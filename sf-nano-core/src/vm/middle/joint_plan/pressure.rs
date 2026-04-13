@@ -1,17 +1,12 @@
-//! Mid-block cached-local pressure policy.
+//! Cached-local pressure budget checks.
 //!
-//! The full long-term plan ranks locals and stack values together. The current
-//! implementation here focuses on cached locals, while stack transients still
-//! use the separate transient contract. Even with that limitation, the keep-key
-//! ordering below gives us the intended cached-local behavior:
-//! - values unused in the block are evicted first
-//! - then values dead after the current point
-//! - then values still used later
-//! - values required by the current local op shape are effectively pinned by
-//!   giving them the strongest keep key
+//! The planner's prefix decisions fully handle pressure within budget, so the
+//! rewrite-time fallback that previously lived here has been removed.  What
+//! remains are the budget-fit predicates used by tests.
 
 #[cfg(test)]
 use crate::vm::middle::budget::count_live_bank_budget_units;
+#[cfg(test)]
 use crate::{
     value_type::ValueType,
     vm::middle::{budget::gp_value_budget_units, frame::FrameSlot},
@@ -19,40 +14,17 @@ use crate::{
 #[cfg(test)]
 use tracked_alloc::collections::BTreeSet;
 
+#[cfg(test)]
 use super::facts::FunctionPlan;
 
-const CARRY_BONUS: i32 = 1024;
-const REMAINING_USE_WEIGHT: i32 = 64;
-const NEXT_USE_DISTANCE_PENALTY: i32 = 1;
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub(crate) struct KeepKey {
-    class: u8,
-    score: i32,
-}
-
-impl KeepKey {
-    #[inline]
-    pub(crate) const fn weakest() -> Self {
-        Self { class: 0, score: 0 }
-    }
-
-    #[inline]
-    pub(crate) const fn strongest() -> Self {
-        Self {
-            class: 3,
-            score: i32::MAX,
-        }
-    }
-}
-
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum CacheBank {
     Gp,
     Fp,
 }
 
-#[inline]
+#[cfg(test)]
 pub(crate) fn slot_bank(local_slot_types: &[ValueType], slot: FrameSlot) -> CacheBank {
     let ty = local_slot_types
         .get(slot.0 as usize)
@@ -65,7 +37,7 @@ pub(crate) fn slot_bank(local_slot_types: &[ValueType], slot: FrameSlot) -> Cach
     }
 }
 
-#[inline]
+#[cfg(test)]
 pub(crate) fn slot_cost(
     local_slot_types: &[ValueType],
     gp_unit_bytes: u8,
@@ -97,44 +69,6 @@ pub(crate) fn fits_with_cached_locals(
         semantic_successor_live_types(plan, semantic_index),
         resident_cache,
     )
-}
-
-pub(crate) fn keep_key(
-    plan: &FunctionPlan,
-    semantic_index: usize,
-    slot: FrameSlot,
-    used_now: Option<FrameSlot>,
-    carried_bonus: bool,
-) -> KeepKey {
-    if used_now == Some(slot) {
-        return KeepKey::strongest();
-    }
-
-    let op_info = &plan.op_info[semantic_index];
-    let block = &plan.block_regions[op_info.block_index as usize];
-    let Some(info) = block.info(slot) else {
-        return KeepKey::weakest();
-    };
-
-    if info.used_after(op_info.block_offset) {
-        let next_distance = i32::from(info.next_use_distance(op_info.block_offset).unwrap_or(0));
-        let remaining = i32::from(info.remaining_use_count(op_info.block_offset));
-        return KeepKey {
-            class: 2,
-            score: info.hot_score + remaining * REMAINING_USE_WEIGHT
-                - next_distance * NEXT_USE_DISTANCE_PENALTY
-                + if carried_bonus { CARRY_BONUS } else { 0 },
-        };
-    }
-
-    if info.used_anywhere() {
-        return KeepKey {
-            class: 1,
-            score: info.hot_score + if carried_bonus { CARRY_BONUS } else { 0 },
-        };
-    }
-
-    KeepKey::weakest()
 }
 
 #[cfg(test)]
@@ -241,7 +175,7 @@ mod tests {
     use super::*;
     use crate::collections;
     use crate::vm::middle::joint_plan::facts::{
-        BlockEntryStackRegion, BlockLocalRegion, BlockPlan, EntryState, OpInfo, OpPlan,
+        BlockEntryStackRegion, BlockLocalSummary, BlockPlan, EntryState, OpInfo, OpPlan,
     };
 
     #[test]
@@ -277,7 +211,7 @@ mod tests {
                 is_block_start: true,
                 local_op: None,
             }],
-            block_regions: collections::vec![BlockLocalRegion::default()],
+            block_local_summaries: collections::vec![BlockLocalSummary::default()],
             block_stack_regions: collections::vec![BlockEntryStackRegion::default()],
             block_transient_regions: collections::vec![
                 crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()

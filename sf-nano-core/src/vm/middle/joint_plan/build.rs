@@ -38,7 +38,9 @@ use super::{
     pressure::fits_with_cached_locals,
 };
 use super::{
-    entry_region::{analyze_block_entry_regions, analyze_block_transient_regions},
+    entry_region::{
+        analyze_block_entry_regions, analyze_block_transient_regions, BlockLocalAnalyzer,
+    },
     facts::{BlockPlan, EntryState, FunctionPlan, LocalOpKind, OpInfo, OpPlan, PrepAction},
     region_solver::solve_public_cache_sets,
 };
@@ -57,19 +59,21 @@ pub(crate) fn build_plan(
 
     let op_info = build_op_info(semantic, cfg, frame);
     let semantic_entry_shapes = analyze_semantic_entry_shapes(semantic);
-    let (block_regions, block_stack_regions) =
+    let (block_local_summaries, block_stack_regions) =
         analyze_block_entry_regions(semantic, cfg, frame, &semantic_entry_shapes);
     let block_transient_regions =
         analyze_block_transient_regions(semantic, cfg, &semantic_entry_shapes);
+    let mut analyzer = BlockLocalAnalyzer::new(semantic.local_count as usize);
     let (op_plans, entry_states) = prepare_semantic_ops(
         semantic,
+        cfg,
         frame,
         config.gp_unit_bytes,
         gp_dynamic_budget,
         fp_dynamic_budget,
         &op_info,
-        &block_regions,
         &block_transient_regions,
+        &mut analyzer,
     )?;
     let block_entry_cached_locals = solve_public_cache_sets(
         semantic,
@@ -78,7 +82,7 @@ pub(crate) fn build_plan(
         gp_dynamic_budget,
         fp_dynamic_budget,
         &op_plans,
-        &block_regions,
+        &block_local_summaries,
     );
     let blocks = cfg
         .blocks
@@ -100,7 +104,7 @@ pub(crate) fn build_plan(
         op_plans,
         entry_states,
         op_info,
-        block_regions,
+        block_local_summaries,
         block_stack_regions,
         block_transient_regions,
         blocks,
@@ -257,24 +261,24 @@ fn choose_tentative_block_entry(
         .position(|info| info.block_index as usize == block_index && info.is_block_start)
         .unwrap_or(0);
     let base_entry = &plan.entry_states[block_start_index];
-    let region = &plan.block_regions[block_index];
+    let summary = &plan.block_local_summaries[block_index];
     let successor_bonus = direct_successor_carry_bonus(cfg, block_index, plan);
     let mut scored_locals = collections::Vec::<(FrameSlot, i32, bool, bool)>::new();
     let mut seen = BTreeSet::new();
 
-    for &slot in &region.ranked_slots {
+    for &slot in &summary.ranked_slots {
         if seen.insert(slot) {
-            let info = region.info(slot);
+            let score = summary.slot_score(slot);
             scored_locals.push((
                 slot,
-                info.map(|info| info.entry_hot_score).unwrap_or_default()
+                score.map(|s| s.entry_hot_score).unwrap_or_default()
                     + successor_bonus
                         .get(slot.0 as usize)
                         .copied()
                         .unwrap_or_default(),
                 false,
                 matches!(
-                    info.and_then(|info| info.entry_first_access_kind),
+                    score.and_then(|s| s.entry_first_access_kind),
                     Some(FirstAccessKind::ReadFirst)
                 ),
             ));
@@ -286,13 +290,13 @@ fn choose_tentative_block_entry(
         }
         let slot = FrameSlot(slot_index as u16);
         if seen.insert(slot) {
-            let info = region.info(slot);
+            let score = summary.slot_score(slot);
             scored_locals.push((
                 slot,
-                info.map(|info| info.entry_hot_score).unwrap_or_default() + bonus,
+                score.map(|s| s.entry_hot_score).unwrap_or_default() + bonus,
                 false,
                 matches!(
-                    info.and_then(|info| info.entry_first_access_kind),
+                    score.and_then(|s| s.entry_first_access_kind),
                     Some(FirstAccessKind::ReadFirst)
                 ),
             ));
@@ -300,10 +304,10 @@ fn choose_tentative_block_entry(
     }
     for &slot in carried {
         if seen.insert(slot) {
-            let info = region.info(slot);
+            let score = summary.slot_score(slot);
             scored_locals.push((
                 slot,
-                info.map(|info| info.entry_hot_score).unwrap_or_default()
+                score.map(|s| s.entry_hot_score).unwrap_or_default()
                     + successor_bonus
                         .get(slot.0 as usize)
                         .copied()
@@ -311,7 +315,7 @@ fn choose_tentative_block_entry(
                     + 1024,
                 true,
                 matches!(
-                    info.and_then(|info| info.entry_first_access_kind),
+                    score.and_then(|s| s.entry_first_access_kind),
                     Some(FirstAccessKind::ReadFirst)
                 ),
             ));
@@ -380,15 +384,13 @@ fn direct_successor_carry_bonus(
     };
 
     for succ in &block.succs {
-        let succ_region = &plan.block_regions[succ.target.as_usize()];
-        for &slot in &succ_region.ranked_slots {
-            if let Some(info) = succ_region.info(slot) {
-                let entry_bonus = info.entry_hot_score;
-                if entry_bonus > 0 {
-                    bonus[slot.0 as usize] += entry_bonus;
-                } else if info.used_anywhere() {
-                    bonus[slot.0 as usize] += 1;
-                }
+        let succ_summary = &plan.block_local_summaries[succ.target.as_usize()];
+        for score in &succ_summary.slot_scores {
+            let entry_bonus = score.entry_hot_score;
+            if entry_bonus > 0 {
+                bonus[score.slot.0 as usize] += entry_bonus;
+            } else if score.used_anywhere {
+                bonus[score.slot.0 as usize] += 1;
             }
         }
     }
@@ -554,13 +556,14 @@ impl LocalKeepKey {
 
 fn prepare_semantic_ops(
     semantic: &SemanticProgram,
+    cfg: &SemanticCfg,
     frame: FrameLayoutPlan,
     gp_unit_bytes: u8,
     gp_dynamic_budget: u8,
     fp_dynamic_budget: u8,
     op_info: &[OpInfo],
-    block_regions: &[super::facts::BlockLocalRegion],
     block_transient_regions: &[super::facts::BlockTransientRegion],
+    analyzer: &mut BlockLocalAnalyzer,
 ) -> Result<(collections::Vec<OpPlan>, collections::Vec<EntryState>), WasmError> {
     let cache_plan = build_cache_plan(semantic, frame, gp_unit_bytes);
     let mut state = PrepareState::new(
@@ -573,12 +576,10 @@ fn prepare_semantic_ops(
     let mut ops = collections::Vec::with_capacity(semantic.ops.len());
 
     for (op_index, semantic_op) in semantic.ops.iter().enumerate() {
-        if op_info
-            .get(op_index)
-            .map(|info| info.is_block_start)
-            .unwrap_or(false)
-        {
+        let info = &op_info[op_index];
+        if info.is_block_start {
             state.enter_cfg_block();
+            analyzer.analyze(semantic, cfg, frame, info.block_index as usize);
         }
         entry_states.push(snapshot_entry_state(&state, state.spill_depth));
         plan_prefix(
@@ -591,7 +592,7 @@ fn prepare_semantic_ops(
             gp_dynamic_budget,
             fp_dynamic_budget,
             op_info,
-            block_regions,
+            analyzer.current_region(),
             block_transient_regions,
             &semantic.op_result_types,
         );
@@ -620,7 +621,7 @@ fn plan_prefix(
     gp_dynamic_budget: u8,
     fp_dynamic_budget: u8,
     op_info: &[OpInfo],
-    block_regions: &[super::facts::BlockLocalRegion],
+    current_block_region: &super::facts::BlockLocalRegion,
     block_transient_regions: &[super::facts::BlockTransientRegion],
     op_result_types: &BTreeMap<usize, collections::Vec<ValueType>>,
 ) {
@@ -654,7 +655,7 @@ fn plan_prefix(
                     fp_dynamic_budget,
                     op_index,
                     op_info,
-                    block_regions,
+                    current_block_region,
                     block_transient_regions,
                     pop as u16,
                     core::slice::from_ref(&push_ty.unwrap_or(ValueType::I64)),
@@ -675,7 +676,7 @@ fn plan_prefix(
                 fp_dynamic_budget,
                 op_index,
                 op_info,
-                block_regions,
+                current_block_region,
                 block_transient_regions,
                 0,
                 core::slice::from_ref(&push_ty),
@@ -694,7 +695,7 @@ fn plan_prefix(
                 fp_dynamic_budget,
                 op_index,
                 op_info,
-                block_regions,
+                current_block_region,
                 block_transient_regions,
                 1,
                 &[],
@@ -714,7 +715,7 @@ fn plan_prefix(
                 fp_dynamic_budget,
                 op_index,
                 op_info,
-                block_regions,
+                current_block_region,
                 block_transient_regions,
                 1,
                 core::slice::from_ref(&push_ty),
@@ -803,7 +804,7 @@ fn plan_local_access(
     fp_dynamic_budget: u8,
     op_index: usize,
     op_info: &[OpInfo],
-    block_regions: &[super::facts::BlockLocalRegion],
+    current_block_region: &super::facts::BlockLocalRegion,
     block_transient_regions: &[super::facts::BlockTransientRegion],
     pop: u16,
     push_types: &[ValueType],
@@ -824,7 +825,7 @@ fn plan_local_access(
             fp_dynamic_budget,
             op_index,
             op_info,
-            block_regions,
+            current_block_region,
             block_transient_regions,
             pop,
             push_types,
@@ -836,7 +837,7 @@ fn plan_local_access(
     let target_keep = local_target_keep_key(
         op_index,
         op_info,
-        block_regions,
+        current_block_region,
         frame.local_slot(local_idx),
     );
     if !state.resident_cache[index] && target_keep == LocalKeepKey::weakest() {
@@ -850,7 +851,7 @@ fn plan_local_access(
             fp_dynamic_budget,
             op_index,
             op_info,
-            block_regions,
+            current_block_region,
             block_transient_regions,
             pop,
             push_types,
@@ -869,7 +870,7 @@ fn plan_local_access(
         fp_dynamic_budget,
         op_index,
         op_info,
-        block_regions,
+        current_block_region,
         block_transient_regions,
         pop,
         push_types,
@@ -898,7 +899,7 @@ fn plan_local_access(
         fp_dynamic_budget,
         op_index,
         op_info,
-        block_regions,
+        current_block_region,
         block_transient_regions,
         pop,
         push_types,
@@ -917,7 +918,7 @@ fn ensure_capacity(
     fp_dynamic_budget: u8,
     op_index: usize,
     op_info: &[OpInfo],
-    block_regions: &[super::facts::BlockLocalRegion],
+    current_block_region: &super::facts::BlockLocalRegion,
     block_transient_regions: &[super::facts::BlockTransientRegion],
     pop: u16,
     push_types: &[ValueType],
@@ -964,7 +965,7 @@ fn ensure_capacity(
             need_fp,
             op_index,
             op_info,
-            block_regions,
+            current_block_region,
         );
         let transient_victim = choose_transient_victim(
             state,
@@ -1004,7 +1005,7 @@ fn choose_cache_victim(
     need_fp: bool,
     op_index: usize,
     op_info: &[OpInfo],
-    block_regions: &[super::facts::BlockLocalRegion],
+    current_block_region: &super::facts::BlockLocalRegion,
 ) -> Option<PressureCandidate<usize>> {
     let mut best: Option<(usize, LocalKeepKey)> = None;
     for (index, candidate) in cache_plan.candidates.iter().copied().enumerate() {
@@ -1021,7 +1022,7 @@ fn choose_cache_victim(
         let keep = local_keep_key(
             op_index,
             op_info,
-            block_regions,
+            current_block_region,
             candidate.slot,
             preserve_cache.map(|idx| cache_plan.candidates[idx].slot),
             false,
@@ -1102,11 +1103,11 @@ fn choose_transient_victim(
 fn local_target_keep_key(
     op_index: usize,
     op_info: &[OpInfo],
-    block_regions: &[super::facts::BlockLocalRegion],
+    current_block_region: &super::facts::BlockLocalRegion,
     slot: FrameSlot,
 ) -> LocalKeepKey {
     let info = &op_info[op_index];
-    let Some(local_info) = block_regions[info.block_index as usize].info(slot) else {
+    let Some(local_info) = current_block_region.info(slot) else {
         return LocalKeepKey::weakest();
     };
     if !local_info.used_after(info.block_offset) {
@@ -1123,7 +1124,7 @@ fn local_target_keep_key(
 fn local_keep_key(
     op_index: usize,
     op_info: &[OpInfo],
-    block_regions: &[super::facts::BlockLocalRegion],
+    current_block_region: &super::facts::BlockLocalRegion,
     slot: FrameSlot,
     used_now: Option<FrameSlot>,
     carried_bonus: bool,
@@ -1135,7 +1136,7 @@ fn local_keep_key(
         };
     }
     let info = &op_info[op_index];
-    let Some(local_info) = block_regions[info.block_index as usize].info(slot) else {
+    let Some(local_info) = current_block_region.info(slot) else {
         return LocalKeepKey::weakest();
     };
     if local_info.used_after(info.block_offset) {
@@ -1624,7 +1625,8 @@ mod tests {
     use super::*;
     use crate::vm::middle::cfg::{CfgBlock, CfgBlockFlags, CfgBlockId, CfgTerminator, SemanticCfg};
     use crate::vm::middle::joint_plan::facts::{
-        BlockEntryStackRegion, BlockLocalInfo, BlockLocalRegion, BlockStackValueInfo,
+        BlockEntryStackRegion, BlockLocalInfo, BlockLocalRegion, BlockLocalSummary,
+        BlockStackValueInfo, LocalSlotScore,
     };
     use crate::vm::wasm::common::SemanticTarget;
 
@@ -1665,24 +1667,16 @@ mod tests {
                 is_block_start: true,
                 local_op: None,
             }],
-            block_regions: collections::vec![BlockLocalRegion {
+            block_local_summaries: collections::vec![BlockLocalSummary {
                 ranked_slots: collections::vec![FrameSlot(0)],
-                locals: collections::vec![Some(BlockLocalInfo {
+                slot_scores: collections::vec![LocalSlotScore {
                     slot: FrameSlot(0),
-                    entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
-                    entry_first_read_distance: Some(0),
-                    entry_first_write_distance: None,
-                    entry_read_count: 1,
-                    entry_write_count: 0,
                     entry_hot_score: 300,
-                    first_access_kind: Some(FirstAccessKind::ReadFirst),
-                    first_read_distance: Some(0),
-                    first_write_distance: None,
+                    entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
+                    used_anywhere: true,
                     read_count: 2,
                     write_count: 0,
-                    access_offsets: collections::vec![0, 1],
-                    hot_score: 400,
-                })],
+                }],
             }],
             block_stack_regions: collections::vec![BlockEntryStackRegion {
                 entry_stack_height: 2,
@@ -1758,41 +1752,25 @@ mod tests {
                 is_block_start: true,
                 local_op: None,
             }],
-            block_regions: collections::vec![BlockLocalRegion {
+            block_local_summaries: collections::vec![BlockLocalSummary {
                 ranked_slots: collections::vec![FrameSlot(0), FrameSlot(1)],
-                locals: collections::vec![
-                    Some(BlockLocalInfo {
+                slot_scores: collections::vec![
+                    LocalSlotScore {
                         slot: FrameSlot(0),
-                        entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
-                        entry_first_read_distance: Some(0),
-                        entry_first_write_distance: None,
-                        entry_read_count: 1,
-                        entry_write_count: 0,
                         entry_hot_score: 800,
-                        first_access_kind: Some(FirstAccessKind::ReadFirst),
-                        first_read_distance: Some(0),
-                        first_write_distance: None,
-                        read_count: 1,
-                        write_count: 0,
-                        access_offsets: collections::vec![0],
-                        hot_score: 800,
-                    }),
-                    Some(BlockLocalInfo {
-                        slot: FrameSlot(1),
                         entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
-                        entry_first_read_distance: Some(0),
-                        entry_first_write_distance: None,
-                        entry_read_count: 1,
-                        entry_write_count: 0,
-                        entry_hot_score: 500,
-                        first_access_kind: Some(FirstAccessKind::ReadFirst),
-                        first_read_distance: Some(0),
-                        first_write_distance: None,
+                        used_anywhere: true,
                         read_count: 1,
                         write_count: 0,
-                        access_offsets: collections::vec![0],
-                        hot_score: 500,
-                    }),
+                    },
+                    LocalSlotScore {
+                        slot: FrameSlot(1),
+                        entry_hot_score: 500,
+                        entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
+                        used_anywhere: true,
+                        read_count: 1,
+                        write_count: 0,
+                    },
                 ],
             }],
             block_stack_regions: collections::vec![BlockEntryStackRegion {
@@ -1853,24 +1831,16 @@ mod tests {
                 is_block_start: true,
                 local_op: None,
             }],
-            block_regions: collections::vec![BlockLocalRegion {
+            block_local_summaries: collections::vec![BlockLocalSummary {
                 ranked_slots: collections::vec![FrameSlot(0)],
-                locals: collections::vec![Some(BlockLocalInfo {
+                slot_scores: collections::vec![LocalSlotScore {
                     slot: FrameSlot(0),
-                    entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
-                    entry_first_read_distance: Some(0),
-                    entry_first_write_distance: None,
-                    entry_read_count: 1,
-                    entry_write_count: 0,
                     entry_hot_score: 320,
-                    first_access_kind: Some(FirstAccessKind::ReadFirst),
-                    first_read_distance: Some(0),
-                    first_write_distance: None,
+                    entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
+                    used_anywhere: true,
                     read_count: 1,
                     write_count: 0,
-                    access_offsets: collections::vec![0],
-                    hot_score: 320,
-                })],
+                }],
             }],
             block_stack_regions: collections::vec![BlockEntryStackRegion {
                 entry_stack_height: 1,
@@ -1915,7 +1885,7 @@ mod tests {
                 is_block_start: true,
                 local_op: None,
             }],
-            block_regions: collections::vec![BlockLocalRegion::default()],
+            block_local_summaries: collections::vec![BlockLocalSummary::default()],
             block_stack_regions: collections::vec![BlockEntryStackRegion {
                 entry_stack_height: 2,
                 values: collections::vec![
@@ -1955,7 +1925,9 @@ mod tests {
     #[test]
     fn finalize_entry_keeps_used_and_surviving_carried_values() {
         let mut plan = test_plan();
-        plan.block_regions[0].locals.push(None);
+        plan.block_local_summaries[0]
+            .slot_scores
+            .push(LocalSlotScore::default());
         plan.blocks[0].tentative_entry_cached_locals =
             collections::vec![FrameSlot(0), FrameSlot(1)];
         let finalized =
@@ -1979,22 +1951,16 @@ mod tests {
     #[test]
     fn finalize_entry_keeps_write_first_only_tentative_local_when_public_state_chose_it() {
         let mut plan = test_plan();
-        plan.block_regions[0].locals.push(Some(BlockLocalInfo {
-            slot: FrameSlot(1),
-            entry_first_access_kind: Some(FirstAccessKind::WriteFirst),
-            entry_first_read_distance: None,
-            entry_first_write_distance: Some(0),
-            entry_read_count: 0,
-            entry_write_count: 1,
-            entry_hot_score: 64,
-            first_access_kind: Some(FirstAccessKind::WriteFirst),
-            first_read_distance: None,
-            first_write_distance: Some(0),
-            read_count: 2,
-            write_count: 1,
-            access_offsets: collections::vec![0, 1, 2],
-            hot_score: 128,
-        }));
+        plan.block_local_summaries[0]
+            .slot_scores
+            .push(LocalSlotScore {
+                slot: FrameSlot(1),
+                entry_hot_score: 64,
+                entry_first_access_kind: Some(FirstAccessKind::WriteFirst),
+                used_anywhere: true,
+                read_count: 2,
+                write_count: 1,
+            });
         plan.blocks[0].tentative_entry_cached_locals =
             collections::vec![FrameSlot(0), FrameSlot(1)];
 
@@ -2015,22 +1981,16 @@ mod tests {
     #[test]
     fn finalize_entry_keeps_write_first_tentative_local_that_survives_exit() {
         let mut plan = test_plan();
-        plan.block_regions[0].locals.push(Some(BlockLocalInfo {
-            slot: FrameSlot(1),
-            entry_first_access_kind: Some(FirstAccessKind::WriteFirst),
-            entry_first_read_distance: None,
-            entry_first_write_distance: Some(0),
-            entry_read_count: 0,
-            entry_write_count: 1,
-            entry_hot_score: 64,
-            first_access_kind: Some(FirstAccessKind::WriteFirst),
-            first_read_distance: None,
-            first_write_distance: Some(0),
-            read_count: 3,
-            write_count: 1,
-            access_offsets: collections::vec![0, 1, 2, 3],
-            hot_score: 192,
-        }));
+        plan.block_local_summaries[0]
+            .slot_scores
+            .push(LocalSlotScore {
+                slot: FrameSlot(1),
+                entry_hot_score: 64,
+                entry_first_access_kind: Some(FirstAccessKind::WriteFirst),
+                used_anywhere: true,
+                read_count: 3,
+                write_count: 1,
+            });
         plan.blocks[0].tentative_entry_cached_locals =
             collections::vec![FrameSlot(0), FrameSlot(1)];
 
@@ -2110,24 +2070,21 @@ mod tests {
                 local_op: None,
             },
         ];
-        plan.block_regions = collections::vec![BlockLocalRegion {
+        plan.block_local_summaries = collections::vec![BlockLocalSummary {
             ranked_slots: collections::vec![FrameSlot(1)],
-            locals: collections::vec![
-                Some(BlockLocalInfo {
+            slot_scores: collections::vec![
+                LocalSlotScore {
                     slot: FrameSlot(0),
-                    ..BlockLocalInfo::default()
-                }),
-                Some(BlockLocalInfo {
+                    ..LocalSlotScore::default()
+                },
+                LocalSlotScore {
                     slot: FrameSlot(1),
-                    entry_first_access_kind: Some(FirstAccessKind::WriteFirst),
-                    first_access_kind: Some(FirstAccessKind::WriteFirst),
-                    entry_write_count: 1,
-                    write_count: 1,
-                    access_offsets: collections::vec![0],
                     entry_hot_score: 32,
-                    hot_score: 32,
-                    ..BlockLocalInfo::default()
-                }),
+                    entry_first_access_kind: Some(FirstAccessKind::WriteFirst),
+                    used_anywhere: true,
+                    read_count: 0,
+                    write_count: 1,
+                },
             ],
         }];
         plan.blocks = collections::vec![BlockPlan::default()];
@@ -2167,7 +2124,7 @@ mod tests {
             is_block_start: true,
             local_op: None,
         }];
-        let block_regions = collections::vec![BlockLocalRegion::default()];
+        let current_block_region = BlockLocalRegion::default();
         let block_transient_regions =
             collections::vec![crate::vm::middle::joint_plan::facts::BlockTransientRegion {
                 entry_stack_height: 3,
@@ -2207,7 +2164,7 @@ mod tests {
             2,
             0,
             &op_info,
-            &block_regions,
+            &current_block_region,
             &block_transient_regions,
             0,
             &[],
@@ -2259,7 +2216,7 @@ mod tests {
                 is_block_start: true,
                 local_op: None,
             }],
-            &[BlockLocalRegion::default()],
+            &BlockLocalRegion::default(),
             &[crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()],
             &BTreeMap::new(),
         );

@@ -89,6 +89,9 @@ impl BlockLocalInfo {
 }
 
 /// Block-local entry-region and whole-block hotness facts.
+///
+/// This is an ephemeral analysis scratch buffer, not stored per block.
+/// Use `BlockLocalAnalyzer` to compute it on demand for the current block.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockLocalRegion {
     pub ranked_slots: collections::Vec<FrameSlot>,
@@ -99,6 +102,35 @@ impl BlockLocalRegion {
     #[inline]
     pub(crate) fn info(&self, slot: FrameSlot) -> Option<&BlockLocalInfo> {
         self.locals.get(slot.0 as usize).and_then(Option::as_ref)
+    }
+}
+
+/// Compact per-block local summary retained for all blocks.
+///
+/// This stores only the data needed for cross-block queries (successor bonus
+/// and block-open planning), not the full per-op access offsets.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct BlockLocalSummary {
+    pub ranked_slots: collections::Vec<FrameSlot>,
+    pub slot_scores: collections::Vec<LocalSlotScore>,
+}
+
+/// Compact per-slot score for cross-block queries.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct LocalSlotScore {
+    pub slot: FrameSlot,
+    pub entry_hot_score: i32,
+    pub entry_first_access_kind: Option<FirstAccessKind>,
+    pub used_anywhere: bool,
+    pub read_count: u16,
+    pub write_count: u16,
+}
+
+impl BlockLocalSummary {
+    #[cfg(test)]
+    #[inline]
+    pub(crate) fn slot_score(&self, slot: FrameSlot) -> Option<&LocalSlotScore> {
+        self.slot_scores.iter().find(|s| s.slot == slot)
     }
 }
 
@@ -220,7 +252,7 @@ pub(crate) struct FunctionPlan {
     pub op_plans: collections::Vec<OpPlan>,
     pub entry_states: collections::Vec<EntryState>,
     pub op_info: collections::Vec<OpInfo>,
-    pub block_regions: collections::Vec<BlockLocalRegion>,
+    pub block_local_summaries: collections::Vec<BlockLocalSummary>,
     pub block_stack_regions: collections::Vec<BlockEntryStackRegion>,
     pub block_transient_regions: collections::Vec<BlockTransientRegion>,
     pub blocks: collections::Vec<BlockPlan>,

@@ -15,7 +15,7 @@ use crate::{
             budget::{count_live_bank_budget_units, gp_value_budget_units},
             cfg::SemanticCfg,
             frame::FrameSlot,
-            joint_plan::facts::{BlockLocalRegion, OpPlan},
+            joint_plan::facts::{BlockLocalSummary, OpPlan},
         },
         wasm::semantic_ir::{SemanticOpKind, SemanticProgram},
     },
@@ -86,7 +86,7 @@ pub(super) fn solve_public_cache_sets(
     gp_dynamic_budget: u8,
     fp_dynamic_budget: u8,
     op_plans: &[OpPlan],
-    block_regions: &[BlockLocalRegion],
+    block_local_summaries: &[BlockLocalSummary],
 ) -> collections::Vec<collections::Vec<FrameSlot>> {
     let local_count = semantic.local_count as usize;
     if cfg.blocks.is_empty() || local_count == 0 {
@@ -116,9 +116,9 @@ pub(super) fn solve_public_cache_sets(
 
     for (block_index, region_id) in regions.owner_by_block.iter().copied().enumerate() {
         let weight = block_weights[block_index];
-        for info in block_regions[block_index].locals.iter().flatten() {
-            let slot_index = info.slot.0 as usize;
-            let access_count = f64::from(info.read_count.saturating_add(info.write_count));
+        for score in &block_local_summaries[block_index].slot_scores {
+            let slot_index = score.slot.0 as usize;
+            let access_count = f64::from(score.read_count.saturating_add(score.write_count));
             if access_count > 0.0 {
                 benefit[region_id][slot_index] += weight * access_count;
             }

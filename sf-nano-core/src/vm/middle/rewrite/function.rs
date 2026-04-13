@@ -20,7 +20,7 @@ use crate::{
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
                 init_locals::locals_reads_before_write, BeforeOpQuery, JointPlanner,
-                LocalAccessDecision, LocalAccessQuery, PressureFallbackQuery, TransientContract,
+                LocalAccessDecision, LocalAccessQuery, TransientContract,
             },
             slot_ssa::SlotSsaProgram,
             ssa_ir::{
@@ -225,11 +225,6 @@ struct LoweredBlock {
     extra_block_cfg_origins: collections::Vec<collections::Vec<u32>>,
 }
 
-struct LowerScratch {
-    pressure_working: collections::Vec<FrameSlot>,
-    pressure_drops: collections::Vec<FrameSlot>,
-}
-
 /// Lower one CFG block exactly once from the planner-chosen entry state.
 ///
 /// The intended long-term algorithm is:
@@ -252,10 +247,6 @@ fn lower_block_range(
 ) -> Result<LoweredBlock, WasmError> {
     let mut resident_cache = entry_cached_locals.iter().copied().collect::<BTreeSet<_>>();
     let mut materialized_cache = resident_cache.clone();
-    let mut scratch = LowerScratch {
-        pressure_working: collections::Vec::new(),
-        pressure_drops: collections::Vec::new(),
-    };
     ensure_state_fits_with_cache(
         &state,
         &resident_cache,
@@ -282,7 +273,6 @@ fn lower_block_range(
             &mut resident_cache,
             &mut materialized_cache,
             values,
-            &mut scratch,
         )?;
     }
 
@@ -300,7 +290,6 @@ fn lower_block_range(
         values,
         original_block_count,
         extra_blocks_len,
-        &mut scratch,
     )?;
 
     Ok(LoweredBlock {
@@ -329,7 +318,6 @@ fn lower_prefix_actions(
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
-    scratch: &mut LowerScratch,
 ) -> Result<(), WasmError> {
     let before_op = planner.before_op(BeforeOpQuery {
         semantic_index,
@@ -347,27 +335,6 @@ fn lower_prefix_actions(
         });
     }
     realize_transient_contract(before_op.transient, state, frame, values)?;
-    planner.pressure_fallback_drops_into(
-        PressureFallbackQuery {
-            semantic_index,
-            resident_cache,
-            live_types: &state.live_types,
-            live_aliases: state.live_aliases(),
-        },
-        &mut scratch.pressure_working,
-        &mut scratch.pressure_drops,
-    );
-    for &slot in &scratch.pressure_drops {
-        if !resident_cache.remove(&slot) {
-            return Err(WasmError::internal(
-                "planner fallback dropped uncached local slot before semantic op",
-            ));
-        }
-        materialized_cache.remove(&slot);
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::LocalDropCache { slot },
-        });
-    }
     ensure_state_fits_with_cache(
         state,
         resident_cache,
@@ -496,38 +463,6 @@ fn count_cached_local_budget_units(
     (gp, fp)
 }
 
-fn apply_pressure_fallback_after_op(
-    semantic_index: usize,
-    planner: &JointPlanner,
-    state: &mut BlockState,
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
-    scratch: &mut LowerScratch,
-) -> Result<(), WasmError> {
-    planner.pressure_fallback_drops_into(
-        PressureFallbackQuery {
-            semantic_index,
-            resident_cache,
-            live_types: &state.live_types,
-            live_aliases: state.live_aliases(),
-        },
-        &mut scratch.pressure_working,
-        &mut scratch.pressure_drops,
-    );
-    for &slot in &scratch.pressure_drops {
-        if !resident_cache.remove(&slot) {
-            return Err(WasmError::internal(
-                "planner fallback dropped uncached local slot after semantic op",
-            ));
-        }
-        materialized_cache.remove(&slot);
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::LocalDropCache { slot },
-        });
-    }
-    Ok(())
-}
-
 fn lower_block_body_op(
     semantic: &SemanticProgram,
     semantic_index: usize,
@@ -538,7 +473,6 @@ fn lower_block_body_op(
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
-    scratch: &mut LowerScratch,
 ) -> Result<(), WasmError> {
     lower_prefix_actions(
         semantic_index,
@@ -549,7 +483,6 @@ fn lower_block_body_op(
         resident_cache,
         materialized_cache,
         values,
-        scratch,
     )?;
     match &semantic.ops[semantic_index].kind {
         SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => {
@@ -564,7 +497,6 @@ fn lower_block_body_op(
             resident_cache,
             materialized_cache,
             values,
-            scratch,
         ),
         SemanticOpKind::LocalGet { idx } => lower_local_get(
             semantic,
@@ -576,7 +508,6 @@ fn lower_block_body_op(
             resident_cache,
             materialized_cache,
             values,
-            scratch,
         ),
         SemanticOpKind::LocalSet { idx } => lower_local_set(
             *idx,
@@ -587,7 +518,6 @@ fn lower_block_body_op(
             local_slot_types,
             resident_cache,
             materialized_cache,
-            scratch,
         ),
         SemanticOpKind::LocalTee { idx } => lower_local_tee(
             semantic,
@@ -599,7 +529,6 @@ fn lower_block_body_op(
             resident_cache,
             materialized_cache,
             values,
-            scratch,
         ),
         SemanticOpKind::CallDirect {
             callee,
@@ -654,11 +583,10 @@ fn lower_primitive(
     kind: &PrimitiveOpKind,
     semantic_index: usize,
     state: &mut BlockState,
-    planner: &JointPlanner,
+    _planner: &JointPlanner,
     resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
+    _materialized_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
-    scratch: &mut LowerScratch,
 ) -> Result<(), WasmError> {
     let (pop, push) = primitive_op::stack_effect(kind);
     let args = state.top_values(pop as usize)?;
@@ -689,14 +617,6 @@ fn lower_primitive(
         },
     });
     state.push_results(results, collections::vec![result_ty; push as usize])?;
-    apply_pressure_fallback_after_op(
-        semantic_index,
-        planner,
-        state,
-        resident_cache,
-        materialized_cache,
-        scratch,
-    )?;
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "primitive op")
 }
 
@@ -710,7 +630,6 @@ fn lower_local_get(
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
-    scratch: &mut LowerScratch,
 ) -> Result<(), WasmError> {
     // `local.get` always needs one SSA result. The current planner decides
     // whether we also keep the local cached after that load.
@@ -740,14 +659,6 @@ fn lower_local_get(
         .then_some(slot)
         .filter(|_| cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
     state.push_results_with_aliases(collections::vec![dst], collections::vec![ty], aliases)?;
-    apply_pressure_fallback_after_op(
-        semantic_index,
-        planner,
-        state,
-        resident_cache,
-        materialized_cache,
-        scratch,
-    )?;
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "local.get")
 }
 
@@ -760,7 +671,6 @@ fn lower_local_set(
     local_slot_types: &[ValueType],
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
-    scratch: &mut LowerScratch,
 ) -> Result<(), WasmError> {
     let src = state.pop_one()?;
     let slot = frame.local_slot(local_idx);
@@ -779,14 +689,6 @@ fn lower_local_set(
             }
         },
     });
-    apply_pressure_fallback_after_op(
-        semantic_index,
-        planner,
-        state,
-        resident_cache,
-        materialized_cache,
-        scratch,
-    )?;
     ensure_state_fits_with_cache(state, resident_cache, local_slot_types, "local.set")
 }
 
@@ -800,7 +702,6 @@ fn lower_local_tee(
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
-    scratch: &mut LowerScratch,
 ) -> Result<(), WasmError> {
     // `local.tee` is the same admission question as `local.get`, except stack
     // height stays flat: the source value stays logically available while we
@@ -842,14 +743,6 @@ fn lower_local_tee(
         .then_some(slot)
         .filter(|_| cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
     state.push_results_with_aliases(collections::vec![dst], collections::vec![ty], aliases)?;
-    apply_pressure_fallback_after_op(
-        semantic_index,
-        planner,
-        state,
-        resident_cache,
-        materialized_cache,
-        scratch,
-    )?;
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "local.tee")
 }
 
@@ -965,7 +858,6 @@ fn lower_block_terminator(
     values: &mut ValueAlloc,
     original_block_count: usize,
     extra_blocks_len: usize,
-    scratch: &mut LowerScratch,
 ) -> Result<LoweredTerminator, WasmError> {
     lower_prefix_actions(
         semantic_index,
@@ -976,7 +868,6 @@ fn lower_block_terminator(
         resident_cache,
         materialized_cache,
         values,
-        scratch,
     )?;
     match &semantic.ops[semantic_index].kind {
         SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => {
@@ -992,7 +883,6 @@ fn lower_block_terminator(
                 resident_cache,
                 materialized_cache,
                 values,
-                scratch,
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
@@ -1020,7 +910,6 @@ fn lower_block_terminator(
                 resident_cache,
                 materialized_cache,
                 values,
-                scratch,
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
@@ -1047,7 +936,6 @@ fn lower_block_terminator(
                 local_slot_types,
                 resident_cache,
                 materialized_cache,
-                scratch,
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
@@ -1075,7 +963,6 @@ fn lower_block_terminator(
                 resident_cache,
                 materialized_cache,
                 values,
-                scratch,
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],

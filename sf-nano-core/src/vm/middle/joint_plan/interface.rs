@@ -60,15 +60,6 @@ pub(crate) struct BeforeOpQuery<'a> {
     pub resident_cache: &'a BTreeSet<FrameSlot>,
 }
 
-/// Query for rare post-contract public-cache fallback drops.
-#[derive(Clone, Debug)]
-pub(crate) struct PressureFallbackQuery<'a> {
-    pub semantic_index: usize,
-    pub resident_cache: &'a BTreeSet<FrameSlot>,
-    pub live_types: &'a [ValueType],
-    pub live_aliases: &'a [Option<FrameSlot>],
-}
-
 /// Query for slot-vs-cache lowering of a local op.
 #[derive(Clone, Debug)]
 pub(crate) struct LocalAccessQuery<'a> {
