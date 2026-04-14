@@ -56,5 +56,3 @@ Run with `run_tests.py` on macOS (Apple M4).
 - Cranelift: wasmtime (`-C compiler=cranelift`, optimizing JIT)
 - V8: Node.js 25.4.0, V8 14.1.146.11 (`run_v8.mjs`)
 - Higher is better for score/MB/s metrics; lower is better for ms/s metrics
-- **Bold** = best interpreter result
-- c-ray: 4000x4000 resolution
