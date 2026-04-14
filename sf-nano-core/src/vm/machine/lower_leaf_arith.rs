@@ -10,7 +10,7 @@ use crate::{
             MachineFloatWidth, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
             MachineIntWidth, MachineSign, MachineValue,
         },
-        middle::ssa_ir::ir::{SsaOperand, SsaValue},
+        middle::ssa_ir::ir::{DecodedOperand, SsaOperand, SsaValue},
         wasm::primitive_op::PrimitiveOpKind,
     },
 };
@@ -29,9 +29,15 @@ impl<'a> BlockLowerContext<'a> {
     ///   allocation.  The architecture backend encodes this as a native
     ///   immediate when possible, or materializes into a scratch register.
     pub(super) fn lower_operand(&mut self, operand: SsaOperand) -> Result<MachineValue, WasmError> {
-        match operand {
-            SsaOperand::Value(v) => Ok(MachineValue::Reg(self.use_value(v)?)),
-            SsaOperand::Const(bits) => Ok(MachineValue::Imm64(bits)),
+        match operand.decode() {
+            DecodedOperand::Value(v) => Ok(MachineValue::Reg(self.use_value(v)?)),
+            DecodedOperand::Const(idx) => {
+                let bits = self.program().const_pool[idx as usize];
+                Ok(MachineValue::Imm64(bits))
+            }
+            DecodedOperand::None => Err(WasmError::internal(
+                "lower_operand called with a NONE SsaOperand",
+            )),
         }
     }
 
@@ -73,9 +79,9 @@ impl<'a> BlockLowerContext<'a> {
         let src = self.lower_operand(src_op)?;
         let dead: collections::Vec<SsaValue> = args
             .iter()
-            .filter_map(|a| match a {
-                SsaOperand::Value(v) => Some(*v),
-                SsaOperand::Const(_) => None,
+            .filter_map(|a| match a.decode() {
+                DecodedOperand::Value(v) => Some(v),
+                DecodedOperand::Const(_) | DecodedOperand::None => None,
             })
             .collect();
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
@@ -102,9 +108,9 @@ impl<'a> BlockLowerContext<'a> {
         let rhs = self.lower_operand(rhs_op)?;
         let dead: collections::Vec<SsaValue> = args
             .iter()
-            .filter_map(|a| match a {
-                SsaOperand::Value(v) => Some(*v),
-                SsaOperand::Const(_) => None,
+            .filter_map(|a| match a.decode() {
+                DecodedOperand::Value(v) => Some(v),
+                DecodedOperand::Const(_) | DecodedOperand::None => None,
             })
             .collect();
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
@@ -133,9 +139,9 @@ impl<'a> BlockLowerContext<'a> {
         let rhs = self.lower_operand(rhs_op)?;
         let dead: collections::Vec<SsaValue> = args
             .iter()
-            .filter_map(|a| match a {
-                SsaOperand::Value(v) => Some(*v),
-                SsaOperand::Const(_) => None,
+            .filter_map(|a| match a.decode() {
+                DecodedOperand::Value(v) => Some(v),
+                DecodedOperand::Const(_) | DecodedOperand::None => None,
             })
             .collect();
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
@@ -168,9 +174,9 @@ impl<'a> BlockLowerContext<'a> {
         let lhs = self.lower_operand(src_op)?;
         let dead: collections::Vec<SsaValue> = args
             .iter()
-            .filter_map(|a| match a {
-                SsaOperand::Value(v) => Some(*v),
-                SsaOperand::Const(_) => None,
+            .filter_map(|a| match a.decode() {
+                DecodedOperand::Value(v) => Some(v),
+                DecodedOperand::Const(_) | DecodedOperand::None => None,
             })
             .collect();
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
@@ -199,9 +205,9 @@ impl<'a> BlockLowerContext<'a> {
         let rhs = self.lower_operand(rhs_op)?;
         let dead: collections::Vec<SsaValue> = args
             .iter()
-            .filter_map(|a| match a {
-                SsaOperand::Value(v) => Some(*v),
-                SsaOperand::Const(_) => None,
+            .filter_map(|a| match a.decode() {
+                DecodedOperand::Value(v) => Some(v),
+                DecodedOperand::Const(_) | DecodedOperand::None => None,
             })
             .collect();
         let dst =
@@ -230,9 +236,9 @@ impl<'a> BlockLowerContext<'a> {
         let rhs = self.lower_operand(rhs_op)?;
         let dead: collections::Vec<SsaValue> = args
             .iter()
-            .filter_map(|a| match a {
-                SsaOperand::Value(v) => Some(*v),
-                SsaOperand::Const(_) => None,
+            .filter_map(|a| match a.decode() {
+                DecodedOperand::Value(v) => Some(v),
+                DecodedOperand::Const(_) | DecodedOperand::None => None,
             })
             .collect();
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
@@ -259,9 +265,9 @@ impl<'a> BlockLowerContext<'a> {
         let src = self.lower_operand(src_op)?;
         let dead: collections::Vec<SsaValue> = args
             .iter()
-            .filter_map(|a| match a {
-                SsaOperand::Value(v) => Some(*v),
-                SsaOperand::Const(_) => None,
+            .filter_map(|a| match a.decode() {
+                DecodedOperand::Value(v) => Some(v),
+                DecodedOperand::Const(_) | DecodedOperand::None => None,
             })
             .collect();
         let dst =
@@ -287,9 +293,9 @@ impl<'a> BlockLowerContext<'a> {
         let src = self.lower_operand(src_op)?;
         let dead: collections::Vec<SsaValue> = args
             .iter()
-            .filter_map(|a| match a {
-                SsaOperand::Value(v) => Some(*v),
-                SsaOperand::Const(_) => None,
+            .filter_map(|a| match a.decode() {
+                DecodedOperand::Value(v) => Some(v),
+                DecodedOperand::Const(_) | DecodedOperand::None => None,
             })
             .collect();
         let dst = if let Some(width) = convert_result_float_width(op) {
@@ -316,9 +322,9 @@ impl<'a> BlockLowerContext<'a> {
         let cond = self.use_operand(args[2])?;
         let dead_inputs: collections::Vec<_> = args
             .iter()
-            .filter_map(|a| match a {
-                SsaOperand::Value(v) => Some(*v),
-                SsaOperand::Const(_) => None,
+            .filter_map(|a| match a.decode() {
+                DecodedOperand::Value(v) => Some(v),
+                DecodedOperand::Const(_) | DecodedOperand::None => None,
             })
             .collect();
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead_inputs)?;

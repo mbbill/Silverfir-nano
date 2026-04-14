@@ -14,7 +14,7 @@ use crate::{
         },
         middle::{
             frame::FrameSlot,
-            ssa_ir::ir::{LocalSlotInfo, SsaBlock, SsaInstKind, SsaProgram, SsaValue},
+            ssa_ir::ir::{LocalSlotInfo, SsaBlock, SsaInstView, SsaProgram, SsaValue},
         },
         runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
     },
@@ -172,7 +172,7 @@ impl<'a> BlockLowerContext<'a> {
             cache_has_value,
             cache_dirty,
             values: collections::Vec::new(),
-            remaining_uses: compute_remaining_uses(block),
+            remaining_uses: compute_remaining_uses(block, program),
             linear_value_state: collections::vec![
                 LinearValueState::default();
                 regfile.gp_dynamic_count() + regfile.fp_dynamic_count()
@@ -985,30 +985,30 @@ pub(super) fn explicit_cached_locals(program: &SsaProgram) -> collections::Vec<C
     let mut order = 0usize;
 
     for block in &program.blocks {
-        for inst in &block.ops {
-            match &inst.kind {
-                SsaInstKind::LocalGetCache { slot, dst } => {
+        for inst_idx in 0..block.ops.len() {
+            match block.view(inst_idx, program) {
+                SsaInstView::LocalGetCache { slot, dst } => {
                     record_explicit_cached_local(
                         &mut explicit,
                         &pref_map,
-                        *slot,
-                        Some(value_type(program, *dst)),
+                        slot,
+                        Some(value_type(program, dst)),
                         &mut order,
                     );
                 }
-                SsaInstKind::LocalSetCache { slot, src } => {
+                SsaInstView::LocalSetCache { slot, src } => {
                     record_explicit_cached_local(
                         &mut explicit,
                         &pref_map,
-                        *slot,
-                        Some(value_type(program, *src)),
+                        slot,
+                        Some(value_type(program, src)),
                         &mut order,
                     );
                 }
-                SsaInstKind::LocalEnsureCache { slot }
-                | SsaInstKind::LocalReserveCache { slot }
-                | SsaInstKind::LocalDropCache { slot } => {
-                    record_explicit_cached_local(&mut explicit, &pref_map, *slot, None, &mut order);
+                SsaInstView::LocalEnsureCache { slot }
+                | SsaInstView::LocalReserveCache { slot }
+                | SsaInstView::LocalDropCache { slot } => {
+                    record_explicit_cached_local(&mut explicit, &pref_map, slot, None, &mut order);
                 }
                 _ => {}
             }

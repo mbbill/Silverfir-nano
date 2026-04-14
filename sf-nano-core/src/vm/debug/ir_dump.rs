@@ -20,7 +20,8 @@ use crate::{
             MachineModuleAbi, MachineSign, MachineStorageType, MachineTerminator, MachineValue,
         },
         middle::ssa_ir::ir::{
-            SsaBlock, SsaCallOp, SsaInstKind, SsaProgram, SsaTerminator, SsaValue,
+            DecodedOperand, SsaBlock, SsaCallOp, SsaInst, SsaInstView, SsaOperand, SsaProgram,
+            SsaTerminator,
         },
     },
 };
@@ -246,7 +247,7 @@ fn render_lir_program(out: &mut String, program: &SsaProgram) {
             .get(block.id.0 as usize)
             .cloned()
             .unwrap_or_default();
-        render_lir_block(out, block, &cached);
+        render_lir_block(out, block, &cached, program);
     }
 }
 
@@ -254,6 +255,7 @@ fn render_lir_block(
     out: &mut String,
     block: &SsaBlock,
     cached: &[crate::vm::middle::frame::FrameSlot],
+    program: &SsaProgram,
 ) {
     if cached.is_empty() {
         let _ = writeln!(
@@ -286,7 +288,7 @@ fn render_lir_block(
         );
     }
     for (i, inst) in block.ops.iter().enumerate() {
-        let _ = writeln!(out, "    {i:02}: {}", render_lir_inst(&inst.kind));
+        let _ = writeln!(out, "    {i:02}: {}", render_lir_inst(inst, block, program));
     }
     let _ = writeln!(
         out,
@@ -295,42 +297,50 @@ fn render_lir_block(
     );
 }
 
-fn render_lir_inst(kind: &SsaInstKind) -> String {
-    match kind {
-        SsaInstKind::Value { op, args, results } => format!(
-            "leaf {:?} args=[{}] results=[{}]",
-            op,
-            operands(args),
-            vals(results),
-        ),
-        SsaInstKind::LocalGetSlot { slot, dst } => {
+fn render_lir_inst(inst: &SsaInst, block: &SsaBlock, program: &SsaProgram) -> String {
+    match inst.view(program, block) {
+        SsaInstView::Value { op, result, args } => {
+            let arg_vec: collections::Vec<SsaOperand> = args.iter().collect();
+            let result_str = if result.is_some() {
+                format!("v{}", result.0)
+            } else {
+                String::new()
+            };
+            format!(
+                "leaf {:?} args=[{}] results=[{}]",
+                op,
+                operands(&arg_vec, program),
+                result_str,
+            )
+        }
+        SsaInstView::LocalGetSlot { slot, dst } => {
             format!("local.get_slot v{} <- fp[{}]", dst.0, slot.0)
         }
-        SsaInstKind::LocalGetCache { slot, dst } => {
+        SsaInstView::LocalGetCache { slot, dst } => {
             format!("local.get_cache v{} <- fp[{}]", dst.0, slot.0)
         }
-        SsaInstKind::Fill { slot, dst } => {
+        SsaInstView::Fill { slot, dst } => {
             format!("fill v{} <- fp[{}]", dst.0, slot.0)
         }
-        SsaInstKind::LocalSetSlot { slot, src } => {
+        SsaInstView::LocalSetSlot { slot, src } => {
             format!("local.set_slot fp[{}] <- v{}", slot.0, src.0)
         }
-        SsaInstKind::LocalSetCache { slot, src } => {
+        SsaInstView::LocalSetCache { slot, src } => {
             format!("local.set_cache fp[{}] <- v{}", slot.0, src.0)
         }
-        SsaInstKind::LocalEnsureCache { slot } => {
+        SsaInstView::LocalEnsureCache { slot } => {
             format!("local.ensure_cache fp[{}]", slot.0)
         }
-        SsaInstKind::LocalReserveCache { slot } => {
+        SsaInstView::LocalReserveCache { slot } => {
             format!("local.reserve_cache fp[{}]", slot.0)
         }
-        SsaInstKind::LocalDropCache { slot } => {
+        SsaInstView::LocalDropCache { slot } => {
             format!("local.drop_cache fp[{}]", slot.0)
         }
-        SsaInstKind::Spill { slot, src } => {
+        SsaInstView::Spill { slot, src } => {
             format!("spill fp[{}] <- v{}", slot.0, src.0)
         }
-        SsaInstKind::Call(bop) => render_call(bop),
+        SsaInstView::Call(bop) => render_call(bop),
     }
 }
 
@@ -407,19 +417,15 @@ fn render_lir_bindings(bindings: &[crate::vm::middle::ssa_ir::ir::SsaBinding]) -
         .into()
 }
 
-fn vals(vs: &[SsaValue]) -> String {
-    vs.iter()
-        .map(|v| format!("v{}", v.0))
-        .collect::<collections::Vec<_>>()
-        .join(", ")
-        .into()
-}
-
-fn operands(ops: &[crate::vm::middle::ssa_ir::ir::SsaOperand]) -> String {
+fn operands(ops: &[SsaOperand], program: &SsaProgram) -> String {
     ops.iter()
-        .map(|op| match op {
-            crate::vm::middle::ssa_ir::ir::SsaOperand::Value(v) => format!("v{}", v.0),
-            crate::vm::middle::ssa_ir::ir::SsaOperand::Const(bits) => format!("#{bits}"),
+        .map(|op| match op.decode() {
+            DecodedOperand::None => String::from("_"),
+            DecodedOperand::Value(v) => format!("v{}", v.0),
+            DecodedOperand::Const(idx) => {
+                let bits = program.const_pool.get(idx as usize).copied().unwrap_or(0);
+                format!("#{bits}")
+            }
         })
         .collect::<collections::Vec<_>>()
         .join(", ")

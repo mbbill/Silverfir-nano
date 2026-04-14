@@ -1,5 +1,6 @@
 use crate::collections;
-use crate::vm::middle::ssa_ir::ir::SsaInstKind;
+use crate::vm::middle::frame::FrameSlot;
+use crate::vm::middle::ssa_ir::ir::SsaOp;
 
 use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind};
 
@@ -53,7 +54,7 @@ fn local_get_uses_cache_when_local_is_already_resident_and_budget_has_result_roo
         .expect("expected one local.get for the already-resident local");
 
     assert!(
-        matches!(first_get, SsaInstKind::LocalGetCache { .. }),
+        first_get.op == SsaOp::LOCAL_GET_CACHE,
         "a local that is already resident from LocalSetCache should be read back through LocalGetCache"
     );
 }
@@ -355,20 +356,16 @@ fn loop_interior_state_blocks_keep_hot_locals_for_later_dispatch_bodies() {
     );
     assert!(
         state_ssa_block.ops.iter().all(|inst| {
-            !matches!(
-                inst.kind,
-                SsaInstKind::LocalDropCache { slot } if slot == slot0 || slot == slot1
-            )
+            !(inst.op == SsaOp::LOCAL_DROP_CACHE
+                && (FrameSlot(inst.meta) == slot0 || FrameSlot(inst.meta) == slot1))
         }),
         "the interior pass-through state block should not drop the hot loop locals; block={state_ssa_block:?}"
     );
     assert!(
         dispatch_repairs.iter().all(|block| {
             block.ops.iter().all(|inst| {
-                !matches!(
-                    inst.kind,
-                    SsaInstKind::LocalEnsureCache { slot } if slot == slot0 || slot == slot1
-                )
+                !(inst.op == SsaOp::LOCAL_ENSURE_CACHE
+                    && (FrameSlot(inst.meta) == slot0 || FrameSlot(inst.meta) == slot1))
             })
         }),
         "the dispatch block should not need to re-ensure the hot locals after the interior state block; repair_blocks={dispatch_repairs:?}",
@@ -432,12 +429,11 @@ fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair
             .filter(|block| {
                 block.ops.iter().any(|inst| {
                     matches!(
-                        inst.kind,
-                        SsaInstKind::LocalReserveCache { slot }
-                            | SsaInstKind::LocalEnsureCache { slot }
-                            | SsaInstKind::LocalDropCache { slot }
-                            if slot == slot0
-                    )
+                        inst.op,
+                        SsaOp::LOCAL_RESERVE_CACHE
+                            | SsaOp::LOCAL_ENSURE_CACHE
+                            | SsaOp::LOCAL_DROP_CACHE
+                    ) && FrameSlot(inst.meta) == slot0
                 })
             })
             .count()
@@ -450,7 +446,7 @@ fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair
     assert!(
         repair_blocks.iter().all(|block| {
             block.ops.iter().all(|inst| {
-                !matches!(inst.kind, SsaInstKind::LocalEnsureCache { slot } if slot == slot0)
+                !(inst.op == SsaOp::LOCAL_ENSURE_CACHE && FrameSlot(inst.meta) == slot0)
             })
         }),
         "the cold incoming edge should reserve the write-first local, not ensure an old value"
@@ -458,7 +454,7 @@ fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair
     assert!(
         prepared.ssa.blocks.iter().any(|block| {
             block.ops.iter().any(|inst| {
-                matches!(inst.kind, SsaInstKind::LocalReserveCache { slot } if slot == slot0)
+                inst.op == SsaOp::LOCAL_RESERVE_CACHE && FrameSlot(inst.meta) == slot0
             })
         }),
         "the cold incoming path should reserve the hot write-first local so the loop can keep that lane hot without loading an old slot value; repair_blocks={repair_blocks:?}, blocks={:?}",
@@ -579,12 +575,11 @@ fn loop_header_trims_cold_carried_local_so_only_the_cold_edge_needs_repair() {
         .filter(|block| {
             block.ops.iter().any(|inst| {
                 matches!(
-                    inst.kind,
-                    SsaInstKind::LocalDropCache { slot }
-                        | SsaInstKind::LocalEnsureCache { slot }
-                        | SsaInstKind::LocalReserveCache { slot }
-                        if slot == slot1
-                )
+                    inst.op,
+                    SsaOp::LOCAL_DROP_CACHE
+                        | SsaOp::LOCAL_ENSURE_CACHE
+                        | SsaOp::LOCAL_RESERVE_CACHE
+                ) && FrameSlot(inst.meta) == slot1
             })
         })
         .collect::<collections::Vec<_>>();

@@ -229,9 +229,11 @@ impl<'a> BlockLowerContext<'a> {
         &mut self,
         operand: crate::vm::middle::ssa_ir::ir::SsaOperand,
     ) -> Result<MachineReg, WasmError> {
-        match operand {
-            crate::vm::middle::ssa_ir::ir::SsaOperand::Value(v) => self.use_value(v),
-            crate::vm::middle::ssa_ir::ir::SsaOperand::Const(bits) => {
+        use crate::vm::middle::ssa_ir::ir::DecodedOperand;
+        match operand.decode() {
+            DecodedOperand::Value(v) => self.use_value(v),
+            DecodedOperand::Const(idx) => {
+                let bits = self.program().const_pool[idx as usize];
                 let ty = crate::vm::machine::machine_ir::MachineStorageType::GpWord;
                 let Some(reg) = self.first_free_linear_value_reg(ty) else {
                     return Err(crate::error::WasmError::internal(
@@ -250,6 +252,9 @@ impl<'a> BlockLowerContext<'a> {
                 });
                 Ok(reg)
             }
+            DecodedOperand::None => Err(crate::error::WasmError::internal(
+                "use_operand called with a NONE SsaOperand",
+            )),
         }
     }
 
@@ -282,14 +287,21 @@ impl<'a> BlockLowerContext<'a> {
         &mut self,
         operand: &crate::vm::middle::ssa_ir::ir::SsaOperand,
     ) -> Result<(MachineValue, MachineValue), WasmError> {
-        match operand {
-            crate::vm::middle::ssa_ir::ir::SsaOperand::Value(v) => {
-                let (lo, hi) = self.use_i64_value_pair(*v)?;
+        use crate::vm::middle::ssa_ir::ir::DecodedOperand;
+        match operand.decode() {
+            DecodedOperand::Value(v) => {
+                let (lo, hi) = self.use_i64_value_pair(v)?;
                 Ok((MachineValue::Reg(lo), MachineValue::Reg(hi)))
             }
-            crate::vm::middle::ssa_ir::ir::SsaOperand::Const(bits) => Ok((
-                MachineValue::Imm64(*bits as u32 as u64),
-                MachineValue::Imm64((*bits >> 32) as u64),
+            DecodedOperand::Const(idx) => {
+                let bits = self.program().const_pool[idx as usize];
+                Ok((
+                    MachineValue::Imm64(bits as u32 as u64),
+                    MachineValue::Imm64((bits >> 32) as u64),
+                ))
+            }
+            DecodedOperand::None => Err(WasmError::internal(
+                "use_i64_operand_pair called with a NONE SsaOperand",
             )),
         }
     }
@@ -1141,6 +1153,7 @@ mod tests {
                 id: SsaTarget(0),
                 params: collections::vec![],
                 ops: collections::vec![],
+                extra_args: collections::Vec::new(),
                 terminator: SsaTerminator::Return { results: None },
             }],
             local_slot_types: collections::Vec::new(),
@@ -1149,6 +1162,9 @@ mod tests {
             block_cfg_origins: collections::vec![],
             value_types,
             value_sink_local: collections::vec![],
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
         }));
         let regfile = Box::leak(Box::new(
             MachineRegFile::new(BackendConfig::new(5, 0, 4, 8)).expect("regfile"),

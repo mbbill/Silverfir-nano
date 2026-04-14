@@ -17,17 +17,14 @@ use crate::collections;
 use crate::{
     value_type::ValueType,
     vm::{
-        middle::ssa_ir::{
-            ir::{SsaBlock, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue},
-            leaf::SsaLeafOp,
-        },
+        middle::ssa_ir::ir::{SsaInst, SsaOp, SsaOperand, SsaProgram, SsaTerminator, SsaValue},
         wasm::primitive_op::{self, PrimitiveOpKind},
     },
 };
 
 pub(crate) fn optimize_program(program: &mut SsaProgram) {
-    for block in &mut program.blocks {
-        fold_constants_into_operands(block);
+    for block_idx in 0..program.blocks.len() {
+        fold_constants_into_operands(program, block_idx);
     }
 }
 
@@ -37,100 +34,154 @@ pub(crate) fn optimize_program(program: &mut SsaProgram) {
 /// This is intentionally block-local. Once cleanup has merged trivial CFG
 /// structure, the profitable constant chains we care about are visible within
 /// one prepared SSA block.
-fn fold_constants_into_operands(block: &mut SsaBlock) {
-    let max_val = max_value_index(block)
+fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
+    // Detach the mutable block pieces so we can freely borrow the rest of the
+    // program (const_pool, primitive_pool) while rewriting them.
+    let mut ops = core::mem::take(&mut program.blocks[block_idx].ops);
+    let extra_args = core::mem::take(&mut program.blocks[block_idx].extra_args);
+    let params = core::mem::take(&mut program.blocks[block_idx].params);
+    let terminator = core::mem::replace(
+        &mut program.blocks[block_idx].terminator,
+        SsaTerminator::TrapUnreachable,
+    );
+
+    let max_val = max_value_index_parts(&params, &ops, &extra_args, &terminator, program)
         .map(|value| value.0 as usize + 1)
         .unwrap_or(0);
     if max_val == 0 {
+        program.blocks[block_idx].ops = ops;
+        program.blocks[block_idx].extra_args = extra_args;
+        program.blocks[block_idx].params = params;
+        program.blocks[block_idx].terminator = terminator;
         return;
     }
 
     let mut known_const: collections::Vec<Option<u64>> = collections::vec![None; max_val];
     let mut used_in_terminator = collections::vec![false; max_val];
 
-    for inst in &block.ops {
-        if let SsaInstKind::Value { op, args, results } = &inst.kind {
-            if !args.is_empty() || results.len() != 1 {
-                continue;
-            }
-            if let Some(bits) = const_bits_of_primitive(op.primitive()) {
-                let value = results[0];
-                if let Some(slot) = known_const.get_mut(value.0 as usize) {
-                    *slot = Some(bits);
-                }
+    // Pass 1: collect Const producers.
+    for inst in &ops {
+        if !inst.op.is_primitive() {
+            continue;
+        }
+        if !inst.args[0].is_none() || !inst.args[1].is_none() {
+            continue;
+        }
+        if inst.result.is_none() {
+            continue;
+        }
+        let pool_idx = inst.op.as_primitive_idx().expect("primitive op") as usize;
+        let kind = &program.primitive_pool[pool_idx];
+        if let Some(bits) = const_bits_of_primitive(kind) {
+            let value = inst.result;
+            if let Some(slot) = known_const.get_mut(value.0 as usize) {
+                *slot = Some(bits);
             }
         }
     }
-    mark_terminator_uses(&block.terminator, &mut used_in_terminator);
+    mark_terminator_uses(&terminator, &mut used_in_terminator);
 
-    for inst in &mut block.ops {
-        let SsaInstKind::Value { op, args, results } = &mut inst.kind else {
+    // Pass 2: try to fold fully-constant ops and absorb const operands.
+    for inst in ops.iter_mut() {
+        let Some(pool_idx) = inst.op.as_primitive_idx() else {
             continue;
         };
 
-        if !args.is_empty() && can_accept_const_operand(op.primitive()) {
-            let const_args = args
-                .iter()
-                .filter_map(|operand| match operand {
-                    SsaOperand::Value(value) => {
-                        known_const.get(value.0 as usize).copied().flatten()
-                    }
-                    SsaOperand::Const(bits) => Some(*bits),
-                })
-                .collect::<collections::Vec<_>>();
-            if const_args.len() == args.len() {
-                if let Some((result_bits, const_primitive)) = try_eval(op.primitive(), &const_args)
-                {
-                    if let Some(result) = results.first().copied() {
-                        if let Some(slot) = known_const.get_mut(result.0 as usize) {
-                            *slot = Some(result_bits);
+        let current_kind = program.primitive_pool[pool_idx as usize].clone();
+        let args_len = inline_arg_count(inst);
+
+        if args_len > 0 && can_accept_const_operand(&current_kind) {
+            // Gather const bit values for each arg (up to 2 inline; this path
+            // never involves 3-arg primitives because `can_accept_const_operand`
+            // does not include them).
+            let mut const_args = collections::Vec::with_capacity(args_len);
+            let mut all_const = true;
+            for operand in inst.args.iter().take(args_len) {
+                match operand.decode() {
+                    super::ssa_ir::ir::DecodedOperand::Value(value) => {
+                        match known_const.get(value.0 as usize).copied().flatten() {
+                            Some(bits) => const_args.push(bits),
+                            None => {
+                                all_const = false;
+                                break;
+                            }
                         }
                     }
-                    *op = SsaLeafOp::from_primitive(const_primitive)
-                        .expect("folded constant primitive must stay a valid leaf op");
-                    args.clear();
-                    continue;
+                    super::ssa_ir::ir::DecodedOperand::Const(idx) => {
+                        const_args.push(program.const_pool[idx as usize]);
+                    }
+                    super::ssa_ir::ir::DecodedOperand::None => {
+                        all_const = false;
+                        break;
+                    }
+                }
+            }
+            if all_const && const_args.len() == args_len {
+                if let Some((result_bits, const_primitive)) = try_eval(&current_kind, &const_args) {
+                    // Folding is best-effort: if the primitive pool is full
+                    // (a u16-encoded SsaOp cannot address more entries), we
+                    // leave the original op in place rather than miscompile.
+                    if let Ok(new_pool_idx) = program.intern_primitive(const_primitive) {
+                        let result = inst.result;
+                        if result.is_some() {
+                            if let Some(slot) = known_const.get_mut(result.0 as usize) {
+                                *slot = Some(result_bits);
+                            }
+                        }
+                        inst.op = SsaOp::primitive(new_pool_idx);
+                        inst.args = [SsaOperand::NONE, SsaOperand::NONE];
+                        inst.meta = 0;
+                        continue;
+                    }
                 }
             }
         }
 
-        if can_accept_const_operand(op.primitive()) {
-            for operand in args.iter_mut() {
-                let SsaOperand::Value(value) = operand else {
+        if can_accept_const_operand(&current_kind) {
+            for operand in inst.args.iter_mut() {
+                let Some(value) = operand.as_value() else {
                     continue;
                 };
                 let index = value.0 as usize;
-                if let Some(Some(bits)) = known_const.get(index) {
+                if let Some(bits) = known_const.get(index).copied().flatten() {
                     if !used_in_terminator.get(index).copied().unwrap_or(true) {
-                        *operand = SsaOperand::Const(*bits);
+                        *operand = program.intern_const(bits);
                     }
                 }
             }
         }
     }
 
+    // Pass 3: compute which SSA values are still used, including terminator,
+    // then drop dead Const producers.
     let mut still_used = collections::vec![false; max_val];
-    for inst in &block.ops {
-        match &inst.kind {
-            SsaInstKind::Value { args, .. } => {
-                for operand in args {
-                    if let SsaOperand::Value(value) = operand {
+    for inst in &ops {
+        if inst.op.is_primitive() {
+            for operand in inst.args.iter() {
+                if let Some(value) = operand.as_value() {
+                    still_used[value.0 as usize] = true;
+                }
+            }
+            // 3-arg primitives pull their third operand from extra_args via
+            // `meta`. We consult stack_effect to know whether this applies.
+            let pool_idx = inst.op.as_primitive_idx().expect("primitive op") as usize;
+            let kind = &program.primitive_pool[pool_idx];
+            if primitive_op::stack_effect(kind).0 == 3 {
+                if let Some(operand) = extra_args.get(inst.meta as usize) {
+                    if let Some(value) = operand.as_value() {
                         still_used[value.0 as usize] = true;
                     }
                 }
             }
-            SsaInstKind::LocalSetSlot { src, .. }
-            | SsaInstKind::LocalSetCache { src, .. }
-            | SsaInstKind::Spill { src, .. } => {
-                still_used[src.0 as usize] = true;
+        } else {
+            match inst.op {
+                SsaOp::SPILL | SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE => {
+                    if let Some(value) = inst.args[0].as_value() {
+                        still_used[value.0 as usize] = true;
+                    }
+                }
+                _ => {}
             }
-            SsaInstKind::Fill { .. }
-            | SsaInstKind::LocalGetSlot { .. }
-            | SsaInstKind::LocalGetCache { .. }
-            | SsaInstKind::LocalEnsureCache { .. }
-            | SsaInstKind::LocalReserveCache { .. }
-            | SsaInstKind::LocalDropCache { .. }
-            | SsaInstKind::Call(_) => {}
         }
     }
     for (index, used) in used_in_terminator.iter().copied().enumerate() {
@@ -139,17 +190,56 @@ fn fold_constants_into_operands(block: &mut SsaBlock) {
         }
     }
 
-    block.ops.retain(|inst| {
-        let SsaInstKind::Value { args, results, .. } = &inst.kind else {
+    ops.retain(|inst| {
+        let Some(pool_idx) = inst.op.as_primitive_idx() else {
             return true;
         };
-        if !args.is_empty() || results.len() != 1 {
+        // Candidate for removal only if this is a 0-arg 1-result op.
+        if !inst.args[0].is_none() || !inst.args[1].is_none() {
             return true;
         }
-        let index = results[0].0 as usize;
-        known_const.get(index).copied().flatten().is_none()
-            || still_used.get(index).copied().unwrap_or(true)
+        if inst.result.is_none() {
+            return true;
+        }
+        let kind = &program.primitive_pool[pool_idx as usize];
+        if !matches!(
+            kind,
+            PrimitiveOpKind::I32Const { .. }
+                | PrimitiveOpKind::I64Const { .. }
+                | PrimitiveOpKind::F32Const { .. }
+                | PrimitiveOpKind::F64Const { .. }
+        ) {
+            return true;
+        }
+        let index = inst.result.0 as usize;
+        // Keep the producer if the value is still consumed anywhere.
+        still_used.get(index).copied().unwrap_or(true)
     });
+
+    // Reattach the block pieces.
+    program.blocks[block_idx].ops = ops;
+    program.blocks[block_idx].extra_args = extra_args;
+    program.blocks[block_idx].params = params;
+    program.blocks[block_idx].terminator = terminator;
+}
+
+/// Count the number of present inline operands for a primitive op (0, 1, or 2).
+///
+/// This function intentionally only inspects the two inline slots: every
+/// candidate for constant-folding in this pass (see `can_accept_const_operand`)
+/// is a 0/1/2-arg op, so the 3rd operand (in `block.extra_args`) is
+/// irrelevant here.
+#[inline]
+fn inline_arg_count(inst: &SsaInst) -> usize {
+    let mut n = 0;
+    for arg in &inst.args {
+        if !arg.is_none() {
+            n += 1;
+        } else {
+            break;
+        }
+    }
+    n
 }
 
 #[inline]
@@ -887,40 +977,56 @@ fn mark_terminator_uses(term: &SsaTerminator, used: &mut [bool]) {
     }
 }
 
-fn max_value_index(block: &SsaBlock) -> Option<SsaValue> {
-    let mut max_value = block.params.iter().copied().max();
+/// Scan every place a value may appear (params, op args & results, extra_args
+/// operands, terminator) and return the highest-indexed `SsaValue` seen.
+fn max_value_index_parts(
+    params: &[SsaValue],
+    ops: &[SsaInst],
+    extra_args: &[SsaOperand],
+    terminator: &SsaTerminator,
+    program: &SsaProgram,
+) -> Option<SsaValue> {
+    let mut max_value = params.iter().copied().max();
 
-    for inst in &block.ops {
-        match &inst.kind {
-            SsaInstKind::Value { args, results, .. } => {
-                max_value = max_value.max(
-                    args.iter()
-                        .filter_map(|operand| match operand {
-                            SsaOperand::Value(value) => Some(*value),
-                            SsaOperand::Const(_) => None,
-                        })
-                        .max(),
-                );
-                max_value = max_value.max(results.iter().copied().max());
+    for inst in ops {
+        if inst.op.is_primitive() {
+            for operand in inst.args.iter() {
+                if let Some(value) = operand.as_value() {
+                    max_value = max_value.max(Some(value));
+                }
             }
-            SsaInstKind::LocalGetSlot { dst, .. }
-            | SsaInstKind::LocalGetCache { dst, .. }
-            | SsaInstKind::Fill { dst, .. } => {
-                max_value = max_value.max(Some(*dst));
+            if inst.result.is_some() {
+                max_value = max_value.max(Some(inst.result));
             }
-            SsaInstKind::LocalSetSlot { src, .. }
-            | SsaInstKind::LocalSetCache { src, .. }
-            | SsaInstKind::Spill { src, .. } => {
-                max_value = max_value.max(Some(*src));
+            // 3-arg primitives' third operand is in extra_args[meta]. Covered
+            // by the blanket scan below.
+            let _ = program;
+        } else {
+            match inst.op {
+                SsaOp::FILL | SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE => {
+                    max_value = max_value.max(Some(inst.result));
+                }
+                SsaOp::SPILL | SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE => {
+                    if let Some(value) = inst.args[0].as_value() {
+                        max_value = max_value.max(Some(value));
+                    }
+                }
+                SsaOp::LOCAL_ENSURE_CACHE
+                | SsaOp::LOCAL_RESERVE_CACHE
+                | SsaOp::LOCAL_DROP_CACHE
+                | SsaOp::CALL => {}
+                _ => {}
             }
-            SsaInstKind::LocalEnsureCache { .. }
-            | SsaInstKind::LocalReserveCache { .. }
-            | SsaInstKind::LocalDropCache { .. }
-            | SsaInstKind::Call(_) => {}
         }
     }
 
-    match &block.terminator {
+    for operand in extra_args {
+        if let Some(value) = operand.as_value() {
+            max_value = max_value.max(Some(value));
+        }
+    }
+
+    match terminator {
         SsaTerminator::Goto(edge) => {
             max_value = max_value.max(edge.bindings.iter().map(|binding| binding.value).max());
         }
@@ -949,72 +1055,105 @@ fn max_value_index(block: &SsaBlock) -> Option<SsaValue> {
 mod tests {
     use crate::collections;
 
-    use super::fold_constants_into_operands;
+    use super::{fold_constants_into_operands, SsaProgram};
     use crate::vm::{
         middle::ssa_ir::{
-            ir::{SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaTerminator, SsaValue},
-            leaf::SsaLeafOp,
+            ir::{SsaBlock, SsaEdge, SsaInst, SsaOp, SsaOperand, SsaTerminator, SsaValue},
             target::SsaTarget,
         },
         wasm::primitive_op::PrimitiveOpKind,
     };
 
+    fn empty_program() -> SsaProgram {
+        SsaProgram {
+            entry: SsaTarget(0),
+            blocks: collections::Vec::new(),
+            local_slot_types: collections::Vec::new(),
+            local_slot_info: collections::Vec::new(),
+            block_entry_cached_slots: collections::Vec::new(),
+            block_cfg_origins: collections::Vec::new(),
+            value_types: collections::Vec::new(),
+            value_sink_local: collections::Vec::new(),
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
+        }
+    }
+
     #[test]
     fn folds_single_use_const_into_value_operand() {
-        let mut block = SsaBlock {
+        let mut program = empty_program();
+        let const_pool_idx = program
+            .intern_primitive(PrimitiveOpKind::I32Const { value: 7 })
+            .unwrap();
+        let add_pool_idx = program.intern_primitive(PrimitiveOpKind::I32Add).unwrap();
+        let block = SsaBlock {
             id: SsaTarget(0),
             params: collections::Vec::new(),
             ops: collections::vec![
-                SsaInst {
-                    kind: SsaInstKind::Value {
-                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 7 })
-                            .unwrap(),
-                        args: collections::Vec::new(),
-                        results: collections::vec![SsaValue(0)],
-                    },
-                },
-                SsaInst {
-                    kind: SsaInstKind::Value {
-                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                        args: collections::vec![
-                            SsaOperand::Value(SsaValue(1)),
-                            SsaOperand::Value(SsaValue(0))
-                        ],
-                        results: collections::vec![SsaValue(2)],
-                    },
-                },
+                SsaInst::primitive(
+                    const_pool_idx,
+                    SsaValue(0),
+                    [SsaOperand::NONE, SsaOperand::NONE],
+                    0,
+                ),
+                SsaInst::primitive(
+                    add_pool_idx,
+                    SsaValue(2),
+                    [
+                        SsaOperand::value(SsaValue(1)),
+                        SsaOperand::value(SsaValue(0))
+                    ],
+                    0,
+                ),
             ],
+            extra_args: collections::Vec::new(),
             terminator: SsaTerminator::Return { results: None },
         };
+        program.blocks.push(block);
+        program
+            .block_entry_cached_slots
+            .push(collections::Vec::new());
 
-        fold_constants_into_operands(&mut block);
+        fold_constants_into_operands(&mut program, 0);
 
+        let block = &program.blocks[0];
         assert_eq!(
             block.ops.len(),
             1,
             "dead const producer should be removed after folding"
         );
-        let SsaInstKind::Value { args, .. } = &block.ops[0].kind else {
-            panic!("expected value op after folding");
-        };
+        let add_inst = &block.ops[0];
+        assert!(add_inst.op.is_primitive());
+        let absorbed_const = add_inst.args.iter().any(|operand| {
+            matches!(
+                operand.decode(),
+                crate::vm::middle::ssa_ir::ir::DecodedOperand::Const(idx)
+                    if program.const_pool[idx as usize] == 7
+            )
+        });
         assert!(
-            args.iter().any(|arg| matches!(arg, SsaOperand::Const(7))),
+            absorbed_const,
             "mixed arithmetic should absorb the const operand"
         );
     }
 
     #[test]
     fn keeps_const_producer_when_value_is_used_by_terminator() {
-        let mut block = SsaBlock {
+        let mut program = empty_program();
+        let const_pool_idx = program
+            .intern_primitive(PrimitiveOpKind::I32Const { value: 1 })
+            .unwrap();
+        program.blocks.push(SsaBlock {
             id: SsaTarget(0),
             params: collections::Vec::new(),
-            ops: collections::vec![SsaInst {
-                kind: SsaInstKind::Value {
-                    op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 }).unwrap(),
-                    args: collections::Vec::new(),
-                    results: collections::vec![SsaValue(0)],
-                },
-            }],
+            ops: collections::vec![SsaInst::primitive(
+                const_pool_idx,
+                SsaValue(0),
+                [SsaOperand::NONE, SsaOperand::NONE],
+                0,
+            )],
+            extra_args: collections::Vec::new(),
             terminator: SsaTerminator::Branch {
                 cond: SsaValue(0),
                 then_edge: SsaEdge {
@@ -1026,24 +1165,26 @@ mod tests {
                     bindings: collections::Vec::new(),
                 },
             },
-        };
+        });
+        program
+            .block_entry_cached_slots
+            .push(collections::Vec::new());
 
-        fold_constants_into_operands(&mut block);
+        fold_constants_into_operands(&mut program, 0);
 
+        let block = &program.blocks[0];
         assert_eq!(
             block.ops.len(),
             1,
             "terminator users must keep the const producer live"
         );
+        let producer = &block.ops[0];
+        assert_eq!(producer.op, SsaOp::primitive(const_pool_idx));
+        assert!(producer.args[0].is_none() && producer.args[1].is_none());
+        assert_eq!(producer.result, SsaValue(0));
         assert!(matches!(
-            &block.ops[0].kind,
-            SsaInstKind::Value {
-                op,
-                ref args,
-                ref results,
-            } if matches!(op.primitive(), PrimitiveOpKind::I32Const { value: 1 })
-                && args.is_empty()
-                && results == &collections::vec![SsaValue(0)]
+            program.primitive_pool[const_pool_idx as usize],
+            PrimitiveOpKind::I32Const { value: 1 }
         ));
     }
 }

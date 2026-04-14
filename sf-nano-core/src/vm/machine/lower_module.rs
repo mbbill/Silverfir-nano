@@ -22,7 +22,9 @@ use crate::{
         middle::{
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             ssa_ir::{
-                ir::{SsaCallOp, SsaInstKind, SsaProgram, SsaTerminator, SsaValue},
+                ir::{
+                    SsaCallOp, SsaInstView, SsaOp, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+                },
                 validate::validate_program,
             },
         },
@@ -270,14 +272,23 @@ fn lower_function(
             lower.emit_zero_init_locals(&init_locals)?;
         }
 
-        for inst in &block.ops {
-            match &inst.kind {
-                SsaInstKind::Value { op, args, results } => {
-                    lower.apply_sink_premap(args, results)?;
+        for inst_idx in 0..block.ops.len() {
+            let inst = block.ops[inst_idx];
+            match block.view(inst_idx, input.ssa) {
+                SsaInstView::Value { op, result, args } => {
+                    // Flatten args into a Vec so helper lowerings that take
+                    // `&[SsaOperand]` keep their existing slice-based API.
+                    let args_vec: collections::Vec<SsaOperand> = args.to_vec();
+                    let results_vec: collections::Vec<SsaValue> = if result.is_some() {
+                        collections::vec![result]
+                    } else {
+                        collections::Vec::new()
+                    };
+                    lower.apply_sink_premap(&args_vec, &results_vec)?;
                     if let Some(lowered) = lower.lower_leaf_special(
                         op,
-                        args,
-                        results,
+                        &args_vec,
+                        &results_vec,
                         extra_block_ids.peek(1),
                         extra_block_ids.peek(0),
                     )? {
@@ -322,9 +333,9 @@ fn lower_function(
                         }
                         continue;
                     }
-                    lower.lower_inst(inst)?;
+                    lower.lower_inst(&inst)?;
                 }
-                SsaInstKind::Call(call) => match call {
+                SsaInstView::Call(call) => match call {
                     // `CallDirect` preserves Wasm semantics above MachineIR:
                     // the callee is compile-time known, but target kind
                     // (local vs external) is decided here.
@@ -680,7 +691,7 @@ fn lower_function(
                         lower.begin_continuation_block_selective()?;
                     }
                 },
-                _ => lower.lower_inst(inst)?,
+                _ => lower.lower_inst(&inst)?,
             }
         }
 
@@ -1657,38 +1668,36 @@ fn simulate_block_cache_exit_state(
     }
 
     for inst in &block.ops {
-        match &inst.kind {
-            SsaInstKind::LocalGetCache { slot, .. }
-            | SsaInstKind::LocalEnsureCache { slot }
-            | SsaInstKind::LocalReserveCache { slot } => {
-                if let Some(&cached_index) = slot_to_index.get(slot) {
+        match inst.op {
+            SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_ENSURE_CACHE | SsaOp::LOCAL_RESERVE_CACHE => {
+                let slot = FrameSlot(inst.meta);
+                if let Some(&cached_index) = slot_to_index.get(&slot) {
                     if !resident[cached_index] {
                         resident[cached_index] = true;
                         dirty[cached_index] = false;
                     }
                 }
             }
-            SsaInstKind::LocalSetCache { slot, .. } => {
-                if let Some(&cached_index) = slot_to_index.get(slot) {
+            SsaOp::LOCAL_SET_CACHE => {
+                let slot = FrameSlot(inst.meta);
+                if let Some(&cached_index) = slot_to_index.get(&slot) {
                     resident[cached_index] = true;
                     dirty[cached_index] = true;
                 }
             }
-            SsaInstKind::LocalDropCache { slot } => {
-                if let Some(&cached_index) = slot_to_index.get(slot) {
+            SsaOp::LOCAL_DROP_CACHE => {
+                let slot = FrameSlot(inst.meta);
+                if let Some(&cached_index) = slot_to_index.get(&slot) {
                     resident[cached_index] = false;
                     dirty[cached_index] = false;
                 }
             }
-            SsaInstKind::Call(_) => {
+            SsaOp::CALL => {
                 resident.fill(false);
                 dirty.fill(false);
             }
-            SsaInstKind::Value { .. }
-            | SsaInstKind::LocalGetSlot { .. }
-            | SsaInstKind::LocalSetSlot { .. }
-            | SsaInstKind::Fill { .. }
-            | SsaInstKind::Spill { .. } => {}
+            // Value / LocalGetSlot / LocalSetSlot / Fill / Spill: no effect.
+            _ => {}
         }
     }
 

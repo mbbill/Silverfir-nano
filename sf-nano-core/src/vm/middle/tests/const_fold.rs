@@ -1,5 +1,5 @@
 use crate::collections;
-use crate::vm::middle::ssa_ir::ir::{SsaInstKind, SsaOperand};
+use crate::vm::middle::ssa_ir::ir::{DecodedOperand, SsaInstView};
 
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
@@ -20,23 +20,25 @@ fn prepared_ssa_absorbs_single_use_const_into_arithmetic_operand() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let add = prepared
-        .ssa
-        .blocks
-        .iter()
-        .flat_map(|block| block.ops.iter())
-        .find_map(|inst| match &inst.kind {
-            SsaInstKind::Value { op, args, .. }
-                if matches!(op.primitive(), PrimitiveOpKind::I32Add) =>
-            {
-                Some(args)
+    let program = &prepared.ssa;
+    let mut add_args: Option<collections::Vec<DecodedOperand>> = None;
+    'outer: for block in program.blocks.iter() {
+        for (idx, _) in block.ops.iter().enumerate() {
+            if let SsaInstView::Value { op, args, .. } = block.view(idx, program) {
+                if matches!(op, PrimitiveOpKind::I32Add) {
+                    add_args = Some(args.iter().map(|a| a.decode()).collect());
+                    break 'outer;
+                }
             }
-            _ => None,
-        })
-        .expect("prepared SSA should still contain the mixed i32.add");
+        }
+    }
+    let add_args = add_args.expect("prepared SSA should still contain the mixed i32.add");
 
     assert!(
-        add.iter().any(|arg| matches!(arg, SsaOperand::Const(7))),
+        add_args.iter().any(|arg| match arg {
+            DecodedOperand::Const(idx) => program.const_pool[*idx as usize] == 7,
+            _ => false,
+        }),
         "middle const absorption should fold the single-use i32.const directly into the i32.add operand; blocks={:?}",
         prepared.ssa.blocks
     );
@@ -57,26 +59,25 @@ fn prepared_ssa_folds_fully_constant_expression_to_single_const() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
+    let program = &prepared.ssa;
     let mut saw_const_three = false;
 
-    for inst in prepared
-        .ssa
-        .blocks
-        .iter()
-        .flat_map(|block| block.ops.iter())
-    {
-        if let SsaInstKind::Value { op, args, .. } = &inst.kind {
-            assert!(
-                !matches!(op.primitive(), PrimitiveOpKind::I32Add),
-                "fully constant i32.add should fold away in middle SSA; blocks={:?}",
-                prepared.ssa.blocks
-            );
-            if matches!(op.primitive(), PrimitiveOpKind::I32Const { value: 3 }) {
+    for block in program.blocks.iter() {
+        for (idx, _) in block.ops.iter().enumerate() {
+            if let SsaInstView::Value { op, args, .. } = block.view(idx, program) {
                 assert!(
-                    args.is_empty(),
-                    "folded const producer should not keep stale operands"
+                    !matches!(op, PrimitiveOpKind::I32Add),
+                    "fully constant i32.add should fold away in middle SSA; blocks={:?}",
+                    prepared.ssa.blocks
                 );
-                saw_const_three = true;
+                if matches!(op, PrimitiveOpKind::I32Const { value: 3 }) {
+                    assert_eq!(
+                        args.len(),
+                        0,
+                        "folded const producer should not keep stale operands"
+                    );
+                    saw_const_three = true;
+                }
             }
         }
     }

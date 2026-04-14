@@ -9,7 +9,7 @@ use crate::{
             MachineCompareKind, MachineFloatWidth, MachineInst, MachineInstKind,
             MachineIntBinaryOp, MachineSign, MachineStorageType, MachineValue,
         },
-        middle::ssa_ir::ir::{SsaOperand, SsaValue},
+        middle::ssa_ir::ir::{DecodedOperand, SsaOperand, SsaValue},
         wasm::primitive_op::PrimitiveOpKind,
     },
 };
@@ -26,9 +26,9 @@ use super::super::{
 fn dead_input_values(operands: &[SsaOperand]) -> collections::Vec<SsaValue> {
     operands
         .iter()
-        .filter_map(|op| match op {
-            SsaOperand::Value(v) => Some(*v),
-            SsaOperand::Const(_) => None,
+        .filter_map(|op| match op.decode() {
+            DecodedOperand::Value(v) => Some(v),
+            DecodedOperand::Const(_) | DecodedOperand::None => None,
         })
         .collect()
 }

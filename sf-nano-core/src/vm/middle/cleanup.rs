@@ -16,7 +16,7 @@ use crate::collections;
 
 use super::ssa_ir::{
     ir::{
-        SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator,
+        SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaOp, SsaOperand, SsaProgram, SsaTerminator,
         SsaValue,
     },
     target::SsaTarget,
@@ -49,18 +49,18 @@ struct CacheRunState {
 }
 
 impl CacheRunState {
-    fn apply(&mut self, kind: &SsaInstKind) {
-        match *kind {
-            SsaInstKind::LocalDropCache { .. } => {
+    fn apply(&mut self, op: SsaOp) {
+        match op {
+            SsaOp::LOCAL_DROP_CACHE => {
                 self.needs_drop = true;
                 self.present = None;
             }
-            SsaInstKind::LocalReserveCache { .. } => {
+            SsaOp::LOCAL_RESERVE_CACHE => {
                 if self.present != Some(CachePresence::Ensured) {
                     self.present = Some(CachePresence::Reserved);
                 }
             }
-            SsaInstKind::LocalEnsureCache { .. } => {
+            SsaOp::LOCAL_ENSURE_CACHE => {
                 self.present = Some(CachePresence::Ensured);
             }
             _ => {}
@@ -88,12 +88,12 @@ fn simplify_cache_only_runs(program: &mut SsaProgram) {
         let mut new_ops = collections::Vec::with_capacity(old_ops.len());
         let mut cache_run = collections::Vec::new();
         for inst in old_ops {
-            if !is_cache_only_op(&inst.kind) {
+            if !is_cache_only_op(inst.op) {
                 flush_cache_run(&mut new_ops, &mut cache_run);
                 new_ops.push(inst);
                 continue;
             }
-            accumulate_cache_run_state(&mut cache_run, &inst.kind);
+            accumulate_cache_run_state(&mut cache_run, &inst);
         }
         flush_cache_run(&mut new_ops, &mut cache_run);
 
@@ -105,7 +105,7 @@ fn simplify_cache_only_runs(program: &mut SsaProgram) {
 fn simplify_cache_run(run: &[SsaInst]) -> collections::Vec<SsaInst> {
     let mut by_slot = collections::Vec::<(u16, CacheRunState)>::new();
     for inst in run {
-        accumulate_cache_run_state(&mut by_slot, &inst.kind);
+        accumulate_cache_run_state(&mut by_slot, inst);
     }
 
     let mut out = collections::Vec::with_capacity(by_slot.len().saturating_mul(2));
@@ -115,17 +115,17 @@ fn simplify_cache_run(run: &[SsaInst]) -> collections::Vec<SsaInst> {
 
 fn accumulate_cache_run_state(
     by_slot: &mut collections::Vec<(u16, CacheRunState)>,
-    kind: &SsaInstKind,
+    inst: &SsaInst,
 ) {
-    let slot = cache_run_slot(kind).expect("cache-only run should only contain cache ops");
+    let slot = cache_run_slot(inst).expect("cache-only run should only contain cache ops");
     match by_slot
         .iter_mut()
         .find(|(slot_index, _)| *slot_index == slot.0)
     {
-        Some((_, state)) => state.apply(kind),
+        Some((_, state)) => state.apply(inst.op),
         None => {
             let mut state = CacheRunState::default();
-            state.apply(kind);
+            state.apply(inst.op);
             by_slot.push((slot.0, state));
         }
     }
@@ -142,20 +142,14 @@ fn flush_cache_run(
     for &(slot_index, state) in by_slot.iter() {
         let slot = super::frame::FrameSlot(slot_index);
         if state.needs_drop {
-            out.push(SsaInst {
-                kind: SsaInstKind::LocalDropCache { slot },
-            });
+            out.push(SsaInst::local_drop_cache(slot));
         }
     }
     for &(slot_index, state) in by_slot.iter() {
         let slot = super::frame::FrameSlot(slot_index);
         match state.present {
-            Some(CachePresence::Ensured) => out.push(SsaInst {
-                kind: SsaInstKind::LocalEnsureCache { slot },
-            }),
-            Some(CachePresence::Reserved) => out.push(SsaInst {
-                kind: SsaInstKind::LocalReserveCache { slot },
-            }),
+            Some(CachePresence::Ensured) => out.push(SsaInst::local_ensure_cache(slot)),
+            Some(CachePresence::Reserved) => out.push(SsaInst::local_reserve_cache(slot)),
             None => {}
         }
     }
@@ -163,21 +157,19 @@ fn flush_cache_run(
 }
 
 #[inline]
-fn is_cache_only_op(kind: &SsaInstKind) -> bool {
+fn is_cache_only_op(op: SsaOp) -> bool {
     matches!(
-        kind,
-        SsaInstKind::LocalEnsureCache { .. }
-            | SsaInstKind::LocalReserveCache { .. }
-            | SsaInstKind::LocalDropCache { .. }
+        op,
+        SsaOp::LOCAL_ENSURE_CACHE | SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_DROP_CACHE
     )
 }
 
 #[inline]
-fn cache_run_slot(kind: &SsaInstKind) -> Option<super::frame::FrameSlot> {
-    match *kind {
-        SsaInstKind::LocalEnsureCache { slot }
-        | SsaInstKind::LocalReserveCache { slot }
-        | SsaInstKind::LocalDropCache { slot } => Some(slot),
+fn cache_run_slot(inst: &SsaInst) -> Option<super::frame::FrameSlot> {
+    match inst.op {
+        SsaOp::LOCAL_ENSURE_CACHE | SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_DROP_CACHE => {
+            Some(super::frame::FrameSlot(inst.meta))
+        }
         _ => None,
     }
 }
@@ -269,25 +261,73 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
         else {
             continue;
         };
+
+        // The merged block's extra_args is concatenated
+        // `[pred.extra_args ++ succ.extra_args]`. `SsaInst.meta` indexes
+        // extra_args with a u16, so the combined length must fit in u16.
+        // If it wouldn't, skip this merge rather than wrap indices and
+        // miscompile 3-arg primitives.
+        let Some(combined_extra) = program.blocks[pred_index]
+            .extra_args
+            .len()
+            .checked_add(program.blocks[succ_index].extra_args.len())
+        else {
+            continue;
+        };
+        if combined_extra > u16::MAX as usize {
+            continue;
+        }
+
         let succ = core::mem::replace(
             &mut program.blocks[succ_index],
             SsaBlock {
                 id: SsaTarget(u32::MAX),
                 params: collections::Vec::new(),
                 ops: collections::Vec::new(),
+                extra_args: collections::Vec::new(),
                 terminator: SsaTerminator::TrapUnreachable,
             },
         );
 
+        // Precompute 3-arg-ness for each succ op while primitive_pool is
+        // borrowable. We need this when rebasing extra_args indices: only
+        // true 3-arg primitives read `meta` as an extra_args index.
+        let three_arg_flags: collections::Vec<bool> = succ
+            .ops
+            .iter()
+            .map(|inst| {
+                inst.op.as_primitive_idx().is_some_and(|idx| {
+                    crate::vm::wasm::primitive_op::stack_effect(
+                        &program.primitive_pool[idx as usize],
+                    )
+                    .0 == 3
+                })
+            })
+            .collect();
+
+        // Substitute extra_args in-place, and remember how succ's indices map
+        // into the appended region of pred.extra_args.
+        let mut succ_extra = succ.extra_args;
+        for operand in succ_extra.iter_mut() {
+            *operand = substitute_operand(*operand, &subst);
+        }
+
+        let pred = &mut program.blocks[pred_index];
+        let extra_args_base = pred.extra_args.len() as u16;
+        pred.extra_args.extend(succ_extra.into_iter());
+
         let merged_ops = succ
             .ops
             .into_iter()
-            .map(|inst| substitute_inst(inst, &subst))
+            .zip(three_arg_flags.into_iter())
+            .map(|(inst, is_three_arg)| {
+                substitute_inst(inst, &subst, extra_args_base, is_three_arg)
+            })
             .collect::<collections::Vec<_>>();
         let merged_terminator = substitute_terminator(succ.terminator, &subst);
 
-        program.blocks[pred_index].ops.extend(merged_ops);
-        program.blocks[pred_index].terminator = merged_terminator;
+        pred.ops.extend(merged_ops);
+        pred.terminator = merged_terminator;
         merge_block_origins(pred_index, succ_index, &mut program.block_cfg_origins);
         remove_blocks(program, &[succ_index]);
         return true;
@@ -411,43 +451,54 @@ fn binding_substitution(
     Some(subst)
 }
 
-fn substitute_inst(inst: SsaInst, subst: &[ValueSubstitution]) -> SsaInst {
-    SsaInst {
-        kind: match inst.kind {
-            SsaInstKind::Value { op, args, results } => SsaInstKind::Value {
-                op,
-                args: args
-                    .into_iter()
-                    .map(|arg| match arg {
-                        SsaOperand::Value(value) => {
-                            SsaOperand::Value(substitute_value(value, subst))
-                        }
-                        SsaOperand::Const(bits) => SsaOperand::Const(bits),
-                    })
-                    .collect(),
-                results,
-            },
-            SsaInstKind::Fill { slot, dst } => SsaInstKind::Fill { slot, dst },
-            SsaInstKind::Spill { slot, src } => SsaInstKind::Spill {
-                slot,
-                src: substitute_value(src, subst),
-            },
-            SsaInstKind::LocalGetSlot { slot, dst } => SsaInstKind::LocalGetSlot { slot, dst },
-            SsaInstKind::LocalGetCache { slot, dst } => SsaInstKind::LocalGetCache { slot, dst },
-            SsaInstKind::LocalSetSlot { slot, src } => SsaInstKind::LocalSetSlot {
-                slot,
-                src: substitute_value(src, subst),
-            },
-            SsaInstKind::LocalSetCache { slot, src } => SsaInstKind::LocalSetCache {
-                slot,
-                src: substitute_value(src, subst),
-            },
-            SsaInstKind::LocalEnsureCache { slot } => SsaInstKind::LocalEnsureCache { slot },
-            SsaInstKind::LocalReserveCache { slot } => SsaInstKind::LocalReserveCache { slot },
-            SsaInstKind::LocalDropCache { slot } => SsaInstKind::LocalDropCache { slot },
-            SsaInstKind::Call(op) => SsaInstKind::Call(op),
-        },
+/// Rewrite the value references in an instruction according to `subst`, and
+/// for 3-arg primitives shift the extra-args index by `extra_args_base`.
+///
+/// `is_three_arg` must be `true` exactly when `inst.op` is a primitive op
+/// whose `stack_effect(...).0 == 3`; for everything else (non-primitives and
+/// 0/1/2-arg primitives) `meta` is left untouched.
+///
+/// Callers must ensure the merged block's total extra_args length stays
+/// within u16; `merge_one_goto_successor` pre-checks that.
+fn substitute_inst(
+    mut inst: SsaInst,
+    subst: &[ValueSubstitution],
+    extra_args_base: u16,
+    is_three_arg: bool,
+) -> SsaInst {
+    if inst.op.is_primitive() {
+        if is_three_arg {
+            // Pre-checked by the caller: combined extra_args len <= u16::MAX.
+            // `inst.meta` is a valid index into the source block's extra_args
+            // (< succ.extra_args.len()); shifting by `extra_args_base` (which
+            // is `pred.extra_args.len()` before the extend) keeps the sum
+            // below u16::MAX.
+            inst.meta = inst
+                .meta
+                .checked_add(extra_args_base)
+                .expect("extra_args index overflow: merge_one_goto_successor should have rejected this merge");
+        }
+        inst.args = [
+            substitute_operand(inst.args[0], subst),
+            substitute_operand(inst.args[1], subst),
+        ];
+        return inst;
     }
+
+    match inst.op {
+        SsaOp::SPILL | SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE => {
+            inst.args[0] = substitute_operand(inst.args[0], subst);
+        }
+        SsaOp::FILL
+        | SsaOp::LOCAL_GET_SLOT
+        | SsaOp::LOCAL_GET_CACHE
+        | SsaOp::LOCAL_ENSURE_CACHE
+        | SsaOp::LOCAL_RESERVE_CACHE
+        | SsaOp::LOCAL_DROP_CACHE
+        | SsaOp::CALL => {}
+        _ => {}
+    }
+    inst
 }
 
 fn substitute_terminator(terminator: SsaTerminator, subst: &[ValueSubstitution]) -> SsaTerminator {
@@ -494,6 +545,21 @@ fn substitute_value(value: SsaValue, subst: &[ValueSubstitution]) -> SsaValue {
         .iter()
         .find(|entry| entry.from == value)
         .map_or(value, |entry| entry.to)
+}
+
+#[inline]
+fn substitute_operand(operand: SsaOperand, subst: &[ValueSubstitution]) -> SsaOperand {
+    match operand.as_value() {
+        Some(value) => {
+            let substituted = substitute_value(value, subst);
+            if substituted == value {
+                operand
+            } else {
+                SsaOperand::value(substituted)
+            }
+        }
+        None => operand,
+    }
 }
 
 fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
@@ -777,47 +843,39 @@ mod tests {
     use super::*;
     use crate::vm::middle::{
         frame::FrameSlot,
-        ssa_ir::{ir::SsaBlock, leaf::SsaLeafOp, validate::validate_program},
+        ssa_ir::{ir::SsaBlock, validate::validate_program},
     };
     use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
-    fn value_inst(result: u32) -> SsaInst {
-        SsaInst {
-            kind: SsaInstKind::Value {
-                op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 1 }).unwrap(),
-                args: collections::Vec::new(),
-                results: collections::vec![SsaValue(result)],
-            },
-        }
+    fn value_inst(program: &mut SsaProgram, result: u32) -> SsaInst {
+        let pool_idx = program
+            .intern_primitive(PrimitiveOpKind::I32Const { value: 1 })
+            .unwrap();
+        SsaInst::primitive(
+            pool_idx,
+            SsaValue(result),
+            [SsaOperand::NONE, SsaOperand::NONE],
+            0,
+        )
     }
 
     #[test]
     fn simplify_cache_run_keeps_required_drop_then_materialization() {
         let run = collections::vec![
-            SsaInst {
-                kind: SsaInstKind::LocalReserveCache { slot: FrameSlot(0) },
-            },
-            SsaInst {
-                kind: SsaInstKind::LocalDropCache { slot: FrameSlot(0) },
-            },
-            SsaInst {
-                kind: SsaInstKind::LocalEnsureCache { slot: FrameSlot(0) },
-            },
-            SsaInst {
-                kind: SsaInstKind::LocalEnsureCache { slot: FrameSlot(0) },
-            },
+            SsaInst::local_reserve_cache(FrameSlot(0)),
+            SsaInst::local_drop_cache(FrameSlot(0)),
+            SsaInst::local_ensure_cache(FrameSlot(0)),
+            SsaInst::local_ensure_cache(FrameSlot(0)),
         ];
         let simplified = simplify_cache_run(&run);
         assert_eq!(
             simplified
                 .iter()
-                .map(|inst| &inst.kind)
+                .map(|inst| inst.op)
                 .collect::<collections::Vec<_>>(),
-            collections::vec![
-                &SsaInstKind::LocalDropCache { slot: FrameSlot(0) },
-                &SsaInstKind::LocalEnsureCache { slot: FrameSlot(0) },
-            ]
+            collections::vec![SsaOp::LOCAL_DROP_CACHE, SsaOp::LOCAL_ENSURE_CACHE]
         );
+        assert!(simplified.iter().all(|inst| inst.meta == 0));
     }
 
     #[test]
@@ -829,6 +887,7 @@ mod tests {
                     id: SsaTarget(0),
                     params: collections::Vec::new(),
                     ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(1),
                         bindings: collections::vec![SsaBinding {
@@ -841,6 +900,7 @@ mod tests {
                     id: SsaTarget(1),
                     params: collections::vec![SsaValue(10)],
                     ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(2),
                         bindings: collections::vec![SsaBinding {
@@ -853,6 +913,7 @@ mod tests {
                     id: SsaTarget(2),
                     params: collections::vec![SsaValue(20)],
                     ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
@@ -866,6 +927,9 @@ mod tests {
             block_cfg_origins: collections::vec![],
             value_types: collections::vec![crate::value_type::ValueType::I32; 32],
             value_sink_local: collections::vec![None; 32],
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
         };
 
         assert!(thread_one_empty_goto_block(&mut program));
@@ -889,31 +953,7 @@ mod tests {
     fn merges_goto_successor_with_param_substitution() {
         let mut program = SsaProgram {
             entry: SsaTarget(0),
-            blocks: collections::vec![
-                SsaBlock {
-                    id: SsaTarget(0),
-                    params: collections::Vec::new(),
-                    ops: collections::vec![value_inst(0)],
-                    terminator: SsaTerminator::Goto(SsaEdge {
-                        target: SsaTarget(1),
-                        bindings: collections::vec![SsaBinding {
-                            param: SsaValue(10),
-                            value: SsaValue(0),
-                        }],
-                    }),
-                },
-                SsaBlock {
-                    id: SsaTarget(1),
-                    params: collections::vec![SsaValue(10)],
-                    ops: collections::vec![SsaInst {
-                        kind: SsaInstKind::LocalSetCache {
-                            slot: FrameSlot(0),
-                            src: SsaValue(10),
-                        },
-                    }],
-                    terminator: SsaTerminator::Return { results: None },
-                },
-            ],
+            blocks: collections::Vec::new(),
             local_slot_types: collections::vec![crate::value_type::ValueType::I32],
             local_slot_info: collections::vec![Default::default()],
             block_entry_cached_slots: collections::vec![
@@ -923,18 +963,40 @@ mod tests {
             block_cfg_origins: collections::vec![],
             value_types: collections::vec![crate::value_type::ValueType::I32; 16],
             value_sink_local: collections::vec![None; 16],
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
         };
+        let vi = value_inst(&mut program, 0);
+        program.blocks = collections::vec![
+            SsaBlock {
+                id: SsaTarget(0),
+                params: collections::Vec::new(),
+                ops: collections::vec![vi],
+                extra_args: collections::Vec::new(),
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: collections::vec![SsaBinding {
+                        param: SsaValue(10),
+                        value: SsaValue(0),
+                    }],
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(1),
+                params: collections::vec![SsaValue(10)],
+                ops: collections::vec![SsaInst::local_set_cache(FrameSlot(0), SsaValue(10))],
+                extra_args: collections::Vec::new(),
+                terminator: SsaTerminator::Return { results: None },
+            },
+        ];
 
         assert!(merge_one_goto_successor(&mut program));
         assert_eq!(program.blocks.len(), 1);
         assert_eq!(program.blocks[0].ops.len(), 2);
-        assert!(matches!(
-            program.blocks[0].ops[1].kind,
-            SsaInstKind::LocalSetCache {
-                src: SsaValue(0),
-                ..
-            }
-        ));
+        let set_cache = &program.blocks[0].ops[1];
+        assert_eq!(set_cache.op, SsaOp::LOCAL_SET_CACHE);
+        assert_eq!(set_cache.args[0].as_value(), Some(SsaValue(0)));
         assert!(matches!(
             program.blocks[0].terminator,
             SsaTerminator::Return { .. }
@@ -951,12 +1013,14 @@ mod tests {
                     id: SsaTarget(0),
                     params: collections::Vec::new(),
                     ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Return { results: None },
                 },
                 SsaBlock {
                     id: SsaTarget(1),
                     params: collections::Vec::new(),
                     ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(2),
                         bindings: collections::Vec::new(),
@@ -966,6 +1030,7 @@ mod tests {
                     id: SsaTarget(2),
                     params: collections::Vec::new(),
                     ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
@@ -979,6 +1044,9 @@ mod tests {
             block_cfg_origins: collections::vec![],
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
         };
 
         assert!(remove_unreachable_blocks(&mut program));
@@ -990,23 +1058,7 @@ mod tests {
     fn does_not_merge_unreachable_predecessor_into_entry() {
         let mut program = SsaProgram {
             entry: SsaTarget(1),
-            blocks: collections::vec![
-                SsaBlock {
-                    id: SsaTarget(0),
-                    params: collections::Vec::new(),
-                    ops: collections::vec![value_inst(0)],
-                    terminator: SsaTerminator::Goto(SsaEdge {
-                        target: SsaTarget(1),
-                        bindings: collections::Vec::new(),
-                    }),
-                },
-                SsaBlock {
-                    id: SsaTarget(1),
-                    params: collections::Vec::new(),
-                    ops: collections::vec![value_inst(1)],
-                    terminator: SsaTerminator::Return { results: None },
-                },
-            ],
+            blocks: collections::Vec::new(),
             local_slot_types: collections::Vec::new(),
             local_slot_info: collections::Vec::new(),
             block_entry_cached_slots: collections::vec![
@@ -1016,7 +1068,31 @@ mod tests {
             block_cfg_origins: collections::vec![],
             value_types: collections::vec![crate::value_type::ValueType::I32; 2],
             value_sink_local: collections::vec![None; 2],
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
         };
+        let vi0 = value_inst(&mut program, 0);
+        let vi1 = value_inst(&mut program, 1);
+        program.blocks = collections::vec![
+            SsaBlock {
+                id: SsaTarget(0),
+                params: collections::Vec::new(),
+                ops: collections::vec![vi0],
+                extra_args: collections::Vec::new(),
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: collections::Vec::new(),
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(1),
+                params: collections::Vec::new(),
+                ops: collections::vec![vi1],
+                extra_args: collections::Vec::new(),
+                terminator: SsaTerminator::Return { results: None },
+            },
+        ];
 
         assert!(!merge_one_goto_successor(&mut program));
         assert!(remove_unreachable_blocks(&mut program));
@@ -1039,6 +1115,7 @@ mod tests {
                     id: SsaTarget(0),
                     params: collections::Vec::new(),
                     ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(2),
                         bindings: collections::Vec::new(),
@@ -1048,12 +1125,14 @@ mod tests {
                     id: SsaTarget(1),
                     params: collections::Vec::new(),
                     ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Return { results: None },
                 },
                 SsaBlock {
                     id: SsaTarget(2),
                     params: collections::Vec::new(),
                     ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Goto(SsaEdge {
                         target: SsaTarget(3),
                         bindings: collections::Vec::new(),
@@ -1063,6 +1142,7 @@ mod tests {
                     id: SsaTarget(3),
                     params: collections::Vec::new(),
                     ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
@@ -1082,6 +1162,9 @@ mod tests {
             ],
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
         };
 
         remove_blocks(&mut program, &[1]);

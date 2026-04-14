@@ -16,7 +16,7 @@ use crate::{
         budget::count_live_bank_budget_units,
         frame::FrameSlot,
         joint_plan::TransientContract,
-        ssa_ir::ir::{SsaInst, SsaValue},
+        ssa_ir::ir::{SsaInst, SsaOperand, SsaValue},
     },
 };
 
@@ -75,6 +75,11 @@ pub(super) struct BlockState {
     /// `type_stack[spill_depth..] == live_types`.
     type_stack: collections::Vec<ValueType>,
     pub(super) ops: collections::Vec<SsaInst>,
+    /// Overflow storage for the third operand of 3-arg primitive ops
+    /// (Select, memory/table bulk ops). Index published via
+    /// [`SsaInst.meta`] for the primitive variant. Transferred into the
+    /// finalized [`SsaBlock.extra_args`] when the block is closed.
+    pub(super) extra_args: collections::Vec<SsaOperand>,
 }
 
 impl BlockState {
@@ -103,6 +108,7 @@ impl BlockState {
             live_aliases: collections::vec![None; params.len()],
             type_stack: full_stack_types.to_vec().into(),
             ops: collections::Vec::new(),
+            extra_args: collections::Vec::new(),
         };
         state.ensure_live_fit("block entry")?;
         Ok(state)

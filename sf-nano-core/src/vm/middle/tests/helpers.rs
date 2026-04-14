@@ -11,7 +11,7 @@ use crate::vm::{
         joint_plan::JointPlanner,
         prepare_function,
         slot_ssa::{self},
-        ssa_ir::ir::{SsaBlock, SsaInstKind, SsaProgram, SsaTerminator},
+        ssa_ir::ir::{SsaBlock, SsaInst, SsaOp, SsaProgram, SsaTerminator},
         PrepareInput, PreparedFunction,
     },
     wasm::{
@@ -163,35 +163,36 @@ pub(super) fn plan_program(
     }
 }
 
-pub(super) fn all_inst_kinds(program: &SsaProgram) -> collections::Vec<&SsaInstKind> {
+pub(super) fn all_insts(program: &SsaProgram) -> collections::Vec<&SsaInst> {
     program
         .blocks
         .iter()
-        .flat_map(|block| block.ops.iter().map(|inst| &inst.kind))
+        .flat_map(|block| block.ops.iter())
         .collect()
 }
 
-pub(super) fn first_local_get_for(program: &SsaProgram, slot: FrameSlot) -> Option<&SsaInstKind> {
-    all_inst_kinds(program).into_iter().find(|kind| {
-        matches!(
-            kind,
-            SsaInstKind::LocalGetSlot { slot: got, .. }
-                | SsaInstKind::LocalGetCache { slot: got, .. }
-                if *got == slot
-        )
+/// Back-compat alias for tests that still import the old name.
+pub(super) fn all_inst_kinds(program: &SsaProgram) -> collections::Vec<&SsaInst> {
+    all_insts(program)
+}
+
+pub(super) fn first_local_get_for(program: &SsaProgram, slot: FrameSlot) -> Option<&SsaInst> {
+    all_insts(program).into_iter().find(|inst| {
+        matches!(inst.op, SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE)
+            && FrameSlot(inst.meta) == slot
     })
 }
 
 pub(super) fn contains_ensure_cache(program: &SsaProgram, slot: FrameSlot) -> bool {
-    all_inst_kinds(program)
+    all_insts(program)
         .into_iter()
-        .any(|kind| matches!(kind, SsaInstKind::LocalEnsureCache { slot: got } if *got == slot))
+        .any(|inst| inst.op == SsaOp::LOCAL_ENSURE_CACHE && FrameSlot(inst.meta) == slot)
 }
 
 pub(super) fn count_ensure_cache(program: &SsaProgram, slot: FrameSlot) -> usize {
-    all_inst_kinds(program)
+    all_insts(program)
         .into_iter()
-        .filter(|kind| matches!(kind, SsaInstKind::LocalEnsureCache { slot: got } if *got == slot))
+        .filter(|inst| inst.op == SsaOp::LOCAL_ENSURE_CACHE && FrameSlot(inst.meta) == slot)
         .count()
 }
 
@@ -212,10 +213,10 @@ pub(super) fn incoming_cache_repair_blocks(
             !block.ops.is_empty()
                 && block.ops.iter().all(|inst| {
                     matches!(
-                        inst.kind,
-                        SsaInstKind::LocalDropCache { .. }
-                            | SsaInstKind::LocalEnsureCache { .. }
-                            | SsaInstKind::LocalReserveCache { .. }
+                        inst.op,
+                        SsaOp::LOCAL_DROP_CACHE
+                            | SsaOp::LOCAL_ENSURE_CACHE
+                            | SsaOp::LOCAL_RESERVE_CACHE
                     )
                 })
         })

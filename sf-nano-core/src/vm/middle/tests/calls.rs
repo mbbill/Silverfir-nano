@@ -1,5 +1,5 @@
 use crate::collections;
-use crate::vm::middle::ssa_ir::ir::SsaInstKind;
+use crate::vm::middle::ssa_ir::ir::SsaOp;
 
 use crate::vm::wasm::semantic_ir::SemanticOpKind;
 
@@ -75,17 +75,14 @@ fn call_barrier_rebuilds_local_access_after_flush() {
     let ops = all_inst_kinds(&prepared.ssa);
     let post_call_get = ops
         .iter()
-        .find(|kind| {
-            matches!(
-                kind,
-                SsaInstKind::LocalGetSlot { slot, .. } | SsaInstKind::LocalGetCache { slot, .. }
-                    if *slot == slot0
-            )
+        .find(|inst| {
+            matches!(inst.op, SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE)
+                && crate::vm::middle::frame::FrameSlot(inst.meta) == slot0
         })
         .expect("expected one local.get after the call");
 
     assert!(
-        matches!(post_call_get, SsaInstKind::LocalGetSlot { .. }),
+        post_call_get.op == SsaOp::LOCAL_GET_SLOT,
         "a one-shot local.get after a call should stay slot-based when the public set does not keep that local resident"
     );
 }
@@ -129,7 +126,7 @@ fn hot_repeated_local_can_stay_public_across_call() {
         first_local_get_for(&prepared.ssa, slot0).expect("expected one local.get after the call");
 
     assert!(
-        matches!(first_get, SsaInstKind::LocalGetCache { .. }),
+        first_get.op == SsaOp::LOCAL_GET_CACHE,
         "repeated post-call uses should still be allowed to use the public cache form"
     );
 }

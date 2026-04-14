@@ -10,7 +10,7 @@ use crate::vm::middle::{
     ssa_ir::{
         ir::{
             entry_cache_requirement, EntryCacheRequirement, SsaBinding, SsaBlock, SsaEdge, SsaInst,
-            SsaInstKind, SsaProgram, SsaTerminator, SsaValue,
+            SsaProgram, SsaTerminator, SsaValue,
         },
         target::SsaTarget,
     },
@@ -142,19 +142,13 @@ fn maybe_repair_edge(
     let repair_params = target_params.get(target_id).cloned().unwrap_or_default();
     let mut ops = collections::Vec::new();
     for slot in repair.drop_cached_locals {
-        ops.push(SsaInst {
-            kind: SsaInstKind::LocalDropCache { slot },
-        });
+        ops.push(SsaInst::local_drop_cache(slot));
     }
     for slot in repair.ensure_cached_locals {
-        ops.push(SsaInst {
-            kind: SsaInstKind::LocalEnsureCache { slot },
-        });
+        ops.push(SsaInst::local_ensure_cache(slot));
     }
     for slot in repair.reserve_cached_locals {
-        ops.push(SsaInst {
-            kind: SsaInstKind::LocalReserveCache { slot },
-        });
+        ops.push(SsaInst::local_reserve_cache(slot));
     }
     let repair_edge = SsaEdge {
         target: edge.target,
@@ -171,6 +165,7 @@ fn maybe_repair_edge(
         id: repair_id,
         params: repair_params,
         ops,
+        extra_args: collections::Vec::new(),
         terminator: SsaTerminator::Goto(repair_edge),
     });
     block_entry_cached_slots.push(pred_exit.to_vec().into());
@@ -207,19 +202,13 @@ fn maybe_repair_entry(
     let repair_params = target_params.get(entry_target).cloned().unwrap_or_default();
     let mut ops = collections::Vec::new();
     for slot in repair.drop_cached_locals {
-        ops.push(SsaInst {
-            kind: SsaInstKind::LocalDropCache { slot },
-        });
+        ops.push(SsaInst::local_drop_cache(slot));
     }
     for slot in repair.ensure_cached_locals {
-        ops.push(SsaInst {
-            kind: SsaInstKind::LocalEnsureCache { slot },
-        });
+        ops.push(SsaInst::local_ensure_cache(slot));
     }
     for slot in repair.reserve_cached_locals {
-        ops.push(SsaInst {
-            kind: SsaInstKind::LocalReserveCache { slot },
-        });
+        ops.push(SsaInst::local_reserve_cache(slot));
     }
     let repair_edge = SsaEdge {
         target: program.entry,
@@ -236,6 +225,7 @@ fn maybe_repair_entry(
         id: repair_id,
         params: repair_params,
         ops,
+        extra_args: collections::Vec::new(),
         terminator: SsaTerminator::Goto(repair_edge),
     });
     program

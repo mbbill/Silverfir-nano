@@ -467,10 +467,11 @@ fn simulate_block_exit_layout(
     }
 
     for inst in &block.ops {
-        match inst.kind {
-            crate::vm::middle::ssa_ir::ir::SsaInstKind::LocalEnsureCache { slot }
-            | crate::vm::middle::ssa_ir::ir::SsaInstKind::LocalReserveCache { slot }
-            | crate::vm::middle::ssa_ir::ir::SsaInstKind::LocalSetCache { slot, .. } => {
+        match inst.op {
+            crate::vm::middle::ssa_ir::ir::SsaOp::LOCAL_ENSURE_CACHE
+            | crate::vm::middle::ssa_ir::ir::SsaOp::LOCAL_RESERVE_CACHE
+            | crate::vm::middle::ssa_ir::ir::SsaOp::LOCAL_SET_CACHE => {
+                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
                 let Some(&slot_index) = slot_to_cached_index.get(&slot) else {
                     continue;
                 };
@@ -522,7 +523,8 @@ fn simulate_block_exit_layout(
                     ));
                 }
             }
-            crate::vm::middle::ssa_ir::ir::SsaInstKind::LocalDropCache { slot } => {
+            crate::vm::middle::ssa_ir::ir::SsaOp::LOCAL_DROP_CACHE => {
+                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
                 let Some(&slot_index) = slot_to_cached_index.get(&slot) else {
                     continue;
                 };
@@ -533,7 +535,7 @@ fn simulate_block_exit_layout(
                     occupy_segment(&mut occupied, start, slot_meta[slot_index].width, false);
                 }
             }
-            crate::vm::middle::ssa_ir::ir::SsaInstKind::Call(_) => {
+            crate::vm::middle::ssa_ir::ir::SsaOp::CALL => {
                 for (slot_index, lane) in layout.iter_mut().enumerate() {
                     if slot_meta.get(slot_index).map(|meta| meta.bank) != Some(bank) {
                         continue;
@@ -544,12 +546,9 @@ fn simulate_block_exit_layout(
                     }
                 }
             }
-            crate::vm::middle::ssa_ir::ir::SsaInstKind::Value { .. }
-            | crate::vm::middle::ssa_ir::ir::SsaInstKind::Fill { .. }
-            | crate::vm::middle::ssa_ir::ir::SsaInstKind::Spill { .. }
-            | crate::vm::middle::ssa_ir::ir::SsaInstKind::LocalGetSlot { .. }
-            | crate::vm::middle::ssa_ir::ir::SsaInstKind::LocalGetCache { .. }
-            | crate::vm::middle::ssa_ir::ir::SsaInstKind::LocalSetSlot { .. } => {}
+            // Value (primitive) / Fill / Spill / LocalGetSlot / LocalGetCache /
+            // LocalSetSlot: no cache layout effects.
+            _ => {}
         }
     }
 

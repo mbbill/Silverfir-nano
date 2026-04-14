@@ -14,7 +14,7 @@ use crate::vm::middle::frame::FrameSlot;
 
 use super::ir::SsaProgram;
 #[cfg(any(debug_assertions, test))]
-use super::ir::{SsaBinding, SsaBlock, SsaEdge, SsaInstKind, SsaOperand, SsaTerminator, SsaValue};
+use super::ir::{SsaBinding, SsaBlock, SsaEdge, SsaInstView, SsaOp, SsaTerminator, SsaValue};
 
 #[cfg(any(debug_assertions, test))]
 pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
@@ -100,32 +100,32 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
         for param in &block.params {
             check(*param)?;
         }
-        for inst in &block.ops {
-            match &inst.kind {
-                SsaInstKind::Value { args, results, .. } => {
-                    for arg in args {
-                        if let SsaOperand::Value(value) = arg {
-                            check(*value)?;
+        for inst_idx in 0..block.ops.len() {
+            match block.view(inst_idx, program) {
+                SsaInstView::Value { result, args, .. } => {
+                    for arg in args.iter() {
+                        if let Some(value) = arg.as_value() {
+                            check(value)?;
                         }
                     }
-                    for result in results {
-                        check(*result)?;
+                    if result.is_some() {
+                        check(result)?;
                     }
                 }
-                SsaInstKind::LocalGetSlot { dst, .. }
-                | SsaInstKind::LocalGetCache { dst, .. }
-                | SsaInstKind::Fill { dst, .. } => {
-                    check(*dst)?;
+                SsaInstView::LocalGetSlot { dst, .. }
+                | SsaInstView::LocalGetCache { dst, .. }
+                | SsaInstView::Fill { dst, .. } => {
+                    check(dst)?;
                 }
-                SsaInstKind::LocalSetSlot { src, .. }
-                | SsaInstKind::LocalSetCache { src, .. }
-                | SsaInstKind::Spill { src, .. } => {
-                    check(*src)?;
+                SsaInstView::LocalSetSlot { src, .. }
+                | SsaInstView::LocalSetCache { src, .. }
+                | SsaInstView::Spill { src, .. } => {
+                    check(src)?;
                 }
-                SsaInstKind::LocalEnsureCache { .. }
-                | SsaInstKind::LocalReserveCache { .. }
-                | SsaInstKind::LocalDropCache { .. }
-                | SsaInstKind::Call(_) => {}
+                SsaInstView::LocalEnsureCache { .. }
+                | SsaInstView::LocalReserveCache { .. }
+                | SsaInstView::LocalDropCache { .. }
+                | SsaInstView::Call(_) => {}
             }
         }
         match &block.terminator {
@@ -168,13 +168,19 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
     let mut cached_slot_types = BTreeMap::<FrameSlot, ValueType>::new();
     for block in &program.blocks {
         for inst in &block.ops {
-            match inst.kind {
-                SsaInstKind::LocalGetCache { slot, dst } => {
+            match inst.op {
+                SsaOp::LOCAL_GET_CACHE => {
+                    let slot = FrameSlot(inst.meta);
+                    let dst = inst.result;
                     if let Some(ty) = program.value_types.get(dst.0 as usize).copied() {
                         cached_slot_types.entry(slot).or_insert(ty);
                     }
                 }
-                SsaInstKind::LocalSetCache { slot, src } => {
+                SsaOp::LOCAL_SET_CACHE => {
+                    let slot = FrameSlot(inst.meta);
+                    let src = inst.args[0]
+                        .as_value()
+                        .expect("LocalSetCache src must be a value");
                     if let Some(ty) = program.value_types.get(src.0 as usize).copied() {
                         cached_slot_types.entry(slot).or_insert(ty);
                     }
@@ -186,25 +192,35 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
 
     for (block_idx, block) in program.blocks.iter().enumerate() {
         for (op_idx, inst) in block.ops.iter().enumerate() {
-            match inst.kind {
-                SsaInstKind::LocalGetCache { slot, dst } => validate_cached_slot_value_type(
-                    program,
-                    &cached_slot_types,
-                    slot,
-                    dst,
-                    block_idx,
-                    op_idx,
-                    "LocalGetCache dst",
-                )?,
-                SsaInstKind::LocalSetCache { slot, src } => validate_cached_slot_value_type(
-                    program,
-                    &cached_slot_types,
-                    slot,
-                    src,
-                    block_idx,
-                    op_idx,
-                    "LocalSetCache src",
-                )?,
+            match inst.op {
+                SsaOp::LOCAL_GET_CACHE => {
+                    let slot = FrameSlot(inst.meta);
+                    let dst = inst.result;
+                    validate_cached_slot_value_type(
+                        program,
+                        &cached_slot_types,
+                        slot,
+                        dst,
+                        block_idx,
+                        op_idx,
+                        "LocalGetCache dst",
+                    )?;
+                }
+                SsaOp::LOCAL_SET_CACHE => {
+                    let slot = FrameSlot(inst.meta);
+                    let src = inst.args[0]
+                        .as_value()
+                        .expect("LocalSetCache src must be a value");
+                    validate_cached_slot_value_type(
+                        program,
+                        &cached_slot_types,
+                        slot,
+                        src,
+                        block_idx,
+                        op_idx,
+                        "LocalSetCache src",
+                    )?;
+                }
                 _ => {}
             }
         }

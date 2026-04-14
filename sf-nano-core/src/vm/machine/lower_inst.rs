@@ -11,9 +11,9 @@ use crate::{
             MachineInstKind, MachineIntWidth, MachineLoadExtension, MachineReg, MachineStorageType,
             MachineTerminator, MachineTrapKind, MachineValue,
         },
-        middle::ssa_ir::{
-            ir::{SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaTerminator, SsaValue},
-            leaf::SsaLeafOp,
+        middle::ssa_ir::ir::{
+            DecodedOperand, SsaEdge, SsaInst, SsaInstView, SsaOp, SsaOperand, SsaTerminator,
+            SsaValue,
         },
         wasm::primitive_op::PrimitiveOpKind,
     },
@@ -121,9 +121,9 @@ impl<'a> BlockLowerContext<'a> {
         let mut arg_vals = [SsaValue(u32::MAX); 4];
         let mut n = 0;
         for a in args.iter() {
-            if let SsaOperand::Value(v) = a {
+            if let DecodedOperand::Value(v) = a.decode() {
                 if n < arg_vals.len() {
-                    arg_vals[n] = *v;
+                    arg_vals[n] = v;
                     n += 1;
                 }
             }
@@ -137,62 +137,84 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn lower_inst(&mut self, inst: &SsaInst) -> Result<(), WasmError> {
-        match &inst.kind {
-            SsaInstKind::LocalGetSlot { slot, dst } => {
-                self.lower_local_get_slot(*slot, *dst)?;
+        // Dispatch on the raw opcode so we can call `&mut self` methods in
+        // each arm without fighting the view borrow (`SsaInstView` for `Call`
+        // and `Value` borrows both `&SsaProgram` and `&SsaBlock`).
+        match inst.op {
+            SsaOp::LOCAL_GET_SLOT => {
+                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let dst = inst.result;
+                self.lower_local_get_slot(slot, dst)?;
             }
-            SsaInstKind::LocalGetCache { slot, dst } => {
-                self.lower_local_get_cache(*slot, *dst)?;
+            SsaOp::LOCAL_GET_CACHE => {
+                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let dst = inst.result;
+                self.lower_local_get_cache(slot, dst)?;
             }
-            SsaInstKind::LocalSetSlot { slot, src } => {
-                self.lower_local_set_slot(*slot, *src)?;
+            SsaOp::LOCAL_SET_SLOT => {
+                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let src = inst.args[0]
+                    .as_value()
+                    .expect("LocalSetSlot src must be a Value");
+                self.lower_local_set_slot(slot, src)?;
             }
-            SsaInstKind::LocalSetCache { slot, src } => {
-                self.lower_local_set_cache(*slot, *src)?;
+            SsaOp::LOCAL_SET_CACHE => {
+                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let src = inst.args[0]
+                    .as_value()
+                    .expect("LocalSetCache src must be a Value");
+                self.lower_local_set_cache(slot, src)?;
             }
-            SsaInstKind::LocalEnsureCache { slot } => {
-                self.lower_local_ensure_cache(*slot)?;
+            SsaOp::LOCAL_ENSURE_CACHE => {
+                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                self.lower_local_ensure_cache(slot)?;
             }
-            SsaInstKind::LocalReserveCache { slot } => {
-                self.lower_local_reserve_cache(*slot)?;
+            SsaOp::LOCAL_RESERVE_CACHE => {
+                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                self.lower_local_reserve_cache(slot)?;
             }
-            SsaInstKind::LocalDropCache { slot } => {
-                if let Some(index) = self.cached_local_index(*slot) {
+            SsaOp::LOCAL_DROP_CACHE => {
+                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                if let Some(index) = self.cached_local_index(slot) {
                     self.emit_drop_cached_local(index)?;
                 }
             }
-            SsaInstKind::Fill { slot, dst } => {
-                let ty = lir_value_storage_type(self.program(), *dst);
-                self.apply_sink_premap(&[], &[*dst])?;
+            SsaOp::FILL => {
+                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let dst = inst.result;
+                let ty = lir_value_storage_type(self.program(), dst);
+                self.apply_sink_premap(&[], &[dst])?;
                 if matches!(ty, MachineStorageType::GpI64) {
                     let ops = self.i64_ops();
-                    ops.emit_load_slot_i64(self, *slot, *dst)?;
+                    ops.emit_load_slot_i64(self, slot, dst)?;
                     return Ok(());
                 }
-                let dst_reg = self.alloc_slot_load_value(*dst)?;
-                let width = canonical_value_mem_width_for_value(self.program(), *dst);
+                let dst_reg = self.alloc_slot_load_value(dst)?;
+                let width = canonical_value_mem_width_for_value(self.program(), dst);
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Load {
                         owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
                         ty,
                         dst: dst_reg,
-                        addr: self.frame_addr(*slot)?,
+                        addr: self.frame_addr(slot)?,
                         width,
                         extension: MachineLoadExtension::None,
                     },
                 });
             }
-            SsaInstKind::Spill { slot, src } => {
-                let ty = lir_value_storage_type(self.program(), *src);
+            SsaOp::SPILL => {
+                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let src = inst.args[0].as_value().expect("Spill src must be a Value");
+                let ty = lir_value_storage_type(self.program(), src);
                 if matches!(ty, MachineStorageType::GpI64) {
                     let ops = self.i64_ops();
-                    ops.emit_store_slot_i64(self, *slot, *src)?;
+                    ops.emit_store_slot_i64(self, slot, src)?;
                     return Ok(());
                 }
-                let src_reg = self.use_value(*src)?;
-                let width = canonical_value_mem_width_for_value(self.program(), *src);
-                let addr = self.frame_addr(*slot)?;
-                if !self.try_coalesce_last_store_immediate(*src, src_reg, ty, addr, width) {
+                let src_reg = self.use_value(src)?;
+                let width = canonical_value_mem_width_for_value(self.program(), src);
+                let addr = self.frame_addr(slot)?;
+                if !self.try_coalesce_last_store_immediate(src, src_reg, ty, addr, width) {
                     self.emit_machine_inst(MachineInst {
                         kind: MachineInstKind::Store {
                             ty,
@@ -204,16 +226,34 @@ impl<'a> BlockLowerContext<'a> {
                 }
                 self.release_dead_values()?;
             }
-            SsaInstKind::Value { op, args, results } => {
-                // Sink pre-mapping is now applied by the caller
-                // (lower_module.rs) before dispatching to lower_inst.
-                self.lower_leaf(op, args, results)?;
-                self.release_dead_values()?;
-            }
-            SsaInstKind::Call(_call) => {
+            SsaOp::CALL => {
                 return Err(WasmError::internal(
                     "call op must be lowered through its specialized path",
                 ));
+            }
+            _ => {
+                // Primitive (Value) op. Copy op/args/result out of the pools
+                // before touching &mut self so the borrow of program ends.
+                let (op, result, args_vec) = {
+                    let program = self.program();
+                    let block = self.block();
+                    let view = inst.view(program, block);
+                    match view {
+                        SsaInstView::Value { op, result, args } => {
+                            (op.clone(), result, args.to_vec())
+                        }
+                        _ => unreachable!("SsaOp classified as primitive but view is not Value"),
+                    }
+                };
+                let results_vec: crate::collections::Vec<SsaValue> = if result.is_some() {
+                    crate::collections::vec![result]
+                } else {
+                    crate::collections::Vec::new()
+                };
+                // Sink pre-mapping is now applied by the caller
+                // (lower_module.rs) before dispatching to lower_inst.
+                self.lower_leaf(&op, &args_vec, &results_vec)?;
+                self.release_dead_values()?;
             }
         }
         Ok(())
@@ -465,7 +505,7 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_leaf_special(
         &mut self,
-        op: &SsaLeafOp,
+        op: &PrimitiveOpKind,
         args: &[SsaOperand],
         results: &[SsaValue],
         continuation: MachineBlockId,
@@ -473,7 +513,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<Option<LeafLowering>, WasmError> {
         use PrimitiveOpKind as P;
 
-        let lowered = match op.primitive() {
+        let lowered = match op {
             P::MemorySize { mem_idx } => {
                 self.lower_memory_size(*mem_idx, results)?;
                 LeafLowering::InPlace
@@ -562,12 +602,12 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn lower_leaf(
         &mut self,
-        op: &SsaLeafOp,
+        op: &PrimitiveOpKind,
         args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<(), WasmError> {
         use PrimitiveOpKind as P;
-        let primitive = op.primitive();
+        let primitive = op;
 
         {
             let ops = self.i64_ops();
@@ -579,8 +619,8 @@ impl<'a> BlockLowerContext<'a> {
         match primitive {
             P::Drop | P::Nop => {
                 for arg in args {
-                    if let SsaOperand::Value(v) = arg {
-                        let _ = self.use_value(*v)?;
+                    if let DecodedOperand::Value(v) = arg.decode() {
+                        let _ = self.use_value(v)?;
                     }
                 }
                 Ok(())

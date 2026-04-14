@@ -116,5 +116,8 @@ fn empty_program(semantic: &SemanticProgram) -> SsaProgram {
         block_cfg_origins: collections::Vec::new(),
         value_types: collections::Vec::new(),
         value_sink_local: collections::Vec::new(),
+        const_pool: collections::Vec::new(),
+        primitive_pool: collections::Vec::new(),
+        call_ops: collections::Vec::new(),
     }
 }

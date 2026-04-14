@@ -17,7 +17,7 @@ use crate::collections;
 
 use crate::vm::middle::{
     frame::FrameSlot,
-    ssa_ir::ir::{SsaBlock, SsaInstKind, SsaProgram},
+    ssa_ir::ir::{SsaBlock, SsaOp, SsaProgram},
 };
 
 /// Run the sink planner over all blocks in the program.
@@ -48,22 +48,20 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
     let mut max_val: u32 = 0;
 
     for inst in ops.iter() {
-        match &inst.kind {
-            SsaInstKind::Value { results, .. } => {
-                for r in results {
-                    if r.0 >= max_val {
-                        max_val = r.0 + 1;
+        if inst.op.is_primitive() {
+            if inst.result.is_some() && inst.result.0 >= max_val {
+                max_val = inst.result.0 + 1;
+            }
+        } else {
+            match inst.op {
+                SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_GET_SLOT | SsaOp::FILL => {
+                    let dst = inst.result;
+                    if dst.is_some() && dst.0 >= max_val {
+                        max_val = dst.0 + 1;
                     }
                 }
+                _ => {}
             }
-            SsaInstKind::LocalGetCache { dst, .. }
-            | SsaInstKind::LocalGetSlot { dst, .. }
-            | SsaInstKind::Fill { dst, .. } => {
-                if dst.0 >= max_val {
-                    max_val = dst.0 + 1;
-                }
-            }
-            _ => {}
         }
     }
 
@@ -71,9 +69,14 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
     let mut is_single_result = collections::vec![false; max_val as usize];
 
     for (pos, inst) in ops.iter().enumerate() {
-        let produced = match &inst.kind {
-            SsaInstKind::Value { results, .. } if results.len() == 1 => Some(results[0]),
-            _ => None,
+        // A primitive op always produces at most one result in the new flat
+        // IR (tri-arg ops still have a single `result` slot), so treating
+        // any primitive with a non-NONE result as single-result matches the
+        // old `results.len() == 1` predicate.
+        let produced = if inst.op.is_primitive() && inst.result.is_some() {
+            Some(inst.result)
+        } else {
+            None
         };
         if let Some(r) = produced {
             if (r.0 as usize) < producer_pos.len() {
@@ -85,10 +88,13 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
 
     // Step 2: For each LocalSetCache, check sink legality.
     for (set_pos, inst) in ops.iter().enumerate() {
-        let (slot, src) = match &inst.kind {
-            SsaInstKind::LocalSetCache { slot, src } => (*slot, *src),
-            _ => continue,
-        };
+        if inst.op != SsaOp::LOCAL_SET_CACHE {
+            continue;
+        }
+        let slot = FrameSlot(inst.meta);
+        let src = inst.args[0]
+            .as_value()
+            .expect("LocalSetCache src must be an SsaValue");
 
         let src_idx = src.0 as usize;
         if src_idx >= producer_pos.len() || !is_single_result[src_idx] {
@@ -106,7 +112,7 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
         // No call barrier between producer and set.
         let has_barrier = ops[prod_pos + 1..set_pos]
             .iter()
-            .any(|i| matches!(i.kind, SsaInstKind::Call(_)));
+            .any(|i| i.op == SsaOp::CALL);
         if has_barrier {
             continue;
         }
@@ -117,10 +123,9 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
         }
 
         // Old value of this local must not be read between producer and set.
-        let old_value_live = ops[prod_pos + 1..set_pos].iter().any(|i| match &i.kind {
-            SsaInstKind::LocalGetCache { slot: s, .. }
-            | SsaInstKind::LocalGetSlot { slot: s, .. } => *s == slot,
-            _ => false,
+        let old_value_live = ops[prod_pos + 1..set_pos].iter().any(|i| {
+            matches!(i.op, SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_GET_SLOT)
+                && FrameSlot(i.meta) == slot
         });
         if old_value_live {
             continue;
@@ -140,10 +145,8 @@ mod tests {
         frame::FrameSlot,
         ssa_ir::{
             ir::{
-                LocalSlotInfo, SsaBlock, SsaInst, SsaInstKind, SsaOperand, SsaProgram,
-                SsaTerminator, SsaValue,
+                LocalSlotInfo, SsaBlock, SsaInst, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
             },
-            leaf::SsaLeafOp,
             target::SsaTarget,
         },
     };
@@ -166,138 +169,107 @@ mod tests {
                 id: SsaTarget(0),
                 params: collections::vec![],
                 ops,
+                extra_args: collections::Vec::new(),
                 terminator: SsaTerminator::Return { results: None },
             }],
             value_types: collections::vec![crate::value_type::ValueType::I32; value_count],
             value_sink_local: collections::vec![None; value_count],
             block_entry_cached_slots: collections::vec![],
             block_cfg_origins: collections::vec![],
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
         }
+    }
+
+    /// Build a primitive Value instruction from raw parts, interning the op
+    /// kind into the program's primitive pool.
+    fn prim_inst(
+        program: &mut SsaProgram,
+        kind: PrimitiveOpKind,
+        result: SsaValue,
+        args: [SsaOperand; 2],
+    ) -> SsaInst {
+        let pool_idx = program.intern_primitive(kind).unwrap();
+        SsaInst::primitive(pool_idx, result, args, 0)
     }
 
     #[test]
     fn sinks_single_result_value_into_local_set_cache() {
-        let mut program = make_program(
-            collections::vec![
-                SsaInst {
-                    kind: SsaInstKind::Value {
-                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 42 })
-                            .unwrap(),
-                        args: collections::vec![],
-                        results: collections::vec![SsaValue(0)],
-                    },
-                },
-                SsaInst {
-                    kind: SsaInstKind::LocalSetCache {
-                        slot: FrameSlot(0),
-                        src: SsaValue(0),
-                    },
-                },
-            ],
-            1,
+        let mut program = make_program(collections::Vec::new(), 1);
+        let i32_const = prim_inst(
+            &mut program,
+            PrimitiveOpKind::I32Const { value: 42 },
+            SsaValue(0),
+            [SsaOperand::NONE, SsaOperand::NONE],
         );
+        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));
+        program.blocks[0].ops = collections::vec![i32_const, set_cache];
+
         plan_sinks(&mut program);
         assert_eq!(program.value_sink_local[0], Some(FrameSlot(0)));
     }
 
     #[test]
     fn does_not_sink_when_old_value_is_read_between_producer_and_set() {
-        let mut program = make_program(
-            collections::vec![
-                SsaInst {
-                    kind: SsaInstKind::Value {
-                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 42 })
-                            .unwrap(),
-                        args: collections::vec![],
-                        results: collections::vec![SsaValue(0)],
-                    },
-                },
-                // Read of fp[0] between producer and set — old value is live.
-                SsaInst {
-                    kind: SsaInstKind::LocalGetCache {
-                        slot: FrameSlot(0),
-                        dst: SsaValue(1),
-                    },
-                },
-                SsaInst {
-                    kind: SsaInstKind::LocalSetCache {
-                        slot: FrameSlot(0),
-                        src: SsaValue(0),
-                    },
-                },
-            ],
-            2,
+        let mut program = make_program(collections::Vec::new(), 2);
+        let i32_const = prim_inst(
+            &mut program,
+            PrimitiveOpKind::I32Const { value: 42 },
+            SsaValue(0),
+            [SsaOperand::NONE, SsaOperand::NONE],
         );
+        // Read of fp[0] between producer and set — old value is live.
+        let get_cache = SsaInst::local_get_cache(FrameSlot(0), SsaValue(1));
+        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));
+        program.blocks[0].ops = collections::vec![i32_const, get_cache, set_cache];
+
         plan_sinks(&mut program);
         assert_eq!(program.value_sink_local[0], None);
     }
 
     #[test]
     fn does_not_sink_across_call_barrier() {
-        let mut program = make_program(
-            collections::vec![
-                SsaInst {
-                    kind: SsaInstKind::Value {
-                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 42 })
-                            .unwrap(),
-                        args: collections::vec![],
-                        results: collections::vec![SsaValue(0)],
-                    },
-                },
-                SsaInst {
-                    kind: SsaInstKind::Call(crate::vm::middle::ssa_ir::ir::SsaCallOp::CallDirect {
-                        callee: 1,
-                        args: crate::vm::middle::frame::FrameSpan {
-                            start: FrameSlot(0),
-                            count: 0,
-                        },
-                        results: crate::vm::middle::frame::FrameSpan {
-                            start: FrameSlot(0),
-                            count: 0,
-                        },
-                    }),
-                },
-                SsaInst {
-                    kind: SsaInstKind::LocalSetCache {
-                        slot: FrameSlot(0),
-                        src: SsaValue(0),
-                    },
-                },
-            ],
-            1,
+        let mut program = make_program(collections::Vec::new(), 1);
+        let i32_const = prim_inst(
+            &mut program,
+            PrimitiveOpKind::I32Const { value: 42 },
+            SsaValue(0),
+            [SsaOperand::NONE, SsaOperand::NONE],
         );
+        let call_idx = program.push_call_op(crate::vm::middle::ssa_ir::ir::SsaCallOp::CallDirect {
+            callee: 1,
+            args: crate::vm::middle::frame::FrameSpan {
+                start: FrameSlot(0),
+                count: 0,
+            },
+            results: crate::vm::middle::frame::FrameSpan {
+                start: FrameSlot(0),
+                count: 0,
+            },
+        });
+        let call = SsaInst::call(call_idx);
+        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));
+        program.blocks[0].ops = collections::vec![i32_const, call, set_cache];
+
         plan_sinks(&mut program);
         assert_eq!(program.value_sink_local[0], None);
     }
 
     #[test]
     fn sinks_when_different_slot_is_read_between_producer_and_set() {
-        let mut program = make_program(
-            collections::vec![
-                SsaInst {
-                    kind: SsaInstKind::Value {
-                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Const { value: 42 })
-                            .unwrap(),
-                        args: collections::vec![],
-                        results: collections::vec![SsaValue(0)],
-                    },
-                },
-                // Read of fp[1] (different slot) — does not block sinking into fp[0].
-                SsaInst {
-                    kind: SsaInstKind::LocalGetCache {
-                        slot: FrameSlot(1),
-                        dst: SsaValue(1),
-                    },
-                },
-                SsaInst {
-                    kind: SsaInstKind::LocalSetCache {
-                        slot: FrameSlot(0),
-                        src: SsaValue(0),
-                    },
-                },
-            ],
-            2,
+        let mut program = make_program(collections::Vec::new(), 2);
+        let i32_const = prim_inst(
+            &mut program,
+            PrimitiveOpKind::I32Const { value: 42 },
+            SsaValue(0),
+            [SsaOperand::NONE, SsaOperand::NONE],
         );
+        // Read of fp[1] (different slot) — does not block sinking into fp[0].
+        let get_cache = SsaInst::local_get_cache(FrameSlot(1), SsaValue(1));
+        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));
+        program.blocks[0].ops = collections::vec![i32_const, get_cache, set_cache];
+
         plan_sinks(&mut program);
         assert_eq!(program.value_sink_local[0], Some(FrameSlot(0)));
     }
@@ -306,33 +278,18 @@ mod tests {
     fn sinks_leaf_op_consuming_cache_value() {
         // get_cache fp[0] → v0, i32.add(v0, #1) → v1, set_cache fp[0] ← v1
         // v1 should sink into fp[0].
-        let mut program = make_program(
-            collections::vec![
-                SsaInst {
-                    kind: SsaInstKind::LocalGetCache {
-                        slot: FrameSlot(0),
-                        dst: SsaValue(0),
-                    },
-                },
-                SsaInst {
-                    kind: SsaInstKind::Value {
-                        op: SsaLeafOp::from_primitive(PrimitiveOpKind::I32Add).unwrap(),
-                        args: collections::vec![
-                            SsaOperand::Value(SsaValue(0)),
-                            SsaOperand::Const(1)
-                        ],
-                        results: collections::vec![SsaValue(1)],
-                    },
-                },
-                SsaInst {
-                    kind: SsaInstKind::LocalSetCache {
-                        slot: FrameSlot(0),
-                        src: SsaValue(1),
-                    },
-                },
-            ],
-            2,
+        let mut program = make_program(collections::Vec::new(), 2);
+        let get_cache = SsaInst::local_get_cache(FrameSlot(0), SsaValue(0));
+        let const_one = program.intern_const(1_u64);
+        let add = prim_inst(
+            &mut program,
+            PrimitiveOpKind::I32Add,
+            SsaValue(1),
+            [SsaOperand::value(SsaValue(0)), const_one],
         );
+        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(1));
+        program.blocks[0].ops = collections::vec![get_cache, add, set_cache];
+
         plan_sinks(&mut program);
         // v0 is a LocalGetCache, not a single-result Value — not sinkable.
         assert_eq!(program.value_sink_local[0], None);

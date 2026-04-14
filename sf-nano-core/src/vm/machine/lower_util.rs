@@ -2,37 +2,43 @@ use tracked_alloc::collections::BTreeMap;
 
 use crate::{
     error::WasmError,
-    vm::middle::ssa_ir::ir::{SsaBlock, SsaEdge, SsaInstKind, SsaOperand, SsaTerminator, SsaValue},
+    vm::middle::ssa_ir::ir::{
+        DecodedOperand, SsaBlock, SsaEdge, SsaInstView, SsaOperand, SsaProgram, SsaTerminator,
+        SsaValue,
+    },
 };
 
-fn count_operand_use(operand: &SsaOperand, uses: &mut BTreeMap<SsaValue, u32>) {
-    if let SsaOperand::Value(v) = operand {
-        *uses.entry(*v).or_insert(0) += 1;
+fn count_operand_use(operand: SsaOperand, uses: &mut BTreeMap<SsaValue, u32>) {
+    if let DecodedOperand::Value(v) = operand.decode() {
+        *uses.entry(v).or_insert(0) += 1;
     }
-    // Const operands have no SsaValue reference to track.
+    // Const / None operands have no SsaValue reference to track.
 }
 
-pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32> {
+pub(super) fn compute_remaining_uses(
+    block: &SsaBlock,
+    program: &SsaProgram,
+) -> BTreeMap<SsaValue, u32> {
     let mut uses = BTreeMap::new();
-    for inst in &block.ops {
-        match &inst.kind {
-            SsaInstKind::Value { args, .. } => {
-                for operand in args {
+    for inst_idx in 0..block.ops.len() {
+        match block.view(inst_idx, program) {
+            SsaInstView::Spill { src, .. }
+            | SsaInstView::LocalSetSlot { src, .. }
+            | SsaInstView::LocalSetCache { src, .. } => {
+                *uses.entry(src).or_insert(0) += 1;
+            }
+            SsaInstView::Value { args, .. } => {
+                for operand in args.iter() {
                     count_operand_use(operand, &mut uses);
                 }
             }
-            SsaInstKind::LocalSetSlot { src, .. }
-            | SsaInstKind::LocalSetCache { src, .. }
-            | SsaInstKind::Spill { src, .. } => {
-                *uses.entry(*src).or_insert(0) += 1;
-            }
-            SsaInstKind::LocalGetSlot { .. }
-            | SsaInstKind::LocalGetCache { .. }
-            | SsaInstKind::Fill { .. } => {}
-            SsaInstKind::LocalEnsureCache { .. }
-            | SsaInstKind::LocalReserveCache { .. }
-            | SsaInstKind::LocalDropCache { .. }
-            | SsaInstKind::Call(_) => {}
+            SsaInstView::Fill { .. }
+            | SsaInstView::LocalGetSlot { .. }
+            | SsaInstView::LocalGetCache { .. }
+            | SsaInstView::LocalEnsureCache { .. }
+            | SsaInstView::LocalReserveCache { .. }
+            | SsaInstView::LocalDropCache { .. }
+            | SsaInstView::Call(_) => {}
         }
     }
 
@@ -63,19 +69,19 @@ pub(super) fn compute_remaining_uses(block: &SsaBlock) -> BTreeMap<SsaValue, u32
     #[cfg(debug_assertions)]
     {
         let mut op_uses: BTreeMap<SsaValue, u32> = BTreeMap::new();
-        for inst in &block.ops {
-            match &inst.kind {
-                SsaInstKind::Value { args, .. } => {
-                    for operand in args {
-                        if let SsaOperand::Value(v) = operand {
-                            *op_uses.entry(*v).or_insert(0) += 1;
+        for inst_idx in 0..block.ops.len() {
+            match block.view(inst_idx, program) {
+                SsaInstView::Spill { src, .. }
+                | SsaInstView::LocalSetSlot { src, .. }
+                | SsaInstView::LocalSetCache { src, .. } => {
+                    *op_uses.entry(src).or_insert(0) += 1;
+                }
+                SsaInstView::Value { args, .. } => {
+                    for operand in args.iter() {
+                        if let DecodedOperand::Value(v) = operand.decode() {
+                            *op_uses.entry(v).or_insert(0) += 1;
                         }
                     }
-                }
-                SsaInstKind::LocalSetSlot { src, .. }
-                | SsaInstKind::LocalSetCache { src, .. }
-                | SsaInstKind::Spill { src, .. } => {
-                    *op_uses.entry(*src).or_insert(0) += 1;
                 }
                 _ => {}
             }

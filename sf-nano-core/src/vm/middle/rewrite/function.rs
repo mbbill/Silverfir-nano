@@ -26,9 +26,8 @@ use crate::{
             ssa_ir::{
                 ir::{
                     entry_cache_requirement, LocalSlotInfo, SsaBinding, SsaBlock, SsaCallOp,
-                    SsaEdge, SsaInst, SsaInstKind, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+                    SsaEdge, SsaInst, SsaOp, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
                 },
-                leaf::SsaLeafOp,
                 target::SsaTarget,
             },
         },
@@ -44,6 +43,46 @@ use super::{
     edge::insert_boundary_repair_blocks,
     state::{make_block_params, BlockState, ValueAlloc},
 };
+
+/// Scratch accumulator for the program-level pools during rewrite.
+///
+/// The rewriter only constructs `SsaProgram` at the very end, but the
+/// per-op lowering needs to intern primitive ops and push call ops as it
+/// goes. This builder holds those pools and is flushed into the final
+/// `SsaProgram`. The `const_pool` is not maintained here because no rewrite
+/// pass emits `SsaOperand::Const` — that happens later in `optimize`.
+#[derive(Debug, Default)]
+pub(super) struct ProgramBuilder {
+    primitive_pool: collections::Vec<PrimitiveOpKind>,
+    call_ops: collections::Vec<SsaCallOp>,
+}
+
+impl ProgramBuilder {
+    pub(super) fn intern_primitive(&mut self, kind: PrimitiveOpKind) -> Result<u32, WasmError> {
+        if let Some(idx) = self.primitive_pool.iter().position(|k| k == &kind) {
+            return Ok(idx as u32);
+        }
+        if self.primitive_pool.len() >= SsaOp::MAX_PRIMITIVE_POOL {
+            return Err(WasmError::internal(
+                "SSA-IR primitive op pool overflow: function has more distinct primitive ops than a u16 opcode can address",
+            ));
+        }
+        let idx = self.primitive_pool.len() as u32;
+        self.primitive_pool.push(kind);
+        Ok(idx)
+    }
+
+    pub(super) fn push_call_op(&mut self, call: SsaCallOp) -> Result<u32, WasmError> {
+        if self.call_ops.len() > u16::MAX as usize {
+            return Err(WasmError::internal(
+                "SSA-IR call_ops overflow: function has more calls than fit in SsaInst.meta (u16)",
+            ));
+        }
+        let idx = self.call_ops.len() as u32;
+        self.call_ops.push(call);
+        Ok(idx)
+    }
+}
 
 pub(crate) fn rewrite_function(
     semantic: &SemanticProgram,
@@ -62,6 +101,9 @@ pub(crate) fn rewrite_function(
             block_cfg_origins: collections::Vec::new(),
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
         });
     }
 
@@ -82,6 +124,7 @@ pub(crate) fn rewrite_function(
         .collect::<collections::Vec<_>>();
 
     let original_block_count = cfg.blocks.len();
+    let mut builder = ProgramBuilder::default();
     let mut blocks = collections::Vec::with_capacity(original_block_count);
     let mut block_entry_cached_slots = collections::Vec::with_capacity(original_block_count);
     let mut block_exit_cached_slots = collections::Vec::with_capacity(original_block_count);
@@ -111,6 +154,7 @@ pub(crate) fn rewrite_function(
             &block_params,
             block_entry.cached_locals,
             &mut values,
+            &mut builder,
             original_block_count,
             extra_blocks.len(),
         )?;
@@ -127,6 +171,7 @@ pub(crate) fn rewrite_function(
             id: SsaTarget(block_index as u32),
             params,
             ops: lowered.ops,
+            extra_args: lowered.extra_args,
             terminator: lowered.terminator,
         });
         extra_block_cached_slots.extend(lowered.extra_block_cached_slots);
@@ -148,6 +193,9 @@ pub(crate) fn rewrite_function(
         blocks,
         value_types: values.take_types(),
         value_sink_local: collections::Vec::new(),
+        const_pool: collections::Vec::new(),
+        primitive_pool: builder.primitive_pool,
+        call_ops: builder.call_ops,
     };
 
     if let Some(entry_block) = program
@@ -186,21 +234,15 @@ fn simulate_materialized_cache_exit(
 ) -> collections::Vec<FrameSlot> {
     let mut materialized = entry_slots.iter().copied().collect::<BTreeSet<_>>();
     for inst in ops {
-        match inst.kind {
-            SsaInstKind::LocalGetCache { slot, .. }
-            | SsaInstKind::LocalSetCache { slot, .. }
-            | SsaInstKind::LocalEnsureCache { slot } => {
-                materialized.insert(slot);
+        match inst.op {
+            SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_SET_CACHE | SsaOp::LOCAL_ENSURE_CACHE => {
+                materialized.insert(FrameSlot(inst.meta));
             }
-            SsaInstKind::LocalReserveCache { slot } | SsaInstKind::LocalDropCache { slot } => {
-                materialized.remove(&slot);
+            SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_DROP_CACHE => {
+                materialized.remove(&FrameSlot(inst.meta));
             }
-            SsaInstKind::Call(_) => materialized.clear(),
-            SsaInstKind::Value { .. }
-            | SsaInstKind::Fill { .. }
-            | SsaInstKind::Spill { .. }
-            | SsaInstKind::LocalGetSlot { .. }
-            | SsaInstKind::LocalSetSlot { .. } => {}
+            SsaOp::CALL => materialized.clear(),
+            _ => {}
         }
     }
     materialized.into_iter().collect()
@@ -218,6 +260,7 @@ fn collect_local_slot_info(semantic: &SemanticProgram) -> collections::Vec<Local
 
 struct LoweredBlock {
     ops: collections::Vec<SsaInst>,
+    extra_args: collections::Vec<SsaOperand>,
     terminator: SsaTerminator,
     actual_exit_cached_slots: collections::Vec<FrameSlot>,
     extra_blocks: collections::Vec<SsaBlock>,
@@ -243,6 +286,7 @@ fn lower_block_range(
     block_params: &[collections::Vec<SsaValue>],
     entry_cached_locals: &[FrameSlot],
     values: &mut ValueAlloc,
+    builder: &mut ProgramBuilder,
     original_block_count: usize,
     extra_blocks_len: usize,
 ) -> Result<LoweredBlock, WasmError> {
@@ -274,6 +318,7 @@ fn lower_block_range(
             &mut resident_cache,
             &mut materialized_cache,
             values,
+            builder,
         )?;
     }
 
@@ -289,12 +334,14 @@ fn lower_block_range(
         semantic_to_block,
         block_params,
         values,
+        builder,
         original_block_count,
         extra_blocks_len,
     )?;
 
     Ok(LoweredBlock {
         ops: state.ops,
+        extra_args: state.extra_args,
         terminator: terminator.terminator,
         actual_exit_cached_slots: materialized_cache.iter().copied().collect(),
         extra_blocks: terminator.extra_blocks,
@@ -504,12 +551,9 @@ fn inline_ensure_capacity(
             let base_slot = frame.operand_slot(state.spill_depth());
             let spilled = state.spill_prefix(1)?;
             for (offset, src) in spilled.into_iter().enumerate() {
-                state.ops.push(SsaInst {
-                    kind: SsaInstKind::Spill {
-                        slot: base_slot.advance(offset as u16),
-                        src,
-                    },
-                });
+                state
+                    .ops
+                    .push(SsaInst::spill(base_slot.advance(offset as u16), src));
             }
             continue;
         }
@@ -527,9 +571,7 @@ fn inline_ensure_capacity(
         // boundary by edge repair if needed.
         let victim = *resident_cache.iter().next_back().unwrap();
         resident_cache.remove(&victim);
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::LocalDropCache { slot: victim },
-        });
+        state.ops.push(SsaInst::local_drop_cache(victim));
     }
 }
 
@@ -550,12 +592,9 @@ fn inline_fill_for_operands(
     let mut reloaded = collections::Vec::with_capacity(fill_count);
     for (offset, ty) in fill_types.iter().copied().enumerate() {
         let dst = values.fresh_typed(ty);
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::Fill {
-                slot: base_slot.advance(offset as u16),
-                dst,
-            },
-        });
+        state
+            .ops
+            .push(SsaInst::fill(base_slot.advance(offset as u16), dst));
         reloaded.push(dst);
     }
     state.fill_prefix(reloaded, fill_types)?;
@@ -571,12 +610,9 @@ fn inline_spill_all(state: &mut BlockState, frame: FrameLayoutPlan) -> Result<()
     let base_slot = frame.operand_slot(state.spill_depth());
     let spilled = state.spill_prefix(count)?;
     for (offset, src) in spilled.into_iter().enumerate() {
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::Spill {
-                slot: base_slot.advance(offset as u16),
-                src,
-            },
-        });
+        state
+            .ops
+            .push(SsaInst::spill(base_slot.advance(offset as u16), src));
     }
     Ok(())
 }
@@ -595,12 +631,9 @@ fn inline_spill_all_except_top(
     let base_slot = frame.operand_slot(state.spill_depth());
     let spilled = state.spill_prefix(spill_count as u16)?;
     for (offset, src) in spilled.into_iter().enumerate() {
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::Spill {
-                slot: base_slot.advance(offset as u16),
-                src,
-            },
-        });
+        state
+            .ops
+            .push(SsaInst::spill(base_slot.advance(offset as u16), src));
     }
     Ok(())
 }
@@ -615,6 +648,7 @@ fn lower_block_body_op(
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
+    builder: &mut ProgramBuilder,
 ) -> Result<(), WasmError> {
     apply_inline_prefix(
         &semantic.ops[semantic_index].kind,
@@ -637,6 +671,7 @@ fn lower_block_body_op(
             resident_cache,
             materialized_cache,
             values,
+            builder,
         ),
         SemanticOpKind::LocalGet { idx } => lower_local_get(
             semantic,
@@ -689,8 +724,8 @@ fn lower_block_body_op(
                 state,
                 resident_cache,
                 materialized_cache,
-            );
-            Ok(())
+                builder,
+            )
         }
         SemanticOpKind::CallIndirect {
             type_idx,
@@ -713,8 +748,8 @@ fn lower_block_body_op(
                 state,
                 resident_cache,
                 materialized_cache,
-            );
-            Ok(())
+                builder,
+            )
         }
         SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } | SemanticOpKind::End => Ok(()),
         SemanticOpKind::Else { .. } => Err(WasmError::internal("else must end a block")),
@@ -739,6 +774,7 @@ fn lower_primitive(
     resident_cache: &mut BTreeSet<FrameSlot>,
     _materialized_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
+    builder: &mut ProgramBuilder,
 ) -> Result<(), WasmError> {
     let (pop, push) = primitive_op::stack_effect(kind);
     let args = state.top_values(pop as usize)?;
@@ -758,18 +794,59 @@ fn lower_primitive(
             .unwrap_or(ValueType::I64)
     };
     state.consume_top(pop as usize)?;
-    let results = (0..push)
-        .map(|_| values.fresh_typed(result_ty))
-        .collect::<collections::Vec<_>>();
-    state.ops.push(SsaInst {
-        kind: SsaInstKind::Value {
-            op: SsaLeafOp::from_primitive(kind.clone()).expect("primitive leaf"),
-            args: args.into_iter().map(SsaOperand::Value).collect(),
-            results: results.clone(),
-        },
-    });
-    state.push_results(results, collections::vec![result_ty; push as usize])?;
+    if push > 1 {
+        return Err(WasmError::internal(
+            "primitive op produces >1 result; unsupported in flat SsaInst layout",
+        ));
+    }
+    let result = if push == 0 {
+        SsaValue::NONE
+    } else {
+        values.fresh_typed(result_ty)
+    };
+    let pool_idx = builder.intern_primitive(kind.clone())?;
+    let (inline_args, extra_idx) = pack_primitive_args(&args, &mut state.extra_args)?;
+    state
+        .ops
+        .push(SsaInst::primitive(pool_idx, result, inline_args, extra_idx));
+    if push != 0 {
+        state.push_results(
+            collections::vec![result],
+            collections::vec![result_ty; push as usize],
+        )?;
+    }
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "primitive op")
+}
+
+/// Package args for a primitive op into the 2-inline + optional extra_args
+/// slot layout. Returns the inline `[SsaOperand; 2]` and the extra-arg index
+/// (0 if no third operand). All rewrite-originated primitive args are
+/// `SsaValue` operands.
+fn pack_primitive_args(
+    args: &[SsaValue],
+    extra_args: &mut collections::Vec<SsaOperand>,
+) -> Result<([SsaOperand; 2], u16), WasmError> {
+    match args.len() {
+        0 => Ok(([SsaOperand::NONE, SsaOperand::NONE], 0)),
+        1 => Ok(([SsaOperand::value(args[0]), SsaOperand::NONE], 0)),
+        2 => Ok(([SsaOperand::value(args[0]), SsaOperand::value(args[1])], 0)),
+        3 => {
+            if extra_args.len() >= u16::MAX as usize {
+                return Err(WasmError::internal(
+                    "block extra_args overflow while lowering 3-arg primitive",
+                ));
+            }
+            let idx = extra_args.len() as u16;
+            extra_args.push(SsaOperand::value(args[2]));
+            Ok((
+                [SsaOperand::value(args[0]), SsaOperand::value(args[1])],
+                idx,
+            ))
+        }
+        _ => Err(WasmError::internal(
+            "primitive op has >3 args; unsupported in flat SsaInst layout",
+        )),
+    }
 }
 
 fn lower_local_get(
@@ -797,16 +874,15 @@ fn lower_local_get(
         resident_cache,
     });
     let dst = values.fresh_typed(ty);
-    state.ops.push(SsaInst {
-        kind: match access {
-            LocalAccessDecision::Slot => SsaInstKind::LocalGetSlot { slot, dst },
-            LocalAccessDecision::Cache => {
-                resident_cache.insert(slot);
-                materialized_cache.insert(slot);
-                SsaInstKind::LocalGetCache { slot, dst }
-            }
-        },
-    });
+    let inst = match access {
+        LocalAccessDecision::Slot => SsaInst::local_get_slot(slot, dst),
+        LocalAccessDecision::Cache => {
+            resident_cache.insert(slot);
+            materialized_cache.insert(slot);
+            SsaInst::local_get_cache(slot, dst)
+        }
+    };
+    state.ops.push(inst);
     let aliases = collections::vec![matches!(access, LocalAccessDecision::Cache)
         .then_some(slot)
         .filter(|_| cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
@@ -831,16 +907,15 @@ fn lower_local_set(
         slot,
         resident_cache,
     });
-    state.ops.push(SsaInst {
-        kind: match access {
-            LocalAccessDecision::Slot => SsaInstKind::LocalSetSlot { slot, src },
-            LocalAccessDecision::Cache => {
-                resident_cache.insert(slot);
-                materialized_cache.insert(slot);
-                SsaInstKind::LocalSetCache { slot, src }
-            }
-        },
-    });
+    let inst = match access {
+        LocalAccessDecision::Slot => SsaInst::local_set_slot(slot, src),
+        LocalAccessDecision::Cache => {
+            resident_cache.insert(slot);
+            materialized_cache.insert(slot);
+            SsaInst::local_set_cache(slot, src)
+        }
+    };
+    state.ops.push(inst);
     ensure_state_fits_with_cache(state, resident_cache, local_slot_types, "local.set")
 }
 
@@ -870,27 +945,25 @@ fn lower_local_tee(
         slot,
         resident_cache,
     });
-    state.ops.push(SsaInst {
-        kind: match access {
-            LocalAccessDecision::Slot => SsaInstKind::LocalSetSlot { slot, src },
-            LocalAccessDecision::Cache => {
-                resident_cache.insert(slot);
-                materialized_cache.insert(slot);
-                SsaInstKind::LocalSetCache { slot, src }
-            }
-        },
-    });
+    let set_inst = match access {
+        LocalAccessDecision::Slot => SsaInst::local_set_slot(slot, src),
+        LocalAccessDecision::Cache => {
+            resident_cache.insert(slot);
+            materialized_cache.insert(slot);
+            SsaInst::local_set_cache(slot, src)
+        }
+    };
+    state.ops.push(set_inst);
     let dst = values.fresh_typed(ty);
-    state.ops.push(SsaInst {
-        kind: match access {
-            LocalAccessDecision::Slot => SsaInstKind::LocalGetSlot { slot, dst },
-            LocalAccessDecision::Cache => {
-                resident_cache.insert(slot);
-                materialized_cache.insert(slot);
-                SsaInstKind::LocalGetCache { slot, dst }
-            }
-        },
-    });
+    let get_inst = match access {
+        LocalAccessDecision::Slot => SsaInst::local_get_slot(slot, dst),
+        LocalAccessDecision::Cache => {
+            resident_cache.insert(slot);
+            materialized_cache.insert(slot);
+            SsaInst::local_get_cache(slot, dst)
+        }
+    };
+    state.ops.push(get_inst);
     let aliases = collections::vec![matches!(access, LocalAccessDecision::Cache)
         .then_some(slot)
         .filter(|_| cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
@@ -907,18 +980,19 @@ fn lower_call_direct(
     state: &mut BlockState,
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
-) {
+    builder: &mut ProgramBuilder,
+) -> Result<(), WasmError> {
     let call_base = call_base_slot(frame, state.height(), params);
-    state.ops.push(SsaInst {
-        kind: SsaInstKind::Call(SsaCallOp::CallDirect {
-            callee,
-            args: FrameSpan::new(call_base, params),
-            results: FrameSpan::new(call_base, results),
-        }),
-    });
+    let call_idx = builder.push_call_op(SsaCallOp::CallDirect {
+        callee,
+        args: FrameSpan::new(call_base, params),
+        results: FrameSpan::new(call_base, results),
+    })?;
+    state.ops.push(SsaInst::call(call_idx));
     state.finish_call(params, results, result_types);
     resident_cache.clear();
     materialized_cache.clear();
+    Ok(())
 }
 
 fn lower_call_indirect(
@@ -931,21 +1005,22 @@ fn lower_call_indirect(
     state: &mut BlockState,
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
-) {
+    builder: &mut ProgramBuilder,
+) -> Result<(), WasmError> {
     let consumed = params.saturating_add(1);
     let call_base = call_base_slot(frame, state.height(), consumed);
-    state.ops.push(SsaInst {
-        kind: SsaInstKind::Call(SsaCallOp::CallIndirect {
-            type_idx,
-            table_idx,
-            index_slot: call_base.advance(params),
-            args: FrameSpan::new(call_base, params),
-            results: FrameSpan::new(call_base, results),
-        }),
-    });
+    let call_idx = builder.push_call_op(SsaCallOp::CallIndirect {
+        type_idx,
+        table_idx,
+        index_slot: call_base.advance(params),
+        args: FrameSpan::new(call_base, params),
+        results: FrameSpan::new(call_base, results),
+    })?;
+    state.ops.push(SsaInst::call(call_idx));
     state.finish_call(consumed, results, result_types);
     resident_cache.clear();
     materialized_cache.clear();
+    Ok(())
 }
 
 fn call_base_slot(frame: FrameLayoutPlan, stack_height: u16, consumed: u16) -> FrameSlot {
@@ -1010,6 +1085,7 @@ fn lower_block_terminator(
     semantic_to_block: &[SsaTarget],
     block_params: &[collections::Vec<SsaValue>],
     values: &mut ValueAlloc,
+    builder: &mut ProgramBuilder,
     original_block_count: usize,
     extra_blocks_len: usize,
 ) -> Result<LoweredTerminator, WasmError> {
@@ -1035,6 +1111,7 @@ fn lower_block_terminator(
                 resident_cache,
                 materialized_cache,
                 values,
+                builder,
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
@@ -1281,12 +1358,10 @@ fn lower_block_terminator(
                 }
                 let mut then_ops = collections::Vec::with_capacity(*arity as usize);
                 for (offset, param) in then_params.iter().copied().enumerate() {
-                    then_ops.push(SsaInst {
-                        kind: SsaInstKind::Spill {
-                            slot: payload_span.start.advance(offset as u16),
-                            src: param,
-                        },
-                    });
+                    then_ops.push(SsaInst::spill(
+                        payload_span.start.advance(offset as u16),
+                        param,
+                    ));
                 }
                 let then_edge = SsaEdge {
                     target: then_block_id,
@@ -1324,6 +1399,7 @@ fn lower_block_terminator(
                     id: then_block_id,
                     params: then_params,
                     ops: then_ops,
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Goto(bridge_target),
                 };
                 Ok(LoweredTerminator {
@@ -1420,7 +1496,8 @@ fn lower_block_terminator(
                 state,
                 resident_cache,
                 materialized_cache,
-            );
+                builder,
+            )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
@@ -1459,7 +1536,8 @@ fn lower_block_terminator(
                 state,
                 resident_cache,
                 materialized_cache,
-            );
+                builder,
+            )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
@@ -1529,12 +1607,9 @@ fn maybe_publish_live_window_for_targets(
     let base_slot = frame.operand_slot(state.spill_depth());
     let prefix_values = state.live()[..publish_count].to_vec();
     for (offset, value) in prefix_values.into_iter().enumerate() {
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::Spill {
-                slot: base_slot.advance(offset as u16),
-                src: value,
-            },
-        });
+        state
+            .ops
+            .push(SsaInst::spill(base_slot.advance(offset as u16), value));
     }
 }
 
@@ -1555,12 +1630,9 @@ fn canonicalize_live_window_for_target(
         let base_slot = frame.operand_slot(state.spill_depth());
         let spilled = state.spill_prefix(publish_count)?;
         for (offset, value) in spilled.into_iter().enumerate() {
-            state.ops.push(SsaInst {
-                kind: SsaInstKind::Spill {
-                    slot: base_slot.advance(offset as u16),
-                    src: value,
-                },
-            });
+            state
+                .ops
+                .push(SsaInst::spill(base_slot.advance(offset as u16), value));
         }
     } else if target_entry.spill_depth < state.spill_depth() {
         // Fill: target expects more values to be live.
@@ -1770,12 +1842,9 @@ fn publish_taken_branch_payload_at(
             .saturating_sub(arity),
     );
     for (offset, value) in payload.into_iter().enumerate() {
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::Spill {
-                slot: base_slot.advance(offset as u16),
-                src: value,
-            },
-        });
+        state
+            .ops
+            .push(SsaInst::spill(base_slot.advance(offset as u16), value));
     }
     Ok(())
 }
@@ -1817,18 +1886,12 @@ fn canonicalize_return_results(
     }
     for offset in 0..arity as usize {
         let value = values.fresh_typed(result_types.get(offset).copied().unwrap_or(ValueType::I64));
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::Fill {
-                slot: src.advance(offset as u16),
-                dst: value,
-            },
-        });
-        state.ops.push(SsaInst {
-            kind: SsaInstKind::Spill {
-                slot: dst.advance(offset as u16),
-                src: value,
-            },
-        });
+        state
+            .ops
+            .push(SsaInst::fill(src.advance(offset as u16), value));
+        state
+            .ops
+            .push(SsaInst::spill(dst.advance(offset as u16), value));
     }
 }
 
