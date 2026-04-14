@@ -16,6 +16,7 @@ use crate::{
         entities::ModuleInst,
         runtime::{
             code::{CompiledNativeModule, NativeRootEntry},
+            code_buf::CodeBuffer,
             dispatch_view::NativeLocalCallInfo32,
         },
     },
@@ -30,8 +31,8 @@ use crate::vm::runtime::trap_signal;
 
 // ── ARM32-specific patch helper ──────────────────────────────────────────────
 
-/// Patch a MOVW/MOVT pair at `movw_offset` with a 32-bit address.
-fn patch_movw_movt(text: &mut TextEmitter, movw_offset: usize, addr: u32) {
+/// Patch a MOVW/MOVT pair at `movw_offset` with a 32-bit word.
+pub(crate) fn patch_movw_movt(text: &mut TextEmitter, movw_offset: usize, word: u32) {
     let existing = u32::from_le_bytes([
         text.byte(movw_offset),
         text.byte(movw_offset + 1),
@@ -40,8 +41,21 @@ fn patch_movw_movt(text: &mut TextEmitter, movw_offset: usize, addr: u32) {
     ]);
     let rd_bits = (existing >> 12) & 0xF;
     let rd = Arm32Reg::from_idx(rd_bits);
-    text.patch_u32(movw_offset, enc::movw(rd, addr as u16));
-    text.patch_u32(movw_offset + 4, enc::movt(rd, (addr >> 16) as u16));
+    text.patch_u32(movw_offset, enc::movw(rd, word as u16));
+    text.patch_u32(movw_offset + 4, enc::movt(rd, (word >> 16) as u16));
+}
+
+pub(crate) fn patch_movw_movt_code_buffer(buf: &mut CodeBuffer, movw_offset: usize, word: u32) {
+    let existing = u32::from_le_bytes([
+        buf.byte(movw_offset),
+        buf.byte(movw_offset + 1),
+        buf.byte(movw_offset + 2),
+        buf.byte(movw_offset + 3),
+    ]);
+    let rd_bits = (existing >> 12) & 0xF;
+    let rd = Arm32Reg::from_idx(rd_bits);
+    buf.patch_u32(movw_offset, enc::movw(rd, word as u16));
+    buf.patch_u32(movw_offset + 4, enc::movt(rd, (word >> 16) as u16));
 }
 
 // ── ARM32 function info table ────────────────────────────────────────────────

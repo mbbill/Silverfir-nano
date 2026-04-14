@@ -69,9 +69,6 @@ impl<'a> BlockLowerContext<'a> {
         //   backend reads `caller_result_base` at the terminator to push it
         //   into the backend-private call record so the callee's `Return`
         //   can copy results into it.
-        //
-        // (1D will hoist the stack precheck out of the call site, at which
-        // point a single temp will suffice.)
         let call_regs = self.borrow_free_gp_dynamic_regs(2)?;
         let callee_frame_base = call_regs[0];
         let stack_limit = call_regs[1];

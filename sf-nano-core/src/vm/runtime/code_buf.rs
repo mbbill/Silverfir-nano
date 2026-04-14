@@ -85,6 +85,17 @@ impl CodeBuffer {
     }
 
     #[inline]
+    pub fn emit_u8(&mut self, byte: u8) -> usize {
+        let offset = self.offset;
+        assert!(offset < self.capacity, "native code buffer overflow");
+        unsafe {
+            self.base.add(offset).write(byte);
+        }
+        self.offset += 1;
+        offset
+    }
+
+    #[inline]
     pub fn emit_u32(&mut self, inst: u32) -> usize {
         let offset = self.offset;
         assert!(offset + 4 <= self.capacity, "native code buffer overflow");
@@ -121,6 +132,14 @@ impl CodeBuffer {
     }
 
     #[inline]
+    pub fn patch_u8(&mut self, offset: usize, byte: u8) {
+        assert!(offset < self.offset, "patch beyond written region");
+        unsafe {
+            self.base.add(offset).write(byte);
+        }
+    }
+
+    #[inline]
     pub fn patch_u32(&mut self, offset: usize, inst: u32) {
         assert!(offset + 4 <= self.offset, "patch beyond written region");
         unsafe {
@@ -134,6 +153,12 @@ impl CodeBuffer {
         unsafe {
             (self.base.add(offset) as *mut u64).write(value);
         }
+    }
+
+    #[inline]
+    pub fn byte(&self, offset: usize) -> u8 {
+        assert!(offset < self.offset, "read beyond written region");
+        unsafe { *self.base.add(offset) }
     }
 
     #[inline]
@@ -165,6 +190,29 @@ impl CodeBuffer {
         self.offset = 0;
         #[cfg(feature = "memprof")]
         self.trace.update(self.trace_state());
+    }
+
+    #[inline]
+    pub fn set_len(&mut self, len: usize) {
+        assert!(len <= self.capacity, "native code buffer overflow");
+        self.offset = len;
+        #[cfg(feature = "memprof")]
+        self.trace.update(self.trace_state());
+    }
+
+    #[inline]
+    pub fn move_region(&mut self, src_offset: usize, dst_offset: usize, len: usize) {
+        assert!(
+            src_offset + len <= self.offset,
+            "move source beyond written region"
+        );
+        assert!(
+            dst_offset + len <= self.capacity,
+            "move destination beyond capacity"
+        );
+        unsafe {
+            ptr::copy(self.base.add(src_offset), self.base.add(dst_offset), len);
+        }
     }
 }
 

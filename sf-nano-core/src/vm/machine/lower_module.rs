@@ -164,6 +164,35 @@ pub(crate) fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModu
     Ok(LoweredMachineModule { module, abi })
 }
 
+pub(crate) fn lower_single_function(
+    backend: BackendConfig,
+    function: LowerFunctionInput,
+    runtime: &mut [MachineFunctionAbi],
+    is_local_func: &[bool],
+    const_pool: &mut ConstPoolBuilder,
+    #[cfg(sf_has_guard_pages)] guard_pages: bool,
+) -> Result<(MachineFunction, MachineFunctionAbi), WasmError> {
+    let max_regfile = MachineRegFile::new(backend)?;
+    let borrowed = function.borrowed();
+    validate_program(borrowed.ssa)?;
+    let abi = lower_function_runtime(borrowed)?;
+    let runtime_slot = runtime
+        .get_mut(borrowed.id.0 as usize)
+        .ok_or_else(|| WasmError::internal("runtime metadata slot is out of range"))?;
+    *runtime_slot = abi.clone();
+    let machine = lower_function(
+        borrowed,
+        backend,
+        &max_regfile,
+        runtime,
+        is_local_func,
+        const_pool,
+        #[cfg(sf_has_guard_pages)]
+        guard_pages,
+    )?;
+    Ok((machine, abi))
+}
+
 fn lower_function_runtime(
     input: BorrowedLowerFunctionInput<'_>,
 ) -> Result<MachineFunctionAbi, WasmError> {

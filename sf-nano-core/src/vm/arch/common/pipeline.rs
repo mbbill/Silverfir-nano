@@ -9,7 +9,8 @@ use crate::{
         machine::machine_ir::{
             MachineBlockParam, MachineFloatWidth, MachineFunction, MachineTrapKind, MachineValue,
         },
-        runtime::code::CompiledNativeModule,
+        runtime::code::CodegenModuleView,
+        runtime::code_buf::CodeBuffer,
     },
 };
 
@@ -20,9 +21,10 @@ use super::types::{FunctionArtifact, ParallelSource};
 
 // ── compile_function ─────────────────────────────────────────────────────────
 
-pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
-    compiled: &'a CompiledNativeModule,
+fn compile_function_impl<'a, A: ArchBackend<'a>>(
+    compiled: &'a dyn CodegenModuleView,
     function: &'a MachineFunction,
+    text: super::text_emitter::TextEmitter,
 ) -> Result<FunctionArtifact, WasmError> {
     super::core::CompilerCore::validate_function(
         A::NAME,
@@ -33,6 +35,7 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     )?;
 
     let mut b = A::new(compiled, function);
+    b.core_mut().text = text;
     #[cfg(sf_has_debug_regions)]
     let mut debug_regions = collections::Vec::new();
 
@@ -206,6 +209,25 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
         body_local_error_offset,
         #[cfg(sf_has_debug_regions)]
         debug_regions,
+    )
+}
+
+pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
+    compiled: &'a dyn CodegenModuleView,
+    function: &'a MachineFunction,
+) -> Result<FunctionArtifact, WasmError> {
+    compile_function_impl::<A>(compiled, function, super::text_emitter::TextEmitter::new())
+}
+
+pub(crate) fn compile_function_into_buffer<'a, A: ArchBackend<'a>>(
+    compiled: &'a dyn CodegenModuleView,
+    function: &'a MachineFunction,
+    executable: &mut CodeBuffer,
+) -> Result<FunctionArtifact, WasmError> {
+    compile_function_impl::<A>(
+        compiled,
+        function,
+        super::text_emitter::TextEmitter::new_in_code_buffer(executable),
     )
 }
 

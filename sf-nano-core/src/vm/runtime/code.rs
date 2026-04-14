@@ -8,7 +8,8 @@ use crate::{
         arch::NativeBackend,
         backend::BackendConfig,
         machine::machine_ir::{
-            MachineConstData, MachineConstId, MachineFuncId, MachineModule, MachineModuleAbi,
+            MachineConstData, MachineConstId, MachineFuncId, MachineFunctionAbi, MachineModule,
+            MachineModuleAbi,
         },
         runtime::{context::NativeContext, dispatch_view::NativeDispatchMetadata},
     },
@@ -17,13 +18,19 @@ use crate::{
 /// Native entry point: identical signature across all architectures.
 pub(crate) type NativeRootEntry = unsafe extern "C" fn(*mut NativeContext, *mut u64) -> u32;
 
+pub(crate) trait CodegenModuleView: core::fmt::Debug {
+    fn backend(&self) -> BackendConfig;
+    fn runtime_for(&self, id: MachineFuncId) -> Option<&MachineFunctionAbi>;
+    fn const_ptr(&self, id: MachineConstId) -> Option<*const u8>;
+}
+
 #[derive(Clone, Debug)]
-struct AlignedConstData {
+pub(crate) struct AlignedConstData {
     storage: Box<[u64]>,
 }
 
 impl AlignedConstData {
-    fn new(record: &MachineConstData) -> Result<Self, WasmError> {
+    pub(crate) fn new(record: &MachineConstData) -> Result<Self, WasmError> {
         if record.align as usize > core::mem::align_of::<u64>() {
             return Err(WasmError::internal(
                 "machine const requires unsupported alignment in the emulator",
@@ -43,7 +50,7 @@ impl AlignedConstData {
     }
 
     #[inline]
-    fn as_ptr(&self) -> *const u8 {
+    pub(crate) fn as_ptr(&self) -> *const u8 {
         self.storage.as_ptr().cast::<u8>()
     }
 }
@@ -81,6 +88,23 @@ impl CompiledNativeModule {
             aligned_consts,
             dispatch_metadata,
         })
+    }
+
+    pub(crate) fn from_streamed(
+        backend_kind: NativeBackend,
+        backend: BackendConfig,
+        abi: MachineModuleAbi,
+        aligned_consts: collections::Vec<AlignedConstData>,
+    ) -> Self {
+        let dispatch_metadata = NativeDispatchMetadata::new(backend, &abi);
+        Self {
+            backend_kind,
+            backend,
+            module: None,
+            abi: Some(abi),
+            aligned_consts,
+            dispatch_metadata,
+        }
     }
 
     #[inline]
@@ -138,6 +162,25 @@ impl CompiledNativeModule {
     #[inline]
     pub(crate) fn publish_local_call_infos(&self, base: *const u8) {
         self.dispatch_metadata.local_call_infos().publish(base);
+    }
+}
+
+impl CodegenModuleView for CompiledNativeModule {
+    #[inline]
+    fn backend(&self) -> BackendConfig {
+        self.backend
+    }
+
+    #[inline]
+    fn runtime_for(&self, id: MachineFuncId) -> Option<&MachineFunctionAbi> {
+        self.abi
+            .as_ref()
+            .and_then(|abi| abi.functions.get(id.0 as usize))
+    }
+
+    #[inline]
+    fn const_ptr(&self, id: MachineConstId) -> Option<*const u8> {
+        CompiledNativeModule::const_ptr(self, id)
     }
 }
 

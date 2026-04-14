@@ -12,7 +12,7 @@ use crate::{
     },
 };
 
-use crate::vm::runtime::code::CompiledNativeModule;
+use crate::vm::runtime::code::CodegenModuleView;
 
 use super::helpers::{trap_kind_index, MACHINE_TRAP_KIND_COUNT};
 use super::text_emitter::TextEmitter;
@@ -29,7 +29,7 @@ use super::types::{
 /// Each arch backend embeds this as `pub core: CompilerCore<'a>`.
 #[derive(Debug)]
 pub(crate) struct CompilerCore<'a> {
-    pub compiled: &'a CompiledNativeModule,
+    pub compiled: &'a dyn CodegenModuleView,
     pub function: &'a MachineFunction,
     pub text: TextEmitter,
     pub labels: collections::Vec<Option<usize>>,
@@ -71,7 +71,7 @@ impl<'a> CompilerCore<'a> {
     /// `fp_capacity` is the maximum number of FP machine registers the backend
     /// supports (e.g. `FP_MACHINE_REG_COUNT`).
     pub(crate) fn new(
-        compiled: &'a CompiledNativeModule,
+        compiled: &'a dyn CodegenModuleView,
         function: &'a MachineFunction,
         fp_capacity: usize,
     ) -> Self {
@@ -191,9 +191,7 @@ impl<'a> CompilerCore<'a> {
         func_id: MachineFuncId,
     ) -> Result<&MachineFunctionAbi, WasmError> {
         self.compiled
-            .abi()
-            .functions
-            .get(func_id.0 as usize)
+            .runtime_for(func_id)
             .ok_or_else(|| WasmError::internal("runtime metadata missing for machine function"))
     }
 

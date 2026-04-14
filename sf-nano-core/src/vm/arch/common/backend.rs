@@ -9,7 +9,7 @@ use crate::{
 use super::core::CompilerCore;
 use super::types::ParallelSource;
 
-use crate::vm::runtime::code::CompiledNativeModule;
+use crate::vm::runtime::code::CodegenModuleView;
 use crate::vm::runtime::code_buf::CodeBuffer;
 
 /// Trait that each architecture backend implements.
@@ -38,7 +38,7 @@ pub(crate) trait ArchBackend<'a>: Sized {
 
     // ── Construction ─────────────────────────────────────────────────────
 
-    fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self;
+    fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self;
 
     /// Access the shared CompilerCore.
     fn core(&self) -> &CompilerCore<'a>;

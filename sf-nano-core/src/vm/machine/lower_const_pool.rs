@@ -8,21 +8,25 @@ use crate::vm::{
     runtime::external::ExternalCallMeta,
 };
 
-pub(super) struct ConstPoolBuilder {
+pub(crate) struct ConstPoolBuilder {
     consts: collections::Vec<MachineConstData>,
     const_ids: BTreeMap<(u32, collections::Vec<u8>), MachineConstId>,
 }
 
 impl ConstPoolBuilder {
-    pub(super) fn new() -> Self {
+    pub(crate) fn new() -> Self {
         Self {
             consts: collections::Vec::new(),
             const_ids: BTreeMap::new(),
         }
     }
 
-    pub(super) fn finish(self) -> collections::Vec<MachineConstData> {
+    pub(crate) fn finish(self) -> collections::Vec<MachineConstData> {
         self.consts
+    }
+
+    pub(crate) fn records(&self) -> &[MachineConstData] {
+        &self.consts
     }
 
     pub(super) fn call_external_meta(&mut self, meta: ExternalCallMeta) -> MachineConstId {

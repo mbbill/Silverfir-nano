@@ -100,10 +100,11 @@ pub(crate) enum MachineTerminator {
     /// - `callee_frame_base` computation
     /// - `caller_result_base` computation (the absolute pointer at which the
     ///   callee's `Return` will copy its results)
-    /// - stack overflow precheck
     /// - zero-fill of the callee frame prefix beyond the argument span
     ///
     /// The arch/backend contract for this terminator is:
+    /// - perform the stack overflow precheck for `callee_frame_base` using the
+    ///   callee's runtime frame-size metadata
     /// - save the caller frame pointer and `caller_result_base` in a
     ///   backend-private call record (typically pushed onto the host stack
     ///   so the unified `Return` can recover them — the *exact* layout is
@@ -122,7 +123,7 @@ pub(crate) enum MachineTerminator {
     /// pass cannot achieve adjacency, the backend emits one
     /// `b/jmp continuation_label` after the call.
     ///
-    /// The backend must not redo frame setup, stack checks, or arrange any
+    /// The backend must not redo any other frame setup or arrange any
     /// call-link memory record at MIR-visible offsets.
     CallDirect {
         /// Compile-time-known local callee id.

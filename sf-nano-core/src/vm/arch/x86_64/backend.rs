@@ -16,7 +16,7 @@ use crate::{
             MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
-            code::{CompiledNativeModule, NativeRootEntry},
+            code::{CodegenModuleView, NativeRootEntry},
             code_buf::CodeBuffer,
             context::ctx_offset,
         },
@@ -92,7 +92,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         max_fp_machine_regs()
     }
 
-    fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self {
+    fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
         Self {
             core: CompilerCore::new(compiled, function, FP_MACHINE_REG_COUNT),
             fixups: collections::Vec::new(),

@@ -33,6 +33,9 @@ mod peephole_tests;
 #[cfg(test)]
 mod validate_tests;
 
+pub(crate) use lower_const_pool::ConstPoolBuilder;
 pub(crate) use lower_module::LoweredMachineModule;
-pub(crate) use lower_module::{lower_module, LowerFunctionInput, LowerModuleInput};
-pub(crate) use optimize::optimize_module;
+pub(crate) use lower_module::{
+    lower_module, lower_single_function, LowerFunctionInput, LowerModuleInput,
+};
+pub(crate) use optimize::{optimize_function, optimize_module};

@@ -65,14 +65,27 @@ use crate::{
     error::WasmError,
     vm::{
         arch,
+        arch::common::helpers::page_align_function,
         machine::{
-            lower_module, machine_ir::MachineFuncId, optimize_module, LowerFunctionInput,
+            lower_module, lower_single_function,
+            machine_ir::{MachineFrameRegion, MachineFuncId, MachineFunctionAbi, MachineModuleAbi},
+            optimize_function, optimize_module, ConstPoolBuilder, LowerFunctionInput,
             LowerModuleInput, LoweredMachineModule,
         },
-        middle::{prepare_function, PrepareInput},
-        runtime::code::{CompiledNativeModule, NativeCode, NativeCodeCache},
+        middle::{
+            frame::{plan_frame_layout, FrameLayoutPlan, FrameSpan},
+            prepare_function, PrepareInput,
+        },
+        runtime::{
+            code::{
+                AlignedConstData, CodegenModuleView, CompiledNativeModule, NativeCode,
+                NativeCodeCache, NativeRootEntry,
+            },
+            code_buf::CodeBuffer,
+            dispatch_view::{NativeLocalCallInfo32, NativeLocalCallInfo64},
+        },
         store::Store,
-        wasm::{context::CompileContext, decode, inline, semantic_ir::SemanticProgram},
+        wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
     },
 };
 
@@ -100,6 +113,528 @@ fn decode_function_semantic(
         ),
     )
     .map_err(|_err| WasmError::internal("native decode failed for function"))
+}
+
+#[derive(Clone, Copy, Debug)]
+struct FunctionStaticSummary {
+    id: MachineFuncId,
+    frame: FrameLayoutPlan,
+    result_count: u16,
+}
+
+impl FunctionStaticSummary {
+    fn abi(self) -> MachineFunctionAbi {
+        MachineFunctionAbi {
+            id: self.id,
+            frame_prefix_slots: self.frame.frame_prefix_size,
+            total_frame_slots: self.frame.total_slots(),
+            helper_scratch: self.frame.call_scratch.map(frame_span_region),
+            return_results: (self.result_count > 0)
+                .then(|| frame_span_region(self.frame.return_results(self.result_count))),
+            init_locals: collections::Vec::new(),
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+struct FunctionEmitSummary {
+    entry: NativeRootEntry,
+    internal_entry_addr: usize,
+    text_len: usize,
+    #[cfg(sf_has_guard_pages)]
+    body_local_error_addr: usize,
+    #[cfg(sf_jitdump)]
+    debug_regions: collections::Vec<crate::vm::arch::common::types::DebugRegion>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum PendingPatchEncoding {
+    U64,
+    #[cfg(any(sf_arch_armv7a, sf_arch_thumbm))]
+    MovwMovt,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct PendingPatch {
+    code_offset: usize,
+    callee: MachineFuncId,
+    encoding: PendingPatchEncoding,
+}
+
+#[derive(Debug)]
+struct StreamingCompiledModule {
+    backend: BackendConfig,
+    abi: MachineModuleAbi,
+    aligned_consts: collections::Vec<AlignedConstData>,
+}
+
+impl StreamingCompiledModule {
+    fn new(backend: BackendConfig, abi: MachineModuleAbi) -> Self {
+        Self {
+            backend,
+            abi,
+            aligned_consts: collections::Vec::new(),
+        }
+    }
+
+    fn sync_consts(&mut self, const_pool: &ConstPoolBuilder) -> Result<(), WasmError> {
+        while self.aligned_consts.len() < const_pool.records().len() {
+            let record = const_pool
+                .records()
+                .get(self.aligned_consts.len())
+                .ok_or_else(|| WasmError::internal("const pool record is out of range"))?;
+            self.aligned_consts.push(AlignedConstData::new(record)?);
+        }
+        Ok(())
+    }
+
+    fn finish(self, active_backend: arch::NativeBackend) -> CompiledNativeModule {
+        CompiledNativeModule::from_streamed(
+            active_backend,
+            self.backend,
+            self.abi,
+            self.aligned_consts,
+        )
+    }
+}
+
+impl CodegenModuleView for StreamingCompiledModule {
+    fn backend(&self) -> BackendConfig {
+        self.backend
+    }
+
+    fn runtime_for(&self, id: MachineFuncId) -> Option<&MachineFunctionAbi> {
+        self.abi.functions.get(id.0 as usize)
+    }
+
+    fn const_ptr(&self, id: crate::vm::machine::machine_ir::MachineConstId) -> Option<*const u8> {
+        self.aligned_consts
+            .get(id.0 as usize)
+            .map(AlignedConstData::as_ptr)
+    }
+}
+
+#[inline]
+fn frame_span_region(span: FrameSpan) -> MachineFrameRegion {
+    MachineFrameRegion {
+        base_slot: span.start.0,
+        slots: span.count,
+    }
+}
+
+fn patch_code_buffer_word(
+    active_backend: arch::NativeBackend,
+    executable: &mut crate::vm::runtime::code_buf::CodeBuffer,
+    code_offset: usize,
+    value: usize,
+) {
+    match patch_encoding(active_backend) {
+        PendingPatchEncoding::U64 => executable.patch_u64(code_offset, value as u64),
+        #[cfg(any(sf_arch_armv7a, sf_arch_thumbm))]
+        PendingPatchEncoding::MovwMovt => {
+            #[cfg(any(sf_arch_armv7a, sf_arch_thumbm))]
+            {
+                crate::vm::arch::arm32::compile::patch_movw_movt_code_buffer(
+                    executable,
+                    code_offset,
+                    value as u32,
+                );
+            }
+            #[cfg(not(any(sf_arch_armv7a, sf_arch_thumbm)))]
+            {
+                let _ = (executable, code_offset, value);
+                unreachable!("movw/movt patching is unavailable on this target");
+            }
+        }
+    }
+}
+
+#[inline]
+fn patch_encoding(active_backend: arch::NativeBackend) -> PendingPatchEncoding {
+    match active_backend {
+        #[cfg(sf_arch_arm64)]
+        arch::NativeBackend::Arm64 => PendingPatchEncoding::U64,
+        #[cfg(sf_arch_armv7a)]
+        arch::NativeBackend::Armv7a => PendingPatchEncoding::MovwMovt,
+        #[cfg(sf_arch_thumbm)]
+        arch::NativeBackend::ThumbM => PendingPatchEncoding::MovwMovt,
+        #[cfg(sf_arch_x64)]
+        arch::NativeBackend::X86_64 => PendingPatchEncoding::U64,
+        #[cfg(sf_emulator)]
+        arch::NativeBackend::Reference => PendingPatchEncoding::U64,
+    }
+}
+
+fn build_static_summaries(
+    module: &ModuleInst,
+    store: &Store,
+    backend: BackendConfig,
+) -> Result<(MachineModuleAbi, collections::Vec<bool>), WasmError> {
+    let mut abi = MachineModuleAbi {
+        functions: (0..module.functions.len())
+            .map(|index| MachineFunctionAbi {
+                id: MachineFuncId(index as u32),
+                ..MachineFunctionAbi::default()
+            })
+            .collect(),
+    };
+    let mut is_local_func = collections::vec![false; module.functions.len()];
+    for (func_idx, func) in module.functions.iter().enumerate() {
+        let Some(spec) = func.spec() else {
+            continue;
+        };
+        let sem_scan_function_phase = phase_span_with_function("sem_scan", Some(func_idx as u32));
+        let semantic = decode_function_semantic(module, store, spec)?;
+        let summary = FunctionStaticSummary {
+            id: MachineFuncId(func_idx as u32),
+            frame: plan_frame_layout(
+                semantic.local_count,
+                semantic.max_stack_height,
+                backend.call_scratch_slots,
+            ),
+            result_count: spec.func_type().results().len() as u16,
+        };
+        abi.functions[func_idx] = summary.abi();
+        is_local_func[func_idx] = true;
+        drop(sem_scan_function_phase);
+    }
+    Ok((abi, is_local_func))
+}
+
+fn emit_function_info_bytes(
+    backend: BackendConfig,
+    abi: &MachineModuleAbi,
+    emitted: &[Option<FunctionEmitSummary>],
+) -> collections::Vec<u8> {
+    if backend.gp_unit_bytes == 8 {
+        let mut bytes = collections::Vec::with_capacity(
+            abi.functions.len() * core::mem::size_of::<NativeLocalCallInfo64>(),
+        );
+        for (func_idx, runtime) in abi.functions.iter().enumerate() {
+            let info = NativeLocalCallInfo64 {
+                entry: emitted
+                    .get(func_idx)
+                    .and_then(|slot| {
+                        slot.as_ref()
+                            .map(|summary| summary.internal_entry_addr as u64)
+                    })
+                    .unwrap_or(0),
+                total_frame_bytes: u64::from(runtime.total_frame_slots) * 8,
+                frame_prefix_slots: u64::from(runtime.frame_prefix_slots),
+            };
+            bytes.extend_from_slice(&info.entry.to_le_bytes());
+            bytes.extend_from_slice(&info.total_frame_bytes.to_le_bytes());
+            bytes.extend_from_slice(&info.frame_prefix_slots.to_le_bytes());
+        }
+        return bytes;
+    }
+
+    let mut bytes = collections::Vec::with_capacity(
+        abi.functions.len() * core::mem::size_of::<NativeLocalCallInfo32>(),
+    );
+    for (func_idx, runtime) in abi.functions.iter().enumerate() {
+        let info = NativeLocalCallInfo32 {
+            entry: emitted
+                .get(func_idx)
+                .and_then(|slot| {
+                    slot.as_ref()
+                        .map(|summary| summary.internal_entry_addr as u32)
+                })
+                .unwrap_or(0),
+            total_frame_bytes: u32::from(runtime.total_frame_slots) * 8,
+            frame_prefix_slots: u32::from(runtime.frame_prefix_slots),
+        };
+        bytes.extend_from_slice(&info.entry.to_le_bytes());
+        bytes.extend_from_slice(&info.total_frame_bytes.to_le_bytes());
+        bytes.extend_from_slice(&info.frame_prefix_slots.to_le_bytes());
+    }
+    bytes
+}
+
+fn finish_native_compile_streaming(
+    active_backend: arch::NativeBackend,
+    backend: BackendConfig,
+    module: &ModuleInst,
+    store: &Store,
+) -> Result<(), WasmError> {
+    let (abi, is_local_func) = build_static_summaries(module, store, backend)?;
+    let mut compiled_view = StreamingCompiledModule::new(backend, abi);
+    let mut const_pool = ConstPoolBuilder::new();
+    let mut groups = 0usize;
+    let mut ssa_ops = 0usize;
+    let mut mir_ops = 0usize;
+    let mut emitted: collections::Vec<Option<FunctionEmitSummary>> =
+        collections::vec![None; module.functions.len()];
+    let mut pending_direct_patches =
+        collections::vec![collections::Vec::new(); module.functions.len()];
+
+    #[cfg(sf_has_guard_pages)]
+    let use_guard_pages = module
+        .memories
+        .first()
+        .map(|m| m.has_guard_pages())
+        .unwrap_or(false)
+        && backend.gp_unit_bytes == 8;
+
+    let arch_lower_phase = phase_span("arch_lower");
+    let mut executable = CodeBuffer::new().map_err(WasmError::internal)?;
+    executable.begin_write();
+    executable.reset();
+    let base_ptr = executable.as_ptr();
+
+    for (func_idx, func) in module.functions.iter().enumerate() {
+        let Some(spec) = func.spec() else {
+            continue;
+        };
+
+        let sem_decode_function_phase =
+            phase_span_with_function("sem_decode", Some(func_idx as u32));
+        let semantic = decode_function_semantic(module, store, spec)?;
+        drop(sem_decode_function_phase);
+
+        let ssa_lower_function_phase = phase_span_with_function("ssa_lower", Some(func_idx as u32));
+        let prepared = prepare_function(
+            PrepareInput {
+                config: backend,
+                function_index: Some(func_idx as u32),
+            },
+            semantic,
+        )
+        .map_err(|_err| {
+            WasmError::internal(
+                "native prepare failed for function type_idx= params= results= max_stack= ops=",
+            )
+        })?;
+        drop(ssa_lower_function_phase);
+
+        groups += 1;
+        ssa_ops += prepared
+            .ssa
+            .blocks
+            .iter()
+            .map(|block| block.ops.len())
+            .sum::<usize>();
+
+        let func_id = MachineFuncId(func_idx as u32);
+        let result_count = spec.func_type().results().len() as u16;
+        let (mut machine, _abi) = lower_single_function(
+            backend,
+            LowerFunctionInput {
+                id: func_id,
+                frame: prepared.frame,
+                ssa: prepared.ssa,
+                result_count,
+            },
+            &mut compiled_view.abi.functions,
+            &is_local_func,
+            &mut const_pool,
+            #[cfg(sf_has_guard_pages)]
+            use_guard_pages,
+        )?;
+        optimize_function(&mut machine, backend);
+        if backend.is_32bit_gp_target() {
+            machine
+                .program
+                .validate_32bit_gp_target(backend.first_fp_reg(), backend)?;
+        }
+        mir_ops += machine
+            .program
+            .blocks
+            .iter()
+            .map(|block| block.ops.len())
+            .sum::<usize>();
+
+        compiled_view.sync_consts(&const_pool)?;
+
+        let stream_base = executable.len();
+        let scratch_base = page_align_function(stream_base, 0);
+        let initial_padding = scratch_base.saturating_sub(stream_base);
+        if initial_padding > 0 {
+            arch::dispatch_emit_nop_padding(active_backend, &mut executable, initial_padding);
+        }
+
+        let arch_lower_function_phase =
+            phase_span_with_function("arch_lower_func", Some(func_idx as u32));
+        let artifact = arch::dispatch_compile_function_into_buffer(
+            active_backend,
+            &compiled_view,
+            &machine,
+            &mut executable,
+        )?;
+        drop(arch_lower_function_phase);
+
+        let text_len = artifact.text.len();
+        let function_base = page_align_function(stream_base, text_len);
+        let extra_padding = function_base.saturating_sub(scratch_base);
+        if extra_padding > 0 {
+            executable.move_region(scratch_base, scratch_base + extra_padding, text_len);
+            executable.set_len(scratch_base);
+            arch::dispatch_emit_nop_padding(active_backend, &mut executable, extra_padding);
+            executable.set_len(function_base + text_len);
+        }
+
+        for patch in &artifact.local_ptr_patches {
+            let target_addr = unsafe { base_ptr.add(function_base + patch.target_offset) } as usize;
+            patch_code_buffer_word(
+                active_backend,
+                &mut executable,
+                function_base + patch.literal_offset,
+                target_addr,
+            );
+        }
+
+        let internal_entry_addr =
+            unsafe { base_ptr.add(function_base + artifact.internal_entry_offset) } as usize;
+        for patch in &artifact.direct_call_patches {
+            let callee_idx = patch.callee.0 as usize;
+            if callee_idx == func_idx {
+                patch_code_buffer_word(
+                    active_backend,
+                    &mut executable,
+                    function_base + patch.literal_offset,
+                    internal_entry_addr,
+                );
+                continue;
+            }
+            if let Some(summary) = emitted.get(callee_idx).and_then(|slot| slot.as_ref()) {
+                patch_code_buffer_word(
+                    active_backend,
+                    &mut executable,
+                    function_base + patch.literal_offset,
+                    summary.internal_entry_addr,
+                );
+            } else {
+                let pending = pending_direct_patches.get_mut(callee_idx).ok_or_else(|| {
+                    WasmError::internal("direct callee patch list is out of range")
+                })?;
+                pending.push(PendingPatch {
+                    code_offset: function_base + patch.literal_offset,
+                    callee: patch.callee,
+                    encoding: patch_encoding(active_backend),
+                });
+            }
+        }
+
+        let entry = unsafe { executable.fn_ptr::<NativeRootEntry>(function_base) };
+        emitted[func_idx] = Some(FunctionEmitSummary {
+            entry,
+            internal_entry_addr,
+            text_len,
+            #[cfg(sf_has_guard_pages)]
+            body_local_error_addr: unsafe {
+                executable.ptr(function_base + artifact.body_local_error_offset)
+            } as usize,
+            #[cfg(sf_jitdump)]
+            debug_regions: artifact.debug_regions,
+        });
+
+        let pending = core::mem::take(
+            pending_direct_patches
+                .get_mut(func_idx)
+                .ok_or_else(|| WasmError::internal("pending direct patch list is out of range"))?,
+        );
+        for patch in pending {
+            let callee_addr = emitted
+                .get(func_idx)
+                .and_then(|slot| slot.as_ref().map(|summary| summary.internal_entry_addr))
+                .ok_or_else(|| WasmError::internal("pending direct callee address is missing"))?;
+            let _ = patch.encoding;
+            patch_code_buffer_word(
+                active_backend,
+                &mut executable,
+                patch.code_offset,
+                callee_addr,
+            );
+        }
+    }
+
+    if pending_direct_patches
+        .iter()
+        .any(|patches| !patches.is_empty())
+    {
+        return Err(WasmError::internal(
+            "native streaming compile finished with unresolved direct-call patches",
+        ));
+    }
+
+    let function_info_table_offset = executable.len();
+    let function_info_bytes = emit_function_info_bytes(backend, &compiled_view.abi, &emitted);
+    executable.emit_bytes(&function_info_bytes);
+    let written_len = executable.len();
+    executable.finish_write(0, written_len);
+    let function_info_base = unsafe { executable.as_ptr().add(function_info_table_offset) };
+    drop(arch_lower_phase);
+
+    #[cfg(sf_jitdump)]
+    {
+        let module_name = &module.name;
+        for (func_idx, entry) in emitted.iter().enumerate() {
+            let Some(entry) = entry else {
+                continue;
+            };
+            let func_base = entry.entry as *const u8;
+            for region in &entry.debug_regions {
+                if region.len > 0 {
+                    let region_start = unsafe { func_base.add(region.offset) };
+                    let code_bytes =
+                        unsafe { core::slice::from_raw_parts(region_start, region.len) };
+                    let symbol = tracked_alloc::format!(
+                        "jit::{}::func{}::{}",
+                        module_name,
+                        func_idx,
+                        region.label
+                    );
+                    crate::vm::debug::jitdump::record_function(region_start, code_bytes, &symbol);
+                }
+            }
+        }
+    }
+
+    #[cfg(sf_has_guard_pages)]
+    {
+        let ranges: collections::Vec<_> = emitted
+            .iter()
+            .filter_map(|slot| slot.as_ref())
+            .map(|entry| {
+                (
+                    entry.entry as usize,
+                    entry.entry as usize + entry.text_len,
+                    entry.body_local_error_addr,
+                )
+            })
+            .collect();
+        crate::vm::runtime::trap_signal::register_jit_ranges(&ranges);
+    }
+
+    let bytes: usize = emitted
+        .iter()
+        .filter_map(|slot| slot.as_ref().map(|entry| entry.text_len))
+        .sum();
+    set_native_stats(groups, ssa_ops, mir_ops, bytes);
+
+    let mut published = module
+        .native_code_buffer()
+        .map_err(|err| WasmError::internal(err))?;
+    core::mem::swap(&mut *published, &mut executable);
+    drop(published);
+
+    let compiled = Rc::new(compiled_view.finish(active_backend));
+    compiled.publish_local_call_infos(function_info_base);
+
+    for (func_idx, func) in module.functions.iter().enumerate() {
+        let Some(spec) = func.spec() else {
+            continue;
+        };
+        let mut code = NativeCode::new(Rc::clone(&compiled), MachineFuncId(func_idx as u32));
+        code = code.with_entry(
+            emitted
+                .get(func_idx)
+                .and_then(|slot| slot.as_ref().map(|entry| entry.entry)),
+        );
+        spec.set_native_code(code, NativeCodeCache::compiled());
+    }
+
+    Ok(())
 }
 
 fn finish_native_compile(
@@ -212,21 +747,19 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         return Ok(());
     }
 
-    // Phase 1: Scan for tiny leaf semantic callees worth retaining as inline seeds.
-    let mut inline_candidates: collections::Vec<Option<SemanticProgram>> =
-        collections::Vec::with_capacity(module.functions.len());
-    for (func_idx, func) in module.functions.iter().enumerate() {
-        let Some(spec) = func.spec() else {
-            inline_candidates.push(None);
-            continue;
-        };
-        let sem_scan_function_phase = phase_span_with_function("sem_scan", Some(func_idx as u32));
-        let semantic = decode_function_semantic(module, store, spec)?;
-        inline_candidates.push(inline::retain_inline_candidate(&semantic).then_some(semantic));
-        drop(sem_scan_function_phase);
+    #[cfg(sf_ir_dump)]
+    let ir_dump_enabled = ir_dump::dump_enabled();
+    #[cfg(not(sf_ir_dump))]
+    let ir_dump_enabled = false;
+    #[cfg(sf_emulator)]
+    let use_batch_pipeline =
+        matches!(active_backend, arch::NativeBackend::Reference) || ir_dump_enabled;
+    #[cfg(not(sf_emulator))]
+    let use_batch_pipeline = ir_dump_enabled;
+    if !use_batch_pipeline {
+        return finish_native_compile_streaming(active_backend, backend, module, store);
     }
 
-    // Phase 2: Decode each caller, inline retained leaf callees, and lower immediately.
     let mut groups = 0usize;
     let mut ssa_ops = 0usize;
     let mut prepared_functions: collections::Vec<LowerFunctionInput> = collections::Vec::new();
@@ -236,13 +769,8 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         };
         let sem_decode_function_phase =
             phase_span_with_function("sem_decode", Some(func_idx as u32));
-        let mut semantic = decode_function_semantic(module, store, spec)?;
+        let semantic = decode_function_semantic(module, store, spec)?;
         drop(sem_decode_function_phase);
-
-        let sem_inline_function_phase =
-            phase_span_with_function("sem_inline", Some(func_idx as u32));
-        inline::inline_calls_in_function(&mut semantic, func_idx as u32, &inline_candidates);
-        drop(sem_inline_function_phase);
 
         let ssa_lower_function_phase = phase_span_with_function("ssa_lower", Some(func_idx as u32));
         let prepared = prepare_function(
@@ -274,7 +802,6 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             result_count,
         });
     }
-    drop(inline_candidates);
 
     #[cfg(sf_ir_dump)]
     let dump_lir_inputs = if ir_dump::dump_enabled() {

@@ -1844,46 +1844,14 @@ fn lowers_direct_local_call_with_continuation_block() {
             ..
         } if dst == callee_frame_base && offset == u64::from(caller_frame.operand_slot(1).0) * 8
     ));
-    // After the new local-call ABI rewrite, the call site emits:
-    //   0. add callee_frame_base, fp, args_offset
-    //   1. load stack_end
-    //   2. sub stack_limit, callee_total_frame_bytes
-    //   3. trap_if Gt callee_frame_base, stack_limit
-    //   4. add caller_result_base, fp, results_offset
-    // — five ops total, with no call-link memory writes. The continuation
-    // block id and the caller frame pointer travel via the backend-private
-    // call record set up by the per-arch lowering of `CallDirect`, not via
-    // any MIR-visible store.
-    assert_eq!(call_block.ops.len(), 5);
-    assert!(matches!(
-        call_block.ops[1].kind,
-        MachineInstKind::Load { .. }
-    ));
-    assert!(matches!(
-        call_block.ops[2].kind,
-        MachineInstKind::IntBinary {
-            op: MachineIntBinaryOp::Sub,
-            ..
-        }
-    ));
-    assert!(matches!(
-        call_block.ops[3].kind,
-        MachineInstKind::TrapIf {
-            cond:
-                MachineBranchCond::IntCompare {
-                    width: MachineIntWidth::I64,
-                    kind: MachineCompareKind::Gt,
-                    sign: MachineSign::Unsigned,
-                    lhs: MachineValue::Reg(lhs),
-                    ..
-                },
-            kind: MachineTrapKind::StackOverflow,
-        } if lhs == callee_frame_base
-    ));
-    // The fifth op computes `caller_result_base = caller_fp + results_offset`
+    // Direct-call stack-overflow precheck now happens in the backend/emulator
+    // call path instead of caller-side MachineIR lowering, so the call site
+    // only materializes the callee frame base and caller result base here.
+    assert_eq!(call_block.ops.len(), 2);
+    // The second op computes `caller_result_base = caller_fp + results_offset`
     // and is consumed by the `CallDirect` terminator below.
     assert!(matches!(
-        call_block.ops[4].kind,
+        call_block.ops[1].kind,
         MachineInstKind::IntBinary {
             op: MachineIntBinaryOp::Add,
             dst,

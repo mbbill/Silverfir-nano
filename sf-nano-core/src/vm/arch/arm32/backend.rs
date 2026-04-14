@@ -21,7 +21,7 @@ use crate::{
             MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
-            code::{CompiledNativeModule, NativeRootEntry},
+            code::{CodegenModuleView, NativeRootEntry},
             code_buf::CodeBuffer,
             context::ctx_offset,
         },
@@ -90,7 +90,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
         abi::max_fp_machine_regs()
     }
 
-    fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self {
+    fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
         Self {
             core: CompilerCore::new(compiled, function, Self::max_fp_regs()),
             fixups: collections::Vec::new(),
@@ -401,9 +401,7 @@ impl<'a> Arm32Backend<'a> {
         let helper_scratch = self
             .core
             .compiled
-            .abi()
-            .functions
-            .get(self.core.function.id.0 as usize)
+            .runtime_for(self.core.function.id)
             .and_then(|runtime| runtime.helper_scratch);
         if let Some(helper_scratch) = helper_scratch {
             debug_assert!(

@@ -426,24 +426,26 @@ fn apply_inline_prefix(
             let (pop, push) = primitive_op::stack_effect(kind);
             // Ensure capacity BEFORE filling operands. The fill must not be
             // undone by subsequent spills — operands are consumed immediately.
-            // Reserve room for both the operands (after fill) and the push result.
-            let net_push = (push as u16).saturating_sub(pop as u16);
-            if net_push > 0 {
-                let result_ty = primitive_op::result_type(kind).unwrap_or(ValueType::I64);
-                let (extra_gp, extra_fp) = if result_ty.is_float() {
-                    (0, net_push as usize)
-                } else {
-                    (net_push as usize, 0)
-                };
-                inline_ensure_capacity(
-                    state,
-                    frame,
-                    resident_cache,
-                    local_slot_types,
-                    extra_gp,
-                    extra_fp,
-                )?;
-            }
+            // Reserve enough room for both:
+            // - any currently spilled operands that will be filled into the
+            //   live window
+            // - any positive per-bank delta after the op replaces its
+            //   consumed operands with results
+            let result_ty = primitive_op::result_type(kind).unwrap_or(ValueType::I64);
+            let result_types = if push == 0 {
+                collections::Vec::new()
+            } else {
+                collections::vec![result_ty; push as usize]
+            };
+            let (extra_gp, extra_fp) = inline_required_capacity(state, pop as u16, &result_types);
+            inline_ensure_capacity(
+                state,
+                frame,
+                resident_cache,
+                local_slot_types,
+                extra_gp,
+                extra_fp,
+            )?;
             inline_fill_for_operands(state, frame, values, pop as u16)?;
         }
         SemanticOpKind::LocalGet { idx } => {
@@ -452,7 +454,7 @@ fn apply_inline_prefix(
                 .get(*idx as usize)
                 .copied()
                 .unwrap_or(ValueType::I64);
-            let (extra_gp, extra_fp) = if ty.is_float() { (0, 1) } else { (1, 0) };
+            let (extra_gp, extra_fp) = inline_required_capacity(state, 0, &[ty]);
             inline_ensure_capacity(
                 state,
                 frame,
@@ -463,6 +465,22 @@ fn apply_inline_prefix(
             )?;
         }
         SemanticOpKind::LocalSet { .. } | SemanticOpKind::LocalTee { .. } => {
+            let result_types = match op {
+                SemanticOpKind::LocalTee { idx } => collections::vec![local_slot_types
+                    .get(*idx as usize)
+                    .copied()
+                    .unwrap_or(ValueType::I64),],
+                _ => collections::Vec::new(),
+            };
+            let (extra_gp, extra_fp) = inline_required_capacity(state, 1, &result_types);
+            inline_ensure_capacity(
+                state,
+                frame,
+                resident_cache,
+                local_slot_types,
+                extra_gp,
+                extra_fp,
+            )?;
             inline_fill_for_operands(state, frame, values, 1)?;
         }
         SemanticOpKind::Block { .. } => {}
@@ -509,6 +527,28 @@ fn apply_inline_prefix(
     // ensure_capacity which was only needed because it ran with tentative cache.
     inline_ensure_capacity(state, frame, resident_cache, local_slot_types, 0, 0)?;
     Ok(())
+}
+
+fn inline_required_capacity(
+    state: &BlockState,
+    operand_count: u16,
+    result_types: &[ValueType],
+) -> (usize, usize) {
+    let min_spill_depth = state.height().saturating_sub(operand_count);
+    let fill_types = state.spilled_types_for_fill(min_spill_depth);
+    let (fill_gp, fill_fp) = count_live_bank_budget_units(&fill_types, state.gp_unit_bytes);
+
+    let already_live_operands = state.live().len().min(operand_count as usize);
+    let existing_operand_types =
+        &state.live_types[state.live_types.len().saturating_sub(already_live_operands)..];
+    let (existing_gp, existing_fp) =
+        count_live_bank_budget_units(existing_operand_types, state.gp_unit_bytes);
+    let (result_gp, result_fp) = count_live_bank_budget_units(result_types, state.gp_unit_bytes);
+
+    (
+        fill_gp.max(result_gp.saturating_sub(existing_gp)),
+        fill_fp.max(result_fp.saturating_sub(existing_fp)),
+    )
 }
 
 /// Spill bottom transients until live + cache + extra_gp/extra_fp fits the budget.

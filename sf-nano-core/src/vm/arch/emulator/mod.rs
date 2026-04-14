@@ -919,7 +919,7 @@ impl<'a> Emulator<'a> {
         let result_base_ptr = self
             .address_space
             .host_stack_ptr(self.read_reg(caller_result_base)?)?;
-        self.enter_callee(callee, callee_fp, result_base_ptr, continuation, false)
+        self.enter_callee(callee, callee_fp, result_base_ptr, continuation, true)
     }
 
     fn enter_indirect_call(

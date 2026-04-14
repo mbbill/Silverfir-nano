@@ -1,11 +1,45 @@
-/// Unified code emitter: a growable byte buffer with typed emit/patch operations.
+/// Unified code emitter: either an owned growable byte buffer or a direct
+/// writer into the shared executable code buffer.
 ///
 /// Used by all arch backends to build function text sections.
 use crate::collections;
+use crate::vm::runtime::code_buf::CodeBuffer;
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct TextEmitter {
-    text: collections::Vec<u8>,
+    storage: TextStorage,
+}
+
+enum TextStorage {
+    Owned(collections::Vec<u8>),
+    CodeBuffer {
+        buf: *mut CodeBuffer,
+        start: usize,
+        len: usize,
+    },
+}
+
+impl core::fmt::Debug for TextEmitter {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match &self.storage {
+            TextStorage::Owned(text) => f
+                .debug_struct("TextEmitter")
+                .field("kind", &"owned")
+                .field("len", &text.len())
+                .finish(),
+            TextStorage::CodeBuffer { start, len, .. } => f
+                .debug_struct("TextEmitter")
+                .field("kind", &"code_buffer")
+                .field("start", start)
+                .field("len", len)
+                .finish(),
+        }
+    }
+}
+
+impl Default for TextEmitter {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 #[allow(dead_code)]
@@ -13,78 +47,173 @@ impl TextEmitter {
     #[inline]
     pub(crate) fn new() -> Self {
         Self {
-            text: collections::Vec::new(),
+            storage: TextStorage::Owned(collections::Vec::new()),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn new_in_code_buffer(buf: &mut CodeBuffer) -> Self {
+        Self {
+            storage: TextStorage::CodeBuffer {
+                buf,
+                start: buf.len(),
+                len: 0,
+            },
         }
     }
 
     #[inline]
     pub(crate) fn len(&self) -> usize {
-        self.text.len()
+        match &self.storage {
+            TextStorage::Owned(text) => text.len(),
+            TextStorage::CodeBuffer { len, .. } => *len,
+        }
     }
 
     // ── Emit ─────────────────────────────────────────────────────────────
 
     #[inline]
     pub(crate) fn emit_u8(&mut self, byte: u8) -> usize {
-        let offset = self.text.len();
-        self.text.push(byte);
-        offset
+        match &mut self.storage {
+            TextStorage::Owned(text) => {
+                let offset = text.len();
+                text.push(byte);
+                offset
+            }
+            TextStorage::CodeBuffer { buf, len, .. } => {
+                let offset = *len;
+                unsafe { (&mut **buf).emit_u8(byte) };
+                *len += 1;
+                offset
+            }
+        }
     }
 
     #[inline]
     pub(crate) fn emit_u32(&mut self, inst: u32) -> usize {
-        let offset = self.text.len();
-        self.text.extend_from_slice(&inst.to_le_bytes());
-        offset
+        match &mut self.storage {
+            TextStorage::Owned(text) => {
+                let offset = text.len();
+                text.extend_from_slice(&inst.to_le_bytes());
+                offset
+            }
+            TextStorage::CodeBuffer { buf, len, .. } => {
+                let offset = *len;
+                unsafe { (&mut **buf).emit_u32(inst) };
+                *len += 4;
+                offset
+            }
+        }
     }
 
     #[inline]
     pub(crate) fn emit_u64(&mut self, value: u64) -> usize {
-        let offset = self.text.len();
-        self.text.extend_from_slice(&value.to_le_bytes());
-        offset
+        match &mut self.storage {
+            TextStorage::Owned(text) => {
+                let offset = text.len();
+                text.extend_from_slice(&value.to_le_bytes());
+                offset
+            }
+            TextStorage::CodeBuffer { buf, len, .. } => {
+                let offset = *len;
+                unsafe { (&mut **buf).emit_u64(value) };
+                *len += 8;
+                offset
+            }
+        }
     }
 
     #[inline]
     pub(crate) fn emit_bytes(&mut self, bytes: &[u8]) -> usize {
-        let offset = self.text.len();
-        self.text.extend_from_slice(bytes);
-        offset
+        match &mut self.storage {
+            TextStorage::Owned(text) => {
+                let offset = text.len();
+                text.extend_from_slice(bytes);
+                offset
+            }
+            TextStorage::CodeBuffer { buf, len, .. } => {
+                let offset = *len;
+                unsafe { (&mut **buf).emit_bytes(bytes) };
+                *len += bytes.len();
+                offset
+            }
+        }
     }
 
     // ── Patch ────────────────────────────────────────────────────────────
 
     #[inline]
     pub(crate) fn patch_u8(&mut self, offset: usize, byte: u8) {
-        self.text[offset] = byte;
+        match &mut self.storage {
+            TextStorage::Owned(text) => text[offset] = byte,
+            TextStorage::CodeBuffer { buf, start, len } => {
+                assert!(offset < *len, "patch beyond written region");
+                unsafe { (&mut **buf).patch_u8(*start + offset, byte) };
+            }
+        }
     }
 
     #[inline]
     pub(crate) fn patch_u32(&mut self, offset: usize, inst: u32) {
-        self.text[offset..offset + 4].copy_from_slice(&inst.to_le_bytes());
+        match &mut self.storage {
+            TextStorage::Owned(text) => {
+                text[offset..offset + 4].copy_from_slice(&inst.to_le_bytes());
+            }
+            TextStorage::CodeBuffer { buf, start, len } => {
+                assert!(offset + 4 <= *len, "patch beyond written region");
+                unsafe { (&mut **buf).patch_u32(*start + offset, inst) };
+            }
+        }
     }
 
     #[inline]
     pub(crate) fn patch_i32(&mut self, offset: usize, value: i32) {
-        self.text[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        match &mut self.storage {
+            TextStorage::Owned(text) => {
+                text[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+            }
+            TextStorage::CodeBuffer { buf, start, len } => {
+                assert!(offset + 4 <= *len, "patch beyond written region");
+                unsafe { (&mut **buf).patch_u32(*start + offset, value as u32) };
+            }
+        }
     }
 
     #[inline]
     pub(crate) fn patch_u64(&mut self, offset: usize, value: u64) {
-        self.text[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+        match &mut self.storage {
+            TextStorage::Owned(text) => {
+                text[offset..offset + 8].copy_from_slice(&value.to_le_bytes());
+            }
+            TextStorage::CodeBuffer { buf, start, len } => {
+                assert!(offset + 8 <= *len, "patch beyond written region");
+                unsafe { (&mut **buf).patch_u64(*start + offset, value) };
+            }
+        }
     }
 
     // ── Read ─────────────────────────────────────────────────────────────
 
     #[inline]
     pub(crate) fn byte(&self, offset: usize) -> u8 {
-        self.text[offset]
+        match &self.storage {
+            TextStorage::Owned(text) => text[offset],
+            TextStorage::CodeBuffer { buf, start, len } => {
+                assert!(offset < *len, "read beyond written region");
+                unsafe { (&**buf).byte(*start + offset) }
+            }
+        }
     }
 
     // ── Finish ───────────────────────────────────────────────────────────
 
     #[inline]
     pub(crate) fn finish(self) -> collections::Vec<u8> {
-        self.text
+        match self.storage {
+            TextStorage::Owned(text) => text,
+            TextStorage::CodeBuffer { .. } => {
+                panic!("cannot finish a CodeBuffer-backed TextEmitter into owned bytes")
+            }
+        }
     }
 }

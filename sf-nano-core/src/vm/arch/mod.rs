@@ -10,8 +10,12 @@ use crate::{
     vm::{
         backend::BackendConfig,
         entities::ModuleInst,
+        machine::machine_ir::MachineFunction,
         result_buffer::ResultBuffer,
-        runtime::code::{CompiledNativeModule, NativeCode, NativeRootEntry},
+        runtime::{
+            code::{CodegenModuleView, CompiledNativeModule, NativeCode, NativeRootEntry},
+            code_buf::CodeBuffer,
+        },
         store::Store,
         value::Value,
     },
@@ -19,6 +23,7 @@ use crate::{
 
 #[cfg(sf_ir_dump)]
 use crate::vm::arch::common::types::DebugRegion;
+use crate::vm::arch::common::types::FunctionArtifact;
 
 pub(crate) mod common;
 #[cfg(sf_emulator)]
@@ -329,6 +334,71 @@ pub(crate) fn dispatch_compile_module(
         }
         #[cfg(sf_emulator)]
         NativeBackend::Reference => Ok(collections::Vec::new()),
+    }
+}
+
+pub(crate) fn dispatch_compile_function_into_buffer(
+    active_backend: NativeBackend,
+    compiled: &dyn CodegenModuleView,
+    function: &MachineFunction,
+    executable: &mut CodeBuffer,
+) -> Result<FunctionArtifact, WasmError> {
+    match active_backend {
+        #[cfg(sf_arch_arm64)]
+        NativeBackend::Arm64 => common::pipeline::compile_function_into_buffer::<
+            arm64::backend::Arm64Backend,
+        >(compiled, function, executable),
+        #[cfg(sf_arch_armv7a)]
+        NativeBackend::Armv7a => common::pipeline::compile_function_into_buffer::<
+            arm32::backend::Arm32Backend,
+        >(compiled, function, executable),
+        #[cfg(sf_arch_thumbm)]
+        NativeBackend::ThumbM => common::pipeline::compile_function_into_buffer::<
+            arm32::backend::Arm32Backend,
+        >(compiled, function, executable),
+        #[cfg(sf_arch_x64)]
+        NativeBackend::X86_64 => common::pipeline::compile_function_into_buffer::<
+            x86_64::backend::X86_64Backend,
+        >(compiled, function, executable),
+        #[cfg(sf_emulator)]
+        NativeBackend::Reference => Err(WasmError::invalid(
+            "reference backend does not emit native code artifacts",
+        )),
+    }
+}
+
+pub(crate) fn dispatch_emit_nop_padding(
+    active_backend: NativeBackend,
+    buf: &mut CodeBuffer,
+    bytes: usize,
+) {
+    match active_backend {
+        #[cfg(sf_arch_arm64)]
+        NativeBackend::Arm64 => {
+            <arm64::backend::Arm64Backend as common::backend::ArchBackend>::emit_nop_padding(
+                buf, bytes,
+            )
+        }
+        #[cfg(sf_arch_armv7a)]
+        NativeBackend::Armv7a => {
+            <arm32::backend::Arm32Backend as common::backend::ArchBackend>::emit_nop_padding(
+                buf, bytes,
+            )
+        }
+        #[cfg(sf_arch_thumbm)]
+        NativeBackend::ThumbM => {
+            <arm32::backend::Arm32Backend as common::backend::ArchBackend>::emit_nop_padding(
+                buf, bytes,
+            )
+        }
+        #[cfg(sf_arch_x64)]
+        NativeBackend::X86_64 => {
+            <x86_64::backend::X86_64Backend as common::backend::ArchBackend>::emit_nop_padding(
+                buf, bytes,
+            )
+        }
+        #[cfg(sf_emulator)]
+        NativeBackend::Reference => {}
     }
 }
 

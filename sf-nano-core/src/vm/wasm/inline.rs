@@ -7,6 +7,8 @@
 //! Runs on a decoded caller using a retained set of tiny semantic callee
 //! bodies, before `prepare_function` / IR lowering.
 
+#![allow(dead_code)]
+
 use crate::collections;
 
 use crate::value_type::ValueType;
