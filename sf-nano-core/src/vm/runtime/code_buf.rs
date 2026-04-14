@@ -12,7 +12,9 @@ use core::ptr;
 
 use super::os;
 #[cfg(feature = "memprof")]
-use tracked_alloc::{AllocationDescriptor, AllocationHandle, AllocationState};
+use tracked_alloc::{
+    AllocationDescriptor, AllocationHandle, AllocationState, RUNTIME_MEMORY_OWNER,
+};
 
 pub struct CodeBuffer {
     base: *mut u8,
@@ -51,7 +53,7 @@ impl CodeBuffer {
             offset: 0,
             #[cfg(feature = "memprof")]
             trace: AllocationHandle::new(
-                AllocationDescriptor::new("RuntimeMemory", "CodeBuffer"),
+                AllocationDescriptor::new(RUNTIME_MEMORY_OWNER, "CodeBuffer"),
                 AllocationState::new(capacity)
                     .with_len(0)
                     .with_capacity(capacity)

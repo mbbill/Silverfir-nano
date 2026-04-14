@@ -62,7 +62,7 @@ pub(super) struct ValueRegs {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct EntryCacheParam {
-    pub cached_index: usize,
+    pub cached_index: u16,
     pub regs: ValueRegs,
     /// True when the target block entry needs the actual local value already
     /// materialized in the cache register. False means the lane is reserved
@@ -215,36 +215,29 @@ impl<'a> BlockLowerContext<'a> {
         }
         let entry_cache_params = lower.entry_cache_params.clone();
         for entry in entry_cache_params {
+            let cached_index = usize::from(entry.cached_index);
             if is_entry {
                 if entry.needs_value {
-                    lower.materialize_entry_cached_local(entry.cached_index, entry.regs)?;
+                    lower.materialize_entry_cached_local(cached_index, entry.regs)?;
                 } else {
-                    lower.bind_cached_local_to_regs(
-                        entry.cached_index,
-                        entry.regs.lo,
-                        entry.regs.hi,
-                    )?;
-                    lower.set_cache_live(entry.cached_index, true);
-                    lower.set_cache_has_value(entry.cached_index, false);
-                    lower.set_cache_dirty(entry.cached_index, false);
+                    lower.bind_cached_local_to_regs(cached_index, entry.regs.lo, entry.regs.hi)?;
+                    lower.set_cache_live(cached_index, true);
+                    lower.set_cache_has_value(cached_index, false);
+                    lower.set_cache_dirty(cached_index, false);
                 }
             } else {
-                lower.bind_cached_local_to_regs(
-                    entry.cached_index,
-                    entry.regs.lo,
-                    entry.regs.hi,
-                )?;
-                lower.set_cache_live(entry.cached_index, true);
-                lower.set_cache_has_value(entry.cached_index, entry.needs_value);
+                lower.bind_cached_local_to_regs(cached_index, entry.regs.lo, entry.regs.hi)?;
+                lower.set_cache_live(cached_index, true);
+                lower.set_cache_has_value(cached_index, entry.needs_value);
                 let initial_dirty = if entry.needs_value {
                     initial_cache_dirty
-                        .and_then(|bits| bits.get(entry.cached_index))
+                        .and_then(|bits| bits.get(cached_index))
                         .copied()
                         .unwrap_or(true)
                 } else {
                     false
                 };
-                lower.set_cache_dirty(entry.cached_index, initial_dirty);
+                lower.set_cache_dirty(cached_index, initial_dirty);
             }
         }
         lower.release_dead_values()?;
@@ -729,13 +722,13 @@ impl<'a> BlockLowerContext<'a> {
     fn preferred_cache_binding(&self, index: usize) -> Option<CachedLocalBinding> {
         self.entry_cache_params
             .iter()
-            .find(|entry| entry.cached_index == index)
+            .find(|entry| usize::from(entry.cached_index) == index)
             .and_then(|entry| self.try_binding_from_regs(index, entry.regs))
             .or_else(|| {
                 let target = self.single_successor_target()?;
                 self.block_entry_cache_params(target)
                     .iter()
-                    .find(|entry| entry.cached_index == index)
+                    .find(|entry| usize::from(entry.cached_index) == index)
                     .and_then(|entry| self.try_binding_from_regs(index, entry.regs))
             })
     }

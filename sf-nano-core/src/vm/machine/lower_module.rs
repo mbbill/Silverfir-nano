@@ -240,7 +240,7 @@ fn lower_function(
 ) -> Result<MachineFunction, WasmError> {
     let gp_reg_width = config.gp_unit_bytes;
     let original_block_count = input.ssa.blocks.len();
-    let mut original_blocks = collections::vec![None; original_block_count];
+    let mut original_blocks = OriginalBlocks::new(original_block_count);
     let mut extra_blocks = collections::Vec::new();
     let mut extra_block_ids = ExtraBlockAllocator::new(original_block_count as u32);
     let i64_ops: &'static dyn I64Lowering = if gp_reg_width == 4 {
@@ -736,12 +736,8 @@ fn lower_function(
         )?;
     }
 
-    let mut blocks = collections::Vec::with_capacity(original_block_count + extra_blocks.len());
-    for (_index, block) in original_blocks.into_iter().enumerate() {
-        blocks.push(block.ok_or_else(|| {
-            WasmError::internal("machine lowering did not produce original block")
-        })?);
-    }
+    let mut blocks = original_blocks.finish()?;
+    blocks.reserve(extra_blocks.len());
     blocks.extend(extra_blocks);
 
     let program = MachineProgram {
@@ -813,7 +809,7 @@ fn frame_span_region(span: FrameSpan) -> MachineFrameRegion {
 
 fn push_lowered_block(
     id: MachineBlockId,
-    original_blocks: &mut [Option<MachineBlock>],
+    original_blocks: &mut OriginalBlocks,
     continuation_blocks: &mut collections::Vec<MachineBlock>,
     params: collections::Vec<MachineBlockParam>,
     ops: collections::Vec<MachineInst>,
@@ -825,15 +821,9 @@ fn push_lowered_block(
         ops,
         terminator,
     };
-    let original_len = original_blocks.len();
+    let original_len = original_blocks.expected();
     if id.as_usize() < original_len {
-        let slot = &mut original_blocks[id.as_usize()];
-        if slot.is_some() {
-            return Err(WasmError::internal(
-                "machine lowering attempted to assign one original block twice".into(),
-            ));
-        }
-        *slot = Some(block);
+        original_blocks.push(id, block)?;
     } else {
         let expected = original_len + continuation_blocks.len();
         if id.as_usize() != expected {
@@ -976,13 +966,54 @@ fn append_entry_cache_params(
     cached_locals: &[super::lower_context::CachedLocal],
 ) {
     for entry in entry_cache_params {
-        if let Some(cached) = cached_locals.get(entry.cached_index) {
+        if let Some(cached) = cached_locals.get(usize::from(entry.cached_index)) {
             params.extend(
                 machine_block_params_for_value(entry.regs, cached.ty)
                     .into_iter()
                     .map(|param| param.with_owner(MachineRegOwner::CachedLocal)),
             );
         }
+    }
+}
+
+struct OriginalBlocks {
+    expected: usize,
+    blocks: collections::Vec<MachineBlock>,
+}
+
+impl OriginalBlocks {
+    #[inline]
+    fn new(expected: usize) -> Self {
+        Self {
+            expected,
+            blocks: collections::Vec::with_capacity(expected),
+        }
+    }
+
+    #[inline]
+    fn expected(&self) -> usize {
+        self.expected
+    }
+
+    #[inline]
+    fn push(&mut self, id: MachineBlockId, block: MachineBlock) -> Result<(), WasmError> {
+        if id.as_usize() != self.blocks.len() {
+            return Err(WasmError::internal(
+                "machine lowering emitted original blocks out of id order".into(),
+            ));
+        }
+        self.blocks.push(block);
+        Ok(())
+    }
+
+    #[inline]
+    fn finish(self) -> Result<collections::Vec<MachineBlock>, WasmError> {
+        if self.blocks.len() != self.expected {
+            return Err(WasmError::internal(
+                "machine lowering did not produce every original block".into(),
+            ));
+        }
+        Ok(self.blocks)
     }
 }
 

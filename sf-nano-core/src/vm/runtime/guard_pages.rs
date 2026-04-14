@@ -14,7 +14,9 @@ use crate::error::WasmError;
 
 use super::os;
 #[cfg(feature = "memprof")]
-use tracked_alloc::{AllocationDescriptor, AllocationHandle, AllocationState};
+use tracked_alloc::{
+    AllocationDescriptor, AllocationHandle, AllocationState, RUNTIME_MEMORY_OWNER,
+};
 
 const WASM_PAGE_SIZE: usize = crate::constants::WASM_PAGE_SIZE;
 
@@ -63,7 +65,7 @@ impl GuardPageMemory {
             committed: initial_bytes,
             #[cfg(feature = "memprof")]
             trace: AllocationHandle::new(
-                AllocationDescriptor::new("RuntimeMemory", "GuardPageMemory"),
+                AllocationDescriptor::new(RUNTIME_MEMORY_OWNER, "GuardPageMemory"),
                 AllocationState::new(initial_bytes)
                     .with_len(initial_bytes)
                     .with_capacity(GUARD_RESERVATION)

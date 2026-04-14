@@ -56,6 +56,11 @@ pub(super) struct ProgramBuilder {
     call_ops: collections::Vec<SsaCallOp>,
 }
 
+#[inline]
+fn track_block_cfg_origins() -> bool {
+    cfg!(any(debug_assertions, test))
+}
+
 impl ProgramBuilder {
     pub(super) fn intern_primitive(&mut self, kind: PrimitiveOpKind) -> Result<u32, WasmError> {
         if let Some(idx) = self.primitive_pool.iter().position(|k| k == &kind) {
@@ -122,11 +127,16 @@ pub(crate) fn rewrite_function(
         .collect::<collections::Vec<_>>();
 
     let original_block_count = cfg.blocks.len();
+    let track_cfg_origins = track_block_cfg_origins();
     let mut builder = ProgramBuilder::default();
     let mut blocks = collections::Vec::with_capacity(original_block_count);
     let mut block_entry_cached_slots = collections::Vec::with_capacity(original_block_count);
     let mut block_exit_cached_slots = collections::Vec::with_capacity(original_block_count);
-    let mut block_cfg_origins = collections::Vec::with_capacity(original_block_count);
+    let mut block_cfg_origins = if track_cfg_origins {
+        collections::Vec::with_capacity(original_block_count)
+    } else {
+        collections::Vec::new()
+    };
     let mut extra_blocks = collections::Vec::new();
     let mut extra_block_cached_slots = collections::Vec::new();
     let mut extra_block_exit_cached_slots = collections::Vec::new();
@@ -164,7 +174,9 @@ pub(crate) fn rewrite_function(
         let actual_exit = simulate_materialized_cache_exit(&final_entry, &lowered.ops);
         block_entry_cached_slots.push(final_entry);
         block_exit_cached_slots.push(actual_exit);
-        block_cfg_origins.push(collections::vec![block_index as u32]);
+        if track_cfg_origins {
+            block_cfg_origins.push(collections::vec![block_index as u32]);
+        }
         blocks.push(SsaBlock {
             id: SsaTarget(block_index as u32),
             params,
@@ -174,13 +186,17 @@ pub(crate) fn rewrite_function(
         });
         extra_block_cached_slots.extend(lowered.extra_block_cached_slots);
         extra_block_exit_cached_slots.extend(lowered.extra_block_exit_cached_slots);
-        extra_block_cfg_origins.extend(lowered.extra_block_cfg_origins);
+        if track_cfg_origins {
+            extra_block_cfg_origins.extend(lowered.extra_block_cfg_origins);
+        }
         extra_blocks.extend(lowered.extra_blocks);
     }
     blocks.extend(extra_blocks);
     block_entry_cached_slots.extend(extra_block_cached_slots);
     block_exit_cached_slots.extend(extra_block_exit_cached_slots);
-    block_cfg_origins.extend(extra_block_cfg_origins);
+    if track_cfg_origins {
+        block_cfg_origins.extend(extra_block_cfg_origins);
+    }
 
     let mut program = SsaProgram {
         entry: SsaTarget(cfg.entry.0),
@@ -1455,7 +1471,11 @@ fn lower_block_terminator(
                         .iter()
                         .copied()
                         .collect()],
-                    extra_block_cfg_origins: collections::vec![collections::Vec::new()],
+                    extra_block_cfg_origins: if track_block_cfg_origins() {
+                        collections::vec![collections::Vec::new()]
+                    } else {
+                        collections::Vec::new()
+                    },
                 })
             } else {
                 if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {

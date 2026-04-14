@@ -691,15 +691,16 @@ impl<'a> BlockLowerContext<'a> {
             }
         }
         for entry in cache_entries.iter().copied() {
-            let cached = self.bound_cached_local(entry.cached_index).ok_or_else(|| {
-                let _slot = self.cached_locals()[entry.cached_index].slot;
+            let cached_index = usize::from(entry.cached_index);
+            let cached = self.bound_cached_local(cached_index).ok_or_else(|| {
+                let _slot = self.cached_locals()[cached_index].slot;
                 WasmError::internal("edge to b expects cached local slot to stay resident, but source block b has no binding")
             })?;
             let _slot = cached.slot;
-            if !self.is_cache_live(entry.cached_index) {
+            if !self.is_cache_live(cached_index) {
                 return Err(WasmError::internal("edge to b expects cached local slot to stay resident, but source block b marked it dead"));
             }
-            if entry.needs_value && !self.cache_has_value(entry.cached_index) {
+            if entry.needs_value && !self.cache_has_value(cached_index) {
                 return Err(WasmError::internal("edge to b expects cached local slot to carry a real value, but source block b only reserved the lane"));
             }
             args.push(if entry.needs_value {

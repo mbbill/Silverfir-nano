@@ -187,11 +187,14 @@ pub(super) fn compute_block_entry_cache_params(
         // slot_to_cached_index. Sizing tight avoids ~2x push-growth overallocation
         // on the per-block Vec, which otherwise dominates mir_lower peak memory.
         let mut entries =
-            collections::Vec::<(u16, usize, EntryCacheParam)>::with_capacity(entry_slots.len());
+            collections::Vec::<(u16, u16, EntryCacheParam)>::with_capacity(entry_slots.len());
         for &slot in entry_slots {
             let Some(&cached_index) = slot_to_cached_index.get(&slot) else {
                 continue;
             };
+            let cached_index_u16 = u16::try_from(cached_index).map_err(|_| {
+                WasmError::internal("cached local index overflowed entry-cache metadata")
+            })?;
             let row_base = block_index * lanes;
             let lane_val = match slot_meta[cached_index].bank {
                 LayoutBank::Gp => gp_layouts[row_base + cached_index],
@@ -215,9 +218,9 @@ pub(super) fn compute_block_entry_cache_params(
                 })?;
             entries.push((
                 regs.lo.0,
-                cached_index,
+                cached_index_u16,
                 EntryCacheParam {
-                    cached_index,
+                    cached_index: cached_index_u16,
                     regs,
                     needs_value: matches!(requirement, EntryCacheRequirement::Ensure),
                 },

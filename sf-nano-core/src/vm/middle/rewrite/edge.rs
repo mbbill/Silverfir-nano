@@ -138,7 +138,9 @@ fn apply_edge_repair(
     program
         .block_entry_cached_slots
         .push(pred_exit.to_vec().into());
-    program.block_cfg_origins.push(collections::Vec::new());
+    if !program.block_cfg_origins.is_empty() {
+        program.block_cfg_origins.push(collections::Vec::new());
+    }
     Some(repair_id)
 }
 
@@ -206,7 +208,9 @@ fn maybe_repair_entry(program: &mut SsaProgram) {
     program
         .block_entry_cached_slots
         .push(collections::Vec::new());
-    program.block_cfg_origins.push(collections::Vec::new());
+    if !program.block_cfg_origins.is_empty() {
+        program.block_cfg_origins.push(collections::Vec::new());
+    }
     program.entry = repair_id;
 }
 
