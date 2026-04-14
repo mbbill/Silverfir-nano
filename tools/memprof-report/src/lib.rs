@@ -57,6 +57,10 @@ struct ReportDocument {
 
 impl ReportDocument {
     fn from_profile(profile: AllocationProfile, command_line: &[String]) -> Self {
+        // Peak is computed from the *tracked* total (heap allocations), not
+        // the runtime-memory series. Runtime memory (the 16 MiB native code
+        // buffer reservation, guard-page mmaps) is reported as a separate
+        // off-by-default series in the HTML.
         let mut raw_peak_index = 0usize;
         let mut peak_bytes = 0usize;
         let mut peak_time_ns = 0u64;
@@ -239,6 +243,8 @@ fn build_report_timeline(
         report_timeline.push(ReportPoint {
             time_ns: point.time_ns,
             total_bytes: point.total_bytes,
+            code_buffer_bytes: point.code_buffer_bytes,
+            guard_page_bytes: point.guard_page_bytes,
             live_records: point.live_records,
             snapshot_id,
         });
@@ -373,6 +379,8 @@ struct ReportSummary {
 struct ReportPoint {
     time_ns: u64,
     total_bytes: usize,
+    code_buffer_bytes: usize,
+    guard_page_bytes: usize,
     live_records: usize,
     snapshot_id: usize,
 }
@@ -813,12 +821,20 @@ const curvePadding = {
   bottom: 28,
 };
 const curveSeriesMeta = [
-  { key: 'total_bytes', label: 'Tracked total', color: '#f59e0b', width: 2.5, visible: true },
+  { key: 'total_bytes', label: 'Tracked total', color: '#f59e0b', width: 2.5, visible: true, defaultOn: true },
+  // Code buffer: mmap'd executable region for emitted native code. A single
+  // CodeBuffer reserves 16 MiB up front regardless of how much code gets
+  // emitted, which would drown out the heap curve — off by default.
+  { key: 'code_buffer_bytes', label: 'Code buffer', color: '#a855f7', width: 2, visible: true, defaultOn: false },
+  // Guard pages: virtual reservation for each wasm linear memory (~8 GB
+  // reserved per memory, a few pages actually committed). Separated so the
+  // enormous virtual reservation does not dominate the chart — off by default.
+  { key: 'guard_page_bytes', label: 'Guard pages', color: '#22c55e', width: 2, visible: true, defaultOn: false },
 ];
 const curveSeriesState = new Map(
   curveSeriesMeta
     .filter((series) => series.visible)
-    .map((series) => [series.key, true])
+    .map((series) => [series.key, !!series.defaultOn])
 );
 let cachedCurveBuckets = null;
 let cachedCurveBucketCount = 0;

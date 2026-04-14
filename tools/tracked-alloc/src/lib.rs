@@ -202,11 +202,56 @@ unsafe impl<A: GlobalAlloc> GlobalAlloc for TrackingAllocator<A> {
     }
 }
 
+/// Owner kind reserved for runtime-managed memory regions (e.g. the native
+/// code buffer and guard-page reservations) that are registered explicitly
+/// via [`AllocationHandle`] rather than going through the wrapper allocators.
+///
+/// Records with this owner kind are tracked separately from the normal
+/// `total_bytes` so that a 16 MiB code buffer reservation does not drown out
+/// the heap allocations the report is meant to highlight.
+pub const RUNTIME_MEMORY_OWNER: &str = "RuntimeMemory";
+
+/// Type-name marker for the native code buffer reservation.
+pub const RUNTIME_TYPE_CODE_BUFFER: &str = "CodeBuffer";
+
+/// Type-name marker for a guard-page backed wasm memory reservation.
+pub const RUNTIME_TYPE_GUARD_PAGE: &str = "GuardPageMemory";
+
+/// Categorization of a record outside the normal heap-tracked total.
+#[cfg(feature = "memprof")]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum RuntimeBucket {
+    /// Ordinary heap allocation — counts toward `total_bytes`.
+    Heap,
+    /// Native code buffer (mmap'd executable region).
+    CodeBuffer,
+    /// Guard-page memory reservation for a wasm linear memory.
+    GuardPage,
+}
+
+#[cfg(feature = "memprof")]
+#[inline]
+fn runtime_bucket(owner_kind: &str, type_name: &str) -> RuntimeBucket {
+    if owner_kind != RUNTIME_MEMORY_OWNER {
+        return RuntimeBucket::Heap;
+    }
+    match type_name {
+        RUNTIME_TYPE_CODE_BUFFER => RuntimeBucket::CodeBuffer,
+        RUNTIME_TYPE_GUARD_PAGE => RuntimeBucket::GuardPage,
+        // Any future RuntimeMemory type falls into CodeBuffer by default so
+        // it is at least accounted for outside the heap total; if it becomes
+        // meaningful, add a dedicated bucket.
+        _ => RuntimeBucket::CodeBuffer,
+    }
+}
+
 #[cfg(not(feature = "memprof"))]
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct RegistrySnapshot {
     pub records: inner::Vec<RecordSnapshot>,
     pub total_bytes: usize,
+    pub code_buffer_bytes: usize,
+    pub guard_page_bytes: usize,
 }
 
 #[cfg(not(feature = "memprof"))]
@@ -327,6 +372,8 @@ pub struct AggregateEntry {
 pub struct AggregateSnapshot {
     pub time_ns: u64,
     pub total_bytes: usize,
+    pub code_buffer_bytes: usize,
+    pub guard_page_bytes: usize,
     pub live_records: usize,
     pub entries: inner::Vec<AggregateEntry>,
 }
@@ -336,6 +383,8 @@ pub struct AggregateSnapshot {
 pub struct TimelinePoint {
     pub time_ns: u64,
     pub total_bytes: usize,
+    pub code_buffer_bytes: usize,
+    pub guard_page_bytes: usize,
     pub live_records: usize,
 }
 
@@ -434,6 +483,8 @@ pub struct RecordSnapshot {
 pub struct RegistrySnapshot {
     pub records: inner::Vec<RecordSnapshot>,
     pub total_bytes: usize,
+    pub code_buffer_bytes: usize,
+    pub guard_page_bytes: usize,
 }
 
 #[cfg(feature = "memprof")]
@@ -536,6 +587,8 @@ pub struct AggregateEntry {
 pub struct AggregateSnapshot {
     pub time_ns: u64,
     pub total_bytes: usize,
+    pub code_buffer_bytes: usize,
+    pub guard_page_bytes: usize,
     pub live_records: usize,
     pub entries: inner::Vec<AggregateEntry>,
 }
@@ -545,6 +598,8 @@ pub struct AggregateSnapshot {
 pub struct TimelinePoint {
     pub time_ns: u64,
     pub total_bytes: usize,
+    pub code_buffer_bytes: usize,
+    pub guard_page_bytes: usize,
     pub live_records: usize,
 }
 
@@ -619,7 +674,17 @@ struct AllocationContext {
 struct ProfilerState {
     start: std::time::Instant,
     next_stack_id: StackId,
+    /// Bytes from records whose owner kind is *not* `RUNTIME_MEMORY_OWNER`
+    /// (i.e. ordinary heap allocations through Vec/Box/etc.). This is the
+    /// number the report headlines as "Tracked total".
     total_bytes: usize,
+    /// Bytes from the native code buffer (`RUNTIME_TYPE_CODE_BUFFER`).
+    /// Exposed as a separate series so the 16 MiB reservation does not
+    /// dominate the tracked total.
+    code_buffer_bytes: usize,
+    /// Bytes from guard-page memory reservations
+    /// (`RUNTIME_TYPE_GUARD_PAGE`). Exposed as a separate series.
+    guard_page_bytes: usize,
     stacks: StdHashMap<StackId, StoredStack>,
     stack_ids_by_text: StdHashMap<AllocBox<str>, StackId>,
     records: StdHashMap<u64, Record>,
@@ -639,6 +704,8 @@ impl Default for ProfilerState {
             start: std::time::Instant::now(),
             next_stack_id: 1,
             total_bytes: 0,
+            code_buffer_bytes: 0,
+            guard_page_bytes: 0,
             stacks: StdHashMap::new(),
             stack_ids_by_text: StdHashMap::new(),
             records: StdHashMap::new(),
@@ -675,6 +742,8 @@ impl ProfilerState {
     fn take_aggregate_snapshot(&mut self) {
         let time_ns = elapsed_ns(self.start);
         let total_bytes = self.total_bytes;
+        let code_buffer_bytes = self.code_buffer_bytes;
+        let guard_page_bytes = self.guard_page_bytes;
         let live_records = self.records.len();
         // Build largest_bytes per key by scanning records.
         let mut largest: StdHashMap<AggregateKey, usize> = StdHashMap::new();
@@ -711,6 +780,8 @@ impl ProfilerState {
         self.snapshots.push(AggregateSnapshot {
             time_ns,
             total_bytes,
+            code_buffer_bytes,
+            guard_page_bytes,
             live_records,
             entries,
         });
@@ -725,6 +796,8 @@ impl ProfilerState {
             self.timeline.push(TimelinePoint {
                 time_ns,
                 total_bytes: self.total_bytes,
+                code_buffer_bytes: self.code_buffer_bytes,
+                guard_page_bytes: self.guard_page_bytes,
                 live_records: self.records.len(),
             });
         }
@@ -1141,10 +1214,27 @@ fn snapshot_from_records(profiler: &ProfilerState) -> RegistrySnapshot {
         })
         .collect();
     sort_records(&mut records);
-    let total_bytes = records.iter().map(|record| record.size_bytes).sum();
+    let mut total_bytes = 0usize;
+    let mut code_buffer_bytes = 0usize;
+    let mut guard_page_bytes = 0usize;
+    for record in &records {
+        match runtime_bucket(record.owner_kind, record.type_name) {
+            RuntimeBucket::Heap => {
+                total_bytes = total_bytes.saturating_add(record.size_bytes);
+            }
+            RuntimeBucket::CodeBuffer => {
+                code_buffer_bytes = code_buffer_bytes.saturating_add(record.size_bytes);
+            }
+            RuntimeBucket::GuardPage => {
+                guard_page_bytes = guard_page_bytes.saturating_add(record.size_bytes);
+            }
+        }
+    }
     RegistrySnapshot {
         records,
         total_bytes,
+        code_buffer_bytes,
+        guard_page_bytes,
     }
 }
 
@@ -1183,7 +1273,19 @@ impl AllocationHandle {
                     intern_stack(&mut profiler, key, full_text)
                 });
             let mut profiler = profiler().lock().unwrap();
-            profiler.total_bytes = profiler.total_bytes.saturating_add(state.size_bytes);
+            match runtime_bucket(self.descriptor.owner_kind, self.descriptor.type_name) {
+                RuntimeBucket::Heap => {
+                    profiler.total_bytes = profiler.total_bytes.saturating_add(state.size_bytes);
+                }
+                RuntimeBucket::CodeBuffer => {
+                    profiler.code_buffer_bytes =
+                        profiler.code_buffer_bytes.saturating_add(state.size_bytes);
+                }
+                RuntimeBucket::GuardPage => {
+                    profiler.guard_page_bytes =
+                        profiler.guard_page_bytes.saturating_add(state.size_bytes);
+                }
+            }
             let record = Record {
                 owner_kind: self.descriptor.owner_kind,
                 type_name: self.descriptor.type_name,
@@ -1235,7 +1337,6 @@ impl AllocationHandle {
         };
         with_tracking_internal(|| {
             let mut profiler = profiler().lock().unwrap();
-            let total_before = profiler.total_bytes;
             let Some(record) = profiler.records.get(&id) else {
                 return;
             };
@@ -1243,6 +1344,7 @@ impl AllocationHandle {
                 || record.size_bytes != state.size_bytes
                 || record.ptr != state.ptr;
             let old_size_bytes = record.size_bytes;
+            let bucket = runtime_bucket(record.owner_kind, record.type_name);
             if !size_changed {
                 if record.len != state.len {
                     let record = profiler
@@ -1254,9 +1356,6 @@ impl AllocationHandle {
                 return;
             }
 
-            let total_bytes = total_before
-                .saturating_sub(old_size_bytes)
-                .saturating_add(state.size_bytes);
             let agg_key = {
                 let record = profiler
                     .records
@@ -1280,7 +1379,26 @@ impl AllocationHandle {
                 record.ptr = state.ptr;
                 record.last_update_stack = None;
             };
-            profiler.total_bytes = total_bytes;
+            match bucket {
+                RuntimeBucket::Heap => {
+                    profiler.total_bytes = profiler
+                        .total_bytes
+                        .saturating_sub(old_size_bytes)
+                        .saturating_add(state.size_bytes);
+                }
+                RuntimeBucket::CodeBuffer => {
+                    profiler.code_buffer_bytes = profiler
+                        .code_buffer_bytes
+                        .saturating_sub(old_size_bytes)
+                        .saturating_add(state.size_bytes);
+                }
+                RuntimeBucket::GuardPage => {
+                    profiler.guard_page_bytes = profiler
+                        .guard_page_bytes
+                        .saturating_sub(old_size_bytes)
+                        .saturating_add(state.size_bytes);
+                }
+            }
             profiler.aggregate_update(&agg_key, old_size_bytes, state.size_bytes);
             profiler.maybe_sample_timeline();
             profiler.maybe_take_snapshot();
@@ -1296,7 +1414,19 @@ impl AllocationHandle {
             let Some(record) = profiler.records.remove(&id) else {
                 return;
             };
-            profiler.total_bytes = profiler.total_bytes.saturating_sub(record.size_bytes);
+            match runtime_bucket(record.owner_kind, record.type_name) {
+                RuntimeBucket::Heap => {
+                    profiler.total_bytes = profiler.total_bytes.saturating_sub(record.size_bytes);
+                }
+                RuntimeBucket::CodeBuffer => {
+                    profiler.code_buffer_bytes =
+                        profiler.code_buffer_bytes.saturating_sub(record.size_bytes);
+                }
+                RuntimeBucket::GuardPage => {
+                    profiler.guard_page_bytes =
+                        profiler.guard_page_bytes.saturating_sub(record.size_bytes);
+                }
+            }
             profiler.aggregate_remove(&record);
             profiler.maybe_sample_timeline();
             profiler.maybe_take_snapshot();
@@ -1430,6 +1560,8 @@ pub fn snapshot_at(time_ns: u64) -> RegistrySnapshot {
         return RegistrySnapshot {
             records: inner::Vec::new(),
             total_bytes: 0,
+            code_buffer_bytes: 0,
+            guard_page_bytes: 0,
         };
     };
     // Synthesize RecordSnapshots from aggregate entries (one per group).
@@ -1452,6 +1584,8 @@ pub fn snapshot_at(time_ns: u64) -> RegistrySnapshot {
     sort_records(&mut records);
     RegistrySnapshot {
         total_bytes: snap.total_bytes,
+        code_buffer_bytes: snap.code_buffer_bytes,
+        guard_page_bytes: snap.guard_page_bytes,
         records,
     }
 }
@@ -1462,6 +1596,8 @@ pub fn reset_tracking() {
     profiler.start = std::time::Instant::now();
     profiler.next_stack_id = 1;
     profiler.total_bytes = 0;
+    profiler.code_buffer_bytes = 0;
+    profiler.guard_page_bytes = 0;
     profiler.stacks.clear();
     profiler.stack_ids_by_text.clear();
     profiler.records.clear();
@@ -4006,17 +4142,25 @@ mod tests {
         reset_tracking();
 
         let mut code = AllocationHandle::new(
-            AllocationDescriptor::new("RuntimeMemory", "CodeBuffer"),
+            AllocationDescriptor::new(RUNTIME_MEMORY_OWNER, RUNTIME_TYPE_CODE_BUFFER),
             AllocationState::new(64)
                 .with_len(0)
                 .with_capacity(64)
                 .with_ptr(0x1000),
         );
+        let mut guard = AllocationHandle::new(
+            AllocationDescriptor::new(RUNTIME_MEMORY_OWNER, RUNTIME_TYPE_GUARD_PAGE),
+            AllocationState::new(4096)
+                .with_len(4096)
+                .with_capacity(4096)
+                .with_ptr(0x2000),
+        );
         let profile0 = profile();
-        assert_eq!(profile0.snapshot.records.len(), 1);
-        assert_eq!(profile0.snapshot.records[0].owner_kind, "RuntimeMemory");
-        assert_eq!(profile0.snapshot.records[0].type_name, "CodeBuffer");
-        assert_eq!(profile0.snapshot.records[0].size_bytes, 64);
+        assert_eq!(profile0.snapshot.records.len(), 2);
+        // Each runtime type is routed to its own series counter.
+        assert_eq!(profile0.snapshot.total_bytes, 0);
+        assert_eq!(profile0.snapshot.code_buffer_bytes, 64);
+        assert_eq!(profile0.snapshot.guard_page_bytes, 4096);
 
         code.update(
             AllocationState::new(128)
@@ -4025,13 +4169,17 @@ mod tests {
                 .with_ptr(0x1000),
         );
         let snapshot1 = snapshot();
-        assert_eq!(snapshot1.records.len(), 1);
-        assert_eq!(snapshot1.records[0].size_bytes, 128);
-        assert_eq!(snapshot1.records[0].len, Some(32));
+        assert_eq!(snapshot1.total_bytes, 0);
+        assert_eq!(snapshot1.code_buffer_bytes, 128);
+        assert_eq!(snapshot1.guard_page_bytes, 4096);
 
         code.remove();
+        guard.remove();
         let profile2 = profile();
         assert!(profile2.snapshot.records.is_empty());
+        assert_eq!(profile2.snapshot.total_bytes, 0);
+        assert_eq!(profile2.snapshot.code_buffer_bytes, 0);
+        assert_eq!(profile2.snapshot.guard_page_bytes, 0);
         set_tracking_enabled(false);
         reset_tracking();
     }
