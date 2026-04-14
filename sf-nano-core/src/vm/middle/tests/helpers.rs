@@ -150,12 +150,13 @@ pub(super) fn plan_program(
             err.message()
         )
     });
-    let planner = JointPlanner::build(semantic, &cfg, &slot, frame, config).unwrap_or_else(|err| {
-        panic!(
-            "joint planner should build for test semantic program: {}",
-            err.message()
-        )
-    });
+    let planner = JointPlanner::build(semantic, &cfg, slot.blocks.len(), frame, config)
+        .unwrap_or_else(|err| {
+            panic!(
+                "joint planner should build for test semantic program: {}",
+                err.message()
+            )
+        });
     PlannedPipeline {
         frame,
         cfg,

@@ -667,7 +667,12 @@ impl<'a> BlockLowerContext<'a> {
             .ok_or_else(|| {
                 WasmError::internal("edge target is out of range during native lowering")
             })?;
-        let mut args = collections::Vec::with_capacity(target.params.len());
+        // Size for the common case of single-reg values; will grow if pair
+        // regs (32-bit targets) push extra hi halves. Counting params+entries
+        // avoids the original `params.len()` under-estimate, which ignored
+        // cache entries and forced push-growth past them.
+        let cache_entries = self.block_entry_cache_params(target.id.0);
+        let mut args = collections::Vec::with_capacity(target.params.len() + cache_entries.len());
         for target_param in &target.params {
             let binding = edge
                 .bindings
@@ -685,7 +690,7 @@ impl<'a> BlockLowerContext<'a> {
                 args.push(MachineValue::Reg(hi));
             }
         }
-        for entry in self.block_entry_cache_params(target.id.0).iter().copied() {
+        for entry in cache_entries.iter().copied() {
             let cached = self.bound_cached_local(entry.cached_index).ok_or_else(|| {
                 let _slot = self.cached_locals()[entry.cached_index].slot;
                 WasmError::internal("edge to b expects cached local slot to stay resident, but source block b has no binding")

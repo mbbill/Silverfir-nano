@@ -16,7 +16,7 @@ use crate::{
     value_type::ValueType,
     vm::{
         backend::BackendConfig,
-        middle::{cfg::SemanticCfg, frame::FrameLayoutPlan, slot_ssa::SlotSsaProgram},
+        middle::{cfg::SemanticCfg, frame::FrameLayoutPlan},
         wasm::{
             primitive_op,
             primitive_op::PrimitiveOpKind,
@@ -40,7 +40,6 @@ use crate::vm::middle::{budget::count_live_bank_budget_units, frame::FrameSlot};
 pub(crate) fn build_plan(
     semantic: &SemanticProgram,
     cfg: &SemanticCfg,
-    _slot_program: &SlotSsaProgram,
     frame: FrameLayoutPlan,
     config: BackendConfig,
 ) -> Result<FunctionPlan, WasmError> {

@@ -212,7 +212,8 @@ fn structured_branch_target_keeps_exact_transient_entry_at_end_block_open() {
     let cfg = cfg::build_semantic_cfg(&semantic);
     let slot = slot_ssa::lower_slot_only_ssa(&semantic, &cfg, frame)
         .expect("slot-only SSA should build for structured branch target regression");
-    let plan = joint_plan::build::build_plan(&semantic, &cfg, &slot, frame, host_config(7, 13))
+    let _ = slot; // only used to ensure slot-only SSA lowers successfully above
+    let plan = joint_plan::build::build_plan(&semantic, &cfg, frame, host_config(7, 13))
         .expect("joint plan should build for structured branch target regression");
     let join_block = block_for_semantic_index(&cfg, 6);
     let join_entry = plan.blocks[join_block.as_usize()].entry.clone();

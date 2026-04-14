@@ -13,7 +13,6 @@ use crate::{
         middle::{
             cfg::{CfgBlockId, SemanticCfg},
             frame::{FrameLayoutPlan, FrameSlot},
-            slot_ssa::SlotSsaProgram,
         },
         wasm::semantic_ir::SemanticProgram,
     },
@@ -41,12 +40,12 @@ impl JointPlanner {
     pub(crate) fn build(
         semantic: &SemanticProgram,
         cfg: &SemanticCfg,
-        slot_program: &SlotSsaProgram,
+        slot_block_count: usize,
         frame: FrameLayoutPlan,
         config: BackendConfig,
     ) -> Result<Self, WasmError> {
-        let plan = build::build_plan(semantic, cfg, slot_program, frame, config)?;
-        validate::validate_plan(cfg, slot_program, &plan)?;
+        let plan = build::build_plan(semantic, cfg, frame, config)?;
+        validate::validate_plan(cfg, slot_block_count, &plan)?;
         Ok(Self { plan })
     }
 

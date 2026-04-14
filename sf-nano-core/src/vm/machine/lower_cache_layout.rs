@@ -26,6 +26,11 @@ use super::{
     lower_regalloc::MachineRegFile,
 };
 
+/// Sentinel for "no lane assigned" in the slot->lane layout matrices.
+/// Replaces `None` in what was previously `Option<usize>` (halves the
+/// per-element size from 16 to 4 bytes).
+const LANE_UNASSIGNED: u32 = u32::MAX;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum LayoutBank {
     Gp,
@@ -82,14 +87,12 @@ pub(super) fn compute_block_entry_cache_params(
     let idom_children = build_idom_children(program.blocks.len(), program.entry.as_usize(), &idom);
     let bank_slots = compute_block_bank_slots(program, &slot_to_cached_index, &slot_meta);
 
-    let mut gp_layouts =
-        collections::vec![collections::vec![None; cached_locals.len()]; program.blocks.len()];
-    let mut fp_layouts =
-        collections::vec![collections::vec![None; cached_locals.len()]; program.blocks.len()];
-    let mut gp_exit_layouts =
-        collections::vec![collections::vec![None; cached_locals.len()]; program.blocks.len()];
-    let mut fp_exit_layouts =
-        collections::vec![collections::vec![None; cached_locals.len()]; program.blocks.len()];
+    let lanes = cached_locals.len();
+    let n_blocks = program.blocks.len();
+    let mut gp_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
+    let mut fp_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
+    let mut gp_exit_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
+    let mut fp_exit_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
     let mut visited = collections::vec![false; program.blocks.len()];
     if program.entry.as_usize() < program.blocks.len() {
         assign_bank_layouts_from_root(
@@ -105,6 +108,7 @@ pub(super) fn compute_block_entry_cache_params(
             &param_usage,
             &mut gp_layouts,
             &mut gp_exit_layouts,
+            lanes,
             &mut visited,
         )?;
         assign_bank_layouts_from_root(
@@ -120,6 +124,7 @@ pub(super) fn compute_block_entry_cache_params(
             &param_usage,
             &mut fp_layouts,
             &mut fp_exit_layouts,
+            lanes,
             &mut collections::vec![false; program.blocks.len()],
         )?;
     }
@@ -141,6 +146,7 @@ pub(super) fn compute_block_entry_cache_params(
             &param_usage,
             &mut gp_layouts,
             &mut gp_exit_layouts,
+            lanes,
             &mut visited,
         )?;
     }
@@ -165,27 +171,38 @@ pub(super) fn compute_block_entry_cache_params(
             &param_usage,
             &mut fp_layouts,
             &mut fp_exit_layouts,
+            lanes,
             &mut fp_visited,
         )?;
     }
 
     let mut layouts = collections::vec![collections::Vec::new(); program.blocks.len()];
     for (block_index, block) in program.blocks.iter().enumerate() {
-        let mut entries = collections::Vec::<(u16, usize, EntryCacheParam)>::new();
         let entry_slots = program
             .block_entry_cached_slots
             .get(block_index)
-            .cloned()
-            .unwrap_or_default();
-        for &slot in &entry_slots {
+            .map(|s| s.as_slice())
+            .unwrap_or(&[]);
+        // Upper bound: one entry per entry slot, minus any that miss
+        // slot_to_cached_index. Sizing tight avoids ~2x push-growth overallocation
+        // on the per-block Vec, which otherwise dominates mir_lower peak memory.
+        let mut entries =
+            collections::Vec::<(u16, usize, EntryCacheParam)>::with_capacity(entry_slots.len());
+        for &slot in entry_slots {
             let Some(&cached_index) = slot_to_cached_index.get(&slot) else {
                 continue;
             };
-            let start = match slot_meta[cached_index].bank {
-                LayoutBank::Gp => gp_layouts[block_index][cached_index],
-                LayoutBank::Fp => fp_layouts[block_index][cached_index],
+            let row_base = block_index * lanes;
+            let lane_val = match slot_meta[cached_index].bank {
+                LayoutBank::Gp => gp_layouts[row_base + cached_index],
+                LayoutBank::Fp => fp_layouts[row_base + cached_index],
+            };
+            if lane_val == LANE_UNASSIGNED {
+                return Err(WasmError::internal(
+                    "cache lane layout missing for slot in block b",
+                ));
             }
-            .ok_or_else(|| WasmError::internal("cache lane layout missing for slot in block b"))?;
+            let start = lane_val as usize;
             let regs = regs_for_segment(
                 regfile,
                 slot_meta[cached_index].bank,
@@ -193,7 +210,7 @@ pub(super) fn compute_block_entry_cache_params(
                 slot_meta[cached_index].width,
             )?;
             let requirement =
-                block_entry_cache_requirement(&entry_slots, block, slot).ok_or_else(|| {
+                block_entry_cache_requirement(entry_slots, block, slot).ok_or_else(|| {
                     WasmError::internal("entry cache slot in block b has no entry requirement")
                 })?;
             entries.push((
@@ -389,7 +406,7 @@ fn compute_block_bank_slots(
 
 fn assign_bank_layouts_from_root(
     block_index: usize,
-    parent_layout: Option<&[Option<usize>]>,
+    parent_layout: Option<&[u32]>,
     bank: LayoutBank,
     lane_count: usize,
     program: &SsaProgram,
@@ -398,11 +415,12 @@ fn assign_bank_layouts_from_root(
     bank_slots: &[[collections::Vec<usize>; 2]],
     slot_meta: &[SlotLayoutMeta],
     param_usage: &[ParamPrefixUsage],
-    layouts: &mut [collections::Vec<Option<usize>>],
-    exit_layouts: &mut [collections::Vec<Option<usize>>],
+    layouts: &mut [u32],
+    exit_layouts: &mut [u32],
+    lanes: usize,
     visited: &mut [bool],
 ) -> Result<(), WasmError> {
-    if block_index >= layouts.len() || visited[block_index] {
+    if block_index >= visited.len() || visited[block_index] {
         return Ok(());
     }
     visited[block_index] = true;
@@ -414,18 +432,21 @@ fn assign_bank_layouts_from_root(
         LayoutBank::Gp => param_usage[block_index].gp,
         LayoutBank::Fp => param_usage[block_index].fp,
     };
-    layouts[block_index] =
+    let row_base = block_index * lanes;
+    let entry_row =
         build_block_bank_layout(slots, parent_layout, slot_meta, lane_count, prefix, bank)?;
-    exit_layouts[block_index] = simulate_block_exit_layout(
+    layouts[row_base..row_base + lanes].copy_from_slice(&entry_row);
+    let exit_row = simulate_block_exit_layout(
         &program.blocks[block_index],
-        &layouts[block_index],
+        &layouts[row_base..row_base + lanes],
         slot_to_cached_index,
         slot_meta,
         bank,
         lane_count,
         prefix,
     )?;
-    let current = exit_layouts[block_index].clone();
+    exit_layouts[row_base..row_base + lanes].copy_from_slice(&exit_row);
+    let current = exit_row;
     for &child in &idom_children[block_index] {
         assign_bank_layouts_from_root(
             child,
@@ -440,6 +461,7 @@ fn assign_bank_layouts_from_root(
             param_usage,
             layouts,
             exit_layouts,
+            lanes,
             visited,
         )?;
     }
@@ -448,14 +470,14 @@ fn assign_bank_layouts_from_root(
 
 fn simulate_block_exit_layout(
     block: &SsaBlock,
-    entry_layout: &[Option<usize>],
+    entry_layout: &[u32],
     slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
     slot_meta: &[SlotLayoutMeta],
     bank: LayoutBank,
     lane_count: usize,
     prefix_occupied: usize,
-) -> Result<collections::Vec<Option<usize>>, WasmError> {
-    let mut layout: collections::Vec<_> = entry_layout.to_vec().into();
+) -> Result<collections::Vec<u32>, WasmError> {
+    let mut layout: collections::Vec<u32> = entry_layout.to_vec().into();
     let mut occupied = collections::vec![false; lane_count];
     for lane in 0..prefix_occupied.min(lane_count) {
         occupied[lane] = true;
@@ -464,8 +486,13 @@ fn simulate_block_exit_layout(
         if slot_meta.get(slot_index).map(|meta| meta.bank) != Some(bank) {
             continue;
         }
-        if let Some(start) = start {
-            occupy_segment(&mut occupied, start, slot_meta[slot_index].width, true);
+        if start != LANE_UNASSIGNED {
+            occupy_segment(
+                &mut occupied,
+                start as usize,
+                slot_meta[slot_index].width,
+                true,
+            );
         }
     }
 
@@ -476,20 +503,20 @@ fn simulate_block_exit_layout(
                 let Some(&slot_index) = slot_to_cached_index.get(&slot) else {
                     continue;
                 };
-                if slot_meta[slot_index].bank != bank || layout[slot_index].is_some() {
+                if slot_meta[slot_index].bank != bank || layout[slot_index] != LANE_UNASSIGNED {
                     continue;
                 }
                 let width = slot_meta[slot_index].width;
                 if let Some(start) = choose_hole_start(&occupied, width) {
                     occupy_segment(&mut occupied, start, width, true);
-                    layout[slot_index] = Some(start);
+                    layout[slot_index] = start as u32;
                 } else if bank == LayoutBank::Gp {
                     let preserve = layout.clone();
                     let mut active = layout
                         .iter()
                         .enumerate()
                         .filter_map(|(cached_index, start)| {
-                            (slot_meta[cached_index].bank == bank && start.is_some())
+                            (slot_meta[cached_index].bank == bank && *start != LANE_UNASSIGNED)
                                 .then_some(cached_index)
                         })
                         .collect::<collections::Vec<_>>();
@@ -509,10 +536,10 @@ fn simulate_block_exit_layout(
                         if slot_meta.get(cached_index).map(|meta| meta.bank) != Some(bank) {
                             continue;
                         }
-                        if let Some(start) = start {
+                        if start != LANE_UNASSIGNED {
                             occupy_segment(
                                 &mut occupied,
-                                start,
+                                start as usize,
                                 slot_meta[cached_index].width,
                                 true,
                             );
@@ -532,8 +559,14 @@ fn simulate_block_exit_layout(
                 if slot_meta[slot_index].bank != bank {
                     continue;
                 }
-                if let Some(start) = layout[slot_index].take() {
-                    occupy_segment(&mut occupied, start, slot_meta[slot_index].width, false);
+                let prev = core::mem::replace(&mut layout[slot_index], LANE_UNASSIGNED);
+                if prev != LANE_UNASSIGNED {
+                    occupy_segment(
+                        &mut occupied,
+                        prev as usize,
+                        slot_meta[slot_index].width,
+                        false,
+                    );
                 }
             }
             SsaOp::CALL => {
@@ -541,9 +574,14 @@ fn simulate_block_exit_layout(
                     if slot_meta.get(slot_index).map(|meta| meta.bank) != Some(bank) {
                         continue;
                     }
-                    if let Some(start) = *lane {
-                        occupy_segment(&mut occupied, start, slot_meta[slot_index].width, false);
-                        *lane = None;
+                    if *lane != LANE_UNASSIGNED {
+                        occupy_segment(
+                            &mut occupied,
+                            *lane as usize,
+                            slot_meta[slot_index].width,
+                            false,
+                        );
+                        *lane = LANE_UNASSIGNED;
                     }
                 }
             }
@@ -558,13 +596,13 @@ fn simulate_block_exit_layout(
 
 fn build_block_bank_layout(
     slots: &[usize],
-    parent_layout: Option<&[Option<usize>]>,
+    parent_layout: Option<&[u32]>,
     slot_meta: &[SlotLayoutMeta],
     lane_count: usize,
     prefix_occupied: usize,
     bank: LayoutBank,
-) -> Result<collections::Vec<Option<usize>>, WasmError> {
-    let mut layout = collections::vec![None; slot_meta.len()];
+) -> Result<collections::Vec<u32>, WasmError> {
+    let mut layout = collections::vec![LANE_UNASSIGNED; slot_meta.len()];
     if slots.is_empty() {
         return Ok(layout);
     }
@@ -576,11 +614,13 @@ fn build_block_bank_layout(
     let mut additions = collections::Vec::new();
     if let Some(parent_layout) = parent_layout {
         for &slot in slots {
-            if let Some(start) = parent_layout[slot] {
+            let parent_start = parent_layout[slot];
+            if parent_start != LANE_UNASSIGNED {
+                let start = parent_start as usize;
                 let width = slot_meta[slot].width;
                 if segment_available(&occupied, start, width) {
                     occupy_segment(&mut occupied, start, width, true);
-                    layout[slot] = Some(start);
+                    layout[slot] = parent_start;
                     continue;
                 }
             }
@@ -596,7 +636,7 @@ fn build_block_bank_layout(
         let width = slot_meta[slot].width;
         if let Some(start) = choose_hole_start(&occupied, width) {
             occupy_segment(&mut occupied, start, width, true);
-            layout[slot] = Some(start);
+            layout[slot] = start as u32;
         } else {
             needs_repack = true;
             break;
@@ -618,16 +658,20 @@ fn build_block_bank_layout(
 
 fn exact_gp_layout(
     slots: &[usize],
-    parent_layout: Option<&[Option<usize>]>,
+    parent_layout: Option<&[u32]>,
     slot_meta: &[SlotLayoutMeta],
     lane_count: usize,
     prefix_occupied: usize,
-) -> Result<collections::Vec<Option<usize>>, WasmError> {
+) -> Result<collections::Vec<u32>, WasmError> {
     let mut ordered = slots.to_vec();
     ordered.sort_by_key(|&slot| {
         (
             Reverse(slot_meta[slot].width),
-            Reverse(parent_layout.and_then(|layout| layout[slot]).is_some()),
+            Reverse(
+                parent_layout
+                    .map(|layout| layout[slot] != LANE_UNASSIGNED)
+                    .unwrap_or(false),
+            ),
             slot,
         )
     });
@@ -635,8 +679,8 @@ fn exact_gp_layout(
     for lane in 0..prefix_occupied.min(lane_count) {
         occupied[lane] = true;
     }
-    let mut current = collections::vec![None; slot_meta.len()];
-    let mut best: Option<(usize, collections::Vec<Option<usize>>)> = None;
+    let mut current = collections::vec![LANE_UNASSIGNED; slot_meta.len()];
+    let mut best: Option<(usize, collections::Vec<u32>)> = None;
     search_exact_gp_layout(
         &ordered,
         0,
@@ -655,12 +699,12 @@ fn exact_gp_layout(
 fn search_exact_gp_layout(
     ordered: &[usize],
     index: usize,
-    parent_layout: Option<&[Option<usize>]>,
+    parent_layout: Option<&[u32]>,
     slot_meta: &[SlotLayoutMeta],
     occupied: &mut [bool],
-    current: &mut [Option<usize>],
+    current: &mut [u32],
     current_cost: usize,
-    best: &mut Option<(usize, collections::Vec<Option<usize>>)>,
+    best: &mut Option<(usize, collections::Vec<u32>)>,
 ) {
     if let Some((best_cost, _)) = best {
         if current_cost > *best_cost {
@@ -685,15 +729,23 @@ fn search_exact_gp_layout(
     let slot = ordered[index];
     let width = slot_meta[slot].width;
     let mut starts = feasible_starts(occupied, width);
-    if let Some(parent_start) = parent_layout.and_then(|layout| layout[slot]) {
+    let parent_start_opt = parent_layout.and_then(|layout| {
+        let v = layout[slot];
+        if v != LANE_UNASSIGNED {
+            Some(v as usize)
+        } else {
+            None
+        }
+    });
+    if let Some(parent_start) = parent_start_opt {
         if let Some(pos) = starts.iter().position(|&start| start == parent_start) {
             starts.swap(0, pos);
         }
     }
     for start in starts {
         occupy_segment(occupied, start, width, true);
-        current[slot] = Some(start);
-        let added_cost = match parent_layout.and_then(|layout| layout[slot]) {
+        current[slot] = start as u32;
+        let added_cost = match parent_start_opt {
             Some(parent_start) if parent_start != start => width,
             _ => 0,
         };
@@ -707,17 +759,19 @@ fn search_exact_gp_layout(
             current_cost + added_cost,
             best,
         );
-        current[slot] = None;
+        current[slot] = LANE_UNASSIGNED;
         occupy_segment(occupied, start, width, false);
     }
 }
 
-fn lexicographically_better(lhs: &[Option<usize>], rhs: &[Option<usize>]) -> bool {
+fn lexicographically_better(lhs: &[u32], rhs: &[u32]) -> bool {
     for (left, right) in lhs.iter().zip(rhs.iter()) {
-        match (*left, *right) {
-            (Some(left), Some(right)) if left != right => return left < right,
-            (Some(_), None) => return true,
-            (None, Some(_)) => return false,
+        let left_set = *left != LANE_UNASSIGNED;
+        let right_set = *right != LANE_UNASSIGNED;
+        match (left_set, right_set) {
+            (true, true) if *left != *right => return *left < *right,
+            (true, false) => return true,
+            (false, true) => return false,
             _ => {}
         }
     }

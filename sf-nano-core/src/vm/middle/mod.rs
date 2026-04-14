@@ -75,16 +75,21 @@ pub(crate) fn prepare_function(
     let slot_program = slot_ssa::lower_slot_only_ssa(&semantic, &semantic_cfg, frame)?;
     drop(slot_phase);
 
-    let joint_plan_phase = phase_span_with_function("joint_plan", input.function_index);
-    let planner =
-        JointPlanner::build(&semantic, &semantic_cfg, &slot_program, frame, input.config)?;
-    drop(joint_plan_phase);
-    // slot_program is only consumed by slot_ssa lowering and by the planner
-    // build + validate; once the planner is built, nothing downstream reads it
-    // (rewrite_function does not take it, and later passes work on ssa).
-    // Drop now so the per-block SlotInst / SlotBlock vecs (~3 MiB on a large
-    // function) are not alive during the biggest phase (ssa_emit).
+    // slot_program is only used beyond slot_lower as a length sanity check
+    // inside the joint-plan validator, so capture that count and drop the full
+    // vector of blocks/ops before the biggest middle phase (joint_plan).
+    let slot_block_count = slot_program.blocks.len();
     drop(slot_program);
+
+    let joint_plan_phase = phase_span_with_function("joint_plan", input.function_index);
+    let planner = JointPlanner::build(
+        &semantic,
+        &semantic_cfg,
+        slot_block_count,
+        frame,
+        input.config,
+    )?;
+    drop(joint_plan_phase);
 
     let ssa_emit_phase = phase_span_with_function("ssa_emit", input.function_index);
     let mut ssa = rewrite::rewrite_function(&semantic, &semantic_cfg, &planner, frame)?;
