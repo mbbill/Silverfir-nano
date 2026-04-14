@@ -14,11 +14,15 @@ use crate::{
     vm::{
         arch::common::{scratch_pool::ScratchPool, text_emitter::TextEmitter},
         machine::machine_ir::{
-            MachineAddr, MachineBranchCond, MachineCallExternal, MachineCompareKind,
+            fp_reg_index, MachineAddr, MachineBranchCond, MachineCallExternal, MachineCompareKind,
             MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth,
             MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
             MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp, MachineSign,
             MachineStorageType, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
+        },
+        runtime::{
+            external::call_external_entry_ptr,
+            preserved::{io as preserved_io, op as preserved_op},
         },
     },
 };
@@ -124,7 +128,7 @@ pub(super) fn prepare_fp<'p>(
 ) -> Result<PreparedFp<'p>, WasmError> {
     match value {
         MachineValue::Reg(reg) => {
-            let fp_idx = crate::vm::machine::machine_ir::fp_reg_index(
+            let fp_idx = fp_reg_index(
                 reg,
                 // We need the config but don't have it here; map_reg will fail
                 // for FP regs so we detect via fp_machine_reg lookup.
@@ -712,9 +716,9 @@ impl<'a> Arm32Backend<'a> {
                 delta,
             } => {
                 self.emit_preserved_helper_call(
-                    crate::vm::runtime::preserved::op::MEMORY_GROW,
-                    &[(crate::vm::runtime::preserved::io::IMM0, *mem_idx)],
-                    &[(crate::vm::runtime::preserved::io::ARG0, *delta)],
+                    preserved_op::MEMORY_GROW,
+                    &[(preserved_io::IMM0, *mem_idx)],
+                    &[(preserved_io::ARG0, *delta)],
                     Some(*dst),
                 )?;
             }
@@ -725,12 +729,12 @@ impl<'a> Arm32Backend<'a> {
                 len,
             } => {
                 self.emit_preserved_helper_call(
-                    crate::vm::runtime::preserved::op::MEMORY_FILL,
-                    &[(crate::vm::runtime::preserved::io::IMM0, *mem_idx)],
+                    preserved_op::MEMORY_FILL,
+                    &[(preserved_io::IMM0, *mem_idx)],
                     &[
-                        (crate::vm::runtime::preserved::io::ARG0, *dest),
-                        (crate::vm::runtime::preserved::io::ARG1, *val),
-                        (crate::vm::runtime::preserved::io::ARG2, *len),
+                        (preserved_io::ARG0, *dest),
+                        (preserved_io::ARG1, *val),
+                        (preserved_io::ARG2, *len),
                     ],
                     None,
                 )?;
@@ -743,15 +747,15 @@ impl<'a> Arm32Backend<'a> {
                 len,
             } => {
                 self.emit_preserved_helper_call(
-                    crate::vm::runtime::preserved::op::MEMORY_COPY,
+                    preserved_op::MEMORY_COPY,
                     &[
-                        (crate::vm::runtime::preserved::io::IMM0, *dst_mem),
-                        (crate::vm::runtime::preserved::io::IMM1, *src_mem),
+                        (preserved_io::IMM0, *dst_mem),
+                        (preserved_io::IMM1, *src_mem),
                     ],
                     &[
-                        (crate::vm::runtime::preserved::io::ARG0, *dest),
-                        (crate::vm::runtime::preserved::io::ARG1, *src),
-                        (crate::vm::runtime::preserved::io::ARG2, *len),
+                        (preserved_io::ARG0, *dest),
+                        (preserved_io::ARG1, *src),
+                        (preserved_io::ARG2, *len),
                     ],
                     None,
                 )?;
@@ -764,23 +768,23 @@ impl<'a> Arm32Backend<'a> {
                 len,
             } => {
                 self.emit_preserved_helper_call(
-                    crate::vm::runtime::preserved::op::MEMORY_INIT,
+                    preserved_op::MEMORY_INIT,
                     &[
-                        (crate::vm::runtime::preserved::io::IMM0, *mem_idx),
-                        (crate::vm::runtime::preserved::io::IMM1, *data_idx),
+                        (preserved_io::IMM0, *mem_idx),
+                        (preserved_io::IMM1, *data_idx),
                     ],
                     &[
-                        (crate::vm::runtime::preserved::io::ARG0, *dest),
-                        (crate::vm::runtime::preserved::io::ARG1, *src),
-                        (crate::vm::runtime::preserved::io::ARG2, *len),
+                        (preserved_io::ARG0, *dest),
+                        (preserved_io::ARG1, *src),
+                        (preserved_io::ARG2, *len),
                     ],
                     None,
                 )?;
             }
             MachineInstKind::DataDrop { data_idx } => {
                 self.emit_preserved_helper_call(
-                    crate::vm::runtime::preserved::op::DATA_DROP,
-                    &[(crate::vm::runtime::preserved::io::IMM0, *data_idx)],
+                    preserved_op::DATA_DROP,
+                    &[(preserved_io::IMM0, *data_idx)],
                     &[],
                     None,
                 )?;
@@ -792,11 +796,11 @@ impl<'a> Arm32Backend<'a> {
                 delta,
             } => {
                 self.emit_preserved_helper_call(
-                    crate::vm::runtime::preserved::op::TABLE_GROW,
-                    &[(crate::vm::runtime::preserved::io::IMM0, *table_idx)],
+                    preserved_op::TABLE_GROW,
+                    &[(preserved_io::IMM0, *table_idx)],
                     &[
-                        (crate::vm::runtime::preserved::io::ARG0, *init_val),
-                        (crate::vm::runtime::preserved::io::ARG1, *delta),
+                        (preserved_io::ARG0, *init_val),
+                        (preserved_io::ARG1, *delta),
                     ],
                     Some(*dst),
                 )?;
@@ -808,12 +812,12 @@ impl<'a> Arm32Backend<'a> {
                 len,
             } => {
                 self.emit_preserved_helper_call(
-                    crate::vm::runtime::preserved::op::TABLE_FILL,
-                    &[(crate::vm::runtime::preserved::io::IMM0, *table_idx)],
+                    preserved_op::TABLE_FILL,
+                    &[(preserved_io::IMM0, *table_idx)],
                     &[
-                        (crate::vm::runtime::preserved::io::ARG0, *start),
-                        (crate::vm::runtime::preserved::io::ARG1, *val),
-                        (crate::vm::runtime::preserved::io::ARG2, *len),
+                        (preserved_io::ARG0, *start),
+                        (preserved_io::ARG1, *val),
+                        (preserved_io::ARG2, *len),
                     ],
                     None,
                 )?;
@@ -826,15 +830,15 @@ impl<'a> Arm32Backend<'a> {
                 len,
             } => {
                 self.emit_preserved_helper_call(
-                    crate::vm::runtime::preserved::op::TABLE_COPY,
+                    preserved_op::TABLE_COPY,
                     &[
-                        (crate::vm::runtime::preserved::io::IMM0, *dst_tbl),
-                        (crate::vm::runtime::preserved::io::IMM1, *src_tbl),
+                        (preserved_io::IMM0, *dst_tbl),
+                        (preserved_io::IMM1, *src_tbl),
                     ],
                     &[
-                        (crate::vm::runtime::preserved::io::ARG0, *dest),
-                        (crate::vm::runtime::preserved::io::ARG1, *src),
-                        (crate::vm::runtime::preserved::io::ARG2, *len),
+                        (preserved_io::ARG0, *dest),
+                        (preserved_io::ARG1, *src),
+                        (preserved_io::ARG2, *len),
                     ],
                     None,
                 )?;
@@ -847,23 +851,23 @@ impl<'a> Arm32Backend<'a> {
                 len,
             } => {
                 self.emit_preserved_helper_call(
-                    crate::vm::runtime::preserved::op::TABLE_INIT,
+                    preserved_op::TABLE_INIT,
                     &[
-                        (crate::vm::runtime::preserved::io::IMM0, *table_idx),
-                        (crate::vm::runtime::preserved::io::IMM1, *elem_idx),
+                        (preserved_io::IMM0, *table_idx),
+                        (preserved_io::IMM1, *elem_idx),
                     ],
                     &[
-                        (crate::vm::runtime::preserved::io::ARG0, *dest),
-                        (crate::vm::runtime::preserved::io::ARG1, *src),
-                        (crate::vm::runtime::preserved::io::ARG2, *len),
+                        (preserved_io::ARG0, *dest),
+                        (preserved_io::ARG1, *src),
+                        (preserved_io::ARG2, *len),
                     ],
                     None,
                 )?;
             }
             MachineInstKind::ElemDrop { elem_idx } => {
                 self.emit_preserved_helper_call(
-                    crate::vm::runtime::preserved::op::ELEM_DROP,
-                    &[(crate::vm::runtime::preserved::io::IMM0, *elem_idx)],
+                    preserved_op::ELEM_DROP,
+                    &[(preserved_io::IMM0, *elem_idx)],
                     &[],
                     None,
                 )?;
@@ -3462,7 +3466,7 @@ impl<'a> Arm32Backend<'a> {
                 WasmError::internal("arm32: external-call metadata is out of range")
             })?;
 
-        let helper_ptr = crate::vm::runtime::external::call_external_entry_ptr() as usize;
+        let helper_ptr = call_external_entry_ptr() as usize;
 
         // Imported calls cross the foreign C ABI, so the caller-saved GP
         // dynamic subset must be spilled explicitly before we stage the ABI

@@ -16,14 +16,15 @@ use crate::{
             MachineCompareKind, MachineEdge, MachineFloatWidth, MachineFrameRegion, MachineFuncId,
             MachineFunction, MachineFunctionAbi, MachineInst, MachineInstKind, MachineIntBinaryOp,
             MachineLoadExtension, MachineMemWidth, MachineModule, MachineModuleAbi, MachineProgram,
-            MachineReg, MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,
-            MachineValue,
+            MachineReg, MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator,
+            MachineTrapKind, MachineValue,
         },
         middle::{
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             ssa_ir::{
                 ir::{
-                    SsaCallOp, SsaInstView, SsaOp, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+                    SsaBlock, SsaCallOp, SsaInstView, SsaOp, SsaOperand, SsaProgram, SsaTerminator,
+                    SsaValue,
                 },
                 validate::validate_program,
             },
@@ -746,9 +747,7 @@ fn stub_machine_function(id: MachineFuncId) -> MachineFunction {
 }
 
 #[inline]
-pub(super) fn slot_offset_bytes(
-    slot: crate::vm::middle::frame::FrameSlot,
-) -> Result<i32, WasmError> {
+pub(super) fn slot_offset_bytes(slot: FrameSlot) -> Result<i32, WasmError> {
     let bytes = i32::from(slot.0)
         .checked_mul(8)
         .ok_or_else(|| WasmError::internal("frame slot byte offset overflow"))?;
@@ -952,11 +951,7 @@ fn append_entry_cache_params(
             params.extend(
                 machine_block_params_for_value(entry.regs, cached.ty)
                     .into_iter()
-                    .map(|param| {
-                        param.with_owner(
-                            crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
-                        )
-                    }),
+                    .map(|param| param.with_owner(MachineRegOwner::CachedLocal)),
             );
         }
     }
@@ -1014,7 +1009,7 @@ fn call_indirect_gp_temps(lower: &BlockLowerContext<'_>) -> Result<CallIndirectG
 fn emit_call_indirect_bounds_check_setup(
     lower: &mut BlockLowerContext<'_>,
     table_idx: u32,
-    index_slot: crate::vm::middle::frame::FrameSlot,
+    index_slot: FrameSlot,
 ) -> Result<(), WasmError> {
     let runtime_layout = lower.runtime_abi_layout();
     let temps = call_indirect_gp_temps(lower)?;
@@ -1023,7 +1018,7 @@ fn emit_call_indirect_bounds_check_setup(
     let table_len = temps.lane2;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: index,
             addr: lower.frame_addr(index_slot)?,
@@ -1036,7 +1031,7 @@ fn emit_call_indirect_bounds_check_setup(
     });
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: table_views,
             addr: lower.runtime_addr(runtime_layout.context.table_views_base_offset),
@@ -1046,7 +1041,7 @@ fn emit_call_indirect_bounds_check_setup(
     });
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: table_len,
             addr: indexed_const_addr(
@@ -1065,7 +1060,7 @@ fn emit_call_indirect_bounds_check_setup(
 fn build_call_indirect_checked_block(
     lower: &BlockLowerContext<'_>,
     table_idx: u32,
-    index_slot: crate::vm::middle::frame::FrameSlot,
+    index_slot: FrameSlot,
 ) -> Result<collections::Vec<MachineInst>, WasmError> {
     let runtime_layout = lower.runtime_abi_layout();
     let temps = call_indirect_gp_temps(lower)?;
@@ -1075,7 +1070,7 @@ fn build_call_indirect_checked_block(
     Ok(collections::vec![
         MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: index,
                 addr: lower.frame_addr(index_slot)?,
@@ -1085,7 +1080,7 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_base,
                 addr: lower.runtime_addr(runtime_layout.context.table_views_base_offset),
@@ -1095,7 +1090,7 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_base,
                 addr: indexed_const_addr(
@@ -1128,7 +1123,7 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: func_idx,
                 addr: MachineAddr {
@@ -1149,7 +1144,7 @@ fn build_call_indirect_checked_block(
         },
         MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_base,
                 addr: lower.runtime_addr(runtime_layout.context.function_views_len_offset),
@@ -1163,7 +1158,7 @@ fn build_call_indirect_checked_block(
 fn build_call_indirect_type_check_block(
     lower: &BlockLowerContext<'_>,
     expected_type_idx: u32,
-    index_slot: crate::vm::middle::frame::FrameSlot,
+    index_slot: FrameSlot,
 ) -> Result<collections::Vec<MachineInst>, WasmError> {
     let function_view_layout = function_view_abi_layout();
     let runtime_layout = lower.runtime_abi_layout();
@@ -1185,7 +1180,7 @@ fn build_call_indirect_type_check_block(
     )?;
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: function_views,
             addr: lower.runtime_addr(runtime_layout.context.type_canon_base_offset),
@@ -1195,7 +1190,7 @@ fn build_call_indirect_type_check_block(
     });
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: expected_type,
             addr: indexed_const_addr(
@@ -1213,7 +1208,7 @@ fn build_call_indirect_type_check_block(
 
 fn build_call_indirect_dispatch_block(
     lower: &BlockLowerContext<'_>,
-    index_slot: crate::vm::middle::frame::FrameSlot,
+    index_slot: FrameSlot,
 ) -> Result<collections::Vec<MachineInst>, WasmError> {
     let function_view_layout = function_view_abi_layout();
     let temps = call_indirect_gp_temps(lower)?;
@@ -1234,7 +1229,7 @@ fn build_call_indirect_dispatch_block(
     )?;
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: local_target,
             addr: MachineAddr {
@@ -1275,7 +1270,7 @@ fn build_call_indirect_local_prepare_block(
     emit_local_call_info_entry_addr(lower, callee_target, prefix_end, prefix_current)?;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: prefix_current,
             addr: MachineAddr {
@@ -1291,7 +1286,7 @@ fn build_call_indirect_local_prepare_block(
     emit_local_call_info_entry_addr(lower, callee_target, prefix_end, prefix_current)?;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: prefix_end,
             addr: MachineAddr {
@@ -1371,7 +1366,7 @@ fn build_call_indirect_local_transfer_block(
     emit_local_call_info_entry_addr(lower, callee_target, caller_result_base, callee_entry)?;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: callee_entry,
             addr: MachineAddr {
@@ -1407,7 +1402,7 @@ fn emit_local_call_info_entry_addr(
     let runtime_layout = lower.runtime_abi_layout();
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: info_base,
             addr: lower.runtime_addr(runtime_layout.context.local_call_infos_base_offset),
@@ -1418,7 +1413,7 @@ fn emit_local_call_info_entry_addr(
     if scaled_index != callee_target {
         lower.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Move {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: scaled_index,
                 src: MachineValue::Reg(callee_target),
@@ -1448,7 +1443,7 @@ fn emit_local_call_info_entry_addr(
 
 fn dynamic_function_view_load(
     lower: &BlockLowerContext<'_>,
-    index_slot: crate::vm::middle::frame::FrameSlot,
+    index_slot: FrameSlot,
     func_idx_dst: MachineReg,
     base_reg: MachineReg,
     scaled_index_reg: MachineReg,
@@ -1460,7 +1455,7 @@ fn dynamic_function_view_load(
     let runtime_layout = native_runtime_abi_layout(lower.gp_reg_width());
     let mut ops = collections::vec![MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: func_idx_dst,
             addr: lower.frame_addr(index_slot)?,
@@ -1471,7 +1466,7 @@ fn dynamic_function_view_load(
     if scaled_index_reg != func_idx_dst {
         ops.push(MachineInst {
             kind: MachineInstKind::Move {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: scaled_index_reg,
                 src: MachineValue::Reg(func_idx_dst),
@@ -1490,7 +1485,7 @@ fn dynamic_function_view_load(
         },
         MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base_reg,
                 addr: lower.runtime_addr(runtime_layout.context.function_views_base_offset),
@@ -1509,7 +1504,7 @@ fn dynamic_function_view_load(
         },
         MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst,
                 addr: MachineAddr {
@@ -1651,7 +1646,7 @@ fn compute_ssa_predecessors(program: &SsaProgram) -> collections::Vec<collection
 
 fn simulate_block_cache_exit_state(
     program: &SsaProgram,
-    block: &crate::vm::middle::ssa_ir::ir::SsaBlock,
+    block: &SsaBlock,
     entry_dirty: &[bool],
     slot_to_index: &BTreeMap<FrameSlot, usize>,
 ) -> (collections::Vec<bool>, collections::Vec<bool>) {

@@ -8,7 +8,7 @@ use crate::{
         machine::machine_ir::{
             MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
             MachineFloatWidth, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
-            MachineIntWidth, MachineSign, MachineValue,
+            MachineIntWidth, MachineRegOwner, MachineSign, MachineValue,
         },
         middle::ssa_ir::ir::{DecodedOperand, SsaOperand, SsaValue},
         wasm::primitive_op::PrimitiveOpKind,
@@ -46,7 +46,7 @@ impl<'a> BlockLowerContext<'a> {
         let dst_reg = self.alloc_value(dst)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Move {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: lir_value_storage_type(self.program(), dst),
                 dst: dst_reg,
                 src: MachineValue::Imm64(imm),

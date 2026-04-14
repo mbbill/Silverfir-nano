@@ -7,6 +7,7 @@
 use crate::collections;
 
 use crate::vm::middle::cfg::CfgBlockId;
+use crate::vm::middle::frame::FrameSlot;
 
 use super::{
     facts::{EntryState, FunctionPlan},
@@ -52,8 +53,8 @@ pub(crate) fn target_entry_decision(
 pub(crate) fn finalize_block_entry_cached_locals(
     plan: &FunctionPlan,
     block: CfgBlockId,
-    _actual_exit: &[crate::vm::middle::frame::FrameSlot],
-) -> collections::Vec<crate::vm::middle::frame::FrameSlot> {
+    _actual_exit: &[FrameSlot],
+) -> collections::Vec<FrameSlot> {
     plan.blocks[block.as_usize()]
         .tentative_entry_cached_locals
         .clone()

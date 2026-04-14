@@ -5,6 +5,7 @@
 //! - `Gp32Lowering` (pair, complex) in `gp32/`
 
 use crate::error::WasmError;
+use crate::vm::middle::frame::FrameSlot;
 
 use super::{
     lower_context::{BlockLowerContext, BoundCachedLocal},
@@ -23,7 +24,7 @@ pub(super) trait I64Lowering {
     fn emit_load_slot_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        slot: crate::vm::middle::frame::FrameSlot,
+        slot: FrameSlot,
         dst: SsaValue,
     ) -> Result<(), WasmError>;
 
@@ -31,7 +32,7 @@ pub(super) trait I64Lowering {
     fn emit_store_slot_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        slot: crate::vm::middle::frame::FrameSlot,
+        slot: FrameSlot,
         src: SsaValue,
     ) -> Result<(), WasmError>;
 

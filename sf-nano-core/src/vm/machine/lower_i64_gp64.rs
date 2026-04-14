@@ -19,7 +19,7 @@ use super::{
 };
 
 use crate::vm::machine::machine_ir::{
-    MachineInst, MachineInstKind, MachineLoadExtension, MachineValue,
+    MachineInst, MachineInstKind, MachineLoadExtension, MachineRegOwner, MachineValue,
 };
 
 pub(super) struct Gp64Lowering;
@@ -36,7 +36,7 @@ impl I64Lowering for Gp64Lowering {
         let width = canonical_value_mem_width_for_value(ctx.program(), dst);
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty,
                 dst: dst_reg,
                 addr: ctx.frame_addr(slot)?,
@@ -90,7 +90,7 @@ impl I64Lowering for Gp64Lowering {
     ) -> Result<(), WasmError> {
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedLocal,
                 ty: cached.ty,
                 dst: cached.reg,
                 addr: ctx.frame_addr(cached.slot)?,

@@ -7,7 +7,8 @@
 use crate::collections;
 
 use crate::vm::machine::machine_ir::{
-    MachineBlock, MachineFloatWidth, MachineInstKind, MachineReg, MachineStorageType, MachineValue,
+    MachineBlock, MachineFloatWidth, MachineInstKind, MachineReg, MachineRegOwner,
+    MachineStorageType, MachineValue,
 };
 
 use super::helpers::for_each_defined_reg;
@@ -57,7 +58,7 @@ pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16)
                         .find(|(bb, ww, r)| *bb == b && *ww == w && *r != d)
                     {
                         inst.kind = MachineInstKind::Move {
-                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            owner: MachineRegOwner::LinearValue,
                             ty: match w {
                                 MachineFloatWidth::F32 => MachineStorageType::Fp32,
                                 MachineFloatWidth::F64 => MachineStorageType::Fp64,

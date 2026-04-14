@@ -11,7 +11,7 @@ use crate::{
     module::entities::FunctionSpec,
     vm::{
         result_buffer::ResultBuffer,
-        runtime::{code::NativeCode, context::NativeContext},
+        runtime::{code::NativeCode, collect_native_results_from_stack, context::NativeContext},
         store::Store,
         value::Value,
     },
@@ -104,7 +104,7 @@ pub(crate) fn eval(
     }
 
     let out = unsafe {
-        crate::vm::runtime::collect_native_results_from_stack(
+        collect_native_results_from_stack(
             stack_base,
             func_type.results(),
             compiled.backend().gp_unit_bytes,

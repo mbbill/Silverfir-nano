@@ -404,7 +404,7 @@ mod tests {
 
     use super::*;
     use crate::{
-        module::{type_context::TypeContext, type_defs::FunctionType},
+        module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
         value_type::ValueType,
         vm::{
             entities::{Caller, ModuleInst},
@@ -433,7 +433,7 @@ mod tests {
         ]);
         let mut module = ModuleInst::new(String::from("m"), types);
         module.functions.push(FunctionInst::Local {
-            spec: crate::module::entities::FunctionSpec::new(
+            spec: FunctionSpec::new(
                 Rc::new(FunctionType::new(
                     collections::vec![ValueType::I32],
                     collections::vec![ValueType::I64],

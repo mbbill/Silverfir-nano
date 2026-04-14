@@ -5,12 +5,13 @@ use crate::collections;
 use crate::{
     error::WasmError,
     vm::{
-        entities::global_offset,
+        entities::{global_offset, GlobalInst},
         machine::machine_ir::{
             machine_ptr_width, MachineAddr, MachineBlockId, MachineBranchCond, MachineCompareKind,
             MachineConvertOp, MachineEdge, MachineInst, MachineInstKind, MachineIntBinaryOp,
-            MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign, MachineStorageType,
-            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_MEM0_BASE_REG,
+            MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner,
+            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MACHINE_MEM0_BASE_REG,
         },
         middle::ssa_ir::ir::{SsaOperand, SsaValue},
         runtime::layout::native_runtime_abi_layout,
@@ -34,7 +35,7 @@ impl<'a> BlockLowerContext<'a> {
         if mem_idx == 0 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst,
                     src: MachineValue::Reg(self.mem0_size_reg()),
@@ -45,7 +46,7 @@ impl<'a> BlockLowerContext<'a> {
             let temp = self.borrow_free_gp_dynamic_regs(1)?[0];
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: temp,
                     addr: self.runtime_addr(runtime_layout.context.memory_views_base_offset),
@@ -55,7 +56,7 @@ impl<'a> BlockLowerContext<'a> {
             });
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst,
                     addr: self.indexed_addr(
@@ -291,7 +292,7 @@ impl<'a> BlockLowerContext<'a> {
         let base = self.borrow_free_gp_dynamic_regs(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base,
                 addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
@@ -301,13 +302,13 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty,
                 dst,
                 addr: self.indexed_addr(
                     base,
                     idx,
-                    core::mem::size_of::<crate::vm::entities::GlobalInst>(),
+                    core::mem::size_of::<GlobalInst>(),
                     global_offset::RAW,
                 )?,
                 width,
@@ -327,7 +328,7 @@ impl<'a> BlockLowerContext<'a> {
         let (dst_lo, dst_hi) = self.alloc_i64_value_pair(result)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: dst_hi,
                 addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
@@ -338,13 +339,13 @@ impl<'a> BlockLowerContext<'a> {
         let lo_addr = self.indexed_addr(
             dst_hi,
             idx,
-            core::mem::size_of::<crate::vm::entities::GlobalInst>(),
+            core::mem::size_of::<GlobalInst>(),
             global_offset::RAW,
         )?;
         let hi_addr = addr_with_byte_offset(lo_addr, 4)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: dst_lo,
                 addr: lo_addr,
@@ -354,7 +355,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: dst_hi,
                 addr: hi_addr,
@@ -393,7 +394,7 @@ impl<'a> BlockLowerContext<'a> {
         let base = self.borrow_free_gp_dynamic_regs(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base,
                 addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
@@ -407,7 +408,7 @@ impl<'a> BlockLowerContext<'a> {
                 addr: self.indexed_addr(
                     base,
                     idx,
-                    core::mem::size_of::<crate::vm::entities::GlobalInst>(),
+                    core::mem::size_of::<GlobalInst>(),
                     global_offset::RAW,
                 )?,
                 width,
@@ -428,7 +429,7 @@ impl<'a> BlockLowerContext<'a> {
         let base = self.borrow_free_gp_dynamic_regs(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base,
                 addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
@@ -439,7 +440,7 @@ impl<'a> BlockLowerContext<'a> {
         let lo_addr = self.indexed_addr(
             base,
             idx,
-            core::mem::size_of::<crate::vm::entities::GlobalInst>(),
+            core::mem::size_of::<GlobalInst>(),
             global_offset::RAW,
         )?;
         let hi_addr = addr_with_byte_offset(lo_addr, 4)?;
@@ -472,7 +473,7 @@ impl<'a> BlockLowerContext<'a> {
         let runtime_layout = self.runtime_abi_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_views,
                 addr: self.runtime_addr(runtime_layout.context.table_views_base_offset),
@@ -482,7 +483,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst,
                 addr: self.indexed_addr(
@@ -1043,7 +1044,7 @@ impl<'a> BlockLowerContext<'a> {
         if let Some((dst, ty, width, extension)) = load_dst {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty,
                     dst,
                     addr: MachineAddr {
@@ -1154,7 +1155,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         ops.push(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty,
                 dst,
                 addr: MachineAddr {
@@ -1348,7 +1349,7 @@ impl<'a> BlockLowerContext<'a> {
         } else if index64 != index {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: index64,
                     src: MachineValue::Reg(index),
@@ -1358,7 +1359,7 @@ impl<'a> BlockLowerContext<'a> {
         let runtime_layout = self.runtime_abi_layout();
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_len,
                 addr: self.runtime_addr(runtime_layout.context.table_views_base_offset),
@@ -1368,7 +1369,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_len,
                 addr: self.indexed_addr(
@@ -1421,7 +1422,7 @@ impl<'a> BlockLowerContext<'a> {
         } else if index64 != index {
             ops.push(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: index64,
                     src: MachineValue::Reg(index),
@@ -1431,7 +1432,7 @@ impl<'a> BlockLowerContext<'a> {
         let runtime_layout = self.runtime_abi_layout();
         ops.push(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: scratch,
                 addr: self.runtime_addr(runtime_layout.context.table_views_base_offset),
@@ -1441,7 +1442,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         ops.push(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: scratch,
                 addr: self.indexed_addr(
@@ -1475,7 +1476,7 @@ impl<'a> BlockLowerContext<'a> {
         if let Some(dst) = load_dst {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst,
                     addr: MachineAddr {
@@ -1520,7 +1521,7 @@ impl<'a> BlockLowerContext<'a> {
         } else if addr32 != addr {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: addr32,
                     src: MachineValue::Reg(addr),
@@ -1569,7 +1570,7 @@ impl<'a> BlockLowerContext<'a> {
         if memidx == 0 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst,
                     src: MachineValue::Reg(self.mem0_size_reg()),
@@ -1580,7 +1581,7 @@ impl<'a> BlockLowerContext<'a> {
 
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst,
                 addr: self.runtime_addr(self.runtime_abi_layout().context.memory_views_base_offset),
@@ -1590,7 +1591,7 @@ impl<'a> BlockLowerContext<'a> {
         });
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst,
                 addr: self.indexed_addr(
@@ -1839,7 +1840,7 @@ pub(super) fn addr_with_byte_offset(
 
 pub(super) fn append_i64_load_ops(
     ops: &mut collections::Vec<MachineInst>,
-    gp_word_int_width: crate::vm::machine::machine_ir::MachineIntWidth,
+    gp_word_int_width: MachineIntWidth,
     base: MachineReg,
     dst_lo: MachineReg,
     dst_hi: MachineReg,
@@ -1850,7 +1851,7 @@ pub(super) fn append_i64_load_ops(
         MachineMemWidth::U64 => {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_hi,
                     addr: MachineAddr { base, offset: 4 },
@@ -1860,7 +1861,7 @@ pub(super) fn append_i64_load_ops(
             });
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_lo,
                     addr: MachineAddr { base, offset: 0 },
@@ -1872,7 +1873,7 @@ pub(super) fn append_i64_load_ops(
         MachineMemWidth::U8 | MachineMemWidth::U16 => {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_lo,
                     addr: MachineAddr { base, offset: 0 },
@@ -1885,7 +1886,7 @@ pub(super) fn append_i64_load_ops(
         MachineMemWidth::U32 => {
             ops.push(MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_lo,
                     addr: MachineAddr { base, offset: 0 },
@@ -1900,7 +1901,7 @@ pub(super) fn append_i64_load_ops(
 
 fn append_i64_load_hi_fill_ops(
     ops: &mut collections::Vec<MachineInst>,
-    gp_word_int_width: crate::vm::machine::machine_ir::MachineIntWidth,
+    gp_word_int_width: MachineIntWidth,
     dst_lo: MachineReg,
     dst_hi: MachineReg,
     extension: MachineLoadExtension,
@@ -1920,7 +1921,7 @@ fn append_i64_load_hi_fill_ops(
         MachineLoadExtension::ZeroExtend | MachineLoadExtension::None => {
             ops.push(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_hi,
                     src: MachineValue::Imm64(0),
@@ -1981,7 +1982,7 @@ fn emit_memory_base_load_ops(
     if memidx == 0 {
         ops.push(MachineInst {
             kind: MachineInstKind::Move {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst,
                 src: MachineValue::Reg(MACHINE_MEM0_BASE_REG),
@@ -1992,7 +1993,7 @@ fn emit_memory_base_load_ops(
 
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst,
             addr: MachineAddr {
@@ -2005,7 +2006,7 @@ fn emit_memory_base_load_ops(
     });
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst,
             addr: MachineAddr {

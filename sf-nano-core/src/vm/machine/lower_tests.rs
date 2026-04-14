@@ -6,14 +6,17 @@ use crate::vm::{
     machine::{
         lower_module,
         machine_ir::{
-            MachineBlockId, MachineCompareKind, MachineFunction, MachineInstKind,
-            MachineIntBinaryOp, MachineMemWidth, MachineModule, MachineReg, MachineStorageType,
-            MachineTerminator, MachineValue, MACHINE_FIXED_REG_COUNT,
+            is_fp_reg, is_gp_reg, MachineAddr, MachineBlockId, MachineBlockParam,
+            MachineBranchCond, MachineCompareKind, MachineConvertOp, MachineEdge,
+            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction, MachineInstKind,
+            MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
+            MachineModule, MachineReg, MachineRegOwner, MachineSign, MachineStorageType,
+            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
         },
         LowerFunctionInput, LowerModuleInput,
     },
     middle::{
-        frame::plan_frame_layout,
+        frame::{plan_frame_layout, FrameSpan},
         ssa_ir::{
             ir::{
                 LocalSlotInfo, SsaBinding, SsaBlock, SsaCallOp, SsaEdge, SsaInst, SsaOperand,
@@ -138,7 +141,7 @@ fn lowers_simple_slot_and_add_block() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -161,7 +164,7 @@ fn lowers_simple_slot_and_add_block() {
     assert_eq!(
         lowered.abi.functions[0].helper_scratch,
         frame.call_scratch.map(|span| {
-            crate::vm::machine::machine_ir::MachineFrameRegion {
+            MachineFrameRegion {
                 base_slot: span.start.0,
                 slots: span.count,
             }
@@ -275,7 +278,7 @@ fn lowers_select_with_wasm_operand_order() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -330,7 +333,7 @@ fn native_backend_requires_at_least_one_gp_linear_value_register() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -347,7 +350,7 @@ fn native_backend_requires_at_least_one_gp_linear_value_register() {
 #[test]
 fn projects_return_results_and_helper_scratch_from_frame_plan() {
     let frame = plan_frame_layout(2, 6, 6);
-    let result_span = crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 2);
+    let result_span = FrameSpan::new(frame.operand_slot(0), 2);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
@@ -375,7 +378,7 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -389,14 +392,14 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
     // planner reserved.
     assert_eq!(
         runtime.functions[0].helper_scratch,
-        Some(crate::vm::machine::machine_ir::MachineFrameRegion {
+        Some(MachineFrameRegion {
             base_slot: frame.call_scratch.unwrap().start.0,
             slots: frame.call_scratch.unwrap().count,
         })
     );
     assert_eq!(
         runtime.functions[0].return_results,
-        Some(crate::vm::machine::machine_ir::MachineFrameRegion {
+        Some(MachineFrameRegion {
             base_slot: result_span.start.0,
             slots: result_span.count,
         })
@@ -421,10 +424,7 @@ fn rejects_inconsistent_return_result_spans() {
             ops: collections::vec![],
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return {
-                results: Some(crate::vm::middle::frame::FrameSpan::new(
-                    frame.operand_slot(0),
-                    1,
-                )),
+                results: Some(FrameSpan::new(frame.operand_slot(0), 1)),
             },
         };
         ssa.blocks.push(__blk0);
@@ -434,10 +434,7 @@ fn rejects_inconsistent_return_result_spans() {
             ops: collections::vec![],
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return {
-                results: Some(crate::vm::middle::frame::FrameSpan::new(
-                    frame.operand_slot(1),
-                    1,
-                )),
+                results: Some(FrameSpan::new(frame.operand_slot(1), 1)),
             },
         };
         ssa.blocks.push(__blk1);
@@ -449,7 +446,7 @@ fn rejects_inconsistent_return_result_spans() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -486,10 +483,7 @@ fn rejects_mixed_void_and_value_returns() {
             ops: collections::vec![],
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return {
-                results: Some(crate::vm::middle::frame::FrameSpan::new(
-                    frame.operand_slot(0),
-                    1,
-                )),
+                results: Some(FrameSpan::new(frame.operand_slot(0), 1)),
             },
         };
         ssa.blocks.push(__blk1);
@@ -501,7 +495,7 @@ fn rejects_mixed_void_and_value_returns() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -559,7 +553,7 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
             ssa: ssa,
             result_count: 0,
@@ -618,7 +612,7 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
             ssa: ssa,
             result_count: 0,
@@ -630,18 +624,18 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
     assert_eq!(block0.params.len(), 2);
     assert!(matches!(
         block0.params[0],
-        crate::vm::machine::machine_ir::MachineBlockParam {
+        MachineBlockParam {
             reg: MachineReg(4),
             ty: MachineStorageType::GpWord,
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
         }
     ));
     assert!(matches!(
         block0.params[1],
-        crate::vm::machine::machine_ir::MachineBlockParam {
+        MachineBlockParam {
             reg: MachineReg(5),
             ty: MachineStorageType::GpWord,
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
         }
     ));
 
@@ -740,7 +734,7 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -799,7 +793,7 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -812,7 +806,7 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             width: MachineMemWidth::U32,
             ..
@@ -821,7 +815,7 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
     assert!(matches!(
         ops[1].kind,
         MachineInstKind::Load {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             width: MachineMemWidth::U32,
             ..
@@ -877,7 +871,7 @@ fn gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -961,7 +955,7 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -1072,7 +1066,7 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -1108,8 +1102,8 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 1,
-                args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
-                results: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(0), 1),
+                args: FrameSpan::new(caller_frame.operand_slot(1), 2),
+                results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -1131,10 +1125,7 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
             ops: collections::vec![],
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return {
-                results: Some(crate::vm::middle::frame::FrameSpan::new(
-                    callee_frame.operand_slot(0),
-                    1,
-                )),
+                results: Some(FrameSpan::new(callee_frame.operand_slot(0), 1)),
             },
         };
         callee.blocks.push(__blk0);
@@ -1147,13 +1138,13 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
         use_guard_pages: false,
         functions: collections::vec![
             LowerFunctionInput {
-                id: crate::vm::machine::machine_ir::MachineFuncId(0),
+                id: MachineFuncId(0),
                 frame: caller_frame,
                 ssa: caller,
                 result_count: 0,
             },
             LowerFunctionInput {
-                id: crate::vm::machine::machine_ir::MachineFuncId(1),
+                id: MachineFuncId(1),
                 frame: callee_frame,
                 ssa: callee,
                 result_count: 0,
@@ -1222,7 +1213,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -1306,7 +1297,7 @@ fn local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free() 
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -1371,7 +1362,7 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -1415,8 +1406,8 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 2),
-                results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
+                args: FrameSpan::new(frame.operand_slot(0), 2),
+                results: FrameSpan::new(frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -1429,7 +1420,7 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -1494,7 +1485,7 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -1556,8 +1547,8 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
-                results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
+                args: FrameSpan::new(frame.operand_slot(0), 1),
+                results: FrameSpan::new(frame.operand_slot(0), 0),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -1570,7 +1561,7 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -1639,8 +1630,8 @@ fn skips_dead_cached_local_reload_after_direct_external_call() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
-                results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
+                args: FrameSpan::new(frame.operand_slot(0), 1),
+                results: FrameSpan::new(frame.operand_slot(0), 0),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -1653,7 +1644,7 @@ fn skips_dead_cached_local_reload_after_direct_external_call() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -1712,8 +1703,8 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 1),
-                results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
+                args: FrameSpan::new(frame.operand_slot(0), 1),
+                results: FrameSpan::new(frame.operand_slot(0), 0),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -1726,7 +1717,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -1777,8 +1768,8 @@ fn lowers_direct_local_call_with_continuation_block() {
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 1,
-                args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
-                results: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(0), 1),
+                args: FrameSpan::new(caller_frame.operand_slot(1), 2),
+                results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -1800,10 +1791,7 @@ fn lowers_direct_local_call_with_continuation_block() {
             ops: collections::vec![],
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return {
-                results: Some(crate::vm::middle::frame::FrameSpan::new(
-                    callee_frame.operand_slot(0),
-                    1,
-                )),
+                results: Some(FrameSpan::new(callee_frame.operand_slot(0), 1)),
             },
         };
         callee.blocks.push(__blk0);
@@ -1816,13 +1804,13 @@ fn lowers_direct_local_call_with_continuation_block() {
         use_guard_pages: false,
         functions: collections::vec![
             LowerFunctionInput {
-                id: crate::vm::machine::machine_ir::MachineFuncId(0),
+                id: MachineFuncId(0),
                 frame: caller_frame,
                 ssa: caller,
                 result_count: 0,
             },
             LowerFunctionInput {
-                id: crate::vm::machine::machine_ir::MachineFuncId(1),
+                id: MachineFuncId(1),
                 frame: callee_frame,
                 ssa: callee,
                 result_count: 0,
@@ -1841,7 +1829,7 @@ fn lowers_direct_local_call_with_continuation_block() {
             caller_result_base,
             continuation,
         } => {
-            assert_eq!(callee, crate::vm::machine::machine_ir::MachineFuncId(1));
+            assert_eq!(callee, MachineFuncId(1));
             assert_eq!(continuation, MachineBlockId(1));
             (callee_frame_base, caller_result_base)
         }
@@ -1882,14 +1870,14 @@ fn lowers_direct_local_call_with_continuation_block() {
         call_block.ops[3].kind,
         MachineInstKind::TrapIf {
             cond:
-                crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
-                    width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
+                MachineBranchCond::IntCompare {
+                    width: MachineIntWidth::I64,
                     kind: MachineCompareKind::Gt,
-                    sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
+                    sign: MachineSign::Unsigned,
                     lhs: MachineValue::Reg(lhs),
                     ..
                 },
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::StackOverflow,
+            kind: MachineTrapKind::StackOverflow,
         } if lhs == callee_frame_base
     ));
     // The fifth op computes `caller_result_base = caller_fp + results_offset`
@@ -1910,7 +1898,7 @@ fn lowers_direct_local_call_with_continuation_block() {
     assert!(matches!(
         continuation.terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::Unreachable
+            kind: MachineTrapKind::Unreachable
         }
     ));
 }
@@ -1942,8 +1930,8 @@ fn flushes_cached_local_before_second_direct_call() {
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 1,
-                args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(0), 0),
-                results: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(0), 1),
+                args: FrameSpan::new(caller_frame.operand_slot(0), 0),
+                results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -1960,8 +1948,8 @@ fn flushes_cached_local_before_second_direct_call() {
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 1,
-                args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(0), 0),
-                results: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(0), 1),
+                args: FrameSpan::new(caller_frame.operand_slot(0), 0),
+                results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -1983,10 +1971,7 @@ fn flushes_cached_local_before_second_direct_call() {
             ops: collections::vec![],
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return {
-                results: Some(crate::vm::middle::frame::FrameSpan::new(
-                    callee_frame.operand_slot(0),
-                    1,
-                )),
+                results: Some(FrameSpan::new(callee_frame.operand_slot(0), 1)),
             },
         };
         callee.blocks.push(__blk0);
@@ -1999,13 +1984,13 @@ fn flushes_cached_local_before_second_direct_call() {
         use_guard_pages: false,
         functions: collections::vec![
             LowerFunctionInput {
-                id: crate::vm::machine::machine_ir::MachineFuncId(0),
+                id: MachineFuncId(0),
                 frame: caller_frame,
                 ssa: caller,
                 result_count: 0,
             },
             LowerFunctionInput {
-                id: crate::vm::machine::machine_ir::MachineFuncId(1),
+                id: MachineFuncId(1),
                 frame: callee_frame,
                 ssa: callee,
                 result_count: 0,
@@ -2026,11 +2011,11 @@ fn flushes_cached_local_before_second_direct_call() {
         .enumerate()
         .filter_map(|(idx, inst)| match &inst.kind {
             MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 addr,
                 ..
             } if *addr
-                == crate::vm::machine::machine_ir::MachineAddr {
+                == MachineAddr {
                     base: MachineReg(1),
                     offset: result_slot_offset,
                 } =>
@@ -2047,7 +2032,7 @@ fn flushes_cached_local_before_second_direct_call() {
         .filter_map(|(idx, inst)| match inst.kind {
             MachineInstKind::Store { addr, .. }
                 if addr
-                    == crate::vm::machine::machine_ir::MachineAddr {
+                    == MachineAddr {
                         base: MachineReg(1),
                         offset: local_slot_offset,
                     } =>
@@ -2078,7 +2063,7 @@ fn flushes_cached_local_before_second_direct_call() {
     assert!(matches!(
         second_call_block.terminator,
         MachineTerminator::CallDirect {
-            callee: crate::vm::machine::machine_ir::MachineFuncId(1),
+            callee: MachineFuncId(1),
             continuation: MachineBlockId(2),
             ..
         }
@@ -2150,7 +2135,7 @@ fn preserves_cached_locals_across_block_edges() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -2166,7 +2151,7 @@ fn preserves_cached_locals_across_block_edges() {
             matches!(
                 inst.kind,
                 MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     src: MachineValue::Imm64(9),
                     ..
                 }
@@ -2197,7 +2182,7 @@ fn preserves_cached_locals_across_block_edges() {
         .enumerate()
         .find_map(|(idx, inst)| match inst.kind {
             MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedLocal,
                 dst,
                 ..
             } => Some((idx, dst)),
@@ -2277,7 +2262,7 @@ fn threads_cached_locals_through_block_edge_params() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -2413,7 +2398,7 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -2486,7 +2471,7 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -2508,7 +2493,7 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
             matches!(
                 inst.kind,
                 MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                    owner: MachineRegOwner::CachedLocal,
                     ..
                 }
             )
@@ -2590,7 +2575,7 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -2733,7 +2718,7 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -2792,7 +2777,7 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -2854,8 +2839,8 @@ fn does_not_save_clean_carried_cache_before_external_call() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
-                results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
+                args: FrameSpan::new(frame.operand_slot(0), 0),
+                results: FrameSpan::new(frame.operand_slot(0), 0),
             });
             __blk1.ops.push(SsaInst::call(__idx));
         }
@@ -2868,7 +2853,7 @@ fn does_not_save_clean_carried_cache_before_external_call() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -2957,8 +2942,8 @@ fn saves_only_dirty_cached_locals_before_external_call() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
-                results: crate::vm::middle::frame::FrameSpan::new(frame.operand_slot(0), 0),
+                args: FrameSpan::new(frame.operand_slot(0), 0),
+                results: FrameSpan::new(frame.operand_slot(0), 0),
             });
             __blk1.ops.push(SsaInst::call(__idx));
         }
@@ -2971,7 +2956,7 @@ fn saves_only_dirty_cached_locals_before_external_call() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -3028,7 +3013,7 @@ fn entry_block_cached_locals_are_loaded_in_prologue_not_passed_as_params() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -3057,7 +3042,7 @@ fn entry_block_cached_locals_are_loaded_in_prologue_not_passed_as_params() {
 
 #[test]
 fn rejects_cache_store_with_incompatible_gp_storage_types() {
-    use crate::value_type::ValueType;
+    use ValueType;
 
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = {
@@ -3105,7 +3090,7 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -3146,8 +3131,8 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 2,
-                args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
-                results: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(0), 1),
+                args: FrameSpan::new(caller_frame.operand_slot(1), 2),
+                results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -3169,10 +3154,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
             ops: collections::vec![],
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return {
-                results: Some(crate::vm::middle::frame::FrameSpan::new(
-                    callee_frame.operand_slot(0),
-                    1,
-                )),
+                results: Some(FrameSpan::new(callee_frame.operand_slot(0), 1)),
             },
         };
         callee.blocks.push(__blk0);
@@ -3185,13 +3167,13 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
         use_guard_pages: false,
         functions: collections::vec![
             LowerFunctionInput {
-                id: crate::vm::machine::machine_ir::MachineFuncId(0),
+                id: MachineFuncId(0),
                 frame: caller_frame,
                 ssa: caller,
                 result_count: 0,
             },
             LowerFunctionInput {
-                id: crate::vm::machine::machine_ir::MachineFuncId(2),
+                id: MachineFuncId(2),
                 frame: callee_frame,
                 ssa: callee,
                 result_count: 0,
@@ -3205,13 +3187,13 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
     assert!(matches!(
         lowered.module.functions[1].program.blocks[0].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::Unreachable
+            kind: MachineTrapKind::Unreachable
         }
     ));
     assert!(matches!(
         lowered.module.functions[0].program.blocks[0].terminator,
         MachineTerminator::CallDirect {
-            callee: crate::vm::machine::machine_ir::MachineFuncId(2),
+            callee: MachineFuncId(2),
             ..
         }
     ));
@@ -3256,7 +3238,7 @@ fn lowers_memory_size_without_helper_boundary() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -3317,7 +3299,7 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -3344,7 +3326,7 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
     assert!(matches!(
         block.ops[2].kind,
         MachineInstKind::IntBinary {
-            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+            width: MachineIntWidth::I32,
             op: MachineIntBinaryOp::ShrU,
             rhs: MachineValue::Imm64(16),
             ..
@@ -3377,8 +3359,8 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
                 type_idx: 3,
                 table_idx: 0,
                 index_slot: call_base.advance(2),
-                args: crate::vm::middle::frame::FrameSpan::new(call_base, 2),
-                results: crate::vm::middle::frame::FrameSpan::new(call_base, 1),
+                args: FrameSpan::new(call_base, 2),
+                results: FrameSpan::new(call_base, 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -3391,7 +3373,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -3410,19 +3392,19 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     assert!(matches!(
         program.blocks[2].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::TableOutOfBounds
+            kind: MachineTrapKind::TableOutOfBounds
         }
     ));
     assert!(matches!(
         program.blocks[4].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::InvalidFunctionReference
+            kind: MachineTrapKind::InvalidFunctionReference
         }
     ));
     assert!(matches!(
         program.blocks[6].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::IndirectCallTypeMismatch
+            kind: MachineTrapKind::IndirectCallTypeMismatch
         }
     ));
     assert!(matches!(
@@ -3485,15 +3467,15 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     assert!(matches!(
         type_check_ops[4].kind,
         MachineInstKind::Load {
-            width: crate::vm::machine::machine_ir::MachineMemWidth::U32,
-            extension: crate::vm::machine::machine_ir::MachineLoadExtension::ZeroExtend,
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
             ..
         }
     ));
     assert!(matches!(
         program.blocks[3].terminator,
         MachineTerminator::Branch {
-            cond: crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
+            cond: MachineBranchCond::IntCompare {
                 rhs: MachineValue::Reg(_),
                 ..
             },
@@ -3526,16 +3508,16 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     assert!(matches!(
         dispatch_ops[4].kind,
         MachineInstKind::Load {
-            width: crate::vm::machine::machine_ir::MachineMemWidth::U32,
-            extension: crate::vm::machine::machine_ir::MachineLoadExtension::ZeroExtend,
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
             ..
         }
     ));
     assert!(matches!(
         dispatch_ops[5].kind,
         MachineInstKind::Load {
-            width: crate::vm::machine::machine_ir::MachineMemWidth::U32,
-            extension: crate::vm::machine::machine_ir::MachineLoadExtension::ZeroExtend,
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
             ..
         }
     ));
@@ -3553,7 +3535,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     ));
     assert!(matches!(
         program.blocks[10].terminator,
-        MachineTerminator::Jump(crate::vm::machine::machine_ir::MachineEdge {
+        MachineTerminator::Jump(MachineEdge {
             target: MachineBlockId(11),
             ..
         })
@@ -3561,7 +3543,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     assert!(matches!(
         program.blocks[11].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::Unreachable
+            kind: MachineTrapKind::Unreachable
         }
     ));
 }
@@ -3591,8 +3573,8 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
                 type_idx: 3,
                 table_idx: 0,
                 index_slot: call_base.advance(2),
-                args: crate::vm::middle::frame::FrameSpan::new(call_base, 2),
-                results: crate::vm::middle::frame::FrameSpan::new(call_base, 1),
+                args: FrameSpan::new(call_base, 2),
+                results: FrameSpan::new(call_base, 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -3605,7 +3587,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -3617,8 +3599,8 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Branch {
-            cond: crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
-                width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+            cond: MachineBranchCond::IntCompare {
+                width: MachineIntWidth::I32,
                 ..
             },
             ..
@@ -3634,7 +3616,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     assert!(program.blocks[1].ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::IntBinary {
-            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+            width: MachineIntWidth::I32,
             op: MachineIntBinaryOp::Mul,
             ..
         }
@@ -3642,7 +3624,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     assert!(matches!(
         program.blocks[7].ops[0].kind,
         MachineInstKind::IntBinary {
-            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+            width: MachineIntWidth::I32,
             op: MachineIntBinaryOp::Add,
             ..
         }
@@ -3700,7 +3682,7 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -3749,8 +3731,8 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 1,
-                args: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(1), 2),
-                results: crate::vm::middle::frame::FrameSpan::new(caller_frame.operand_slot(0), 1),
+                args: FrameSpan::new(caller_frame.operand_slot(1), 2),
+                results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -3772,10 +3754,7 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
             ops: collections::vec![],
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return {
-                results: Some(crate::vm::middle::frame::FrameSpan::new(
-                    callee_frame.operand_slot(0),
-                    1,
-                )),
+                results: Some(FrameSpan::new(callee_frame.operand_slot(0), 1)),
             },
         };
         callee.blocks.push(__blk0);
@@ -3788,13 +3767,13 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
         use_guard_pages: false,
         functions: collections::vec![
             LowerFunctionInput {
-                id: crate::vm::machine::machine_ir::MachineFuncId(0),
+                id: MachineFuncId(0),
                 frame: caller_frame,
                 ssa: caller,
                 result_count: 0,
             },
             LowerFunctionInput {
-                id: crate::vm::machine::machine_ir::MachineFuncId(1),
+                id: MachineFuncId(1),
                 frame: callee_frame,
                 ssa: callee,
                 result_count: 0,
@@ -3883,7 +3862,7 @@ fn lowers_global_get_and_set_without_helpers() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -3956,7 +3935,7 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -3973,7 +3952,7 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
     assert!(matches!(
         program.blocks[1].terminator,
         MachineTerminator::Trap {
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::TableOutOfBounds
+            kind: MachineTrapKind::TableOutOfBounds
         }
     ));
     assert!(matches!(
@@ -4039,7 +4018,7 @@ fn lowers_i32_load_with_inline_trap_if() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -4057,14 +4036,14 @@ fn lowers_i32_load_with_inline_trap_if() {
     assert!(ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::Convert {
-            op: crate::vm::machine::machine_ir::MachineConvertOp::I64ExtendI32U,
+            op: MachineConvertOp::I64ExtendI32U,
             ..
         }
     )));
     assert!(ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::IntBinary {
-            width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
+            width: MachineIntWidth::I64,
             op: MachineIntBinaryOp::Add,
             ..
         }
@@ -4072,14 +4051,14 @@ fn lowers_i32_load_with_inline_trap_if() {
     assert!(ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::TrapIf {
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::MemoryOutOfBounds,
+            kind: MachineTrapKind::MemoryOutOfBounds,
             ..
         }
     )));
     assert!(matches!(
         ops.last().unwrap().kind,
         MachineInstKind::Load {
-            width: crate::vm::machine::machine_ir::MachineMemWidth::U32,
+            width: MachineMemWidth::U32,
             ..
         }
     ));
@@ -4138,7 +4117,7 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -4150,14 +4129,14 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
     assert!(!ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::Convert {
-            op: crate::vm::machine::machine_ir::MachineConvertOp::I64ExtendI32U,
+            op: MachineConvertOp::I64ExtendI32U,
             ..
         }
     )));
     assert!(ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::IntBinary {
-            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+            width: MachineIntWidth::I32,
             op: MachineIntBinaryOp::Add,
             ..
         }
@@ -4165,8 +4144,8 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
     assert!(ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::TrapIf {
-            cond: crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
-                width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+            cond: MachineBranchCond::IntCompare {
+                width: MachineIntWidth::I32,
                 ..
             },
             ..
@@ -4227,7 +4206,7 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -4241,14 +4220,14 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
     for inst in ops {
         if let MachineInstKind::TrapIf {
             cond:
-                crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
-                    width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                MachineBranchCond::IntCompare {
+                    width: MachineIntWidth::I32,
                     kind: MachineCompareKind::Lt,
-                    sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
+                    sign: MachineSign::Unsigned,
                     rhs: MachineValue::Imm64(value),
                     ..
                 },
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::MemoryOutOfBounds,
+            kind: MachineTrapKind::MemoryOutOfBounds,
         } = &inst.kind
         {
             if *value == 1 {
@@ -4332,7 +4311,7 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
         backend: gp32_backend_config(0, 4, 0, 2),
         use_guard_pages: true,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -4346,14 +4325,14 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
     for inst in ops {
         if let MachineInstKind::TrapIf {
             cond:
-                crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
-                    width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                MachineBranchCond::IntCompare {
+                    width: MachineIntWidth::I32,
                     kind: MachineCompareKind::Lt,
-                    sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
+                    sign: MachineSign::Unsigned,
                     rhs: MachineValue::Imm64(value),
                     ..
                 },
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::MemoryOutOfBounds,
+            kind: MachineTrapKind::MemoryOutOfBounds,
         } = &inst.kind
         {
             if *value == 8 {
@@ -4362,13 +4341,13 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
         }
         if let MachineInstKind::TrapIf {
             cond:
-                crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
-                    width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                MachineBranchCond::IntCompare {
+                    width: MachineIntWidth::I32,
                     kind: MachineCompareKind::Gt,
-                    sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
+                    sign: MachineSign::Unsigned,
                     ..
                 },
-            kind: crate::vm::machine::machine_ir::MachineTrapKind::MemoryOutOfBounds,
+            kind: MachineTrapKind::MemoryOutOfBounds,
         } = &inst.kind
         {
             saw_bounds_trap = true;
@@ -4424,7 +4403,7 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -4436,7 +4415,7 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Move {
-            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+            owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             src: MachineValue::Imm64(value),
             ..
@@ -4445,7 +4424,7 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
     assert!(matches!(
         ops[1].kind,
         MachineInstKind::IntCompare {
-            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+            width: MachineIntWidth::I32,
             rhs: MachineValue::Imm64(value),
             ..
         } if value == u32::MAX as u64
@@ -4505,7 +4484,7 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -4602,7 +4581,7 @@ fn threads_live_linear_values_through_split_continuation_params() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -4630,7 +4609,7 @@ fn threads_live_linear_values_through_split_continuation_params() {
     assert!(matches!(
         continuation.ops[0].kind,
         MachineInstKind::Convert {
-            op: crate::vm::machine::machine_ir::MachineConvertOp::I64ExtendI32U,
+            op: MachineConvertOp::I64ExtendI32U,
             ..
         }
     ));
@@ -4712,7 +4691,7 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -4730,7 +4709,7 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width() {
         matches!(
             inst.kind,
             MachineInstKind::TrapIf {
-                kind: crate::vm::machine::machine_ir::MachineTrapKind::MemoryOutOfBounds,
+                kind: MachineTrapKind::MemoryOutOfBounds,
                 ..
             }
         )
@@ -4748,7 +4727,7 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width() {
 
 #[test]
 fn lowers_f32_const_to_fp_machine_const() {
-    use crate::value_type::ValueType;
+    use ValueType;
 
     let frame = plan_frame_layout(0, 1, 1);
     let ssa = {
@@ -4766,10 +4745,7 @@ fn lowers_f32_const_to_fp_machine_const() {
             ops: collections::vec![],
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return {
-                results: Some(crate::vm::middle::frame::FrameSpan::new(
-                    frame.operand_slot(0),
-                    1,
-                )),
+                results: Some(FrameSpan::new(frame.operand_slot(0), 1)),
             },
         };
         {
@@ -4795,7 +4771,7 @@ fn lowers_f32_const_to_fp_machine_const() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 1,
@@ -4808,7 +4784,7 @@ fn lowers_f32_const_to_fp_machine_const() {
         matches!(
             inst.kind,
             MachineInstKind::FloatConst {
-                width: crate::vm::machine::machine_ir::MachineFloatWidth::F32,
+                width: MachineFloatWidth::F32,
                 bits: 0x4120_0000,
                 dst,
             } if dst.0 >= lowered.module.config.first_fp_reg()
@@ -4826,7 +4802,7 @@ fn lowers_f32_const_to_fp_machine_const() {
 
 #[test]
 fn float_slot_load_routes_to_fp_bank_when_typed() {
-    use crate::value_type::ValueType;
+    use ValueType;
 
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = {
@@ -4844,10 +4820,7 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
             ops: collections::vec![],
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return {
-                results: Some(crate::vm::middle::frame::FrameSpan::new(
-                    frame.operand_slot(0),
-                    1,
-                )),
+                results: Some(FrameSpan::new(frame.operand_slot(0), 1)),
             },
         };
         __blk0
@@ -4865,7 +4838,7 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 1,
@@ -4884,7 +4857,7 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
         })
         .expect("there should be a Load instruction");
     assert!(
-        crate::vm::machine::machine_ir::is_fp_reg(load_dst, lowered.module.config),
+        is_fp_reg(load_dst, lowered.module.config),
         "typed F64 LocalGet must allocate into FP bank, got GP reg {}",
         load_dst.0,
     );
@@ -4908,10 +4881,7 @@ fn untyped_slot_load_stays_in_gp_bank() {
             ops: collections::vec![],
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return {
-                results: Some(crate::vm::middle::frame::FrameSpan::new(
-                    frame.operand_slot(0),
-                    1,
-                )),
+                results: Some(FrameSpan::new(frame.operand_slot(0), 1)),
             },
         };
         __blk0
@@ -4929,7 +4899,7 @@ fn untyped_slot_load_stays_in_gp_bank() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 1,
@@ -4947,7 +4917,7 @@ fn untyped_slot_load_stays_in_gp_bank() {
         })
         .expect("there should be a Load instruction");
     assert!(
-        crate::vm::machine::machine_ir::is_gp_reg(load_dst, lowered.module.config),
+        is_gp_reg(load_dst, lowered.module.config),
         "untyped LocalGet must stay in GP bank, got FP reg {}",
         load_dst.0,
     );
@@ -4955,7 +4925,7 @@ fn untyped_slot_load_stays_in_gp_bank() {
 
 #[test]
 fn f32_block_params_keep_f32_width() {
-    use crate::value_type::ValueType;
+    use ValueType;
 
     let frame = plan_frame_layout(1, 1, 2);
     let ssa = {
@@ -5000,7 +4970,7 @@ fn f32_block_params_keep_f32_width() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -5015,7 +4985,7 @@ fn f32_block_params_keep_f32_width() {
 
 #[test]
 fn f32_cached_locals_use_f32_slot_widths() {
-    use crate::value_type::ValueType;
+    use ValueType;
 
     let frame = plan_frame_layout(1, 1, 2);
     let ssa = {
@@ -5052,7 +5022,7 @@ fn f32_cached_locals_use_f32_slot_widths() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -5124,7 +5094,7 @@ fn local_get_cache_source_aliases_without_move() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -5141,7 +5111,7 @@ fn local_get_cache_source_aliases_without_move() {
             matches!(
                 inst.kind,
                 MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     src: MachineValue::Reg(_),
                     ..
                 }
@@ -5209,7 +5179,7 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,
@@ -5226,7 +5196,7 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
             matches!(
                 inst.kind,
                 MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     src: MachineValue::Reg(_),
                     ..
                 }
@@ -5288,7 +5258,7 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             frame,
             ssa: ssa,
             result_count: 0,

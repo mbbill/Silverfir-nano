@@ -17,11 +17,13 @@ use crate::{
         machine::machine_ir::{
             MachineAddr, MachineBranchCond, MachineFloatWidth, MachineFunction, MachineInstKind,
             MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineModule,
-            MachineModuleAbi, MachineSign, MachineStorageType, MachineTerminator, MachineValue,
+            MachineModuleAbi, MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator,
+            MachineValue,
         },
+        middle::frame::FrameSlot,
         middle::ssa_ir::ir::{
-            DecodedOperand, SsaBlock, SsaCallOp, SsaInst, SsaInstView, SsaOperand, SsaProgram,
-            SsaTerminator,
+            DecodedOperand, SsaBinding, SsaBlock, SsaCallOp, SsaInst, SsaInstView, SsaOperand,
+            SsaProgram, SsaTerminator,
         },
     },
 };
@@ -254,7 +256,7 @@ fn render_lir_program(out: &mut String, program: &SsaProgram) {
 fn render_lir_block(
     out: &mut String,
     block: &SsaBlock,
-    cached: &[crate::vm::middle::frame::FrameSlot],
+    cached: &[FrameSlot],
     program: &SsaProgram,
 ) {
     if cached.is_empty() {
@@ -408,7 +410,7 @@ fn render_lir_terminator(term: &SsaTerminator) -> String {
     }
 }
 
-fn render_lir_bindings(bindings: &[crate::vm::middle::ssa_ir::ir::SsaBinding]) -> String {
+fn render_lir_bindings(bindings: &[SsaBinding]) -> String {
     bindings
         .iter()
         .map(|b| format!("v{}=v{}", b.param.0, b.value.0))
@@ -979,10 +981,10 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
     }
 }
 
-fn owner_tag(owner: crate::vm::machine::machine_ir::MachineRegOwner) -> &'static str {
+fn owner_tag(owner: MachineRegOwner) -> &'static str {
     match owner {
-        crate::vm::machine::machine_ir::MachineRegOwner::LinearValue => "linear",
-        crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal => "cache",
+        MachineRegOwner::LinearValue => "linear",
+        MachineRegOwner::CachedLocal => "cache",
     }
 }
 

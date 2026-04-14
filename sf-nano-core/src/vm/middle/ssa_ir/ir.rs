@@ -32,6 +32,7 @@
 
 use crate::collections;
 
+use crate::error::WasmError;
 use crate::value_type::ValueType;
 
 use super::target::SsaTarget;
@@ -607,15 +608,12 @@ impl SsaProgram {
     /// Production rewrite uses its own `ProgramBuilder`; this variant exists
     /// for later passes (optimize) and test fixtures that mutate an existing
     /// `SsaProgram`.
-    pub(crate) fn intern_primitive(
-        &mut self,
-        kind: PrimitiveOpKind,
-    ) -> Result<u32, crate::error::WasmError> {
+    pub(crate) fn intern_primitive(&mut self, kind: PrimitiveOpKind) -> Result<u32, WasmError> {
         if let Some(idx) = self.primitive_pool.iter().position(|k| k == &kind) {
             return Ok(idx as u32);
         }
         if self.primitive_pool.len() >= SsaOp::MAX_PRIMITIVE_POOL {
-            return Err(crate::error::WasmError::internal(
+            return Err(WasmError::internal(
                 "SSA-IR primitive op pool overflow: function has more distinct primitive ops than a u16 opcode can address",
             ));
         }

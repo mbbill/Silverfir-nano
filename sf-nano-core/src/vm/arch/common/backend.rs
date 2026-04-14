@@ -1,8 +1,8 @@
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
-        MachineReg, MachineTerminator, MachineTrapKind,
+        MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFunction,
+        MachineInst, MachineReg, MachineTerminator, MachineTrapKind,
     },
 };
 
@@ -38,10 +38,7 @@ pub(crate) trait ArchBackend<'a>: Sized {
 
     // ── Construction ─────────────────────────────────────────────────────
 
-    fn new(
-        compiled: &'a CompiledNativeModule,
-        function: &'a crate::vm::machine::machine_ir::MachineFunction,
-    ) -> Self;
+    fn new(compiled: &'a CompiledNativeModule, function: &'a MachineFunction) -> Self;
 
     /// Access the shared CompilerCore.
     fn core(&self) -> &CompilerCore<'a>;

@@ -14,6 +14,7 @@ use super::{abi, enc};
 use crate::vm::arch::common::helpers::trap_code;
 use crate::vm::arch::common::types::{LocalPtrPatch, PendingLocalPtrPatch};
 use crate::vm::arch::shared_64::is_fallthrough_edge;
+use crate::vm::runtime::{external::call_external_entry_ptr, trap::raise_trap};
 
 impl<'a> super::backend::Arm64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────────
@@ -574,10 +575,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.materialize_u64(abi::C_ARG2, metadata as u64);
         let call_scratch_idx = self.gp_scratch.alloc();
         let call_scratch = self.gp_scratch.reg(call_scratch_idx);
-        self.materialize_u64(
-            call_scratch,
-            crate::vm::runtime::external::call_external_entry_ptr() as usize as u64,
-        );
+        self.materialize_u64(call_scratch, call_external_entry_ptr() as usize as u64);
         self.core.text.emit_u32(enc::blr(call_scratch));
         self.gp_scratch.free_index(call_scratch_idx);
 
@@ -603,11 +601,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         materialize_u64_into(&mut self.core.text, abi::C_ARG1, trap_code(kind));
         let call_scratch_idx = self.gp_scratch.alloc();
         let call_scratch = self.gp_scratch.reg(call_scratch_idx);
-        materialize_u64_into(
-            &mut self.core.text,
-            call_scratch,
-            crate::vm::runtime::trap::raise_trap as u64,
-        );
+        materialize_u64_into(&mut self.core.text, call_scratch, raise_trap as u64);
         self.core.text.emit_u32(enc::blr(call_scratch));
         self.gp_scratch.free_index(call_scratch_idx);
         // raise_trap returned with C_RET0 = NativeCallStatus::Error (= 1).

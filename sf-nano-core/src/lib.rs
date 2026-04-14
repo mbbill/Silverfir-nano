@@ -30,6 +30,8 @@ pub use vm::build::{
 };
 pub use vm::entities::{Caller, ExternalFn, FunctionInst};
 pub use vm::instance::{Import, ImportValue, Instance};
+#[cfg(sf_has_guard_pages)]
+use vm::runtime::trap_signal;
 pub use vm::runtime::{
     active_runtime_engine, set_reference_backend, set_reference_backend_mode, ReferenceBackendMode,
     RuntimeEngine,
@@ -42,7 +44,7 @@ pub use vm::value::{RefHandle, Value};
 pub fn reset_native_runtime_state() {
     #[cfg(sf_has_guard_pages)]
     {
-        crate::vm::runtime::trap_signal::reset_debug_state();
-        crate::vm::runtime::trap_signal::clear_registered_jit_ranges();
+        trap_signal::reset_debug_state();
+        trap_signal::clear_registered_jit_ranges();
     }
 }

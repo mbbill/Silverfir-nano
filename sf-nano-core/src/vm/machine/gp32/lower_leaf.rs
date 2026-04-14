@@ -7,7 +7,7 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineCompareKind, MachineFloatWidth, MachineInst, MachineInstKind,
-            MachineIntBinaryOp, MachineSign, MachineStorageType, MachineValue,
+            MachineIntBinaryOp, MachineRegOwner, MachineSign, MachineStorageType, MachineValue,
         },
         middle::ssa_ir::ir::{DecodedOperand, SsaOperand, SsaValue},
         wasm::primitive_op::PrimitiveOpKind,
@@ -57,7 +57,7 @@ impl<'a> BlockLowerContext<'a> {
                 let (dst_lo, dst_hi) = self.alloc_i64_value_pair(single_result(results)?)?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: Ty::GpWord,
                         dst: dst_lo,
                         src: MachineValue::Imm64(*value as u32 as u64),
@@ -65,7 +65,7 @@ impl<'a> BlockLowerContext<'a> {
                 });
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: Ty::GpWord,
                         dst: dst_hi,
                         src: MachineValue::Imm64((*value >> 32) as u32 as u64),
@@ -252,7 +252,7 @@ impl<'a> BlockLowerContext<'a> {
                 let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: Ty::GpWord,
                         dst,
                         src: src_lo,
@@ -268,7 +268,7 @@ impl<'a> BlockLowerContext<'a> {
                     self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &dead)?;
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: Ty::GpWord,
                         dst: dst_lo,
                         src: MachineValue::Reg(src),
@@ -289,7 +289,7 @@ impl<'a> BlockLowerContext<'a> {
                     P::I64ExtendI32U => {
                         self.emit_machine_inst(MachineInst {
                             kind: MachineInstKind::Move {
-                                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                                owner: MachineRegOwner::LinearValue,
                                 ty: Ty::GpWord,
                                 dst: dst_hi,
                                 src: MachineValue::Imm64(0),

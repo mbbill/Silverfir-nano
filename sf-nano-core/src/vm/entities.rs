@@ -6,16 +6,18 @@ use crate::collections;
 use core::cell::RefCell;
 use tracked_alloc::{rc::Rc, string::String};
 
+use crate::error::WasmError;
 use crate::module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType};
 use crate::utils::limits::Limits;
 use crate::value_type::ValueType;
 
 #[cfg(sf_jit)]
 use crate::vm::runtime::code_buf::CodeBuffer;
+#[cfg(sf_has_guard_pages)]
+use crate::vm::runtime::guard_pages::GuardPageMemory;
 use crate::vm::value::{RefHandle, Value};
 
-pub type ExternalFn =
-    fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), crate::error::WasmError>;
+pub type ExternalFn = fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), WasmError>;
 
 pub struct Caller<'a> {
     memory: Option<&'a mut [u8]>,
@@ -109,7 +111,7 @@ pub struct MemInst {
     pub data: collections::Vec<u8>,
     pub limits: Limits,
     #[cfg(sf_has_guard_pages)]
-    guard: Option<crate::vm::runtime::guard_pages::GuardPageMemory>,
+    guard: Option<GuardPageMemory>,
 }
 
 impl Clone for MemInst {
@@ -136,8 +138,8 @@ impl MemInst {
 
     /// Allocate with guard-page backing (mmap + PROT_NONE guard region).
     #[cfg(sf_has_guard_pages)]
-    pub fn new_guarded(limits: Limits) -> Result<Self, crate::error::WasmError> {
-        let guard = crate::vm::runtime::guard_pages::GuardPageMemory::new(limits.min())?;
+    pub fn new_guarded(limits: Limits) -> Result<Self, WasmError> {
+        let guard = GuardPageMemory::new(limits.min())?;
         Ok(MemInst {
             data: collections::Vec::new(),
             limits,
@@ -186,7 +188,7 @@ impl MemInst {
     /// Mutable access to the guard-page backing (for grow).
     #[cfg(sf_has_guard_pages)]
     #[inline]
-    pub fn guard_mut(&mut self) -> Option<&mut crate::vm::runtime::guard_pages::GuardPageMemory> {
+    pub fn guard_mut(&mut self) -> Option<&mut GuardPageMemory> {
         self.guard.as_mut()
     }
 }

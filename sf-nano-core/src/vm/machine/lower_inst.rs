@@ -8,12 +8,15 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineBlockId, MachineBranchCond, MachineEdge, MachineFloatWidth, MachineInst,
-            MachineInstKind, MachineIntWidth, MachineLoadExtension, MachineReg, MachineStorageType,
-            MachineTerminator, MachineTrapKind, MachineValue,
+            MachineInstKind, MachineIntWidth, MachineLoadExtension, MachineReg, MachineRegOwner,
+            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
-        middle::ssa_ir::ir::{
-            DecodedOperand, SsaEdge, SsaInst, SsaInstView, SsaOp, SsaOperand, SsaTerminator,
-            SsaValue,
+        middle::{
+            frame::FrameSlot,
+            ssa_ir::ir::{
+                DecodedOperand, SsaEdge, SsaInst, SsaInstView, SsaOp, SsaOperand, SsaTerminator,
+                SsaValue,
+            },
         },
         wasm::primitive_op::PrimitiveOpKind,
     },
@@ -142,45 +145,45 @@ impl<'a> BlockLowerContext<'a> {
         // and `Value` borrows both `&SsaProgram` and `&SsaBlock`).
         match inst.op {
             SsaOp::LOCAL_GET_SLOT => {
-                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let slot = FrameSlot(inst.meta);
                 let dst = inst.result;
                 self.lower_local_get_slot(slot, dst)?;
             }
             SsaOp::LOCAL_GET_CACHE => {
-                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let slot = FrameSlot(inst.meta);
                 let dst = inst.result;
                 self.lower_local_get_cache(slot, dst)?;
             }
             SsaOp::LOCAL_SET_SLOT => {
-                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let slot = FrameSlot(inst.meta);
                 let src = inst.args[0]
                     .as_value()
                     .expect("LocalSetSlot src must be a Value");
                 self.lower_local_set_slot(slot, src)?;
             }
             SsaOp::LOCAL_SET_CACHE => {
-                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let slot = FrameSlot(inst.meta);
                 let src = inst.args[0]
                     .as_value()
                     .expect("LocalSetCache src must be a Value");
                 self.lower_local_set_cache(slot, src)?;
             }
             SsaOp::LOCAL_ENSURE_CACHE => {
-                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let slot = FrameSlot(inst.meta);
                 self.lower_local_ensure_cache(slot)?;
             }
             SsaOp::LOCAL_RESERVE_CACHE => {
-                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let slot = FrameSlot(inst.meta);
                 self.lower_local_reserve_cache(slot)?;
             }
             SsaOp::LOCAL_DROP_CACHE => {
-                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let slot = FrameSlot(inst.meta);
                 if let Some(index) = self.cached_local_index(slot) {
                     self.emit_drop_cached_local(index)?;
                 }
             }
             SsaOp::FILL => {
-                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let slot = FrameSlot(inst.meta);
                 let dst = inst.result;
                 let ty = lir_value_storage_type(self.program(), dst);
                 self.apply_sink_premap(&[], &[dst])?;
@@ -193,7 +196,7 @@ impl<'a> BlockLowerContext<'a> {
                 let width = canonical_value_mem_width_for_value(self.program(), dst);
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty,
                         dst: dst_reg,
                         addr: self.frame_addr(slot)?,
@@ -203,7 +206,7 @@ impl<'a> BlockLowerContext<'a> {
                 });
             }
             SsaOp::SPILL => {
-                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+                let slot = FrameSlot(inst.meta);
                 let src = inst.args[0].as_value().expect("Spill src must be a Value");
                 let ty = lir_value_storage_type(self.program(), src);
                 if matches!(ty, MachineStorageType::GpI64) {
@@ -261,7 +264,7 @@ impl<'a> BlockLowerContext<'a> {
 
     fn ensure_cached_local_loaded(
         &mut self,
-        _slot: crate::vm::middle::frame::FrameSlot,
+        _slot: FrameSlot,
         cached_index: usize,
         ty: MachineStorageType,
     ) -> Result<(), WasmError> {
@@ -280,7 +283,7 @@ impl<'a> BlockLowerContext<'a> {
         } else {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                    owner: MachineRegOwner::CachedLocal,
                     ty: cached.ty,
                     dst: cached.reg,
                     addr: self.frame_addr(cached.slot)?,
@@ -295,11 +298,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_local_get_slot(
-        &mut self,
-        slot: crate::vm::middle::frame::FrameSlot,
-        dst: SsaValue,
-    ) -> Result<(), WasmError> {
+    fn lower_local_get_slot(&mut self, slot: FrameSlot, dst: SsaValue) -> Result<(), WasmError> {
         let ty = lir_value_storage_type(self.program(), dst);
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let ops = self.i64_ops();
@@ -310,7 +309,7 @@ impl<'a> BlockLowerContext<'a> {
         let width = canonical_value_mem_width_for_value(self.program(), dst);
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty,
                 dst: dst_reg,
                 addr: self.frame_addr(slot)?,
@@ -321,11 +320,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_local_get_cache(
-        &mut self,
-        slot: crate::vm::middle::frame::FrameSlot,
-        dst: SsaValue,
-    ) -> Result<(), WasmError> {
+    fn lower_local_get_cache(&mut self, slot: FrameSlot, dst: SsaValue) -> Result<(), WasmError> {
         let ty = lir_value_storage_type(self.program(), dst);
         let Some(cached_index) = self.cached_local_index(slot) else {
             return Err(WasmError::internal(
@@ -342,7 +337,7 @@ impl<'a> BlockLowerContext<'a> {
             let (dst_lo, dst_hi) = self.alloc_i64_value_pair(dst)?;
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_lo,
                     src: MachineValue::Reg(cached.reg),
@@ -350,7 +345,7 @@ impl<'a> BlockLowerContext<'a> {
             });
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: dst_hi,
                     src: MachineValue::Reg(cached_hi),
@@ -366,10 +361,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_local_ensure_cache(
-        &mut self,
-        slot: crate::vm::middle::frame::FrameSlot,
-    ) -> Result<(), WasmError> {
+    fn lower_local_ensure_cache(&mut self, slot: FrameSlot) -> Result<(), WasmError> {
         let Some(cached_index) = self.cached_local_index(slot) else {
             return Err(WasmError::internal(
                 "LocalEnsureCache on non-cached local slot",
@@ -383,10 +375,7 @@ impl<'a> BlockLowerContext<'a> {
             .map_err(|_err| WasmError::internal("LocalEnsureCache(slot=) in block b failed"))
     }
 
-    fn lower_local_reserve_cache(
-        &mut self,
-        slot: crate::vm::middle::frame::FrameSlot,
-    ) -> Result<(), WasmError> {
+    fn lower_local_reserve_cache(&mut self, slot: FrameSlot) -> Result<(), WasmError> {
         let Some(cached_index) = self.cached_local_index(slot) else {
             return Err(WasmError::internal(
                 "LocalReserveCache on non-cached local slot",
@@ -400,11 +389,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_local_set_slot(
-        &mut self,
-        slot: crate::vm::middle::frame::FrameSlot,
-        src: SsaValue,
-    ) -> Result<(), WasmError> {
+    fn lower_local_set_slot(&mut self, slot: FrameSlot, src: SsaValue) -> Result<(), WasmError> {
         let ty = lir_value_storage_type(self.program(), src);
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let ops = self.i64_ops();
@@ -428,11 +413,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_local_set_cache(
-        &mut self,
-        slot: crate::vm::middle::frame::FrameSlot,
-        src: SsaValue,
-    ) -> Result<(), WasmError> {
+    fn lower_local_set_cache(&mut self, slot: FrameSlot, src: SsaValue) -> Result<(), WasmError> {
         let ty = lir_value_storage_type(self.program(), src);
         let Some(cached_index) = self.cached_local_index(slot) else {
             return Err(WasmError::internal(
@@ -465,7 +446,7 @@ impl<'a> BlockLowerContext<'a> {
             let (src_lo, src_hi) = self.use_i64_value_pair(src)?;
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                    owner: MachineRegOwner::CachedLocal,
                     ty: MachineStorageType::GpWord,
                     dst: cached.reg,
                     src: MachineValue::Reg(src_lo),
@@ -473,7 +454,7 @@ impl<'a> BlockLowerContext<'a> {
             });
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                    owner: MachineRegOwner::CachedLocal,
                     ty: MachineStorageType::GpWord,
                     dst: cached_hi,
                     src: MachineValue::Reg(src_hi),
@@ -493,7 +474,7 @@ impl<'a> BlockLowerContext<'a> {
         let src_reg = self.use_value(src)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Move {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedLocal,
                 ty: cached.ty,
                 dst: cache_reg,
                 src: MachineValue::Reg(src_reg),

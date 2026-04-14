@@ -26,7 +26,7 @@ use crate::{
 };
 
 #[cfg(test)]
-use super::facts::FirstAccessKind;
+use super::facts::{BlockTransientRegion, FirstAccessKind};
 use super::{
     entry_region::{analyze_block_entry_regions, analyze_block_transient_regions},
     facts::{BlockPlan, CompactEntryPoint, EntryState, FunctionPlan, LocalOpKind, OpInfo},
@@ -964,9 +964,7 @@ mod tests {
                     },
                 ],
             }],
-            block_transient_regions: collections::vec![
-                crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
-            ],
+            block_transient_regions: collections::vec![BlockTransientRegion::default()],
             blocks: collections::vec![BlockPlan {
                 entry: EntryState {
                     stack_height: 2,
@@ -1054,9 +1052,7 @@ mod tests {
                     hot_score: 300,
                 }],
             }],
-            block_transient_regions: collections::vec![
-                crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
-            ],
+            block_transient_regions: collections::vec![BlockTransientRegion::default()],
             blocks: collections::vec![BlockPlan {
                 entry: EntryState {
                     stack_height: 1,
@@ -1128,9 +1124,7 @@ mod tests {
                     hot_score: 320,
                 }],
             }],
-            block_transient_regions: collections::vec![
-                crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
-            ],
+            block_transient_regions: collections::vec![BlockTransientRegion::default()],
             blocks: collections::vec![BlockPlan {
                 entry: EntryState {
                     stack_height: 1,
@@ -1187,9 +1181,7 @@ mod tests {
                     },
                 ],
             }],
-            block_transient_regions: collections::vec![
-                crate::vm::middle::joint_plan::facts::BlockTransientRegion::default()
-            ],
+            block_transient_regions: collections::vec![BlockTransientRegion::default()],
             blocks: collections::vec![BlockPlan {
                 entry: EntryState {
                     stack_height: 2,

@@ -13,7 +13,7 @@ use crate::{
     error::WasmError,
     vm::{
         raw_value::{as_f32, as_f64, from_f32, from_f64, from_i32, from_i64},
-        runtime::context::NativeContext,
+        runtime::{context::NativeContext, trap::raise_trap},
     },
 };
 
@@ -39,7 +39,7 @@ unsafe extern "C" {
 /// # Safety
 /// `ctx` must point to a valid `NativeContext` for the duration of the call.
 pub(crate) unsafe extern "C" fn arm32_raise_trap(ctx: *mut NativeContext, kind: u32) -> u32 {
-    unsafe { crate::vm::runtime::trap::raise_trap(ctx, u64::from(kind)) }
+    unsafe { raise_trap(ctx, u64::from(kind)) }
 }
 
 #[inline]

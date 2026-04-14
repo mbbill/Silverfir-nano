@@ -1,11 +1,13 @@
 use crate::collections;
 use crate::vm::backend::BackendConfig;
-
 use crate::vm::machine::machine_ir::{
-    MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineEdge, MachineInst,
-    MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
-    MachineStorageType, MachineTerminator, MachineValue,
+    MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
+    MachineCallExternal, MachineCompareKind, MachineConstId, MachineEdge, MachineFloatBinaryOp,
+    MachineFloatWidth, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
+    MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
+    MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator, MachineValue,
 };
+use crate::vm::machine::peephole::optimize;
 
 /// Build a BackendConfig matching the historical machine-test register layout.
 ///
@@ -44,7 +46,7 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
                 ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Move {
-                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            owner: MachineRegOwner::LinearValue,
                             ty: MachineStorageType::GpWord,
                             dst: MachineReg(7),
                             src: MachineValue::Reg(MachineReg(8)),
@@ -52,8 +54,8 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
                     },
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
-                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
+                            width: MachineIntWidth::I32,
+                            op: MachineIntUnaryOp::Clz,
                             dst: MachineReg(6),
                             src: MachineValue::Reg(MachineReg(7)),
                         },
@@ -73,7 +75,7 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert_eq!(
@@ -132,11 +134,11 @@ fn does_not_copy_propagate_move_from_cached_local_block_param() {
                 // been treated as a plain "transient" number. The explicit
                 // owner says otherwise, and the peephole must obey the owner.
                 params: collections::vec![MachineBlockParam::gp_word(MachineReg(7))
-                    .with_owner(crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,)],
+                    .with_owner(MachineRegOwner::CachedLocal,)],
                 ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Move {
-                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            owner: MachineRegOwner::LinearValue,
                             ty: MachineStorageType::GpWord,
                             dst: MachineReg(8),
                             src: MachineValue::Reg(MachineReg(7)),
@@ -144,8 +146,8 @@ fn does_not_copy_propagate_move_from_cached_local_block_param() {
                     },
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
-                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
+                            width: MachineIntWidth::I32,
+                            op: MachineIntUnaryOp::Clz,
                             dst: MachineReg(6),
                             src: MachineValue::Reg(MachineReg(8)),
                         },
@@ -165,7 +167,7 @@ fn does_not_copy_propagate_move_from_cached_local_block_param() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 12, 12, 0));
+    optimize(&mut program, test_config(7, 8, 12, 12, 0));
 
     let block = &program.blocks[0];
     assert_eq!(
@@ -210,7 +212,7 @@ fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
                 ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Load {
-                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            owner: MachineRegOwner::LinearValue,
                             ty: MachineStorageType::GpWord,
                             dst: MachineReg(11),
                             addr: MachineAddr {
@@ -223,7 +225,7 @@ fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
                     },
                     MachineInst {
                         kind: MachineInstKind::Move {
-                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            owner: MachineRegOwner::LinearValue,
                             ty: MachineStorageType::GpWord,
                             dst: MachineReg(8),
                             src: MachineValue::Reg(MachineReg(11)),
@@ -231,8 +233,8 @@ fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
                     },
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
-                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
+                            width: MachineIntWidth::I32,
+                            op: MachineIntUnaryOp::Clz,
                             dst: MachineReg(6),
                             src: MachineValue::Reg(MachineReg(8)),
                         },
@@ -252,7 +254,7 @@ fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 12, 14, 0));
+    optimize(&mut program, test_config(7, 8, 12, 14, 0));
 
     let block = &program.blocks[0];
     assert_eq!(
@@ -296,7 +298,7 @@ fn does_not_copy_propagate_cached_local_load_defs() {
                 ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Load {
-                            owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                            owner: MachineRegOwner::CachedLocal,
                             ty: MachineStorageType::GpWord,
                             dst: MachineReg(7),
                             addr: MachineAddr {
@@ -309,7 +311,7 @@ fn does_not_copy_propagate_cached_local_load_defs() {
                     },
                     MachineInst {
                         kind: MachineInstKind::Move {
-                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            owner: MachineRegOwner::LinearValue,
                             ty: MachineStorageType::GpWord,
                             dst: MachineReg(8),
                             src: MachineValue::Reg(MachineReg(7)),
@@ -317,8 +319,8 @@ fn does_not_copy_propagate_cached_local_load_defs() {
                     },
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
-                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
+                            width: MachineIntWidth::I32,
+                            op: MachineIntUnaryOp::Clz,
                             dst: MachineReg(6),
                             src: MachineValue::Reg(MachineReg(8)),
                         },
@@ -338,7 +340,7 @@ fn does_not_copy_propagate_cached_local_load_defs() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 12, 12, 0));
+    optimize(&mut program, test_config(7, 8, 12, 12, 0));
 
     let block = &program.blocks[0];
     assert_eq!(
@@ -389,7 +391,7 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(4),
                         src: MachineValue::Imm64(0),
@@ -397,7 +399,7 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Imm64(5),
@@ -405,7 +407,7 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(5),
                         src: MachineValue::Reg(MachineReg(7)),
@@ -425,7 +427,7 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 8, 8, 0));
+    optimize(&mut program, test_config(7, 8, 8, 8, 0));
 
     let block = &program.blocks[0];
     let const_idx = block
@@ -488,7 +490,7 @@ fn deduplicate_constants_kills_tracked_constant_when_i64_pair_instruction_redefi
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Imm64(5),
@@ -496,7 +498,7 @@ fn deduplicate_constants_kills_tracked_constant_when_i64_pair_instruction_redefi
                 },
                 MachineInst {
                     kind: MachineInstKind::Int64PairBinary {
-                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
+                        op: MachineIntBinaryOp::Add,
                         dst_lo: MachineReg(7),
                         dst_hi: MachineReg(8),
                         lhs_lo: MachineValue::Reg(MachineReg(2)),
@@ -507,7 +509,7 @@ fn deduplicate_constants_kills_tracked_constant_when_i64_pair_instruction_redefi
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(9),
                         src: MachineValue::Imm64(5),
@@ -518,7 +520,7 @@ fn deduplicate_constants_kills_tracked_constant_when_i64_pair_instruction_redefi
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 12, 12, 0));
+    optimize(&mut program, test_config(7, 4, 12, 12, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -564,8 +566,8 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
                 },
                 MachineInst {
                     kind: MachineInstKind::IntBinary {
-                        width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
-                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
+                        width: MachineIntWidth::I64,
+                        op: MachineIntBinaryOp::Add,
                         dst: MachineReg(8),
                         lhs: MachineValue::Reg(MachineReg(2)),
                         rhs: MachineValue::Imm64(80),
@@ -573,7 +575,7 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
@@ -600,7 +602,7 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 5);
@@ -648,7 +650,7 @@ fn forwards_fp_spill_reload_into_gp_move() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
@@ -675,7 +677,7 @@ fn forwards_fp_spill_reload_into_gp_move() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 11, 12, 0));
+    optimize(&mut program, test_config(7, 8, 11, 12, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -710,7 +712,7 @@ fn does_not_forward_when_i64_pair_instruction_redefines_stored_source_reg() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Int64PairBinary {
-                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
+                        op: MachineIntBinaryOp::Add,
                         dst_lo: MachineReg(7),
                         dst_hi: MachineReg(8),
                         lhs_lo: MachineValue::Reg(MachineReg(2)),
@@ -721,7 +723,7 @@ fn does_not_forward_when_i64_pair_instruction_redefines_stored_source_reg() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(9),
                         addr: MachineAddr {
@@ -737,7 +739,7 @@ fn does_not_forward_when_i64_pair_instruction_redefines_stored_source_reg() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 12, 12, 0));
+    optimize(&mut program, test_config(7, 4, 12, 12, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -775,7 +777,7 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(4),
                         src: MachineValue::Imm64(0),
@@ -783,7 +785,7 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
@@ -799,7 +801,7 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 8, 8, 0));
+    optimize(&mut program, test_config(7, 8, 8, 8, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -848,7 +850,7 @@ fn does_not_forward_across_overlapping_store() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
@@ -864,7 +866,7 @@ fn does_not_forward_across_overlapping_store() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 8, 8, 0));
+    optimize(&mut program, test_config(7, 8, 8, 8, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -891,7 +893,7 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
@@ -904,8 +906,8 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
                 },
                 MachineInst {
                     kind: MachineInstKind::IntBinary {
-                        width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
-                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
+                        width: MachineIntWidth::I64,
+                        op: MachineIntBinaryOp::Add,
                         dst: MachineReg(8),
                         lhs: MachineValue::Reg(MachineReg(2)),
                         rhs: MachineValue::Imm64(16),
@@ -913,7 +915,7 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(9),
                         addr: MachineAddr {
@@ -940,7 +942,7 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 10, 10, 0));
+    optimize(&mut program, test_config(7, 8, 10, 10, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 3);
@@ -968,7 +970,7 @@ fn does_not_reuse_identical_loads_across_distinct_storage_types() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::Fp64,
                         dst: MachineReg(11),
                         addr: MachineAddr {
@@ -981,7 +983,7 @@ fn does_not_reuse_identical_loads_across_distinct_storage_types() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
@@ -997,7 +999,7 @@ fn does_not_reuse_identical_loads_across_distinct_storage_types() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 11, 12, 0));
+    optimize(&mut program, test_config(7, 8, 11, 12, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1024,7 +1026,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
@@ -1037,7 +1039,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Imm64(0),
@@ -1045,7 +1047,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(8),
                         addr: MachineAddr {
@@ -1061,7 +1063,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1088,7 +1090,7 @@ fn does_not_reuse_load_after_i64_pair_instruction_redefines_loaded_reg() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         addr: MachineAddr {
@@ -1101,7 +1103,7 @@ fn does_not_reuse_load_after_i64_pair_instruction_redefines_loaded_reg() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Int64PairBinary {
-                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
+                        op: MachineIntBinaryOp::Add,
                         dst_lo: MachineReg(7),
                         dst_hi: MachineReg(8),
                         lhs_lo: MachineValue::Reg(MachineReg(2)),
@@ -1112,7 +1114,7 @@ fn does_not_reuse_load_after_i64_pair_instruction_redefines_loaded_reg() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(9),
                         addr: MachineAddr {
@@ -1128,7 +1130,7 @@ fn does_not_reuse_load_after_i64_pair_instruction_redefines_loaded_reg() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 12, 12, 0));
+    optimize(&mut program, test_config(7, 4, 12, 12, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1155,7 +1157,7 @@ fn copy_propagate_kills_alias_when_i64_pair_instruction_redefines_reg() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Reg(MachineReg(4)),
@@ -1163,7 +1165,7 @@ fn copy_propagate_kills_alias_when_i64_pair_instruction_redefines_reg() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Int64PairBinary {
-                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::Add,
+                        op: MachineIntBinaryOp::Add,
                         dst_lo: MachineReg(7),
                         dst_hi: MachineReg(8),
                         lhs_lo: MachineValue::Reg(MachineReg(2)),
@@ -1174,8 +1176,8 @@ fn copy_propagate_kills_alias_when_i64_pair_instruction_redefines_reg() {
                 },
                 MachineInst {
                     kind: MachineInstKind::IntUnary {
-                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                        op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
+                        width: MachineIntWidth::I32,
+                        op: MachineIntUnaryOp::Clz,
                         dst: MachineReg(9),
                         src: MachineValue::Reg(MachineReg(7)),
                     },
@@ -1185,7 +1187,7 @@ fn copy_propagate_kills_alias_when_i64_pair_instruction_redefines_reg() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 12, 12, 0));
+    optimize(&mut program, test_config(7, 4, 12, 12, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1208,7 +1210,7 @@ fn preserves_linear_value_move_when_linear_source_reg_is_redefined_before_termin
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Reg(MachineReg(8)),
@@ -1216,7 +1218,7 @@ fn preserves_linear_value_move_when_linear_source_reg_is_redefined_before_termin
                 },
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(8),
                         src: MachineValue::Imm64(0),
@@ -1230,7 +1232,7 @@ fn preserves_linear_value_move_when_linear_source_reg_is_redefined_before_termin
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 10, 10, 0));
+    optimize(&mut program, test_config(7, 8, 10, 10, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1262,7 +1264,7 @@ fn copy_propagates_linear_copies_of_cached_local_snapshots() {
                 ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Move {
-                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            owner: MachineRegOwner::LinearValue,
                             ty: MachineStorageType::GpWord,
                             dst: MachineReg(7),
                             src: MachineValue::Reg(MachineReg(4)),
@@ -1270,7 +1272,7 @@ fn copy_propagates_linear_copies_of_cached_local_snapshots() {
                     },
                     MachineInst {
                         kind: MachineInstKind::Move {
-                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            owner: MachineRegOwner::LinearValue,
                             ty: MachineStorageType::GpWord,
                             dst: MachineReg(8),
                             src: MachineValue::Reg(MachineReg(7)),
@@ -1278,8 +1280,8 @@ fn copy_propagates_linear_copies_of_cached_local_snapshots() {
                     },
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
-                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
+                            width: MachineIntWidth::I32,
+                            op: MachineIntUnaryOp::Clz,
                             dst: MachineReg(6),
                             src: MachineValue::Reg(MachineReg(8)),
                         },
@@ -1299,7 +1301,7 @@ fn copy_propagates_linear_copies_of_cached_local_snapshots() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -1338,23 +1340,21 @@ fn preserves_linear_value_move_live_across_helper_barrier() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Reg(MachineReg(8)),
                     },
                 },
                 MachineInst {
-                    kind: MachineInstKind::CallExternal(
-                        crate::vm::machine::machine_ir::MachineCallExternal {
-                            metadata: crate::vm::machine::machine_ir::MachineConstId(0),
-                        },
-                    ),
+                    kind: MachineInstKind::CallExternal(MachineCallExternal {
+                        metadata: MachineConstId(0),
+                    },),
                 },
                 MachineInst {
                     kind: MachineInstKind::IntUnary {
-                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                        op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
+                        width: MachineIntWidth::I32,
+                        op: MachineIntUnaryOp::Clz,
                         dst: MachineReg(6),
                         src: MachineValue::Reg(MachineReg(7)),
                     },
@@ -1364,7 +1364,7 @@ fn preserves_linear_value_move_live_across_helper_barrier() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 3);
@@ -1401,7 +1401,7 @@ fn does_not_copy_propagate_cached_local_snapshots_into_integer_uses_or_edges() {
                 ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Move {
-                            owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                            owner: MachineRegOwner::LinearValue,
                             ty: MachineStorageType::GpWord,
                             dst: MachineReg(7),
                             src: MachineValue::Reg(MachineReg(4)),
@@ -1409,8 +1409,8 @@ fn does_not_copy_propagate_cached_local_snapshots_into_integer_uses_or_edges() {
                     },
                     MachineInst {
                         kind: MachineInstKind::IntUnary {
-                            width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                            op: crate::vm::machine::machine_ir::MachineIntUnaryOp::Clz,
+                            width: MachineIntWidth::I32,
+                            op: MachineIntUnaryOp::Clz,
                             dst: MachineReg(8),
                             src: MachineValue::Reg(MachineReg(7)),
                         },
@@ -1430,7 +1430,7 @@ fn does_not_copy_propagate_cached_local_snapshots_into_integer_uses_or_edges() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -1469,7 +1469,7 @@ fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpI64,
                         dst: MachineReg(7),
                         src: MachineValue::Reg(MachineReg(10)),
@@ -1477,8 +1477,8 @@ fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
                 },
                 MachineInst {
                     kind: MachineInstKind::FloatBinary {
-                        width: crate::vm::machine::machine_ir::MachineFloatWidth::F64,
-                        op: crate::vm::machine::machine_ir::MachineFloatBinaryOp::Add,
+                        width: MachineFloatWidth::F64,
+                        op: MachineFloatBinaryOp::Add,
                         dst: MachineReg(11),
                         lhs: MachineValue::Reg(MachineReg(10)),
                         rhs: MachineValue::Reg(MachineReg(7)),
@@ -1489,7 +1489,7 @@ fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 10, 12, 0));
+    optimize(&mut program, test_config(7, 8, 10, 12, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1512,7 +1512,7 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpI64,
                         dst: MachineReg(7),
                         src: MachineValue::Reg(MachineReg(10)),
@@ -1534,7 +1534,7 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 10, 11, 0));
+    optimize(&mut program, test_config(7, 8, 10, 11, 0));
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1553,8 +1553,8 @@ fn preserves_moves_into_fp_cached_locals() {
         fp_reg_init_widths: collections::vec![
             None,
             None,
-            Some(crate::vm::machine::machine_ir::MachineFloatWidth::F32),
-            Some(crate::vm::machine::machine_ir::MachineFloatWidth::F32),
+            Some(MachineFloatWidth::F32),
+            Some(MachineFloatWidth::F32),
         ],
         blocks: collections::vec![MachineBlock {
             id: MachineBlockId(0),
@@ -1562,7 +1562,7 @@ fn preserves_moves_into_fp_cached_locals() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                        owner: MachineRegOwner::CachedLocal,
                         ty: MachineStorageType::Fp32,
                         dst: MachineReg(13),
                         src: MachineValue::Reg(MachineReg(11)),
@@ -1584,7 +1584,7 @@ fn preserves_moves_into_fp_cached_locals() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 11, 15, 2));
+    optimize(&mut program, test_config(7, 8, 11, 15, 2));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -1616,18 +1616,16 @@ fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
                 params: collections::Vec::new(),
                 ops: collections::vec![MachineInst {
                     kind: MachineInstKind::IntCompare {
-                        width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
-                        kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
-                        sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
+                        width: MachineIntWidth::I64,
+                        kind: MachineCompareKind::Eq,
+                        sign: MachineSign::Unsigned,
                         dst: MachineReg(7),
                         lhs: MachineValue::Reg(MachineReg(4)),
                         rhs: MachineValue::Imm64(0),
                     },
                 }],
                 terminator: MachineTerminator::Branch {
-                    cond: crate::vm::machine::machine_ir::MachineBranchCond::Value(
-                        MachineValue::Reg(MachineReg(7)),
-                    ),
+                    cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(7)),),
                     then_edge: MachineEdge {
                         target: MachineBlockId(1),
                         args: collections::Vec::new(),
@@ -1653,14 +1651,14 @@ fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 9, 9, 0));
+    optimize(&mut program, test_config(7, 4, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 1);
     assert!(matches!(
         block.ops[0].kind,
         MachineInstKind::IntCompare {
-            width: crate::vm::machine::machine_ir::MachineIntWidth::I64,
+            width: MachineIntWidth::I64,
             dst: MachineReg(7),
             ..
         }
@@ -1668,9 +1666,7 @@ fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
     assert!(matches!(
         block.terminator,
         MachineTerminator::Branch {
-            cond: crate::vm::machine::machine_ir::MachineBranchCond::Value(MachineValue::Reg(
-                MachineReg(7)
-            )),
+            cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(7))),
             ..
         }
     ));
@@ -1687,18 +1683,16 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
                 params: collections::Vec::new(),
                 ops: collections::vec![MachineInst {
                     kind: MachineInstKind::IntCompare {
-                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                        kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
-                        sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
+                        width: MachineIntWidth::I32,
+                        kind: MachineCompareKind::Eq,
+                        sign: MachineSign::Unsigned,
                         dst: MachineReg(7),
                         lhs: MachineValue::Reg(MachineReg(4)),
                         rhs: MachineValue::Imm64(0),
                     },
                 }],
                 terminator: MachineTerminator::Branch {
-                    cond: crate::vm::machine::machine_ir::MachineBranchCond::Value(
-                        MachineValue::Reg(MachineReg(7)),
-                    ),
+                    cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(7)),),
                     then_edge: MachineEdge {
                         target: MachineBlockId(1),
                         args: collections::Vec::new(),
@@ -1724,16 +1718,16 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 9, 9, 0));
+    optimize(&mut program, test_config(7, 4, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert!(block.ops.is_empty());
     assert!(matches!(
         block.terminator,
         MachineTerminator::Branch {
-            cond: crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
-                width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
+            cond: MachineBranchCond::IntCompare {
+                width: MachineIntWidth::I32,
+                kind: MachineCompareKind::Eq,
                 ..
             },
             ..
@@ -1752,18 +1746,16 @@ fn fuses_compare_branch_for_high_dynamic_result_reg() {
                 params: collections::Vec::new(),
                 ops: collections::vec![MachineInst {
                     kind: MachineInstKind::IntCompare {
-                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                        kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
-                        sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
+                        width: MachineIntWidth::I32,
+                        kind: MachineCompareKind::Eq,
+                        sign: MachineSign::Unsigned,
                         dst: MachineReg(11),
                         lhs: MachineValue::Reg(MachineReg(4)),
                         rhs: MachineValue::Imm64(0),
                     },
                 }],
                 terminator: MachineTerminator::Branch {
-                    cond: crate::vm::machine::machine_ir::MachineBranchCond::Value(
-                        MachineValue::Reg(MachineReg(11)),
-                    ),
+                    cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(11)),),
                     then_edge: MachineEdge {
                         target: MachineBlockId(1),
                         args: collections::Vec::new(),
@@ -1789,7 +1781,7 @@ fn fuses_compare_branch_for_high_dynamic_result_reg() {
         ],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 12, 14, 0));
+    optimize(&mut program, test_config(7, 8, 12, 14, 0));
 
     let block = &program.blocks[0];
     assert!(
@@ -1799,9 +1791,9 @@ fn fuses_compare_branch_for_high_dynamic_result_reg() {
     assert!(matches!(
         block.terminator,
         MachineTerminator::Branch {
-            cond: crate::vm::machine::machine_ir::MachineBranchCond::IntCompare {
-                width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
+            cond: MachineBranchCond::IntCompare {
+                width: MachineIntWidth::I32,
+                kind: MachineCompareKind::Eq,
                 ..
             },
             ..
@@ -1820,8 +1812,8 @@ fn fuses_test_bits_for_high_dynamic_result_reg() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::IntBinary {
-                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::And,
+                        width: MachineIntWidth::I32,
+                        op: MachineIntBinaryOp::And,
                         dst: MachineReg(11),
                         lhs: MachineValue::Reg(MachineReg(4)),
                         rhs: MachineValue::Imm64(0xff),
@@ -1829,9 +1821,9 @@ fn fuses_test_bits_for_high_dynamic_result_reg() {
                 },
                 MachineInst {
                     kind: MachineInstKind::IntCompare {
-                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                        kind: crate::vm::machine::machine_ir::MachineCompareKind::Eq,
-                        sign: crate::vm::machine::machine_ir::MachineSign::Unsigned,
+                        width: MachineIntWidth::I32,
+                        kind: MachineCompareKind::Eq,
+                        sign: MachineSign::Unsigned,
                         dst: MachineReg(13),
                         lhs: MachineValue::Reg(MachineReg(11)),
                         rhs: MachineValue::Imm64(0),
@@ -1842,7 +1834,7 @@ fn fuses_test_bits_for_high_dynamic_result_reg() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 12, 16, 0));
+    optimize(&mut program, test_config(7, 8, 12, 16, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 1);
@@ -1868,7 +1860,7 @@ fn does_not_fold_constant_past_non_adjacent_instruction() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Imm64(0),
@@ -1876,7 +1868,7 @@ fn does_not_fold_constant_past_non_adjacent_instruction() {
                 },
                 MachineInst {
                     kind: MachineInstKind::FloatConst {
-                        width: crate::vm::machine::machine_ir::MachineFloatWidth::F32,
+                        width: MachineFloatWidth::F32,
                         dst: MachineReg(9),
                         bits: 0,
                     },
@@ -1897,7 +1889,7 @@ fn does_not_fold_constant_past_non_adjacent_instruction() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 9, 10, 1));
+    optimize(&mut program, test_config(7, 4, 9, 10, 1));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 3);
@@ -1933,7 +1925,7 @@ fn does_not_fold_constant_used_as_non_replaceable_address_base() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(7),
                         src: MachineValue::Imm64(64),
@@ -1941,7 +1933,7 @@ fn does_not_fold_constant_used_as_non_replaceable_address_base() {
                 },
                 MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty: MachineStorageType::GpWord,
                         dst: MachineReg(6),
                         addr: MachineAddr {
@@ -1957,7 +1949,7 @@ fn does_not_fold_constant_used_as_non_replaceable_address_base() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 4, 8, 8, 0));
+    optimize(&mut program, test_config(7, 4, 8, 8, 0));
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -1993,8 +1985,8 @@ fn fuses_shru_and_into_bitfield_extract() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::IntBinary {
-                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::ShrU,
+                        width: MachineIntWidth::I32,
+                        op: MachineIntBinaryOp::ShrU,
                         dst: MachineReg(7),
                         lhs: MachineValue::Reg(MachineReg(4)),
                         rhs: MachineValue::Imm64(1),
@@ -2002,8 +1994,8 @@ fn fuses_shru_and_into_bitfield_extract() {
                 },
                 MachineInst {
                     kind: MachineInstKind::IntBinary {
-                        width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
-                        op: crate::vm::machine::machine_ir::MachineIntBinaryOp::And,
+                        width: MachineIntWidth::I32,
+                        op: MachineIntBinaryOp::And,
                         dst: MachineReg(8),
                         lhs: MachineValue::Reg(MachineReg(7)),
                         rhs: MachineValue::Imm64(32767),
@@ -2014,7 +2006,7 @@ fn fuses_shru_and_into_bitfield_extract() {
         }],
     };
 
-    crate::vm::machine::peephole::optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0));
 
     let block = &program.blocks[0];
     assert_eq!(
@@ -2027,7 +2019,7 @@ fn fuses_shru_and_into_bitfield_extract() {
         matches!(
             block.ops[0].kind,
             MachineInstKind::BitfieldExtractU {
-                width: crate::vm::machine::machine_ir::MachineIntWidth::I32,
+                width: MachineIntWidth::I32,
                 dst: MachineReg(8),
                 src: MachineReg(4),
                 lsb: 1,

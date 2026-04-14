@@ -5,6 +5,8 @@
 //! targets. The semantic layer wraps these leaf ops in a larger function-body
 //! IR instead of duplicating the common non-structural Wasm operation set.
 
+use crate::value_type::ValueType;
+
 macro_rules! for_each_primitive_op {
     ($m:ident) => {
         $m! {
@@ -230,9 +232,7 @@ for_each_primitive_op!(define_primitive_ops);
 /// Returns `None` for ops that produce zero results (stores, drops, etc.) or
 /// ops whose result type depends on context (Select, GlobalGet).
 #[inline]
-pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<crate::value_type::ValueType> {
-    use crate::value_type::ValueType;
-
+pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<ValueType> {
     Some(match kind {
         // i32 arithmetic
         PrimitiveOpKind::I32Add

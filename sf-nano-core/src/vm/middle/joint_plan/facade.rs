@@ -12,7 +12,7 @@ use crate::{
         backend::BackendConfig,
         middle::{
             cfg::{CfgBlockId, SemanticCfg},
-            frame::FrameLayoutPlan,
+            frame::{FrameLayoutPlan, FrameSlot},
             slot_ssa::SlotSsaProgram,
         },
         wasm::semantic_ir::SemanticProgram,
@@ -78,8 +78,8 @@ impl JointPlanner {
     pub(crate) fn finalize_block_entry(
         &self,
         block: CfgBlockId,
-        actual_exit: &[crate::vm::middle::frame::FrameSlot],
-    ) -> collections::Vec<crate::vm::middle::frame::FrameSlot> {
+        actual_exit: &[FrameSlot],
+    ) -> collections::Vec<FrameSlot> {
         finalize_block_entry_cached_locals(&self.plan, block, actual_exit)
     }
 }

@@ -16,7 +16,10 @@
 
 use crate::{
     error::WasmError,
-    vm::machine::machine_ir::{MachineReg, MachineValue, MACHINE_CTX_REG},
+    vm::{
+        machine::machine_ir::{MachineReg, MachineValue, MACHINE_CTX_REG},
+        runtime::preserved::io as preserved_io,
+    },
 };
 
 use super::{
@@ -27,7 +30,7 @@ use super::{
     reg::Arm32Reg,
 };
 
-const PRESERVED_IO_BYTES: u32 = crate::vm::runtime::preserved::io::SLOT_COUNT as u32 * 8;
+const PRESERVED_IO_BYTES: u32 = preserved_io::SLOT_COUNT as u32 * 8;
 const PRESERVED_GP_SPILL_BYTES: u32 = 24;
 
 impl<'a> Arm32Backend<'a> {

@@ -13,6 +13,7 @@ use crate::{
             gp_dynamic_index, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
             MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
+        runtime::preserved::io as preserved_io,
     },
 };
 
@@ -352,7 +353,7 @@ const PRESERVED_GP_COUNT: usize = REG_PLAN.gp_dynamic_caller_saved.len();
 const PRESERVED_FP_COUNT: usize = REG_PLAN.fp_dynamic_caller_saved.len();
 
 const fn preserved_io_size() -> u32 {
-    crate::vm::runtime::preserved::io::SLOT_COUNT as u32 * 8
+    preserved_io::SLOT_COUNT as u32 * 8
 }
 
 /// Byte offset of the GP save area within the preserved-helper frame.

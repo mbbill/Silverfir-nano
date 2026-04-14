@@ -12,7 +12,7 @@ use crate::collections;
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
     self, MachineAddr, MachineBlock, MachineBranchCond, MachineConvertOp, MachineEdge, MachineInst,
-    MachineInstKind, MachineMemWidth, MachineReg, MachineTerminator, MachineValue,
+    MachineInstKind, MachineMemWidth, MachineReg, MachineRegOwner, MachineTerminator, MachineValue,
 };
 use crate::vm::machine::ownership::DynamicOwnershipTracker;
 
@@ -85,7 +85,7 @@ pub(super) fn copy_propagate(
 
         match &inst.kind {
             MachineInstKind::Move {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: _,
                 dst,
                 src: MachineValue::Reg(src),

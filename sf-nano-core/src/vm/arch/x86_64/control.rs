@@ -20,6 +20,7 @@ use super::{
 use crate::vm::arch::common::helpers::trap_code;
 use crate::vm::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
 use crate::vm::arch::shared_64::is_fallthrough_edge;
+use crate::vm::runtime::{external::call_external_entry_ptr, trap::raise_trap};
 
 impl<'a> X86_64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────
@@ -260,10 +261,7 @@ impl<'a> X86_64Backend<'a> {
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
         self.materialize_u64(C_ARG1, trap_code(kind));
         let call_scratch = self.gp_scratch.claim_rax().detach();
-        self.materialize_u64(
-            *call_scratch,
-            crate::vm::runtime::trap::raise_trap as usize as u64,
-        );
+        self.materialize_u64(*call_scratch, raise_trap as usize as u64);
         enc::call_reg(&mut self.core.text, *call_scratch);
         // JMP body_local_error_label — preserves RAX (the trap kind).
         let body_local_error_label = self.core.body_local_error_label;
@@ -437,10 +435,7 @@ impl<'a> X86_64Backend<'a> {
         enc::mov_rr_64(&mut self.core.text, C_ARG1, map_fixed_reg(MACHINE_FP_REG));
         self.materialize_u64(C_ARG2, metadata as u64);
         let call_scratch = self.gp_scratch.claim_rax().detach();
-        self.materialize_u64(
-            *call_scratch,
-            crate::vm::runtime::external::call_external_entry_ptr() as usize as u64,
-        );
+        self.materialize_u64(*call_scratch, call_external_entry_ptr() as usize as u64);
         enc::call_reg(&mut self.core.text, *call_scratch);
 
         // Nonzero helper status → propagate via body_local_error_label.

@@ -1,7 +1,8 @@
-use crate::vm::middle::ssa_ir::ir::SsaInstKind;
 use crate::collections;
+use crate::vm::middle::ssa_ir::ir::SsaInstKind;
 
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
+use crate::vm::wasm::semantic_ir::SemanticOpKind;
 
 use super::helpers::{
     all_inst_kinds, contains_drop_cache, i32_program, op, prepare_i32_program, prim,
@@ -20,15 +21,15 @@ fn mid_block_pressure_spills_colder_bottom_transient_to_keep_hot_cache() {
         collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 5 }),
             prim(PrimitiveOpKind::I32Const { value: 7 }),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalSet { idx: 0 }),
+            op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 22 }),
             prim(PrimitiveOpKind::Drop),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalGet { idx: 0 }),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalGet { idx: 0 }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
             prim(PrimitiveOpKind::I32Add),
             prim(PrimitiveOpKind::I32Add),
             prim(PrimitiveOpKind::Drop),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::ReturnVoid),
+            op(SemanticOpKind::ReturnVoid),
         ],
     );
 
@@ -84,14 +85,14 @@ fn mid_block_pressure_spills_truly_unused_transient_before_dropping_hot_cache() 
         collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 5 }),
             prim(PrimitiveOpKind::I32Const { value: 7 }),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalSet { idx: 0 }),
+            op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 22 }),
             prim(PrimitiveOpKind::Drop),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalGet { idx: 0 }),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalGet { idx: 0 }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
             prim(PrimitiveOpKind::I32Add),
             prim(PrimitiveOpKind::Drop),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::ReturnVoid),
+            op(SemanticOpKind::ReturnVoid),
         ],
     );
 
@@ -147,12 +148,12 @@ fn mid_block_pressure_drops_cold_cache_to_keep_hot_transient_live() {
         0,
         collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 7 }),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalSet { idx: 0 }),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalGet { idx: 1 }),
+            op(SemanticOpKind::LocalSet { idx: 0 }),
+            op(SemanticOpKind::LocalGet { idx: 1 }),
             prim(PrimitiveOpKind::I32Const { value: 22 }),
             prim(PrimitiveOpKind::I32Add),
             prim(PrimitiveOpKind::Drop),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::ReturnVoid),
+            op(SemanticOpKind::ReturnVoid),
         ],
     );
 
@@ -201,13 +202,13 @@ fn mid_block_pressure_can_drop_multiple_cold_caches_to_admit_one_hot_local() {
         1,
         collections::vec![
             prim(PrimitiveOpKind::I32Const { value: 1 }),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalSet { idx: 0 }),
+            op(SemanticOpKind::LocalSet { idx: 0 }),
             prim(PrimitiveOpKind::I32Const { value: 2 }),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalSet { idx: 1 }),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalGet { idx: 2 }),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::LocalGet { idx: 2 }),
+            op(SemanticOpKind::LocalSet { idx: 1 }),
+            op(SemanticOpKind::LocalGet { idx: 2 }),
+            op(SemanticOpKind::LocalGet { idx: 2 }),
             prim(PrimitiveOpKind::I32Add),
-            op(crate::vm::wasm::semantic_ir::SemanticOpKind::ReturnOne),
+            op(SemanticOpKind::ReturnOne),
         ],
     );
 

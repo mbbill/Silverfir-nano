@@ -15,10 +15,10 @@ use crate::{
             scratch_pool::ScratchPool, types::ParallelSource,
         },
         machine::machine_ir::{
-            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId,
-            MachineFunction, MachineFunctionAbi, MachineInst, MachineReg, MachineTerminator,
-            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
-            MACHINE_MEM0_SIZE_REG,
+            fp_reg_index, MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth,
+            MachineFrameRegion, MachineFuncId, MachineFunction, MachineFunctionAbi, MachineInst,
+            MachineReg, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
             code::{CompiledNativeModule, NativeRootEntry},
@@ -352,11 +352,8 @@ impl<'a> Arm32Backend<'a> {
 
     #[inline]
     pub(super) fn map_fp_dreg(&self, reg: MachineReg) -> Result<u32, WasmError> {
-        let fp_idx =
-            crate::vm::machine::machine_ir::fp_reg_index(reg, self.core.compiled.backend())
-                .ok_or_else(|| {
-                    WasmError::invalid("arm32: expected FP register, got GP machine reg")
-                })?;
+        let fp_idx = fp_reg_index(reg, self.core.compiled.backend())
+            .ok_or_else(|| WasmError::invalid("arm32: expected FP register, got GP machine reg"))?;
         abi::fp_machine_reg(fp_idx)
             .ok_or_else(|| WasmError::invalid("arm32: FP machine reg index out of range"))
     }
@@ -435,10 +432,7 @@ impl<'a> Arm32Backend<'a> {
     /// path that materializes `fp_reg + base` into a temporary GP register
     /// (spilled to the host stack so the JIT register file is preserved).
     #[cfg(sf_fp_dp)]
-    fn emit_helper_scratch_save(
-        &mut self,
-        helper_scratch: crate::vm::machine::machine_ir::MachineFrameRegion,
-    ) {
+    fn emit_helper_scratch_save(&mut self, helper_scratch: MachineFrameRegion) {
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         // These saves are emitted only inside `emit_host_call`, which has
         // already preserved both backend-owned GP scratch registers.
@@ -495,10 +489,7 @@ impl<'a> Arm32Backend<'a> {
     /// Restore D3-D7 from the function's `helper_scratch` slots. Mirrors
     /// `emit_helper_scratch_save`.
     #[cfg(sf_fp_dp)]
-    fn emit_helper_scratch_restore(
-        &mut self,
-        helper_scratch: crate::vm::machine::machine_ir::MachineFrameRegion,
-    ) {
+    fn emit_helper_scratch_restore(&mut self, helper_scratch: MachineFrameRegion) {
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let gp_lo_s = self.gp_scratch.scoped_alloc().detach();
         let gp_hi_s = self.gp_scratch.scoped_alloc().detach();
@@ -546,10 +537,7 @@ impl<'a> Arm32Backend<'a> {
 
     /// Save the fixed MachineIR roles plus both backend-owned GP scratches
     /// into helper-scratch slots 5..=7 without perturbing `SP`.
-    fn emit_fixed_helper_state_save(
-        &mut self,
-        helper_scratch: crate::vm::machine::machine_ir::MachineFrameRegion,
-    ) {
+    fn emit_fixed_helper_state_save(&mut self, helper_scratch: MachineFrameRegion) {
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let base_byte_offset = i32::from(helper_scratch.base_slot) * 8;
 
@@ -577,10 +565,7 @@ impl<'a> Arm32Backend<'a> {
         }
     }
 
-    fn emit_fixed_helper_state_restore(
-        &mut self,
-        helper_scratch: crate::vm::machine::machine_ir::MachineFrameRegion,
-    ) {
+    fn emit_fixed_helper_state_restore(&mut self, helper_scratch: MachineFrameRegion) {
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let base_byte_offset = i32::from(helper_scratch.base_slot) * 8;
 

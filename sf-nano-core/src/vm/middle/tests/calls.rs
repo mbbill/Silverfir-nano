@@ -1,6 +1,8 @@
 use crate::collections;
+use crate::vm::middle::frame::FrameSlot;
 use crate::vm::middle::ssa_ir::ir::SsaOp;
 
+use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 use crate::vm::wasm::semantic_ir::SemanticOpKind;
 
 use super::helpers::{
@@ -24,9 +26,7 @@ fn entry_block_does_not_preload_local_used_only_after_call_barrier() {
             }),
             op(SemanticOpKind::LocalGet { idx: 0 }),
             op(SemanticOpKind::LocalGet { idx: 0 }),
-            op(SemanticOpKind::Primitive(
-                crate::vm::wasm::primitive_op::PrimitiveOpKind::I32Add,
-            )),
+            op(SemanticOpKind::Primitive(PrimitiveOpKind::I32Add,)),
             op(SemanticOpKind::ReturnOne),
         ],
     );
@@ -56,9 +56,9 @@ fn call_barrier_rebuilds_local_access_after_flush() {
         1,
         1,
         collections::vec![
-            op(SemanticOpKind::Primitive(
-                crate::vm::wasm::primitive_op::PrimitiveOpKind::I32Const { value: 7 },
-            )),
+            op(SemanticOpKind::Primitive(PrimitiveOpKind::I32Const {
+                value: 7
+            },)),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             op(SemanticOpKind::CallDirect {
                 callee: 0,
@@ -77,7 +77,7 @@ fn call_barrier_rebuilds_local_access_after_flush() {
         .iter()
         .find(|inst| {
             matches!(inst.op, SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE)
-                && crate::vm::middle::frame::FrameSlot(inst.meta) == slot0
+                && FrameSlot(inst.meta) == slot0
         })
         .expect("expected one local.get after the call");
 
@@ -94,9 +94,9 @@ fn hot_repeated_local_can_stay_public_across_call() {
         4,
         1,
         collections::vec![
-            op(SemanticOpKind::Primitive(
-                crate::vm::wasm::primitive_op::PrimitiveOpKind::I32Const { value: 7 },
-            )),
+            op(SemanticOpKind::Primitive(PrimitiveOpKind::I32Const {
+                value: 7
+            },)),
             op(SemanticOpKind::LocalSet { idx: 0 }),
             op(SemanticOpKind::CallDirect {
                 callee: 0,
@@ -105,17 +105,11 @@ fn hot_repeated_local_can_stay_public_across_call() {
             }),
             op(SemanticOpKind::LocalGet { idx: 0 }),
             op(SemanticOpKind::LocalGet { idx: 0 }),
-            op(SemanticOpKind::Primitive(
-                crate::vm::wasm::primitive_op::PrimitiveOpKind::I32Add,
-            )),
-            op(SemanticOpKind::Primitive(
-                crate::vm::wasm::primitive_op::PrimitiveOpKind::Drop,
-            )),
+            op(SemanticOpKind::Primitive(PrimitiveOpKind::I32Add,)),
+            op(SemanticOpKind::Primitive(PrimitiveOpKind::Drop,)),
             op(SemanticOpKind::LocalGet { idx: 0 }),
             op(SemanticOpKind::LocalGet { idx: 0 }),
-            op(SemanticOpKind::Primitive(
-                crate::vm::wasm::primitive_op::PrimitiveOpKind::I32Add,
-            )),
+            op(SemanticOpKind::Primitive(PrimitiveOpKind::I32Add,)),
             op(SemanticOpKind::ReturnOne),
         ],
     );

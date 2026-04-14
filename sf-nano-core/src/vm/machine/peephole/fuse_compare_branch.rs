@@ -9,8 +9,8 @@
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge, MachineInstKind, MachineReg,
-    MachineRegOwner, MachineTerminator, MachineValue,
+    MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge, MachineInstKind, MachineIntWidth,
+    MachineReg, MachineRegOwner, MachineTerminator, MachineValue,
 };
 
 use super::helpers::{count_value_uses, inst_defines, terminator_uses_reg, value_is_reg};
@@ -47,8 +47,7 @@ pub(super) fn fuse_compare_branch(
         // it must be safe for all backends.
         let fused_cond = match &last_op.kind {
             MachineInstKind::IntCompare { width, .. }
-                if *width == crate::vm::machine::machine_ir::MachineIntWidth::I64
-                    && gp_reg_width == 4 =>
+                if *width == MachineIntWidth::I64 && gp_reg_width == 4 =>
             {
                 continue
             }
@@ -71,8 +70,7 @@ pub(super) fn fuse_compare_branch(
                 }
             }
             MachineInstKind::TestBits { width, .. }
-                if *width == crate::vm::machine::machine_ir::MachineIntWidth::I64
-                    && gp_reg_width == 4 =>
+                if *width == MachineIntWidth::I64 && gp_reg_width == 4 =>
             {
                 continue
             }

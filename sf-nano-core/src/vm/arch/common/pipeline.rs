@@ -7,7 +7,7 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineBlockParam, MachineFloatWidth, MachineTrapKind, MachineValue,
+            MachineBlockParam, MachineFloatWidth, MachineFunction, MachineTrapKind, MachineValue,
         },
         runtime::code::CompiledNativeModule,
     },
@@ -22,7 +22,7 @@ use super::types::{FunctionArtifact, ParallelSource};
 
 pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
     compiled: &'a CompiledNativeModule,
-    function: &'a crate::vm::machine::machine_ir::MachineFunction,
+    function: &'a MachineFunction,
 ) -> Result<FunctionArtifact, WasmError> {
     super::core::CompilerCore::validate_function(
         A::NAME,

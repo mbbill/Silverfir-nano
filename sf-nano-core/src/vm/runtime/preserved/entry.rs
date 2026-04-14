@@ -1,9 +1,10 @@
 use crate::{
     error::WasmError,
     vm::runtime::{
-        common::{internal_error, set_ctx_error, NativeCallStatus},
+        common::{internal_error, set_ctx_error, trap_error, NativeCallStatus},
         context::NativeContext,
     },
+    vm::value::RefHandle,
 };
 
 use super::{
@@ -60,9 +61,7 @@ unsafe fn dispatch_preserved(
             let mem = super::ops::memory_mut(ctx, mem_idx)?;
             let mem_len = mem.memory_len();
             if dest.saturating_add(len) > mem_len {
-                return Err(crate::vm::runtime::common::trap_error(
-                    "out of bounds memory access",
-                ));
+                return Err(trap_error("out of bounds memory access"));
             }
             unsafe {
                 let slice = core::slice::from_raw_parts_mut(mem.memory_ptr(), mem_len);
@@ -113,11 +112,9 @@ unsafe fn dispatch_preserved(
             let len = unsafe { *io_ptr.add(io::ARG2) } as usize;
             let table = super::ops::table_mut(ctx, table_idx)?;
             if start.saturating_add(len) > table.elements.len() {
-                return Err(crate::vm::runtime::common::trap_error(
-                    "out of bounds table access",
-                ));
+                return Err(trap_error("out of bounds table access"));
             }
-            table.elements[start..start + len].fill(crate::vm::value::RefHandle::new(val as usize));
+            table.elements[start..start + len].fill(RefHandle::new(val as usize));
             Ok(())
         }
         op::TABLE_COPY => {

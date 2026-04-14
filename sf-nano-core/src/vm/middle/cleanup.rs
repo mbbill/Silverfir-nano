@@ -841,6 +841,7 @@ fn edge_at_mut(program: &mut SsaProgram, location: EdgeLocation) -> &mut SsaEdge
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::value_type::ValueType;
     use crate::vm::middle::{
         frame::FrameSlot,
         ssa_ir::{ir::SsaBlock, validate::validate_program},
@@ -925,7 +926,7 @@ mod tests {
                 collections::Vec::new()
             ],
             block_cfg_origins: collections::vec![],
-            value_types: collections::vec![crate::value_type::ValueType::I32; 32],
+            value_types: collections::vec![ValueType::I32; 32],
             value_sink_local: collections::vec![None; 32],
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
@@ -954,14 +955,14 @@ mod tests {
         let mut program = SsaProgram {
             entry: SsaTarget(0),
             blocks: collections::Vec::new(),
-            local_slot_types: collections::vec![crate::value_type::ValueType::I32],
+            local_slot_types: collections::vec![ValueType::I32],
             local_slot_info: collections::vec![Default::default()],
             block_entry_cached_slots: collections::vec![
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
             block_cfg_origins: collections::vec![],
-            value_types: collections::vec![crate::value_type::ValueType::I32; 16],
+            value_types: collections::vec![ValueType::I32; 16],
             value_sink_local: collections::vec![None; 16],
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
@@ -1066,7 +1067,7 @@ mod tests {
                 collections::Vec::new()
             ],
             block_cfg_origins: collections::vec![],
-            value_types: collections::vec![crate::value_type::ValueType::I32; 2],
+            value_types: collections::vec![ValueType::I32; 2],
             value_sink_local: collections::vec![None; 2],
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),

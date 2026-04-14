@@ -19,7 +19,7 @@ use crate::{
     error::WasmError,
     op_decoder::{Decoder, Immediate, OpStream, OpcodeHandler},
     opcodes::{Opcode, OpcodeFC, WasmOpcode},
-    value_type::ValueType,
+    value_type::{HeapType, RefType, ValueType},
 };
 
 use super::{
@@ -787,10 +787,7 @@ impl<'a> DecodeContext<'a> {
                     });
                     let func_type_idx =
                         self.compile.store.function(*func_idx as usize).type_index();
-                    let ty = ValueType::Ref(crate::value_type::RefType::new(
-                        false,
-                        crate::value_type::HeapType::Concrete(func_type_idx),
-                    ));
+                    let ty = ValueType::Ref(RefType::new(false, HeapType::Concrete(func_type_idx)));
                     self.record_result_types(op_idx, &[ty]);
                 }
             }

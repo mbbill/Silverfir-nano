@@ -25,6 +25,8 @@ use super::backend::{Arm32Backend, CompiledArm32Entry};
 use super::enc;
 use super::reg::Arm32Reg;
 use crate::vm::arch::common::backend::ArchBackend;
+#[cfg(sf_has_guard_pages)]
+use crate::vm::runtime::trap_signal;
 
 // ── ARM32-specific patch helper ──────────────────────────────────────────────
 
@@ -216,7 +218,7 @@ pub(crate) fn compile_module(
                 )
             })
             .collect();
-        crate::vm::runtime::trap_signal::register_jit_ranges(&ranges);
+        trap_signal::register_jit_ranges(&ranges);
     }
     Ok(entries)
 }

@@ -6,7 +6,7 @@ use tracked_alloc::string::{String, ToString};
 
 use crate::error::WasmError;
 use crate::module::entities::{
-    Data, Element, ElementInit, FunctionDef, GlobalDef, MemoryDef, TableDef,
+    ConstExpr, Data, Element, ElementInit, FunctionDef, GlobalDef, MemoryDef, TableDef,
 };
 use crate::module::type_defs::FunctionType;
 use crate::module::Module;
@@ -518,10 +518,7 @@ impl Instance {
     }
 }
 
-fn eval_offset(
-    expr: &crate::module::entities::ConstExpr,
-    module: &ModuleInst,
-) -> Result<usize, WasmError> {
+fn eval_offset(expr: &ConstExpr, module: &ModuleInst) -> Result<usize, WasmError> {
     let value = eval_const_expr(expr, module)?;
     match value {
         Value::I32(v) => {

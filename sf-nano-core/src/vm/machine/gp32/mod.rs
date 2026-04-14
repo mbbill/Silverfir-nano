@@ -18,8 +18,8 @@ use super::{
 };
 
 use crate::vm::machine::machine_ir::{
-    MachineInst, MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineStorageType,
-    MachineValue,
+    MachineInst, MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineRegOwner,
+    MachineStorageType, MachineValue,
 };
 
 pub(super) struct Gp32Lowering;
@@ -34,7 +34,7 @@ impl I64Lowering for Gp32Lowering {
         let (dst_lo, dst_hi) = ctx.alloc_i64_value_pair(dst)?;
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: dst_lo,
                 addr: ctx.frame_addr_offset(slot, 0)?,
@@ -44,7 +44,7 @@ impl I64Lowering for Gp32Lowering {
         });
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: dst_hi,
                 addr: ctx.frame_addr_offset(slot, 4)?,
@@ -102,7 +102,7 @@ impl I64Lowering for Gp32Lowering {
         })?;
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedLocal,
                 ty: MachineStorageType::GpWord,
                 dst: cached.reg,
                 addr: ctx.frame_addr_offset(cached.slot, 0)?,
@@ -112,7 +112,7 @@ impl I64Lowering for Gp32Lowering {
         });
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedLocal,
                 ty: MachineStorageType::GpWord,
                 dst: cached_hi,
                 addr: ctx.frame_addr_offset(cached.slot, 4)?,

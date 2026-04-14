@@ -4,8 +4,8 @@ use crate::{
         machine::machine_ir::{
             MachineAddr, MachineBlockId, MachineBranchCond, MachineCallExternal,
             MachineCompareKind, MachineConstId, MachineFuncId, MachineInst, MachineInstKind,
-            MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth, MachineReg, MachineSign,
-            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner,
+            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::frame::{FrameSlot, FrameSpan},
         runtime::external::{ExternalCallFrameRegion, ExternalCallMeta, ExternalCallTargetKind},
@@ -196,7 +196,7 @@ impl<'a> BlockLowerContext<'a> {
             },
             MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: self.regfile().mem0_base(),
                     addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_base_offset),
@@ -206,7 +206,7 @@ impl<'a> BlockLowerContext<'a> {
             },
             MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: self.regfile().mem0_size(),
                     addr: self.runtime_addr(self.runtime_abi_layout().context.mem0_size_offset),
@@ -241,7 +241,7 @@ impl<'a> BlockLowerContext<'a> {
         let stack_end_offset = self.runtime_abi_layout().context.stack_end_offset;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: stack_limit,
                 addr: self.runtime_addr(stack_end_offset),
@@ -284,7 +284,7 @@ impl<'a> BlockLowerContext<'a> {
         let stack_end_offset = self.runtime_abi_layout().context.stack_end_offset;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: stack_limit,
                 addr: self.runtime_addr(stack_end_offset),

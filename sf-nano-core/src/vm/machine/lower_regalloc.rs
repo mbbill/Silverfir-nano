@@ -8,13 +8,13 @@ use crate::{
     vm::{
         backend::BackendConfig,
         machine::machine_ir::{
-            machine_ptr_width, machine_word_int_width, MachineBlockParam, MachineBranchCond,
-            MachineConvertOp, MachineEdge, MachineFloatWidth, MachineInst, MachineInstKind,
-            MachineIntWidth, MachineMemWidth, MachineReg, MachineRegOwner, MachineStorageType,
-            MachineTerminator, MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
-            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            machine_ptr_width, machine_word_int_width, MachineAddr, MachineBlockParam,
+            MachineBranchCond, MachineConvertOp, MachineEdge, MachineFloatWidth, MachineInst,
+            MachineInstKind, MachineIntWidth, MachineMemWidth, MachineReg, MachineRegOwner,
+            MachineStorageType, MachineTerminator, MachineValue, MACHINE_CTX_REG,
+            MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
-        middle::ssa_ir::ir::{SsaProgram, SsaValue},
+        middle::ssa_ir::ir::{DecodedOperand, SsaOperand, SsaProgram, SsaValue},
     },
 };
 
@@ -225,34 +225,30 @@ impl<'a> BlockLowerContext<'a> {
     /// - `SsaOperand::Value(v)` → `use_value(v)`
     /// - `SsaOperand::Const(bits)` → allocate a linear-value reg, emit a Move with
     ///   the constant, and return the register.
-    pub(super) fn use_operand(
-        &mut self,
-        operand: crate::vm::middle::ssa_ir::ir::SsaOperand,
-    ) -> Result<MachineReg, WasmError> {
-        use crate::vm::middle::ssa_ir::ir::DecodedOperand;
+    pub(super) fn use_operand(&mut self, operand: SsaOperand) -> Result<MachineReg, WasmError> {
         match operand.decode() {
             DecodedOperand::Value(v) => self.use_value(v),
             DecodedOperand::Const(idx) => {
                 let bits = self.program().const_pool[idx as usize];
-                let ty = crate::vm::machine::machine_ir::MachineStorageType::GpWord;
+                let ty = MachineStorageType::GpWord;
                 let Some(reg) = self.first_free_linear_value_reg(ty) else {
-                    return Err(crate::error::WasmError::internal(
+                    return Err(WasmError::internal(
                         "dynamic register budget exhausted while materializing constant operand"
                             .into(),
                     ));
                 };
                 self.set_linear_value_reg(reg, None, Some(ty))?;
-                self.emit_machine_inst(crate::vm::machine::machine_ir::MachineInst {
-                    kind: crate::vm::machine::machine_ir::MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
                         ty,
                         dst: reg,
-                        src: crate::vm::machine::machine_ir::MachineValue::Imm64(bits),
+                        src: MachineValue::Imm64(bits),
                     },
                 });
                 Ok(reg)
             }
-            DecodedOperand::None => Err(crate::error::WasmError::internal(
+            DecodedOperand::None => Err(WasmError::internal(
                 "use_operand called with a NONE SsaOperand",
             )),
         }
@@ -285,9 +281,8 @@ impl<'a> BlockLowerContext<'a> {
     /// - `Const(bits)` → split into lo/hi immediates
     pub(super) fn use_i64_operand_pair(
         &mut self,
-        operand: &crate::vm::middle::ssa_ir::ir::SsaOperand,
+        operand: &SsaOperand,
     ) -> Result<(MachineValue, MachineValue), WasmError> {
-        use crate::vm::middle::ssa_ir::ir::DecodedOperand;
         match operand.decode() {
             DecodedOperand::Value(v) => {
                 let (lo, hi) = self.use_i64_value_pair(v)?;
@@ -662,7 +657,7 @@ impl<'a> BlockLowerContext<'a> {
         src_value: SsaValue,
         src_reg: MachineReg,
         ty: MachineStorageType,
-        addr: crate::vm::machine::machine_ir::MachineAddr,
+        addr: MachineAddr,
         width: MachineMemWidth,
     ) -> bool {
         if !self.is_linear_value_reg(src_reg) {
@@ -675,7 +670,7 @@ impl<'a> BlockLowerContext<'a> {
 
         let imm = match self.ops_last().map(|inst| &inst.kind) {
             Some(MachineInstKind::Move {
-                owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                owner: MachineRegOwner::LinearValue,
                 ty: inst_ty,
                 dst,
                 src: MachineValue::Imm64(imm),

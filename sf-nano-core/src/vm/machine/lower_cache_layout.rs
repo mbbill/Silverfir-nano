@@ -7,9 +7,15 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::MachineStorageType,
-        middle::ssa_ir::{
-            ir::{block_entry_cache_requirement, SsaProgram, SsaTerminator},
-            target::SsaTarget,
+        middle::{
+            frame::FrameSlot,
+            ssa_ir::{
+                ir::{
+                    block_entry_cache_requirement, EntryCacheRequirement, SsaBlock, SsaOp,
+                    SsaProgram, SsaTerminator,
+                },
+                target::SsaTarget,
+            },
         },
     },
 };
@@ -196,10 +202,7 @@ pub(super) fn compute_block_entry_cache_params(
                 EntryCacheParam {
                     cached_index,
                     regs,
-                    needs_value: matches!(
-                        requirement,
-                        crate::vm::middle::ssa_ir::ir::EntryCacheRequirement::Ensure
-                    ),
+                    needs_value: matches!(requirement, EntryCacheRequirement::Ensure),
                 },
             ));
         }
@@ -358,7 +361,7 @@ fn mark_idom_reachable(block_index: usize, children: &[collections::Vec<usize>],
 
 fn compute_block_bank_slots(
     program: &SsaProgram,
-    slot_to_cached_index: &BTreeMap<crate::vm::middle::frame::FrameSlot, usize>,
+    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
     slot_meta: &[SlotLayoutMeta],
 ) -> collections::Vec<[collections::Vec<usize>; 2]> {
     (0..program.blocks.len())
@@ -390,7 +393,7 @@ fn assign_bank_layouts_from_root(
     bank: LayoutBank,
     lane_count: usize,
     program: &SsaProgram,
-    slot_to_cached_index: &BTreeMap<crate::vm::middle::frame::FrameSlot, usize>,
+    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
     idom_children: &[collections::Vec<usize>],
     bank_slots: &[[collections::Vec<usize>; 2]],
     slot_meta: &[SlotLayoutMeta],
@@ -444,9 +447,9 @@ fn assign_bank_layouts_from_root(
 }
 
 fn simulate_block_exit_layout(
-    block: &crate::vm::middle::ssa_ir::ir::SsaBlock,
+    block: &SsaBlock,
     entry_layout: &[Option<usize>],
-    slot_to_cached_index: &BTreeMap<crate::vm::middle::frame::FrameSlot, usize>,
+    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
     slot_meta: &[SlotLayoutMeta],
     bank: LayoutBank,
     lane_count: usize,
@@ -468,10 +471,8 @@ fn simulate_block_exit_layout(
 
     for inst in &block.ops {
         match inst.op {
-            crate::vm::middle::ssa_ir::ir::SsaOp::LOCAL_ENSURE_CACHE
-            | crate::vm::middle::ssa_ir::ir::SsaOp::LOCAL_RESERVE_CACHE
-            | crate::vm::middle::ssa_ir::ir::SsaOp::LOCAL_SET_CACHE => {
-                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+            SsaOp::LOCAL_ENSURE_CACHE | SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_SET_CACHE => {
+                let slot = FrameSlot(inst.meta);
                 let Some(&slot_index) = slot_to_cached_index.get(&slot) else {
                     continue;
                 };
@@ -523,8 +524,8 @@ fn simulate_block_exit_layout(
                     ));
                 }
             }
-            crate::vm::middle::ssa_ir::ir::SsaOp::LOCAL_DROP_CACHE => {
-                let slot = crate::vm::middle::frame::FrameSlot(inst.meta);
+            SsaOp::LOCAL_DROP_CACHE => {
+                let slot = FrameSlot(inst.meta);
                 let Some(&slot_index) = slot_to_cached_index.get(&slot) else {
                     continue;
                 };
@@ -535,7 +536,7 @@ fn simulate_block_exit_layout(
                     occupy_segment(&mut occupied, start, slot_meta[slot_index].width, false);
                 }
             }
-            crate::vm::middle::ssa_ir::ir::SsaOp::CALL => {
+            SsaOp::CALL => {
                 for (slot_index, lane) in layout.iter_mut().enumerate() {
                     if slot_meta.get(slot_index).map(|meta| meta.bank) != Some(bank) {
                         continue;

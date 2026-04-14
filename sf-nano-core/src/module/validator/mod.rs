@@ -293,7 +293,7 @@ fn is_type_compatible(actual: ValueType, expected: ValueType) -> bool {
 /// Validate that any concrete heap type index in a value type is within bounds.
 fn validate_valtype_ref(vt: &ValueType, type_count: usize) -> Result<(), WasmError> {
     if let ValueType::Ref(rt) = vt {
-        if let crate::value_type::HeapType::Concrete(idx) = rt.heap_type {
+        if let HeapType::Concrete(idx) = rt.heap_type {
             if (idx as usize) >= type_count {
                 return Err(WasmError::invalid("type index out of bounds ()"));
             }

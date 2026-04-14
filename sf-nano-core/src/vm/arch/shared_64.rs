@@ -16,6 +16,8 @@ use crate::{
 
 #[cfg(sf_has_debug_regions)]
 use crate::vm::arch::common::types::DebugRegion;
+#[cfg(sf_has_guard_pages)]
+use crate::vm::runtime::trap_signal;
 
 /// Metadata needed by the shared 64-bit module linker for each emitted function.
 pub(crate) struct EmittedFunction64 {
@@ -176,7 +178,7 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
                 (func_start, func_end, body_local_error)
             })
             .collect();
-        crate::vm::runtime::trap_signal::register_jit_ranges(&ranges);
+        trap_signal::register_jit_ranges(&ranges);
     }
 
     Ok(entries)

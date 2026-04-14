@@ -7,7 +7,7 @@ use crate::module::entities::ConstExpr;
 use crate::opcodes::Opcode;
 use crate::utils::payload::Payload;
 use crate::value_type::{HeapType, RefType};
-use crate::vm::entities::ModuleInst;
+use crate::vm::entities::{FunctionInst, ModuleInst};
 use crate::vm::value::{RefHandle, Value};
 
 pub(crate) fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<Value, WasmError> {
@@ -48,8 +48,8 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, module: &ModuleInst) -> Result<V
                 }
                 let ref_handle = RefHandle::new(func_idx);
                 let type_idx = match &module.functions[func_idx] {
-                    crate::vm::entities::FunctionInst::Local { type_index, .. } => *type_index,
-                    crate::vm::entities::FunctionInst::External { .. } => 0,
+                    FunctionInst::Local { type_index, .. } => *type_index,
+                    FunctionInst::External { .. } => 0,
                 };
                 let heap_type = HeapType::Concrete(type_idx);
                 let ref_type = RefType::new(false, heap_type);

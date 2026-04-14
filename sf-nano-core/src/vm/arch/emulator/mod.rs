@@ -31,8 +31,10 @@ use crate::{
         result_buffer::ResultBuffer,
         runtime::{
             code::{CompiledNativeModule, NativeCode},
+            collect_native_results_from_stack,
             common::NativeCallStatus,
             context::NativeContext,
+            external::call_external_entry_ptr,
             preserved::{self, io as preserved_io, op as preserved_op},
         },
         store::Store,
@@ -187,7 +189,7 @@ pub(crate) fn eval(
     }
 
     let out = unsafe {
-        crate::vm::runtime::collect_native_results_from_stack(
+        collect_native_results_from_stack(
             stack_base,
             func_type.results(),
             compiled.backend().gp_unit_bytes,
@@ -830,7 +832,7 @@ impl<'a> Emulator<'a> {
             .compiled
             .const_ptr(call.metadata)
             .ok_or_else(|| WasmError::internal("machine external-call metadata is out of range"))?;
-        let entry = crate::vm::runtime::external::call_external_entry_ptr();
+        let entry = call_external_entry_ptr();
         let status = unsafe { entry(self.ctx as *mut NativeContext, self.fp, metadata) };
         if status == NativeCallStatus::Ok as u32 {
             self.address_space.validate_runtime_shape(self.ctx)?;
@@ -2296,13 +2298,13 @@ mod tests {
                 MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
                 MachineCompareKind, MachineEdge, MachineFuncId, MachineFunction,
                 MachineIndexExtend, MachineInst, MachineInstKind, MachineIntWidth, MachineMemWidth,
-                MachineModule, MachineModuleAbi, MachineProgram, MachineReg, MachineSign,
-                MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+                MachineModule, MachineModuleAbi, MachineProgram, MachineReg, MachineRegOwner,
+                MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
                 MACHINE_FIXED_REG_COUNT, MACHINE_MEM0_BASE_REG,
             },
             runtime::{self, code::CompiledNativeModule},
             store::Store,
-            value::Value,
+            value::{RefHandle, Value},
         },
     };
 
@@ -2459,7 +2461,7 @@ mod tests {
         });
 
         let mut table = TableInst::new(Limits::new(1, Some(1)).unwrap(), ValueType::funcref());
-        table.elements[0] = crate::vm::value::RefHandle::new(0);
+        table.elements[0] = RefHandle::new(0);
         module.tables.push(table);
 
         let mut store = Store::new(module);
@@ -2556,7 +2558,7 @@ mod tests {
         });
 
         let mut table = TableInst::new(Limits::new(1, Some(1)).unwrap(), ValueType::funcref());
-        table.elements[0] = crate::vm::value::RefHandle::new(0);
+        table.elements[0] = RefHandle::new(0);
         module.tables.push(table);
 
         let mut store = Store::new(module);
@@ -3000,7 +3002,7 @@ mod tests {
                             params: collections::Vec::new(),
                             ops: collections::vec![MachineInst {
                                 kind: MachineInstKind::Move {
-                                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                                    owner: MachineRegOwner::LinearValue,
                                     ty: MachineStorageType::GpI64,
                                     dst: MachineReg(MACHINE_FIXED_REG_COUNT),
                                     src: MachineValue::Imm64(7),

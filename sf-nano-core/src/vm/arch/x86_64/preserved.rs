@@ -23,7 +23,10 @@
 
 use crate::{
     error::WasmError,
-    vm::machine::machine_ir::{MachineValue, MACHINE_CTX_REG},
+    vm::{
+        machine::machine_ir::{MachineValue, MACHINE_CTX_REG},
+        runtime::preserved::io as preserved_io,
+    },
 };
 
 use super::{
@@ -33,7 +36,7 @@ use super::{
     reg::X86Reg,
 };
 
-const PRESERVED_IO_BYTES: u8 = (crate::vm::runtime::preserved::io::SLOT_COUNT * 8) as u8;
+const PRESERVED_IO_BYTES: u8 = (preserved_io::SLOT_COUNT * 8) as u8;
 
 impl<'a> X86_64Backend<'a> {
     pub(super) fn emit_preserved_io_open(&mut self) {

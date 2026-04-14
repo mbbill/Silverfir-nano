@@ -140,12 +140,14 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
 #[cfg(test)]
 mod tests {
     use crate::collections;
+    use crate::value_type::ValueType;
 
     use crate::vm::middle::{
-        frame::FrameSlot,
+        frame::{FrameSlot, FrameSpan},
         ssa_ir::{
             ir::{
-                LocalSlotInfo, SsaBlock, SsaInst, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+                LocalSlotInfo, SsaBlock, SsaCallOp, SsaInst, SsaOperand, SsaProgram, SsaTerminator,
+                SsaValue,
             },
             target::SsaTarget,
         },
@@ -157,7 +159,7 @@ mod tests {
     fn make_program(ops: collections::Vec<SsaInst>, value_count: usize) -> SsaProgram {
         SsaProgram {
             entry: SsaTarget(0),
-            local_slot_types: collections::vec![crate::value_type::ValueType::I32; 2],
+            local_slot_types: collections::vec![ValueType::I32; 2],
             local_slot_info: collections::vec![
                 LocalSlotInfo {
                     is_param: true,
@@ -172,7 +174,7 @@ mod tests {
                 extra_args: collections::Vec::new(),
                 terminator: SsaTerminator::Return { results: None },
             }],
-            value_types: collections::vec![crate::value_type::ValueType::I32; value_count],
+            value_types: collections::vec![ValueType::I32; value_count],
             value_sink_local: collections::vec![None; value_count],
             block_entry_cached_slots: collections::vec![],
             block_cfg_origins: collections::vec![],
@@ -237,13 +239,13 @@ mod tests {
             SsaValue(0),
             [SsaOperand::NONE, SsaOperand::NONE],
         );
-        let call_idx = program.push_call_op(crate::vm::middle::ssa_ir::ir::SsaCallOp::CallDirect {
+        let call_idx = program.push_call_op(SsaCallOp::CallDirect {
             callee: 1,
-            args: crate::vm::middle::frame::FrameSpan {
+            args: FrameSpan {
                 start: FrameSlot(0),
                 count: 0,
             },
-            results: crate::vm::middle::frame::FrameSpan {
+            results: FrameSpan {
                 start: FrameSlot(0),
                 count: 0,
             },

@@ -9,12 +9,14 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineAddr, MachineFuncId, MachineFunctionAbi, MachineInst, MachineInstKind,
-            MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineStorageType,
-            MachineValue,
+            MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner,
+            MachineStorageType, MachineValue,
         },
         middle::{
             frame::FrameSlot,
-            ssa_ir::ir::{LocalSlotInfo, SsaBlock, SsaInstView, SsaProgram, SsaValue},
+            ssa_ir::ir::{
+                LocalSlotInfo, SsaBlock, SsaInstView, SsaProgram, SsaTerminator, SsaValue,
+            },
         },
         runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
     },
@@ -682,7 +684,7 @@ impl<'a> BlockLowerContext<'a> {
                 };
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                        owner: MachineRegOwner::LinearValue,
                         ty,
                         dst: t,
                         src: MachineValue::Reg(cache_reg),
@@ -740,13 +742,13 @@ impl<'a> BlockLowerContext<'a> {
 
     fn single_successor_target(&self) -> Option<u32> {
         match &self.block.terminator {
-            crate::vm::middle::ssa_ir::ir::SsaTerminator::Goto(edge) => Some(edge.target.0),
-            crate::vm::middle::ssa_ir::ir::SsaTerminator::Branch {
+            SsaTerminator::Goto(edge) => Some(edge.target.0),
+            SsaTerminator::Branch {
                 then_edge,
                 else_edge,
                 ..
             } if then_edge.target == else_edge.target => Some(then_edge.target.0),
-            crate::vm::middle::ssa_ir::ir::SsaTerminator::BrTable { entries, .. }
+            SsaTerminator::BrTable { entries, .. }
                 if entries
                     .first()
                     .map(|first| entries.iter().all(|entry| entry.target == first.target))
@@ -754,10 +756,10 @@ impl<'a> BlockLowerContext<'a> {
             {
                 entries.first().map(|entry| entry.target.0)
             }
-            crate::vm::middle::ssa_ir::ir::SsaTerminator::Branch { .. }
-            | crate::vm::middle::ssa_ir::ir::SsaTerminator::BrTable { .. }
-            | crate::vm::middle::ssa_ir::ir::SsaTerminator::Return { .. }
-            | crate::vm::middle::ssa_ir::ir::SsaTerminator::TrapUnreachable => None,
+            SsaTerminator::Branch { .. }
+            | SsaTerminator::BrTable { .. }
+            | SsaTerminator::Return { .. }
+            | SsaTerminator::TrapUnreachable => None,
         }
     }
 
@@ -963,7 +965,7 @@ impl<'a> BlockLowerContext<'a> {
         } else {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::CachedLocal,
+                    owner: MachineRegOwner::CachedLocal,
                     ty: cached.ty,
                     dst: cached.reg,
                     addr: self.frame_addr(cached.slot)?,

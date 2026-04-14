@@ -4,8 +4,9 @@ use crate::collections;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    MachineAddr, MachineBranchCond, MachineEdge, MachineInst, MachineInstKind, MachineMemWidth,
-    MachineReg, MachineStorageType, MachineTerminator, MachineValue,
+    is_fp_reg, is_gp_reg, MachineAddr, MachineBranchCond, MachineEdge, MachineInst,
+    MachineInstKind, MachineMemWidth, MachineReg, MachineStorageType, MachineTerminator,
+    MachineValue,
 };
 
 // --- Instruction analysis ---
@@ -402,7 +403,7 @@ pub(super) fn rewrite_move_storage_type(
     ty: MachineStorageType,
     config: BackendConfig,
 ) -> Option<MachineStorageType> {
-    if crate::vm::machine::machine_ir::is_fp_reg(dst, config) != ty.is_fp() {
+    if is_fp_reg(dst, config) != ty.is_fp() {
         return None;
     }
     move_rewrite_supported(dst, src, config).then_some(ty)
@@ -412,13 +413,13 @@ fn move_rewrite_supported(dst: MachineReg, src: MachineValue, config: BackendCon
     match src {
         MachineValue::Reg(src_reg) => reg_move_rewrite_supported(dst, src_reg, config),
         MachineValue::ReservedReg(_) => false,
-        MachineValue::Imm64(_) => crate::vm::machine::machine_ir::is_gp_reg(dst, config),
+        MachineValue::Imm64(_) => is_gp_reg(dst, config),
     }
 }
 
 fn reg_move_rewrite_supported(dst: MachineReg, src: MachineReg, config: BackendConfig) -> bool {
-    let dst_is_fp = crate::vm::machine::machine_ir::is_fp_reg(dst, config);
-    let src_is_fp = crate::vm::machine::machine_ir::is_fp_reg(src, config);
+    let dst_is_fp = is_fp_reg(dst, config);
+    let src_is_fp = is_fp_reg(src, config);
     !dst_is_fp || src_is_fp
 }
 

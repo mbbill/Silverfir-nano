@@ -3,8 +3,9 @@ use crate::vm::backend::BackendConfig;
 
 use crate::vm::machine::machine_ir::{
     MachineBlock, MachineBlockId, MachineBlockParam, MachineCallExternal, MachineConstData,
-    MachineConstId, MachineEdge, MachineFunction, MachineInst, MachineInstKind, MachineModule,
-    MachineProgram, MachineReg, MachineStorageType, MachineTerminator, MachineValue,
+    MachineConstId, MachineEdge, MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
+    MachineModule, MachineProgram, MachineReg, MachineRegOwner, MachineStorageType,
+    MachineTerminator, MachineValue,
 };
 
 /// Minimal config for validate tests: no extra dynamic budget beyond the minimum.
@@ -56,7 +57,7 @@ fn rejects_out_of_range_register() {
             params: collections::Vec::new(),
             ops: collections::vec![MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: crate::vm::machine::machine_ir::MachineRegOwner::LinearValue,
+                    owner: MachineRegOwner::LinearValue,
                     ty: MachineStorageType::GpWord,
                     dst: MachineReg(99),
                     src: MachineValue::Imm64(0),
@@ -75,7 +76,7 @@ fn rejects_out_of_range_helper_metadata() {
     let module = MachineModule {
         config: minimal_config(),
         functions: collections::vec![MachineFunction {
-            id: crate::vm::machine::machine_ir::MachineFuncId(0),
+            id: MachineFuncId(0),
             program: MachineProgram {
                 entry: MachineBlockId(0),
                 fp_reg_init_widths: collections::vec![],

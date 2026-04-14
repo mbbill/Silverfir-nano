@@ -325,7 +325,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let raw_byte = payload.peek_u8()?;
                 let memidx = payload.read_leb128_u32()?;
                 if raw_byte != 0x00 {
-                    return Err(crate::error::WasmError::malformed("zero byte expected"));
+                    return Err(WasmError::malformed("zero byte expected"));
                 }
                 let wasm_op = OP(op);
                 let imm = Immediate::MemoryIndex(memidx);
@@ -504,7 +504,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     (align_flag - 64, memidx)
                 };
                 if align >= 32 {
-                    return Err(crate::error::WasmError::malformed("malformed memop flags"));
+                    return Err(WasmError::malformed("malformed memop flags"));
                 }
                 let offset = payload.read_leb128_u32()? as u64;
                 let wasm_op = OP(op);
