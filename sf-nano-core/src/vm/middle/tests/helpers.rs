@@ -115,7 +115,7 @@ pub(super) fn prepare_program(
             config: host_config(gp_dynamic_budget, fp_dynamic_budget),
             function_index: None,
         },
-        semantic,
+        semantic.clone(),
     )
     .unwrap_or_else(|err| {
         panic!(

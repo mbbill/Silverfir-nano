@@ -50,7 +50,7 @@ pub(crate) struct PreparedFunction {
 
 pub(crate) fn prepare_function(
     input: PrepareInput,
-    semantic: &SemanticProgram,
+    semantic: SemanticProgram,
 ) -> Result<PreparedFunction, WasmError> {
     semantic.validate()?;
 
@@ -63,29 +63,37 @@ pub(crate) fn prepare_function(
     if semantic.ops.is_empty() {
         return Ok(PreparedFunction {
             frame,
-            ssa: empty_program(semantic),
+            ssa: empty_program(&semantic),
         });
     }
 
     let cfg_phase = phase_span_with_function("cfg_lower", input.function_index);
-    let semantic_cfg = cfg::build_semantic_cfg(semantic);
+    let semantic_cfg = cfg::build_semantic_cfg(&semantic);
     drop(cfg_phase);
 
     let slot_phase = phase_span_with_function("slot_lower", input.function_index);
-    let slot_program = slot_ssa::lower_slot_only_ssa(semantic, &semantic_cfg, frame)?;
+    let slot_program = slot_ssa::lower_slot_only_ssa(&semantic, &semantic_cfg, frame)?;
     drop(slot_phase);
 
     let joint_plan_phase = phase_span_with_function("joint_plan", input.function_index);
-    let planner = JointPlanner::build(semantic, &semantic_cfg, &slot_program, frame, input.config)?;
+    let planner =
+        JointPlanner::build(&semantic, &semantic_cfg, &slot_program, frame, input.config)?;
     drop(joint_plan_phase);
+    // slot_program is only consumed by slot_ssa lowering and by the planner
+    // build + validate; once the planner is built, nothing downstream reads it
+    // (rewrite_function does not take it, and later passes work on ssa).
+    // Drop now so the per-block SlotInst / SlotBlock vecs (~3 MiB on a large
+    // function) are not alive during the biggest phase (ssa_emit).
+    drop(slot_program);
 
     let ssa_emit_phase = phase_span_with_function("ssa_emit", input.function_index);
-    let mut ssa =
-        rewrite::rewrite_function(semantic, &semantic_cfg, &slot_program, &planner, frame)?;
+    let mut ssa = rewrite::rewrite_function(&semantic, &semantic_cfg, &planner, frame)?;
     drop(ssa_emit_phase);
+    // Nothing past rewrite_function reads semantic / planner / semantic_cfg,
+    // so release them before running cleanup / optimize / sink / validate.
     drop(planner);
-    drop(slot_program);
     drop(semantic_cfg);
+    drop(semantic);
 
     let ssa_cleanup_phase = phase_span_with_function("ssa_cleanup", input.function_index);
     cleanup::cleanup_program(&mut ssa);

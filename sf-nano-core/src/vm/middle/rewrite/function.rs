@@ -22,7 +22,6 @@ use crate::{
                 init_locals::locals_reads_before_write, JointPlanner, LocalAccessDecision,
                 LocalAccessQuery,
             },
-            slot_ssa::SlotSsaProgram,
             ssa_ir::{
                 ir::{
                     entry_cache_requirement, LocalSlotInfo, SsaBinding, SsaBlock, SsaCallOp,
@@ -87,7 +86,6 @@ impl ProgramBuilder {
 pub(crate) fn rewrite_function(
     semantic: &SemanticProgram,
     cfg: &SemanticCfg,
-    _slot_program: &SlotSsaProgram,
     planner: &JointPlanner,
     frame: FrameLayoutPlan,
 ) -> Result<SsaProgram, WasmError> {

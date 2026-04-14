@@ -10,7 +10,7 @@ use crate::vm::middle::{
     ssa_ir::{
         ir::{
             entry_cache_requirement, EntryCacheRequirement, SsaBinding, SsaBlock, SsaEdge, SsaInst,
-            SsaProgram, SsaTerminator, SsaValue,
+            SsaProgram, SsaTerminator,
         },
         target::SsaTarget,
     },
@@ -23,135 +23,102 @@ struct RepairActions {
     drop_cached_locals: collections::Vec<FrameSlot>,
 }
 
+impl RepairActions {
+    fn is_empty(&self) -> bool {
+        self.ensure_cached_locals.is_empty()
+            && self.reserve_cached_locals.is_empty()
+            && self.drop_cached_locals.is_empty()
+    }
+}
+
+/// Identifies which outgoing edge of a terminator a repair applies to.
+#[derive(Clone, Copy, Debug)]
+enum EdgeSlot {
+    Goto,
+    BranchThen,
+    BranchElse,
+    BrTable(usize),
+}
+
 pub(super) fn insert_boundary_repair_blocks(
     program: &mut SsaProgram,
     exit_cached_slots: &[collections::Vec<FrameSlot>],
 ) {
     let original_len = program.blocks.len();
-    let target_blocks = program.blocks.clone();
-    let target_params = program
-        .blocks
-        .iter()
-        .map(|block| block.params.clone())
-        .collect::<collections::Vec<_>>();
-    let target_entries = program.block_entry_cached_slots.clone();
-    let mut extra_blocks = collections::Vec::new();
+
+    // Scratch reused across blocks for edge enumeration; avoids allocating a
+    // fresh Vec per block for the common 1- and 2-edge cases.
+    let mut edge_slots: collections::Vec<(EdgeSlot, SsaTarget)> = collections::Vec::new();
 
     for block_index in 0..original_len {
         let pred_exit = exit_cached_slots
             .get(block_index)
             .cloned()
             .unwrap_or_default();
-        let terminator = &mut program.blocks[block_index].terminator;
-        match terminator {
-            SsaTerminator::Goto(edge) => maybe_repair_edge(
-                edge,
-                &pred_exit,
-                &target_blocks,
-                &target_entries,
-                &target_params,
-                &mut extra_blocks,
-                &mut program.block_entry_cached_slots,
-                &mut program.block_cfg_origins,
-                original_len,
-            ),
+
+        edge_slots.clear();
+        match &program.blocks[block_index].terminator {
+            SsaTerminator::Goto(edge) => {
+                edge_slots.push((EdgeSlot::Goto, edge.target));
+            }
             SsaTerminator::Branch {
                 then_edge,
                 else_edge,
                 ..
             } => {
-                maybe_repair_edge(
-                    then_edge,
-                    &pred_exit,
-                    &target_blocks,
-                    &target_entries,
-                    &target_params,
-                    &mut extra_blocks,
-                    &mut program.block_entry_cached_slots,
-                    &mut program.block_cfg_origins,
-                    original_len,
-                );
-                maybe_repair_edge(
-                    else_edge,
-                    &pred_exit,
-                    &target_blocks,
-                    &target_entries,
-                    &target_params,
-                    &mut extra_blocks,
-                    &mut program.block_entry_cached_slots,
-                    &mut program.block_cfg_origins,
-                    original_len,
-                );
+                edge_slots.push((EdgeSlot::BranchThen, then_edge.target));
+                edge_slots.push((EdgeSlot::BranchElse, else_edge.target));
             }
             SsaTerminator::BrTable { entries, .. } => {
-                for edge in entries {
-                    maybe_repair_edge(
-                        edge,
-                        &pred_exit,
-                        &target_blocks,
-                        &target_entries,
-                        &target_params,
-                        &mut extra_blocks,
-                        &mut program.block_entry_cached_slots,
-                        &mut program.block_cfg_origins,
-                        original_len,
-                    );
+                for (idx, edge) in entries.iter().enumerate() {
+                    edge_slots.push((EdgeSlot::BrTable(idx), edge.target));
                 }
             }
             SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
         }
+
+        for i in 0..edge_slots.len() {
+            let (slot, original_target) = edge_slots[i];
+            if let Some(repair_id) = apply_edge_repair(program, &pred_exit, original_target) {
+                retarget_edge(&mut program.blocks[block_index].terminator, slot, repair_id);
+            }
+        }
     }
 
-    maybe_repair_entry(
-        program,
-        &target_blocks,
-        &target_entries,
-        &target_params,
-        &mut extra_blocks,
-        original_len,
-    );
-    program.blocks.extend(extra_blocks);
+    maybe_repair_entry(program);
 }
 
-fn maybe_repair_edge(
-    edge: &mut SsaEdge,
+/// Compute the repair for one outgoing edge (reads `program` immutably for
+/// the target's ops / params) and, if a repair is needed, push the repair
+/// block onto `program` and return its id.
+fn apply_edge_repair(
+    program: &mut SsaProgram,
     pred_exit: &[FrameSlot],
-    target_blocks: &[SsaBlock],
-    target_entries: &[collections::Vec<FrameSlot>],
-    target_params: &[collections::Vec<SsaValue>],
-    extra_blocks: &mut collections::Vec<SsaBlock>,
-    block_entry_cached_slots: &mut collections::Vec<collections::Vec<FrameSlot>>,
-    block_cfg_origins: &mut collections::Vec<collections::Vec<u32>>,
-    original_len: usize,
-) {
-    let target_id = edge.target.as_usize();
-    let target_entry = target_entries.get(target_id).cloned().unwrap_or_default();
-    let target_ops = target_blocks
-        .get(target_id)
-        .map(|block| block.ops.as_slice())
-        .unwrap_or(&[]);
-    let repair = derive_edge_repair(pred_exit, &target_entry, target_ops);
-    if repair.ensure_cached_locals.is_empty()
-        && repair.reserve_cached_locals.is_empty()
-        && repair.drop_cached_locals.is_empty()
-    {
-        return;
-    }
+    original_target: SsaTarget,
+) -> Option<SsaTarget> {
+    let target_id = original_target.as_usize();
 
-    let repair_id = SsaTarget((original_len + extra_blocks.len()) as u32);
-    let repair_params = target_params.get(target_id).cloned().unwrap_or_default();
-    let mut ops = collections::Vec::new();
-    for slot in repair.drop_cached_locals {
-        ops.push(SsaInst::local_drop_cache(slot));
-    }
-    for slot in repair.ensure_cached_locals {
-        ops.push(SsaInst::local_ensure_cache(slot));
-    }
-    for slot in repair.reserve_cached_locals {
-        ops.push(SsaInst::local_reserve_cache(slot));
-    }
+    // Read-only inspection of the original target block.
+    let (repair, repair_params) = {
+        let target_block = program.blocks.get(target_id);
+        let target_ops = target_block.map(|b| b.ops.as_slice()).unwrap_or(&[]);
+        let target_entry = program
+            .block_entry_cached_slots
+            .get(target_id)
+            .map(|s| s.as_slice())
+            .unwrap_or(&[]);
+        let repair = derive_edge_repair(pred_exit, target_entry, target_ops);
+        if repair.is_empty() {
+            return None;
+        }
+        let repair_params = target_block.map(|b| b.params.clone()).unwrap_or_default();
+        (repair, repair_params)
+    };
+
+    let repair_id = SsaTarget(program.blocks.len() as u32);
+    let ops = build_repair_ops(&repair);
     let repair_edge = SsaEdge {
-        target: edge.target,
+        target: original_target,
         bindings: repair_params
             .iter()
             .copied()
@@ -161,57 +128,65 @@ fn maybe_repair_edge(
             })
             .collect(),
     };
-    extra_blocks.push(SsaBlock {
+    program.blocks.push(SsaBlock {
         id: repair_id,
         params: repair_params,
         ops,
         extra_args: collections::Vec::new(),
         terminator: SsaTerminator::Goto(repair_edge),
     });
-    block_entry_cached_slots.push(pred_exit.to_vec().into());
-    block_cfg_origins.push(collections::Vec::new());
-    edge.target = repair_id;
+    program
+        .block_entry_cached_slots
+        .push(pred_exit.to_vec().into());
+    program.block_cfg_origins.push(collections::Vec::new());
+    Some(repair_id)
 }
 
-fn maybe_repair_entry(
-    program: &mut SsaProgram,
-    target_blocks: &[SsaBlock],
-    target_entries: &[collections::Vec<FrameSlot>],
-    target_params: &[collections::Vec<SsaValue>],
-    extra_blocks: &mut collections::Vec<SsaBlock>,
-    original_len: usize,
-) {
-    let entry_target = program.entry.as_usize();
-    let entry_cached = target_entries
-        .get(entry_target)
-        .cloned()
-        .unwrap_or_default();
-    let target_ops = target_blocks
-        .get(entry_target)
-        .map(|block| block.ops.as_slice())
-        .unwrap_or(&[]);
-    let repair = derive_edge_repair(&[], &entry_cached, target_ops);
-    if repair.ensure_cached_locals.is_empty()
-        && repair.reserve_cached_locals.is_empty()
-        && repair.drop_cached_locals.is_empty()
-    {
-        return;
+fn retarget_edge(terminator: &mut SsaTerminator, slot: EdgeSlot, repair_id: SsaTarget) {
+    match (terminator, slot) {
+        (SsaTerminator::Goto(edge), EdgeSlot::Goto) => edge.target = repair_id,
+        (SsaTerminator::Branch { then_edge, .. }, EdgeSlot::BranchThen) => {
+            then_edge.target = repair_id
+        }
+        (SsaTerminator::Branch { else_edge, .. }, EdgeSlot::BranchElse) => {
+            else_edge.target = repair_id
+        }
+        (SsaTerminator::BrTable { entries, .. }, EdgeSlot::BrTable(idx)) => {
+            if let Some(edge) = entries.get_mut(idx) {
+                edge.target = repair_id;
+            }
+        }
+        _ => debug_assert!(
+            false,
+            "retarget_edge: terminator shape changed between enumeration and mutation"
+        ),
     }
+}
 
-    let repair_id = SsaTarget((original_len + extra_blocks.len()) as u32);
-    let repair_params = target_params.get(entry_target).cloned().unwrap_or_default();
-    let mut ops = collections::Vec::new();
-    for slot in repair.drop_cached_locals {
-        ops.push(SsaInst::local_drop_cache(slot));
-    }
-    for slot in repair.ensure_cached_locals {
-        ops.push(SsaInst::local_ensure_cache(slot));
-    }
-    for slot in repair.reserve_cached_locals {
-        ops.push(SsaInst::local_reserve_cache(slot));
-    }
+fn maybe_repair_entry(program: &mut SsaProgram) {
+    let entry_target = program.entry;
+    let entry_id = entry_target.as_usize();
+
+    let (repair, repair_params) = {
+        let target_block = program.blocks.get(entry_id);
+        let target_ops = target_block.map(|b| b.ops.as_slice()).unwrap_or(&[]);
+        let target_entry = program
+            .block_entry_cached_slots
+            .get(entry_id)
+            .map(|s| s.as_slice())
+            .unwrap_or(&[]);
+        let repair = derive_edge_repair(&[], target_entry, target_ops);
+        if repair.is_empty() {
+            return;
+        }
+        let repair_params = target_block.map(|b| b.params.clone()).unwrap_or_default();
+        (repair, repair_params)
+    };
+
+    let repair_id = SsaTarget(program.blocks.len() as u32);
+    let ops = build_repair_ops(&repair);
     let repair_edge = SsaEdge {
-        target: program.entry,
+        target: entry_target,
         bindings: repair_params
             .iter()
             .copied()
@@ -221,7 +196,7 @@ fn maybe_repair_entry(
             })
             .collect(),
     };
-    extra_blocks.push(SsaBlock {
+    program.blocks.push(SsaBlock {
         id: repair_id,
         params: repair_params,
         ops,
@@ -233,6 +208,24 @@ fn maybe_repair_entry(
         .push(collections::Vec::new());
     program.block_cfg_origins.push(collections::Vec::new());
     program.entry = repair_id;
+}
+
+fn build_repair_ops(repair: &RepairActions) -> collections::Vec<SsaInst> {
+    let mut ops = collections::Vec::with_capacity(
+        repair.drop_cached_locals.len()
+            + repair.ensure_cached_locals.len()
+            + repair.reserve_cached_locals.len(),
+    );
+    for &slot in &repair.drop_cached_locals {
+        ops.push(SsaInst::local_drop_cache(slot));
+    }
+    for &slot in &repair.ensure_cached_locals {
+        ops.push(SsaInst::local_ensure_cache(slot));
+    }
+    for &slot in &repair.reserve_cached_locals {
+        ops.push(SsaInst::local_reserve_cache(slot));
+    }
+    ops
 }
 
 fn derive_edge_repair(

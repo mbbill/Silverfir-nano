@@ -250,7 +250,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                 config: backend,
                 function_index: Some(func_idx as u32),
             },
-            &semantic,
+            semantic,
         )
         .map_err(|_err| {
             WasmError::internal(
