@@ -1239,7 +1239,7 @@ mod tests {
         let full_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target")
-            .join("webassembly-testsuite-2.0")
+            .join("webassembly-testsuite")
             .join(path);
         let content = fs::read_to_string(&full_path).expect("read wast");
         let mut lexer = wast::lexer::Lexer::new(&content);
@@ -1270,7 +1270,7 @@ mod tests {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target")
-            .join("webassembly-testsuite-2.0")
+            .join("webassembly-testsuite")
             .join(path);
         let mut runner = WastTestRunner::new();
         runner.run_wast_file(&path)

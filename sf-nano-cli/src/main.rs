@@ -36,7 +36,7 @@ fn run_cli(args: &[String]) -> i32 {
         return 0;
     }
 
-    let mut dir: Option<PathBuf> = None;
+    let mut preopens: Vec<(String, PathBuf)> = Vec::new();
     let mut backend_mode = BackendMode::Native;
     let mut reference_mode = ReferenceBackendMode::Disabled;
     let mut remaining_args: Vec<String> = Vec::new();
@@ -80,9 +80,18 @@ fn run_cli(args: &[String]) -> i32 {
         } else if args[i] == "--dir" {
             i += 1;
             if i < args.len() {
-                dir = Some(PathBuf::from(&args[i]));
+                let spec = &args[i];
+                if let Some((guest, host)) = spec.split_once("::") {
+                    if guest.is_empty() || host.is_empty() {
+                        eprintln!("Error: --dir expects <guest::host> or <path>");
+                        return 1;
+                    }
+                    preopens.push((guest.to_string(), PathBuf::from(host)));
+                } else {
+                    preopens.push((".".to_string(), PathBuf::from(spec)));
+                }
             } else {
-                eprintln!("Error: --dir requires a path");
+                eprintln!("Error: --dir requires <guest::host> or <path>");
                 return 1;
             }
         } else if args[i] == "--backend" {
@@ -168,9 +177,25 @@ fn run_cli(args: &[String]) -> i32 {
         wasi_args.extend(prog_args);
 
         let mut ctx_builder = WasiContextBuilder::new().args(&wasi_args);
-        let preopen = dir.as_deref().unwrap_or_else(|| std::path::Path::new("."));
-        ctx_builder = ctx_builder.preopen_dir(".", preopen);
-        let ctx = ctx_builder.inherit_env().build();
+        let wasi_test_only_specified =
+            env::var("WASI_TEST_ONLY_SPECIFIED_VARS").ok().as_deref() == Some("1");
+        if wasi_test_only_specified {
+            for (key, value) in env::vars() {
+                if key != "PATH" && key != "WASI_TEST_ONLY_SPECIFIED_VARS" {
+                    ctx_builder = ctx_builder.env(&key, &value);
+                }
+            }
+        } else {
+            ctx_builder = ctx_builder.inherit_env();
+        }
+        if preopens.is_empty() {
+            ctx_builder = ctx_builder.preopen_dir(".", std::path::Path::new("."));
+        } else {
+            for (guest, host) in &preopens {
+                ctx_builder = ctx_builder.preopen_dir(guest, host.clone());
+            }
+        }
+        let ctx = ctx_builder.build();
         set_wasi_ctx(ctx);
 
         let imports = wasi_imports();
@@ -251,7 +276,7 @@ fn print_usage(program_name: &str) {
     eprintln!("  --backend <auto|native>   Select the execution backend.");
     eprintln!("  --emu64                   Use the 64-bit reference emulator.");
     eprintln!("  --emu32                   Use the 32-bit reference emulator.");
-    eprintln!("  --dir <path>              Set the guest working directory.");
+    eprintln!("  --dir <guest::host|path>  Preopen a host directory (repeatable).");
     #[cfg(feature = "memprof")]
     {
         eprintln!("  --memprof                 Record allocation events and emit an HTML report.");

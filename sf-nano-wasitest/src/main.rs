@@ -1,224 +1,183 @@
-//! WASI test runner for sf-nano
+//! WASI test runner for silverfir-nano.
 //!
-//! Discovers WASI test `.wasm` files and runs each one via the `sf-nano-cli`
-//! binary as a subprocess, validating exit codes and stdout/stderr output.
+//! This runner is intentionally aligned with the `silverfir-rs` WASI harness:
+//! same testsuite layout, same suite discovery rules, and the same subprocess
+//! execution model with timeout protection. The subprocess target is
+//! `sf-nano-cli`, so failures reflect nano behavior instead of the old
+//! interpreter.
 
+mod discovery;
+mod summary;
+mod types;
+mod utils;
+
+use discovery::{discover_suite_tests, find_test_suite_directories, match_filters, read_manifest};
 use log::{error, info, warn};
-use serde::Deserialize;
-use structopt::StructOpt;
+use summary::print_test_summary;
+use types::{TestConfig, TestFailure, TestOutput, TestResult, TestSuite};
+use utils::copy_dir_recursive;
 
 use std::{
-    collections::HashMap,
     fs,
     io::Read,
     path::{Path, PathBuf},
     process::{Command, Stdio},
     time::{Duration, Instant},
 };
+use structopt::StructOpt;
 
 const WASI_TESTSUITE_DIR: &str = env!("WASI_TESTSUITE_DIR");
 const TEST_TIMEOUT_SECS: u64 = 10;
 
-// Tests to skip (add entries as needed)
-const SKIP_LIST: &[&str] = &[];
-
-// ---------------------------------------------------------------------------
-// CLI
-// ---------------------------------------------------------------------------
-
-#[derive(StructOpt, Debug)]
+#[derive(StructOpt, Debug, Clone)]
 #[structopt(
     name = "sf-nano-wasitest",
-    about = "WASI test runner for sf-nano (subprocess-based)"
+    about = "Run wasi-testsuite against silverfir-nano"
 )]
 struct Cli {
-    /// Substring filters for test names. Multiple allowed.
-    #[structopt(name = "FILTERS")]
+    /// Substring filters for test names (file stems). Multiple allowed.
+    #[structopt(name = "FILTERS", parse(from_str))]
     patterns: Vec<String>,
 
-    /// Path to the sf-nano-cli binary
+    /// Path to the sf-nano-cli binary.
     #[structopt(long = "cli-path")]
     cli_path: Option<PathBuf>,
 
-    /// Log level (trace, debug, info, warn, error)
-    #[structopt(long = "log-level")]
-    log_level: Option<String>,
-
-    /// List matching tests and exit
+    /// List matching tests and exit.
     #[structopt(long = "list")]
     list_only: bool,
 
-    /// Stop after first failure
+    /// Stop after first failing suite.
     #[structopt(long = "fail-fast")]
     fail_fast: bool,
 
-    /// Quiet output
+    /// Log level (trace, debug, info, warn, error).
+    #[structopt(long = "log-level")]
+    log_level: Option<String>,
+
+    /// Quiet output (suppress per-test prints).
     #[structopt(short = "q", long = "quiet")]
     quiet: bool,
+
+    /// Backend to use for execution (auto, native, jit).
+    #[structopt(long = "backend")]
+    backend: Option<String>,
+
+    /// Use the 64-bit reference emulator backend.
+    #[structopt(long = "emu64", conflicts_with = "emu32")]
+    emu64: bool,
+
+    /// Use the 32-bit reference emulator backend.
+    #[structopt(long = "emu32", conflicts_with = "emu64")]
+    emu32: bool,
 }
 
-// ---------------------------------------------------------------------------
-// Test config (JSON)
-// ---------------------------------------------------------------------------
+fn main() {
+    let cli = Cli::from_args();
+    init_logging(cli.log_level.as_deref());
 
-#[derive(Debug, Deserialize, Default)]
-#[allow(dead_code)]
-struct TestConfig {
-    args: Option<Vec<String>>,
-    env: Option<HashMap<String, String>>,
-    exit_code: Option<i32>,
-    dirs: Option<Vec<String>>,
-    stdout: Option<String>,
-    stderr: Option<String>,
-}
+    let cli_path = resolve_cli_path(cli.cli_path.clone());
+    info!("Using sf-nano-cli: {}", cli_path.display());
+    info!("Using WASI testsuite from: {}", WASI_TESTSUITE_DIR);
 
-// ---------------------------------------------------------------------------
-// Test result types
-// ---------------------------------------------------------------------------
-
-#[derive(Debug)]
-struct TestOutput {
-    exit_code: i32,
-    stdout: String,
-    stderr: String,
-}
-
-#[derive(Debug)]
-struct TestFailure {
-    kind: String,
-    message: String,
-}
-
-#[derive(Debug)]
-struct TestResult {
-    name: String,
-    skipped: bool,
-    failures: Vec<TestFailure>,
-    duration: Duration,
-}
-
-impl TestResult {
-    fn passed(&self) -> bool {
-        !self.skipped && self.failures.is_empty()
+    let testsuite_path = Path::new(WASI_TESTSUITE_DIR);
+    if !testsuite_path.exists() {
+        error!(
+            "WASI testsuite directory not found at: {}",
+            WASI_TESTSUITE_DIR
+        );
+        error!("This should have been downloaded during build. Try running `cargo build` first.");
+        std::process::exit(1);
     }
-    fn failed(&self) -> bool {
-        !self.failures.is_empty()
+
+    let test_suite_dirs = find_test_suite_directories(testsuite_path);
+    info!("Found {} test suite directories", test_suite_dirs.len());
+    if test_suite_dirs.is_empty() {
+        warn!("No test suite directories found");
+        return;
     }
-    fn status(&self) -> &'static str {
-        if self.skipped {
-            "SKIPPED"
-        } else if self.failed() {
-            "FAILED"
-        } else {
-            "PASSED"
+
+    if cli.list_only {
+        let mut total = 0usize;
+        for suite_dir in &test_suite_dirs {
+            let (suite_name, tests) = discover_suite_tests(suite_dir);
+            let mut matched: Vec<_> = tests
+                .into_iter()
+                .filter(|(_, name)| match_filters(&cli.patterns, name))
+                .collect();
+            if !matched.is_empty() {
+                println!("Suite: {}", suite_name);
+                matched.sort_by(|a, b| a.1.cmp(&b.1));
+                for (_, name) in matched {
+                    println!("  - {}", name);
+                    total += 1;
+                }
+            }
+        }
+        println!("Total matching tests: {}", total);
+        return;
+    }
+
+    let start_time = Instant::now();
+    let mut suites = Vec::new();
+
+    for suite_dir in test_suite_dirs {
+        let suite = run_test_suite(&suite_dir, &cli_path, &cli);
+        info!(
+            "Suite '{}': {} total, {} passed, {} failed, {} skipped",
+            suite.name,
+            suite.total_count(),
+            suite.passed_count(),
+            suite.failed_count(),
+            suite.skipped_count()
+        );
+        let suite_failed = suite.failed_count() > 0;
+        suites.push(suite);
+        if cli.fail_fast && suite_failed {
+            break;
         }
     }
-}
 
-// ---------------------------------------------------------------------------
-// Summary
-// ---------------------------------------------------------------------------
+    let total_duration = start_time.elapsed();
+    print_test_summary(&suites, total_duration);
 
-struct Summary {
-    passed: usize,
-    failed: usize,
-    skipped: usize,
-}
-
-impl Summary {
-    fn total(&self) -> usize {
-        self.passed + self.failed + self.skipped
+    let total_failures: usize = suites.iter().map(|suite| suite.failed_count()).sum();
+    if total_failures > 0 {
+        std::process::exit(1);
     }
 }
 
-fn print_summary(s: &Summary, duration: Duration) {
-    println!();
-    println!("=== sf-nano WASI Test Summary ===");
-    println!("Total:   {}", s.total());
-    println!(
-        "Passed:  {} ({:.1}%)",
-        s.passed,
-        if s.total() > 0 {
-            s.passed as f64 / s.total() as f64 * 100.0
-        } else {
-            0.0
-        }
-    );
-    println!(
-        "Failed:  {} ({:.1}%)",
-        s.failed,
-        if s.total() > 0 {
-            s.failed as f64 / s.total() as f64 * 100.0
-        } else {
-            0.0
-        }
-    );
-    println!(
-        "Skipped: {} ({:.1}%)",
-        s.skipped,
-        if s.total() > 0 {
-            s.skipped as f64 / s.total() as f64 * 100.0
-        } else {
-            0.0
-        }
-    );
-    println!("Duration: {:.2?}", duration);
-}
-
-// ---------------------------------------------------------------------------
-// Discovery
-// ---------------------------------------------------------------------------
-
-fn discover_wasm_files(dir: &Path) -> Vec<PathBuf> {
-    let mut result = Vec::new();
-    collect_wasm_files(dir, &mut result);
-    result.sort();
-    result
-}
-
-fn collect_wasm_files(dir: &Path, out: &mut Vec<PathBuf>) {
-    let entries = match fs::read_dir(dir) {
-        Ok(e) => e,
-        Err(_) => return,
-    };
-    for entry in entries.flatten() {
-        let path = entry.path();
-        if path.is_dir() {
-            collect_wasm_files(&path, out);
-        } else if path.extension().is_some_and(|ext| ext == "wasm") {
-            out.push(path);
-        }
+fn init_logging(level: Option<&str>) {
+    if let Some(level_str) = level {
+        let log_level = match level_str.to_lowercase().as_str() {
+            "trace" => log::LevelFilter::Trace,
+            "debug" => log::LevelFilter::Debug,
+            "info" => log::LevelFilter::Info,
+            "warn" => log::LevelFilter::Warn,
+            "error" => log::LevelFilter::Error,
+            _ => {
+                eprintln!(
+                    "Invalid log level '{}'. Valid options: trace, debug, info, warn, error",
+                    level_str
+                );
+                std::process::exit(1);
+            }
+        };
+        env_logger::Builder::new().filter_level(log_level).init();
+    } else {
+        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
     }
 }
 
-fn match_filters(patterns: &[String], name: &str) -> bool {
-    if patterns.is_empty() {
-        return true;
+fn resolve_cli_path(cli_path: Option<PathBuf>) -> PathBuf {
+    if let Some(path) = cli_path {
+        return path;
     }
-    let lower = name.to_lowercase();
-    patterns.iter().any(|p| lower.contains(&p.to_lowercase()))
+    find_cli_binary().unwrap_or_else(|| {
+        error!("Could not find sf-nano-cli. Use --cli-path or build it first.");
+        std::process::exit(1);
+    })
 }
-
-fn read_test_config(wasm_file: &Path) -> TestConfig {
-    let json_path = wasm_file.with_extension("json");
-    if !json_path.exists() {
-        return TestConfig::default();
-    }
-    match fs::read_to_string(&json_path) {
-        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|e| {
-            warn!("Failed to parse {}: {}", json_path.display(), e);
-            TestConfig::default()
-        }),
-        Err(e) => {
-            warn!("Failed to read {}: {}", json_path.display(), e);
-            TestConfig::default()
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Locate sf-nano-cli
-// ---------------------------------------------------------------------------
 
 fn find_cli_binary() -> Option<PathBuf> {
     let exe_name = if cfg!(windows) {
@@ -227,7 +186,6 @@ fn find_cli_binary() -> Option<PathBuf> {
         "sf-nano-cli"
     };
 
-    // 1. Next to the current binary
     if let Ok(self_exe) = std::env::current_exe() {
         if let Some(dir) = self_exe.parent() {
             let candidate = dir.join(exe_name);
@@ -237,7 +195,6 @@ fn find_cli_binary() -> Option<PathBuf> {
         }
     }
 
-    // 2. Common cargo target directories
     for profile in &["debug", "release"] {
         let candidate = PathBuf::from(format!("target/{}/{}", profile, exe_name));
         if candidate.exists() {
@@ -245,7 +202,6 @@ fn find_cli_binary() -> Option<PathBuf> {
         }
     }
 
-    // 3. Fall back to PATH
     if Command::new(exe_name)
         .arg("--help")
         .stdout(Stdio::null())
@@ -259,91 +215,283 @@ fn find_cli_binary() -> Option<PathBuf> {
     None
 }
 
-// ---------------------------------------------------------------------------
-// Run a single test
-// ---------------------------------------------------------------------------
+fn run_test_suite(suite_dir: &Path, cli_path: &Path, cli: &Cli) -> TestSuite {
+    let start_time = Instant::now();
+    let suite_name = read_manifest(suite_dir).unwrap_or_else(|| {
+        suite_dir
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("unknown")
+            .to_string()
+    });
+    let (_, tests) = discover_suite_tests(suite_dir);
 
-fn run_test(wasm_file: &Path, cli_path: &Path) -> TestResult {
-    let test_name = wasm_file
-        .file_stem()
-        .and_then(|n| n.to_str())
-        .unwrap_or("unknown")
-        .to_string();
+    let tests: Vec<_> = tests
+        .into_iter()
+        .filter(|(_, name)| match_filters(&cli.patterns, name))
+        .collect();
 
-    let start = Instant::now();
-
-    // Check skip list
-    if SKIP_LIST.contains(&test_name.as_str()) {
-        return TestResult {
-            name: test_name,
-            skipped: true,
-            failures: vec![],
-            duration: start.elapsed(),
-        };
+    if !cli.quiet && !tests.is_empty() {
+        println!("Running suite: {}", suite_name);
     }
 
+    let mut test_results = Vec::new();
+    for (wasm_file, test_name) in tests {
+        let result = execute_single_test(&wasm_file, &test_name, cli_path, cli);
+        if !cli.quiet {
+            print_test_result(&result);
+        }
+        test_results.push(result);
+    }
+
+    if !cli.quiet && !test_results.is_empty() {
+        println!();
+    }
+
+    TestSuite {
+        name: suite_name,
+        test_results,
+        duration: start_time.elapsed(),
+    }
+}
+
+fn print_test_result(result: &TestResult) {
+    let status_symbol = match result.status() {
+        "PASSED" => "OK",
+        "FAILED" => "FAIL",
+        "SKIPPED" => "SKIP",
+        _ => "?",
+    };
+    if result.failed() {
+        let failure_msg = result
+            .failures
+            .iter()
+            .map(|failure| format!("{}: {}", failure.failure_type, failure.message))
+            .collect::<Vec<_>>()
+            .join(", ");
+        println!(
+            "  {} {} ({:.2?}) - {}",
+            status_symbol, result.name, result.duration, failure_msg
+        );
+    } else {
+        println!(
+            "  {} {} ({:.2?})",
+            status_symbol, result.name, result.duration
+        );
+    }
+}
+
+fn execute_single_test(
+    wasm_file: &Path,
+    test_name: &str,
+    cli_path: &Path,
+    cli: &Cli,
+) -> TestResult {
+    let start_time = Instant::now();
     let config = read_test_config(wasm_file);
+    let wasm_data = match fs::read(wasm_file) {
+        Ok(data) => data,
+        Err(err) => {
+            return TestResult {
+                name: test_name.to_string(),
+                config,
+                output: None,
+                is_executed: true,
+                failures: vec![TestFailure {
+                    failure_type: "file_read".to_string(),
+                    message: format!("Failed to read test file: {}", err),
+                }],
+                duration: start_time.elapsed(),
+                command_line: None,
+            };
+        }
+    };
 
-    // Build command
+    match run_wasm_test_with_subprocess(
+        test_name,
+        &wasm_data,
+        &config,
+        wasm_file.parent(),
+        cli_path,
+        cli,
+    ) {
+        Ok((output, command_line)) => {
+            let failures = validate_test_output(&config, &output);
+            TestResult {
+                name: test_name.to_string(),
+                config,
+                output: Some(output),
+                is_executed: true,
+                failures,
+                duration: start_time.elapsed(),
+                command_line: Some(command_line),
+            }
+        }
+        Err(err) => TestResult {
+            name: test_name.to_string(),
+            config,
+            output: None,
+            is_executed: true,
+            failures: vec![TestFailure {
+                failure_type: "execution".to_string(),
+                message: err,
+            }],
+            duration: start_time.elapsed(),
+            command_line: None,
+        },
+    }
+}
+
+fn read_test_config(wasm_file: &Path) -> TestConfig {
+    let config_file = wasm_file.with_extension("json");
+    if !config_file.exists() {
+        return TestConfig::default();
+    }
+
+    match fs::read_to_string(&config_file) {
+        Ok(content) => serde_json::from_str(&content).unwrap_or_else(|err| {
+            warn!(
+                "Failed to parse config file {}: {}",
+                config_file.display(),
+                err
+            );
+            TestConfig::default()
+        }),
+        Err(err) => {
+            warn!(
+                "Failed to read config file {}: {}",
+                config_file.display(),
+                err
+            );
+            TestConfig::default()
+        }
+    }
+}
+
+fn run_wasm_test_with_subprocess(
+    test_name: &str,
+    wasm_data: &[u8],
+    config: &TestConfig,
+    fixture_dir: Option<&Path>,
+    cli_path: &Path,
+    cli: &Cli,
+) -> Result<(TestOutput, String), String> {
+    let temp_root = std::env::temp_dir().join("sf-nano-wasitest").join(format!(
+        "{}-{}",
+        std::process::id(),
+        test_name
+    ));
+    fs::create_dir_all(&temp_root)
+        .map_err(|err| format!("Failed to create temp directory: {}", err))?;
+    let temp_wasm_path = temp_root.join(format!("{}.wasm", test_name));
+    fs::write(&temp_wasm_path, wasm_data)
+        .map_err(|err| format!("Failed to write temp WASM file: {}", err))?;
+
     let mut cmd = Command::new(cli_path);
-    cmd.arg(wasm_file);
+    if let Some(ref backend) = cli.backend {
+        cmd.arg("--backend").arg(backend);
+    }
+    if cli.emu64 {
+        cmd.arg("--emu64");
+    } else if cli.emu32 {
+        cmd.arg("--emu32");
+    }
 
-    // Add test arguments
+    let fixture_root = fixture_dir
+        .map(|path| path.join("fs-tests.dir"))
+        .or_else(|| {
+            std::env::current_dir()
+                .ok()
+                .map(|path| path.join("fs-tests.dir"))
+        });
+
+    if let Some(ref dirs) = config.dirs {
+        for dir in dirs {
+            let guest = dir.clone();
+            let dst = temp_root.join("preopens").join(dir);
+            fs::create_dir_all(&dst).map_err(|err| {
+                format!(
+                    "Failed to create preopen directory {}: {}",
+                    dst.display(),
+                    err
+                )
+            })?;
+
+            if let Some(ref root) = fixture_root {
+                let dir_clean = dir.replace(".cleanup", "");
+                let src = if dir_clean == "fs-tests.dir" {
+                    root.clone()
+                } else {
+                    root.join(&dir_clean)
+                };
+                if src.exists() {
+                    if src.is_dir() {
+                        copy_dir_recursive(&src, &dst).map_err(|err| {
+                            format!(
+                                "Failed to copy fixture {} -> {}: {}",
+                                src.display(),
+                                dst.display(),
+                                err
+                            )
+                        })?;
+                    } else {
+                        let _ = fs::copy(&src, &dst);
+                    }
+                }
+            }
+
+            cmd.arg("--dir")
+                .arg(format!("{}::{}", guest, dst.display()));
+        }
+    }
+
+    cmd.arg(&temp_wasm_path);
+
     if let Some(ref args) = config.args {
         cmd.args(args);
     }
 
-    // Environment: clear, preserve PATH, then set test-specified vars
     cmd.env_clear();
     if let Ok(path) = std::env::var("PATH") {
         cmd.env("PATH", path);
     }
+    cmd.env("WASI_TEST_ONLY_SPECIFIED_VARS", "1");
     if let Some(ref env_vars) = config.env {
         for (key, value) in env_vars {
             cmd.env(key, value);
         }
     }
 
-    // Set working directory to parent of wasm file for dir preopens
-    if let Some(parent) = wasm_file.parent() {
-        cmd.current_dir(parent);
-    }
-
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
-    // Spawn and wait with timeout
-    let mut child = match cmd.spawn() {
-        Ok(c) => c,
-        Err(e) => {
-            return TestResult {
-                name: test_name,
-                skipped: false,
-                failures: vec![TestFailure {
-                    kind: "spawn".into(),
-                    message: format!("Failed to spawn sf-nano-cli: {}", e),
-                }],
-                duration: start.elapsed(),
-            };
-        }
-    };
+    let command_line = format!("{:?}", cmd);
+    let mut child = cmd
+        .spawn()
+        .map_err(|err| format!("Failed to spawn sf-nano-cli: {}", err))?;
 
     let timeout = Duration::from_secs(TEST_TIMEOUT_SECS);
     let poll_interval = Duration::from_millis(100);
+    let start = Instant::now();
 
     let output = loop {
         match child.try_wait() {
             Ok(Some(status)) => {
                 let mut stdout_buf = Vec::new();
                 let mut stderr_buf = Vec::new();
-                if let Some(mut out) = child.stdout.take() {
-                    let _ = out.read_to_end(&mut stdout_buf);
+                if let Some(mut stdout) = child.stdout.take() {
+                    let _ = stdout.read_to_end(&mut stdout_buf);
                 }
-                if let Some(mut err) = child.stderr.take() {
-                    let _ = err.read_to_end(&mut stderr_buf);
+                if let Some(mut stderr) = child.stderr.take() {
+                    let _ = stderr.read_to_end(&mut stderr_buf);
                 }
+
                 break Ok(TestOutput {
-                    exit_code: status.code().unwrap_or(-1),
+                    exit_code: if status.success() {
+                        0
+                    } else {
+                        status.code().unwrap_or(-1)
+                    },
                     stdout: String::from_utf8_lossy(&stdout_buf).to_string(),
                     stderr: String::from_utf8_lossy(&stderr_buf).to_string(),
                 });
@@ -359,205 +507,64 @@ fn run_test(wasm_file: &Path, cli_path: &Path) -> TestResult {
                 }
                 std::thread::sleep(poll_interval);
             }
-            Err(e) => {
+            Err(err) => {
                 let _ = child.kill();
-                break Err(format!("Failed to check process status: {}", e));
+                break Err(format!("Failed to check process status: {}", err));
             }
         }
     };
 
-    match output {
-        Ok(output) => {
-            let failures = validate_output(&config, &output);
-            TestResult {
-                name: test_name,
-                skipped: false,
-                failures,
-                duration: start.elapsed(),
-            }
-        }
-        Err(msg) => TestResult {
-            name: test_name,
-            skipped: false,
-            failures: vec![TestFailure {
-                kind: "execution".into(),
-                message: msg,
-            }],
-            duration: start.elapsed(),
-        },
-    }
+    let _ = fs::remove_file(&temp_wasm_path);
+    let _ = fs::remove_dir_all(&temp_root);
+
+    output.map(|out| (out, command_line))
 }
 
-// ---------------------------------------------------------------------------
-// Validation
-// ---------------------------------------------------------------------------
-
-fn validate_output(config: &TestConfig, output: &TestOutput) -> Vec<TestFailure> {
+fn validate_test_output(config: &TestConfig, output: &TestOutput) -> Vec<TestFailure> {
     let mut failures = Vec::new();
 
-    // Exit code
     let expected_exit = config.exit_code.unwrap_or(0);
     if expected_exit != output.exit_code {
-        let mut msg = format!("expected {} == actual {}", expected_exit, output.exit_code);
+        let mut message = format!("expected {} == actual {}", expected_exit, output.exit_code);
         let stderr_trim = output.stderr.trim();
         if !stderr_trim.is_empty() {
             let snippet = if stderr_trim.len() > 500 {
-                format!("{}…", &stderr_trim[..500])
+                format!("{}...", &stderr_trim[..500])
             } else {
                 stderr_trim.to_string()
             };
-            msg.push_str(" | stderr: ");
-            msg.push_str(&snippet);
+            message.push_str(" | stderr: ");
+            message.push_str(&snippet);
         }
         failures.push(TestFailure {
-            kind: "exit_code".into(),
-            message: msg,
+            failure_type: "exit_code".to_string(),
+            message,
         });
     }
 
-    // Stdout
-    if let Some(ref expected) = config.stdout {
-        if expected != &output.stdout {
+    if let Some(ref expected_stdout) = config.stdout {
+        if expected_stdout != &output.stdout {
             failures.push(TestFailure {
-                kind: "stdout".into(),
-                message: format!("expected '{}' == actual '{}'", expected, output.stdout),
+                failure_type: "stdout".to_string(),
+                message: format!(
+                    "expected {:?} == actual {:?}",
+                    expected_stdout, output.stdout
+                ),
             });
         }
     }
 
-    // Stderr
-    if let Some(ref expected) = config.stderr {
-        if expected != &output.stderr {
+    if let Some(ref expected_stderr) = config.stderr {
+        if expected_stderr != &output.stderr {
             failures.push(TestFailure {
-                kind: "stderr".into(),
-                message: format!("expected '{}' == actual '{}'", expected, output.stderr),
+                failure_type: "stderr".to_string(),
+                message: format!(
+                    "expected {:?} == actual {:?}",
+                    expected_stderr, output.stderr
+                ),
             });
         }
     }
 
     failures
-}
-
-// ---------------------------------------------------------------------------
-// Main
-// ---------------------------------------------------------------------------
-
-fn main() {
-    let cli = Cli::from_args();
-
-    // Initialize logging
-    if let Some(ref level_str) = cli.log_level {
-        let log_level = match level_str.to_lowercase().as_str() {
-            "trace" => log::LevelFilter::Trace,
-            "debug" => log::LevelFilter::Debug,
-            "info" => log::LevelFilter::Info,
-            "warn" => log::LevelFilter::Warn,
-            "error" => log::LevelFilter::Error,
-            _ => {
-                eprintln!(
-                    "Invalid log level '{}'. Valid: trace, debug, info, warn, error",
-                    level_str
-                );
-                std::process::exit(1);
-            }
-        };
-        env_logger::Builder::new().filter_level(log_level).init();
-    } else {
-        env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
-    }
-
-    // Resolve sf-nano-cli path
-    let cli_path = cli.cli_path.clone().or_else(find_cli_binary);
-    let cli_path = match cli_path {
-        Some(p) => p,
-        None => {
-            error!("Could not find sf-nano-cli binary. Use --cli-path or build it first.");
-            std::process::exit(1);
-        }
-    };
-    info!("Using sf-nano-cli: {}", cli_path.display());
-
-    let testsuite_path = Path::new(WASI_TESTSUITE_DIR);
-    if !testsuite_path.exists() {
-        error!(
-            "WASI testsuite not found at: {}. Run 'cargo build' first.",
-            WASI_TESTSUITE_DIR
-        );
-        std::process::exit(1);
-    }
-    info!("Using WASI testsuite from: {}", WASI_TESTSUITE_DIR);
-
-    // Discover tests
-    let all_wasm = discover_wasm_files(testsuite_path);
-    let filtered: Vec<_> = all_wasm
-        .iter()
-        .filter(|p| {
-            let name = p.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-            match_filters(&cli.patterns, name)
-        })
-        .collect();
-
-    if cli.list_only {
-        for wasm in &filtered {
-            println!(
-                "{}",
-                wasm.file_stem().and_then(|s| s.to_str()).unwrap_or("?")
-            );
-        }
-        println!("Total matching tests: {}", filtered.len());
-        return;
-    }
-
-    if !cli.quiet {
-        println!("Running {} WASI tests...", filtered.len());
-        println!();
-    }
-
-    let start = Instant::now();
-    let mut results = Vec::new();
-
-    for wasm in &filtered {
-        let result = run_test(wasm, &cli_path);
-
-        if !cli.quiet {
-            let symbol = match result.status() {
-                "PASSED" => "✅",
-                "FAILED" => "❌",
-                "SKIPPED" => "⏭",
-                _ => "❓",
-            };
-            if result.failed() {
-                let msg = result
-                    .failures
-                    .iter()
-                    .map(|f| format!("{}: {}", f.kind, f.message))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                println!(
-                    "  {} {} ({:.2?}) - {}",
-                    symbol, result.name, result.duration, msg
-                );
-            } else {
-                println!("  {} {} ({:.2?})", symbol, result.name, result.duration);
-            }
-        }
-
-        let should_stop = cli.fail_fast && result.failed();
-        results.push(result);
-        if should_stop {
-            break;
-        }
-    }
-
-    let summary = Summary {
-        passed: results.iter().filter(|r| r.passed()).count(),
-        failed: results.iter().filter(|r| r.failed()).count(),
-        skipped: results.iter().filter(|r| r.skipped).count(),
-    };
-
-    print_summary(&summary, start.elapsed());
-
-    if summary.failed > 0 {
-        std::process::exit(1);
-    }
 }

@@ -17,7 +17,7 @@
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-TESTSUITE_DIR="${TESTSUITE_DIR:-$REPO_ROOT/target/webassembly-testsuite-2.0}"
+TESTSUITE_DIR="${TESTSUITE_DIR:-$REPO_ROOT/target/webassembly-testsuite}"
 X64_TARGET=x86_64-apple-darwin
 ARMV7_TARGET=armv7-unknown-linux-musleabihf
 export TESTSUITE_DIR

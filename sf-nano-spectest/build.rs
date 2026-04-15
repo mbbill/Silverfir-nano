@@ -1,10 +1,9 @@
 use std::{env, fs, path::Path, process::Command};
 
-// Pin to the last WASM 2.0 commit before wasm-3.0 tests were merged (Oct 30, 2024)
 const TESTSUITE_URL: &str =
-    "https://github.com/WebAssembly/testsuite/archive/eeb6dac81be81151da0958ed955aba91230c1f25.tar.gz";
+    "https://github.com/WebAssembly/testsuite/archive/e999a1051925895022ab06abc25b23ca300ab0d0.tar.gz";
 const TESTSUITE_VERSION_FILE: &str = "testsuite_version.txt";
-const TESTSUITE_VERSION: &str = "wasm2.0-eeb6dac";
+const TESTSUITE_VERSION: &str = "e999a1051925895022ab06abc25b23ca300ab0d0";
 
 fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();
@@ -13,7 +12,7 @@ fn main() {
         .find(|path| path.file_name().is_some_and(|name| name == "target"))
         .unwrap_or_else(|| Path::new("target"));
 
-    let testsuite_dir = cargo_target_dir.join("webassembly-testsuite-2.0");
+    let testsuite_dir = cargo_target_dir.join("webassembly-testsuite");
     let version_file = testsuite_dir.join(TESTSUITE_VERSION_FILE);
 
     let need_download = if testsuite_dir.exists() && version_file.exists() {

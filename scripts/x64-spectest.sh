@@ -15,7 +15,7 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET=x86_64-apple-darwin
 SPECTEST_BIN="$REPO_ROOT/target/$TARGET/debug/sf-nano-spectest"
-TESTSUITE_DIR="${TESTSUITE_DIR:-$REPO_ROOT/target/webassembly-testsuite-2.0}"
+TESTSUITE_DIR="${TESTSUITE_DIR:-$REPO_ROOT/target/webassembly-testsuite}"
 
 # Parse arguments: everything after "--" is forwarded to spectest
 EXTRA_ARGS=()

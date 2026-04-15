@@ -139,7 +139,7 @@ fn main() {
                 .parent()
                 .unwrap()
                 .join("target")
-                .join("webassembly-testsuite-2.0");
+                .join("webassembly-testsuite");
 
             warn!(
                 "TESTSUITE_DIR not set, using default: {}",
