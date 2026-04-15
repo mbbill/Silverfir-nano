@@ -105,7 +105,7 @@ pub(crate) fn prepare_function(
     drop(ssa_cleanup_phase);
 
     let ssa_opt_phase = phase_span_with_function("ssa_opt", input.function_index);
-    optimize::optimize_program(&mut ssa);
+    optimize::optimize_program(&mut ssa, input.config);
     drop(ssa_opt_phase);
 
     let ssa_sink_phase = phase_span_with_function("ssa_sink", input.function_index);
