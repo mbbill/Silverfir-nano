@@ -573,6 +573,18 @@ pub(super) fn clz(dst: Arm32Reg, src: Arm32Reg) -> u32 {
     cond_bits(Cond::Al) | (0b000101101111 << 16) | rd(dst) | (0b1111 << 8) | (0b0001 << 4) | rm(src)
 }
 
+/// RBIT Rd, Rm (reverse bits, ARMv6T2+)
+#[inline]
+pub(super) fn rbit(dst: Arm32Reg, src: Arm32Reg) -> u32 {
+    // RBIT: cond 0110 1111 1111 Rd 1111 0011 Rm
+    cond_bits(Cond::Al)
+        | (0b01101111 << 20)
+        | (0b1111 << 16)
+        | (dst.idx() << 12)
+        | (0b11110011 << 4)
+        | src.idx()
+}
+
 // ─── Load / Store (immediate offset) ────────────────────────────────────────
 
 /// LDR Rd, [Rn, #offset] (word load, +/- 12-bit immediate)

@@ -6,7 +6,6 @@
 
 use crate::vm::machine::machine_ir::MachineConvertOp;
 
-use super::enc::Cond;
 use super::reg::Arm32Reg;
 
 // ── Convert op code ──────────────────────────────────────────────────────────
@@ -35,13 +34,8 @@ pub(super) fn convert_op_code(op: MachineConvertOp) -> u32 {
 
 // ── RBIT encoding ────────────────────────────────────────────────────────────
 
-/// RBIT Rd, Rm (reverse bits, ARMv6T2+)
+/// `RBIT Rd, Rm` — reverse bits (ARMv6T2+). Thin pass-through so every
+/// caller goes via the ISA-correct encoder in `enc_a32` / `enc_t2`.
 pub(super) fn rbit(dst: Arm32Reg, src: Arm32Reg) -> u32 {
-    // RBIT: cond 0110 1111 1111 Rd 1111 0011 Rm
-    super::enc::cond_bits(Cond::Al)
-        | (0b01101111 << 20)
-        | (0b1111 << 16)
-        | ((dst.idx()) << 12)
-        | (0b11110011 << 4)
-        | src.idx()
+    super::enc::rbit(dst, src)
 }

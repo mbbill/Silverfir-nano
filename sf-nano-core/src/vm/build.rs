@@ -475,6 +475,12 @@ fn finish_native_compile_streaming(
 
         for patch in &artifact.local_ptr_patches {
             let target_addr = unsafe { base_ptr.add(function_base + patch.target_offset) } as usize;
+            // arm32 Thumb-2 interworking: continuation / local-ptr addresses
+            // are branched to via BX, so the LSB must signal Thumb mode.
+            // See arm32::thumb_interworking_bit. On A32 / arm64 / x86_64 the
+            // helper passes through unchanged.
+            #[cfg(sf_arm32_isa_thumb)]
+            let target_addr = arch::arm32::thumb_interworking_bit(target_addr);
             patch_code_buffer_word(
                 active_backend,
                 &mut executable,
@@ -485,6 +491,10 @@ fn finish_native_compile_streaming(
 
         let internal_entry_addr =
             unsafe { base_ptr.add(function_base + artifact.internal_entry_offset) } as usize;
+        // arm32 Thumb-2: internal call targets (reached via BLX reg after
+        // MOVW/MOVT) need LSB=1 so the CPU stays in Thumb on entry.
+        #[cfg(sf_arm32_isa_thumb)]
+        let internal_entry_addr = arch::arm32::thumb_interworking_bit(internal_entry_addr);
         for patch in &artifact.direct_call_patches {
             let callee_idx = patch.callee.0 as usize;
             if callee_idx == func_idx {
@@ -516,6 +526,15 @@ fn finish_native_compile_streaming(
         }
 
         let entry = unsafe { executable.fn_ptr::<NativeRootEntry>(function_base) };
+        // Rust code (A32) enters this JITted function via `blx reg`; on
+        // arm32 Thumb-2 builds, the pointer needs LSB=1 to switch the CPU
+        // to Thumb mode on entry.
+        #[cfg(sf_arm32_isa_thumb)]
+        let entry: NativeRootEntry = unsafe {
+            core::mem::transmute::<usize, NativeRootEntry>(arch::arm32::thumb_interworking_bit(
+                entry as usize,
+            ))
+        };
         emitted[func_idx] = Some(FunctionEmitSummary {
             entry,
             internal_entry_addr,

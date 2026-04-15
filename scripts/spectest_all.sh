@@ -1,8 +1,15 @@
 #!/usr/bin/env bash
 #
 # Build and run spectest for all supported native backends in both debug and
-# release profiles: arm64, x64, emu64, emu32, then armv7.
-# Stops on first failure.
+# release profiles: arm64, x64, emu64, emu32, armv7a (A32 JIT), then armv7m
+# (Thumb-2 JIT). Stops on first failure.
+#
+# The armv7a and armv7m rows share the same target triple
+# (armv7-unknown-linux-musleabihf); armv7m adds `--features thumb2-test` so
+# the arm32 backend emits Thumb-2 via `enc_t2.rs`. Cargo's feature
+# fingerprint keeps the two binaries distinct, but they write to the same
+# `sf-nano-spectest` path — so we capture each binary to a separate bin
+# before the next build clobbers it.
 #
 # Usage:
 #   ./scripts/spectest_all.sh [-- extra spectest args...]
@@ -77,6 +84,25 @@ build_spectest() {
     cargo build "${cargo_args[@]}"
 }
 
+# Variant of `build_spectest` that adds `thumb2-test` to the feature list so
+# the arm32 backend emits Thumb-2 instead of A32. Only meaningful for the
+# armv7 target.
+build_spectest_thumb2() {
+    local profile="$1"
+    shift
+
+    local -a cargo_args=(
+        "$@"
+        -p sf-nano-spectest
+        --no-default-features
+        --features jit,thumb2-test
+    )
+    if [[ "$profile" == "release" ]]; then
+        cargo_args=(--release "${cargo_args[@]}")
+    fi
+    cargo build "${cargo_args[@]}"
+}
+
 profile_bin() {
     local profile="$1"
     local target="$2"
@@ -125,29 +151,60 @@ run_profile() {
     run_with_extra_args "$host_bin" --emu32
     echo
 
-    echo "=== Building spectest ($profile, armv7) ==="
+    echo "=== Building spectest ($profile, armv7a / A32 JIT) ==="
     build_spectest "$profile" --target "$ARMV7_TARGET"
     armv7_bin="$(profile_bin "$profile" "$ARMV7_TARGET")"
     if [[ ! -f "$armv7_bin" ]]; then
         echo "ERROR: Build succeeded but binary not found at $armv7_bin" >&2
         exit 1
     fi
+    # Capture the A32 binary before the Thumb-2 build overwrites it at
+    # the same output path.
+    local armv7a_saved="$armv7_bin.armv7a"
+    cp -f "$armv7_bin" "$armv7a_saved"
     echo
 
-    echo "=== spectest: armv7 ($profile) ==="
-    local -a armv7_cmd=(
+    echo "=== spectest: armv7a / A32 JIT ($profile) ==="
+    local -a armv7a_cmd=(
         colima ssh --
         env
         "TESTSUITE_DIR=$TESTSUITE_DIR"
         qemu-arm-static
-        "$armv7_bin"
+        "$armv7a_saved"
         --backend
         native
     )
     if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
-        armv7_cmd+=("${EXTRA_ARGS[@]}")
+        armv7a_cmd+=("${EXTRA_ARGS[@]}")
     fi
-    "${armv7_cmd[@]}"
+    "${armv7a_cmd[@]}"
+    echo
+
+    echo "=== Building spectest ($profile, armv7m / Thumb-2 JIT) ==="
+    build_spectest_thumb2 "$profile" --target "$ARMV7_TARGET"
+    armv7_bin="$(profile_bin "$profile" "$ARMV7_TARGET")"
+    if [[ ! -f "$armv7_bin" ]]; then
+        echo "ERROR: Build succeeded but binary not found at $armv7_bin" >&2
+        exit 1
+    fi
+    local armv7m_saved="$armv7_bin.armv7m"
+    cp -f "$armv7_bin" "$armv7m_saved"
+    echo
+
+    echo "=== spectest: armv7m / Thumb-2 JIT ($profile) ==="
+    local -a armv7m_cmd=(
+        colima ssh --
+        env
+        "TESTSUITE_DIR=$TESTSUITE_DIR"
+        qemu-arm-static
+        "$armv7m_saved"
+        --backend
+        native
+    )
+    if [[ ${#EXTRA_ARGS[@]} -gt 0 ]]; then
+        armv7m_cmd+=("${EXTRA_ARGS[@]}")
+    fi
+    "${armv7m_cmd[@]}"
     echo
 }
 

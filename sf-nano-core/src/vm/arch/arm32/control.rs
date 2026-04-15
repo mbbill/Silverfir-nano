@@ -15,8 +15,14 @@ use super::{
     backend::{Arm32Backend, BranchFixupKind},
     enc::{self, Cond},
     inst::{emit_load_u32_into, prepare_gp},
-    reg::Arm32Reg,
 };
+
+// Only the A32 br_table dispatch path references `Arm32Reg` directly (for
+// the `ADD PC, PC, Rm, LSL #2` PC-relative jump). On Thumb-2 builds that
+// path is cfg-branched out in favor of a `cmp + b.eq` chain, so the import
+// would be unused.
+#[cfg(not(sf_arm32_isa_thumb))]
+use super::reg::Arm32Reg;
 
 // ─── Terminator compilation ─────────────────────────────────────────────────
 
@@ -104,9 +110,12 @@ impl<'a> Arm32Backend<'a> {
                     emit_load_u32_into(&mut self.core.text, *clamp, max_idx);
                     self.core.text.emit_u32(enc::cmp_reg(*index_hw, *clamp));
                     // If index > max, use max (conditional move)
-                    self.core
-                        .text
-                        .emit_u32(enc::mov_reg_cond(Cond::Hi, *index_hw, *clamp));
+                    super::inst::emit_mov_reg_cond_into(
+                        &mut self.core.text,
+                        Cond::Hi,
+                        *index_hw,
+                        *clamp,
+                    );
                 }
 
                 // Emit edge stubs and collect their labels
@@ -116,20 +125,50 @@ impl<'a> Arm32Backend<'a> {
                     edge_label_ids.push(label);
                 }
 
-                // ARM reads PC as current+8 for data-processing instructions, so
-                // keep one 4-byte padding slot between the dispatch ADD and the
-                // first branch-table entry.
-                self.core.text.emit_u32(enc::add_reg_lsl_imm(
-                    Arm32Reg::R15,
-                    Arm32Reg::R15,
-                    *index_hw,
-                    2,
-                ));
-                self.core.text.emit_u32(enc::nop());
-
-                // Emit branch table entries (will be patched by resolve_fixups)
-                for &label_id in &edge_label_ids {
-                    self.emit_branch(BranchFixupKind::B, label_id);
+                // Dispatch. A32 uses a PC-relative branch table:
+                // `ADD PC, PC, Rindex, LSL #2` (A32 reads PC as instr+8, so
+                // leave one NOP pad between the ADD and the first table slot).
+                // Thumb-2 forbids `ADD PC, PC, Rm, LSL #N` (T3 is UNPREDICTABLE
+                // when Rd=PC and shift != 0), so we use a compare-and-branch
+                // chain instead. O(N) vs A32's O(1), fine for wasm br_tables
+                // which are almost always small; the clamp above still bounds
+                // `index` to 0..=N-1 so the final branch can be unconditional.
+                #[cfg(not(sf_arm32_isa_thumb))]
+                {
+                    self.core.text.emit_u32(enc::add_reg_lsl_imm(
+                        Arm32Reg::R15,
+                        Arm32Reg::R15,
+                        *index_hw,
+                        2,
+                    ));
+                    self.core.text.emit_u32(enc::nop());
+                    for &label_id in &edge_label_ids {
+                        self.emit_branch(BranchFixupKind::B, label_id);
+                    }
+                }
+                #[cfg(sf_arm32_isa_thumb)]
+                {
+                    // Clamp guarantees index < len, so dispatch via
+                    // `cmp + beq` for each entry except the last, which
+                    // falls through to an unconditional branch. For
+                    // indices beyond the modified-immediate range, go
+                    // through MOVW/MOVT + cmp_reg.
+                    let last = edge_label_ids.len() - 1;
+                    for (i, &label_id) in edge_label_ids.iter().enumerate() {
+                        if i == last {
+                            self.emit_branch(BranchFixupKind::B, label_id);
+                        } else {
+                            let idx = i as u32;
+                            if let Some((imm8, rot)) = enc::encode_arm_imm(idx) {
+                                self.core.text.emit_u32(enc::cmp_imm(*index_hw, imm8, rot));
+                            } else {
+                                let s = self.gp_scratch.scoped_alloc();
+                                super::inst::emit_load_u32_into(&mut self.core.text, *s, idx);
+                                self.core.text.emit_u32(enc::cmp_reg(*index_hw, *s));
+                            }
+                            self.emit_branch(BranchFixupKind::BCond(Cond::Eq), label_id);
+                        }
+                    }
                 }
             }
         }

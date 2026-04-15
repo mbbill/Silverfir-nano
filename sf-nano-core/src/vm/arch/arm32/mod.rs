@@ -2,12 +2,43 @@ pub(super) mod abi;
 pub(crate) mod backend;
 pub(crate) mod compile;
 mod control;
+// Encoder selection: `enc` resolves to either the A32 encoder (`enc_a32.rs`)
+// or the Thumb-2 encoder (`enc_t2.rs`) based on `sf_arm32_isa_thumb`. Set by
+// build.rs for sf_arch_thumbm, and also for sf_arch_armv7a when the
+// `thumb2-test` cargo feature is on (see that feature's comment).
+#[cfg(not(sf_arm32_isa_thumb))]
+#[path = "enc_a32.rs"]
+mod enc;
+#[cfg(sf_arm32_isa_thumb)]
+#[path = "enc_t2.rs"]
 mod enc;
 mod inst;
 mod operands;
 mod preserved;
 mod reg;
 mod select;
+
+/// Mark a code address as a Thumb-mode function entry for ARM/Thumb
+/// interworking. On Thumb-2 builds (`sf_arm32_isa_thumb`), any address that
+/// will be used as a branch target — function entries, direct-call patches,
+/// indirect branch destinations — must have LSB=1 set so that `BX` / `BLX`
+/// (or Rust-side function-pointer calls via `blx reg`) switch the CPU to
+/// Thumb mode on entry. Without this, the processor would try to decode
+/// Thumb-2 bytes as A32 and fault immediately.
+///
+/// On A32 builds the bit is meaningless (A32 instructions must be word-
+/// aligned, so LSB=0 always) and this helper is a no-op.
+#[inline]
+pub(crate) const fn thumb_interworking_bit(addr: usize) -> usize {
+    #[cfg(sf_arm32_isa_thumb)]
+    {
+        addr | 1
+    }
+    #[cfg(not(sf_arm32_isa_thumb))]
+    {
+        addr
+    }
+}
 
 use crate::{
     error::WasmError,

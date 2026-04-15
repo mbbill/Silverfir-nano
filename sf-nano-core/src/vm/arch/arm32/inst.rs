@@ -59,6 +59,91 @@ pub(super) fn emit_load_u32_into(text: &mut TextEmitter, dst: Arm32Reg, value: u
     }
 }
 
+/// Emit a conditional `MOV Rd, Rm` (16-bit T1 form). A32 uses the per-
+/// instruction condition field; Thumb-2 emits `IT <cond>` followed by the
+/// 16-bit unconditional MOV. The IT + 16-bit MOV pair is naturally
+/// 4-byte-aligned, no trailing pad needed.
+pub(super) fn emit_mov_reg_cond_into(
+    text: &mut TextEmitter,
+    cond: enc::Cond,
+    dst: Arm32Reg,
+    src: Arm32Reg,
+) {
+    #[cfg(not(sf_arm32_isa_thumb))]
+    {
+        text.emit_u32(enc::mov_reg_cond(cond, dst, src));
+    }
+    #[cfg(sf_arm32_isa_thumb)]
+    {
+        if matches!(cond, enc::Cond::Al) {
+            // Unconditional: fall back to the plain (padded) mov_reg.
+            text.emit_u32(enc::mov_reg(dst, src));
+        } else {
+            // IT <cond> + 16-bit MOV Rd, Rm (T1 high-reg form) = 4 bytes total.
+            text.emit_u16(enc::it(cond));
+            let rd = dst.idx() as u16;
+            let rm = src.idx() as u16;
+            let d = (rd >> 3) & 1;
+            let rd_lo = rd & 0x7;
+            let mov16: u16 = 0x4600 | (d << 7) | ((rm & 0xF) << 3) | rd_lo;
+            text.emit_u16(mov16);
+        }
+    }
+}
+
+/// Emit a conditional DP-imm instruction. Bridges A32 (per-instruction
+/// condition field) and Thumb-2 (`IT` prefix before a single trailing
+/// unconditional instruction). Callers use this wherever they previously
+/// wrote `emit_u32(enc::dp_imm_cond(...))` — that direct form would emit
+/// only the DP, missing the `IT` prefix under Thumb-2.
+pub(super) fn emit_dp_imm_cond_into(
+    text: &mut TextEmitter,
+    cond: enc::Cond,
+    opcode: u32,
+    s: bool,
+    dst: Arm32Reg,
+    lhs: Arm32Reg,
+    imm8: u32,
+    rot: u32,
+) {
+    #[cfg(not(sf_arm32_isa_thumb))]
+    {
+        text.emit_u32(enc::dp_imm_cond(cond, opcode, s, dst, lhs, imm8, rot));
+    }
+    #[cfg(sf_arm32_isa_thumb)]
+    {
+        if !matches!(cond, enc::Cond::Al) {
+            // IT is 2 bytes; the very next instruction is the one under
+            // the IT block. Emit raw 16-bit IT, then the 32-bit DP
+            // (conditional), then a trailing 2-byte NOP so the whole
+            // sequence stays 4-byte-aligned for the surrounding emitter
+            // (emit_nop_padding assumes 4-byte slots; sub-word tails
+            // would get silently truncated at page boundaries).
+            text.emit_u16(enc::it(cond));
+            text.emit_u32(enc::dp_imm_cond(
+                enc::Cond::Al,
+                opcode,
+                s,
+                dst,
+                lhs,
+                imm8,
+                rot,
+            ));
+            text.emit_u16(0xBF00); // NOP — outside the IT block
+        } else {
+            text.emit_u32(enc::dp_imm_cond(
+                enc::Cond::Al,
+                opcode,
+                s,
+                dst,
+                lhs,
+                imm8,
+                rot,
+            ));
+        }
+    }
+}
+
 /// Prepare a MachineValue as a GP register.
 ///
 /// - `Reg(gp)` → `Mapped(physical_gp)` — no scratch used.
@@ -2752,7 +2837,8 @@ impl<'a> Arm32Backend<'a> {
         self.core.bind_label(ordered);
         self.emit_load_u32(dst_hw, 0);
         let (imm8, rot) = enc::encode_arm_imm(1).unwrap();
-        self.core.text.emit_u32(enc::dp_imm_cond(
+        emit_dp_imm_cond_into(
+            &mut self.core.text,
             Self::float_compare_ordered_cond(kind),
             0b1101,
             false,
@@ -2760,7 +2846,7 @@ impl<'a> Arm32Backend<'a> {
             Arm32Reg::R0,
             imm8,
             rot,
-        ));
+        );
         self.core.bind_label(done);
         Ok(())
     }
@@ -3248,9 +3334,7 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineValue::Reg(r) => {
                 let src = map_reg(*r)?;
-                self.core
-                    .text
-                    .emit_u32(enc::mov_reg_cond(cond, dst_hw, src));
+                emit_mov_reg_cond_into(&mut self.core.text, cond, dst_hw, src);
             }
             MachineValue::ReservedReg(_reg) => {
                 return Err(WasmError::internal("arm32 emit_gp_select_value_cond cannot consume reserved cache register as value"));
@@ -3258,7 +3342,7 @@ impl<'a> Arm32Backend<'a> {
             MachineValue::Imm64(v) => {
                 let s = self.gp_scratch.scoped_alloc();
                 emit_load_u32_into(&mut self.core.text, *s, *v as u32);
-                self.core.text.emit_u32(enc::mov_reg_cond(cond, dst_hw, *s));
+                emit_mov_reg_cond_into(&mut self.core.text, cond, dst_hw, *s);
             }
         }
         Ok(())
@@ -3315,7 +3399,8 @@ impl<'a> Arm32Backend<'a> {
 
         self.emit_load_u32(dst_hw, 0);
         let (imm8, rot) = enc::encode_arm_imm(1).unwrap();
-        self.core.text.emit_u32(enc::dp_imm_cond(
+        emit_dp_imm_cond_into(
+            &mut self.core.text,
             cond,
             0b1101,
             false,
@@ -3323,7 +3408,7 @@ impl<'a> Arm32Backend<'a> {
             Arm32Reg::R0,
             imm8,
             rot,
-        ));
+        );
         Ok(())
     }
 
@@ -3433,7 +3518,8 @@ impl<'a> Arm32Backend<'a> {
         };
         emit_load_u32_into(&mut self.core.text, dst_hw, 0);
         let (imm8, rot) = enc::encode_arm_imm(1).unwrap();
-        self.core.text.emit_u32(enc::dp_imm_cond(
+        emit_dp_imm_cond_into(
+            &mut self.core.text,
             cond,
             0b1101, // MOV
             false,
@@ -3441,7 +3527,7 @@ impl<'a> Arm32Backend<'a> {
             Arm32Reg::R0,
             imm8,
             rot,
-        ));
+        );
         Ok(())
     }
 
