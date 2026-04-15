@@ -78,7 +78,7 @@ def is_path_allowed(path):
     except (ValueError, OSError):
         return False
     for prefix in ALLOWED_PATH_PREFIXES:
-        if resolved == prefix or resolved.startswith(prefix + "/"):
+        if resolved == prefix or resolved.startswith(prefix + os.sep):
             return True
     return False
 
@@ -93,7 +93,7 @@ def _is_tmp_path(path):
         resolved = os.path.realpath(os.path.expanduser(path))
     except (ValueError, OSError):
         return False
-    return any(resolved == p or resolved.startswith(p + "/") for p in _TMP_PREFIXES)
+    return any(resolved == p or resolved.startswith(p + os.sep) for p in _TMP_PREFIXES)
 
 
 def _extract_git_target_dir(tokens, start_idx):
