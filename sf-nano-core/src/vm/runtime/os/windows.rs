@@ -4,11 +4,10 @@
 //! on finalize via `VirtualProtect`, with `FlushInstructionCache` for
 //! icache invalidation.
 //!
-//! Guarded memory is not yet implemented. The reserve/commit/release
-//! primitives are only compiled when `sf_has_guard_pages` is set, which
-//! `build.rs` currently gates off for Windows. The stub shapes below are
-//! wired up so that a future implementation can plug in without touching
-//! callers.
+//! Guarded memory uses the `VirtualAlloc(MEM_RESERVE | PAGE_NOACCESS)` +
+//! `VirtualAlloc(MEM_COMMIT | PAGE_READWRITE)` pattern. The trap signal
+//! handler lives at `os/signal/x64_windows.rs` and is registered through
+//! `AddVectoredExceptionHandler`.
 
 use core::ptr;
 
@@ -23,6 +22,7 @@ unsafe extern "system" {
 const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const MEM_RELEASE: u32 = 0x8000;
+const PAGE_NOACCESS: u32 = 0x01;
 const PAGE_READWRITE: u32 = 0x04;
 const PAGE_EXECUTE_READ: u32 = 0x20;
 
@@ -75,9 +75,31 @@ pub(crate) unsafe fn finish_write_executable(
 }
 
 // ── Guarded linear memory ───────────────────────────────────────────────────
-//
-// Windows can in principle support guarded memory via
-// `VirtualAlloc(MEM_RESERVE|PAGE_NOACCESS)` for the reservation,
-// `VirtualAlloc(MEM_COMMIT|PAGE_READWRITE)` for commit, and VEH for the
-// trap handler. Today `build.rs` never emits `sf_has_guard_pages` for
-// Windows, so the functions below are compiled out entirely.
+
+#[cfg(sf_has_guard_pages)]
+pub(crate) fn reserve_guarded(total: usize) -> Result<*mut u8, &'static str> {
+    let base = unsafe { VirtualAlloc(ptr::null_mut(), total, MEM_RESERVE, PAGE_NOACCESS) };
+    if base.is_null() {
+        return Err("guard-page memory: VirtualAlloc reserve failed");
+    }
+    Ok(base)
+}
+
+#[cfg(sf_has_guard_pages)]
+pub(crate) fn commit_guarded(base: *mut u8, offset: usize, len: usize) -> Result<(), &'static str> {
+    if len == 0 {
+        return Ok(());
+    }
+    let addr = unsafe { base.add(offset) };
+    let p = unsafe { VirtualAlloc(addr, len, MEM_COMMIT, PAGE_READWRITE) };
+    if p.is_null() {
+        return Err("guard-page memory: VirtualAlloc commit failed");
+    }
+    Ok(())
+}
+
+#[cfg(sf_has_guard_pages)]
+pub(crate) fn release_guarded(base: *mut u8, _total: usize) {
+    // MEM_RELEASE requires size = 0; it frees the entire reservation rooted at base.
+    unsafe { VirtualFree(base, 0, MEM_RELEASE) };
+}

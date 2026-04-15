@@ -41,6 +41,11 @@ mod x64_linux;
 #[cfg(all(sf_os_linux, sf_arch_x64))]
 pub(in crate::vm::runtime) use x64_linux::install_platform_handler;
 
+#[cfg(all(sf_os_windows, sf_arch_x64))]
+mod x64_windows;
+#[cfg(all(sf_os_windows, sf_arch_x64))]
+pub(in crate::vm::runtime) use x64_windows::install_platform_handler;
+
 #[cfg(all(sf_os_linux, sf_arch_armv7a))]
 mod armv7a_linux;
 #[cfg(all(sf_os_linux, sf_arch_armv7a))]
