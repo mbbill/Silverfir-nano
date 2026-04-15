@@ -57,18 +57,36 @@ for arg in "$@"; do
     esac
 done
 
-# Each entry: "label|target|kind|core extra cargo args"
+# Each entry: "label|target|kind|core_extra|cli_spectest_features_override"
+#
+# Fields
+# ------
+#   label                         — human-readable row name in the matrix
+#   target                        — rustc target triple
+#   kind                          — "hosted" (core+cli+spectest) / "bare" (core only)
+#   core_extra                    — extra cargo args forwarded only to the core check
+#   cli_spectest_features_override— if non-empty, replaces the default
+#                                   `--no-default-features --features jit` for the
+#                                   cli and spectest cargo invocations. Used for
+#                                   Thumb-2 variant rows so `thumb2-test` propagates
+#                                   through all three packages.
 DEFAULT_TARGETS=(
-    "arm64-darwin|aarch64-apple-darwin|hosted|"
-    "arm64-linux|aarch64-unknown-linux-gnu|hosted|"
-    "arm64-none|aarch64-unknown-none|bare|--no-default-features --features jit"
-    "x64-darwin|x86_64-apple-darwin|hosted|"
-    "x64-linux|x86_64-unknown-linux-gnu|hosted|"
-    "x64-windows|x86_64-pc-windows-gnu|hosted|"
+    "arm64-darwin|aarch64-apple-darwin|hosted||"
+    "arm64-linux|aarch64-unknown-linux-gnu|hosted||"
+    "arm64-none|aarch64-unknown-none|bare|--no-default-features --features jit|"
+    "x64-darwin|x86_64-apple-darwin|hosted||"
+    "x64-linux|x86_64-unknown-linux-gnu|hosted||"
+    "x64-windows|x86_64-pc-windows-gnu|hosted||"
 )
 
 EXTRA_TARGETS=(
-    "armv7-linux|armv7-unknown-linux-musleabihf|hosted|"
+    "armv7-linux|armv7-unknown-linux-musleabihf|hosted||"
+    # Same triple as armv7-linux, but builds with `--features thumb2-test` so
+    # the arm32 backend emits Thumb-2 via `enc_t2.rs`. Cargo's feature
+    # fingerprint distinguishes the two builds; we pin a separate
+    # CARGO_TARGET_DIR per (label, package) in `run_package_check` so they
+    # don't clobber each other.
+    "armv7m-linux|armv7-unknown-linux-musleabihf|hosted|--no-default-features --features jit,thumb2-test|--no-default-features --features jit,thumb2-test"
 )
 
 if [[ $INCLUDE_ALL -eq 1 ]]; then
@@ -146,6 +164,7 @@ run_package_check() {
     local target="$2"
     local package_key="$3"
     local core_extra="$4"
+    local cli_spectest_override="$5"
     local log="$LOG_DIR/$label.$package_key.log"
     local target_dir="$BUILD_DIR/$label-$package_key"
     local cargo_args=()
@@ -159,10 +178,22 @@ run_package_check() {
             fi
             ;;
         cli)
-            cargo_args=(-p sf-nano-cli --no-default-features --features jit)
+            if [[ -n "$cli_spectest_override" ]]; then
+                cargo_args=(-p sf-nano-cli)
+                # shellcheck disable=SC2206
+                cargo_args+=($cli_spectest_override)
+            else
+                cargo_args=(-p sf-nano-cli --no-default-features --features jit)
+            fi
             ;;
         spectest)
-            cargo_args=(-p sf-nano-spectest --no-default-features --features jit)
+            if [[ -n "$cli_spectest_override" ]]; then
+                cargo_args=(-p sf-nano-spectest)
+                # shellcheck disable=SC2206
+                cargo_args+=($cli_spectest_override)
+            else
+                cargo_args=(-p sf-nano-spectest --no-default-features --features jit)
+            fi
             ;;
         *)
             echo "internal error: unknown package key '$package_key'" >&2
@@ -184,7 +215,7 @@ printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' "-----" "------" "----" "---" "----
 
 fail=0
 for entry in "${TARGETS[@]}"; do
-    IFS='|' read -r label target kind core_extra <<<"$entry"
+    IFS='|' read -r label target kind core_extra cli_spectest_override <<<"$entry"
     core_cell=""
     cli_cell=""
     spectest_cell=""
@@ -204,7 +235,7 @@ for entry in "${TARGETS[@]}"; do
 
     if [[ "$kind" == "hosted" ]]; then
         for package_key in "${PACKAGES[@]}"; do
-            if run_package_check "$label" "$target" "$package_key" "$core_extra"; then
+            if run_package_check "$label" "$target" "$package_key" "$core_extra" "$cli_spectest_override"; then
                 pkg_status=ok
             else
                 pkg_status=fail
@@ -219,7 +250,7 @@ for entry in "${TARGETS[@]}"; do
             esac
         done
     else
-        if run_package_check "$label" "$target" core "$core_extra"; then
+        if run_package_check "$label" "$target" core "$core_extra" ""; then
             core_cell=$(format_cell ok "$(warning_count_from_log "$LOG_DIR/$label.core.log")")
         else
             core_cell=$(format_cell fail "$(warning_count_from_log "$LOG_DIR/$label.core.log")")

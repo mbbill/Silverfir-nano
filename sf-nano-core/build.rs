@@ -17,6 +17,12 @@
 //   arm (everything else)  → sf_arch_armv7a   (arm32 module, A32 encoding)
 //   x86_64                 → sf_arch_x64
 //
+// Encoder-variant cfg (independent of sf_arch_*):
+//   sf_arm32_isa_thumb — arm32 module emits Thumb-2 via enc_t2.rs. Set for
+//     any sf_arch_thumbm target, and also for sf_arch_armv7a when the
+//     `thumb2-test` cargo feature is on (used to run the existing armv7-A
+//     qemu harness against Thumb-2 output for encoder validation).
+//
 // OS cfgs (from CARGO_CFG_TARGET_OS):
 //   linux   → sf_os_linux   (+ sf_has_posix)
 //   macos   → sf_os_macos   (+ sf_has_posix)
@@ -58,6 +64,7 @@ const DECLARED_CFGS: &[&str] = &[
     "sf_arch_armv7a",
     "sf_arch_thumbm",
     "sf_arch_x64",
+    "sf_arm32_isa_thumb",
     "sf_os_linux",
     "sf_os_macos",
     "sf_os_windows",
@@ -112,13 +119,22 @@ fn emit_arch_cfgs() {
         "arm" => {
             if target.starts_with("thumbv") {
                 println!("cargo:rustc-cfg=sf_arch_thumbm");
-                // thumbm does not set sf_fp_dp by default (many Cortex-M
-                // cores are SP-only or have no FPU). Enable via a future
-                // cargo feature when targeting a DP-capable core.
+                println!("cargo:rustc-cfg=sf_arm32_isa_thumb");
+                // sf_fp_dp stays off on thumbm: no M-profile FPU offers
+                // double-precision arithmetic (FPv5-SP-D16 is SP-only, and
+                // no DP variant exists for M-profile). Wasm f64 on thumbm
+                // requires a separate legalization story and is out of
+                // scope for the initial bring-up.
             } else {
                 println!("cargo:rustc-cfg=sf_arch_armv7a");
                 // ARMv7-A targets with IDIV always have VFPv3-D16+.
                 println!("cargo:rustc-cfg=sf_fp_dp");
+                // Opt-in Thumb-2 emit path for encoder validation under
+                // the armv7-A qemu harness. A32 Rust ↔ Thumb-2 JIT code
+                // bridge via ARM/Thumb interworking at BX/BLX boundaries.
+                if env::var_os("CARGO_FEATURE_THUMB2_TEST").is_some() {
+                    println!("cargo:rustc-cfg=sf_arm32_isa_thumb");
+                }
             }
         }
         "x86_64" => println!("cargo:rustc-cfg=sf_arch_x64"),

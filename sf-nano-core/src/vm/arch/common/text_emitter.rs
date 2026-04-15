@@ -90,6 +90,26 @@ impl TextEmitter {
     }
 
     #[inline]
+    pub(crate) fn emit_u16(&mut self, value: u16) -> usize {
+        match &mut self.storage {
+            TextStorage::Owned(text) => {
+                let offset = text.len();
+                text.extend_from_slice(&value.to_le_bytes());
+                offset
+            }
+            TextStorage::CodeBuffer { buf, len, .. } => {
+                let offset = *len;
+                unsafe {
+                    (&mut **buf).emit_u8(value as u8);
+                    (&mut **buf).emit_u8((value >> 8) as u8);
+                };
+                *len += 2;
+                offset
+            }
+        }
+    }
+
+    #[inline]
     pub(crate) fn emit_u32(&mut self, inst: u32) -> usize {
         match &mut self.storage {
             TextStorage::Owned(text) => {

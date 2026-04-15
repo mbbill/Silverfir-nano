@@ -95,6 +95,14 @@ COMBOS=(
     "cli+jitdump|jit,wasi,guard-pages,jitdump"
     "spectest|jit,validator,guard-pages"
     "full-dev|jit,wasi,validator,call-trace,guard-pages,ir-dump,jitdump"
+
+    # Thumb-2 ISA variant (arm32 backend emits Thumb-2 instead of A32). The
+    # cfg gating (`sf_arm32_isa_thumb`) only has effect when the host arch
+    # is arm, but the source must still typecheck on every host — so this
+    # matrix row catches accidental cfg breakage during cross-crate edits.
+    "jit+thumb2|jit,thumb2-test"
+    "cli+thumb2|jit,wasi,guard-pages,thumb2-test"
+    "spectest+thumb2|jit,validator,guard-pages,thumb2-test"
 )
 
 # ── Helpers ──────────────────────────────────────────────────────────────────

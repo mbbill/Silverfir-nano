@@ -25,6 +25,7 @@ use crate::{
 use super::backend::{Arm32Backend, CompiledArm32Entry};
 use super::enc;
 use super::reg::Arm32Reg;
+use super::thumb_interworking_bit;
 use crate::vm::arch::common::backend::ArchBackend;
 #[cfg(sf_has_guard_pages)]
 use crate::vm::runtime::trap_signal;
@@ -32,6 +33,29 @@ use crate::vm::runtime::trap_signal;
 // ── ARM32-specific patch helper ──────────────────────────────────────────────
 
 /// Patch a MOVW/MOVT pair at `movw_offset` with a 32-bit word.
+///
+/// Extracts the destination register from the previously emitted MOVW so
+/// the re-emit targets the same Rd. The Rd field lives in different
+/// positions of the 32-bit u32 depending on the encoder:
+///  * A32 MOVW: Rd at instruction bits [15:12], which is `existing[15:12]`
+///    because the full 32-bit instruction was emitted as a plain little-
+///    endian u32.
+///  * Thumb-2 MOVW T3: Rd at instruction bits [11:8] of halfword 1.
+///    Halfwords were swapped at emit time (see `enc_t2` module doc) so
+///    halfword 1 occupies `u32` bits [31:16]; Rd therefore sits at
+///    `existing[27:24]`.
+#[inline]
+fn extract_movw_rd(existing: u32) -> u32 {
+    #[cfg(sf_arm32_isa_thumb)]
+    {
+        (existing >> 24) & 0xF
+    }
+    #[cfg(not(sf_arm32_isa_thumb))]
+    {
+        (existing >> 12) & 0xF
+    }
+}
+
 pub(crate) fn patch_movw_movt(text: &mut TextEmitter, movw_offset: usize, word: u32) {
     let existing = u32::from_le_bytes([
         text.byte(movw_offset),
@@ -39,8 +63,7 @@ pub(crate) fn patch_movw_movt(text: &mut TextEmitter, movw_offset: usize, word: 
         text.byte(movw_offset + 2),
         text.byte(movw_offset + 3),
     ]);
-    let rd_bits = (existing >> 12) & 0xF;
-    let rd = Arm32Reg::from_idx(rd_bits);
+    let rd = Arm32Reg::from_idx(extract_movw_rd(existing));
     text.patch_u32(movw_offset, enc::movw(rd, word as u16));
     text.patch_u32(movw_offset + 4, enc::movt(rd, (word >> 16) as u16));
 }
@@ -52,8 +75,7 @@ pub(crate) fn patch_movw_movt_code_buffer(buf: &mut CodeBuffer, movw_offset: usi
         buf.byte(movw_offset + 2),
         buf.byte(movw_offset + 3),
     ]);
-    let rd_bits = (existing >> 12) & 0xF;
-    let rd = Arm32Reg::from_idx(rd_bits);
+    let rd = Arm32Reg::from_idx(extract_movw_rd(existing));
     buf.patch_u32(movw_offset, enc::movw(rd, word as u16));
     buf.patch_u32(movw_offset + 4, enc::movt(rd, (word >> 16) as u16));
 }
@@ -100,9 +122,13 @@ pub(crate) fn compile_module(
 
     let mut internal_entry_addrs = collections::Vec::with_capacity(artifacts.len());
     for (i, base_offset) in base_offsets.iter().enumerate() {
-        internal_entry_addrs.push(unsafe {
-            base_ptr.add(*base_offset + artifacts[i].internal_entry_offset)
-        } as usize);
+        let raw =
+            unsafe { base_ptr.add(*base_offset + artifacts[i].internal_entry_offset) } as usize;
+        // Direct-call patches (MOVW/MOVT into a GP reg followed by BLX reg)
+        // and the function-info table (consumed by the local-call dispatch
+        // stub via another BLX reg) need the Thumb interworking bit on
+        // thumbm builds. No-op on A32.
+        internal_entry_addrs.push(thumb_interworking_bit(raw));
     }
 
     // Build ARM32-specific function info table (3x u32 = 12 bytes per entry).
@@ -126,12 +152,16 @@ pub(crate) fn compile_module(
     // Pass 2.5: patch MOVW/MOVT addresses in artifacts
     for (index, artifact) in artifacts.iter_mut().enumerate() {
         let function_base = base_offsets[index];
-        // Patch local pointers (continuation addresses)
+        // Patch local pointers (continuation addresses). On thumbm these are
+        // loaded into a reg and branched to via BX, so they need the Thumb
+        // interworking bit. On A32 the helper is a no-op.
         for patch in &artifact.local_ptr_patches {
-            let target_addr = unsafe { base_ptr.add(function_base + patch.target_offset) } as u32;
+            let raw = unsafe { base_ptr.add(function_base + patch.target_offset) } as usize;
+            let target_addr = thumb_interworking_bit(raw) as u32;
             patch_movw_movt(&mut artifact.text, patch.literal_offset, target_addr);
         }
-        // Patch direct call targets
+        // Patch direct call targets. The callee address already carries the
+        // interworking bit from `internal_entry_addrs` above.
         for patch in &artifact.direct_call_patches {
             let callee_addr = *internal_entry_addrs
                 .get(patch.callee.0 as usize)
@@ -169,6 +199,13 @@ pub(crate) fn compile_module(
         let body_local_error_offset = artifact.body_local_error_offset;
         let offset = executable.emit_bytes(&text_bytes);
         let entry = unsafe { executable.fn_ptr::<NativeRootEntry>(offset) };
+        // Rust code (A32) calls this entry via `blx reg`, which consults the
+        // LSB of the target address to decide ARM vs Thumb mode. On thumbm
+        // builds the JITted code is Thumb-2, so the pointer needs LSB=1.
+        #[cfg(sf_arm32_isa_thumb)]
+        let entry: NativeRootEntry = unsafe {
+            core::mem::transmute::<usize, NativeRootEntry>(thumb_interworking_bit(entry as usize))
+        };
         #[cfg(sf_has_guard_pages)]
         body_local_error_addrs
             .push(unsafe { executable.ptr(offset + body_local_error_offset) } as usize);

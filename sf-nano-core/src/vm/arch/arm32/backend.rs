@@ -333,9 +333,15 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
 
     fn emit_nop_padding(buf: &mut CodeBuffer, bytes: usize) {
         debug_assert!(bytes % 4 == 0, "ARM32 NOP padding must be 4-byte aligned");
-        const ARM32_NOP: [u8; 4] = 0xe1a00000_u32.to_le_bytes();
+        // A32: `MOV R0, R0` (0xE1A00000). Thumb-2: two 16-bit Thumb NOPs
+        // (0xBF00, 0xBF00) packed into the 4-byte slot. Both are AL-always,
+        // flag-free, and side-effect-free.
+        #[cfg(not(sf_arm32_isa_thumb))]
+        const NOP_SLOT: [u8; 4] = 0xe1a00000_u32.to_le_bytes();
+        #[cfg(sf_arm32_isa_thumb)]
+        const NOP_SLOT: [u8; 4] = 0xbf00bf00_u32.to_le_bytes();
         for _ in 0..bytes / 4 {
-            buf.emit_bytes(&ARM32_NOP);
+            buf.emit_bytes(&NOP_SLOT);
         }
     }
 }
