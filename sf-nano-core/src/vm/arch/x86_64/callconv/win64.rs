@@ -197,12 +197,16 @@ pub(in crate::vm::arch::x86_64) fn emit_trapping_trunc_call(
 ) {
     backend.save_caller_clobbered_gp_dynamic();
 
+    // Read `src` into C_ARG1 (RDX) before clobbering C_ARG0 (RCX) with ctx.
+    // `src_gp` comes from the backend-owned GP scratch bank {RAX, RCX, RDX},
+    // so if it lives in RCX, writing ctx into RCX first would destroy the
+    // float bits before the `C_ARG1 <- src` move could forward them.
+    enc::mov_rr_64(&mut backend.core.text, C_ARG1, src);
     enc::mov_rr_64(
         &mut backend.core.text,
         C_ARG0,
         map_fixed_reg(MACHINE_CTX_REG),
     );
-    enc::mov_rr_64(&mut backend.core.text, C_ARG1, src);
     backend.materialize_u64(C_ARG2, op_code);
     // Out-pointer = current RSP (scratch in the padding slot above).
     enc::mov_rr_64(&mut backend.core.text, C_ARG3, X86Reg::RSP);
