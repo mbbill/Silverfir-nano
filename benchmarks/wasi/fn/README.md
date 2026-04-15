@@ -10,13 +10,13 @@ Files:
 - `single_fn_200k.wasm`: assembled benchmark module (currently about 205 KiB)
 
 Local toolchain used here:
-- WAT assembly: `/Users/bytedance/dev/emsdk/upstream/bin/wasm-as`
+- WAT assembly: `wasm-as`
 
 Regenerate:
 
 ```sh
 python3 benchmarks/wasi/single-fn/gen_single_fn_wat.py
-/Users/bytedance/dev/emsdk/upstream/bin/wasm-as \
+wasm-as \
   benchmarks/wasi/single-fn/single_fn_200k.wat \
   -o benchmarks/wasi/single-fn/single_fn_200k.wasm
 ```

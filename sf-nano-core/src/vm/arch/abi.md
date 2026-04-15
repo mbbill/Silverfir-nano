@@ -77,7 +77,7 @@ backends:
 - `MachineReg(2)` = cached `mem0` base pointer
 - `MachineReg(3)` = cached `mem0` size
 
-These are defined in [`regs.rs`](/Users/bytedance/Dev/Silverfir-nano/sf-nano-core/src/vm/native/ir/machine/regs.rs).
+These are defined in [`regs.rs`](sf-nano-core/src/vm/native/ir/machine/regs.rs).
 
 All remaining machine registers are dynamically allocated by lowering.
 
@@ -85,7 +85,7 @@ The logical regfile layout is:
 
 `[fixed | gp_dynamic | fp_dynamic]`
 
-This layout is defined by [`lower_regalloc.rs`](/Users/bytedance/Dev/Silverfir-nano/sf-nano-core/src/vm/machine/lower_regalloc.rs).
+This layout is defined by [`lower_regalloc.rs`](sf-nano-core/src/vm/machine/lower_regalloc.rs).
 
 Implications:
 
@@ -287,10 +287,10 @@ The shared model is:
 
 In the current code, this is implemented by:
 
-- [`emit_save_all_cached_locals`](/Users/bytedance/Dev/Silverfir-nano/sf-nano-core/src/vm/native/lower/context.rs)
-- [`emit_reload_mem0_cache_regs`](/Users/bytedance/Dev/Silverfir-nano/sf-nano-core/src/vm/native/lower/context.rs)
-- [`emit_reload_cached_locals`](/Users/bytedance/Dev/Silverfir-nano/sf-nano-core/src/vm/native/lower/context.rs)
-- helper boundary lowering in [`boundary.rs`](/Users/bytedance/Dev/Silverfir-nano/sf-nano-core/src/vm/native/lower/boundary.rs)
+- [`emit_save_all_cached_locals`](sf-nano-core/src/vm/native/lower/context.rs)
+- [`emit_reload_mem0_cache_regs`](sf-nano-core/src/vm/native/lower/context.rs)
+- [`emit_reload_cached_locals`](sf-nano-core/src/vm/native/lower/context.rs)
+- helper boundary lowering in [`boundary.rs`](sf-nano-core/src/vm/native/lower/boundary.rs)
 
 This means:
 
