@@ -74,12 +74,12 @@ What makes that credible is not any one trick but the shape of the compiler:
   A fully materialized IR for the whole module is never held in memory,
   which is what makes JIT-on-MCU possible at all.
 - **The middle-end allocator is designed for JIT budget *and* good
-  codegen.** `ALGORITHM4` is a region-based cost-optimal public-cache
-  residency allocator driven by Lagrangian relaxation over the structured
-  region tree that Wasm gives for free. It runs per-function at JIT scale
-  in a few thousand operations, and the output competes with what much
-  heavier optimizing compilers produce. See `docs/ALGORITHM4.md` for the
-  full treatment.
+  codegen.** [`ALGORITHM4`](docs/ALGORITHM4.md) is a region-based
+  cost-optimal public-cache residency allocator driven by Lagrangian
+  relaxation over the structured region tree that Wasm gives for free.
+  It runs per-function at JIT scale in a few thousand operations, and
+  the output competes with what much heavier optimizing compilers
+  produce.
 
 ## Performance (Apple M4)
 
