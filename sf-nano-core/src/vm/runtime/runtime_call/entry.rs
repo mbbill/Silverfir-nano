@@ -1,0 +1,442 @@
+use tracked_alloc::rc::Rc;
+
+use crate::collections;
+
+use crate::{
+    error::WasmError,
+    module::type_context::check_function_types_equivalent,
+    vm::{
+        arch::active_backend_config,
+        entities::{Caller, FunctionInst},
+        runtime,
+        runtime::{
+            common::{internal_error, run_frame_call, trap_error},
+            context::NativeContext,
+        },
+        store::Store,
+        value::RefHandle,
+        value::Value,
+        value_encoding::{machine_raw_to_ref, machine_raw_to_value, value_to_machine_raw},
+    },
+};
+
+use super::abi::{RuntimeCallFrameRegion, RuntimeCallMeta, RuntimeCallTargetKind};
+
+/// Uniform entrypoint used by MachineIR runtime calls.
+pub(crate) type RuntimeCallEntry =
+    unsafe extern "C" fn(ctx: *mut NativeContext, frame: *mut u64, metadata: *const u8) -> u32;
+
+#[inline]
+pub(crate) fn call_runtime_entry_ptr() -> RuntimeCallEntry {
+    runtime_call_entry
+}
+
+#[inline]
+fn active_gp_unit_bytes() -> u8 {
+    active_backend_config()
+        .map(|cfg| cfg.gp_unit_bytes)
+        .unwrap_or(core::mem::size_of::<usize>() as u8)
+}
+
+unsafe extern "C" fn runtime_call_entry(
+    ctx: *mut NativeContext,
+    frame: *mut u64,
+    metadata: *const u8,
+) -> u32 {
+    run_frame_call(ctx, frame, metadata, invoke_runtime_call)
+}
+
+#[inline]
+unsafe fn frame_read(frame: *mut u64, slot: u16) -> u64 {
+    unsafe { *frame.add(slot as usize) }
+}
+
+#[inline]
+unsafe fn frame_write(frame: *mut u64, slot: u16, value: u64) {
+    unsafe {
+        *frame.add(slot as usize) = value;
+    }
+}
+
+#[inline]
+fn require_region_slots(
+    region: RuntimeCallFrameRegion,
+    expected: u16,
+    label: &'static str,
+) -> Result<(), WasmError> {
+    if region.slots != expected {
+        return Err(internal_error(label));
+    }
+    Ok(())
+}
+
+#[inline]
+fn region_slot(
+    region: RuntimeCallFrameRegion,
+    index: u16,
+    label: &'static str,
+) -> Result<u16, WasmError> {
+    if index >= region.slots {
+        return Err(internal_error(label));
+    }
+    region
+        .base_slot
+        .checked_add(index)
+        .ok_or_else(|| internal_error("runtime-call frame slot overflow"))
+}
+
+#[inline]
+unsafe fn region_read(
+    frame: *mut u64,
+    region: RuntimeCallFrameRegion,
+    index: u16,
+    label: &'static str,
+) -> Result<u64, WasmError> {
+    Ok(unsafe { frame_read(frame, region_slot(region, index, label)?) })
+}
+
+#[inline]
+unsafe fn region_write(
+    frame: *mut u64,
+    region: RuntimeCallFrameRegion,
+    index: u16,
+    value: u64,
+    label: &'static str,
+) -> Result<(), WasmError> {
+    unsafe {
+        frame_write(frame, region_slot(region, index, label)?, value);
+    }
+    Ok(())
+}
+
+fn invoke_runtime_call(
+    ctx: &mut NativeContext,
+    frame: *mut u64,
+    meta: &RuntimeCallMeta,
+) -> Result<(), WasmError> {
+    match meta.target_kind()? {
+        RuntimeCallTargetKind::Immediate => {
+            call_runtime_by_local_index(ctx, frame, meta.func_idx_source, meta.args, meta.results)
+        }
+        RuntimeCallTargetKind::FrameSlot => {
+            let func_idx_slot = u16::try_from(meta.func_idx_source)
+                .map_err(|_| internal_error("runtime-call func_idx source slot exceeds u16"))?;
+            call_runtime_by_handle(
+                ctx,
+                frame,
+                machine_raw_to_ref(
+                    unsafe { frame_read(frame, func_idx_slot) },
+                    active_gp_unit_bytes(),
+                ),
+                meta.expected_type_idx,
+                meta.args,
+                meta.results,
+            )
+        }
+    }
+}
+
+fn call_runtime_by_local_index(
+    ctx: &mut NativeContext,
+    frame: *mut u64,
+    func_idx: u32,
+    args_region: RuntimeCallFrameRegion,
+    results_region: RuntimeCallFrameRegion,
+) -> Result<(), WasmError> {
+    let store_ptr = {
+        let store = ctx
+            .store()
+            .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
+        store as *const Store as *mut Store
+    };
+    let owner_store = unsafe { store_ptr.as_mut() }
+        .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
+    let callee_ptr = owner_store
+        .module()
+        .functions
+        .get(func_idx as usize)
+        .ok_or_else(|| internal_error("runtime-call referenced invalid function index"))?
+        as *const FunctionInst;
+    let callee = unsafe { &*callee_ptr };
+    invoke_runtime_target(ctx, frame, owner_store, callee, args_region, results_region)
+}
+
+fn call_runtime_by_handle(
+    ctx: &mut NativeContext,
+    frame: *mut u64,
+    handle: RefHandle,
+    expected_type_idx: u32,
+    args_region: RuntimeCallFrameRegion,
+    results_region: RuntimeCallFrameRegion,
+) -> Result<(), WasmError> {
+    if handle.is_null() {
+        return Err(trap_error("null function reference"));
+    }
+    let entry = {
+        let store = ctx
+            .store()
+            .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
+        store
+            .function_entry_for_handle(handle)
+            .ok_or_else(|| trap_error("invalid function reference"))?
+    };
+    let owner_store = unsafe { entry.store.as_mut() }
+        .ok_or_else(|| internal_error("runtime-call referenced dead function owner"))?;
+    let callee_ptr = owner_store
+        .module()
+        .functions
+        .get(entry.local_index)
+        .ok_or_else(|| internal_error("runtime-call referenced invalid function index"))?
+        as *const FunctionInst;
+    let callee = unsafe { &*callee_ptr };
+    if expected_type_idx != u32::MAX {
+        let caller_store = ctx
+            .store()
+            .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
+        let expected_type = caller_store
+            .module()
+            .get_type(expected_type_idx)
+            .ok_or_else(|| internal_error("call_ref expected type index is out of range"))?;
+        let compatible = expected_type.as_ref() == callee.func_type()
+            || check_function_types_equivalent(
+                expected_type.as_ref(),
+                callee.func_type(),
+                &caller_store.module().types,
+            );
+        if !compatible {
+            return Err(trap_error("call_ref type mismatch"));
+        }
+    }
+    invoke_runtime_target(ctx, frame, owner_store, callee, args_region, results_region)
+}
+
+fn invoke_runtime_target(
+    ctx: &mut NativeContext,
+    frame: *mut u64,
+    owner_store: &mut Store,
+    callee: &FunctionInst,
+    args_region: RuntimeCallFrameRegion,
+    results_region: RuntimeCallFrameRegion,
+) -> Result<(), WasmError> {
+    let func_type = Rc::new(callee.func_type().clone());
+
+    require_region_slots(
+        args_region,
+        func_type.params().len() as u16,
+        "runtime-call args span does not match function arity",
+    )?;
+    require_region_slots(
+        results_region,
+        func_type.results().len() as u16,
+        "runtime-call result span does not match function arity",
+    )?;
+
+    let args: collections::Vec<Value> = func_type
+        .params()
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| unsafe {
+            region_read(
+                frame,
+                args_region,
+                index as u16,
+                "runtime-call arg slot is out of bounds",
+            )
+            .map(|raw| machine_raw_to_value(raw, *ty, active_gp_unit_bytes()))
+        })
+        .collect::<Result<_, _>>()?;
+    let mut ret_vals = collections::vec![Value::default(); func_type.results().len()];
+
+    match callee {
+        FunctionInst::Host { callback, .. } => {
+            let mem_slice = if owner_store.module().memories.is_empty() {
+                None
+            } else {
+                let mem = owner_store.memory_mut(0);
+                let ptr = mem.memory_ptr();
+                let len = mem.memory_len();
+                if len == 0 {
+                    None
+                } else {
+                    Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
+                }
+            };
+            let mut caller = Caller::new(mem_slice);
+            callback(&mut caller, &args, &mut ret_vals)?;
+        }
+        FunctionInst::Linked { handle, .. } => {
+            return call_runtime_by_handle(
+                ctx,
+                frame,
+                *handle,
+                u32::MAX,
+                args_region,
+                results_region,
+            );
+        }
+        FunctionInst::Local { .. } => {
+            let result_stack = runtime::eval(callee, owner_store, &args)?;
+            for (index, ty) in func_type.results().iter().enumerate() {
+                ret_vals[index] = Value::from_raw(result_stack.peek_at_index(index), *ty);
+            }
+        }
+    }
+
+    if ret_vals.len() != func_type.results().len() {
+        return Err(internal_error(
+            "runtime-call target returned an unexpected result count",
+        ));
+    }
+
+    ctx.refresh_cached_views();
+
+    for (index, value) in ret_vals.into_iter().enumerate() {
+        unsafe {
+            region_write(
+                frame,
+                results_region,
+                index as u16,
+                value_to_machine_raw(value, active_gp_unit_bytes()),
+                "runtime-call result slot is out of bounds",
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use tracked_alloc::{boxed::Box, rc::Rc, string::String};
+
+    use super::*;
+    use crate::{
+        module::{type_context::TypeContext, type_defs::FunctionType},
+        utils::limits::Limits,
+        value_type::ValueType,
+        vm::{
+            entities::{HostFn, MemInst, ModuleInst},
+            runtime::common::NativeCallStatus,
+            store::Store,
+        },
+    };
+
+    fn test_context(module: ModuleInst) -> (Box<Store>, NativeContext) {
+        let mut store = Box::new(Store::new(module));
+        let ctx = NativeContext::new((&mut *store) as *mut Store, core::ptr::null_mut());
+        (store, ctx)
+    }
+
+    fn call_runtime<T: Copy>(ctx: &mut NativeContext, frame: &mut [u64], meta: &T) -> u32 {
+        let entry = call_runtime_entry_ptr();
+        unsafe { entry(ctx, frame.as_mut_ptr(), (meta as *const T).cast::<u8>()) }
+    }
+
+    #[test]
+    fn runtime_call_marshals_frame_slots() {
+        fn host_add(
+            _caller: &mut Caller,
+            args: &[Value],
+            results: &mut [Value],
+        ) -> Result<(), WasmError> {
+            let lhs = match args[0] {
+                Value::I32(value) => value,
+                _ => panic!("unexpected arg"),
+            };
+            let rhs = match args[1] {
+                Value::I32(value) => value,
+                _ => panic!("unexpected arg"),
+            };
+            results[0] = Value::I32(lhs + rhs);
+            Ok(())
+        }
+
+        let func_type = Rc::new(FunctionType::new(
+            collections::vec![ValueType::I32, ValueType::I32],
+            collections::vec![ValueType::I32],
+        ));
+        let mut module = ModuleInst::new(String::from("m"), TypeContext::empty());
+        module.functions.push(FunctionInst::Host {
+            func_type,
+            callback: host_add as HostFn,
+        });
+        module
+            .memories
+            .push(MemInst::new(Limits::new(1, Some(1)).unwrap()));
+        let (_store, mut ctx) = test_context(module);
+        let meta = RuntimeCallMeta {
+            func_idx_source: 0,
+            func_idx_source_kind: RuntimeCallTargetKind::Immediate as u32,
+            expected_type_idx: u32::MAX,
+            args: RuntimeCallFrameRegion {
+                base_slot: 0,
+                slots: 2,
+            },
+            results: RuntimeCallFrameRegion {
+                base_slot: 0,
+                slots: 1,
+            },
+        };
+        let mut frame = [7, 5, 99];
+
+        let status = call_runtime(&mut ctx, &mut frame, &meta);
+
+        assert_eq!(status, NativeCallStatus::Ok as u32);
+        assert_eq!(frame[0], 12);
+        assert!(ctx.error.is_none());
+    }
+
+    #[test]
+    fn runtime_call_reads_dynamic_target_slot() {
+        fn host_add(
+            _caller: &mut Caller,
+            args: &[Value],
+            results: &mut [Value],
+        ) -> Result<(), WasmError> {
+            let lhs = match args[0] {
+                Value::I32(value) => value,
+                _ => panic!("unexpected arg"),
+            };
+            let rhs = match args[1] {
+                Value::I32(value) => value,
+                _ => panic!("unexpected arg"),
+            };
+            results[0] = Value::I32(lhs + rhs);
+            Ok(())
+        }
+
+        let func_type = Rc::new(FunctionType::new(
+            collections::vec![ValueType::I32, ValueType::I32],
+            collections::vec![ValueType::I32],
+        ));
+        let mut module = ModuleInst::new(String::from("m"), TypeContext::empty());
+        module.functions.push(FunctionInst::Host {
+            func_type,
+            callback: host_add as HostFn,
+        });
+        module
+            .memories
+            .push(MemInst::new(Limits::new(1, Some(1)).unwrap()));
+        let (_store, mut ctx) = test_context(module);
+        let meta = RuntimeCallMeta {
+            func_idx_source: 2,
+            func_idx_source_kind: RuntimeCallTargetKind::FrameSlot as u32,
+            expected_type_idx: u32::MAX,
+            args: RuntimeCallFrameRegion {
+                base_slot: 0,
+                slots: 2,
+            },
+            results: RuntimeCallFrameRegion {
+                base_slot: 0,
+                slots: 1,
+            },
+        };
+        let mut frame = [7, 5, 0];
+
+        let status = call_runtime(&mut ctx, &mut frame, &meta);
+
+        assert_eq!(status, NativeCallStatus::Ok as u32);
+        assert_eq!(frame[0], 12);
+        assert!(ctx.error.is_none());
+    }
+}

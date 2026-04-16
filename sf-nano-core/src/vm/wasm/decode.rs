@@ -18,7 +18,7 @@ use tracked_alloc::collections::BTreeMap;
 use crate::{
     error::WasmError,
     op_decoder::{Decoder, Immediate, OpStream, OpcodeHandler},
-    opcodes::{Opcode, OpcodeFC, WasmOpcode},
+    opcodes::{Opcode, OpcodeFB, OpcodeFC, WasmOpcode},
     value_type::{HeapType, RefType, ValueType},
 };
 
@@ -356,11 +356,27 @@ impl<'a> DecodeContext<'a> {
             results,
         });
         if results > 0 {
-            if let Some(ty) = self.compile.types.get(type_idx) {
+            if let Some(ty) = self.compile.types.get_function_type(type_idx) {
                 self.record_result_types(idx, ty.results());
             }
         }
         self.pop_values(params as usize);
+        self.push_values(results as usize);
+    }
+
+    fn handle_call_ref(&mut self, type_idx: u32) {
+        let (params, results) = self.compile.resolve_type_index(type_idx);
+        let idx = self.push_op(SemanticOpKind::CallRef {
+            type_idx,
+            params,
+            results,
+        });
+        if results > 0 {
+            if let Some(ty) = self.compile.types.get_function_type(type_idx) {
+                self.record_result_types(idx, ty.results());
+            }
+        }
+        self.pop_values(params.saturating_add(1) as usize);
         self.push_values(results as usize);
     }
 
@@ -378,7 +394,7 @@ impl<'a> DecodeContext<'a> {
 
     fn dispatch(&mut self, wasm_op: WasmOpcode, imm: &Immediate) -> Result<(), WasmError> {
         use Opcode::*;
-        use WasmOpcode::{FC, OP};
+        use WasmOpcode::{FB, FC, OP};
 
         match wasm_op {
             OP(LOCAL_GET) => {
@@ -678,12 +694,32 @@ impl<'a> DecodeContext<'a> {
 
             OP(MEMORY_SIZE) => {
                 if let Immediate::MemoryIndex(mem_idx) = imm {
+                    let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::MemorySize { mem_idx: *mem_idx });
+                    let is_mem64 = self.compile.store.memory(*mem_idx as usize).limits.is64;
+                    self.record_result_types(
+                        op_idx,
+                        &[if is_mem64 {
+                            ValueType::I64
+                        } else {
+                            ValueType::I32
+                        }],
+                    );
                 }
             }
             OP(MEMORY_GROW) => {
                 if let Immediate::MemoryIndex(mem_idx) = imm {
+                    let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::MemoryGrow { mem_idx: *mem_idx });
+                    let is_mem64 = self.compile.store.memory(*mem_idx as usize).limits.is64;
+                    self.record_result_types(
+                        op_idx,
+                        &[if is_mem64 {
+                            ValueType::I64
+                        } else {
+                            ValueType::I32
+                        }],
+                    );
                 }
             }
             FC(OpcodeFC::MEMORY_FILL) => {
@@ -739,16 +775,36 @@ impl<'a> DecodeContext<'a> {
             }
             FC(OpcodeFC::TABLE_SIZE) => {
                 if let Immediate::TableIndex(table_idx) = imm {
+                    let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::TableSize {
                         table_idx: *table_idx,
                     });
+                    let is_table64 = self.compile.store.table(*table_idx as usize).limits.is64;
+                    self.record_result_types(
+                        op_idx,
+                        &[if is_table64 {
+                            ValueType::I64
+                        } else {
+                            ValueType::I32
+                        }],
+                    );
                 }
             }
             FC(OpcodeFC::TABLE_GROW) => {
                 if let Immediate::TableIndex(table_idx) = imm {
+                    let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::TableGrow {
                         table_idx: *table_idx,
                     });
+                    let is_table64 = self.compile.store.table(*table_idx as usize).limits.is64;
+                    self.record_result_types(
+                        op_idx,
+                        &[if is_table64 {
+                            ValueType::I64
+                        } else {
+                            ValueType::I32
+                        }],
+                    );
                 }
             }
             FC(OpcodeFC::TABLE_FILL) => {
@@ -779,6 +835,8 @@ impl<'a> DecodeContext<'a> {
                 }
             }
             OP(REF_IS_NULL) => self.handle_primitive(PrimitiveOpKind::RefIsNull),
+            OP(REF_EQ) => self.handle_primitive(PrimitiveOpKind::RefEq),
+            OP(REF_AS_NON_NULL) => self.handle_primitive(PrimitiveOpKind::RefAsNonNull),
             OP(REF_FUNC) => {
                 if let Immediate::FunctionIndex(func_idx) = imm {
                     let op_idx = self.current_index();
@@ -949,8 +1007,157 @@ impl<'a> DecodeContext<'a> {
                     self.handle_call_indirect(*typeidx, *tableidx);
                 }
             }
+            OP(CALL_REF) => {
+                if let Immediate::TypeIndex(typeidx) = imm {
+                    if self.unreachable {
+                        self.handle_primitive(PrimitiveOpKind::Nop);
+                    } else {
+                        self.handle_call_ref(*typeidx);
+                    }
+                }
+            }
 
             OP(NOP) => self.handle_primitive(PrimitiveOpKind::Nop),
+
+            FB(OpcodeFB::REF_I31) => self.handle_primitive(PrimitiveOpKind::RefI31),
+            FB(OpcodeFB::I31_GET_S) => self.handle_primitive(PrimitiveOpKind::I31GetS),
+            FB(OpcodeFB::I31_GET_U) => self.handle_primitive(PrimitiveOpKind::I31GetU),
+            FB(OpcodeFB::ANY_CONVERT_EXTERN) => {
+                self.handle_primitive(PrimitiveOpKind::AnyConvertExtern)
+            }
+            FB(OpcodeFB::EXTERN_CONVERT_ANY) => {
+                self.handle_primitive(PrimitiveOpKind::ExternConvertAny)
+            }
+            FB(OpcodeFB::REF_TEST) | FB(OpcodeFB::REF_TEST_NULL) => {
+                if let Immediate::RefType(ValueType::Ref(ref_type)) = imm {
+                    self.handle_primitive(PrimitiveOpKind::RefTest {
+                        ref_type: *ref_type,
+                    });
+                }
+            }
+            FB(OpcodeFB::REF_CAST) | FB(OpcodeFB::REF_CAST_NULL) => {
+                if let Immediate::RefType(ValueType::Ref(ref_type)) = imm {
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::RefCast {
+                        ref_type: *ref_type,
+                    });
+                    self.record_result_types(op_idx, &[ValueType::Ref(*ref_type)]);
+                }
+            }
+            FB(OpcodeFB::STRUCT_NEW_DEFAULT) => {
+                if let Immediate::TypeIndex(type_idx) = imm {
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::StructNewDefault {
+                        type_idx: *type_idx,
+                    });
+                    self.record_result_types(
+                        op_idx,
+                        &[ValueType::Ref(RefType::new(
+                            false,
+                            HeapType::Concrete(*type_idx),
+                        ))],
+                    );
+                }
+            }
+            FB(OpcodeFB::STRUCT_GET) => {
+                if let Immediate::StructFieldArgs { typeidx, fieldidx } = imm {
+                    let def_type =
+                        self.compile.types.get(*typeidx).ok_or_else(|| {
+                            WasmError::invalid("struct.get type index out of bounds")
+                        })?;
+                    let struct_type = match &def_type.composite {
+                        crate::module::type_defs::CompositeType::Struct(struct_type) => struct_type,
+                        _ => return Err(WasmError::invalid("struct.get expected struct type")),
+                    };
+                    let field_type = struct_type
+                        .fields
+                        .get(*fieldidx as usize)
+                        .map(|field| field.storage.to_valtype())
+                        .ok_or_else(|| {
+                            WasmError::invalid("struct.get field index out of bounds")
+                        })?;
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::StructGet {
+                        type_idx: *typeidx,
+                        field_idx: *fieldidx,
+                    });
+                    self.record_result_types(op_idx, &[field_type]);
+                }
+            }
+            FB(OpcodeFB::STRUCT_GET_S) => {
+                if let Immediate::StructFieldArgs { typeidx, fieldidx } = imm {
+                    let def_type = self.compile.types.get(*typeidx).ok_or_else(|| {
+                        WasmError::invalid("struct.get_s type index out of bounds")
+                    })?;
+                    let struct_type = match &def_type.composite {
+                        crate::module::type_defs::CompositeType::Struct(struct_type) => struct_type,
+                        _ => return Err(WasmError::invalid("struct.get_s expected struct type")),
+                    };
+                    let field_type = struct_type
+                        .fields
+                        .get(*fieldidx as usize)
+                        .map(|field| field.storage.to_valtype())
+                        .ok_or_else(|| {
+                            WasmError::invalid("struct.get_s field index out of bounds")
+                        })?;
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::StructGetS {
+                        type_idx: *typeidx,
+                        field_idx: *fieldidx,
+                    });
+                    self.record_result_types(op_idx, &[field_type]);
+                }
+            }
+            FB(OpcodeFB::STRUCT_GET_U) => {
+                if let Immediate::StructFieldArgs { typeidx, fieldidx } = imm {
+                    let def_type = self.compile.types.get(*typeidx).ok_or_else(|| {
+                        WasmError::invalid("struct.get_u type index out of bounds")
+                    })?;
+                    let struct_type = match &def_type.composite {
+                        crate::module::type_defs::CompositeType::Struct(struct_type) => struct_type,
+                        _ => return Err(WasmError::invalid("struct.get_u expected struct type")),
+                    };
+                    let field_type = struct_type
+                        .fields
+                        .get(*fieldidx as usize)
+                        .map(|field| field.storage.to_valtype())
+                        .ok_or_else(|| {
+                            WasmError::invalid("struct.get_u field index out of bounds")
+                        })?;
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::StructGetU {
+                        type_idx: *typeidx,
+                        field_idx: *fieldidx,
+                    });
+                    self.record_result_types(op_idx, &[field_type]);
+                }
+            }
+            FB(OpcodeFB::STRUCT_SET) => {
+                if let Immediate::StructFieldArgs { typeidx, fieldidx } = imm {
+                    self.handle_primitive(PrimitiveOpKind::StructSet {
+                        type_idx: *typeidx,
+                        field_idx: *fieldidx,
+                    });
+                }
+            }
+            FB(OpcodeFB::ARRAY_NEW_DEFAULT) => {
+                if let Immediate::TypeIndex(type_idx) = imm {
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::ArrayNewDefault {
+                        type_idx: *type_idx,
+                    });
+                    self.record_result_types(
+                        op_idx,
+                        &[ValueType::Ref(RefType::new(
+                            false,
+                            HeapType::Concrete(*type_idx),
+                        ))],
+                    );
+                }
+            }
+            FB(_op) => {
+                return Err(WasmError::invalid("unsupported semantic decode GC opcode"));
+            }
 
             _ => {
                 return Err(WasmError::invalid("unsupported semantic decode opcode"));

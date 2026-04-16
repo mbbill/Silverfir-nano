@@ -56,6 +56,7 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
     for (index, block) in program.blocks.iter().enumerate() {
         validate_block_id(block, index)?;
         validate_params(&block.params)?;
+        validate_linear_op_uses(program, block)?;
 
         match &block.terminator {
             SsaTerminator::Goto(edge) => validate_edge(program, edge)?,
@@ -251,6 +252,42 @@ fn validate_cached_slot_value_type(
         return Err(WasmError::internal(
             "cached local slot uses incompatible value type",
         ));
+    }
+    Ok(())
+}
+
+#[cfg(any(debug_assertions, test))]
+fn validate_linear_op_uses(program: &SsaProgram, block: &SsaBlock) -> Result<(), WasmError> {
+    let mut uses = BTreeMap::<SsaValue, u32>::new();
+    for op_idx in 0..block.ops.len() {
+        match block.view(op_idx, program) {
+            SsaInstView::Spill { src, .. }
+            | SsaInstView::LocalSetSlot { src, .. }
+            | SsaInstView::LocalSetCache { src, .. } => {
+                *uses.entry(src).or_insert(0) += 1;
+            }
+            SsaInstView::Value { args, .. } => {
+                for arg in args.iter() {
+                    if let Some(value) = arg.as_value() {
+                        *uses.entry(value).or_insert(0) += 1;
+                    }
+                }
+            }
+            SsaInstView::Fill { .. }
+            | SsaInstView::LocalGetSlot { .. }
+            | SsaInstView::LocalGetCache { .. }
+            | SsaInstView::LocalEnsureCache { .. }
+            | SsaInstView::LocalReserveCache { .. }
+            | SsaInstView::LocalDropCache { .. }
+            | SsaInstView::Call(_) => {}
+        }
+    }
+    for &count in uses.values() {
+        if count > 1 {
+            return Err(WasmError::internal(
+                "SSA-IR value has more than one use within ops",
+            ));
+        }
     }
     Ok(())
 }

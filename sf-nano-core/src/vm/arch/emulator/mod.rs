@@ -16,17 +16,14 @@ use crate::{
     module::entities::FunctionSpec,
     vm::{
         machine::machine_ir::{
-            MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineCallExternal,
-            MachineCompareKind, MachineConvertOp, MachineEdge, MachineFloatBinaryOp,
-            MachineFloatUnaryOp, MachineFloatWidth, MachineFrameRegion, MachineFuncId,
-            MachineFunctionAbi, MachineIndexExtend, MachineInst, MachineInstKind,
+            MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineCallRuntime,
+            MachineCallTarget, MachineCompareKind, MachineConvertOp, MachineEdge,
+            MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineFrameRegion,
+            MachineFuncId, MachineFunctionAbi, MachineIndexExtend, MachineInst, MachineInstKind,
             MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
             MachineMemWidth, MachineProgram, MachineReg, MachineShiftOp, MachineSign,
-            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
+            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
             MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
-        },
-        raw_value::{
-            as_f32, as_f64, as_i32, as_i64, as_u32, as_u64, from_f32, from_f64, from_i32, from_i64,
         },
         result_buffer::ResultBuffer,
         runtime::{
@@ -34,11 +31,15 @@ use crate::{
             collect_native_results_from_stack,
             common::NativeCallStatus,
             context::NativeContext,
-            external::call_external_entry_ptr,
             preserved::{self, io as preserved_io, op as preserved_op},
+            runtime_call::call_runtime_entry_ptr,
         },
         store::Store,
         value::Value,
+        value_encoding::{
+            as_f32, as_f64, as_i32, as_i64, as_u32, as_u64, from_f32, from_f64, from_i32, from_i64,
+            value_to_machine_raw,
+        },
     },
 };
 
@@ -160,7 +161,7 @@ pub(crate) fn eval(
 
     unsafe {
         for (index, arg) in args.iter().enumerate() {
-            *stack_base.add(index) = arg.to_raw();
+            *stack_base.add(index) = value_to_machine_raw(*arg, compiled.backend().gp_unit_bytes);
         }
         if runtime.frame_prefix_slots as usize > args.len() {
             core::ptr::write_bytes(
@@ -237,25 +238,13 @@ impl<'a> Emulator<'a> {
                         .ok_or_else(|| WasmError::internal("machine jump table has no entries"))?;
                     self.jump_to_edge(edge)
                 }
-                MachineTerminator::CallDirect {
-                    callee,
+                MachineTerminator::Call {
+                    target,
                     callee_frame_base,
                     caller_result_base,
                     continuation,
-                } => self.enter_direct_call(
-                    *callee,
-                    *callee_frame_base,
-                    *caller_result_base,
-                    *continuation,
-                ),
-                MachineTerminator::CallIndirect {
-                    callee_target,
-                    callee_entry: _,
-                    callee_frame_base,
-                    caller_result_base,
-                    continuation,
-                } => self.enter_indirect_call(
-                    *callee_target,
+                } => self.enter_call(
+                    target,
                     *callee_frame_base,
                     *caller_result_base,
                     *continuation,
@@ -702,7 +691,7 @@ impl<'a> Emulator<'a> {
                 };
                 self.write_reg_with_kind(*dst, result, fixed_reg_addr_kind(*dst))?;
             }
-            MachineInstKind::CallExternal(call) => self.execute_call_external(call)?,
+            MachineInstKind::CallRuntime(call) => self.execute_call_runtime(call)?,
             MachineInstKind::MemoryGrow {
                 mem_idx,
                 dst,
@@ -823,16 +812,213 @@ impl<'a> Emulator<'a> {
                 io[preserved_io::IMM0] = u64::from(*elem_idx);
                 self.execute_preserved_helper(preserved_op::ELEM_DROP, &mut io)?;
             }
+            MachineInstKind::RefFunc { func_idx, dst } => {
+                self.execute_preserved_result(
+                    preserved_op::REF_FUNC,
+                    *func_idx,
+                    0,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::RefAsNonNull { src, dst } => {
+                self.execute_preserved_result(
+                    preserved_op::REF_AS_NON_NULL,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::RefEq { lhs, rhs, dst } => {
+                self.execute_preserved_result(
+                    preserved_op::REF_EQ,
+                    0,
+                    0,
+                    *lhs,
+                    *rhs,
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::RefI31 { src, dst } => {
+                self.execute_preserved_result(
+                    preserved_op::REF_I31,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::I31GetS { src, dst } => {
+                self.execute_preserved_result(
+                    preserved_op::I31_GET_S,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::I31GetU { src, dst } => {
+                self.execute_preserved_result(
+                    preserved_op::I31_GET_U,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::AnyConvertExtern { src, dst } => {
+                self.execute_preserved_result(
+                    preserved_op::ANY_CONVERT_EXTERN,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::ExternConvertAny { src, dst } => {
+                self.execute_preserved_result(
+                    preserved_op::EXTERN_CONVERT_ANY,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::RefTest { ref_type, src, dst } => {
+                let encoded = ref_type.encode_to_u64();
+                self.execute_preserved_result(
+                    preserved_op::REF_TEST,
+                    encoded as u32,
+                    (encoded >> 32) as u32,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::RefCast { ref_type, src, dst } => {
+                let encoded = ref_type.encode_to_u64();
+                self.execute_preserved_result(
+                    preserved_op::REF_CAST,
+                    encoded as u32,
+                    (encoded >> 32) as u32,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::StructNewDefault { type_idx, dst } => {
+                self.execute_preserved_result(
+                    preserved_op::STRUCT_NEW_DEFAULT,
+                    *type_idx,
+                    0,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::StructGet {
+                type_idx,
+                field_idx,
+                signed,
+                ty,
+                src,
+                dst,
+                dst_hi,
+            } => {
+                let op_code = match signed {
+                    None => preserved_op::STRUCT_GET,
+                    Some(true) => preserved_op::STRUCT_GET_S,
+                    Some(false) => preserved_op::STRUCT_GET_U,
+                };
+                self.execute_preserved_result(
+                    op_code,
+                    *type_idx,
+                    *field_idx,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    *ty,
+                    *dst,
+                    *dst_hi,
+                )?;
+            }
+            MachineInstKind::StructSet {
+                type_idx,
+                field_idx,
+                ref_src,
+                value_lo,
+                value_hi,
+            } => {
+                self.execute_struct_set(*type_idx, *field_idx, *ref_src, *value_lo, *value_hi)?;
+            }
+            MachineInstKind::ArrayNewDefault {
+                type_idx,
+                length,
+                dst,
+            } => {
+                self.execute_preserved_result(
+                    preserved_op::ARRAY_NEW_DEFAULT,
+                    *type_idx,
+                    0,
+                    *length,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
         }
         Ok(())
     }
 
-    fn execute_call_external(&mut self, call: &MachineCallExternal) -> Result<(), WasmError> {
+    fn execute_call_runtime(&mut self, call: &MachineCallRuntime) -> Result<(), WasmError> {
         let metadata = self
             .compiled
             .const_ptr(call.metadata)
-            .ok_or_else(|| WasmError::internal("machine external-call metadata is out of range"))?;
-        let entry = call_external_entry_ptr();
+            .ok_or_else(|| WasmError::internal("machine runtime-call metadata is out of range"))?;
+        let entry = call_runtime_entry_ptr();
         let status = unsafe { entry(self.ctx as *mut NativeContext, self.fp, metadata) };
         if status == NativeCallStatus::Ok as u32 {
             self.address_space.validate_runtime_shape(self.ctx)?;
@@ -843,6 +1029,63 @@ impl<'a> Emulator<'a> {
             .error
             .take()
             .unwrap_or_else(|| trap_from_kind(MachineTrapKind::HelperFailure)))
+    }
+
+    fn execute_preserved_result(
+        &mut self,
+        op_code: u32,
+        imm0: u32,
+        imm1: u32,
+        arg0: MachineValue,
+        arg1: MachineValue,
+        arg2: MachineValue,
+        _ty: MachineStorageType,
+        dst: MachineReg,
+        dst_hi: Option<MachineReg>,
+    ) -> Result<(), WasmError> {
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(imm0);
+        io[preserved_io::IMM1] = u64::from(imm1);
+        io[preserved_io::ARG0] = self.read_value(arg0)?;
+        io[preserved_io::ARG1] = self.read_value(arg1)?;
+        io[preserved_io::ARG2] = self.read_value(arg2)?;
+        self.execute_preserved_helper(op_code, &mut io)?;
+        if let Some(dst_hi) = dst_hi {
+            self.write_reg_with_kind(
+                dst,
+                u64::from(io[preserved_io::RET0] as u32),
+                fixed_reg_addr_kind(dst),
+            )?;
+            self.write_reg_with_kind(
+                dst_hi,
+                u64::from((io[preserved_io::RET0] >> 32) as u32),
+                fixed_reg_addr_kind(dst_hi),
+            )?;
+        } else {
+            self.write_reg_with_kind(dst, io[preserved_io::RET0], fixed_reg_addr_kind(dst))?;
+        }
+        Ok(())
+    }
+
+    fn execute_struct_set(
+        &mut self,
+        type_idx: u32,
+        field_idx: u32,
+        ref_src: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+    ) -> Result<(), WasmError> {
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(type_idx);
+        io[preserved_io::IMM1] = u64::from(field_idx);
+        io[preserved_io::ARG0] = self.read_value(ref_src)?;
+        io[preserved_io::ARG1] = if let Some(value_hi) = value_hi {
+            u64::from(self.read_value(value_lo)? as u32)
+                | (u64::from(self.read_value(value_hi)? as u32) << 32)
+        } else {
+            self.read_value(value_lo)?
+        };
+        self.execute_preserved_helper(preserved_op::STRUCT_SET, &mut io)
     }
 
     fn execute_preserved_helper(
@@ -906,37 +1149,32 @@ impl<'a> Emulator<'a> {
         Ok(())
     }
 
-    fn enter_direct_call(
+    fn enter_call(
         &mut self,
-        callee: MachineFuncId,
+        target: &MachineCallTarget,
         callee_frame_base: MachineReg,
         caller_result_base: MachineReg,
         continuation: MachineBlockId,
     ) -> Result<(), WasmError> {
+        let (callee, check_stack_capacity) = match target {
+            MachineCallTarget::Direct(callee) => (*callee, true),
+            MachineCallTarget::Indirect { callee_target, .. } => {
+                (MachineFuncId(self.read_reg(*callee_target)? as u32), false)
+            }
+        };
         let callee_fp = self
             .address_space
             .host_stack_ptr(self.read_reg(callee_frame_base)?)?;
         let result_base_ptr = self
             .address_space
             .host_stack_ptr(self.read_reg(caller_result_base)?)?;
-        self.enter_callee(callee, callee_fp, result_base_ptr, continuation, true)
-    }
-
-    fn enter_indirect_call(
-        &mut self,
-        callee_target: MachineReg,
-        callee_frame_base: MachineReg,
-        caller_result_base: MachineReg,
-        continuation: MachineBlockId,
-    ) -> Result<(), WasmError> {
-        let callee = MachineFuncId(self.read_reg(callee_target)? as u32);
-        let callee_fp = self
-            .address_space
-            .host_stack_ptr(self.read_reg(callee_frame_base)?)?;
-        let result_base_ptr = self
-            .address_space
-            .host_stack_ptr(self.read_reg(caller_result_base)?)?;
-        self.enter_callee(callee, callee_fp, result_base_ptr, continuation, false)
+        self.enter_callee(
+            callee,
+            callee_fp,
+            result_base_ptr,
+            continuation,
+            check_stack_capacity,
+        )
     }
 
     fn enter_callee(
@@ -2351,7 +2589,7 @@ mod tests {
     }
 
     #[test]
-    fn evaluates_native_machine_module_with_helper_external_call() {
+    fn evaluates_native_machine_module_with_helper_runtime_call() {
         let _guard = enable_reference_backend();
 
         let ty = Rc::new(FunctionType::new(
@@ -2360,7 +2598,7 @@ mod tests {
         ));
         let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
         let mut module = ModuleInst::new(String::from("m"), types);
-        module.functions.push(FunctionInst::External {
+        module.functions.push(FunctionInst::Host {
             func_type: Rc::clone(&ty),
             callback: host_double,
         });
@@ -3070,7 +3308,7 @@ mod tests {
     }
 
     #[test]
-    fn runtime_eval_emu32_rejects_more_than_eight_memories() {
+    fn runtime_eval_emu32_rejects_more_than_thirty_two_memories() {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
 
         let ty = Rc::new(FunctionType::new(
@@ -3085,7 +3323,7 @@ mod tests {
             spec,
             type_index: 0,
         });
-        for _ in 0..9 {
+        for _ in 0..33 {
             module
                 .memories
                 .push(native_test_memory(Limits::new(0, Some(1)).unwrap()));
@@ -3098,7 +3336,7 @@ mod tests {
             .expect_err("emu32 should reject synthetic address-space memory overlap");
         assert!(error
             .message()
-            .contains("emu32 synthetic address space supports at most 8 memories"));
+            .contains("emu32 synthetic address space supports at most 32 memories"));
     }
 
     #[test]

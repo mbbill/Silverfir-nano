@@ -84,6 +84,11 @@ pub(crate) enum SemanticOpKind {
         params: u16,
         results: u16,
     },
+    CallRef {
+        type_idx: u32,
+        params: u16,
+        results: u16,
+    },
     ReturnVoid,
     ReturnOne,
     Return {
@@ -120,7 +125,8 @@ pub(crate) struct SemanticProgram {
 pub(crate) fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
     match kind {
         SemanticOpKind::CallDirect { results, .. }
-        | SemanticOpKind::CallIndirect { results, .. } => Some(*results as usize),
+        | SemanticOpKind::CallIndirect { results, .. }
+        | SemanticOpKind::CallRef { results, .. } => Some(*results as usize),
         SemanticOpKind::Block { results, .. }
         | SemanticOpKind::Loop { results, .. }
         | SemanticOpKind::If { results, .. } => Some(*results as usize),

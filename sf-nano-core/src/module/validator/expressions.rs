@@ -2,9 +2,12 @@ use crate::collections;
 use crate::{
     error::WasmError,
     module::{entities::ConstExpr, Module},
-    opcodes::Opcode::{self, *},
+    opcodes::{
+        Opcode::{self, *},
+        OpcodeFB,
+    },
     utils::payload::Payload,
-    value_type::{HeapType, RefType, ValueType},
+    value_type::{AbstractHeapType, HeapType, RefType, ValueType},
 };
 /// Context for validating constant expressions
 #[derive(Debug, Clone, Default)]
@@ -32,7 +35,7 @@ impl ValidationContext {
     pub fn global(index: usize) -> Self {
         Self {
             is_passive: false,
-            only_imported_globals: true,
+            only_imported_globals: false,
             validating_global_index: Some(index),
         }
     }
@@ -63,6 +66,7 @@ impl ConstExpr {
                     op,
                     REF_NULL
                         | REF_FUNC
+                        | PREFIX_FB
                         | END
                         | I32_CONST
                         | I64_CONST
@@ -156,6 +160,167 @@ impl ConstExpr {
                         ));
                     }
                     stack.push(ValueType::I64);
+                }
+                PREFIX_FB => {
+                    let fb_opcode_value = code.read_leb128_u32()?;
+                    let fb_opcode: OpcodeFB = fb_opcode_value.try_into()?;
+                    use OpcodeFB::*;
+                    match fb_opcode {
+                        REF_I31 => {
+                            if stack.is_empty() {
+                                return Err(WasmError::invalid("Not enough operands for ref.i31"));
+                            }
+                            let operand = stack.pop().unwrap();
+                            if operand != ValueType::I32 {
+                                return Err(WasmError::invalid("ref.i31 expects i32 operand"));
+                            }
+                            let i31_ref = ValueType::Ref(RefType::new(
+                                false,
+                                HeapType::Abstract(AbstractHeapType::I31),
+                            ));
+                            stack.push(i31_ref);
+                        }
+                        ANY_CONVERT_EXTERN => {
+                            if stack.is_empty() {
+                                return Err(WasmError::invalid(
+                                    "Not enough operands for any.convert_extern",
+                                ));
+                            }
+                            let operand = stack.pop().unwrap();
+                            match operand {
+                                ValueType::Ref(ref_type)
+                                    if matches!(
+                                        ref_type.heap_type,
+                                        HeapType::Abstract(AbstractHeapType::Extern)
+                                    ) =>
+                                {
+                                    let any_ref = ValueType::Ref(RefType::new(
+                                        ref_type.nullable,
+                                        HeapType::Abstract(AbstractHeapType::Any),
+                                    ));
+                                    stack.push(any_ref);
+                                }
+                                _ => {
+                                    return Err(WasmError::invalid(
+                                        "any.convert_extern expects externref operand",
+                                    ));
+                                }
+                            }
+                        }
+                        EXTERN_CONVERT_ANY => {
+                            if stack.is_empty() {
+                                return Err(WasmError::invalid(
+                                    "Not enough operands for extern.convert_any",
+                                ));
+                            }
+                            let operand = stack.pop().unwrap();
+                            match operand {
+                                ValueType::Ref(ref_type)
+                                    if matches!(
+                                        ref_type.heap_type,
+                                        HeapType::Abstract(AbstractHeapType::Any)
+                                    ) =>
+                                {
+                                    let extern_ref = ValueType::Ref(RefType::new(
+                                        ref_type.nullable,
+                                        HeapType::Abstract(AbstractHeapType::Extern),
+                                    ));
+                                    stack.push(extern_ref);
+                                }
+                                _ => {
+                                    return Err(WasmError::invalid(
+                                        "extern.convert_any expects anyref operand",
+                                    ));
+                                }
+                            }
+                        }
+                        STRUCT_NEW => {
+                            let typeidx = code.read_leb128_u32()?;
+                            let def_type = module
+                                .types()
+                                .get(typeidx)
+                                .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                            let struct_type = match &def_type.composite {
+                                crate::module::type_defs::CompositeType::Struct(s) => s,
+                                _ => return Err(WasmError::invalid("Expected struct type")),
+                            };
+                            for field in struct_type.fields.iter().rev() {
+                                if stack.is_empty() {
+                                    return Err(WasmError::invalid(
+                                        "Not enough operands for struct.new",
+                                    ));
+                                }
+                                let value = stack.pop().unwrap();
+                                let expected_type = field.storage.to_valtype();
+                                if value != expected_type {
+                                    return Err(WasmError::invalid(
+                                        "struct.new field type mismatch",
+                                    ));
+                                }
+                            }
+                            let struct_ref =
+                                ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx)));
+                            stack.push(struct_ref);
+                        }
+                        STRUCT_NEW_DEFAULT => {
+                            let typeidx = code.read_leb128_u32()?;
+                            let def_type = module
+                                .types()
+                                .get(typeidx)
+                                .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                            if !matches!(
+                                &def_type.composite,
+                                crate::module::type_defs::CompositeType::Struct(_)
+                            ) {
+                                return Err(WasmError::invalid("Expected struct type"));
+                            }
+                            let struct_ref =
+                                ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx)));
+                            stack.push(struct_ref);
+                        }
+                        ARRAY_NEW | ARRAY_NEW_DEFAULT => {
+                            let typeidx = code.read_leb128_u32()?;
+                            let def_type = module
+                                .types()
+                                .get(typeidx)
+                                .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                            let array_type = match &def_type.composite {
+                                crate::module::type_defs::CompositeType::Array(a) => a,
+                                _ => return Err(WasmError::invalid("Expected array type")),
+                            };
+                            if stack.is_empty() {
+                                return Err(WasmError::invalid(
+                                    "Not enough operands for array.new",
+                                ));
+                            }
+                            let len = stack.pop().unwrap();
+                            if len != ValueType::I32 {
+                                return Err(WasmError::invalid("array.new length expects i32"));
+                            }
+                            if matches!(fb_opcode, ARRAY_NEW) {
+                                if stack.is_empty() {
+                                    return Err(WasmError::invalid(
+                                        "Not enough operands for array.new",
+                                    ));
+                                }
+                                let init = stack.pop().unwrap();
+                                let expected_type = array_type.element.storage.to_valtype();
+                                if init != expected_type {
+                                    return Err(WasmError::invalid(
+                                        "array.new element type mismatch",
+                                    ));
+                                }
+                            }
+                            let array_ref =
+                                ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx)));
+                            stack.push(array_ref);
+                        }
+                        _ => {
+                            return Err(WasmError::invalid(
+                                "Unsupported GC opcode in constant expression",
+                            ));
+                        }
+                    }
                 }
                 END => {
                     if stack.len() != 1 {

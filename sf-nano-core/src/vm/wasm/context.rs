@@ -55,7 +55,7 @@ impl<'a> CompileContext<'a> {
             BlockType::ValueType(_) => (0, 1),
             BlockType::TypeIndex(idx) => self
                 .types
-                .get(*idx as u32)
+                .get_function_type(*idx as u32)
                 .map(|ty| (ty.params().len() as u16, ty.results().len() as u16))
                 .unwrap_or((0, 0)),
         }
@@ -79,7 +79,7 @@ impl<'a> CompileContext<'a> {
             BlockType::ValueType(value_type) => collections::vec![*value_type],
             BlockType::TypeIndex(idx) => self
                 .types
-                .get(*idx as u32)
+                .get_function_type(*idx as u32)
                 .map(|ty| ty.results().to_vec().into())
                 .unwrap_or_else(collections::Vec::new),
         }
@@ -99,7 +99,7 @@ impl<'a> CompileContext<'a> {
     #[inline]
     pub(crate) fn resolve_type_index(&self, type_idx: u32) -> (u16, u16) {
         self.types
-            .get(type_idx)
+            .get_function_type(type_idx)
             .map(|ty| (ty.params().len() as u16, ty.results().len() as u16))
             .unwrap_or((0, 0))
     }

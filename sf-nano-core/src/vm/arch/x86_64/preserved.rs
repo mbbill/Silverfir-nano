@@ -8,40 +8,82 @@
 //!   1. Save caller-clobbered GP dynamic regs (see
 //!      `save_caller_clobbered_gp_dynamic`). Total 48 bytes keeps RSP
 //!      16-aligned.
-//!   2. `sub rsp, PRESERVED_IO_BYTES` (`io::SLOT_COUNT * 8` bytes).
-//!   3. Write IMM0/IMM1/ARG0..ARG2 slots on the stack.
+//!   2. `sub rsp, PRESERVED_FRAME_BYTES`, where the low `PRESERVED_IO_BYTES`
+//!      bytes are the helper I/O area and the upper `PRESERVED_FP_BYTES`
+//!      bytes save XMM2..XMM15.
+//!   3. Write IMM0/IMM1/ARG0..ARG2 slots into the I/O area.
 //!   4. `mov rdi, ctx ; mov rsi, op_code ; lea rdx, [rsp]`
 //!   5. `mov r11, preserved_entry ; call r11`
 //!   6. Stash status (RAX) into a scratch; optionally read RET0 into another
 //!      scratch.
-//!   7. `add rsp, PRESERVED_IO_BYTES`
-//!   8. Restore caller-clobbered GP dynamic regs.
+//!   7. Restore XMM2..XMM15 from the preserved frame.
+//!   8. `add rsp, PRESERVED_FRAME_BYTES`
+//!   9. Restore caller-clobbered GP dynamic regs.
 //!   9. `test status, status ; jne body_local_error_label`
-//!
-//! FP dynamic registers are not saved around these calls. The MachineIR
-//! pipeline is responsible for publishing cached state before helper calls.
 
 use crate::{
     error::WasmError,
     vm::{
+        arch::common::text_emitter::TextEmitter,
         machine::machine_ir::{MachineValue, MACHINE_CTX_REG},
         runtime::preserved::io as preserved_io,
     },
 };
 
 use super::{
-    abi::{map_fixed_reg, C_ARG0, C_ARG1, C_ARG2, C_RET0},
+    abi::{self, map_fixed_reg, C_ARG0, C_ARG1, C_ARG2, C_RET0},
     backend::X86_64Backend,
     enc::{self, Cc},
     reg::X86Reg,
 };
 
 const PRESERVED_IO_BYTES: u8 = (preserved_io::SLOT_COUNT * 8) as u8;
+const PRESERVED_FP_BYTES: u32 = (abi::FP_MACHINE_REG_COUNT as u32) * 16;
+const PRESERVED_FRAME_BYTES: u32 = PRESERVED_IO_BYTES as u32 + PRESERVED_FP_BYTES;
+
+/// MOVAPS [RSP+disp], XMMn.
+fn movaps_store_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
+    let reg = (xmm & 7) as u8;
+    if xmm >= 8 {
+        e.emit_u8(0x44);
+    }
+    e.emit_bytes(&[0x0F, 0x29]);
+    if disp == 0 {
+        e.emit_bytes(&[reg << 3 | 0x04, 0x24]);
+    } else if (-128..=127).contains(&disp) {
+        e.emit_bytes(&[0x40 | reg << 3 | 0x04, 0x24, disp as u8]);
+    } else {
+        e.emit_bytes(&[0x80 | reg << 3 | 0x04, 0x24]);
+        e.emit_bytes(&(disp as i32).to_le_bytes());
+    }
+}
+
+/// MOVAPS XMMn, [RSP+disp].
+fn movaps_load_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
+    let reg = (xmm & 7) as u8;
+    if xmm >= 8 {
+        e.emit_u8(0x44);
+    }
+    e.emit_bytes(&[0x0F, 0x28]);
+    if disp == 0 {
+        e.emit_bytes(&[reg << 3 | 0x04, 0x24]);
+    } else if (-128..=127).contains(&disp) {
+        e.emit_bytes(&[0x40 | reg << 3 | 0x04, 0x24, disp as u8]);
+    } else {
+        e.emit_bytes(&[0x80 | reg << 3 | 0x04, 0x24]);
+        e.emit_bytes(&(disp as i32).to_le_bytes());
+    }
+}
 
 impl<'a> X86_64Backend<'a> {
     pub(super) fn emit_preserved_io_open(&mut self) {
         self.save_caller_clobbered_gp_dynamic();
-        enc::sub_rsp_imm8(&mut self.core.text, PRESERVED_IO_BYTES);
+        enc::sub_rsp_imm32(&mut self.core.text, PRESERVED_FRAME_BYTES);
+        for index in 0..abi::FP_MACHINE_REG_COUNT {
+            let xmm = abi::fp_machine_reg(index).expect("x86_64 FP dynamic reg");
+            let disp = PRESERVED_IO_BYTES as i32 + (index as i32) * 16;
+            movaps_store_rsp(&mut self.core.text, xmm, disp);
+        }
     }
 
     pub(super) fn emit_io_store_imm(&mut self, slot: usize, value: u32) {
@@ -132,8 +174,14 @@ impl<'a> X86_64Backend<'a> {
             );
         }
 
-        // Tear down the I/O area before popping caller-clobbered regs.
-        enc::add_rsp_imm8(&mut self.core.text, PRESERVED_IO_BYTES);
+        for index in 0..abi::FP_MACHINE_REG_COUNT {
+            let xmm = abi::fp_machine_reg(index).expect("x86_64 FP dynamic reg");
+            let disp = PRESERVED_IO_BYTES as i32 + (index as i32) * 16;
+            movaps_load_rsp(&mut self.core.text, xmm, disp);
+        }
+
+        // Tear down the preserved frame before popping caller-clobbered regs.
+        enc::add_rsp_imm32(&mut self.core.text, PRESERVED_FRAME_BYTES);
 
         // Status lives in RAX and survives the dynamic restore because RAX is
         // backend-owned on x86_64, not part of the saved dynamic subset.

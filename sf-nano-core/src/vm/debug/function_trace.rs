@@ -193,7 +193,12 @@ mod imp {
     fn hash_memories(module: &ModuleInst) -> u64 {
         let mut hasher = Fnv64::default();
         for memory in &module.memories {
-            hasher.write(memory.data.as_slice());
+            let len = memory.memory_len();
+            if len == 0 {
+                continue;
+            }
+            let bytes = unsafe { core::slice::from_raw_parts(memory.memory_ptr(), len) };
+            hasher.write(bytes);
         }
         hasher.finish()
     }

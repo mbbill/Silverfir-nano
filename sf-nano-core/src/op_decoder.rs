@@ -83,6 +83,29 @@ pub enum Immediate {
         dstidx: u32,
         srcidx: u32,
     },
+    TypeIndex(u32),
+    StructFieldArgs {
+        typeidx: u32,
+        fieldidx: u32,
+    },
+    ArrayNewFixed {
+        typeidx: u32,
+        n: u32,
+    },
+    TwoTypeIndices {
+        type1: u32,
+        type2: u32,
+    },
+    TwoU32s {
+        value1: u32,
+        value2: u32,
+    },
+    BrOnCast {
+        flags: u8,
+        label_idx: u32,
+        rt1: ValueType,
+        rt2: ValueType,
+    },
 }
 
 #[macro_export]
@@ -148,6 +171,23 @@ impl fmt::Display for Immediate {
                 write!(f, "elemidx({}), tableidx({})", elemidx, tableidx)
             }
             TableCopyArgs { dstidx, srcidx } => write!(f, "dstidx({}), srcidx({})", dstidx, srcidx),
+            TypeIndex(typeidx) => write!(f, "typeidx({})", typeidx),
+            StructFieldArgs { typeidx, fieldidx } => {
+                write!(f, "typeidx({}), fieldidx({})", typeidx, fieldidx)
+            }
+            ArrayNewFixed { typeidx, n } => write!(f, "typeidx({}), n({})", typeidx, n),
+            TwoTypeIndices { type1, type2 } => write!(f, "type1({}), type2({})", type1, type2),
+            TwoU32s { value1, value2 } => write!(f, "value1({}), value2({})", value1, value2),
+            BrOnCast {
+                flags,
+                label_idx,
+                rt1,
+                rt2,
+            } => write!(
+                f,
+                "flags({}), labelidx({}), rt1({}), rt2({})",
+                flags, label_idx, rt1, rt2
+            ),
         }
     }
 }
@@ -218,7 +258,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
 
 impl<'a, 'b> Decoder<'a, 'b> {
     fn decode_one(&self) -> Result<bool, WasmError> {
-        use crate::opcodes::{Opcode::*, OpcodeFC::*, WasmOpcode::*};
+        use crate::opcodes::{Opcode::*, OpcodeFB::*, OpcodeFC::*, WasmOpcode::*};
 
         if self.end_reached.get() {
             return Ok(false);
@@ -321,12 +361,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 });
             }
             MEMORY_SIZE | MEMORY_GROW => {
-                // WASM 2.0: reserved byte must be exactly 0x00
-                let raw_byte = payload.peek_u8()?;
                 let memidx = payload.read_leb128_u32()?;
-                if raw_byte != 0x00 {
-                    return Err(WasmError::malformed("zero byte expected"));
-                }
                 let wasm_op = OP(op);
                 let imm = Immediate::MemoryIndex(memidx);
                 let next_off = payload.position();
@@ -411,6 +446,29 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     imm,
                 });
             }
+            REF_EQ | REF_AS_NON_NULL => {
+                let wasm_op = OP(op);
+                let imm = Immediate::None;
+                let next_off = payload.position();
+                self.decoded_ops.borrow_mut().push(DecodedOp {
+                    wasm_op,
+                    op_offset,
+                    next_op_offset: next_off,
+                    imm,
+                });
+            }
+            BR_ON_NULL | BR_ON_NON_NULL => {
+                let label = payload.read_leb128_u32()?;
+                let wasm_op = OP(op);
+                let imm = Immediate::LabelIndex(label);
+                let next_off = payload.position();
+                self.decoded_ops.borrow_mut().push(DecodedOp {
+                    wasm_op,
+                    op_offset,
+                    next_op_offset: next_off,
+                    imm,
+                });
+            }
             I32_CONST => {
                 let imm1 = payload.read_leb128_i32()?;
                 let wasm_op = OP(op);
@@ -472,7 +530,19 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     imm,
                 });
             }
-            RETURN_CALL | RETURN_CALL_INDIRECT => {
+            CALL_REF => {
+                let typeidx = payload.read_leb128_u32()?;
+                let wasm_op = OP(op);
+                let imm = Immediate::TypeIndex(typeidx);
+                let next_off = payload.position();
+                self.decoded_ops.borrow_mut().push(DecodedOp {
+                    wasm_op,
+                    op_offset,
+                    next_op_offset: next_off,
+                    imm,
+                });
+            }
+            RETURN_CALL | RETURN_CALL_INDIRECT | RETURN_CALL_REF => {
                 return Err(WasmError::invalid("Opcode not yet supported in decoder"));
             }
             SELECT_T => {
@@ -506,7 +576,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 if align >= 32 {
                     return Err(WasmError::malformed("malformed memop flags"));
                 }
-                let offset = payload.read_leb128_u32()? as u64;
+                let offset = payload.read_leb128_u64()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::MemArg {
                     align,
@@ -520,6 +590,137 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     next_op_offset: next_off,
                     imm,
                 });
+            }
+            PREFIX_FB => {
+                let op_ext: OpcodeFB = payload.read_leb128_u32()?.try_into()?;
+                match op_ext {
+                    STRUCT_NEW | STRUCT_NEW_DEFAULT | ARRAY_NEW | ARRAY_NEW_DEFAULT
+                    | ARRAY_FILL => {
+                        let typeidx = payload.read_leb128_u32()?;
+                        let wasm_op = FB(op_ext);
+                        let imm = Immediate::TypeIndex(typeidx);
+                        let next_off = payload.position();
+                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                            wasm_op,
+                            op_offset,
+                            next_op_offset: next_off,
+                            imm,
+                        });
+                    }
+                    STRUCT_GET | STRUCT_SET | STRUCT_GET_S | STRUCT_GET_U => {
+                        let typeidx = payload.read_leb128_u32()?;
+                        let fieldidx = payload.read_leb128_u32()?;
+                        let wasm_op = FB(op_ext);
+                        let imm = Immediate::StructFieldArgs { typeidx, fieldidx };
+                        let next_off = payload.position();
+                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                            wasm_op,
+                            op_offset,
+                            next_op_offset: next_off,
+                            imm,
+                        });
+                    }
+                    ARRAY_GET | ARRAY_SET | ARRAY_GET_S | ARRAY_GET_U => {
+                        let typeidx = payload.read_leb128_u32()?;
+                        let wasm_op = FB(op_ext);
+                        let imm = Immediate::TypeIndex(typeidx);
+                        let next_off = payload.position();
+                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                            wasm_op,
+                            op_offset,
+                            next_op_offset: next_off,
+                            imm,
+                        });
+                    }
+                    ARRAY_NEW_FIXED => {
+                        let typeidx = payload.read_leb128_u32()?;
+                        let n = payload.read_leb128_u32()?;
+                        let wasm_op = FB(op_ext);
+                        let imm = Immediate::ArrayNewFixed { typeidx, n };
+                        let next_off = payload.position();
+                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                            wasm_op,
+                            op_offset,
+                            next_op_offset: next_off,
+                            imm,
+                        });
+                    }
+                    ARRAY_LEN | REF_I31 | I31_GET_S | I31_GET_U | ANY_CONVERT_EXTERN
+                    | EXTERN_CONVERT_ANY => {
+                        let wasm_op = FB(op_ext);
+                        let imm = Immediate::None;
+                        let next_off = payload.position();
+                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                            wasm_op,
+                            op_offset,
+                            next_op_offset: next_off,
+                            imm,
+                        });
+                    }
+                    ARRAY_COPY => {
+                        let type1 = payload.read_leb128_u32()?;
+                        let type2 = payload.read_leb128_u32()?;
+                        let wasm_op = FB(op_ext);
+                        let imm = Immediate::TwoTypeIndices { type1, type2 };
+                        let next_off = payload.position();
+                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                            wasm_op,
+                            op_offset,
+                            next_op_offset: next_off,
+                            imm,
+                        });
+                    }
+                    ARRAY_INIT_DATA | ARRAY_INIT_ELEM | ARRAY_NEW_DATA | ARRAY_NEW_ELEM => {
+                        let value1 = payload.read_leb128_u32()?;
+                        let value2 = payload.read_leb128_u32()?;
+                        let wasm_op = FB(op_ext);
+                        let imm = Immediate::TwoU32s { value1, value2 };
+                        let next_off = payload.position();
+                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                            wasm_op,
+                            op_offset,
+                            next_op_offset: next_off,
+                            imm,
+                        });
+                    }
+                    REF_TEST | REF_TEST_NULL | REF_CAST | REF_CAST_NULL => {
+                        let heap_type = HeapType::parse(&mut payload)?;
+                        let nullable = matches!(op_ext, REF_TEST_NULL | REF_CAST_NULL);
+                        let ref_type = RefType::new(nullable, heap_type);
+                        let wasm_op = FB(op_ext);
+                        let imm = Immediate::RefType(ValueType::Ref(ref_type));
+                        let next_off = payload.position();
+                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                            wasm_op,
+                            op_offset,
+                            next_op_offset: next_off,
+                            imm,
+                        });
+                    }
+                    BR_ON_CAST | BR_ON_CAST_FAIL => {
+                        let flags = payload.read_u8()?;
+                        let label_idx = payload.read_leb128_u32()?;
+                        let rt1 = ValueType::parse(&mut payload)?;
+                        let rt2 = ValueType::parse(&mut payload)?;
+                        if !rt1.is_ref() || !rt2.is_ref() {
+                            return Err(WasmError::invalid("br_on_cast requires reference types"));
+                        }
+                        let wasm_op = FB(op_ext);
+                        let imm = Immediate::BrOnCast {
+                            flags,
+                            label_idx,
+                            rt1,
+                            rt2,
+                        };
+                        let next_off = payload.position();
+                        self.decoded_ops.borrow_mut().push(DecodedOp {
+                            wasm_op,
+                            op_offset,
+                            next_op_offset: next_off,
+                            imm,
+                        });
+                    }
+                }
             }
             PREFIX_FC => {
                 let op_ext: OpcodeFC = payload.read_leb128_u32()?.try_into()?;

@@ -113,8 +113,8 @@ impl<'a> X86_64Backend<'a> {
                 let trap_label = self.core.ensure_trap_label(*kind);
                 self.lower_branch_if(cond, trap_label)
             }
-            MachineInstKind::CallExternal(call) => {
-                self.lower_call_external(call.metadata.0 as usize)
+            MachineInstKind::CallRuntime(call) => {
+                self.lower_call_runtime(call.metadata.0 as usize)
             }
             MachineInstKind::FloatUnary {
                 width,
@@ -208,6 +208,187 @@ impl<'a> X86_64Backend<'a> {
                 self.lower_table_init(*table_idx, *elem_idx, *dest, *src, *len)
             }
             MachineInstKind::ElemDrop { elem_idx } => self.lower_elem_drop(*elem_idx),
+            MachineInstKind::RefFunc { func_idx, dst } => self.lower_preserved_result(
+                crate::vm::runtime::preserved::op::REF_FUNC,
+                *func_idx,
+                0,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::RefAsNonNull { src, dst } => self.lower_preserved_result(
+                crate::vm::runtime::preserved::op::REF_AS_NON_NULL,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::RefEq { lhs, rhs, dst } => self.lower_preserved_result(
+                crate::vm::runtime::preserved::op::REF_EQ,
+                0,
+                0,
+                *lhs,
+                *rhs,
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::RefI31 { src, dst } => self.lower_preserved_result(
+                crate::vm::runtime::preserved::op::REF_I31,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::I31GetS { src, dst } => self.lower_preserved_result(
+                crate::vm::runtime::preserved::op::I31_GET_S,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::I31GetU { src, dst } => self.lower_preserved_result(
+                crate::vm::runtime::preserved::op::I31_GET_U,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::AnyConvertExtern { src, dst } => self.lower_preserved_result(
+                crate::vm::runtime::preserved::op::ANY_CONVERT_EXTERN,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::ExternConvertAny { src, dst } => self.lower_preserved_result(
+                crate::vm::runtime::preserved::op::EXTERN_CONVERT_ANY,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::RefTest { ref_type, src, dst } => {
+                let encoded = ref_type.encode_to_u64();
+                self.lower_preserved_result(
+                    crate::vm::runtime::preserved::op::REF_TEST,
+                    encoded as u32,
+                    (encoded >> 32) as u32,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )
+            }
+            MachineInstKind::RefCast { ref_type, src, dst } => {
+                let encoded = ref_type.encode_to_u64();
+                self.lower_preserved_result(
+                    crate::vm::runtime::preserved::op::REF_CAST,
+                    encoded as u32,
+                    (encoded >> 32) as u32,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )
+            }
+            MachineInstKind::StructNewDefault { type_idx, dst } => self.lower_preserved_result(
+                crate::vm::runtime::preserved::op::STRUCT_NEW_DEFAULT,
+                *type_idx,
+                0,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::StructGet {
+                type_idx,
+                field_idx,
+                signed,
+                ty,
+                src,
+                dst,
+                dst_hi,
+            } => {
+                if dst_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "x86_64 backend received pair-valued struct.get".into(),
+                    ));
+                }
+                let op_code = match signed {
+                    None => crate::vm::runtime::preserved::op::STRUCT_GET,
+                    Some(true) => crate::vm::runtime::preserved::op::STRUCT_GET_S,
+                    Some(false) => crate::vm::runtime::preserved::op::STRUCT_GET_U,
+                };
+                self.lower_preserved_result(
+                    op_code,
+                    *type_idx,
+                    *field_idx,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    *ty,
+                    *dst,
+                )
+            }
+            MachineInstKind::StructSet {
+                type_idx,
+                field_idx,
+                ref_src,
+                value_lo,
+                value_hi,
+            } => {
+                if value_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "x86_64 backend received pair-valued struct.set".into(),
+                    ));
+                }
+                self.lower_preserved_no_result(
+                    crate::vm::runtime::preserved::op::STRUCT_SET,
+                    *type_idx,
+                    *field_idx,
+                    *ref_src,
+                    *value_lo,
+                    MachineValue::Imm64(0),
+                )
+            }
+            MachineInstKind::ArrayNewDefault {
+                type_idx,
+                length,
+                dst,
+            } => self.lower_preserved_result(
+                crate::vm::runtime::preserved::op::ARRAY_NEW_DEFAULT,
+                *type_idx,
+                0,
+                *length,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
         }
     }
     // ── Move / const ────────────────────────────────────────────────────────
@@ -2020,10 +2201,10 @@ impl<'a> X86_64Backend<'a> {
 
     // ── Helper calls ──────────────────────────────────────────────────────────
 
-    pub(super) fn lower_call_external(&mut self, const_idx: usize) -> Result<(), WasmError> {
+    pub(super) fn lower_call_runtime(&mut self, const_idx: usize) -> Result<(), WasmError> {
         // Delegated to the control-flow module, which owns the matching
         // body_local_error_label propagation path.
-        self.lower_call_external_term(const_idx)
+        self.lower_call_runtime_term(const_idx)
     }
 
     // ── Float conversion helpers ────────────────────────────────────────────
@@ -2223,6 +2404,65 @@ impl<'a> X86_64Backend<'a> {
         self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
         self.emit_io_store_u32_value(preserved_io::ARG0, delta)?;
         self.emit_preserved_call_and_close(op::MEMORY_GROW, Some(dst_gp));
+        Ok(())
+    }
+
+    fn lower_preserved_no_result(
+        &mut self,
+        op_code: u32,
+        imm0: u32,
+        imm1: u32,
+        arg0: MachineValue,
+        arg1: MachineValue,
+        arg2: MachineValue,
+    ) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::io as preserved_io;
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, imm0);
+        self.emit_io_store_imm(preserved_io::IMM1, imm1);
+        self.emit_io_store_value(preserved_io::ARG0, arg0)?;
+        self.emit_io_store_value(preserved_io::ARG1, arg1)?;
+        self.emit_io_store_value(preserved_io::ARG2, arg2)?;
+        self.emit_preserved_call_and_close(op_code, None);
+        Ok(())
+    }
+
+    fn lower_preserved_result(
+        &mut self,
+        op_code: u32,
+        imm0: u32,
+        imm1: u32,
+        arg0: MachineValue,
+        arg1: MachineValue,
+        arg2: MachineValue,
+        ty: MachineStorageType,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::io as preserved_io;
+
+        self.emit_preserved_io_open();
+        self.emit_io_store_imm(preserved_io::IMM0, imm0);
+        self.emit_io_store_imm(preserved_io::IMM1, imm1);
+        self.emit_io_store_value(preserved_io::ARG0, arg0)?;
+        self.emit_io_store_value(preserved_io::ARG1, arg1)?;
+        self.emit_io_store_value(preserved_io::ARG2, arg2)?;
+
+        if let Some(width) = ty.float_width() {
+            self.emit_preserved_call_and_close(op_code, Some(X86Reg::RCX));
+            let dst_fp = self.map_fp_reg(dst)? as u8;
+            match width {
+                MachineFloatWidth::F32 => {
+                    enc::movd_xmm_r32(&mut self.core.text, dst_fp, X86Reg::RCX)
+                }
+                MachineFloatWidth::F64 => {
+                    enc::movq_xmm_r64(&mut self.core.text, dst_fp, X86Reg::RCX)
+                }
+            }
+            self.core.set_fp_reg_width(dst, width)?;
+        } else {
+            let dst_gp = self.map_gp_reg(dst)?;
+            self.emit_preserved_call_and_close(op_code, Some(dst_gp));
+        }
         Ok(())
     }
 

@@ -555,7 +555,9 @@ fn compute_block_call_counts(
                 .filter(|&semantic_index| {
                     matches!(
                         semantic.ops[semantic_index].kind,
-                        SemanticOpKind::CallDirect { .. } | SemanticOpKind::CallIndirect { .. }
+                        SemanticOpKind::CallDirect { .. }
+                            | SemanticOpKind::CallIndirect { .. }
+                            | SemanticOpKind::CallRef { .. }
                     )
                 })
                 .count() as u32

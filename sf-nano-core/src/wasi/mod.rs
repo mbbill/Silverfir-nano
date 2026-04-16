@@ -1,7 +1,7 @@
 //! WASI preview1 support for sf-nano-core.
 //!
 //! Gated behind `#[cfg(sf_wasi_host)]`. Uses a thread-local `WasiCtx`
-//! so that plain `fn`-pointer `ExternalFn` callbacks can access WASI state
+//! so that plain `fn`-pointer `HostFn` callbacks can access WASI state
 //! without closures.
 
 use crate::collections;
@@ -155,7 +155,7 @@ impl Default for WasiContextBuilder {
 }
 
 // ---------------------------------------------------------------------------
-// Thread-local WasiCtx for fn-pointer ExternalFn callbacks
+// Thread-local WasiCtx for fn-pointer HostFn callbacks
 // ---------------------------------------------------------------------------
 
 use std::cell::RefCell;

@@ -20,7 +20,7 @@ pub mod wasi;
 // Public re-exports for ergonomic API
 pub use error::WasmError;
 pub use module::type_defs::FunctionType;
-pub use utils::limits::Limitable;
+pub use utils::limits::{Limitable, Limits};
 pub use vm::backend::{active_backend, backend_mode, set_backend_mode, BackendKind, BackendMode};
 #[cfg(sf_jit)]
 pub use vm::build::{
@@ -28,14 +28,17 @@ pub use vm::build::{
     native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
     NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
 };
-pub use vm::entities::{Caller, ExternalFn, FunctionInst};
-pub use vm::instance::{Import, ImportValue, Instance};
+pub use vm::entities::{Caller, FunctionInst, HostFn};
+pub use vm::instance::{
+    Import, ImportValue, ImportedTableState, Instance, InstanceInstantiationError,
+};
 #[cfg(sf_has_guard_pages)]
 use vm::runtime::trap_signal;
 pub use vm::runtime::{
     active_runtime_engine, set_reference_backend, set_reference_backend_mode, ReferenceBackendMode,
     RuntimeEngine,
 };
+pub use vm::store::LinkRegistry;
 pub use vm::value::{RefHandle, Value};
 
 /// Reset process-global native runtime state that does not track module

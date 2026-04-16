@@ -2,7 +2,7 @@ use crate::collections;
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-    MachineCallExternal, MachineCompareKind, MachineConstId, MachineEdge, MachineFloatBinaryOp,
+    MachineCallRuntime, MachineCompareKind, MachineConstId, MachineEdge, MachineFloatBinaryOp,
     MachineFloatWidth, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
     MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
     MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator, MachineValue,
@@ -1347,7 +1347,7 @@ fn preserves_linear_value_move_live_across_helper_barrier() {
                     },
                 },
                 MachineInst {
-                    kind: MachineInstKind::CallExternal(MachineCallExternal {
+                    kind: MachineInstKind::CallRuntime(MachineCallRuntime {
                         metadata: MachineConstId(0),
                     },),
                 },
@@ -1376,10 +1376,7 @@ fn preserves_linear_value_move_live_across_helper_barrier() {
             ..
         }
     ));
-    assert!(matches!(
-        block.ops[1].kind,
-        MachineInstKind::CallExternal(_)
-    ));
+    assert!(matches!(block.ops[1].kind, MachineInstKind::CallRuntime(_)));
     assert!(matches!(
         block.ops[2].kind,
         MachineInstKind::IntUnary {

@@ -1,10 +1,13 @@
 //! WAST test runner adapted for sf-nano (single-module WebAssembly 2.0 interpreter)
 
 use log::debug;
-use sf_nano_core::module::entities::FunctionDef;
+use sf_nano_core::module::entities::{FunctionDef, GlobalDef};
+use sf_nano_core::module::type_context::TypeContext;
 use sf_nano_core::module::Module;
-use sf_nano_core::value_type::{AbstractHeapType, RefType};
-use sf_nano_core::{Caller, ExternalFn, Import, Instance, Limitable, RefHandle, Value, WasmError};
+use sf_nano_core::value_type::{AbstractHeapType, HeapType, RefType};
+use sf_nano_core::{
+    Caller, HostFn, Import, Instance, Limitable, LinkRegistry, RefHandle, Value, WasmError,
+};
 use std::{cell::RefCell, collections::HashMap, fmt, fs, path::Path};
 use wast::{
     core::{WastArgCore, WastRetCore},
@@ -99,10 +102,15 @@ pub enum WastValue {
     I64(i64),
     F32(f32),
     F64(f64),
+    NullRef(RefType),
     FuncRef(Option<u32>),
     ExternRef(Option<u32>),
     AnyFuncRef,
     AnyExternRef,
+    AnyI31Ref(RefType),
+    AnyStructRef(RefType),
+    AnyArrayRef(RefType),
+    Ref(Option<u32>, RefType),
 }
 
 impl From<WastValue> for Value {
@@ -112,6 +120,7 @@ impl From<WastValue> for Value {
             WastValue::I64(v) => Value::I64(v),
             WastValue::F32(v) => Value::F32(v),
             WastValue::F64(v) => Value::F64(v),
+            WastValue::NullRef(ref_type) => Value::Ref(RefHandle::null(), ref_type),
             WastValue::FuncRef(Some(idx)) => {
                 Value::Ref(RefHandle::new(idx as usize), RefType::funcref())
             }
@@ -127,7 +136,47 @@ impl From<WastValue> for Value {
             WastValue::AnyExternRef => {
                 panic!("AnyExternRef should not be converted to Value")
             }
+            WastValue::AnyI31Ref(_) => {
+                panic!("AnyI31Ref should not be converted to Value")
+            }
+            WastValue::AnyStructRef(_) => {
+                panic!("AnyStructRef should not be converted to Value")
+            }
+            WastValue::AnyArrayRef(_) => {
+                panic!("AnyArrayRef should not be converted to Value")
+            }
+            WastValue::Ref(Some(idx), ref_type) => {
+                let handle = match ref_type.heap_type {
+                    HeapType::Abstract(AbstractHeapType::Any)
+                    | HeapType::Abstract(AbstractHeapType::Eq) => RefHandle::hostref(idx as usize),
+                    HeapType::Abstract(AbstractHeapType::Extern) => {
+                        RefHandle::externref(idx as usize)
+                    }
+                    _ => RefHandle::new(idx as usize),
+                };
+                Value::Ref(handle, ref_type)
+            }
+            WastValue::Ref(None, ref_type) => Value::Ref(RefHandle::null(), ref_type),
         }
+    }
+}
+
+fn convert_abstract_null_ref(ty: wast::core::AbstractHeapType) -> WastValue {
+    use wast::core::AbstractHeapType as AHT;
+    match ty {
+        AHT::Func => WastValue::FuncRef(None),
+        AHT::Extern => WastValue::ExternRef(None),
+        AHT::NoFunc => WastValue::NullRef(RefType::nullfuncref()),
+        AHT::NoExtern => WastValue::NullRef(RefType::nullexternref()),
+        AHT::NoExn => WastValue::NullRef(RefType::nullexnref()),
+        AHT::Any => WastValue::NullRef(RefType::anyref()),
+        AHT::Eq => WastValue::NullRef(RefType::eqref()),
+        AHT::I31 => WastValue::NullRef(RefType::i31ref()),
+        AHT::Struct => WastValue::NullRef(RefType::structref()),
+        AHT::Array => WastValue::NullRef(RefType::arrayref()),
+        AHT::Exn => WastValue::NullRef(RefType::exnref()),
+        AHT::None => WastValue::NullRef(RefType::nullref()),
+        _ => WastValue::FuncRef(None),
     }
 }
 
@@ -159,26 +208,19 @@ fn noop_print_f64_f64(_: &mut Caller, _: &[Value], _: &mut [Value]) -> Result<()
 
 fn spectest_imports() -> Vec<Import> {
     vec![
-        Import::func("spectest", "print", noop_print as ExternalFn),
-        Import::func("spectest", "print_i32", noop_print_i32 as ExternalFn),
-        Import::func("spectest", "print_i64", noop_print_i64 as ExternalFn),
-        Import::func("spectest", "print_f32", noop_print_f32 as ExternalFn),
-        Import::func("spectest", "print_f64", noop_print_f64 as ExternalFn),
-        Import::func(
-            "spectest",
-            "print_i32_f32",
-            noop_print_i32_f32 as ExternalFn,
-        ),
-        Import::func(
-            "spectest",
-            "print_f64_f64",
-            noop_print_f64_f64 as ExternalFn,
-        ),
+        Import::func("spectest", "print", noop_print as HostFn),
+        Import::func("spectest", "print_i32", noop_print_i32 as HostFn),
+        Import::func("spectest", "print_i64", noop_print_i64 as HostFn),
+        Import::func("spectest", "print_f32", noop_print_f32 as HostFn),
+        Import::func("spectest", "print_f64", noop_print_f64 as HostFn),
+        Import::func("spectest", "print_i32_f32", noop_print_i32_f32 as HostFn),
+        Import::func("spectest", "print_f64_f64", noop_print_f64_f64 as HostFn),
         Import::global("spectest", "global_i32", Value::I32(666), false),
         Import::global("spectest", "global_i64", Value::I64(666), false),
         Import::global("spectest", "global_f32", Value::F32(666.6_f32), false),
         Import::global("spectest", "global_f64", Value::F64(666.6_f64), false),
         Import::table("spectest", "table", 10, Some(20)),
+        Import::table64("spectest", "table64", 10, Some(20)),
         Import::memory("spectest", "memory", 1, Some(2)),
     ]
 }
@@ -187,16 +229,20 @@ fn spectest_imports() -> Vec<Import> {
 // Cross-module function forwarding (spectest-only, lives in std code)
 // ---------------------------------------------------------------------------
 //
-// ExternalFn is a plain fn pointer — no closures. To forward calls to
+// HostFn is a plain fn pointer — no closures. To forward calls to
 // registered module exports, we use a thread-local slot table:
 //   1. Before instantiation, allocate a slot per cross-module function import.
 //   2. Each slot stores (instance_name, export_name).
 //   3. Macro-generated fn pointers (fwd_00..fwd_31) each call forward_call(N).
 //   4. forward_call reads the slot, finds the instance, and invokes the export.
 
+enum ForwardingTarget {
+    FunctionIndex(usize),
+}
+
 struct ForwardingSlot {
     instance_name: String,
-    export_name: String,
+    target: ForwardingTarget,
 }
 
 thread_local! {
@@ -214,21 +260,82 @@ fn register_forwarding_instances(
     FORWARDING_INSTANCES.with(|cell| {
         let mut map = cell.borrow_mut();
         map.clear();
+        for (internal_name, inst) in instances.iter_mut() {
+            map.insert(internal_name.clone(), inst as *mut Instance);
+        }
         for (reg_name, internal_name) in registered_as {
-            if let Some(inst) = instances.get_mut(internal_name) {
-                map.insert(reg_name.clone(), inst as *mut Instance);
+            if let Some(inst_ptr) = map.get(internal_name).copied() {
+                map.insert(reg_name.clone(), inst_ptr);
             }
         }
     });
 }
 
-fn alloc_forwarding_slot(instance_name: &str, export_name: &str) -> usize {
+fn find_exported_global_index(module: &Module, export_name: &str) -> Option<usize> {
+    module
+        .globals()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, global)| {
+            global
+                .export_names()
+                .iter()
+                .any(|name| name == export_name)
+                .then_some(idx)
+        })
+}
+
+fn find_exported_function_index(module: &Module, export_name: &str) -> Option<usize> {
+    module
+        .functions()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, func)| {
+            func.export_names()
+                .iter()
+                .any(|name| name == export_name)
+                .then_some(idx)
+        })
+}
+
+fn find_exported_table_index(module: &Module, export_name: &str) -> Option<usize> {
+    module.tables().iter().enumerate().find_map(|(idx, table)| {
+        table
+            .export_names()
+            .iter()
+            .any(|name| name == export_name)
+            .then_some(idx)
+    })
+}
+
+fn find_exported_memory_index(module: &Module, export_name: &str) -> Option<usize> {
+    module
+        .memories()
+        .iter()
+        .enumerate()
+        .find_map(|(idx, memory)| {
+            memory
+                .export_names()
+                .iter()
+                .any(|name| name == export_name)
+                .then_some(idx)
+        })
+}
+
+fn alloc_forwarding_function_slot(instance_name: &str, function_index: usize) -> usize {
+    alloc_forwarding_slot_target(
+        instance_name,
+        ForwardingTarget::FunctionIndex(function_index),
+    )
+}
+
+fn alloc_forwarding_slot_target(instance_name: &str, target: ForwardingTarget) -> usize {
     FORWARDING_SLOTS.with(|cell| {
         let mut slots = cell.borrow_mut();
         let idx = slots.len();
         slots.push(Some(ForwardingSlot {
             instance_name: instance_name.to_string(),
-            export_name: export_name.to_string(),
+            target,
         }));
         idx
     })
@@ -245,10 +352,15 @@ fn forward_call(
     args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    let (inst_name, export_name) = FORWARDING_SLOTS.with(|cell| {
+    let (inst_name, target) = FORWARDING_SLOTS.with(|cell| {
         let slots = cell.borrow();
         match slots.get(slot).and_then(|s| s.as_ref()) {
-            Some(s) => Ok((s.instance_name.clone(), s.export_name.clone())),
+            Some(s) => Ok((
+                s.instance_name.clone(),
+                match &s.target {
+                    ForwardingTarget::FunctionIndex(idx) => ForwardingTarget::FunctionIndex(*idx),
+                },
+            )),
             None => Err(WasmError::internal("forwarding slot empty")),
         }
     })?;
@@ -258,7 +370,11 @@ fn forward_call(
             Some(&inst_ptr) => {
                 // Safety: single-threaded spectest, instance outlives the call
                 let inst = unsafe { &mut *inst_ptr };
-                let ret = inst.invoke(&export_name, args)?;
+                let ret = match target {
+                    ForwardingTarget::FunctionIndex(function_index) => {
+                        inst.invoke_function_index(function_index, args)?
+                    }
+                };
                 for (i, v) in ret.iter().enumerate() {
                     if i < results.len() {
                         results[i] = *v;
@@ -315,11 +431,116 @@ make_forwarder!(fwd_28, 28);
 make_forwarder!(fwd_29, 29);
 make_forwarder!(fwd_30, 30);
 make_forwarder!(fwd_31, 31);
+make_forwarder!(fwd_32, 32);
+make_forwarder!(fwd_33, 33);
+make_forwarder!(fwd_34, 34);
+make_forwarder!(fwd_35, 35);
+make_forwarder!(fwd_36, 36);
+make_forwarder!(fwd_37, 37);
+make_forwarder!(fwd_38, 38);
+make_forwarder!(fwd_39, 39);
+make_forwarder!(fwd_40, 40);
+make_forwarder!(fwd_41, 41);
+make_forwarder!(fwd_42, 42);
+make_forwarder!(fwd_43, 43);
+make_forwarder!(fwd_44, 44);
+make_forwarder!(fwd_45, 45);
+make_forwarder!(fwd_46, 46);
+make_forwarder!(fwd_47, 47);
+make_forwarder!(fwd_48, 48);
+make_forwarder!(fwd_49, 49);
+make_forwarder!(fwd_50, 50);
+make_forwarder!(fwd_51, 51);
+make_forwarder!(fwd_52, 52);
+make_forwarder!(fwd_53, 53);
+make_forwarder!(fwd_54, 54);
+make_forwarder!(fwd_55, 55);
+make_forwarder!(fwd_56, 56);
+make_forwarder!(fwd_57, 57);
+make_forwarder!(fwd_58, 58);
+make_forwarder!(fwd_59, 59);
+make_forwarder!(fwd_60, 60);
+make_forwarder!(fwd_61, 61);
+make_forwarder!(fwd_62, 62);
+make_forwarder!(fwd_63, 63);
+make_forwarder!(fwd_64, 64);
+make_forwarder!(fwd_65, 65);
+make_forwarder!(fwd_66, 66);
+make_forwarder!(fwd_67, 67);
+make_forwarder!(fwd_68, 68);
+make_forwarder!(fwd_69, 69);
+make_forwarder!(fwd_70, 70);
+make_forwarder!(fwd_71, 71);
+make_forwarder!(fwd_72, 72);
+make_forwarder!(fwd_73, 73);
+make_forwarder!(fwd_74, 74);
+make_forwarder!(fwd_75, 75);
+make_forwarder!(fwd_76, 76);
+make_forwarder!(fwd_77, 77);
+make_forwarder!(fwd_78, 78);
+make_forwarder!(fwd_79, 79);
+make_forwarder!(fwd_80, 80);
+make_forwarder!(fwd_81, 81);
+make_forwarder!(fwd_82, 82);
+make_forwarder!(fwd_83, 83);
+make_forwarder!(fwd_84, 84);
+make_forwarder!(fwd_85, 85);
+make_forwarder!(fwd_86, 86);
+make_forwarder!(fwd_87, 87);
+make_forwarder!(fwd_88, 88);
+make_forwarder!(fwd_89, 89);
+make_forwarder!(fwd_90, 90);
+make_forwarder!(fwd_91, 91);
+make_forwarder!(fwd_92, 92);
+make_forwarder!(fwd_93, 93);
+make_forwarder!(fwd_94, 94);
+make_forwarder!(fwd_95, 95);
+make_forwarder!(fwd_96, 96);
+make_forwarder!(fwd_97, 97);
+make_forwarder!(fwd_98, 98);
+make_forwarder!(fwd_99, 99);
+make_forwarder!(fwd_100, 100);
+make_forwarder!(fwd_101, 101);
+make_forwarder!(fwd_102, 102);
+make_forwarder!(fwd_103, 103);
+make_forwarder!(fwd_104, 104);
+make_forwarder!(fwd_105, 105);
+make_forwarder!(fwd_106, 106);
+make_forwarder!(fwd_107, 107);
+make_forwarder!(fwd_108, 108);
+make_forwarder!(fwd_109, 109);
+make_forwarder!(fwd_110, 110);
+make_forwarder!(fwd_111, 111);
+make_forwarder!(fwd_112, 112);
+make_forwarder!(fwd_113, 113);
+make_forwarder!(fwd_114, 114);
+make_forwarder!(fwd_115, 115);
+make_forwarder!(fwd_116, 116);
+make_forwarder!(fwd_117, 117);
+make_forwarder!(fwd_118, 118);
+make_forwarder!(fwd_119, 119);
+make_forwarder!(fwd_120, 120);
+make_forwarder!(fwd_121, 121);
+make_forwarder!(fwd_122, 122);
+make_forwarder!(fwd_123, 123);
+make_forwarder!(fwd_124, 124);
+make_forwarder!(fwd_125, 125);
+make_forwarder!(fwd_126, 126);
+make_forwarder!(fwd_127, 127);
 
-const FORWARDER_TABLE: [ExternalFn; 32] = [
+const FORWARDER_TABLE: [HostFn; 128] = [
     fwd_00, fwd_01, fwd_02, fwd_03, fwd_04, fwd_05, fwd_06, fwd_07, fwd_08, fwd_09, fwd_10, fwd_11,
     fwd_12, fwd_13, fwd_14, fwd_15, fwd_16, fwd_17, fwd_18, fwd_19, fwd_20, fwd_21, fwd_22, fwd_23,
-    fwd_24, fwd_25, fwd_26, fwd_27, fwd_28, fwd_29, fwd_30, fwd_31,
+    fwd_24, fwd_25, fwd_26, fwd_27, fwd_28, fwd_29, fwd_30, fwd_31, fwd_32, fwd_33, fwd_34, fwd_35,
+    fwd_36, fwd_37, fwd_38, fwd_39, fwd_40, fwd_41, fwd_42, fwd_43, fwd_44, fwd_45, fwd_46, fwd_47,
+    fwd_48, fwd_49, fwd_50, fwd_51, fwd_52, fwd_53, fwd_54, fwd_55, fwd_56, fwd_57, fwd_58, fwd_59,
+    fwd_60, fwd_61, fwd_62, fwd_63, fwd_64, fwd_65, fwd_66, fwd_67, fwd_68, fwd_69, fwd_70, fwd_71,
+    fwd_72, fwd_73, fwd_74, fwd_75, fwd_76, fwd_77, fwd_78, fwd_79, fwd_80, fwd_81, fwd_82, fwd_83,
+    fwd_84, fwd_85, fwd_86, fwd_87, fwd_88, fwd_89, fwd_90, fwd_91, fwd_92, fwd_93, fwd_94, fwd_95,
+    fwd_96, fwd_97, fwd_98, fwd_99, fwd_100, fwd_101, fwd_102, fwd_103, fwd_104, fwd_105, fwd_106,
+    fwd_107, fwd_108, fwd_109, fwd_110, fwd_111, fwd_112, fwd_113, fwd_114, fwd_115, fwd_116,
+    fwd_117, fwd_118, fwd_119, fwd_120, fwd_121, fwd_122, fwd_123, fwd_124, fwd_125, fwd_126,
+    fwd_127,
 ];
 
 // ---------------------------------------------------------------------------
@@ -333,10 +554,14 @@ pub struct WastTestRunner {
     named_modules: HashMap<String, String>,
     registered_as: HashMap<String, String>,
     module_definitions: HashMap<String, Vec<u8>>,
+    linked_function_refs: HashMap<(String, String, usize), usize>,
+    function_registry: LinkRegistry,
+    retained_failed_instances: Vec<Instance>,
 }
 
 impl WastTestRunner {
     pub fn new() -> Self {
+        clear_forwarding();
         WastTestRunner {
             instances: HashMap::new(),
             module_bytes: HashMap::new(),
@@ -344,6 +569,9 @@ impl WastTestRunner {
             named_modules: HashMap::new(),
             registered_as: HashMap::new(),
             module_definitions: HashMap::new(),
+            linked_function_refs: HashMap::new(),
+            function_registry: LinkRegistry::new(),
+            retained_failed_instances: Vec::new(),
         }
     }
 
@@ -496,6 +724,7 @@ impl WastTestRunner {
     fn execute_wast_invoke(&mut self, invoke: &WastInvoke) -> Result<Vec<Value>, TestError> {
         // Refresh forwarding pointers (HashMap may have been modified since last registration)
         register_forwarding_instances(&mut self.instances, &self.registered_as);
+        self.sync_registered_imports_from_sources();
 
         let internal_name = self
             .resolve_module_name(invoke.module.as_ref())
@@ -507,19 +736,24 @@ impl WastTestRunner {
             .map(|arg| arg.into())
             .collect();
 
-        let instance = self.instances.get_mut(&internal_name).ok_or_else(|| {
-            TestError::infrastructure(format!("Instance '{}' not found", internal_name))
-        })?;
+        let result = {
+            let instance = self.instances.get_mut(&internal_name).ok_or_else(|| {
+                TestError::infrastructure(format!("Instance '{}' not found", internal_name))
+            })?;
+            instance
+                .invoke(invoke.name, &args)
+                .map(|v| v.into_iter().collect())
+        };
 
-        instance
-            .invoke(invoke.name, &args)
-            .map(|v| v.into_iter().collect())
-            .map_err(|e| {
-                TestError::runtime(
-                    format!("successful invocation of function '{}'", invoke.name),
-                    e,
-                )
-            })
+        self.sync_registered_imports_back_to_sources(&internal_name);
+        self.sync_registered_imports_from_sources();
+
+        result.map_err(|e| {
+            TestError::runtime(
+                format!("successful invocation of function '{}'", invoke.name),
+                e,
+            )
+        })
     }
 
     // -----------------------------------------------------------------------
@@ -788,6 +1022,7 @@ impl WastTestRunner {
         match exec {
             WastExecute::Invoke(invoke) => self.execute_wast_invoke(invoke),
             WastExecute::Get { module, global, .. } => {
+                self.sync_registered_imports_from_sources();
                 let internal_name = self
                     .resolve_module_name(module.as_ref())
                     .map_err(TestError::infrastructure)?;
@@ -806,8 +1041,7 @@ impl WastTestRunner {
                 wast::Wat::Module(module) => match module.encode() {
                     Ok(wasm_bytes) => {
                         register_forwarding_instances(&mut self.instances, &self.registered_as);
-                        let imports = self.build_imports(&wasm_bytes);
-                        match Instance::new(&wasm_bytes, &imports) {
+                        match self.instantiate_with_registry(&wasm_bytes, true) {
                             Ok(_instance) => Ok(vec![]),
                             Err(e) => Err(TestError::runtime(
                                 "successful module instantiation".to_string(),
@@ -880,8 +1114,7 @@ impl WastTestRunner {
         self.module_counter += 1;
 
         register_forwarding_instances(&mut self.instances, &self.registered_as);
-        let imports = self.build_imports(&compiled.wasm_bytes);
-        let instance = Instance::new(&compiled.wasm_bytes, &imports)?;
+        let instance = self.instantiate_with_registry(&compiled.wasm_bytes, false)?;
 
         self.instances.insert(internal_name.clone(), instance);
         self.module_bytes
@@ -891,14 +1124,37 @@ impl WastTestRunner {
             self.named_modules.insert(name, internal_name.clone());
         }
 
+        self.sync_registered_imports_back_to_sources(&internal_name);
+        self.sync_registered_imports_from_sources();
+
         Ok(internal_name)
     }
 
     /// Try to instantiate a module temporarily (for assert_invalid/assert_unlinkable).
     fn try_instantiate_temp(&mut self, wasm_bytes: &[u8]) -> Result<Instance, WasmError> {
         register_forwarding_instances(&mut self.instances, &self.registered_as);
+        self.instantiate_with_registry(wasm_bytes, true)
+    }
+
+    fn instantiate_with_registry(
+        &mut self,
+        wasm_bytes: &[u8],
+        retain_partial: bool,
+    ) -> Result<Instance, WasmError> {
         let imports = self.build_imports(wasm_bytes);
-        Instance::new(wasm_bytes, &imports)
+        let module = Module::new("main", wasm_bytes)?;
+        match Instance::from_module_with_registry(module, &imports, &self.function_registry) {
+            Ok(instance) => Ok(instance),
+            Err(err) => {
+                let (partial, error) = err.into_parts();
+                if retain_partial {
+                    if let Some(instance) = partial {
+                        self.retained_failed_instances.push(instance);
+                    }
+                }
+                Err(error)
+            }
+        }
     }
 
     /// Build imports for a module by providing spectest imports plus exports
@@ -906,7 +1162,6 @@ impl WastTestRunner {
     /// via thread-local slot table.
     fn build_imports(&self, wasm_bytes: &[u8]) -> Vec<Import> {
         let mut imports = spectest_imports();
-        clear_forwarding();
 
         // For each registered module, provide its exports as imports.
         for (registered_name, internal_name) in &self.registered_as {
@@ -917,43 +1172,47 @@ impl WastTestRunner {
                         for global in module.globals() {
                             for export_name in global.export_names() {
                                 if let Some(value) = instance.get_global(export_name) {
-                                    imports.push(Import::global(
+                                    imports.push(Import::global_with_linked_function(
                                         registered_name,
                                         export_name,
                                         value,
                                         global.mutable(),
+                                        None,
                                     ));
                                 }
                             }
                         }
 
-                        // Function exports — use forwarding fn pointers
+                        // Function exports — use shared linked handles
                         for func in module.functions() {
                             for export_name in func.export_names() {
                                 let ft = func.func_type().clone();
-                                let slot = alloc_forwarding_slot(registered_name, export_name);
-                                if slot < FORWARDER_TABLE.len() {
-                                    imports.push(Import::func_typed(
-                                        registered_name,
-                                        export_name,
-                                        FORWARDER_TABLE[slot],
-                                        ft,
-                                    ));
-                                } else {
-                                    fn stub_fn(
-                                        _: &mut Caller,
-                                        _: &[Value],
-                                        _: &mut [Value],
-                                    ) -> Result<(), WasmError> {
-                                        Ok(())
+                                let type_ctx = module.types().clone();
+                                if let Some(func_idx) =
+                                    find_exported_function_index(&module, export_name)
+                                {
+                                    if let Some(handle) = instance.function_handle_at(func_idx) {
+                                        imports.push(Import::linked_func_typed_with_context(
+                                            registered_name,
+                                            export_name,
+                                            handle,
+                                            ft,
+                                            type_ctx.clone(),
+                                        ));
                                     }
-                                    imports.push(Import::func_typed(
-                                        registered_name,
-                                        export_name,
-                                        stub_fn as ExternalFn,
-                                        ft,
-                                    ));
                                 }
+                            }
+                        }
+
+                        // Tag exports — link-time only, no runtime handle yet
+                        for tag in module.tags() {
+                            for export_name in tag.export_names() {
+                                imports.push(Import::tag_typed_with_context(
+                                    registered_name,
+                                    export_name,
+                                    tag.func_type().clone(),
+                                    module.types().clone(),
+                                ));
                             }
                         }
 
@@ -963,12 +1222,34 @@ impl WastTestRunner {
                                 let current_size = instance
                                     .table_size(export_name)
                                     .unwrap_or(table.limits().min());
-                                imports.push(Import::table(
-                                    registered_name,
-                                    export_name,
-                                    current_size,
-                                    table.limits().max(),
-                                ));
+                                let state = find_exported_table_index(&module, export_name)
+                                    .and_then(|table_idx| {
+                                        instance.shared_table_state_at(table_idx)
+                                    });
+                                let import = if table.limits().is64 {
+                                    Import::table_with_state(
+                                        registered_name,
+                                        export_name,
+                                        sf_nano_core::Limits::new_64(
+                                            current_size,
+                                            table.limits().max(),
+                                        )
+                                        .expect("registered table export limits should stay valid"),
+                                        state,
+                                    )
+                                } else {
+                                    Import::table_with_state(
+                                        registered_name,
+                                        export_name,
+                                        sf_nano_core::Limits::new(
+                                            current_size,
+                                            table.limits().max(),
+                                        )
+                                        .expect("registered table export limits should stay valid"),
+                                        state,
+                                    )
+                                };
+                                imports.push(import);
                             }
                         }
 
@@ -978,12 +1259,37 @@ impl WastTestRunner {
                                 let current_pages = instance
                                     .memory_pages(export_name)
                                     .unwrap_or(memory.limits().min());
-                                imports.push(Import::memory(
-                                    registered_name,
-                                    export_name,
-                                    current_pages,
-                                    memory.limits().max(),
-                                ));
+                                let shared_memory =
+                                    find_exported_memory_index(&module, export_name)
+                                        .and_then(|mem_idx| instance.shared_memory_at(mem_idx));
+                                let import = if memory.limits().is64 {
+                                    Import::memory_with_state(
+                                        registered_name,
+                                        export_name,
+                                        sf_nano_core::Limits::new_64(
+                                            current_pages,
+                                            memory.limits().max(),
+                                        )
+                                        .expect(
+                                            "registered memory export limits should stay valid",
+                                        ),
+                                        shared_memory,
+                                    )
+                                } else {
+                                    Import::memory_with_state(
+                                        registered_name,
+                                        export_name,
+                                        sf_nano_core::Limits::new(
+                                            current_pages,
+                                            memory.limits().max(),
+                                        )
+                                        .expect(
+                                            "registered memory export limits should stay valid",
+                                        ),
+                                        shared_memory,
+                                    )
+                                };
+                                imports.push(import);
                             }
                         }
                     }
@@ -1020,7 +1326,7 @@ impl WastTestRunner {
                                 imports.push(Import::func(
                                     mod_name,
                                     import_name,
-                                    fallback_stub as ExternalFn,
+                                    fallback_stub as HostFn,
                                 ));
                             }
                         }
@@ -1030,6 +1336,166 @@ impl WastTestRunner {
         }
 
         imports
+    }
+
+    fn sync_registered_imports_from_sources(&mut self) {
+        let mut global_ops = Vec::new();
+
+        let module_entries: Vec<_> = self
+            .module_bytes
+            .iter()
+            .map(|(name, bytes)| (name.clone(), bytes.clone()))
+            .collect();
+
+        for (dst_internal, bytes) in module_entries {
+            let Ok(module) = Module::new("_sync_imports_dst", &bytes) else {
+                continue;
+            };
+
+            for (dst_idx, global) in module.globals().iter().enumerate() {
+                let GlobalDef::Import { module, name, .. } = global.def() else {
+                    continue;
+                };
+                let Some(src_internal) = self.registered_as.get(module.as_str()) else {
+                    continue;
+                };
+                let src_internal = src_internal.clone();
+                let Some(src_bytes) = self.module_bytes.get(&src_internal) else {
+                    continue;
+                };
+                let Ok(src_module) = Module::new("_sync_imports_src", src_bytes) else {
+                    continue;
+                };
+                let Some(src_idx) = find_exported_global_index(&src_module, name.as_str()) else {
+                    continue;
+                };
+                let Some(value) = self
+                    .instances
+                    .get(&src_internal)
+                    .and_then(|instance| instance.global_at(src_idx))
+                else {
+                    continue;
+                };
+                let value = self.remap_global_value(&src_internal, &dst_internal, value);
+                global_ops.push((dst_internal.clone(), dst_idx, value));
+            }
+        }
+
+        for (dst_internal, dst_idx, value) in global_ops {
+            if let Some(instance) = self.instances.get_mut(&dst_internal) {
+                let _ = instance.replace_global_at(dst_idx, value);
+            }
+        }
+    }
+
+    fn sync_registered_imports_back_to_sources(&mut self, src_internal: &str) {
+        let mut global_ops = Vec::new();
+
+        let Some(bytes) = self.module_bytes.get(src_internal) else {
+            return;
+        };
+        let Ok(module) = Module::new("_sync_exports_src", bytes) else {
+            return;
+        };
+
+        for (src_idx, global) in module.globals().iter().enumerate() {
+            let GlobalDef::Import {
+                module,
+                name,
+                mutable,
+                ..
+            } = global.def()
+            else {
+                continue;
+            };
+            if !*mutable {
+                continue;
+            }
+            let Some(dst_internal) = self.registered_as.get(module.as_str()) else {
+                continue;
+            };
+            let dst_internal = dst_internal.clone();
+            let Some(dst_bytes) = self.module_bytes.get(&dst_internal) else {
+                continue;
+            };
+            let Ok(dst_module) = Module::new("_sync_exports_dst", dst_bytes) else {
+                continue;
+            };
+            let Some(dst_idx) = find_exported_global_index(&dst_module, name.as_str()) else {
+                continue;
+            };
+            let Some(value) = self
+                .instances
+                .get(src_internal)
+                .and_then(|instance| instance.global_at(src_idx))
+            else {
+                continue;
+            };
+            let value = self.remap_global_value(src_internal, &dst_internal, value);
+            global_ops.push((dst_internal, dst_idx, value));
+        }
+
+        for (dst_internal, dst_idx, value) in global_ops {
+            if let Some(instance) = self.instances.get_mut(&dst_internal) {
+                let _ = instance.replace_global_at(dst_idx, value);
+            }
+        }
+    }
+
+    fn remap_table_ref(
+        &mut self,
+        src_internal: &str,
+        dst_internal: &str,
+        handle: RefHandle,
+    ) -> RefHandle {
+        if handle.is_null() || handle.is_extern() {
+            return handle;
+        }
+
+        let src_func_idx = handle.payload();
+        let key = (
+            dst_internal.to_string(),
+            src_internal.to_string(),
+            src_func_idx,
+        );
+        if let Some(&dst_func_idx) = self.linked_function_refs.get(&key) {
+            return RefHandle::new(dst_func_idx);
+        }
+
+        let Some(func_type) = self
+            .instances
+            .get(src_internal)
+            .and_then(|instance| instance.function_type_at(src_func_idx))
+        else {
+            return handle;
+        };
+
+        let slot = alloc_forwarding_function_slot(src_internal, src_func_idx);
+        let Some(&callback) = FORWARDER_TABLE.get(slot) else {
+            return handle;
+        };
+
+        let Some(dst_instance) = self.instances.get_mut(dst_internal) else {
+            return handle;
+        };
+        let dst_func_idx = dst_instance.append_host_function(func_type, callback);
+        self.linked_function_refs.insert(key, dst_func_idx);
+        RefHandle::new(dst_func_idx)
+    }
+
+    fn remap_global_value(
+        &mut self,
+        src_internal: &str,
+        dst_internal: &str,
+        value: Value,
+    ) -> Value {
+        match value {
+            Value::Ref(handle, ref_type) if !handle.is_null() && !handle.is_extern() => Value::Ref(
+                self.remap_table_ref(src_internal, dst_internal, handle),
+                ref_type,
+            ),
+            other => other,
+        }
     }
 
     // -----------------------------------------------------------------------
@@ -1077,20 +1543,12 @@ impl WastTestRunner {
             WastArgCore::I64(val) => Some(WastValue::I64(*val)),
             WastArgCore::F32(f32_val) => Some(WastValue::F32(f32::from_bits(f32_val.bits))),
             WastArgCore::F64(f64_val) => Some(WastValue::F64(f64::from_bits(f64_val.bits))),
-            WastArgCore::RefNull(ref_type) => {
-                match ref_type {
-                    wast::core::HeapType::Abstract { ty, .. } => {
-                        use wast::core::AbstractHeapType as AHT;
-                        match ty {
-                            AHT::Func => Some(WastValue::FuncRef(None)),
-                            AHT::Extern => Some(WastValue::ExternRef(None)),
-                            _ => Some(WastValue::FuncRef(None)), // fallback
-                        }
-                    }
-                    _ => Some(WastValue::FuncRef(None)),
-                }
-            }
+            WastArgCore::RefNull(ref_type) => match ref_type {
+                wast::core::HeapType::Abstract { ty, .. } => Some(convert_abstract_null_ref(*ty)),
+                _ => Some(WastValue::FuncRef(None)),
+            },
             WastArgCore::RefExtern(idx) => Some(WastValue::ExternRef(Some(*idx))),
+            WastArgCore::RefHost(idx) => Some(WastValue::Ref(Some(*idx), RefType::anyref())),
             _ => None,
         }
     }
@@ -1129,12 +1587,7 @@ impl WastTestRunner {
             },
             WastRetCore::RefNull(opt_ref_type) => match opt_ref_type {
                 Some(wast::core::HeapType::Abstract { ty, .. }) => {
-                    use wast::core::AbstractHeapType as AHT;
-                    match ty {
-                        AHT::Func => Some(WastValue::FuncRef(None)),
-                        AHT::Extern => Some(WastValue::ExternRef(None)),
-                        _ => Some(WastValue::FuncRef(None)),
-                    }
+                    Some(convert_abstract_null_ref(*ty))
                 }
                 _ => Some(WastValue::FuncRef(None)),
             },
@@ -1142,6 +1595,10 @@ impl WastTestRunner {
                 Some(idx) => Some(WastValue::ExternRef(Some(*idx))),
                 None => Some(WastValue::AnyExternRef),
             },
+            WastRetCore::RefHost(idx) => Some(WastValue::Ref(
+                Some(*idx),
+                RefType::new(true, AbstractHeapType::Any.into()),
+            )),
             WastRetCore::RefFunc(opt_idx) => match opt_idx {
                 Some(idx) => match idx {
                     wast::token::Index::Num(n, _) => Some(WastValue::FuncRef(Some(*n))),
@@ -1149,6 +1606,26 @@ impl WastTestRunner {
                 },
                 None => Some(WastValue::AnyFuncRef),
             },
+            WastRetCore::RefI31 => Some(WastValue::AnyI31Ref(RefType::new(
+                false,
+                AbstractHeapType::I31.into(),
+            ))),
+            WastRetCore::RefStruct => Some(WastValue::AnyStructRef(RefType::new(
+                false,
+                AbstractHeapType::Struct.into(),
+            ))),
+            WastRetCore::RefArray => Some(WastValue::AnyArrayRef(RefType::new(
+                false,
+                AbstractHeapType::Array.into(),
+            ))),
+            WastRetCore::RefAny => Some(WastValue::Ref(
+                None,
+                RefType::new(false, AbstractHeapType::Any.into()),
+            )),
+            WastRetCore::RefEq => Some(WastValue::Ref(
+                None,
+                RefType::new(false, AbstractHeapType::Eq.into()),
+            )),
             _ => None,
         }
     }
@@ -1203,21 +1680,77 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
         {
             match (actual_ref, expected_ref) {
                 (ref_val, Some(expected_idx)) => {
-                    !ref_val.is_null() && ref_val.raw_value() == *expected_idx as usize
+                    !ref_val.is_null() && ref_val.payload() == *expected_idx as usize
                 }
                 (ref_val, None) => ref_val.is_null(),
             }
         }
+        (Value::Ref(actual_ref, _), WastValue::FuncRef(None)) => actual_ref.is_null(),
+        (Value::Ref(actual_ref, ref_type), WastValue::NullRef(expected_type)) => {
+            actual_ref.is_null()
+                && (ref_type.is_subtype_of(expected_type, &TypeContext::empty())
+                    || expected_type.is_subtype_of(&ref_type, &TypeContext::empty()))
+                || (actual_ref.is_null()
+                    && ((ref_type.is_funcref() && expected_type.is_funcref())
+                        || (ref_type.is_externref() && expected_type.is_externref())))
+        }
         (Value::Ref(actual_ref, _), WastValue::AnyFuncRef) => !actual_ref.is_null(),
         (Value::Ref(actual_ref, ref_type), WastValue::AnyExternRef) if ref_type.is_externref() => {
             !actual_ref.is_null()
+        }
+        (Value::Ref(actual_ref, actual_rt), WastValue::AnyI31Ref(expected_rt)) => {
+            if actual_ref.is_null() {
+                return false;
+            }
+            actual_rt.heap_type == expected_rt.heap_type
+                || matches!(
+                    actual_rt.heap_type,
+                    HeapType::Abstract(AbstractHeapType::Any)
+                        | HeapType::Abstract(AbstractHeapType::Eq)
+                )
+        }
+        (Value::Ref(actual_ref, actual_rt), WastValue::AnyStructRef(_)) => {
+            if actual_ref.is_null() {
+                return false;
+            }
+            match actual_rt.heap_type {
+                HeapType::Abstract(AbstractHeapType::Struct)
+                | HeapType::Abstract(AbstractHeapType::Any)
+                | HeapType::Abstract(AbstractHeapType::Eq)
+                | HeapType::Concrete(_) => true,
+                _ => false,
+            }
+        }
+        (Value::Ref(actual_ref, actual_rt), WastValue::AnyArrayRef(_)) => {
+            if actual_ref.is_null() {
+                return false;
+            }
+            match actual_rt.heap_type {
+                HeapType::Abstract(AbstractHeapType::Array)
+                | HeapType::Abstract(AbstractHeapType::Any)
+                | HeapType::Abstract(AbstractHeapType::Eq)
+                | HeapType::Concrete(_) => true,
+                _ => false,
+            }
         }
         (Value::Ref(actual_ref, ref_type), WastValue::ExternRef(expected_ref))
             if ref_type.is_externref() =>
         {
             match (actual_ref, expected_ref) {
                 (ref_val, Some(expected_idx)) => {
-                    !ref_val.is_null() && ref_val.raw_value() == *expected_idx as usize
+                    !ref_val.is_null() && ref_val.payload() == *expected_idx as usize
+                }
+                (ref_val, None) => ref_val.is_null(),
+            }
+        }
+        (Value::Ref(actual_ref, actual_rt), WastValue::Ref(expected_ref, expected_rt)) => {
+            match (actual_ref, expected_ref) {
+                (ref_val, Some(expected_idx)) => {
+                    if ref_val.is_null() || *actual_rt != *expected_rt {
+                        false
+                    } else {
+                        ref_val.payload() == *expected_idx as usize
+                    }
                 }
                 (ref_val, None) => ref_val.is_null(),
             }
@@ -1434,7 +1967,7 @@ mod tests {
                     "expected native code to be compiled for as-mixed-operands"
                 );
             }
-            FunctionInst::External { .. } => panic!("expected local export"),
+            FunctionInst::Host { .. } => panic!("expected local export"),
         }
     }
 

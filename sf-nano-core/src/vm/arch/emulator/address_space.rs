@@ -1,5 +1,6 @@
 use crate::{
     error::WasmError,
+    value_type::ValueType,
     vm::{
         entities::{global_offset, GlobalInst},
         machine::machine_ir::MachineMemWidth,
@@ -9,6 +10,7 @@ use crate::{
             layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
         },
         value::RefHandle,
+        value_encoding::{machine_raw_to_ref, ref_to_machine_raw},
     },
 };
 
@@ -21,7 +23,7 @@ const LOCAL_CALL_INFOS_BASE_32: u64 = 0x1400_0000;
 const GLOBALS_BASE_32: u64 = 0x1500_0000;
 const TYPE_CANON_BASE_32: u64 = 0x1600_0000;
 const MEMORY_BASE_32: u64 = 0x4000_0000;
-const MEMORY_WINDOW_32: u64 = 0x1000_0000;
+const MEMORY_WINDOW_32: u64 = 0x0400_0000;
 const TABLE_ELEMENTS_BASE_32: u64 = 0xC000_0000;
 const TABLE_ELEMENTS_WINDOW_32: u64 = 0x0400_0000;
 const MEMORY_VIEWS_WINDOW_32: u64 = TABLE_VIEWS_BASE_32 - MEMORY_VIEWS_BASE_32;
@@ -209,7 +211,7 @@ impl Target32AddressSpace {
 
         if ctx.memory_views_len > MAX_MEMORY_COUNT_32 {
             return Err(WasmError::internal(
-                "emu32 synthetic address space supports at most 8 memories",
+                "emu32 synthetic address space supports at most 32 memories",
             ));
         }
         for mem_index in 0..ctx.memory_views_len {
@@ -595,6 +597,14 @@ impl Target32AddressSpace {
                 "synthetic 32-bit global load uses unsupported field offset",
             ));
         }
+        if matches!(global.value_type, ValueType::Ref(_)) {
+            let raw = ref_to_machine_raw(
+                RefHandle::new(global.raw() as usize),
+                self.layout.gp_unit_bytes,
+            );
+            let bit_shift = (field_offset - global_offset::RAW) * 8;
+            return self.read_scalar(width, raw >> bit_shift);
+        }
         let bit_shift = (field_offset - global_offset::RAW) * 8;
         let raw = global.raw() >> bit_shift;
         self.read_scalar(width, raw)
@@ -782,6 +792,10 @@ impl Target32AddressSpace {
             MachineMemWidth::U32 => u64::from(value as u32),
             MachineMemWidth::U64 => value,
         };
+        if matches!(global.value_type, ValueType::Ref(_)) {
+            global.set_raw(machine_raw_to_ref(raw, self.layout.gp_unit_bytes).encoded() as u64);
+            return Ok(());
+        }
         let bit_shift = (field_offset - global_offset::RAW) * 8;
         let mask = match width {
             MachineMemWidth::U8 => 0xffu64,
@@ -804,7 +818,7 @@ impl Target32AddressSpace {
         let entry = self.ref_handle_entry(ctx, table_index, offset)?;
         let view = unsafe { *ctx.table_views_base.add(table_index) };
         let handle = unsafe { *view.elements_base.add(entry) };
-        Ok(handle.0 as u64)
+        Ok(ref_to_machine_raw(handle, self.layout.gp_unit_bytes))
     }
 
     fn store_table_element(
@@ -817,7 +831,7 @@ impl Target32AddressSpace {
         let entry = self.ref_handle_entry(ctx, table_index, offset)?;
         let view = unsafe { *ctx.table_views_base.add(table_index) };
         unsafe {
-            *view.elements_base.add(entry) = RefHandle(value as usize);
+            *view.elements_base.add(entry) = machine_raw_to_ref(value, self.layout.gp_unit_bytes);
         }
         Ok(())
     }

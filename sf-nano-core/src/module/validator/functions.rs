@@ -5,10 +5,11 @@ use crate::{
     extract_imm,
     module::{
         entities::{Element, ElementInit, FunctionSpec, FunctionType},
+        type_context::TypeContext,
         Module,
     },
     op_decoder::{BlockType, Immediate, OpStream, OpcodeHandler},
-    opcodes::{Opcode, OpcodeFC, WasmOpcode},
+    opcodes::{Opcode, OpcodeFB, OpcodeFC, WasmOpcode},
     utils::limits::Limitable,
     value_type::{HeapType, RefType, ValueType},
 };
@@ -34,6 +35,12 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
                     decoded.imm.clone(),
                 )?,
                 WasmOpcode::FC(op) => self.on_op_fc(
+                    op,
+                    decoded.op_offset,
+                    decoded.next_op_offset,
+                    decoded.imm.clone(),
+                )?,
+                WasmOpcode::FB(op) => self.on_op_fb(
                     op,
                     decoded.op_offset,
                     decoded.next_op_offset,
@@ -68,7 +75,7 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
         }
 
         for (actual, expected) in actual_results.iter().zip(expected_results.iter()) {
-            if !actual.is_compatible_with(expected) {
+            if !actual.is_subtype_of(expected, self.module.types()) {
                 return Err(WasmError::invalid(
                     "function return type mismatch, expected: , actual",
                 ));
@@ -81,7 +88,11 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
 
 impl<'a> FunctionValidator<'a> {
     pub(super) fn new(module: &'a Module, function: &'a FunctionSpec) -> Result<Self, WasmError> {
-        let mut context = Context::new(function.func_type().params(), function.locals());
+        let mut context = Context::new(
+            module.types().clone(),
+            function.func_type().params(),
+            function.locals(),
+        );
 
         context.push_ctrl(FrameType::Function, function.func_type_rc())?;
 
@@ -98,14 +109,23 @@ impl<'a> FunctionValidator<'a> {
                 collections::Vec::new(),
                 collections::Vec::new(),
             ))),
-            BlockType::ValueType(value_type) => Ok(Rc::new(FunctionType::new(
-                collections::Vec::new(),
-                collections::vec![value_type],
-            ))),
+            BlockType::ValueType(value_type) => {
+                if let ValueType::Ref(ref_type) = value_type {
+                    if let HeapType::Concrete(idx) = ref_type.heap_type {
+                        if idx as usize >= self.module.types().len() {
+                            return Err(WasmError::invalid("unknown type"));
+                        }
+                    }
+                }
+                Ok(Rc::new(FunctionType::new(
+                    collections::Vec::new(),
+                    collections::vec![value_type],
+                )))
+            }
             BlockType::TypeIndex(type_index) => self
                 .module
                 .types()
-                .get(type_index as u32)
+                .get_function_type(type_index as u32)
                 .cloned()
                 .ok_or_else(|| WasmError::malformed("block type index out of range")),
         }
@@ -233,7 +253,7 @@ impl<'a> FunctionValidator<'a> {
         use Opcode::*;
         use ValueType::*;
         match op {
-            NOP | PREFIX_FC | PREFIX_FD => Ok(()),
+            NOP | PREFIX_FB | PREFIX_FC | PREFIX_FD => Ok(()),
             UNREACHABLE => self.context.mark_unreachable(),
             BLOCK => {
                 let block_type = extract_imm!(imm, Immediate::Block);
@@ -343,7 +363,7 @@ impl<'a> FunctionValidator<'a> {
                 let function_type = self
                     .module
                     .types()
-                    .get(typeidx)
+                    .get_function_type(typeidx)
                     .cloned()
                     .ok_or_else(|| WasmError::invalid("invalid function type index"))?;
                 let table_type = table.value_type();
@@ -355,7 +375,22 @@ impl<'a> FunctionValidator<'a> {
                 self.context.pop_vals(function_type.params())?;
                 self.context.push_vals(function_type.results())
             }
-            RETURN_CALL | RETURN_CALL_INDIRECT => Err(WasmError::invalid("Opcode not implemented")),
+            CALL_REF => {
+                let type_idx = extract_imm!(imm, Immediate::TypeIndex);
+                let function_type = self
+                    .module
+                    .types()
+                    .get_function_type(type_idx)
+                    .cloned()
+                    .ok_or_else(|| WasmError::invalid("invalid function type index"))?;
+                self.context
+                    .pop_val(Some(ValueType::Ref(RefType::funcref())))?;
+                self.context.pop_vals(function_type.params())?;
+                self.context.push_vals(function_type.results())
+            }
+            RETURN_CALL | RETURN_CALL_INDIRECT | RETURN_CALL_REF => {
+                Err(WasmError::invalid("Opcode not implemented"))
+            }
             DROP => {
                 self.context.pop_val(None)?;
                 Ok(())
@@ -495,6 +530,25 @@ impl<'a> FunctionValidator<'a> {
             REF_IS_NULL => {
                 self.context.pop_ref_type()?;
                 self.context.push_val(I32)?;
+                Ok(())
+            }
+            REF_EQ => {
+                let ref1 = self.context.pop_ref_type()?;
+                let ref2 = self.context.pop_ref_type()?;
+                if !ref1.is_subtype_of_eqref() || !ref2.is_subtype_of_eqref() {
+                    return Err(WasmError::invalid("type mismatch"));
+                }
+                self.context.push_val(I32)?;
+                Ok(())
+            }
+            REF_AS_NON_NULL => {
+                let ref_type = self.context.pop_ref_type()?;
+                self.context.push_val(ref_type)?;
+                Ok(())
+            }
+            BR_ON_NULL | BR_ON_NON_NULL => {
+                self.context.pop_ref_type()?;
+                self.context.mark_unreachable()?;
                 Ok(())
             }
             REF_FUNC => {
@@ -814,7 +868,7 @@ impl<'a> FunctionValidator<'a> {
                 let table = &self.module.tables()[tableidx as usize];
                 let elem_type = elem.value_type();
                 let table_type = table.value_type();
-                if !elem_type.is_compatible_with(&table_type) {
+                if !elem_type.is_subtype_of(&table_type, self.module.types()) {
                     return Err(WasmError::invalid("type mismatch"));
                 }
                 let table = &self.module.tables()[tableidx as usize];
@@ -850,7 +904,7 @@ impl<'a> FunctionValidator<'a> {
                 let src_table = &self.module.tables()[srcidx as usize];
                 let dst_type = dst_table.value_type();
                 let src_type = src_table.value_type();
-                if src_type != dst_type && !src_type.is_compatible_with(&dst_type) {
+                if !src_type.is_subtype_of(&dst_type, self.module.types()) {
                     return Err(WasmError::invalid("table copy type mismatch"));
                 }
 
@@ -907,12 +961,320 @@ impl<'a> FunctionValidator<'a> {
                 let idx_type = if is_table64 { I64 } else { I32 };
                 self.context.pop_val(Some(idx_type))?; // n (size)
                 let ref_val = self.context.pop_ref_type()?; // value
-                if !ref_val.is_compatible_with(&table_type) {
+                if !ref_val.is_subtype_of(&table_type, self.module.types()) {
                     return Err(WasmError::invalid(
                         "table fill type mismatch: expected , got",
                     ));
                 }
                 self.context.pop_val(Some(idx_type))?; // dest
+                Ok(())
+            }
+        }
+    }
+
+    fn on_op_fb(
+        &mut self,
+        op: OpcodeFB,
+        _op_offset: usize,
+        _next_op_offset: usize,
+        imm: Immediate,
+    ) -> Result<(), WasmError> {
+        use crate::{
+            module::type_defs::CompositeType,
+            value_type::{AbstractHeapType, HeapType, RefType},
+        };
+        use OpcodeFB::*;
+        use ValueType::*;
+
+        match op {
+            STRUCT_NEW => {
+                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let def_type = self
+                    .module
+                    .types()
+                    .get(typeidx as u32)
+                    .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                let struct_type = match &def_type.composite {
+                    CompositeType::Struct(s) => s,
+                    _ => return Err(WasmError::invalid("Expected struct type")),
+                };
+                for field in struct_type.fields.iter().rev() {
+                    let field_type = field.storage.to_valtype();
+                    self.context.pop_val(Some(field_type))?;
+                }
+                let struct_ref =
+                    ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx as u32)));
+                self.context.push_val(struct_ref)?;
+                Ok(())
+            }
+            STRUCT_NEW_DEFAULT => {
+                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let def_type = self
+                    .module
+                    .types()
+                    .get(typeidx as u32)
+                    .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                match &def_type.composite {
+                    CompositeType::Struct(_) => {}
+                    _ => return Err(WasmError::invalid("Expected struct type")),
+                }
+                let struct_ref =
+                    ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx as u32)));
+                self.context.push_val(struct_ref)?;
+                Ok(())
+            }
+            STRUCT_GET | STRUCT_GET_S | STRUCT_GET_U => {
+                let (typeidx, fieldidx) = match imm {
+                    Immediate::StructFieldArgs { typeidx, fieldidx } => (typeidx, fieldidx),
+                    _ => return Err(WasmError::invalid("Invalid immediate for struct.get")),
+                };
+                let def_type = self
+                    .module
+                    .types()
+                    .get(typeidx)
+                    .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                let struct_type = match &def_type.composite {
+                    CompositeType::Struct(s) => s,
+                    _ => return Err(WasmError::invalid("Expected struct type")),
+                };
+                if fieldidx as usize >= struct_type.fields.len() {
+                    return Err(WasmError::invalid("Field index out of bounds"));
+                }
+                let structref = self.context.pop_val(None)?;
+                let expected_struct_ref =
+                    ValueType::Ref(RefType::new(true, HeapType::Concrete(typeidx)));
+                if !structref.is_subtype_of(&expected_struct_ref, &self.context.types)
+                    && structref != ValueType::Unknown
+                {
+                    return Err(WasmError::invalid("struct.get requires struct reference"));
+                }
+                let field_type = struct_type.fields[fieldidx as usize].storage.to_valtype();
+                self.context.push_val(field_type)?;
+                Ok(())
+            }
+            STRUCT_SET => {
+                let (typeidx, fieldidx) = match imm {
+                    Immediate::StructFieldArgs { typeidx, fieldidx } => (typeidx, fieldidx),
+                    _ => return Err(WasmError::invalid("Invalid immediate for struct.set")),
+                };
+                let def_type = self
+                    .module
+                    .types()
+                    .get(typeidx)
+                    .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                let struct_type = match &def_type.composite {
+                    CompositeType::Struct(s) => s,
+                    _ => return Err(WasmError::invalid("Expected struct type")),
+                };
+                if fieldidx as usize >= struct_type.fields.len() {
+                    return Err(WasmError::invalid("Field index out of bounds"));
+                }
+                if !struct_type.fields[fieldidx as usize].mutable {
+                    return Err(WasmError::invalid("Cannot set immutable field"));
+                }
+                let field_type = struct_type.fields[fieldidx as usize].storage.to_valtype();
+                let value = self.context.pop_val(None)?;
+                let structref = self.context.pop_val(None)?;
+                if !value.is_subtype_of(&field_type, &self.context.types) {
+                    return Err(WasmError::invalid("struct.set value type mismatch"));
+                }
+                let expected_struct_ref =
+                    ValueType::Ref(RefType::new(true, HeapType::Concrete(typeidx)));
+                if !structref.is_subtype_of(&expected_struct_ref, &self.context.types)
+                    && structref != ValueType::Unknown
+                {
+                    return Err(WasmError::invalid("struct.set requires struct reference"));
+                }
+                Ok(())
+            }
+            ARRAY_NEW => {
+                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let def_type = self
+                    .module
+                    .types()
+                    .get(typeidx as u32)
+                    .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                let array_type = match &def_type.composite {
+                    CompositeType::Array(a) => a,
+                    _ => return Err(WasmError::invalid("Expected array type")),
+                };
+                self.context.pop_val(Some(I32))?;
+                let elem_type = array_type.element.storage.to_valtype();
+                self.context.pop_val(Some(elem_type))?;
+                let array_ref =
+                    ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx as u32)));
+                self.context.push_val(array_ref)?;
+                Ok(())
+            }
+            ARRAY_NEW_DEFAULT => {
+                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let def_type = self
+                    .module
+                    .types()
+                    .get(typeidx as u32)
+                    .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                match &def_type.composite {
+                    CompositeType::Array(_) => {}
+                    _ => return Err(WasmError::invalid("Expected array type")),
+                }
+                self.context.pop_val(Some(I32))?;
+                let array_ref =
+                    ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx as u32)));
+                self.context.push_val(array_ref)?;
+                Ok(())
+            }
+            ARRAY_NEW_FIXED => {
+                let (typeidx, n) = match imm {
+                    Immediate::ArrayNewFixed { typeidx, n } => (typeidx, n),
+                    _ => return Err(WasmError::invalid("Invalid immediate for array.new_fixed")),
+                };
+                let def_type = self
+                    .module
+                    .types()
+                    .get(typeidx)
+                    .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                let array_type = match &def_type.composite {
+                    CompositeType::Array(a) => a,
+                    _ => return Err(WasmError::invalid("Expected array type")),
+                };
+                let elem_type = array_type.element.storage.to_valtype();
+                for _ in 0..n {
+                    self.context.pop_val(Some(elem_type))?;
+                }
+                let array_ref = ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx)));
+                self.context.push_val(array_ref)?;
+                Ok(())
+            }
+            ARRAY_GET | ARRAY_GET_S | ARRAY_GET_U => {
+                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let def_type = self
+                    .module
+                    .types()
+                    .get(typeidx as u32)
+                    .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                let array_type = match &def_type.composite {
+                    CompositeType::Array(a) => a,
+                    _ => return Err(WasmError::invalid("Expected array type")),
+                };
+                self.context.pop_val(Some(I32))?;
+                let array_ref =
+                    ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx as u32)));
+                self.context.pop_val(Some(array_ref))?;
+                let elem_type = array_type.element.storage.to_valtype();
+                self.context.push_val(elem_type)?;
+                Ok(())
+            }
+            ARRAY_SET => {
+                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let def_type = self
+                    .module
+                    .types()
+                    .get(typeidx as u32)
+                    .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                let array_type = match &def_type.composite {
+                    CompositeType::Array(a) => a,
+                    _ => return Err(WasmError::invalid("Expected array type")),
+                };
+                if !array_type.element.mutable {
+                    return Err(WasmError::invalid("Cannot set immutable array element"));
+                }
+                let elem_type = array_type.element.storage.to_valtype();
+                let value = self.context.pop_val(None)?;
+                let index = self.context.pop_val(None)?;
+                let arrayref = self.context.pop_val(None)?;
+                if !value.is_subtype_of(&elem_type, &self.context.types) {
+                    return Err(WasmError::invalid("array.set value type mismatch"));
+                }
+                if index != I32 && index != ValueType::Unknown {
+                    return Err(WasmError::invalid("array.set index must be i32"));
+                }
+                if !arrayref.is_ref() && arrayref != ValueType::Unknown {
+                    return Err(WasmError::invalid("array.set requires arrayref"));
+                }
+                Ok(())
+            }
+            ARRAY_LEN => {
+                let array_ref = ValueType::Ref(RefType::new(
+                    false,
+                    HeapType::Abstract(AbstractHeapType::Array),
+                ));
+                self.context.pop_val(Some(array_ref))?;
+                self.context.push_val(I32)?;
+                Ok(())
+            }
+            REF_I31 => {
+                self.context.pop_val(Some(I32))?;
+                let i31_ref = ValueType::Ref(RefType::new(
+                    false,
+                    HeapType::Abstract(AbstractHeapType::I31),
+                ));
+                self.context.push_val(i31_ref)?;
+                Ok(())
+            }
+            I31_GET_S | I31_GET_U => {
+                let i31_ref = ValueType::Ref(RefType::new(
+                    true,
+                    HeapType::Abstract(AbstractHeapType::I31),
+                ));
+                self.context.pop_val(Some(i31_ref))?;
+                self.context.push_val(I32)?;
+                Ok(())
+            }
+            ARRAY_FILL => {
+                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let def_type = self
+                    .module
+                    .types()
+                    .get(typeidx as u32)
+                    .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                let array_type = match &def_type.composite {
+                    CompositeType::Array(a) => a,
+                    _ => return Err(WasmError::invalid("Expected array type")),
+                };
+                if !array_type.element.mutable {
+                    return Err(WasmError::invalid("Cannot fill immutable array"));
+                }
+                let elem_type = array_type.element.storage.to_valtype();
+                self.context.pop_val(Some(elem_type))?;
+                self.context.pop_val(Some(I32))?;
+                self.context.pop_val(Some(I32))?;
+                let array_ref =
+                    ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx as u32)));
+                self.context.pop_val(Some(array_ref))?;
+                Ok(())
+            }
+            ARRAY_COPY | ARRAY_INIT_DATA | ARRAY_INIT_ELEM | ARRAY_NEW_DATA | ARRAY_NEW_ELEM => {
+                Err(WasmError::invalid("Opcode not implemented"))
+            }
+            REF_TEST | REF_TEST_NULL => {
+                let _ref_type = extract_imm!(imm, Immediate::RefType);
+                let _popped = self.context.pop_ref_type()?;
+                self.context.push_val(I32)?;
+                Ok(())
+            }
+            REF_CAST | REF_CAST_NULL => {
+                let ref_type = extract_imm!(imm, Immediate::RefType);
+                let _popped = self.context.pop_ref_type()?;
+                self.context.push_val(ref_type)?;
+                Ok(())
+            }
+            BR_ON_CAST | BR_ON_CAST_FAIL => Ok(()),
+            ANY_CONVERT_EXTERN => {
+                let _popped = self.context.pop_ref_type()?;
+                let anyref = ValueType::Ref(RefType::new(
+                    true,
+                    HeapType::Abstract(AbstractHeapType::Any),
+                ));
+                self.context.push_val(anyref)?;
+                Ok(())
+            }
+            EXTERN_CONVERT_ANY => {
+                let _popped = self.context.pop_ref_type()?;
+                let externref = ValueType::Ref(RefType::new(
+                    true,
+                    HeapType::Abstract(AbstractHeapType::Extern),
+                ));
+                self.context.push_val(externref)?;
                 Ok(())
             }
         }
@@ -983,6 +1345,7 @@ impl ControlFrame {
 }
 
 struct Context {
+    types: TypeContext,
     control_frames: collections::Vec<ControlFrame>,
     all_locals: collections::Vec<ValueType>,
     val_stack: collections::Vec<ValueType>,
@@ -991,7 +1354,7 @@ struct Context {
 }
 
 impl Context {
-    fn new(params: &[ValueType], locals: &[ValueType]) -> Self {
+    fn new(types: TypeContext, params: &[ValueType], locals: &[ValueType]) -> Self {
         let mut all_locals = collections::Vec::new();
         all_locals.extend_from_slice(params);
         all_locals.extend_from_slice(locals);
@@ -1012,6 +1375,7 @@ impl Context {
         }
 
         Context {
+            types,
             control_frames: collections::Vec::new(),
             all_locals,
             val_stack: collections::Vec::new(),
@@ -1049,7 +1413,7 @@ impl Context {
         let actual = self.val_stack.pop().unwrap();
 
         if let Some(expected_type) = expected {
-            if !actual.is_compatible_with(&expected_type) {
+            if !actual.is_subtype_of(&expected_type, &self.types) {
                 return Err(WasmError::invalid("type mismatch: expected , got"));
             }
         }

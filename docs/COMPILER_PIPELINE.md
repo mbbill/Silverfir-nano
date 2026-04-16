@@ -686,7 +686,7 @@ path directly.
 
 ### Optimization-enabling structure: machine constant pool
 
-`ConstPoolBuilder` moves external-call metadata and other read-only records out
+`ConstPoolBuilder` moves runtime-call metadata and other read-only records out
 of the instruction stream into the machine module's constant pool.
 
 What this optimizes:
@@ -870,7 +870,7 @@ Main code:
 - `sf-nano-core/src/vm/arch/arm64/*`
 - `sf-nano-core/src/vm/arch/armv7a/*`
 - `sf-nano-core/src/vm/arch/x86_64/*`
-- `sf-nano-core/src/vm/runtime/external/*`
+- `sf-nano-core/src/vm/runtime/runtime_call/*`
 - `sf-nano-core/src/vm/runtime/preserved/*`
 
 This stage is late by design. The shared pipeline keeps enough semantic shape
@@ -925,7 +925,7 @@ the boundary rules safe:
 
 - MachineIR can publish cached locals before a boundary
 - local calls can reuse the caller operand region as callee frame prefix
-- external calls can read and write frame spans directly
+- runtime calls can read and write frame spans directly
 - preserved helpers can save caller-clobbered JIT state and then operate on a
   native-stack I/O window
 
@@ -987,7 +987,7 @@ dynamic state unavailable there.
 That means:
 
 - regular lowering must not use `C_ARG*` / `C_RET*` as general temps
-- external-call lowering may use them while entering the runtime external-call
+- runtime-call lowering may use them while entering the runtime-call
   entry
 - preserved-helper lowering may use them while entering the preserved runtime
   entry
@@ -997,28 +997,73 @@ That means:
 This is why ARM64 `X0` / `X1` / `X2` are dangerous outside real runtime-call
 glue even though the ISA itself would let the backend use them freely.
 
-#### 6. External calls and preserved helpers are different boundary systems
+#### 6. MachineIR is the shared / arch boundary
+
+MachineIR is the bottom of the shared pipeline and the top of the
+arch-dependent backend pipeline.
+
+That means a feature belongs in MachineIR only when the semantics below it are
+still shared across targets. A MachineIR op should represent Wasm or shared JIT
+behavior, not one backend's current helper strategy.
+
+Use this rule:
+
+- if the operation's semantics are still platform-independent, keep it above or
+  at MachineIR
+- if different targets may choose between native instructions and helper
+  fallback for the same MachineIR op, that choice belongs below MachineIR
+- do not add a new MachineIR op just because one backend currently needs a
+  helper call
+
+Calls are the main place where this matters:
+
+- `Call` is the MachineIR compiled-call form because it represents real Wasm
+  call control transfer into another compiled frame
+  - `Call { target: Direct(..) }` is for a compile-time-known compiled callee
+  - `Call { target: Indirect { .. } }` is for a runtime-resolved compiled
+    callee, whether that callee lives in the current module or in another
+    linked compiled module
+- `CallRuntime` is a MachineIR instruction because it still represents Wasm call
+  semantics, just through the runtime-dispatch path that round-trips back to
+  the next instruction
+- preserved helpers such as `memory.grow`, `table.grow`, `ref.test`,
+  `struct.get`, and similar helper-backed ops are not MachineIR call forms;
+  they are backend lowering choices for ordinary MachineIR instructions
+
+Current call-shape split:
+
+| Endpoint after shared dispatch | MachineIR form |
+| --- | --- |
+| compile-time-known compiled callee | `Call { target: Direct(..) }` |
+| runtime-resolved compiled callee | `Call { target: Indirect { .. } }` |
+| host or runtime-dispatch path | `CallRuntime` |
+
+#### 7. Runtime calls and preserved helpers are different boundary systems
 
 The current JIT intentionally keeps two runtime boundary systems:
 
-- External-call system:
-  - triggered only by Wasm `call` / `call_indirect` that resolve to external
-    handlers
+- Runtime-call system:
+  - triggered only by Wasm `call` / `call_indirect` / `call_ref` sites that
+    must round-trip through runtime dispatch instead of transferring into
+    another compiled MachineIR function
+  - this includes calls that resolve to host/runtime targets such as WASI, and
+    any dynamic target that is not representable as a compiled-frame transfer
   - lowered by MachineIR as an inline runtime call
   - uses frame slots as its argument/result transport
-  - implemented under `sf-nano-core/src/vm/runtime/external/`
+  - implemented under `sf-nano-core/src/vm/runtime/runtime_call/`
 - Preserved-helper system:
   - triggered by engine-internal helper-backed operations such as
-    `memory.grow`, `memory.copy`, `table.grow`, `table.init`, and similar ops
+    `memory.grow`, `memory.copy`, `table.grow`, `table.init`, `ref.test`,
+    `ref.cast`, `struct.get`, `struct.set`, and similar ops
   - owned by native backends rather than MachineIR
   - uses a fixed native-stack I/O layout
   - implemented under `sf-nano-core/src/vm/runtime/preserved/`
 
 They share some low-level status/error plumbing, but they are not one generic
 "helper" mechanism. The JIT should keep those boundaries explicit so readers do
-not confuse host callbacks with engine-internal preserved operations.
+not confuse Wasm call dispatch with engine-internal preserved operations.
 
-#### 7. Boundary-specific safety rules
+#### 8. Boundary-specific safety rules
 
 The safe register/use policy is different at each boundary:
 
@@ -1026,7 +1071,7 @@ The safe register/use policy is different at each boundary:
 | --- | --- | --- |
 | Regular instruction lowering | scratch-pool regs only | mapped fixed/cache/transient regs keep their MachineIR meaning |
 | Local JIT-to-JIT call transfer | scratch-pool regs only | MachineIR already prepared frame setup and call-link state |
-| External call entry sequence | scratch-pool regs plus foreign `C_ARG*`/`C_RET*` as part of the ABI sequence | transients are dead, cached locals published, fixed regs remain live |
+| Runtime-call entry sequence | scratch-pool regs plus foreign `C_ARG*`/`C_RET*` as part of the ABI sequence | transients are dead, cached locals published, fixed regs remain live |
 | Preserved-helper entry sequence | scratch-pool regs plus foreign `C_ARG*`/`C_RET*` inside the preserved-helper protocol | preserved wrapper saves the caller-clobbered JIT state it needs before reusing those registers |
 
 One subtle consequence is that "caller-saved" does not mean "free right now".
@@ -1037,7 +1082,7 @@ is either:
 - being used inside a boundary protocol that has already made the relevant
   MachineIR state unavailable there
 
-#### 8. Delicate paths should document why they are delicate
+#### 9. Delicate paths should document why they are delicate
 
 Some control-flow glue is sensitive because of overlapping frame regions. A
 good example is local return lowering: the backend may need to capture

@@ -3,9 +3,9 @@
 use crate::error::WasmError;
 use crate::vm::arch::common::helpers::trap_error;
 use crate::vm::machine::machine_ir::MachineTrapKind;
-use crate::vm::raw_value::{as_f32, as_f64, from_i32, from_i64};
 #[cfg(not(sf_os_windows))]
 use crate::vm::runtime::context::NativeContext;
+use crate::vm::value_encoding::{as_f32, as_f64, from_i32, from_i64};
 
 // ── Trapping truncation ──────────────────────────────────────────────────────
 

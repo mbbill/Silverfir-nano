@@ -3,9 +3,9 @@
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConstId, MachineEdge,
-        MachineFuncId, MachineReg, MachineTerminator, MachineTrapKind, MachineValue,
-        MACHINE_CTX_REG, MACHINE_FP_REG,
+        MachineBlockId, MachineBranchCond, MachineCallTarget, MachineCompareKind, MachineConstId,
+        MachineEdge, MachineReg, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
+        MACHINE_FP_REG,
     },
 };
 
@@ -20,7 +20,7 @@ use super::{
 use crate::vm::arch::common::helpers::trap_code;
 use crate::vm::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
 use crate::vm::arch::shared_64::is_fallthrough_edge;
-use crate::vm::runtime::{external::call_external_entry_ptr, trap::raise_trap};
+use crate::vm::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
 
 impl<'a> X86_64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────
@@ -57,27 +57,13 @@ impl<'a> X86_64Backend<'a> {
             MachineTerminator::JumpTable { index, entries } => {
                 self.lower_jump_table(*index, entries)
             }
-            MachineTerminator::CallDirect {
-                callee,
+            MachineTerminator::Call {
+                target,
                 callee_frame_base,
                 caller_result_base,
                 continuation,
-            } => self.lower_call_direct(
-                *callee,
-                *callee_frame_base,
-                *caller_result_base,
-                *continuation,
-                fallthrough,
-            ),
-            MachineTerminator::CallIndirect {
-                callee_target,
-                callee_entry,
-                callee_frame_base,
-                caller_result_base,
-                continuation,
-            } => self.lower_call_indirect(
-                *callee_target,
-                *callee_entry,
+            } => self.lower_call(
+                target,
                 *callee_frame_base,
                 *caller_result_base,
                 *continuation,
@@ -326,17 +312,15 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
-    // ── Call direct ──────────────────────────────────────────────────────────
+    // ── Compiled call ────────────────────────────────────────────────────────
 
-    /// Lower a local SF→SF direct call. Pushes the call record (caller's
-    /// `caller_result_base` + caller's fp_reg), switches fp_reg to the
-    /// callee's frame base, emits `mov scratch, imm64` + `call scratch` where
-    /// the imm64 is patched to the callee's internal entry at module-link
-    /// time, then a post-call status check that branches to
-    /// `body_local_error_label` on non-zero RAX.
-    fn lower_call_direct(
+    /// Lower a compiled SF->SF call. The only target-specific part is how the
+    /// callee entry address is materialized; the call-record protocol,
+    /// frame-pointer switch, post-call status check, and continuation handling
+    /// are shared.
+    fn lower_call(
         &mut self,
-        callee: MachineFuncId,
+        target: &MachineCallTarget,
         callee_frame_base: MachineReg,
         caller_result_base: MachineReg,
         continuation: MachineBlockId,
@@ -348,7 +332,6 @@ impl<'a> X86_64Backend<'a> {
         let body_local_error_label = self.core.body_local_error_label;
         let continuation_label = self.core.block_label(continuation)?;
         let continuation_is_fallthrough = fallthrough == Some(continuation);
-        let call_scratch = self.gp_scratch.claim_rax().detach();
 
         // Push the call record: caller_fp at higher slot, caller_result_base
         // at lower slot. Matches the layout consumed by the body's unified
@@ -359,16 +342,25 @@ impl<'a> X86_64Backend<'a> {
         // Switch fp_reg to the callee's frame base.
         enc::mov_rr_64(&mut self.core.text, fp_reg, callee_fp);
 
-        // Load the callee's internal entry address via patchable movabs.
-        enc::movabs_ri_64(&mut self.core.text, *call_scratch, 0);
-        let callee_imm_offset = self.core.text.len() - 8;
-        self.core.direct_call_patches.push(DirectCallPatch {
-            literal_offset: callee_imm_offset,
-            callee,
-        });
-        // CALL scratch — pushes the return address (= this call site's
-        // fall-through) onto the host stack.
-        enc::call_reg(&mut self.core.text, *call_scratch);
+        match target {
+            MachineCallTarget::Direct(callee) => {
+                let call_scratch = self.gp_scratch.claim_rax().detach();
+                // Load the callee's internal entry address via patchable movabs.
+                enc::movabs_ri_64(&mut self.core.text, *call_scratch, 0);
+                let callee_imm_offset = self.core.text.len() - 8;
+                self.core.direct_call_patches.push(DirectCallPatch {
+                    literal_offset: callee_imm_offset,
+                    callee: *callee,
+                });
+                // CALL scratch — pushes the return address (= this call site's
+                // fall-through) onto the host stack.
+                enc::call_reg(&mut self.core.text, *call_scratch);
+            }
+            MachineCallTarget::Indirect { callee_entry, .. } => {
+                let callee_entry = self.map_gp_reg(*callee_entry)?;
+                enc::call_reg(&mut self.core.text, callee_entry);
+            }
+        }
 
         // --- callee returns here. C_RET0 holds 0 (success) or trap kind
         //     (error). Status check propagates to body_local_error_label.
@@ -383,59 +375,21 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
-    // ── Call indirect ────────────────────────────────────────────────────────
+    // ── Call runtime ─────────────────────────────────────────────────────────
 
-    fn lower_call_indirect(
-        &mut self,
-        _callee_target: MachineReg,
-        callee_entry: MachineReg,
-        callee_frame_base: MachineReg,
-        caller_result_base: MachineReg,
-        continuation: MachineBlockId,
-        fallthrough: Option<MachineBlockId>,
-    ) -> Result<(), WasmError> {
-        let callee_fp = self.map_gp_reg(callee_frame_base)?;
-        let caller_result_base = self.map_gp_reg(caller_result_base)?;
-        let callee_entry = self.map_gp_reg(callee_entry)?;
-        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        let body_local_error_label = self.core.body_local_error_label;
-        let continuation_label = self.core.block_label(continuation)?;
-        let continuation_is_fallthrough = fallthrough == Some(continuation);
-
-        // Push the call record (same shape as CallDirect).
-        enc::push(&mut self.core.text, fp_reg);
-        enc::push(&mut self.core.text, caller_result_base);
-
-        // Switch fp_reg to the callee's frame base.
-        enc::mov_rr_64(&mut self.core.text, fp_reg, callee_fp);
-
-        // CALL callee_entry — runtime-resolved target.
-        enc::call_reg(&mut self.core.text, callee_entry);
-
-        // Status check + continuation branch.
-        enc::test_rr_64(&mut self.core.text, super::abi::C_RET0, super::abi::C_RET0);
-        self.emit_jcc(Cc::NE, body_local_error_label);
-        if !continuation_is_fallthrough {
-            self.emit_jmp(continuation_label);
-        }
-        Ok(())
-    }
-
-    // ── Call external ────────────────────────────────────────────────────────
-
-    pub(super) fn lower_call_external_term(&mut self, const_idx: usize) -> Result<(), WasmError> {
+    pub(super) fn lower_call_runtime_term(&mut self, const_idx: usize) -> Result<(), WasmError> {
         let metadata = self
             .core
             .compiled
             .const_ptr(MachineConstId(const_idx as u32))
-            .ok_or_else(|| WasmError::internal("x86_64 external-call metadata is out of range"))?;
-        // External calls are inline runtime calls. Pass the current context,
+            .ok_or_else(|| WasmError::internal("x86_64 runtime-call metadata is out of range"))?;
+        // Runtime calls are inline runtime calls. Pass the current context,
         // the active Wasm frame pointer, and the const-pool metadata record.
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
         enc::mov_rr_64(&mut self.core.text, C_ARG1, map_fixed_reg(MACHINE_FP_REG));
         self.materialize_u64(C_ARG2, metadata as u64);
         let call_scratch = self.gp_scratch.claim_rax().detach();
-        self.materialize_u64(*call_scratch, call_external_entry_ptr() as usize as u64);
+        self.materialize_u64(*call_scratch, call_runtime_entry_ptr() as usize as u64);
         enc::call_reg(&mut self.core.text, *call_scratch);
 
         // Nonzero helper status → propagate via body_local_error_label.

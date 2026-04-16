@@ -9,18 +9,20 @@ use tracked_alloc::rc::Rc;
 use tracked_alloc::string::{String, ToString};
 
 use crate::error::WasmError;
-use crate::module::entities::{Data, Element, Function, FunctionType, Global, Memory, Table};
+use crate::module::entities::{Data, Element, Function, FunctionType, Global, Memory, Table, Tag};
 use crate::module::type_context::TypeContext;
+use crate::module::type_defs::{CompositeType, DefType};
 use crate::module::Module;
 
 pub struct ModuleBuilder {
     name: String,
     binary_version: u32,
-    types: collections::Vec<Rc<FunctionType>>,
+    type_definitions: collections::Vec<Rc<DefType>>,
     functions: collections::Vec<Function>,
     memories: collections::Vec<Memory>,
     tables: collections::Vec<Table>,
     globals: collections::Vec<Global>,
+    tags: collections::Vec<Tag>,
     elements: collections::Vec<Element>,
     data: collections::Vec<Data>,
     start_func_index: Option<usize>,
@@ -33,11 +35,12 @@ impl ModuleBuilder {
         ModuleBuilder {
             name: String::new(),
             binary_version: 0,
-            types: collections::Vec::new(),
+            type_definitions: collections::Vec::new(),
             functions: collections::Vec::new(),
             memories: collections::Vec::new(),
             tables: collections::Vec::new(),
             globals: collections::Vec::new(),
+            tags: collections::Vec::new(),
             elements: collections::Vec::new(),
             data: collections::Vec::new(),
             start_func_index: None,
@@ -63,13 +66,17 @@ impl ModuleBuilder {
         self.binary_version = version;
     }
 
-    pub fn with_types(&mut self, types: collections::Vec<Rc<FunctionType>>) {
-        self.types = types;
+    pub fn with_type_definitions(&mut self, type_definitions: collections::Vec<Rc<DefType>>) {
+        self.type_definitions = type_definitions;
     }
 
-    /// Get a function type by index.
     pub fn get_function_type(&self, index: usize) -> Option<Rc<FunctionType>> {
-        self.types.get(index).cloned()
+        self.type_definitions
+            .get(index)
+            .and_then(|def_type| match &def_type.composite {
+                CompositeType::Func(func_type) => Some(func_type.clone()),
+                _ => None,
+            })
     }
 
     pub fn append_function(&mut self, func: Function) {
@@ -152,16 +159,18 @@ impl ModuleBuilder {
         self.memories.shrink_to_fit();
         self.tables.shrink_to_fit();
         self.globals.shrink_to_fit();
+        self.tags.shrink_to_fit();
         self.elements.shrink_to_fit();
 
         Module {
             name: self.name,
             binary_version: self.binary_version,
-            types: TypeContext::new(self.types),
+            types: TypeContext::new(self.type_definitions),
             functions: self.functions,
             tables: self.tables,
             memories: self.memories,
             globals: self.globals,
+            tags: self.tags,
             elements: self.elements,
             data: self.data,
             start_func_index: self.start_func_index,
@@ -172,6 +181,16 @@ impl ModuleBuilder {
     /// Helper for tests: set function types directly.
     #[cfg(test)]
     pub fn with_function_types(&mut self, function_types: collections::Vec<Rc<FunctionType>>) {
-        self.types = function_types;
+        self.type_definitions = function_types
+            .into_iter()
+            .map(|func_type| {
+                Rc::new(DefType {
+                    composite: CompositeType::Func(func_type),
+                    supertypes: collections::vec![],
+                    is_final: true,
+                    rec_group: None,
+                })
+            })
+            .collect();
     }
 }

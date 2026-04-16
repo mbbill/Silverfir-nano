@@ -60,30 +60,14 @@ impl<'a> Arm32Backend<'a> {
                 self.emit_branch(BranchFixupKind::B, trap_label);
             }
 
-            MachineTerminator::CallDirect {
-                callee,
+            MachineTerminator::Call {
+                target,
                 callee_frame_base,
                 caller_result_base,
                 continuation,
             } => {
-                self.emit_call_direct(
-                    *callee,
-                    *callee_frame_base,
-                    *caller_result_base,
-                    *continuation,
-                )?;
-            }
-
-            MachineTerminator::CallIndirect {
-                callee_target,
-                callee_entry,
-                callee_frame_base,
-                caller_result_base,
-                continuation,
-            } => {
-                self.emit_call_indirect(
-                    *callee_target,
-                    *callee_entry,
+                self.emit_call(
+                    target,
                     *callee_frame_base,
                     *caller_result_base,
                     *continuation,

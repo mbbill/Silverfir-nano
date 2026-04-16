@@ -11,8 +11,9 @@ use crate::collections;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    self, MachineAddr, MachineBlock, MachineBranchCond, MachineConvertOp, MachineEdge, MachineInst,
-    MachineInstKind, MachineMemWidth, MachineReg, MachineRegOwner, MachineTerminator, MachineValue,
+    self, MachineAddr, MachineBlock, MachineBranchCond, MachineCallTarget, MachineConvertOp,
+    MachineEdge, MachineInst, MachineInstKind, MachineMemWidth, MachineReg, MachineRegOwner,
+    MachineTerminator, MachineValue,
 };
 use crate::vm::machine::ownership::DynamicOwnershipTracker;
 
@@ -71,7 +72,24 @@ pub(super) fn copy_propagate(
         rewrite_sources(&mut inst.kind, aliases);
         rewrite_float_alias_sources(&mut inst.kind, float_aliases);
 
-        if matches!(inst.kind, MachineInstKind::CallExternal(_)) {
+        if matches!(
+            inst.kind,
+            MachineInstKind::CallRuntime(_)
+                | MachineInstKind::RefFunc { .. }
+                | MachineInstKind::RefAsNonNull { .. }
+                | MachineInstKind::RefEq { .. }
+                | MachineInstKind::RefI31 { .. }
+                | MachineInstKind::I31GetS { .. }
+                | MachineInstKind::I31GetU { .. }
+                | MachineInstKind::AnyConvertExtern { .. }
+                | MachineInstKind::ExternConvertAny { .. }
+                | MachineInstKind::RefTest { .. }
+                | MachineInstKind::RefCast { .. }
+                | MachineInstKind::StructNewDefault { .. }
+                | MachineInstKind::StructGet { .. }
+                | MachineInstKind::StructSet { .. }
+                | MachineInstKind::ArrayNewDefault { .. }
+        ) {
             clear_aliases(aliases);
             clear_aliases(float_aliases);
             rewritten.push(inst);
@@ -135,7 +153,24 @@ fn can_elide_reg_move(
         if inst_defines(&inst.kind, dst) {
             return true;
         }
-        if matches!(inst.kind, MachineInstKind::CallExternal(_)) {
+        if matches!(
+            inst.kind,
+            MachineInstKind::CallRuntime(_)
+                | MachineInstKind::RefFunc { .. }
+                | MachineInstKind::RefAsNonNull { .. }
+                | MachineInstKind::RefEq { .. }
+                | MachineInstKind::RefI31 { .. }
+                | MachineInstKind::I31GetS { .. }
+                | MachineInstKind::I31GetU { .. }
+                | MachineInstKind::AnyConvertExtern { .. }
+                | MachineInstKind::ExternConvertAny { .. }
+                | MachineInstKind::RefTest { .. }
+                | MachineInstKind::RefCast { .. }
+                | MachineInstKind::StructNewDefault { .. }
+                | MachineInstKind::StructGet { .. }
+                | MachineInstKind::StructSet { .. }
+                | MachineInstKind::ArrayNewDefault { .. }
+        ) {
             // copy_propagate clears aliases at helper calls, so a move can only
             // disappear here if its destination is dead after the barrier.
             let remaining = &ops[start_idx + 1 + later_index + 1..];
@@ -260,7 +295,36 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(mask, aliases);
         }
         MachineInstKind::TrapIf { cond, .. } => rewrite_branch_cond(cond, aliases),
-        MachineInstKind::CallExternal(_) => {}
+        MachineInstKind::CallRuntime(_) => {}
+        MachineInstKind::RefFunc { .. } | MachineInstKind::StructNewDefault { .. } => {}
+        MachineInstKind::RefAsNonNull { src, .. }
+        | MachineInstKind::RefI31 { src, .. }
+        | MachineInstKind::I31GetS { src, .. }
+        | MachineInstKind::I31GetU { src, .. }
+        | MachineInstKind::AnyConvertExtern { src, .. }
+        | MachineInstKind::ExternConvertAny { src, .. }
+        | MachineInstKind::RefTest { src, .. }
+        | MachineInstKind::RefCast { src, .. }
+        | MachineInstKind::StructGet { src, .. }
+        | MachineInstKind::ArrayNewDefault { length: src, .. } => {
+            rewrite_value(src, aliases);
+        }
+        MachineInstKind::RefEq { lhs, rhs, .. } => {
+            rewrite_value(lhs, aliases);
+            rewrite_value(rhs, aliases);
+        }
+        MachineInstKind::StructSet {
+            ref_src,
+            value_lo,
+            value_hi,
+            ..
+        } => {
+            rewrite_value(ref_src, aliases);
+            rewrite_value(value_lo, aliases);
+            if let Some(value_hi) = value_hi {
+                rewrite_value(value_hi, aliases);
+            }
+        }
         MachineInstKind::MemoryGrow { delta, .. } => {
             rewrite_value(delta, aliases);
         }
@@ -311,23 +375,20 @@ fn rewrite_terminator_sources(term: &mut MachineTerminator, aliases: &[Option<Ma
                 rewrite_edge(edge, aliases);
             }
         }
-        MachineTerminator::CallDirect {
+        MachineTerminator::Call {
+            target,
             callee_frame_base,
             caller_result_base,
             ..
         } => {
-            *callee_frame_base = resolve_alias(*callee_frame_base, aliases);
-            *caller_result_base = resolve_alias(*caller_result_base, aliases);
-        }
-        MachineTerminator::CallIndirect {
-            callee_target,
-            callee_entry,
-            callee_frame_base,
-            caller_result_base,
-            ..
-        } => {
-            *callee_target = resolve_alias(*callee_target, aliases);
-            *callee_entry = resolve_alias(*callee_entry, aliases);
+            if let MachineCallTarget::Indirect {
+                callee_target,
+                callee_entry,
+            } = target
+            {
+                *callee_target = resolve_alias(*callee_target, aliases);
+                *callee_entry = resolve_alias(*callee_entry, aliases);
+            }
             *callee_frame_base = resolve_alias(*callee_frame_base, aliases);
             *caller_result_base = resolve_alias(*caller_result_base, aliases);
         }
@@ -343,8 +404,7 @@ fn rewrite_float_alias_terminator_sources(
         MachineTerminator::Branch { cond, .. } => rewrite_float_alias_branch_cond(cond, aliases),
         MachineTerminator::Jump(_)
         | MachineTerminator::JumpTable { .. }
-        | MachineTerminator::CallDirect { .. }
-        | MachineTerminator::CallIndirect { .. }
+        | MachineTerminator::Call { .. }
         | MachineTerminator::Return
         | MachineTerminator::Trap { .. } => {}
     }

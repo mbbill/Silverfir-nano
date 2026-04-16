@@ -1,7 +1,7 @@
-//! External WebAssembly value API.
+//! Public WebAssembly value API.
 //!
 //! This module provides the public interface for WebAssembly values,
-//! used for function arguments, return values, and external API interactions.
+//! used for function arguments, return values, and host API interactions.
 
 use crate::value_type::{RefType, ValueType};
 use core::fmt::Display;
@@ -12,18 +12,30 @@ pub struct RefHandle(pub(crate) usize);
 
 impl RefHandle {
     #[cfg(target_pointer_width = "64")]
-    const HOST_TAG: usize = 1 << 60;
+    const SPECIAL_TAG: usize = 1 << 60;
     #[cfg(target_pointer_width = "64")]
     const EXTERN_TAG: usize = 1 << 61;
     #[cfg(target_pointer_width = "64")]
-    const TAG_MASK: usize = 0x3 << 60;
+    const PAYLOAD_BITS: u32 = 60;
 
     #[cfg(target_pointer_width = "32")]
-    const HOST_TAG: usize = 1 << 28;
+    const SPECIAL_TAG: usize = 1 << 28;
     #[cfg(target_pointer_width = "32")]
     const EXTERN_TAG: usize = 1 << 29;
     #[cfg(target_pointer_width = "32")]
-    const TAG_MASK: usize = 0x3 << 28;
+    const PAYLOAD_BITS: u32 = 28;
+
+    const fn payload_mask() -> usize {
+        Self::SPECIAL_TAG - 1
+    }
+
+    const fn pool_payload_tag() -> usize {
+        1usize << (Self::PAYLOAD_BITS - 1)
+    }
+
+    const fn host_payload_mask() -> usize {
+        Self::pool_payload_tag() - 1
+    }
 
     pub const fn new(value: usize) -> Self {
         Self(value)
@@ -37,12 +49,20 @@ impl RefHandle {
         self.0 == usize::MAX
     }
 
+    pub fn hostref(index: usize) -> Self {
+        Self(Self::SPECIAL_TAG | (index & Self::host_payload_mask()))
+    }
+
     pub fn externref(index: usize) -> Self {
-        Self(Self::EXTERN_TAG | Self::HOST_TAG | (index & 0xFFF_FFFF))
+        Self(Self::SPECIAL_TAG | Self::EXTERN_TAG | (index & Self::host_payload_mask()))
     }
 
     pub fn is_host(&self) -> bool {
-        !self.is_null() && (self.0 & Self::HOST_TAG) != 0
+        self.is_special() && !self.is_pooled()
+    }
+
+    pub fn is_special(&self) -> bool {
+        !self.is_null() && (self.0 & Self::SPECIAL_TAG) != 0
     }
 
     pub fn is_extern(&self) -> bool {
@@ -53,11 +73,59 @@ impl RefHandle {
         }
     }
 
-    pub fn raw_value(&self) -> usize {
+    pub(crate) fn is_pooled(&self) -> bool {
+        self.is_special() && (self.0 & Self::pool_payload_tag()) != 0
+    }
+
+    pub(crate) fn pooled_index(&self) -> Option<usize> {
+        self.is_pooled()
+            .then_some(self.0 & Self::host_payload_mask())
+    }
+
+    pub fn host_index(&self) -> Option<usize> {
+        self.is_host().then_some(self.0 & Self::host_payload_mask())
+    }
+
+    pub(crate) fn from_pool_index(index: usize) -> Self {
+        Self(Self::SPECIAL_TAG | Self::pool_payload_tag() | (index & Self::host_payload_mask()))
+    }
+
+    pub fn to_any(self) -> Result<Self, ()> {
+        if self.is_null() {
+            Ok(self)
+        } else if self.is_special() && self.is_extern() {
+            Ok(Self(self.0 & !Self::EXTERN_TAG))
+        } else {
+            Err(())
+        }
+    }
+
+    pub fn to_extern(self) -> Result<Self, ()> {
+        if self.is_null() {
+            Ok(self)
+        } else if self.is_special() {
+            Ok(Self(self.0 | Self::EXTERN_TAG))
+        } else {
+            Err(())
+        }
+    }
+
+    #[inline]
+    pub const fn encoded(self) -> usize {
+        self.0
+    }
+
+    pub fn payload(&self) -> usize {
         if self.is_null() {
             return usize::MAX;
         }
-        self.0 & !Self::TAG_MASK
+        if self.is_pooled() {
+            self.0 & Self::host_payload_mask()
+        } else if self.is_special() {
+            self.0 & Self::host_payload_mask()
+        } else {
+            self.0 & Self::payload_mask()
+        }
     }
 }
 
@@ -247,7 +315,7 @@ impl Value {
             Value::I64(v) => v as u64,
             Value::F32(v) => f32::to_bits(v) as u64,
             Value::F64(v) => f64::to_bits(v),
-            Value::Ref(r, _) => r.raw_value() as u64,
+            Value::Ref(r, _) => r.encoded() as u64,
             Value::Unknown => 0,
         }
     }

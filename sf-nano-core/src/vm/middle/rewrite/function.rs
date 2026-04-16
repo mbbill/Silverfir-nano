@@ -532,6 +532,7 @@ fn apply_inline_prefix(
         }
         SemanticOpKind::CallDirect { .. }
         | SemanticOpKind::CallIndirect { .. }
+        | SemanticOpKind::CallRef { .. }
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => {
@@ -805,6 +806,28 @@ fn lower_block_body_op(
                 builder,
             )
         }
+        SemanticOpKind::CallRef {
+            type_idx,
+            params,
+            results,
+        } => {
+            let rtypes = semantic
+                .op_result_types
+                .get(&semantic_index)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            lower_call_ref(
+                *type_idx,
+                *params,
+                *results,
+                rtypes,
+                frame,
+                state,
+                resident_cache,
+                materialized_cache,
+                builder,
+            )
+        }
         SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } | SemanticOpKind::End => Ok(()),
         SemanticOpKind::Else { .. } => Err(WasmError::internal("else must end a block")),
         SemanticOpKind::If { .. }
@@ -1067,6 +1090,32 @@ fn lower_call_indirect(
         type_idx,
         table_idx,
         index_slot: call_base.advance(params),
+        args: FrameSpan::new(call_base, params),
+        results: FrameSpan::new(call_base, results),
+    })?;
+    state.ops.push(SsaInst::call(call_idx));
+    state.finish_call(consumed, results, result_types);
+    resident_cache.clear();
+    materialized_cache.clear();
+    Ok(())
+}
+
+fn lower_call_ref(
+    type_idx: u32,
+    params: u16,
+    results: u16,
+    result_types: &[ValueType],
+    frame: FrameLayoutPlan,
+    state: &mut BlockState,
+    resident_cache: &mut BTreeSet<FrameSlot>,
+    materialized_cache: &mut BTreeSet<FrameSlot>,
+    builder: &mut ProgramBuilder,
+) -> Result<(), WasmError> {
+    let consumed = params.saturating_add(1);
+    let call_base = call_base_slot(frame, state.height(), consumed);
+    let call_idx = builder.push_call_op(SsaCallOp::CallRef {
+        type_idx,
+        ref_slot: call_base.advance(params),
         args: FrameSpan::new(call_base, params),
         results: FrameSpan::new(call_base, results),
     })?;
@@ -1587,6 +1636,44 @@ fn lower_block_terminator(
             lower_call_indirect(
                 *type_idx,
                 *table_idx,
+                *params,
+                *results,
+                rtypes,
+                frame,
+                state,
+                resident_cache,
+                materialized_cache,
+                builder,
+            )?;
+            maybe_publish_live_window_for_targets(
+                &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                state,
+                frame,
+                planner,
+            );
+            Ok(LoweredTerminator::new(goto_next(
+                semantic_index,
+                semantic.ops.len(),
+                state,
+                frame,
+                values,
+                semantic_to_block,
+                block_params,
+                planner,
+            )?))
+        }
+        SemanticOpKind::CallRef {
+            type_idx,
+            params,
+            results,
+        } => {
+            let rtypes = semantic
+                .op_result_types
+                .get(&semantic_index)
+                .map(|v| v.as_slice())
+                .unwrap_or(&[]);
+            lower_call_ref(
+                *type_idx,
                 *params,
                 *results,
                 rtypes,

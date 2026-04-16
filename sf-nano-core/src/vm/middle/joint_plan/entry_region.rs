@@ -189,6 +189,7 @@ fn clears_cache_region(kind: &SemanticOpKind) -> bool {
             | SemanticOpKind::BrTable { .. }
             | SemanticOpKind::CallDirect { .. }
             | SemanticOpKind::CallIndirect { .. }
+            | SemanticOpKind::CallRef { .. }
             | SemanticOpKind::ReturnVoid
             | SemanticOpKind::ReturnOne
             | SemanticOpKind::Return { .. }
@@ -316,6 +317,7 @@ fn analyze_entry_stack_region(
             | SemanticOpKind::BrTable { .. }
             | SemanticOpKind::CallDirect { .. }
             | SemanticOpKind::CallIndirect { .. }
+            | SemanticOpKind::CallRef { .. }
             | SemanticOpKind::ReturnVoid
             | SemanticOpKind::ReturnOne
             | SemanticOpKind::Return { .. } => break,
@@ -466,6 +468,17 @@ fn apply_transient_analysis_effect(
             push_fresh_transient_symbols(stack, infos, next_symbol, *results as usize);
         }
         SemanticOpKind::CallIndirect {
+            params, results, ..
+        } => {
+            record_transient_touches(
+                stack,
+                params.saturating_add(1) as usize,
+                block_offset,
+                infos,
+            );
+            push_fresh_transient_symbols(stack, infos, next_symbol, *results as usize);
+        }
+        SemanticOpKind::CallRef {
             params, results, ..
         } => {
             record_transient_touches(

@@ -67,6 +67,11 @@ pub(crate) enum SlotInstKind {
         params: u16,
         results: u16,
     },
+    CallRef {
+        type_idx: u32,
+        params: u16,
+        results: u16,
+    },
 }
 
 /// Slot-only block terminator.
@@ -155,6 +160,15 @@ fn lower_body_inst_kind(kind: &SemanticOpKind) -> Option<SlotInstKind> {
         } => Some(SlotInstKind::CallIndirect {
             type_idx: *type_idx,
             table_idx: *table_idx,
+            params: *params,
+            results: *results,
+        }),
+        SemanticOpKind::CallRef {
+            type_idx,
+            params,
+            results,
+        } => Some(SlotInstKind::CallRef {
+            type_idx: *type_idx,
             params: *params,
             results: *results,
         }),

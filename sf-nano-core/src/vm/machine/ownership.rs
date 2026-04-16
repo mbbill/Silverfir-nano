@@ -104,7 +104,20 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::IndexedLoad { dst, .. }
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
-        | MachineInstKind::TestBits { dst, .. } => Some(*dst),
+        | MachineInstKind::TestBits { dst, .. }
+        | MachineInstKind::RefFunc { dst, .. }
+        | MachineInstKind::RefAsNonNull { dst, .. }
+        | MachineInstKind::RefEq { dst, .. }
+        | MachineInstKind::RefI31 { dst, .. }
+        | MachineInstKind::I31GetS { dst, .. }
+        | MachineInstKind::I31GetU { dst, .. }
+        | MachineInstKind::AnyConvertExtern { dst, .. }
+        | MachineInstKind::ExternConvertAny { dst, .. }
+        | MachineInstKind::RefTest { dst, .. }
+        | MachineInstKind::RefCast { dst, .. }
+        | MachineInstKind::StructNewDefault { dst, .. }
+        | MachineInstKind::ArrayNewDefault { dst, .. } => Some(*dst),
+        MachineInstKind::StructGet { dst, dst_hi, .. } => dst_hi.is_none().then_some(*dst),
         MachineInstKind::MemoryGrow { dst, .. } | MachineInstKind::TableGrow { dst, .. } => {
             Some(*dst)
         }
@@ -115,7 +128,8 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::TableFill { .. }
         | MachineInstKind::TableCopy { .. }
         | MachineInstKind::TableInit { .. }
-        | MachineInstKind::ElemDrop { .. } => None,
+        | MachineInstKind::ElemDrop { .. }
+        | MachineInstKind::StructSet { .. } => None,
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -128,6 +142,6 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         MachineInstKind::Store { .. }
         | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
-        | MachineInstKind::CallExternal(_) => None,
+        | MachineInstKind::CallRuntime(_) => None,
     }
 }

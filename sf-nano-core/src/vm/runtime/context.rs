@@ -11,6 +11,7 @@ use crate::collections;
 
 use crate::{
     error::WasmError,
+    module::type_defs::CompositeType,
     vm::{
         entities::{FunctionInst, GlobalInst, ModuleInst},
         runtime::{code::CompiledNativeModule, dispatch_view::NativeDispatchMetadata},
@@ -190,13 +191,16 @@ impl NativeContext {
             .module()
             .tables
             .iter()
-            .map(|table| NativeTableView {
-                elements_base: if table.elements.is_empty() {
-                    core::ptr::null_mut()
-                } else {
-                    table.elements.as_ptr() as *mut RefHandle
-                },
-                elements_len: table.elements.len(),
+            .map(|table| {
+                let elements = table.elements();
+                NativeTableView {
+                    elements_base: if elements.is_empty() {
+                        core::ptr::null_mut()
+                    } else {
+                        elements.as_ptr() as *mut RefHandle
+                    },
+                    elements_len: elements.len(),
+                }
             })
             .collect();
 
@@ -239,25 +243,44 @@ impl NativeContext {
 
         let module = store.module();
         let type_canon = &self.type_canon;
-        let function_views: collections::Vec<_> = module
-            .functions
+        let current_store = self.store;
+        let registry = store.clone_function_registry();
+        let function_views: collections::Vec<_> = registry
+            .borrow()
             .iter()
-            .enumerate()
-            .map(|(func_idx, func)| {
-                let (kind, local_target) = match func {
-                    FunctionInst::Local { .. } => (function_kind::LOCAL, func_idx as u32),
-                    FunctionInst::External { .. } => (function_kind::EXTERNAL, u32::MAX),
+            .filter_map(|entry| unsafe {
+                entry
+                    .store
+                    .as_ref()
+                    .map(|owner_store| (owner_store, entry.local_index))
+            })
+            .map(|(owner_store, local_index)| {
+                let func = &owner_store.module().functions[local_index];
+                let is_local =
+                    core::ptr::eq(owner_store as *const Store, current_store as *const Store)
+                        && matches!(func, FunctionInst::Local { .. });
+                let (kind, local_target) = if is_local {
+                    (function_kind::LOCAL, local_index as u32)
+                } else {
+                    (function_kind::EXTERNAL, u32::MAX)
                 };
+                let func_type = func.func_type();
                 let type_canon = match func {
-                    FunctionInst::Local { type_index, .. } => type_canon
+                    FunctionInst::Local { type_index, .. } if is_local => type_canon
                         .get(*type_index as usize)
                         .copied()
                         .unwrap_or(u32::MAX),
-                    FunctionInst::External { func_type, .. } => module
+                    _ => module
                         .types
                         .as_slice()
                         .iter()
-                        .position(|candidate| candidate.as_ref() == func_type.as_ref())
+                        .position(|candidate| {
+                            matches!(
+                                &candidate.composite,
+                                CompositeType::Func(candidate_func)
+                                    if candidate_func.as_ref() == func_type
+                            )
+                        })
                         .and_then(|index| type_canon.get(index).copied())
                         .unwrap_or(u32::MAX),
                 };
@@ -404,7 +427,11 @@ mod tests {
 
     use super::*;
     use crate::{
-        module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
+        module::{
+            entities::FunctionSpec,
+            type_context::TypeContext,
+            type_defs::{CompositeType, DefType, FunctionType},
+        },
         value_type::ValueType,
         vm::{
             entities::{Caller, ModuleInst},
@@ -413,7 +440,7 @@ mod tests {
         },
     };
 
-    fn external_noop(
+    fn host_noop(
         _caller: &mut Caller<'_>,
         _args: &[Value],
         _results: &mut [Value],
@@ -421,15 +448,29 @@ mod tests {
         Ok(())
     }
 
+    fn func_def(
+        params: collections::Vec<ValueType>,
+        results: collections::Vec<ValueType>,
+    ) -> Rc<DefType> {
+        Rc::new(DefType {
+            composite: CompositeType::Func(Rc::new(FunctionType::new(params, results))),
+            supertypes: collections::vec![],
+            is_final: true,
+            rec_group: None,
+        })
+    }
+
     #[test]
     fn refresh_function_views_canonicalizes_equivalent_type_indices() {
-        let duplicated_sig = Rc::new(FunctionType::new(
-            collections::vec![ValueType::I32],
-            collections::vec![ValueType::I64],
-        ));
         let types = TypeContext::new(collections::vec![
-            Rc::clone(&duplicated_sig),
-            duplicated_sig
+            func_def(
+                collections::vec![ValueType::I32],
+                collections::vec![ValueType::I64],
+            ),
+            func_def(
+                collections::vec![ValueType::I32],
+                collections::vec![ValueType::I64],
+            ),
         ]);
         let mut module = ModuleInst::new(String::from("m"), types);
         module.functions.push(FunctionInst::Local {
@@ -455,22 +496,24 @@ mod tests {
     }
 
     #[test]
-    fn refresh_function_views_canonicalizes_equivalent_external_signatures() {
-        let duplicated_sig = Rc::new(FunctionType::new(
-            collections::vec![ValueType::I32],
-            collections::vec![ValueType::I64],
-        ));
+    fn refresh_function_views_canonicalizes_equivalent_host_signatures() {
         let types = TypeContext::new(collections::vec![
-            Rc::clone(&duplicated_sig),
-            duplicated_sig
+            func_def(
+                collections::vec![ValueType::I32],
+                collections::vec![ValueType::I64],
+            ),
+            func_def(
+                collections::vec![ValueType::I32],
+                collections::vec![ValueType::I64],
+            ),
         ]);
         let mut module = ModuleInst::new(String::from("m"), types);
-        module.functions.push(FunctionInst::External {
+        module.functions.push(FunctionInst::Host {
             func_type: Rc::new(FunctionType::new(
                 collections::vec![ValueType::I32],
                 collections::vec![ValueType::I64],
             )),
-            callback: external_noop,
+            callback: host_noop,
         });
         let mut store = Box::new(Store::new(module));
         let ctx = NativeContext::new((&mut *store) as *mut Store, core::ptr::null_mut());

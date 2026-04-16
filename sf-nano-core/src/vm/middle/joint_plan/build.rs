@@ -625,6 +625,20 @@ fn apply_semantic_effect(
                 push_result_types(&mut state.type_stack, *results, op_index, op_result_types);
             }
         }
+        SemanticOpKind::CallRef {
+            params, results, ..
+        } => {
+            if !state.unreachable {
+                state.height = state
+                    .height
+                    .saturating_sub(params.saturating_add(1))
+                    .saturating_add(*results);
+                state.spill_depth = state.height;
+                let base = state.height.saturating_sub(*results) as usize;
+                state.type_stack.truncate(base);
+                push_result_types(&mut state.type_stack, *results, op_index, op_result_types);
+            }
+        }
         SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
             state.mark_unreachable();
         }
@@ -845,6 +859,7 @@ fn apply_structural_prefix(op: &SemanticOp, state: &mut PrepareState) {
         }
         SemanticOpKind::CallDirect { .. }
         | SemanticOpKind::CallIndirect { .. }
+        | SemanticOpKind::CallRef { .. }
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => {

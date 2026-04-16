@@ -15,8 +15,8 @@ use crate::{
     vm::{
         arch::common::types::DebugRegion,
         machine::machine_ir::{
-            MachineAddr, MachineBranchCond, MachineFloatWidth, MachineFunction, MachineInstKind,
-            MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineModule,
+            MachineAddr, MachineBranchCond, MachineCallTarget, MachineFloatWidth, MachineFunction,
+            MachineInstKind, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineModule,
             MachineModuleAbi, MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator,
             MachineValue,
         },
@@ -368,6 +368,19 @@ fn render_call(bop: &SsaCallOp) -> String {
         } => format!(
             "call_indirect type={type_idx} table={table_idx} index=fp[{}] args=fp[{}..{}) results=fp[{}..{})",
             index_slot.0,
+            args.start.0,
+            args.start.0 + args.count,
+            results.start.0,
+            results.start.0 + results.count,
+        ),
+        SsaCallOp::CallRef {
+            type_idx,
+            ref_slot,
+            args,
+            results,
+        } => format!(
+            "call_ref type={type_idx} ref=fp[{}] args=fp[{}..{}) results=fp[{}..{})",
+            ref_slot.0,
             args.start.0,
             args.start.0 + args.count,
             results.start.0,
@@ -856,8 +869,8 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         MachineInstKind::TrapIf { kind, cond } => {
             format!("trap_if {:?} {}", kind, render_branch_cond(cond))
         }
-        MachineInstKind::CallExternal(call) => {
-            format!("call_external const={}", call.metadata.0)
+        MachineInstKind::CallRuntime(call) => {
+            format!("call_runtime const={}", call.metadata.0)
         }
         MachineInstKind::MemoryGrow {
             mem_idx,
@@ -978,6 +991,100 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         MachineInstKind::ElemDrop { elem_idx } => {
             format!("elem.drop elem={}", elem_idx)
         }
+        MachineInstKind::RefFunc { func_idx, dst } => {
+            format!("ref.func func={} -> r{}", func_idx, dst.0)
+        }
+        MachineInstKind::RefAsNonNull { src, dst } => {
+            format!("ref.as_non_null {} -> r{}", mval(src), dst.0)
+        }
+        MachineInstKind::RefEq { lhs, rhs, dst } => {
+            format!("ref.eq {} {} -> r{}", mval(lhs), mval(rhs), dst.0)
+        }
+        MachineInstKind::RefI31 { src, dst } => {
+            format!("ref.i31 {} -> r{}", mval(src), dst.0)
+        }
+        MachineInstKind::I31GetS { src, dst } => {
+            format!("i31.get_s {} -> r{}", mval(src), dst.0)
+        }
+        MachineInstKind::I31GetU { src, dst } => {
+            format!("i31.get_u {} -> r{}", mval(src), dst.0)
+        }
+        MachineInstKind::AnyConvertExtern { src, dst } => {
+            format!("any.convert_extern {} -> r{}", mval(src), dst.0)
+        }
+        MachineInstKind::ExternConvertAny { src, dst } => {
+            format!("extern.convert_any {} -> r{}", mval(src), dst.0)
+        }
+        MachineInstKind::RefTest { ref_type, src, dst } => {
+            format!("ref.test {} {} -> r{}", ref_type, mval(src), dst.0)
+        }
+        MachineInstKind::RefCast { ref_type, src, dst } => {
+            format!("ref.cast {} {} -> r{}", ref_type, mval(src), dst.0)
+        }
+        MachineInstKind::StructNewDefault { type_idx, dst } => {
+            format!("struct.new_default type={} -> r{}", type_idx, dst.0)
+        }
+        MachineInstKind::StructGet {
+            type_idx,
+            field_idx,
+            signed,
+            ty,
+            src,
+            dst,
+            dst_hi,
+        } => {
+            let op = match signed {
+                None => "struct.get",
+                Some(true) => "struct.get_s",
+                Some(false) => "struct.get_u",
+            };
+            let result = if let Some(dst_hi) = dst_hi {
+                format!("r{},r{}", dst.0, dst_hi.0)
+            } else {
+                format!("r{}", dst.0)
+            };
+            format!(
+                "{} type={} field={} {:?} {} -> {}",
+                op,
+                type_idx,
+                field_idx,
+                ty,
+                mval(src),
+                result
+            )
+        }
+        MachineInstKind::StructSet {
+            type_idx,
+            field_idx,
+            ref_src,
+            value_lo,
+            value_hi,
+        } => {
+            let value = if let Some(value_hi) = value_hi {
+                format!("{}, {}", mval(value_lo), mval(value_hi))
+            } else {
+                mval(value_lo)
+            };
+            format!(
+                "struct.set type={} field={} {} {}",
+                type_idx,
+                field_idx,
+                mval(ref_src),
+                value
+            )
+        }
+        MachineInstKind::ArrayNewDefault {
+            type_idx,
+            length,
+            dst,
+        } => {
+            format!(
+                "array.new_default type={} {} -> r{}",
+                type_idx,
+                mval(length),
+                dst.0
+            )
+        }
     }
 }
 
@@ -1010,33 +1117,28 @@ fn render_machine_term(term: &MachineTerminator) -> String {
                 entries.iter().map(|e| format!("b{}", e.target.0)).collect();
             format!("jump_table {} [{}]", mval(index), targets.join(", "))
         }
-        MachineTerminator::CallDirect {
-            callee,
+        MachineTerminator::Call {
+            target,
             callee_frame_base,
             caller_result_base,
             continuation,
-        } => {
-            format!(
-                "call_direct f{} frame_base=r{} caller_result_base=r{} cont=b{}",
+        } => match target {
+            MachineCallTarget::Direct(callee) => format!(
+                "call f{} frame_base=r{} caller_result_base=r{} cont=b{}",
                 callee.0, callee_frame_base.0, caller_result_base.0, continuation.0
-            )
-        }
-        MachineTerminator::CallIndirect {
-            callee_target,
-            callee_entry,
-            callee_frame_base,
-            caller_result_base,
-            continuation,
-        } => {
-            format!(
-                "call_indirect target=r{} entry=r{} frame_base=r{} caller_result_base=r{} cont=b{}",
+            ),
+            MachineCallTarget::Indirect {
+                callee_target,
+                callee_entry,
+            } => format!(
+                "call target=r{} entry=r{} frame_base=r{} caller_result_base=r{} cont=b{}",
                 callee_target.0,
                 callee_entry.0,
                 callee_frame_base.0,
                 caller_result_base.0,
                 continuation.0
-            )
-        }
+            ),
+        },
         MachineTerminator::Return => "return".into(),
         MachineTerminator::Trap { kind } => format!("trap {:?}", kind),
     }

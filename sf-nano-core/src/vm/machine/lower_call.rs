@@ -2,13 +2,13 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineAddr, MachineBlockId, MachineBranchCond, MachineCallExternal,
+            MachineAddr, MachineBlockId, MachineBranchCond, MachineCallRuntime, MachineCallTarget,
             MachineCompareKind, MachineConstId, MachineFuncId, MachineInst, MachineInstKind,
             MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner,
             MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::frame::{FrameSlot, FrameSpan},
-        runtime::external::{ExternalCallFrameRegion, ExternalCallMeta, ExternalCallTargetKind},
+        runtime::runtime_call::{RuntimeCallFrameRegion, RuntimeCallMeta, RuntimeCallTargetKind},
     },
 };
 
@@ -112,15 +112,15 @@ impl<'a> BlockLowerContext<'a> {
         // SsaProgram's `local_slot_info.reads_before_write` analysis. Locals
         // that are guaranteed to be written before any read need no init.
 
-        Ok(MachineTerminator::CallDirect {
-            callee: callee_id,
+        Ok(MachineTerminator::Call {
+            target: MachineCallTarget::Direct(callee_id),
             callee_frame_base,
             caller_result_base,
             continuation,
         })
     }
 
-    pub(super) fn lower_call_external(
+    pub(super) fn lower_call_runtime(
         &mut self,
         func_idx: u32,
         args: FrameSpan,
@@ -128,68 +128,87 @@ impl<'a> BlockLowerContext<'a> {
         const_pool: &mut ConstPoolBuilder,
     ) -> Result<(), WasmError> {
         self.ensure_no_live_values(
-            "prepared SSA-IR external call reached native lowering with live linear SSA values; values must be published before the call",
+            "prepared SSA-IR runtime call reached native lowering with live linear SSA values; values must be published before the call",
         )?;
 
-        // External calls are modeled as inline runtime-entry calls rather than MIR
-        // terminators. Unlike local calls, they do not transfer control to
-        // another compiled MachineIR function or create a MachineIR
-        // continuation edge; the runtime external-call entry returns inline to
-        // this block.
+        // Runtime-dispatch calls are modeled as inline runtime-entry calls
+        // rather than MIR terminators. Unlike local calls, they do not transfer
+        // control to another compiled MachineIR function or create a MachineIR
+        // continuation edge; the runtime-call entry returns inline to this
+        // block.
         //
         // The surrounding MIR still makes the call boundary explicit by
         // emitting cached-local save/reload and mem0 cache refresh around the
-        // external-call instruction sequence.
-        let metadata = self.build_call_external_meta_direct(func_idx, args, results, const_pool);
-        self.emit_call_external(metadata)
+        // runtime-call instruction sequence.
+        let metadata = self.build_call_runtime_meta_direct(func_idx, args, results, const_pool);
+        self.emit_call_runtime(metadata)
     }
 
-    pub(super) fn build_call_external_meta_direct(
+    pub(super) fn build_call_runtime_meta_direct(
         &self,
         func_idx: u32,
         args: FrameSpan,
         results: FrameSpan,
         const_pool: &mut ConstPoolBuilder,
     ) -> MachineConstId {
-        // Direct external calls carry the Wasm function index as an immediate
-        // in the metadata record. The runtime entry will use it directly.
-        const_pool.call_external_meta(ExternalCallMeta {
+        // Direct runtime calls carry the Wasm function index as an immediate in
+        // the metadata record. The runtime entry will use it directly.
+        const_pool.call_runtime_meta(RuntimeCallMeta {
             func_idx_source: func_idx,
-            func_idx_source_kind: ExternalCallTargetKind::Immediate as u32,
-            args: external_call_region(args),
-            results: external_call_region(results),
+            func_idx_source_kind: RuntimeCallTargetKind::Immediate as u32,
+            expected_type_idx: u32::MAX,
+            args: runtime_call_region(args),
+            results: runtime_call_region(results),
         })
     }
 
-    pub(super) fn build_call_external_meta_indirect(
+    pub(super) fn build_call_runtime_meta_indirect(
         &self,
         func_idx_slot: FrameSlot,
         args: FrameSpan,
         results: FrameSpan,
         const_pool: &mut ConstPoolBuilder,
     ) -> MachineConstId {
-        // Indirect external calls resolve the target at runtime. MachineIR
+        // Indirect runtime calls resolve the target at runtime. MachineIR
         // publishes the frame slot that now holds the resolved function index,
         // and the runtime entry reloads it from there.
-        const_pool.call_external_meta(ExternalCallMeta {
+        const_pool.call_runtime_meta(RuntimeCallMeta {
             func_idx_source: func_idx_slot.0 as u32,
-            func_idx_source_kind: ExternalCallTargetKind::FrameSlot as u32,
-            args: external_call_region(args),
-            results: external_call_region(results),
+            func_idx_source_kind: RuntimeCallTargetKind::FrameSlot as u32,
+            expected_type_idx: u32::MAX,
+            args: runtime_call_region(args),
+            results: runtime_call_region(results),
         })
     }
 
-    pub(super) fn build_external_call_ops(
+    pub(super) fn build_call_runtime_meta_ref(
+        &self,
+        type_idx: u32,
+        ref_slot: FrameSlot,
+        args: FrameSpan,
+        results: FrameSpan,
+        const_pool: &mut ConstPoolBuilder,
+    ) -> MachineConstId {
+        const_pool.call_runtime_meta(RuntimeCallMeta {
+            func_idx_source: ref_slot.0 as u32,
+            func_idx_source_kind: RuntimeCallTargetKind::FrameSlot as u32,
+            expected_type_idx: type_idx,
+            args: runtime_call_region(args),
+            results: runtime_call_region(results),
+        })
+    }
+
+    pub(super) fn build_runtime_call_ops(
         &self,
         metadata: MachineConstId,
     ) -> collections::Vec<MachineInst> {
-        // The external-call instruction itself is the foreign-call boundary.
+        // The runtime-call instruction itself is the foreign-call boundary.
         // The reloads that follow repair machine-visible runtime state that may
         // have changed while the host callback executed, most importantly the
         // cached mem0 base/size pair after a possible memory growth.
         collections::vec![
             MachineInst {
-                kind: MachineInstKind::CallExternal(MachineCallExternal { metadata }),
+                kind: MachineInstKind::CallRuntime(MachineCallRuntime { metadata }),
             },
             MachineInst {
                 kind: MachineInstKind::Load {
@@ -214,14 +233,14 @@ impl<'a> BlockLowerContext<'a> {
         ]
     }
 
-    fn emit_call_external(&mut self, metadata: MachineConstId) -> Result<(), WasmError> {
-        // External calls are frame-slot based and return inline in the same
+    fn emit_call_runtime(&mut self, metadata: MachineConstId) -> Result<(), WasmError> {
+        // Runtime calls are frame-slot based and return inline in the same
         // MIR block. Because the runtime call may clobber every machine
         // register, cached locals must be published to their canonical frame
         // slots before the call. Re-caching after the call is explicit in
         // SSA-IR.
         self.emit_save_dirty_cached_locals()?;
-        self.emit_machine_ops(self.build_external_call_ops(metadata));
+        self.emit_machine_ops(self.build_runtime_call_ops(metadata));
         Ok(())
     }
 
@@ -349,11 +368,11 @@ impl<'a> BlockLowerContext<'a> {
 }
 
 #[inline]
-fn external_call_region(span: FrameSpan) -> ExternalCallFrameRegion {
-    // External calls use frame-relative regions all the way down to the runtime
+fn runtime_call_region(span: FrameSpan) -> RuntimeCallFrameRegion {
+    // Runtime calls use frame-relative regions all the way down to the runtime
     // entry, so the Wasm frame span lowers directly to the serialized ABI
     // record without any extra scratch slot or repacking.
-    ExternalCallFrameRegion {
+    RuntimeCallFrameRegion {
         base_slot: span.start.0,
         slots: span.count,
     }

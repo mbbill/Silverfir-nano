@@ -2,8 +2,7 @@
 
 use crate::collections;
 
-#[cfg(sf_jit)]
-use core::cell::RefCell;
+use core::cell::{Ref, RefCell, RefMut};
 use tracked_alloc::{rc::Rc, string::String};
 
 use crate::error::WasmError;
@@ -17,7 +16,7 @@ use crate::vm::runtime::code_buf::CodeBuffer;
 use crate::vm::runtime::guard_pages::GuardPageMemory;
 use crate::vm::value::{RefHandle, Value};
 
-pub type ExternalFn = fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), WasmError>;
+pub type HostFn = fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), WasmError>;
 
 pub struct Caller<'a> {
     memory: Option<&'a mut [u8]>,
@@ -46,9 +45,13 @@ pub enum FunctionInst {
         spec: FunctionSpec,
         type_index: u32,
     },
-    External {
+    Host {
         func_type: Rc<FunctionType>,
-        callback: ExternalFn,
+        callback: HostFn,
+    },
+    Linked {
+        func_type: Rc<FunctionType>,
+        handle: RefHandle,
     },
 }
 
@@ -57,7 +60,8 @@ impl FunctionInst {
     pub fn func_type(&self) -> &FunctionType {
         match self {
             FunctionInst::Local { spec, .. } => spec.func_type(),
-            FunctionInst::External { func_type, .. } => func_type,
+            FunctionInst::Host { func_type, .. } => func_type,
+            FunctionInst::Linked { func_type, .. } => func_type,
         }
     }
 
@@ -65,27 +69,35 @@ impl FunctionInst {
     pub fn type_index(&self) -> u32 {
         match self {
             FunctionInst::Local { type_index, .. } => *type_index,
-            FunctionInst::External { .. } => u32::MAX,
+            FunctionInst::Host { .. } | FunctionInst::Linked { .. } => u32::MAX,
         }
     }
 
     #[inline]
-    pub fn is_external(&self) -> bool {
-        matches!(self, FunctionInst::External { .. })
+    pub fn is_host(&self) -> bool {
+        matches!(self, FunctionInst::Host { .. })
     }
 
     #[inline]
     pub fn spec(&self) -> Option<&FunctionSpec> {
         match self {
             FunctionInst::Local { spec, .. } => Some(spec),
-            FunctionInst::External { .. } => None,
+            FunctionInst::Host { .. } | FunctionInst::Linked { .. } => None,
+        }
+    }
+
+    #[inline]
+    pub fn linked_handle(&self) -> Option<RefHandle> {
+        match self {
+            FunctionInst::Linked { handle, .. } => Some(*handle),
+            _ => None,
         }
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct TableInst {
-    pub elements: collections::Vec<RefHandle>,
+    elements: Rc<RefCell<collections::Vec<RefHandle>>>,
     pub limits: Limits,
     pub value_type: ValueType,
 }
@@ -94,45 +106,72 @@ impl TableInst {
     pub fn new(limits: Limits, value_type: ValueType) -> Self {
         let initial_size = limits.min();
         TableInst {
-            elements: collections::vec![RefHandle::null(); initial_size],
+            elements: Rc::new(RefCell::new(collections::vec![
+                RefHandle::null();
+                initial_size
+            ])),
             limits,
             value_type,
         }
     }
 
     #[inline]
+    pub fn from_shared(
+        limits: Limits,
+        value_type: ValueType,
+        elements: Rc<RefCell<collections::Vec<RefHandle>>>,
+    ) -> Self {
+        Self {
+            elements,
+            limits,
+            value_type,
+        }
+    }
+
+    #[inline]
+    pub fn elements(&self) -> Ref<'_, collections::Vec<RefHandle>> {
+        self.elements.borrow()
+    }
+
+    #[inline]
+    pub fn elements_mut(&self) -> RefMut<'_, collections::Vec<RefHandle>> {
+        self.elements.borrow_mut()
+    }
+
+    #[inline]
+    pub fn clone_shared_elements(&self) -> Rc<RefCell<collections::Vec<RefHandle>>> {
+        Rc::clone(&self.elements)
+    }
+
+    #[inline]
     pub fn size(&self) -> usize {
-        self.elements.len()
+        self.elements.borrow().len()
     }
 }
 
 #[derive(Debug)]
-pub struct MemInst {
-    pub data: collections::Vec<u8>,
-    pub limits: Limits,
+pub(crate) struct MemBacking {
+    pub(crate) data: collections::Vec<u8>,
     #[cfg(sf_has_guard_pages)]
-    guard: Option<GuardPageMemory>,
+    pub(crate) guard: Option<GuardPageMemory>,
 }
 
-impl Clone for MemInst {
-    fn clone(&self) -> Self {
-        MemInst {
-            data: self.data.clone(),
-            limits: self.limits.clone(),
-            #[cfg(sf_has_guard_pages)]
-            guard: None, // guard-page backing is not cloneable; clone falls back to Vec
-        }
-    }
+#[derive(Debug, Clone)]
+pub struct MemInst {
+    backing: Rc<RefCell<MemBacking>>,
+    pub limits: Limits,
 }
 
 impl MemInst {
     pub fn new(limits: Limits) -> Self {
         let initial_bytes = limits.min() * crate::constants::WASM_PAGE_SIZE;
         MemInst {
-            data: collections::vec![0u8; initial_bytes],
+            backing: Rc::new(RefCell::new(MemBacking {
+                data: collections::vec![0u8; initial_bytes],
+                #[cfg(sf_has_guard_pages)]
+                guard: None,
+            })),
             limits,
-            #[cfg(sf_has_guard_pages)]
-            guard: None,
         }
     }
 
@@ -141,10 +180,27 @@ impl MemInst {
     pub fn new_guarded(limits: Limits) -> Result<Self, WasmError> {
         let guard = GuardPageMemory::new(limits.min())?;
         Ok(MemInst {
-            data: collections::Vec::new(),
+            backing: Rc::new(RefCell::new(MemBacking {
+                data: collections::Vec::new(),
+                guard: Some(guard),
+            })),
             limits,
-            guard: Some(guard),
         })
+    }
+
+    #[inline]
+    pub(crate) fn from_shared(limits: Limits, backing: Rc<RefCell<MemBacking>>) -> Self {
+        Self { backing, limits }
+    }
+
+    #[inline]
+    pub(crate) fn backing_mut(&self) -> RefMut<'_, MemBacking> {
+        self.backing.borrow_mut()
+    }
+
+    #[inline]
+    pub(crate) fn clone_shared_backing(&self) -> Rc<RefCell<MemBacking>> {
+        Rc::clone(&self.backing)
     }
 
     #[inline]
@@ -157,7 +213,7 @@ impl MemInst {
     pub fn has_guard_pages(&self) -> bool {
         #[cfg(sf_has_guard_pages)]
         {
-            self.guard.is_some()
+            self.backing.borrow().guard.is_some()
         }
         #[cfg(not(sf_has_guard_pages))]
         {
@@ -168,28 +224,23 @@ impl MemInst {
     /// Pointer to the memory buffer (works for both Vec and guard-page backing).
     #[inline]
     pub fn memory_ptr(&self) -> *mut u8 {
+        let backing = self.backing.borrow();
         #[cfg(sf_has_guard_pages)]
-        if let Some(ref g) = self.guard {
+        if let Some(ref g) = backing.guard {
             return g.base();
         }
-        self.data.as_ptr() as *mut u8
+        backing.data.as_ptr() as *mut u8
     }
 
     /// Current committed size in bytes.
     #[inline]
     pub fn memory_len(&self) -> usize {
+        let backing = self.backing.borrow();
         #[cfg(sf_has_guard_pages)]
-        if let Some(ref g) = self.guard {
+        if let Some(ref g) = backing.guard {
             return g.len();
         }
-        self.data.len()
-    }
-
-    /// Mutable access to the guard-page backing (for grow).
-    #[cfg(sf_has_guard_pages)]
-    #[inline]
-    pub fn guard_mut(&mut self) -> Option<&mut GuardPageMemory> {
-        self.guard.as_mut()
+        backing.data.len()
     }
 }
 
@@ -296,6 +347,7 @@ pub struct ModuleInst {
     pub name: String,
     pub types: TypeContext,
     pub functions: collections::Vec<FunctionInst>,
+    pub function_handles: collections::Vec<RefHandle>,
     pub tables: collections::Vec<TableInst>,
     pub memories: collections::Vec<MemInst>,
     pub globals: collections::Vec<GlobalInst>,
@@ -311,6 +363,7 @@ impl ModuleInst {
             name,
             types,
             functions: collections::Vec::new(),
+            function_handles: collections::Vec::new(),
             tables: collections::Vec::new(),
             memories: collections::Vec::new(),
             globals: collections::Vec::new(),
@@ -323,7 +376,25 @@ impl ModuleInst {
 
     #[inline]
     pub fn get_type(&self, index: u32) -> Option<&Rc<FunctionType>> {
-        self.types.get(index)
+        self.types.get_function_type(index)
+    }
+
+    #[inline]
+    pub fn function_handle(&self, index: usize) -> Option<RefHandle> {
+        self.function_handles.get(index).copied()
+    }
+
+    #[inline]
+    pub(crate) fn ensure_function_handle_capacity(&mut self, len: usize) {
+        if self.function_handles.len() < len {
+            self.function_handles.resize(len, RefHandle::null());
+        }
+    }
+
+    #[inline]
+    pub(crate) fn set_function_handle(&mut self, index: usize, handle: RefHandle) {
+        self.ensure_function_handle_capacity(index + 1);
+        self.function_handles[index] = handle;
     }
 
     #[cfg(sf_jit)]
@@ -350,6 +421,7 @@ impl Default for ModuleInst {
             name: String::new(),
             types: TypeContext::empty(),
             functions: collections::Vec::new(),
+            function_handles: collections::Vec::new(),
             tables: collections::Vec::new(),
             memories: collections::Vec::new(),
             globals: collections::Vec::new(),

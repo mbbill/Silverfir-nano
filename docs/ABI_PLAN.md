@@ -1,6 +1,7 @@
 # Local Call ABI Redesign — Plan
 
-Status: design locked (pending implementation).
+Status: implemented in the current tree. Historical notes below still refer to
+the earlier two-terminator sketch where that context matters.
 Audience: anyone touching `vm/machine/lower_call.rs`, `vm/machine/lower_module.rs`,
 `vm/machine/machine_ir/{abi,cfg,inst}.rs`, the per-arch `control.rs` files,
 `vm/arch/common/{pipeline,eval}.rs`, or `vm/runtime/{code,layout}.rs`.
@@ -41,9 +42,8 @@ absorbing the wins. This redesign is the structural fix.
    Comparable reduction on x86_64 (≤ 7 ops including the `test eax/jnz`).
 2. Per return overhead ≤ 4 + N ops (from ~6 + 2N), including a single
    `mov w0, #0` (`xor eax, eax` on x86_64) for the success status.
-3. MachineIR stays portable. No arch-specific variants of `CallDirect` /
-   `CallIndirect` / `Return`. Per-platform details live in the backend's
-   terminator lowering.
+3. MachineIR stays portable. No arch-specific variants of compiled `Call` /
+   `Return`. Per-platform details live in the backend's terminator lowering.
 4. Cached locals are spilled at a call site only if the callee can actually
    clobber the registers they live in (per-callee clobber set).
 5. The wasm-stack overflow check is amortised to one check per function entry
@@ -64,7 +64,7 @@ absorbing the wins. This redesign is the structural fix.
   result slots). Keep the explicit copy.
 - No new fixed result-area register. `caller_result_base` is a normal MIR reg.
 - No special-casing of call lowering per architecture inside MachineIR.
-- No `CallExternal` ABI changes. Helper boundary stays as it is today.
+- No `CallRuntime` ABI changes. Helper boundary stays as it is today.
 
 ## 4. The shape change at a glance
 
@@ -75,34 +75,35 @@ absorbing the wins. This redesign is the structural fix.
 
 pub(crate) enum MachineTerminator {
     // ...
-    CallDirect {
-        callee:             MachineFuncId,
+    Call {
+        target:             MachineCallTarget,
         callee_frame_base:  MachineReg, // caller_fp + args_offset
         caller_result_base: MachineReg, // caller_fp + results_offset (absolute)
         continuation:       MachineBlockId, // CFG edge — abstract
     },
-    CallIndirect {
-        callee_target:      MachineReg,
-        callee_entry:       MachineReg,
-        callee_frame_base:  MachineReg,
-        caller_result_base: MachineReg,
-        continuation:       MachineBlockId,
-    },
     Return,
     // ...
+}
+
+pub(crate) enum MachineCallTarget {
+    Direct(MachineFuncId),
+    Indirect {
+        callee_target: MachineReg,
+        callee_entry: MachineReg,
+    },
 }
 ```
 
 **Deletions**
 
-- `CallDirect::call_link_base`, `CallIndirect::call_link_base`
+- `Call::call_link_base`
 - `MachineCallLinkLayout` (and its field on `MachineModuleAbi`)
 - `FrameLayoutPlan::call_scratch` is **split** (see §6 — *not* deleted by
   name, the live half is renamed)
 
 **Additions**
 
-- `caller_result_base: MachineReg` on both `CallDirect` and `CallIndirect`
+- `caller_result_base: MachineReg` on `Call`
 - `MachineFunctionAbi::body_emits_native_call: bool` (per-function metadata; the
   bit asks a property question about the *function*, not the *backend* —
   see §8 for backend interpretation)
@@ -197,7 +198,7 @@ internal_entry_label:             ; <-- direct local calls patch to this
 5. Lower body blocks as today.
 6. **Replace** the function-wide `return_error_label` with
    `body_local_error_label`: a synthetic block reached from trap stubs,
-   `CallExternal`'s post-helper status check, and every caller-side
+   `CallRuntime`'s post-helper status check, and every caller-side
    post-BL status check. It lowers as a near-copy of the unified Return
    sequence with two differences: it skips the result copy and it does
    not touch `C_RET0`. The trap stub for each kind does
@@ -222,7 +223,7 @@ internal_entry_label:             ; <-- direct local calls patch to this
 
 The emulator does *not* need to literally simulate the public-entry caller
 stub. It can keep its existing root special case and only emulate the new
-local-call ABI shape (push logical call frame on `CallDirect`, pop on
+local-call ABI shape (push logical call frame on direct-target `Call`, pop on
 `Return`).
 
 ## 6. Splitting `call_scratch`
@@ -265,12 +266,11 @@ stops mentioning it or moves to the new `caller_result_base` plumbing.
 ## 7. Per-backend lowering contracts
 
 The MIR is the same on every backend. The arch-specific work is in
-`vm/arch/<arch>/control.rs::lower_call_direct`,
-`lower_call_indirect`, and `lower_return_sequence`, plus a new
+`vm/arch/<arch>/control.rs::lower_call` and `lower_return_sequence`, plus a new
 `lower_root_caller_stub` in the pipeline-side helper file.
 
-The shared description: at `CallDirect` lowering time the backend must (a)
-arrange for the platform's hardware return mechanism to bring control back
+The shared description: at compiled-`Call` lowering time the backend must
+(a) arrange for the platform's hardware return mechanism to bring control back
 to the continuation block, (b) make the caller's `MACHINE_FP_REG` value and
 `caller_result_base` recoverable inside the callee's `Return`, and (c)
 switch `MACHINE_FP_REG` to `callee_frame_base` before transferring control.
@@ -281,7 +281,7 @@ SP, or any specific instruction.
 
 ### arm64
 
-Caller (per `CallDirect`, including the register-based post-BL status
+Caller (per direct-target `Call`, including the register-based post-BL status
 check from §9):
 
 ```
@@ -366,7 +366,7 @@ shim** in the body prelude (§8) and using **`ret 24`** at `Return` time:
   drops `8 + 16 = 24` bytes (alignment slot + 16-byte call record). One
   instruction discards everything.
 
-Pure leaves on x86_64 (no `CallDirect` / `CallIndirect` / `CallExternal`)
+Pure leaves on x86_64 (no compiled `Call` / `CallRuntime`)
 don't need the shim: there's no helper or trap call inside the body that
 would observe the misalignment. They use `ret 16` (no alignment slot to
 discard) and skip the prelude `sub`.
@@ -388,7 +388,7 @@ After the body-prelude `sub rsp, 8` (when `body_emits_native_call`):
 [rsp + 24]  = result_base
 ```
 
-Caller (per `CallDirect`, including the register-based post-BL status
+Caller (per direct-target `Call`, including the register-based post-BL status
 check from §9):
 
 ```
@@ -462,7 +462,7 @@ MachineIR contract.
 ### emulator
 
 The emulator backend ignores all of the hardware-return discussion and
-maintains a logical call stack. On `CallDirect` it pushes
+maintains a logical call stack. On direct-target `Call` it pushes
 `(caller_fp, caller_result_base, continuation_block_id)` onto its own
 `Vec<...>`; on `Return` it pops one frame, copies results, restores
 `fp_reg`, and resumes execution at the popped continuation block. The
@@ -487,9 +487,8 @@ Definition (shared):
 > the following ops, all of which lower as a native `bl`/`call` on at least
 > one supported backend:
 >
-> - `CallDirect` (terminator) — local SF→SF call
-> - `CallIndirect` (terminator) — local SF→SF call via table
-> - `CallExternal` (instruction) — runtime helper boundary
+> - `Call` (terminator) — compiled SF→SF call (direct-target or indirect-target)
+> - `CallRuntime` (instruction) — runtime helper boundary
 > - `Trap` (terminator) — `lower_trap_dispatch` calls `raise_trap` via `bl`
 > - `TrapIf` (instruction) — conditional trap; the not-taken side falls
 >   through but the taken side branches to a trap stub that calls
@@ -497,7 +496,7 @@ Definition (shared):
 > - any future MIR op whose backend lowering emits a host call must be
 >   added to this list
 
-`CallExternal` counts because the runtime helper boundary on arm64/armv7a
+`CallRuntime` counts because the runtime helper boundary on arm64/armv7a
 goes through `bl <runtime helper>` (clobbering the link register), and on
 x86_64 goes through `call <runtime helper>` (requiring 16-byte alignment).
 `Trap`/`TrapIf` count for the same reason — they reach `raise_trap` via the
@@ -556,7 +555,7 @@ it has to change.
 Today's tail layout (`vm/arch/common/pipeline.rs:92–112`) emits a single
 function-wide `return_error_label` whose body is just `lower_epilogue()`
 followed by `ret`. Trap helpers (`lower_trap_dispatch`) and the
-`CallExternal` post-call status check (`lower_cbnz` to `return_error_label`)
+`CallRuntime` post-call status check (`lower_cbnz` to `return_error_label`)
 all branch there. This works because today every function is entered via
 the C-ABI prologue, so by the time anything reaches `return_error_label`
 the C callee-saved registers are sitting on the host stack ready to be
@@ -601,7 +600,7 @@ SF↔SF status return.
   (concretely, the `MachineTrapKind` discriminant; any non-zero will do
   for propagation but the kind value gives a cheap debug breadcrumb), then
   branches to `body_local_error_label`.
-- `CallExternal`'s existing post-helper status check (`cbnz x0, ...` on
+- `CallRuntime`'s existing post-helper status check (`cbnz x0, ...` on
   the helper return value) now branches to `body_local_error_label`
   instead of `return_error_label`. The helper's return value is already
   the propagation status, so no extra `mov` is needed.
@@ -618,7 +617,7 @@ The success-path `Return` lowering is identical *except* it sets
 `C_RET0 = 0` immediately before the native return. That's the only
 difference between the two terminal sequences.
 
-**At every caller-side `CallDirect` / `CallIndirect`**, after the BL/CALL:
+**At every caller-side `Call`**, after the BL/CALL:
 
 ```
 arm64:    cbnz w0, body_local_error_label
@@ -660,7 +659,7 @@ of by reading a flag the runtime sets manually.)
 | `public_entry_label` | C ABI | C-ABI prologue + caller stub | `bl internal_entry`, then `lower_epilogue` (no status check) |
 | `internal_entry_label` | local `bl/call`, public stub `bl/call` | body prelude + body blocks | various; success exits via `Return` terminator → `return_ok_label` |
 | `return_ok_label` | every `Return` terminator | unified Return: pop record, copy results, restore `fp_reg`, `mov C_RET0, #0` | native return |
-| `body_local_error_label` | trap stubs, post-BL status check, `CallExternal` post-call check | unified Return without the result copy and without touching `C_RET0` | native return |
+| `body_local_error_label` | trap stubs, post-BL status check, `CallRuntime` post-call check | unified Return without the result copy and without touching `C_RET0` | native return |
 
 The deferred per-trap-kind tail blocks (the `lower_trap_dispatch` codegen
 that materializes a trap kind constant and calls `raise_trap`) stay in the
@@ -689,7 +688,7 @@ bottom-up over the call graph). Out of scope for v1.
 
 The block layout pass already orders blocks to maximise fall-through for
 conditional branches. Extend it to treat the `continuation` edge of
-`CallDirect`/`CallIndirect` as a preferred (not forced) fall-through.
+`Call` as a preferred (not forced) fall-through.
 
 Backend lowering of the call terminator must handle both cases:
 
@@ -737,13 +736,15 @@ Must land complete and correct. The recommended subtask order:
    field lives on `LocalCallInfoAbiLayout`, *not* `CallDispatchView`).
    Update `runtime::layout::tests`. Frame planning no longer reserves
    call-link slots.
-3. **Change MIR shape.** Drop `call_link_base` from `CallDirect`/
-   `CallIndirect`. Add `caller_result_base: MachineReg`. Drop
+3. **Change MIR shape.** Collapse the compiled-call terminator to
+   `Call { target: MachineCallTarget, ... }`, drop the old
+   `call_link_base` field, add `caller_result_base: MachineReg`, and drop
    `MachineCallLinkLayout` from `MachineModuleAbi`. Update `validate.rs`,
    `ownership.rs`, the regalloc helpers, and the MIR pretty-printer.
 4. **Change local indirect-call metadata layout.** Rewrite
    `lower_module.rs:1340–1390` (the indirect-call call-link write path)
-   to compute `caller_result_base` and emit the new `CallIndirect` shape.
+   to compute `caller_result_base` and emit the new indirect-target `Call`
+   shape.
 5. **Add the public-entry caller stub.** Per backend: a
    `lower_root_caller_stub()` helper that builds the root call record,
    does the platform `bl/call` to `internal_entry_label`, then falls
@@ -754,8 +755,8 @@ Must land complete and correct. The recommended subtask order:
    longer pass `root_return` and to read results directly from
    `stack_base` (which is where the unified `Return` will copy them).
 6. **Add backend-private call-record lowering and register-based status
-   check.** Per arch `lower_call_direct` / `lower_call_indirect`: push
-   the record, advance `fp_reg`, native `bl/call`,
+   check.** Per arch `lower_call`: push the record, advance `fp_reg`,
+   native `bl/call`,
    `cbnz w0, body_local_error_label` (arm64) /
    `test eax,eax; jnz body_local_error_label` (x86_64), optional post-
    call `b` if continuation is not adjacent. Implement on arm64 first,
@@ -770,12 +771,12 @@ Must land complete and correct. The recommended subtask order:
    and *no* touch of `C_RET0` (the trap stub or upstream BL has already
    set it non-zero). Trap stubs end with
    `bl raise_trap; mov C_RET0, #<trap_kind>; b body_local_error_label`.
-   `CallExternal`'s post-helper `cbnz` now targets `body_local_error_label`.
+   `CallRuntime`'s post-helper `cbnz` now targets `body_local_error_label`.
    The shared `return_error_label` is deleted.
 8. **`body_emits_native_call` + body prelude.** Compute the bit during
    machine lowering by walking the MIR and asking
    `mir_op_emits_host_call(&kind)` for each op. The predicate returns
-   true for `CallDirect`, `CallIndirect`, `CallExternal`, `Trap`, and
+   true for `Call`, `CallRuntime`, `Trap`, and
    `TrapIf`. Stored in `MachineFunctionAbi::body_emits_native_call`. Emit
    the synthetic body prelude in the common pipeline. Each backend
    interprets the bit per the table in §8: arm64/armv7a `stp` link
@@ -793,7 +794,7 @@ Must land complete and correct. The recommended subtask order:
     `cargo run --bin sf-nano-spectest -- --backend native`, regenerate
     the coremark dump, run `scripts/compare_llvm.py`. Update
     `lower_tests.rs` fixtures touched by the call-frame-zero work in
-    earlier sessions; their expected MIR op counts and shapes will move.
+    earlier sessions; their expected MIR op counts and `Call` shapes will move.
     Confirm the coremark crc still matches (modulo iteration count
     sensitivity), and report instruction-count and CoreMark deltas.
 
@@ -841,7 +842,7 @@ errors as of the 1A.9 / 1A.10 / 1C-revert checkpoint:
 - Obsolete `lower_return_ok_status` method still defined; not on
   `ArchBackend` anymore (`x86_64/backend.rs:184`).
 - Stale `return_error_label` references in `lower_trap`, trap stub
-  emission, and external-call status check (`backend.rs:211`,
+  emission, and runtime-call status check (`backend.rs:211`,
   `control.rs:310`, `inst.rs:2106`, `inst.rs:2198`). Need to retarget
   to `body_local_error_label`.
 - Stale `EmittedFunction::root_return_offset` /
@@ -954,7 +955,7 @@ A first attempt was made and reverted in 2026-04. Notes for the next try:
 1. `clobber_set.rs` analysis pass: scans every function's MIR ops/block
    params for GP-bank defs, runs Tarjan SCC over the direct call graph,
    computes the transitive closure, and stores a `u64` bitmask. Functions
-   containing `CallExternal`, `CallIndirect`, or living in a non-trivial
+   containing `CallRuntime`, `CallIndirect`, or living in a non-trivial
    SCC are marked full-clobber (`u64::MAX`).
 2. New MIR variant `CallSiteCacheSpill { ty, addr, width, src }` to
    distinguish call-site spill stores from `LocalDropCache` flushes (which

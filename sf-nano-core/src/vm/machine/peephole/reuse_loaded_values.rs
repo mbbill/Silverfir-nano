@@ -69,7 +69,21 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
             MachineInstKind::Store { addr, width, .. } => {
                 tracked.retain(|entry| !addrs_overlap(entry.addr, entry.width, *addr, *width));
             }
-            MachineInstKind::CallExternal(_) => {
+            MachineInstKind::CallRuntime(_)
+            | MachineInstKind::RefFunc { .. }
+            | MachineInstKind::RefAsNonNull { .. }
+            | MachineInstKind::RefEq { .. }
+            | MachineInstKind::RefI31 { .. }
+            | MachineInstKind::I31GetS { .. }
+            | MachineInstKind::I31GetU { .. }
+            | MachineInstKind::AnyConvertExtern { .. }
+            | MachineInstKind::ExternConvertAny { .. }
+            | MachineInstKind::RefTest { .. }
+            | MachineInstKind::RefCast { .. }
+            | MachineInstKind::StructNewDefault { .. }
+            | MachineInstKind::StructGet { .. }
+            | MachineInstKind::StructSet { .. }
+            | MachineInstKind::ArrayNewDefault { .. } => {
                 tracked.clear();
             }
             _ => {}

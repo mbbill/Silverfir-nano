@@ -1,16 +1,21 @@
 use crate::{
     error::WasmError,
-    vm::runtime::{
-        common::{internal_error, set_ctx_error, trap_error, NativeCallStatus},
-        context::NativeContext,
+    vm::{
+        runtime::{
+            common::{internal_error, set_ctx_error, trap_error, NativeCallStatus},
+            context::NativeContext,
+        },
+        value_encoding::machine_raw_to_ref,
     },
-    vm::value::RefHandle,
 };
 
 use super::{
     abi::{io, op},
     ops::{
-        do_memory_copy, do_memory_grow, do_memory_init, do_table_copy, do_table_grow, do_table_init,
+        do_any_convert_extern, do_array_new_default, do_extern_convert_any, do_i31_get_s,
+        do_i31_get_u, do_memory_copy, do_memory_grow, do_memory_init, do_ref_as_non_null,
+        do_ref_cast, do_ref_eq, do_ref_func, do_ref_i31, do_ref_test, do_struct_get,
+        do_struct_new_default, do_struct_set, do_table_copy, do_table_grow, do_table_init,
     },
 };
 
@@ -98,7 +103,7 @@ unsafe fn dispatch_preserved(
         op::TABLE_GROW => {
             let table_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
             let init_val = unsafe { *io_ptr.add(io::ARG0) };
-            let delta = unsafe { *io_ptr.add(io::ARG1) } as usize;
+            let delta = unsafe { *io_ptr.add(io::ARG1) };
             let result = do_table_grow(ctx, table_idx, init_val, delta)?;
             unsafe {
                 *io_ptr.add(io::RET0) = result;
@@ -111,10 +116,12 @@ unsafe fn dispatch_preserved(
             let val = unsafe { *io_ptr.add(io::ARG1) };
             let len = unsafe { *io_ptr.add(io::ARG2) } as usize;
             let table = super::ops::table_mut(ctx, table_idx)?;
-            if start.saturating_add(len) > table.elements.len() {
+            let mut elements = table.elements_mut();
+            if start.saturating_add(len) > elements.len() {
                 return Err(trap_error("out of bounds table access"));
             }
-            table.elements[start..start + len].fill(RefHandle::new(val as usize));
+            elements[start..start + len]
+                .fill(machine_raw_to_ref(val, super::ops::active_gp_unit_bytes()));
             Ok(())
         }
         op::TABLE_COPY => {
@@ -142,6 +149,144 @@ unsafe fn dispatch_preserved(
                 elem.drop_segment();
             }
             Ok(())
+        }
+        op::REF_FUNC => {
+            let func_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let result = do_ref_func(ctx, func_idx)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::REF_AS_NON_NULL => {
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_ref_as_non_null(raw_ref)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::REF_EQ => {
+            let lhs = unsafe { *io_ptr.add(io::ARG0) };
+            let rhs = unsafe { *io_ptr.add(io::ARG1) };
+            unsafe {
+                *io_ptr.add(io::RET0) = do_ref_eq(lhs, rhs);
+            }
+            Ok(())
+        }
+        op::REF_I31 => {
+            let value = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_ref_i31(ctx, value)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::I31_GET_S => {
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_i31_get_s(ctx, raw_ref)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::I31_GET_U => {
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_i31_get_u(ctx, raw_ref)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::ANY_CONVERT_EXTERN => {
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_any_convert_extern(raw_ref)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::EXTERN_CONVERT_ANY => {
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_extern_convert_any(raw_ref)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::STRUCT_NEW_DEFAULT => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let result = do_struct_new_default(ctx, type_idx)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::ARRAY_NEW_DEFAULT => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let len = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_array_new_default(ctx, type_idx, len)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::REF_TEST => {
+            let imm0 = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let imm1 = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_ref_test(ctx, imm0, imm1, raw_ref)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::REF_CAST => {
+            let imm0 = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let imm1 = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_ref_cast(ctx, imm0, imm1, raw_ref)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::STRUCT_GET => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let field_idx = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_struct_get(ctx, type_idx, field_idx, raw_ref, None)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::STRUCT_GET_S => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let field_idx = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_struct_get(ctx, type_idx, field_idx, raw_ref, Some(true))?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::STRUCT_GET_U => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let field_idx = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_struct_get(ctx, type_idx, field_idx, raw_ref, Some(false))?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::STRUCT_SET => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let field_idx = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let raw_value = unsafe { *io_ptr.add(io::ARG1) };
+            do_struct_set(ctx, type_idx, field_idx, raw_ref, raw_value)
         }
         _ => Err(internal_error("unknown preserved-helper op code")),
     }

@@ -1,71 +1,75 @@
-//! Type context for type resolution and equivalence checking
+//! Type context for type resolution and subtyping.
 //!
-//! This module provides a type context that ensures type indices are always
-//! resolved within the correct module scope, as required by the WebAssembly spec.
-//!
-//! TypeContext uses Rc internally, so cloning is cheap (just incrementing reference counts).
+//! The module keeps the unified WebAssembly 3.0 type table but still lets most
+//! of nano work with resolved `FunctionType`s on functions.
 
 use crate::collections;
-
+use crate::module::type_defs::{CompositeType, DefType, FunctionType};
+use crate::value_type::{HeapType, ValueType};
 use tracked_alloc::rc::Rc;
 
-use crate::module::type_defs::FunctionType;
-use crate::value_type::{HeapType, ValueType};
-
-/// Type context provides access to type definitions within a module
-///
-/// This ensures type indices are always resolved within the correct module scope.
-/// Per WebAssembly spec, each module instance maintains its own type array,
-/// and type indices are module-local.
-///
-/// ## Performance
-/// TypeContext uses `Rc` internally, so cloning is cheap (O(1) - just incrementing
-/// reference counts). This allows passing TypeContext by value without performance concerns.
 #[derive(Clone)]
 pub struct TypeContext {
-    types: Rc<[Rc<FunctionType>]>,
+    types: Rc<[Rc<DefType>]>,
 }
 
 impl TypeContext {
-    /// Create a new type context from type definitions
-    pub fn new(types: collections::Vec<Rc<FunctionType>>) -> Self {
+    pub fn new(types: collections::Vec<Rc<DefType>>) -> Self {
         Self {
             types: collections::into_alloc_vec(types).into(),
         }
     }
 
-    /// Create an empty type context (for modules with no type section)
     pub fn empty() -> Self {
         Self {
             types: Rc::from([]),
         }
     }
 
-    /// Get a type definition by index
-    pub fn get(&self, idx: u32) -> Option<&Rc<FunctionType>> {
+    pub fn get(&self, idx: u32) -> Option<&Rc<DefType>> {
         self.types.get(idx as usize)
     }
 
-    /// Get all type definitions as a slice
-    pub fn as_slice(&self) -> &[Rc<FunctionType>] {
+    pub fn as_slice(&self) -> &[Rc<DefType>] {
         &self.types
     }
 
-    /// Number of types in this context
     pub fn len(&self) -> usize {
         self.types.len()
     }
 
-    /// Check if this context is empty
     pub fn is_empty(&self) -> bool {
         self.types.is_empty()
     }
 
-    /// Check if two function types (by index) are equivalent
-    ///
-    /// In WASM 2.0, all defined types are function types. Two function types
-    /// are equivalent if they have the same parameter and result types.
+    pub fn get_function_type(&self, idx: u32) -> Option<&Rc<FunctionType>> {
+        self.get(idx)
+            .and_then(|def_type| match &def_type.composite {
+                CompositeType::Func(func_type) => Some(func_type),
+                _ => None,
+            })
+    }
+
     pub fn types_equivalent(&self, idx1: u32, idx2: u32) -> bool {
+        let mut visiting = collections::Vec::new();
+        self.types_equivalent_inner(idx1, idx2, &mut visiting)
+    }
+
+    fn types_equivalent_inner(
+        &self,
+        idx1: u32,
+        idx2: u32,
+        visiting: &mut collections::Vec<(u32, u32)>,
+    ) -> bool {
+        let pair = if idx1 < idx2 {
+            (idx1, idx2)
+        } else {
+            (idx2, idx1)
+        };
+
+        if visiting.contains(&pair) {
+            return true;
+        }
         if idx1 == idx2 {
             return true;
         }
@@ -77,20 +81,146 @@ impl TypeContext {
             return false;
         };
 
-        function_types_structurally_equal(type1, type2)
+        visiting.push(pair);
+
+        let result = match (&type1.composite, &type2.composite) {
+            (CompositeType::Func(_), CompositeType::Func(_)) => {
+                self.composite_types_equivalent(&type1.composite, &type2.composite, visiting)
+            }
+            (CompositeType::Struct(_), CompositeType::Struct(_))
+            | (CompositeType::Array(_), CompositeType::Array(_)) => {
+                match (type1.rec_group, type2.rec_group) {
+                    (Some(g1), Some(g2)) if g1 == g2 => self.composite_types_equivalent(
+                        &type1.composite,
+                        &type2.composite,
+                        visiting,
+                    ),
+                    _ => false,
+                }
+            }
+            _ => false,
+        };
+
+        if let Some(pos) = visiting.iter().position(|entry| *entry == pair) {
+            visiting.swap_remove(pos);
+        }
+
+        result
+    }
+
+    fn composite_types_equivalent(
+        &self,
+        c1: &CompositeType,
+        c2: &CompositeType,
+        visiting: &mut collections::Vec<(u32, u32)>,
+    ) -> bool {
+        match (c1, c2) {
+            (CompositeType::Func(f1), CompositeType::Func(f2)) => {
+                if f1.params().len() != f2.params().len()
+                    || f1.results().len() != f2.results().len()
+                {
+                    return false;
+                }
+
+                for (p1, p2) in f1.params().iter().zip(f2.params().iter()) {
+                    if !self.value_types_equivalent(p1, p2, visiting) {
+                        return false;
+                    }
+                }
+                for (r1, r2) in f1.results().iter().zip(f2.results().iter()) {
+                    if !self.value_types_equivalent(r1, r2, visiting) {
+                        return false;
+                    }
+                }
+                true
+            }
+            (CompositeType::Struct(s1), CompositeType::Struct(s2)) => {
+                if s1.fields.len() != s2.fields.len() {
+                    return false;
+                }
+
+                for (field1, field2) in s1.fields.iter().zip(s2.fields.iter()) {
+                    if field1.mutable != field2.mutable {
+                        return false;
+                    }
+                    if !self.storage_types_equivalent(&field1.storage, &field2.storage, visiting) {
+                        return false;
+                    }
+                }
+
+                true
+            }
+            (CompositeType::Array(a1), CompositeType::Array(a2)) => {
+                a1.element.mutable == a2.element.mutable
+                    && self.storage_types_equivalent(
+                        &a1.element.storage,
+                        &a2.element.storage,
+                        visiting,
+                    )
+            }
+            _ => false,
+        }
+    }
+
+    fn storage_types_equivalent(
+        &self,
+        s1: &crate::module::type_defs::StorageType,
+        s2: &crate::module::type_defs::StorageType,
+        visiting: &mut collections::Vec<(u32, u32)>,
+    ) -> bool {
+        use crate::module::type_defs::{PackedType, StorageType};
+
+        match (s1, s2) {
+            (StorageType::Val(v1), StorageType::Val(v2)) => {
+                self.value_types_equivalent(v1, v2, visiting)
+            }
+            (StorageType::Packed(PackedType::I8), StorageType::Packed(PackedType::I8)) => true,
+            (StorageType::Packed(PackedType::I16), StorageType::Packed(PackedType::I16)) => true,
+            _ => false,
+        }
+    }
+
+    fn value_types_equivalent(
+        &self,
+        v1: &ValueType,
+        v2: &ValueType,
+        visiting: &mut collections::Vec<(u32, u32)>,
+    ) -> bool {
+        match (v1, v2) {
+            (ValueType::I32, ValueType::I32) => true,
+            (ValueType::I64, ValueType::I64) => true,
+            (ValueType::F32, ValueType::F32) => true,
+            (ValueType::F64, ValueType::F64) => true,
+            (ValueType::V128, ValueType::V128) => true,
+            (ValueType::Unknown, ValueType::Unknown) => true,
+            (ValueType::Ref(rt1), ValueType::Ref(rt2)) => {
+                if rt1.nullable != rt2.nullable {
+                    return false;
+                }
+
+                match (&rt1.heap_type, &rt2.heap_type) {
+                    (HeapType::Abstract(a1), HeapType::Abstract(a2)) => a1 == a2,
+                    (HeapType::Concrete(idx1), HeapType::Concrete(idx2)) => {
+                        self.types_equivalent_inner(*idx1, *idx2, visiting)
+                    }
+                    _ => false,
+                }
+            }
+            _ => false,
+        }
     }
 }
 
 impl core::ops::Deref for TypeContext {
-    type Target = [Rc<FunctionType>];
+    type Target = [Rc<DefType>];
 
     fn deref(&self) -> &Self::Target {
         &self.types
     }
 }
 
-impl AsRef<[Rc<FunctionType>]> for TypeContext {
-    fn as_ref(&self) -> &[Rc<FunctionType>] {
+impl AsRef<[Rc<DefType>]> for TypeContext {
+    fn as_ref(&self) -> &[Rc<DefType>] {
         &self.types
     }
 }
@@ -103,21 +233,6 @@ impl core::fmt::Debug for TypeContext {
     }
 }
 
-// ============================================================================
-// Cross-Module Type Equivalence Functions
-// ============================================================================
-
-/// Check if two function types are equivalent for cross-module import matching
-///
-/// This handles cross-module imports where type indices might differ between modules.
-/// Two function types are equivalent if:
-/// - Same number of parameters and results
-/// - Each parameter/result type is equivalent (recursively for reference types)
-///
-/// # Arguments
-/// * `export_type` - The function type from the exporting module
-/// * `import_type` - The function type from the importing module
-/// * `export_type_ctx` - The type context of the exporting module
 pub fn check_function_types_equivalent(
     export_type: &FunctionType,
     import_type: &FunctionType,
@@ -148,10 +263,6 @@ pub fn check_function_types_equivalent(
     true
 }
 
-/// Check if two value types are equivalent across modules
-///
-/// For cross-module type matching, type indices are module-local so we need
-/// special handling for concrete reference types.
 pub fn value_types_equivalent_cross_module(
     exp_type: &ValueType,
     imp_type: &ValueType,
@@ -163,7 +274,6 @@ pub fn value_types_equivalent_cross_module(
         (ValueType::F32, ValueType::F32) => true,
         (ValueType::F64, ValueType::F64) => true,
         (ValueType::V128, ValueType::V128) => true,
-
         (ValueType::Ref(exp_ref), ValueType::Ref(imp_ref)) => {
             if exp_ref.nullable != imp_ref.nullable {
                 return false;
@@ -181,12 +291,6 @@ pub fn value_types_equivalent_cross_module(
                 _ => false,
             }
         }
-
         _ => false,
     }
-}
-
-/// Check if two function types are structurally equal (same params and results)
-fn function_types_structurally_equal(f1: &FunctionType, f2: &FunctionType) -> bool {
-    f1.params() == f2.params() && f1.results() == f2.results()
 }

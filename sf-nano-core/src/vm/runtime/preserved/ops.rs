@@ -1,22 +1,68 @@
 use crate::{
     constants::WASM_PAGE_SIZE,
     error::WasmError,
+    module::type_defs::{CompositeType, PackedType, StorageType},
     vm::{
+        arch::active_backend_config,
         entities::{MemInst, TableInst},
+        gc_type_check::check_ref_type_match,
         runtime::{
             common::{internal_error, trap_error},
             context::NativeContext,
         },
+        store::{RefRegistryEntry, Store},
         value::RefHandle,
+        value::Value,
+        value_encoding::{
+            machine_raw_to_ref, machine_raw_to_value, ref_to_machine_raw, value_to_machine_raw,
+        },
     },
 };
 
 #[inline]
-pub(super) fn memory_mut(ctx: &mut NativeContext, mem_idx: u32) -> Result<&mut MemInst, WasmError> {
+fn current_store(ctx: &NativeContext) -> Result<&Store, WasmError> {
     let store = ctx
-        .store_mut()
+        .store()
         .ok_or_else(|| internal_error("preserved helper context is missing store"))?;
-    store
+    Ok(store)
+}
+
+#[inline]
+fn current_store_mut(ctx: &mut NativeContext) -> Result<&mut Store, WasmError> {
+    ctx.store_mut()
+        .ok_or_else(|| internal_error("preserved helper context is missing store"))
+}
+
+#[inline]
+pub(super) fn active_gp_unit_bytes() -> u8 {
+    active_backend_config()
+        .map(|cfg| cfg.gp_unit_bytes)
+        .unwrap_or(core::mem::size_of::<usize>() as u8)
+}
+
+#[inline]
+fn ref_from_machine(raw_ref: u64) -> RefHandle {
+    machine_raw_to_ref(raw_ref, active_gp_unit_bytes())
+}
+
+#[inline]
+fn ref_to_machine(handle: RefHandle) -> u64 {
+    ref_to_machine_raw(handle, active_gp_unit_bytes())
+}
+
+#[inline]
+fn value_from_machine(raw: u64, ty: crate::value_type::ValueType) -> Value {
+    machine_raw_to_value(raw, ty, active_gp_unit_bytes())
+}
+
+#[inline]
+fn value_to_machine(value: Value) -> u64 {
+    value_to_machine_raw(value, active_gp_unit_bytes())
+}
+
+#[inline]
+pub(super) fn memory_mut(ctx: &mut NativeContext, mem_idx: u32) -> Result<&mut MemInst, WasmError> {
+    current_store_mut(ctx)?
         .module_mut()
         .memories
         .get_mut(mem_idx as usize)
@@ -28,14 +74,305 @@ pub(super) fn table_mut(
     ctx: &mut NativeContext,
     table_idx: u32,
 ) -> Result<&mut TableInst, WasmError> {
-    let store = ctx
-        .store_mut()
-        .ok_or_else(|| internal_error("preserved helper context is missing store"))?;
-    store
+    current_store_mut(ctx)?
         .module_mut()
         .tables
         .get_mut(table_idx as usize)
         .ok_or_else(|| internal_error("preserved helper referenced invalid table index"))
+}
+
+pub(super) fn do_ref_func(ctx: &mut NativeContext, func_idx: u32) -> Result<u64, WasmError> {
+    let store = current_store(ctx)?;
+    let handle = store
+        .module()
+        .function_handle(func_idx as usize)
+        .ok_or_else(|| internal_error("preserved helper referenced invalid function index"))?;
+    Ok(ref_to_machine(handle))
+}
+
+pub(super) fn do_ref_as_non_null(raw_ref: u64) -> Result<u64, WasmError> {
+    let handle = ref_from_machine(raw_ref);
+    if handle.is_null() {
+        return Err(trap_error("null reference"));
+    }
+    Ok(ref_to_machine(handle))
+}
+
+#[inline]
+pub(super) fn do_ref_eq(lhs: u64, rhs: u64) -> u64 {
+    u64::from(lhs == rhs)
+}
+
+pub(super) fn do_ref_i31(ctx: &mut NativeContext, raw_value: u64) -> Result<u64, WasmError> {
+    let handle = current_store_mut(ctx)?.register_i31(raw_value as u32 as i32);
+    Ok(ref_to_machine(handle))
+}
+
+fn decode_i31(store: &Store, handle: RefHandle) -> Result<i32, WasmError> {
+    if handle.is_null() {
+        return Err(trap_error("null i31 reference"));
+    }
+    if handle.is_extern() {
+        return Err(trap_error("invalid i31 reference"));
+    }
+    match store.ref_entry_for_handle(handle) {
+        Some(RefRegistryEntry::I31(value)) => Ok(value),
+        _ => Err(trap_error("invalid i31 reference")),
+    }
+}
+
+pub(super) fn do_i31_get_s(ctx: &mut NativeContext, raw_ref: u64) -> Result<u64, WasmError> {
+    let handle = ref_from_machine(raw_ref);
+    let value = decode_i31(current_store(ctx)?, handle)? as u32 & 0x7fff_ffff;
+    let signed = if (value & 0x4000_0000) != 0 {
+        value | 0x8000_0000
+    } else {
+        value
+    };
+    Ok(signed as u64)
+}
+
+pub(super) fn do_i31_get_u(ctx: &mut NativeContext, raw_ref: u64) -> Result<u64, WasmError> {
+    let handle = ref_from_machine(raw_ref);
+    let value = decode_i31(current_store(ctx)?, handle)? as u32 & 0x7fff_ffff;
+    Ok(value as u64)
+}
+
+pub(super) fn do_any_convert_extern(raw_ref: u64) -> Result<u64, WasmError> {
+    let handle = ref_from_machine(raw_ref)
+        .to_any()
+        .map_err(|_| trap_error("any.convert_extern: value is not in extern hierarchy"))?;
+    Ok(ref_to_machine(handle))
+}
+
+pub(super) fn do_extern_convert_any(raw_ref: u64) -> Result<u64, WasmError> {
+    let handle = ref_from_machine(raw_ref)
+        .to_extern()
+        .map_err(|_| trap_error("extern.convert_any: value is not in aggregate hierarchy"))?;
+    Ok(ref_to_machine(handle))
+}
+
+#[inline]
+fn decode_reftype(imm0: u32, imm1: u32) -> crate::value_type::RefType {
+    let encoded = (u64::from(imm1) << 32) | u64::from(imm0);
+    crate::value_type::RefType::decode_from_u64(encoded)
+}
+
+pub(super) fn do_ref_test(
+    ctx: &NativeContext,
+    imm0: u32,
+    imm1: u32,
+    raw_ref: u64,
+) -> Result<u64, WasmError> {
+    let target_type = decode_reftype(imm0, imm1);
+    let handle = ref_from_machine(raw_ref);
+    let is_match = if handle.is_null() {
+        target_type.nullable
+    } else {
+        check_ref_type_match(handle, &target_type.heap_type, current_store(ctx)?)?
+    };
+    Ok(u64::from(is_match))
+}
+
+pub(super) fn do_ref_cast(
+    ctx: &NativeContext,
+    imm0: u32,
+    imm1: u32,
+    raw_ref: u64,
+) -> Result<u64, WasmError> {
+    let target_type = decode_reftype(imm0, imm1);
+    let handle = ref_from_machine(raw_ref);
+
+    if handle.is_null() {
+        return if target_type.nullable {
+            Ok(ref_to_machine(handle))
+        } else {
+            Err(trap_error("cast failure"))
+        };
+    }
+
+    if check_ref_type_match(handle, &target_type.heap_type, current_store(ctx)?)? {
+        Ok(ref_to_machine(handle))
+    } else {
+        Err(trap_error("cast failure"))
+    }
+}
+
+pub(super) fn do_struct_new_default(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+) -> Result<u64, WasmError> {
+    let store = current_store_mut(ctx)?;
+    let fields = {
+        let def_type = store
+            .module()
+            .types
+            .get(type_idx)
+            .ok_or_else(|| internal_error("preserved helper referenced invalid type index"))?;
+        let struct_type = match &def_type.composite {
+            CompositeType::Struct(struct_type) => struct_type,
+            _ => return Err(internal_error("preserved helper expected a struct type")),
+        };
+        struct_type
+            .fields
+            .iter()
+            .map(|field| Value::default_for_type(field.storage.to_valtype()))
+            .collect()
+    };
+    let gc_ref = store.gc_heap().borrow_mut().alloc_struct(type_idx, fields);
+    let handle = store.register_gc_ref(gc_ref);
+    Ok(ref_to_machine(handle))
+}
+
+fn struct_field_storage(
+    store: &Store,
+    type_idx: u32,
+    field_idx: u32,
+) -> Result<StorageType, WasmError> {
+    let def_type = store
+        .module()
+        .types
+        .get(type_idx)
+        .ok_or_else(|| internal_error("preserved helper referenced invalid type index"))?;
+    let struct_type = match &def_type.composite {
+        CompositeType::Struct(struct_type) => struct_type,
+        _ => return Err(internal_error("preserved helper expected a struct type")),
+    };
+    struct_type
+        .fields
+        .get(field_idx as usize)
+        .map(|field| field.storage)
+        .ok_or_else(|| internal_error("preserved helper referenced invalid field index"))
+}
+
+fn resolve_struct_ref(
+    store: &Store,
+    handle: RefHandle,
+) -> Result<(*mut Store, crate::vm::gc_heap::GcRef), WasmError> {
+    if handle.is_null() {
+        return Err(trap_error("null structure reference"));
+    }
+    if handle.is_extern() {
+        return Err(trap_error("invalid structure reference"));
+    }
+
+    match store.ref_entry_for_handle(handle) {
+        Some(RefRegistryEntry::Gc { store, gc_ref }) => Ok((store, gc_ref)),
+        _ => Err(trap_error("invalid structure reference")),
+    }
+}
+
+fn extend_packed_field(value: Value, storage: StorageType, signed: bool) -> Value {
+    match (value, storage) {
+        (Value::I32(raw), StorageType::Packed(PackedType::I8)) => {
+            if signed {
+                Value::I32((raw as i8) as i32)
+            } else {
+                Value::I32(raw & 0xFF)
+            }
+        }
+        (Value::I32(raw), StorageType::Packed(PackedType::I16)) => {
+            if signed {
+                Value::I32((raw as i16) as i32)
+            } else {
+                Value::I32(raw & 0xFFFF)
+            }
+        }
+        _ => value,
+    }
+}
+
+pub(super) fn do_struct_get(
+    ctx: &NativeContext,
+    type_idx: u32,
+    field_idx: u32,
+    raw_ref: u64,
+    signed: Option<bool>,
+) -> Result<u64, WasmError> {
+    let current = current_store(ctx)?;
+    let storage = struct_field_storage(current, type_idx, field_idx)?;
+    let handle = ref_from_machine(raw_ref);
+    let (origin_store_ptr, gc_ref) = resolve_struct_ref(current, handle)?;
+    let origin_store = unsafe { origin_store_ptr.as_ref() }
+        .ok_or_else(|| internal_error("struct ref points to missing store"))?;
+    let value = origin_store
+        .gc_heap()
+        .borrow()
+        .get_struct(gc_ref)
+        .map_err(|_| trap_error("invalid structure reference"))?
+        .fields
+        .get(field_idx as usize)
+        .copied()
+        .ok_or_else(|| internal_error("preserved helper referenced invalid struct field"))?;
+    let value = match signed {
+        Some(is_signed) => extend_packed_field(value, storage, is_signed),
+        None => value,
+    };
+    Ok(value_to_machine(value))
+}
+
+pub(super) fn do_struct_set(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+    field_idx: u32,
+    raw_ref: u64,
+    raw_value: u64,
+) -> Result<(), WasmError> {
+    let handle = ref_from_machine(raw_ref);
+    let (storage, origin_ref) = {
+        let current = current_store(ctx)?;
+        (
+            struct_field_storage(current, type_idx, field_idx)?,
+            resolve_struct_ref(current, handle)?,
+        )
+    };
+    let (origin_store_ptr, gc_ref) = origin_ref;
+    let value = value_from_machine(raw_value, storage.to_valtype());
+    let origin_store = unsafe { origin_store_ptr.as_mut() }
+        .ok_or_else(|| internal_error("struct ref points to missing store"))?;
+    let mut gc_heap = origin_store.gc_heap().borrow_mut();
+    let gc_struct = gc_heap
+        .get_struct_mut(gc_ref)
+        .map_err(|_| trap_error("invalid structure reference"))?;
+    let Some(field) = gc_struct.fields.get_mut(field_idx as usize) else {
+        return Err(internal_error(
+            "preserved helper referenced invalid struct field",
+        ));
+    };
+    *field = value;
+    Ok(())
+}
+
+pub(super) fn do_array_new_default(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+    length_raw: u64,
+) -> Result<u64, WasmError> {
+    let store = current_store_mut(ctx)?;
+    let (elem_type, length) = {
+        let def_type = store
+            .module()
+            .types
+            .get(type_idx)
+            .ok_or_else(|| internal_error("preserved helper referenced invalid type index"))?;
+        let array_type = match &def_type.composite {
+            CompositeType::Array(array_type) => array_type,
+            _ => return Err(internal_error("preserved helper expected an array type")),
+        };
+        (
+            array_type.element.storage.to_valtype(),
+            length_raw as u32 as usize,
+        )
+    };
+    let init = Value::default_for_type(elem_type);
+    let mut elements = crate::collections::Vec::new();
+    elements
+        .try_reserve(length)
+        .map_err(|_| trap_error("out of memory"))?;
+    elements.resize(length, init);
+    let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
+    let handle = store.register_gc_ref(gc_ref);
+    Ok(ref_to_machine(handle))
 }
 
 /// Core memory-grow logic owned by the preserved-helper system. Returns the
@@ -57,12 +394,14 @@ pub(super) fn do_memory_grow(
         Some(new_pages) => {
             #[cfg(sf_has_guard_pages)]
             {
-                if let Some(guard) = mem.guard_mut() {
+                let mut backing = mem.backing_mut();
+                if let Some(guard) = backing.guard.as_mut() {
                     match guard.grow(delta_pages) {
                         Ok(_) => old_pages as u64,
                         Err(_) => error_value,
                     }
                 } else {
+                    drop(backing);
                     grow_heap(mem, new_pages, old_pages, error_value)
                 }
             }
@@ -81,11 +420,12 @@ pub(super) fn do_memory_grow(
 
 fn grow_heap(mem: &mut MemInst, new_pages: usize, old_pages: usize, error_value: u64) -> u64 {
     if let Some(new_len) = new_pages.checked_mul(WASM_PAGE_SIZE) {
-        let additional = new_len.saturating_sub(mem.data.len());
-        if mem.data.try_reserve(additional).is_err() {
+        let mut backing = mem.backing_mut();
+        let additional = new_len.saturating_sub(backing.data.len());
+        if backing.data.try_reserve(additional).is_err() {
             error_value
         } else {
-            mem.data.resize(new_len, 0);
+            backing.data.resize(new_len, 0);
             old_pages as u64
         }
     } else {
@@ -217,21 +557,30 @@ pub(super) fn do_table_grow(
     ctx: &mut NativeContext,
     table_idx: u32,
     init_val_raw: u64,
-    delta: usize,
+    delta_raw: u64,
 ) -> Result<u64, WasmError> {
-    let fill = RefHandle::new(init_val_raw as usize);
+    let fill = ref_from_machine(init_val_raw);
     let table = table_mut(ctx, table_idx)?;
-    let old_len = table.elements.len();
+    let is_64 = table.limits.is64;
+    let error_value = if is_64 { u64::MAX } else { u32::MAX as u64 };
+    let delta = if is_64 {
+        delta_raw as usize
+    } else {
+        delta_raw as u32 as usize
+    };
+    let mut elements = table.elements_mut();
+    let old_len = elements.len();
     let result = match old_len.checked_add(delta) {
-        None => u32::MAX as u64,
-        Some(new_len) if new_len > table.limits.get_max() => u32::MAX as u64,
-        Some(_) if table.elements.try_reserve(delta).is_err() => u32::MAX as u64,
+        None => error_value,
+        Some(new_len) if new_len > table.limits.get_max() => error_value,
+        Some(_) if elements.try_reserve(delta).is_err() => error_value,
         Some(new_len) => {
-            table.elements.resize_with(new_len, || fill);
+            elements.resize_with(new_len, || fill);
             old_len as u64
         }
     };
-    if result != u32::MAX as u64 {
+    drop(elements);
+    if result != error_value {
         ctx.refresh_table_views();
     }
     Ok(result)
@@ -257,12 +606,11 @@ pub(super) fn do_table_copy(
     }
     if di == si {
         let table = store.table_mut(di);
-        if src.saturating_add(len) > table.elements.len()
-            || dest.saturating_add(len) > table.elements.len()
-        {
+        let mut elements = table.elements_mut();
+        if src.saturating_add(len) > elements.len() || dest.saturating_add(len) > elements.len() {
             return Err(trap_error("out of bounds table access"));
         }
-        table.elements.copy_within(src..src + len, dest);
+        elements.copy_within(src..src + len, dest);
     } else {
         let module = store.module_mut();
         let (src_table, dst_table) = if si < di {
@@ -272,12 +620,14 @@ pub(super) fn do_table_copy(
             let (left, right) = module.tables.split_at_mut(si);
             (&right[0] as &TableInst, &mut left[di])
         };
-        if src.saturating_add(len) > src_table.elements.len()
-            || dest.saturating_add(len) > dst_table.elements.len()
+        let src_elements = src_table.elements();
+        let mut dst_elements = dst_table.elements_mut();
+        if src.saturating_add(len) > src_elements.len()
+            || dest.saturating_add(len) > dst_elements.len()
         {
             return Err(trap_error("out of bounds table access"));
         }
-        dst_table.elements[dest..dest + len].copy_from_slice(&src_table.elements[src..src + len]);
+        dst_elements[dest..dest + len].copy_from_slice(&src_elements[src..src + len]);
     }
     Ok(())
 }
@@ -305,22 +655,22 @@ pub(super) fn do_table_init(
         return Err(trap_error("out of bounds table access"));
     }
     let elem = &module.elements[ei];
+    let table_len = module.tables[ti].size();
     if len == 0 {
-        if src > elem.refs.len() || dest > module.tables[ti].elements.len() {
+        if src > elem.refs.len() || dest > table_len {
             return Err(trap_error("out of bounds table access"));
         }
         return Ok(());
     }
-    if src.saturating_add(len) > elem.refs.len()
-        || dest.saturating_add(len) > module.tables[ti].elements.len()
-    {
+    if src.saturating_add(len) > elem.refs.len() || dest.saturating_add(len) > table_len {
         return Err(trap_error("out of bounds table access"));
     }
     if elem.is_dropped() {
         return Err(trap_error("out of bounds table access"));
     }
+    let mut table_elements = module.tables[ti].elements_mut();
     for offset in 0..len {
-        module.tables[ti].elements[dest + offset] = module.elements[ei].refs[src + offset];
+        table_elements[dest + offset] = module.elements[ei].refs[src + offset];
     }
     Ok(())
 }

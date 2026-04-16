@@ -280,7 +280,7 @@ fixed regs for the backend.
 The shared model is:
 
 1. publish all cached locals to their canonical frame slots
-2. issue `CallExternal`
+2. issue `CallRuntime`
 3. refresh any fixed cached views whose semantic contents may have changed
    across the helper (for example `mem0` base/size after helper side effects)
 4. reload cached locals from their frame slots
@@ -413,11 +413,11 @@ may still be target-only.
 
 ## Local Call ABI
 
-Direct and indirect local calls between MachineIR functions use a
-backend-private host-stack call record. The MIR-level contract is just
-the `CallDirect` / `CallIndirect` terminator with `callee_frame_base`,
-`caller_result_base`, and `continuation`; the call record layout itself
-is target-private and never appears in the abstract MIR.
+Compiled local calls between MachineIR functions use a backend-private
+host-stack call record. The MIR-level contract is the `Call` terminator
+with `target`, `callee_frame_base`, `caller_result_base`, and
+`continuation`; the call record layout itself is target-private and
+never appears in the abstract MIR.
 
 ### Public entry vs internal entry
 
@@ -436,7 +436,7 @@ Each function gets two entry points in the emitted code:
 
 This split keeps direct local calls free of the C-ABI prologue cost
 while leaving the public entry usable from C code (root invocation,
-external callbacks).
+host callbacks).
 
 ### Body prelude and terminal sequences
 
@@ -475,8 +475,9 @@ The body has exactly two terminal sequences:
 
 ### Call sequence (arm64, reference implementation)
 
-For `CallDirect` (with `caller_result_base` and `callee_frame_base`
-already materialised in registers by earlier MIR ops):
+For a direct-target `Call` (with `caller_result_base` and
+`callee_frame_base` already materialised in registers by earlier MIR
+ops):
 
 ```
 stp caller_result_base, fp_reg, [sp, #-16]!   ; push call record
@@ -490,8 +491,8 @@ cbnz w0, body_local_error_label               ; status check on C_RET0
                                               ;  below)
 ```
 
-`CallIndirect` is identical except it uses the runtime register
-`callee_entry` directly instead of a deferred literal.
+An indirect-target `Call` is identical except it uses the runtime
+register `callee_entry` directly instead of a deferred literal.
 
 The 16-byte record pushed before each call contains:
 
@@ -520,19 +521,18 @@ Local-call trap status flows through `C_RET0`:
   hands the C_RET0 value back to the C caller as the function return
   value.
 
-`CallExternal`'s post-helper `cbnz w0` targets the same
-`body_local_error_label`, so external-helper failures use the same
+`CallRuntime`'s post-helper `cbnz w0` targets the same
+`body_local_error_label`, so runtime-call failures use the same
 unwind path.
 
 ### Block layout — continuation fall-through
 
 The shared block layout pass in
 `CompilerCore::extend_block_trace`/`block_layout` treats every
-`CallDirect` / `CallIndirect` continuation as a preferred fall-through
-target. When the layout pass succeeds in placing the continuation block
-immediately after the call site, the backend's `lower_call_direct` /
-`lower_call_indirect` elides the trailing `b continuation_label` (or
-`jmp` / `b` on other architectures).
+`Call` continuation as a preferred fall-through target. When the layout
+pass succeeds in placing the continuation block immediately after the
+call site, the backend's compiled-call lowering elides the trailing
+`b continuation_label` (or `jmp` / `b` on other architectures).
 
 For backends that emit per-call inline literals (arm64 uses an
 `ldr_lit_64` to load the patchable callee address), the literal must

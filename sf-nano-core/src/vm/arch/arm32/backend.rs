@@ -15,10 +15,11 @@ use crate::{
             scratch_pool::ScratchPool, types::ParallelSource,
         },
         machine::machine_ir::{
-            fp_reg_index, MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth,
-            MachineFrameRegion, MachineFuncId, MachineFunction, MachineFunctionAbi, MachineInst,
-            MachineReg, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
-            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            fp_reg_index, MachineBlock, MachineBlockId, MachineBlockParam, MachineCallTarget,
+            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction,
+            MachineFunctionAbi, MachineInst, MachineReg, MachineTerminator, MachineTrapKind,
+            MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+            MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
             code::{CodegenModuleView, NativeRootEntry},
@@ -1028,14 +1029,12 @@ impl<'a> Arm32Backend<'a> {
         self.core.runtime_for(func_id)
     }
 
-    /// Direct call lowering. Pushes the backend-private call record onto
-    /// the host stack, switches `MACHINE_FP_REG` to the callee frame, and
-    /// `bl`s through a patchable MOVW/MOVT-loaded callee address. After the
-    /// callee returns, status is checked in R0; nonzero branches to the
-    /// body-local error tail to propagate the trap upward.
-    pub(super) fn emit_call_direct(
+    /// Compiled call lowering. Pushes the backend-private call record onto
+    /// the host stack, switches `MACHINE_FP_REG` to the callee frame, enters
+    /// the compiled callee, and then checks the returned status in `R0`.
+    pub(super) fn emit_call(
         &mut self,
-        callee: MachineFuncId,
+        target: &MachineCallTarget,
         callee_frame_base: MachineReg,
         caller_result_base: MachineReg,
         continuation: MachineBlockId,
@@ -1063,21 +1062,29 @@ impl<'a> Arm32Backend<'a> {
         // Switch MACHINE_FP_REG to the callee frame.
         self.core.text.emit_u32(enc::mov_reg(fp_reg, callee_fp));
 
-        // Load the callee's internal entry address into a scratch via a
-        // patchable MOVW/MOVT pair, then `blx` through it.
-        let s = self.gp_scratch.scoped_alloc();
-        let callee_patch = emit_patchable_addr_into(&mut self.core.text, *s);
-        self.core.text.emit_u32(enc::blx_reg(*s));
-        drop(s);
+        match target {
+            MachineCallTarget::Direct(callee) => {
+                // Load the callee's internal entry address into a scratch via a
+                // patchable MOVW/MOVT pair, then `blx` through it.
+                let s = self.gp_scratch.scoped_alloc();
+                let callee_patch = emit_patchable_addr_into(&mut self.core.text, *s);
+                self.core.text.emit_u32(enc::blx_reg(*s));
+                drop(s);
 
-        // Record the direct-call patch so module-link patching writes the
-        // resolved internal-entry address into the MOVW/MOVT pair.
-        self.core
-            .direct_call_patches
-            .push(crate::vm::arch::common::types::DirectCallPatch {
-                literal_offset: callee_patch,
-                callee,
-            });
+                // Record the direct-call patch so module-link patching writes the
+                // resolved internal-entry address into the MOVW/MOVT pair.
+                self.core.direct_call_patches.push(
+                    crate::vm::arch::common::types::DirectCallPatch {
+                        literal_offset: callee_patch,
+                        callee: *callee,
+                    },
+                );
+            }
+            MachineCallTarget::Indirect { callee_entry, .. } => {
+                let callee_entry = map_reg(*callee_entry)?;
+                self.core.text.emit_u32(enc::blx_reg(callee_entry));
+            }
+        }
 
         // --- callee returns here. R0 holds 0 (success) or trap kind (error).
         // Status check propagates errors to body_local_error_label.
@@ -1170,48 +1177,6 @@ impl<'a> Arm32Backend<'a> {
 
         // 6. Native return (bx lr; LR holds the body prelude's saved LR).
         self.core.text.emit_u32(enc::bx(Arm32Reg::R14));
-        Ok(())
-    }
-
-    /// Indirect call lowering. Same call-record / status-check protocol as
-    /// `emit_call_direct`, but the callee entry address is supplied at
-    /// runtime in a register (already resolved by call_indirect dispatch).
-    pub(super) fn emit_call_indirect(
-        &mut self,
-        _callee_target: MachineReg,
-        callee_entry: MachineReg,
-        callee_frame_base: MachineReg,
-        caller_result_base: MachineReg,
-        continuation: MachineBlockId,
-    ) -> Result<(), WasmError> {
-        let callee_fp = map_reg(callee_frame_base)?;
-        let caller_result_base = map_reg(caller_result_base)?;
-        let callee_entry = map_reg(callee_entry)?;
-        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        let body_local_error_label = self.core.body_local_error_label;
-
-        // Push call record (same shape as emit_call_direct).
-        self.core
-            .text
-            .emit_u32(enc::sub_imm(Arm32Reg::SP, Arm32Reg::SP, 8, 0));
-        self.core
-            .text
-            .emit_u32(enc::str_imm(caller_result_base, Arm32Reg::SP, 0));
-        self.core
-            .text
-            .emit_u32(enc::str_imm(fp_reg, Arm32Reg::SP, 4));
-
-        // Switch fp_reg to the callee frame.
-        self.core.text.emit_u32(enc::mov_reg(fp_reg, callee_fp));
-
-        // BLX to the runtime-resolved callee entry. Populates LR for the
-        // callee's eventual `bx lr`.
-        self.core.text.emit_u32(enc::blx_reg(callee_entry));
-
-        // --- callee returns here. Status check + continuation branch.
-        self.emit_status_check_to(body_local_error_label);
-        let continuation_label = self.core.block_label(continuation)?;
-        self.emit_branch(BranchFixupKind::B, continuation_label);
         Ok(())
     }
 

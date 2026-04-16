@@ -281,7 +281,7 @@ pub(super) fn encode_arm_imm(value: u32) -> Option<(u32, u32)> {
 }
 
 // `cond_bits` was part of the A32 API but is meaningless on Thumb-2
-// (no per-instruction condition field). The one external caller
+// (no per-instruction condition field). The one remaining caller
 // (`select.rs::rbit`) now routes through `enc::rbit` which each ISA
 // implements itself, so no Thumb-2 `cond_bits` is needed.
 

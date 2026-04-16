@@ -2,7 +2,7 @@ use crate::collections;
 use crate::vm::backend::BackendConfig;
 
 use crate::vm::machine::machine_ir::{
-    MachineBlock, MachineBlockId, MachineBlockParam, MachineCallExternal, MachineConstData,
+    MachineBlock, MachineBlockId, MachineBlockParam, MachineCallRuntime, MachineConstData,
     MachineConstId, MachineEdge, MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
     MachineModule, MachineProgram, MachineReg, MachineRegOwner, MachineStorageType,
     MachineTerminator, MachineValue,
@@ -84,7 +84,7 @@ fn rejects_out_of_range_helper_metadata() {
                     id: MachineBlockId(0),
                     params: collections::Vec::new(),
                     ops: collections::vec![MachineInst {
-                        kind: MachineInstKind::CallExternal(MachineCallExternal {
+                        kind: MachineInstKind::CallRuntime(MachineCallRuntime {
                             metadata: MachineConstId(1),
                         }),
                     }],

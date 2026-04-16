@@ -9,9 +9,9 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             machine_ptr_width, machine_word_int_width, MachineAddr, MachineBlockParam,
-            MachineBranchCond, MachineConvertOp, MachineEdge, MachineFloatWidth, MachineInst,
-            MachineInstKind, MachineIntWidth, MachineMemWidth, MachineReg, MachineRegOwner,
-            MachineStorageType, MachineTerminator, MachineValue, MACHINE_CTX_REG,
+            MachineBranchCond, MachineCallTarget, MachineConvertOp, MachineEdge, MachineFloatWidth,
+            MachineInst, MachineInstKind, MachineIntWidth, MachineMemWidth, MachineReg,
+            MachineRegOwner, MachineStorageType, MachineTerminator, MachineValue, MACHINE_CTX_REG,
             MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         middle::ssa_ir::ir::{DecodedOperand, SsaOperand, SsaProgram, SsaValue},
@@ -810,7 +810,20 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::IndexedLoad { dst, .. }
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
-        | MachineInstKind::TestBits { dst, .. } => Some(*dst),
+        | MachineInstKind::TestBits { dst, .. }
+        | MachineInstKind::RefFunc { dst, .. }
+        | MachineInstKind::RefAsNonNull { dst, .. }
+        | MachineInstKind::RefEq { dst, .. }
+        | MachineInstKind::RefI31 { dst, .. }
+        | MachineInstKind::I31GetS { dst, .. }
+        | MachineInstKind::I31GetU { dst, .. }
+        | MachineInstKind::AnyConvertExtern { dst, .. }
+        | MachineInstKind::ExternConvertAny { dst, .. }
+        | MachineInstKind::RefTest { dst, .. }
+        | MachineInstKind::RefCast { dst, .. }
+        | MachineInstKind::StructNewDefault { dst, .. }
+        | MachineInstKind::ArrayNewDefault { dst, .. } => Some(*dst),
+        MachineInstKind::StructGet { dst, dst_hi, .. } => dst_hi.is_none().then_some(*dst),
         MachineInstKind::MemoryGrow { dst, .. } | MachineInstKind::TableGrow { dst, .. } => {
             Some(*dst)
         }
@@ -821,7 +834,8 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::TableFill { .. }
         | MachineInstKind::TableCopy { .. }
         | MachineInstKind::TableInit { .. }
-        | MachineInstKind::ElemDrop { .. } => None,
+        | MachineInstKind::ElemDrop { .. }
+        | MachineInstKind::StructSet { .. } => None,
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -834,7 +848,7 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         MachineInstKind::Store { .. }
         | MachineInstKind::IndexedStore { .. }
         | MachineInstKind::TrapIf { .. }
-        | MachineInstKind::CallExternal(_) => None,
+        | MachineInstKind::CallRuntime(_) => None,
     }
 }
 
@@ -952,7 +966,36 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         MachineInstKind::TrapIf { cond, .. } => {
             visit_branch_cond_regs(cond, &mut visit);
         }
-        MachineInstKind::CallExternal(_) => {}
+        MachineInstKind::CallRuntime(_) => {}
+        MachineInstKind::RefFunc { .. } | MachineInstKind::StructNewDefault { .. } => {}
+        MachineInstKind::RefAsNonNull { src, .. }
+        | MachineInstKind::RefI31 { src, .. }
+        | MachineInstKind::I31GetS { src, .. }
+        | MachineInstKind::I31GetU { src, .. }
+        | MachineInstKind::AnyConvertExtern { src, .. }
+        | MachineInstKind::ExternConvertAny { src, .. }
+        | MachineInstKind::RefTest { src, .. }
+        | MachineInstKind::RefCast { src, .. }
+        | MachineInstKind::StructGet { src, .. }
+        | MachineInstKind::ArrayNewDefault { length: src, .. } => {
+            visit_value_reg(src, &mut visit);
+        }
+        MachineInstKind::RefEq { lhs, rhs, .. } => {
+            visit_value_reg(lhs, &mut visit);
+            visit_value_reg(rhs, &mut visit);
+        }
+        MachineInstKind::StructSet {
+            ref_src,
+            value_lo,
+            value_hi,
+            ..
+        } => {
+            visit_value_reg(ref_src, &mut visit);
+            visit_value_reg(value_lo, &mut visit);
+            if let Some(value_hi) = value_hi {
+                visit_value_reg(value_hi, &mut visit);
+            }
+        }
         MachineInstKind::MemoryGrow { delta, .. } => {
             visit_value_reg(delta, &mut visit);
         }
@@ -1023,23 +1066,20 @@ fn visit_term_source_regs(term: &MachineTerminator, mut visit: impl FnMut(Machin
                 visit_edge_regs(edge, &mut visit);
             }
         }
-        MachineTerminator::CallDirect {
+        MachineTerminator::Call {
+            target,
             callee_frame_base,
             caller_result_base,
             ..
         } => {
-            visit(*callee_frame_base);
-            visit(*caller_result_base);
-        }
-        MachineTerminator::CallIndirect {
-            callee_target,
-            callee_entry,
-            callee_frame_base,
-            caller_result_base,
-            ..
-        } => {
-            visit(*callee_target);
-            visit(*callee_entry);
+            if let MachineCallTarget::Indirect {
+                callee_target,
+                callee_entry,
+            } = target
+            {
+                visit(*callee_target);
+                visit(*callee_entry);
+            }
             visit(*callee_frame_base);
             visit(*caller_result_base);
         }

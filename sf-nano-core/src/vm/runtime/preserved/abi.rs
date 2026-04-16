@@ -30,4 +30,20 @@ pub(crate) mod op {
     pub(crate) const TABLE_COPY: u32 = 7;
     pub(crate) const TABLE_INIT: u32 = 8;
     pub(crate) const ELEM_DROP: u32 = 9;
+    pub(crate) const REF_FUNC: u32 = 10;
+    pub(crate) const REF_AS_NON_NULL: u32 = 11;
+    pub(crate) const REF_EQ: u32 = 12;
+    pub(crate) const REF_I31: u32 = 13;
+    pub(crate) const I31_GET_S: u32 = 14;
+    pub(crate) const I31_GET_U: u32 = 15;
+    pub(crate) const ANY_CONVERT_EXTERN: u32 = 16;
+    pub(crate) const EXTERN_CONVERT_ANY: u32 = 17;
+    pub(crate) const STRUCT_NEW_DEFAULT: u32 = 18;
+    pub(crate) const ARRAY_NEW_DEFAULT: u32 = 19;
+    pub(crate) const REF_TEST: u32 = 20;
+    pub(crate) const REF_CAST: u32 = 21;
+    pub(crate) const STRUCT_GET: u32 = 22;
+    pub(crate) const STRUCT_GET_S: u32 = 23;
+    pub(crate) const STRUCT_GET_U: u32 = 24;
+    pub(crate) const STRUCT_SET: u32 = 25;
 }

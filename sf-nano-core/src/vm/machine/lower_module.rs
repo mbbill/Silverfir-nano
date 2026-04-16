@@ -13,11 +13,11 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-            MachineCompareKind, MachineEdge, MachineFloatWidth, MachineFrameRegion, MachineFuncId,
-            MachineFunction, MachineFunctionAbi, MachineInst, MachineInstKind, MachineIntBinaryOp,
-            MachineLoadExtension, MachineMemWidth, MachineModule, MachineModuleAbi, MachineProgram,
-            MachineReg, MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator,
-            MachineTrapKind, MachineValue,
+            MachineCallTarget, MachineCompareKind, MachineEdge, MachineFloatWidth,
+            MachineFrameRegion, MachineFuncId, MachineFunction, MachineFunctionAbi, MachineInst,
+            MachineInstKind, MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth,
+            MachineModule, MachineModuleAbi, MachineProgram, MachineReg, MachineRegOwner,
+            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::{
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
@@ -366,9 +366,9 @@ fn lower_function(
                     lower.lower_inst(&inst)?;
                 }
                 SsaInstView::Call(call) => match call {
-                    // `CallDirect` preserves Wasm semantics above MachineIR:
+                    // `Call` preserves Wasm semantics above MachineIR:
                     // the callee is compile-time known, but target kind
-                    // (local vs external) is decided here.
+                    // (compiled local vs runtime-dispatch path) is decided here.
                     //
                     // Local targets become MIR terminators because control
                     // transfers into another compiled MachineIR function and
@@ -397,15 +397,239 @@ fn lower_function(
                         current_params = collections::Vec::new();
                         lower.begin_continuation_block_selective()?;
                     }
-                    // External targets stay in the current block as helper-call
-                    // instructions. They cross the runtime ABI boundary but do
-                    // not produce a MachineIR CFG edge.
+                    // Runtime-dispatch targets stay in the current block as
+                    // inline runtime-call instructions. They cross the runtime
+                    // ABI boundary but do not produce a MachineIR CFG edge.
                     SsaCallOp::CallDirect {
                         callee,
                         args,
                         results,
                     } => {
-                        lower.lower_call_external(*callee, *args, *results, const_pool)?;
+                        lower.lower_call_runtime(*callee, *args, *results, const_pool)?;
+                    }
+                    SsaCallOp::CallRef {
+                        type_idx,
+                        ref_slot,
+                        args,
+                        results,
+                    } => {
+                        let type_idx = *type_idx;
+                        let ref_slot = *ref_slot;
+                        let args = *args;
+                        let results = *results;
+                        lower.ensure_no_live_values(
+                            "prepared SSA-IR call_ref reached native lowering with live linear SSA values; values must be published before the call",
+                        )?;
+                        // `call_ref` uses the same local-vs-runtime split as
+                        // `call_indirect`, but it starts from a raw funcref
+                        // handle that is already in a canonical frame slot.
+                        //
+                        //   current_block
+                        //     -> trap_invalid_ref
+                        //     -> type_check
+                        //          -> trap_type
+                        //          -> dispatch
+                        //               -> local_prepare
+                        //                    -> local_transfer
+                        //                    -> local_zero_loop -> local_transfer
+                        //               -> runtime_call
+                        //
+                        //   local_transfer --Call--> continuation
+                        //   runtime_call --------Jump------> continuation
+                        let trap_invalid_ref = extra_block_ids.alloc();
+                        let type_check = extra_block_ids.alloc();
+                        let dispatch = extra_block_ids.alloc();
+                        let trap_type = extra_block_ids.alloc();
+                        let local_prepare = extra_block_ids.alloc();
+                        let local_zero_loop = extra_block_ids.alloc();
+                        let local_transfer = extra_block_ids.alloc();
+                        let runtime_call = extra_block_ids.alloc();
+                        let continuation = extra_block_ids.alloc();
+                        let indirect_temps = call_indirect_gp_temps(&lower)?;
+                        let local_call_target_param = indirect_temps.lane0;
+
+                        lower.emit_save_dirty_cached_locals()?;
+                        lower.emit_machine_ops(build_call_ref_validate_block(&lower, ref_slot)?);
+                        push_lowered_block(
+                            current_block,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            current_params,
+                            lower.take_ops(),
+                            MachineTerminator::Branch {
+                                cond: MachineBranchCond::IntCompare {
+                                    width: lower.gp_word_int_width(),
+                                    kind: MachineCompareKind::Ge,
+                                    sign: MachineSign::Unsigned,
+                                    lhs: MachineValue::Reg(indirect_temps.lane0),
+                                    rhs: MachineValue::Reg(indirect_temps.lane1),
+                                },
+                                then_edge: MachineEdge {
+                                    target: trap_invalid_ref,
+                                    args: collections::Vec::new(),
+                                },
+                                else_edge: MachineEdge {
+                                    target: type_check,
+                                    args: collections::Vec::new(),
+                                },
+                            },
+                        )?;
+                        push_lowered_block(
+                            trap_invalid_ref,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            collections::Vec::new(),
+                            collections::Vec::new(),
+                            MachineTerminator::Trap {
+                                kind: MachineTrapKind::InvalidFunctionReference,
+                            },
+                        )?;
+                        push_lowered_block(
+                            type_check,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            collections::Vec::new(),
+                            build_call_indirect_type_check_block(&lower, type_idx, ref_slot)?,
+                            MachineTerminator::Branch {
+                                cond: MachineBranchCond::IntCompare {
+                                    width: lower.gp_word_int_width(),
+                                    kind: MachineCompareKind::Ne,
+                                    sign: MachineSign::Unsigned,
+                                    lhs: MachineValue::Reg(indirect_temps.lane0),
+                                    rhs: MachineValue::Reg(indirect_temps.lane2),
+                                },
+                                then_edge: MachineEdge {
+                                    target: trap_type,
+                                    args: collections::Vec::new(),
+                                },
+                                else_edge: MachineEdge {
+                                    target: dispatch,
+                                    args: collections::Vec::new(),
+                                },
+                            },
+                        )?;
+                        push_lowered_block(
+                            dispatch,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            collections::Vec::new(),
+                            build_call_indirect_dispatch_block(&lower, ref_slot)?,
+                            MachineTerminator::Branch {
+                                cond: MachineBranchCond::IntCompare {
+                                    width: lower.gp_word_int_width(),
+                                    kind: MachineCompareKind::Eq,
+                                    sign: MachineSign::Unsigned,
+                                    lhs: MachineValue::Reg(indirect_temps.lane0),
+                                    rhs: MachineValue::Imm64(function_kind::LOCAL as u64),
+                                },
+                                then_edge: MachineEdge {
+                                    target: local_prepare,
+                                    args: collections::vec![MachineValue::Reg(
+                                        indirect_temps.lane2
+                                    )],
+                                },
+                                else_edge: MachineEdge {
+                                    target: runtime_call,
+                                    args: collections::Vec::new(),
+                                },
+                            },
+                        )?;
+                        push_lowered_block(
+                            trap_type,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            collections::Vec::new(),
+                            collections::Vec::new(),
+                            MachineTerminator::Trap {
+                                kind: MachineTrapKind::IndirectCallTypeMismatch,
+                            },
+                        )?;
+                        push_lowered_block(
+                            local_prepare,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            collections::vec![MachineBlockParam::gp_word(local_call_target_param)],
+                            build_call_indirect_local_prepare_block(&mut lower, args)?,
+                            MachineTerminator::Branch {
+                                cond: MachineBranchCond::IntCompare {
+                                    width: lower.gp_word_int_width(),
+                                    kind: MachineCompareKind::Ge,
+                                    sign: MachineSign::Unsigned,
+                                    lhs: MachineValue::Reg(indirect_temps.lane3),
+                                    rhs: MachineValue::Reg(indirect_temps.lane2),
+                                },
+                                then_edge: MachineEdge {
+                                    target: local_transfer,
+                                    args: collections::Vec::new(),
+                                },
+                                else_edge: MachineEdge {
+                                    target: local_zero_loop,
+                                    args: collections::Vec::new(),
+                                },
+                            },
+                        )?;
+                        push_lowered_block(
+                            local_zero_loop,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            collections::Vec::new(),
+                            build_call_indirect_local_zero_loop_block(&mut lower)?,
+                            MachineTerminator::Branch {
+                                cond: MachineBranchCond::IntCompare {
+                                    width: lower.gp_word_int_width(),
+                                    kind: MachineCompareKind::Lt,
+                                    sign: MachineSign::Unsigned,
+                                    lhs: MachineValue::Reg(indirect_temps.lane3),
+                                    rhs: MachineValue::Reg(indirect_temps.lane2),
+                                },
+                                then_edge: MachineEdge {
+                                    target: local_zero_loop,
+                                    args: collections::Vec::new(),
+                                },
+                                else_edge: MachineEdge {
+                                    target: local_transfer,
+                                    args: collections::Vec::new(),
+                                },
+                            },
+                        )?;
+                        push_lowered_block(
+                            local_transfer,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            collections::Vec::new(),
+                            build_call_indirect_local_transfer_block(
+                                &mut lower,
+                                continuation,
+                                results,
+                            )?,
+                            MachineTerminator::Call {
+                                target: MachineCallTarget::Indirect {
+                                    callee_target: indirect_temps.lane0,
+                                    callee_entry: indirect_temps.lane2,
+                                },
+                                callee_frame_base: indirect_temps.lane1,
+                                caller_result_base: indirect_temps.lane3,
+                                continuation,
+                            },
+                        )?;
+                        let metadata = lower.build_call_runtime_meta_ref(
+                            type_idx, ref_slot, args, results, const_pool,
+                        );
+                        push_lowered_block(
+                            runtime_call,
+                            &mut original_blocks,
+                            &mut extra_blocks,
+                            collections::Vec::new(),
+                            lower.build_runtime_call_ops(metadata),
+                            MachineTerminator::Jump(MachineEdge {
+                                target: continuation,
+                                args: collections::Vec::new(),
+                            }),
+                        )?;
+
+                        current_block = continuation;
+                        current_params = collections::Vec::new();
+                        lower.begin_continuation_block_selective()?;
                     }
                     SsaCallOp::CallIndirect { .. } => {
                         let SsaCallOp::CallIndirect {
@@ -445,14 +669,14 @@ fn lower_function(
                         //                    -> local_prepare
                         //                         -> local_transfer
                         //                         -> local_zero_loop -> local_transfer
-                        //                    -> external_call
+                        //                    -> runtime_call
                         //
-                        //   local_transfer --CallIndirect--> continuation
-                        //   external_call --------Jump-----> continuation
+                        //   local_transfer --Call--> continuation
+                        //   runtime_call --------Jump-----> continuation
                         //
                         // The local arm needs more blocks because it must load local-call
                         // metadata, run a dynamic stack precheck, and zero the callee frame prefix
-                        // before it can commit the final transfer terminator. The external arm is
+                        // before it can commit the final transfer terminator. The runtime arm is
                         // a straight inline runtime-entry call that rejoins the shared
                         // continuation block immediately.
                         let checked = extra_block_ids.alloc();
@@ -464,7 +688,7 @@ fn lower_function(
                         let local_prepare = extra_block_ids.alloc();
                         let local_zero_loop = extra_block_ids.alloc();
                         let local_transfer = extra_block_ids.alloc();
-                        let external_call = extra_block_ids.alloc();
+                        let runtime_call = extra_block_ids.alloc();
                         let continuation = extra_block_ids.alloc();
                         let indirect_temps = call_indirect_gp_temps(&lower)?;
                         // These four reserved GP lanes are intentionally threaded across the
@@ -580,7 +804,7 @@ fn lower_function(
                             },
                         )?;
                         // `dispatch` decides whether the resolved target stays inside compiled
-                        // local code or crosses the external-call runtime entry.
+                        // local code or crosses the runtime-call entry.
                         push_lowered_block(
                             dispatch,
                             &mut original_blocks,
@@ -602,7 +826,7 @@ fn lower_function(
                                     )],
                                 },
                                 else_edge: MachineEdge {
-                                    target: external_call,
+                                    target: runtime_call,
                                     args: collections::Vec::new(),
                                 },
                             },
@@ -673,7 +897,7 @@ fn lower_function(
                             },
                         )?;
                         // `local_transfer` writes the logical call-link fields and terminates with
-                        // `CallIndirect`. By this point MachineIR has already resolved the callee
+                        // `Call`. By this point MachineIR has already resolved the callee
                         // entry address and chosen the call-link base; the backend only commits the
                         // final transfer.
                         push_lowered_block(
@@ -686,30 +910,32 @@ fn lower_function(
                                 continuation,
                                 results,
                             )?,
-                            MachineTerminator::CallIndirect {
-                                callee_target: indirect_temps.lane0,
-                                callee_entry: indirect_temps.lane2,
+                            MachineTerminator::Call {
+                                target: MachineCallTarget::Indirect {
+                                    callee_target: indirect_temps.lane0,
+                                    callee_entry: indirect_temps.lane2,
+                                },
                                 callee_frame_base: indirect_temps.lane1,
                                 caller_result_base: indirect_temps.lane3,
                                 continuation,
                             },
                         )?;
-                        let metadata = lower.build_call_external_meta_indirect(
+                        let metadata = lower.build_call_runtime_meta_indirect(
                             func_idx_slot,
                             args,
                             results,
                             const_pool,
                         );
-                        // `external_call` is the external-target sibling of the local path. It
+                        // `runtime_call` is the runtime-dispatch sibling of the local path. It
                         // reuses the resolved function index now stored in `func_idx_slot`,
-                        // performs the inline external-call sequence, and then jumps to the shared
+                        // performs the inline runtime-call sequence, and then jumps to the shared
                         // continuation block.
                         push_lowered_block(
-                            external_call,
+                            runtime_call,
                             &mut original_blocks,
                             &mut extra_blocks,
                             collections::Vec::new(),
-                            lower.build_external_call_ops(metadata),
+                            lower.build_runtime_call_ops(metadata),
                             MachineTerminator::Jump(MachineEdge {
                                 target: continuation,
                                 args: collections::Vec::new(),
@@ -863,8 +1089,7 @@ fn attach_continuation_args(
             }
             attached
         }
-        MachineTerminator::CallDirect { .. }
-        | MachineTerminator::CallIndirect { .. }
+        MachineTerminator::Call { .. }
         | MachineTerminator::Return
         | MachineTerminator::Trap { .. } => false,
     };
@@ -1207,6 +1432,38 @@ fn build_call_indirect_checked_block(
                 owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: table_base,
+                addr: lower.runtime_addr(runtime_layout.context.function_views_len_offset),
+                width: lower.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        },
+    ])
+}
+
+fn build_call_ref_validate_block(
+    lower: &BlockLowerContext<'_>,
+    ref_slot: FrameSlot,
+) -> Result<collections::Vec<MachineInst>, WasmError> {
+    let runtime_layout = lower.runtime_abi_layout();
+    let temps = call_indirect_gp_temps(lower)?;
+    let func_idx = temps.lane0;
+    let function_views_len = temps.lane1;
+    Ok(collections::vec![
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: func_idx,
+                addr: lower.frame_addr(ref_slot)?,
+                width: MachineMemWidth::U32,
+                extension: MachineLoadExtension::ZeroExtend,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: function_views_len,
                 addr: lower.runtime_addr(runtime_layout.context.function_views_len_offset),
                 width: lower.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,

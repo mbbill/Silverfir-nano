@@ -30,7 +30,7 @@ const GUARD_RESERVATION: usize = 8 * 1024 * 1024 * 1024 + 64 * 1024;
 ///
 /// The base pointer is stable for the lifetime of the allocation (no
 /// reallocation on grow). Only the committed size changes.
-pub struct GuardPageMemory {
+pub(crate) struct GuardPageMemory {
     base: *mut u8,
     committed: usize,
     #[cfg(feature = "memprof")]
@@ -42,7 +42,7 @@ unsafe impl Send for GuardPageMemory {}
 
 impl GuardPageMemory {
     /// Allocate a guarded memory with `initial_pages` committed.
-    pub fn new(initial_pages: usize) -> Result<Self, WasmError> {
+    pub(crate) fn new(initial_pages: usize) -> Result<Self, WasmError> {
         let initial_bytes = initial_pages * WASM_PAGE_SIZE;
         if initial_bytes > GUARD_RESERVATION {
             return Err(WasmError::internal(
@@ -85,7 +85,7 @@ impl GuardPageMemory {
     }
 
     /// Grow by `delta_pages`. Returns the old size in pages.
-    pub fn grow(&mut self, delta_pages: usize) -> Result<usize, WasmError> {
+    pub(crate) fn grow(&mut self, delta_pages: usize) -> Result<usize, WasmError> {
         let old_pages = self.committed / WASM_PAGE_SIZE;
         let new_bytes = self
             .committed
@@ -108,23 +108,13 @@ impl GuardPageMemory {
     }
 
     #[inline]
-    pub fn base(&self) -> *mut u8 {
+    pub(crate) fn base(&self) -> *mut u8 {
         self.base
     }
 
     #[inline]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.committed
-    }
-
-    #[inline]
-    pub fn as_slice(&self) -> &[u8] {
-        unsafe { core::slice::from_raw_parts(self.base, self.committed) }
-    }
-
-    #[inline]
-    pub fn as_mut_slice(&mut self) -> &mut [u8] {
-        unsafe { core::slice::from_raw_parts_mut(self.base, self.committed) }
     }
 }
 

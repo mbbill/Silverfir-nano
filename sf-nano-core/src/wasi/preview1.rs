@@ -1,11 +1,13 @@
 //! WASI preview1 function implementations for sf-nano-core.
 //!
-//! Each public function has the signature `ExternalFn`:
+//! Each public function has the signature `HostFn`:
 //! `fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), WasmError>`
 
 use crate::collections;
 
+use filetime::{set_file_handle_times, set_file_times, set_symlink_file_times, FileTime};
 use std::format;
+use std::hash::{Hash, Hasher};
 use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
@@ -22,16 +24,21 @@ use super::FdEntry;
 // WASI errno constants
 // ---------------------------------------------------------------------------
 
+const ERRNO_ACCES: i32 = 2;
 const ERRNO_SUCCESS: i32 = 0;
 const ERRNO_BADF: i32 = 8;
+const ERRNO_EXIST: i32 = 20;
 const ERRNO_ILSEQ: i32 = 25;
 const ERRNO_INVAL: i32 = 28;
 const ERRNO_IO: i32 = 29;
 const ERRNO_ISDIR: i32 = 31;
+const ERRNO_LOOP: i32 = 32;
 const ERRNO_NAMETOOLONG: i32 = 37;
 const ERRNO_NOENT: i32 = 44;
-const ERRNO_NOSYS: i32 = 52;
 const ERRNO_NOTDIR: i32 = 54;
+const ERRNO_NOTEMPTY: i32 = 55;
+const ERRNO_NOTSOCK: i32 = 57;
+const ERRNO_PERM: i32 = 63;
 const ERRNO_SPIPE: i32 = 70;
 const ERRNO_NOTCAPABLE: i32 = 76;
 
@@ -118,12 +125,32 @@ const OFLAGS_EXCL: i32 = 4;
 const OFLAGS_TRUNC: i32 = 8;
 
 const FDFLAGS_APPEND: u16 = 1;
+const FDFLAGS_DSYNC: u16 = 2;
+const FDFLAGS_NONBLOCK: u16 = 4;
+const FDFLAGS_RSYNC: u16 = 8;
+const FDFLAGS_SYNC: u16 = 16;
 
 // WASI filetype constants
 const FILETYPE_UNKNOWN: u8 = 0;
 const FILETYPE_CHARACTER_DEVICE: u8 = 2;
 const FILETYPE_DIRECTORY: u8 = 3;
 const FILETYPE_REGULAR_FILE: u8 = 4;
+const FILETYPE_SYMBOLIC_LINK: u8 = 7;
+
+const PATH_RIGHTS: u64 = RIGHT_PATH_CREATE_DIRECTORY
+    | RIGHT_PATH_CREATE_FILE
+    | RIGHT_PATH_LINK_SOURCE
+    | RIGHT_PATH_LINK_TARGET
+    | RIGHT_PATH_OPEN
+    | RIGHT_PATH_READLINK
+    | RIGHT_PATH_RENAME_SOURCE
+    | RIGHT_PATH_RENAME_TARGET
+    | RIGHT_PATH_FILESTAT_GET
+    | RIGHT_PATH_FILESTAT_SET_SIZE
+    | RIGHT_PATH_FILESTAT_SET_TIMES
+    | RIGHT_PATH_SYMLINK
+    | RIGHT_PATH_REMOVE_DIRECTORY
+    | RIGHT_PATH_UNLINK_FILE;
 
 // ---------------------------------------------------------------------------
 // Memory helper functions
@@ -232,17 +259,137 @@ fn resolve_under_base(base: &Path, rel: &str) -> Result<PathBuf, i32> {
     Ok(out)
 }
 
-// ---------------------------------------------------------------------------
-// Map std::io::ErrorKind to WASI errno
-// ---------------------------------------------------------------------------
+fn path_error_to_errno(e: &std::io::Error) -> i32 {
+    use std::io::ErrorKind as K;
 
-fn io_error_to_errno(e: &std::io::Error) -> i32 {
     match e.kind() {
-        std::io::ErrorKind::NotFound => ERRNO_NOENT,
-        std::io::ErrorKind::PermissionDenied => ERRNO_NOTCAPABLE,
-        std::io::ErrorKind::AlreadyExists => 20, // ERRNO_EXIST
-        std::io::ErrorKind::InvalidInput => ERRNO_INVAL,
+        K::AlreadyExists => ERRNO_EXIST,
+        K::DirectoryNotEmpty => ERRNO_NOTEMPTY,
+        K::InvalidInput => ERRNO_INVAL,
+        K::IsADirectory => ERRNO_ISDIR,
+        K::NotADirectory => ERRNO_NOTDIR,
+        K::NotFound => ERRNO_NOENT,
+        K::PermissionDenied => ERRNO_PERM,
         _ => ERRNO_IO,
+    }
+}
+
+fn validate_path_bytes(bytes: &[u8]) -> Result<String, i32> {
+    if bytes.contains(&0) {
+        return Err(ERRNO_INVAL);
+    }
+    match std::str::from_utf8(bytes) {
+        Ok(s) => Ok(s.to_string()),
+        Err(_) => Err(ERRNO_ILSEQ),
+    }
+}
+
+#[inline]
+fn ns_to_filetime(ns: u64) -> FileTime {
+    let secs = (ns / 1_000_000_000) as i64;
+    let nsec = (ns % 1_000_000_000) as u32;
+    FileTime::from_unix_time(secs, nsec)
+}
+
+fn timestamp_ns(time: std::io::Result<SystemTime>) -> u64 {
+    time.ok()
+        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+        .map(|d| d.as_nanos() as u64)
+        .unwrap_or(0)
+}
+
+fn write_filestat(
+    mem: &mut [u8],
+    buf_ptr: u32,
+    dev: u64,
+    ino: u64,
+    filetype: u8,
+    nlink: u64,
+    size: u64,
+    atim: u64,
+    mtim: u64,
+    ctim: u64,
+) -> Result<(), WasmError> {
+    write_u64_le(mem, buf_ptr, dev)?;
+    write_u64_le(mem, buf_ptr + 8, ino)?;
+    write_u8_le(mem, buf_ptr + 16, filetype)?;
+    write_u64_le(mem, buf_ptr + 24, nlink)?;
+    write_u64_le(mem, buf_ptr + 32, size)?;
+    write_u64_le(mem, buf_ptr + 40, atim)?;
+    write_u64_le(mem, buf_ptr + 48, mtim)?;
+    write_u64_le(mem, buf_ptr + 56, ctim)?;
+    Ok(())
+}
+
+fn preopen_index_for_fd(ctx: &super::WasiCtx, fd: i32) -> Option<usize> {
+    let idx = fd - 3;
+    if idx < 0 || ctx.closed_preopens.contains(&fd) {
+        return None;
+    }
+    let idx = idx as usize;
+    (idx < ctx.preopens.len()).then_some(idx)
+}
+
+fn dir_fd_state(fd: i32) -> Result<(PathBuf, u64, u64), i32> {
+    super::with_ctx(|ctx| {
+        if let Some(idx) = preopen_index_for_fd(ctx, fd) {
+            return Ok((
+                ctx.preopens[idx].host_path.clone(),
+                RIGHTS_DIR_BASE,
+                RIGHTS_DIR_INHERITING,
+            ));
+        }
+        match ctx.fds.get(&fd) {
+            Some(FdEntry::Dir {
+                host_path,
+                rights_base,
+                rights_inh,
+            }) => Ok((host_path.clone(), *rights_base, *rights_inh)),
+            Some(FdEntry::File { .. }) => Err(ERRNO_NOTDIR),
+            None => Err(ERRNO_BADF),
+        }
+    })
+}
+
+fn derive_ino_from_meta(meta: &std::fs::Metadata, _host_path: &Path) -> u64 {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        meta.ino()
+    }
+    #[cfg(not(unix))]
+    {
+        let mut hasher = std::collections::hash_map::DefaultHasher::new();
+        _host_path.to_string_lossy().hash(&mut hasher);
+        let ft: u8 = if meta.is_dir() {
+            FILETYPE_DIRECTORY
+        } else if meta.is_file() {
+            FILETYPE_REGULAR_FILE
+        } else {
+            FILETYPE_UNKNOWN
+        };
+        ft.hash(&mut hasher);
+        meta.len().hash(&mut hasher);
+        timestamp_ns(meta.created()).hash(&mut hasher);
+        timestamp_ns(meta.modified()).hash(&mut hasher);
+        hasher.finish() & ((1u64 << 53) - 1)
+    }
+}
+
+fn derive_ino_for_path(host_path: &Path) -> u64 {
+    match std::fs::symlink_metadata(host_path) {
+        Ok(meta) => derive_ino_from_meta(&meta, host_path),
+        Err(_) => {
+            let mut hasher = std::collections::hash_map::DefaultHasher::new();
+            host_path.to_string_lossy().hash(&mut hasher);
+            hasher.finish() & ((1u64 << 53) - 1)
+        }
+    }
+}
+
+fn entry_host_path(entry: &FdEntry) -> PathBuf {
+    match entry {
+        FdEntry::Dir { host_path, .. } | FdEntry::File { host_path, .. } => host_path.clone(),
     }
 }
 
@@ -672,9 +819,27 @@ pub(crate) fn fd_seek(
             if (*rights_base & RIGHT_FD_SEEK) == 0 {
                 return Err(ERRNO_NOTCAPABLE);
             }
+            if offset < 0 {
+                if whence == 1 {
+                    if let Ok(cur) = file.stream_position() {
+                        if (-offset as u64) > cur {
+                            return Err(ERRNO_INVAL);
+                        }
+                    }
+                } else if whence == 2 {
+                    if let Ok(meta) = file.metadata() {
+                        if (-offset as u64) > meta.len() {
+                            return Err(ERRNO_INVAL);
+                        }
+                    }
+                }
+            }
             match file.seek(seek_from) {
                 Ok(pos) => Ok(pos),
-                Err(_) => Err(ERRNO_IO),
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::InvalidInput => Err(ERRNO_INVAL),
+                    _ => Err(ERRNO_IO),
+                },
             }
         }
         Some(FdEntry::Dir { .. }) => Err(ERRNO_ISDIR),
@@ -804,9 +969,12 @@ pub(crate) fn fd_prestat_dir_name(
     match result {
         Ok(guest_path) => {
             let bytes = guest_path.as_bytes();
-            let copy_len = std::cmp::min(bytes.len(), path_len as usize);
+            if path_len < bytes.len() as u32 {
+                results[0] = Value::I32(ERRNO_NAMETOOLONG);
+                return Ok(());
+            }
             let mem = get_mem(caller)?;
-            write_mem(mem, path_ptr, &bytes[..copy_len])?;
+            write_mem(mem, path_ptr, bytes)?;
             results[0] = Value::I32(ERRNO_SUCCESS);
         }
         Err(errno) => {
@@ -1054,7 +1222,7 @@ pub(crate) fn path_open(
     results: &mut [Value],
 ) -> Result<(), WasmError> {
     let fd = as_i32(&args[0])?;
-    let _dirflags = as_i32(&args[1])?;
+    let dirflags = as_i32(&args[1])? as u32;
     let path_ptr = as_i32(&args[2])? as u32;
     let path_len = as_i32(&args[3])? as u32;
     let oflags = as_i32(&args[4])?;
@@ -1064,54 +1232,22 @@ pub(crate) fn path_open(
     let out_fd_ptr = as_i32(&args[8])? as u32;
 
     let mem = get_mem(caller)?;
+    write_u32_le(mem, out_fd_ptr, 0)?;
 
-    // Read path from guest memory
     let path_bytes = read_mem(mem, path_ptr, path_len)?;
-
-    // Validate: no NUL bytes
-    if path_bytes.contains(&0) {
-        results[0] = Value::I32(ERRNO_ILSEQ);
-        return Ok(());
-    }
-
-    // Validate: valid UTF-8
-    let path_str = match std::str::from_utf8(path_bytes) {
-        Ok(s) => s.to_string(),
-        Err(_) => {
-            results[0] = Value::I32(ERRNO_ILSEQ);
+    let path_str = match validate_path_bytes(path_bytes) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
             return Ok(());
         }
     };
-
     if path_str.len() > 4096 {
         results[0] = Value::I32(ERRNO_NAMETOOLONG);
         return Ok(());
     }
 
-    // Get the base directory info from preopen or dynamic fd
-    let base_info: Result<(PathBuf, u64), i32> = super::with_ctx(|ctx| {
-        // Check if it's a preopen fd
-        let preopen_end = 3 + ctx.preopens.len() as i32;
-        if fd >= 3 && fd < preopen_end {
-            if ctx.closed_preopens.contains(&fd) {
-                return Err(ERRNO_BADF);
-            }
-            let idx = (fd - 3) as usize;
-            return Ok((ctx.preopens[idx].host_path.clone(), RIGHTS_DIR_INHERITING));
-        }
-        // Check dynamic fds
-        match ctx.fds.get(&fd) {
-            Some(FdEntry::Dir {
-                host_path,
-                rights_inh: inh,
-                ..
-            }) => Ok((host_path.clone(), *inh)),
-            Some(FdEntry::File { .. }) => Err(ERRNO_NOTDIR),
-            None => Err(ERRNO_BADF),
-        }
-    });
-
-    let (base_host_path, base_allowed_inh) = match base_info {
+    let (base_host_path, base_allowed_base, base_allowed_inh) = match dir_fd_state(fd) {
         Ok(v) => v,
         Err(errno) => {
             results[0] = Value::I32(errno);
@@ -1119,23 +1255,7 @@ pub(crate) fn path_open(
         }
     };
 
-    // Rights enforcement: requested rights must be a subset of inheriting rights
-    if (rights_base & !base_allowed_inh) != 0 || (rights_inh & !base_allowed_inh) != 0 {
-        results[0] = Value::I32(ERRNO_NOTCAPABLE);
-        return Ok(());
-    }
-
-    // Capability checks for specific oflags
-    if (oflags & OFLAGS_TRUNC) != 0 && (base_allowed_inh & RIGHT_PATH_FILESTAT_SET_SIZE) == 0 {
-        results[0] = Value::I32(ERRNO_NOTCAPABLE);
-        return Ok(());
-    }
-    if (oflags & OFLAGS_CREAT) != 0 && (base_allowed_inh & RIGHT_PATH_CREATE_FILE) == 0 {
-        results[0] = Value::I32(ERRNO_NOTCAPABLE);
-        return Ok(());
-    }
-
-    // Resolve the path
+    let had_trailing_slash = path_str.ends_with('/') || path_str.ends_with('\\');
     let host_path = match resolve_under_base(&base_host_path, &path_str) {
         Ok(p) => p,
         Err(errno) => {
@@ -1144,89 +1264,117 @@ pub(crate) fn path_open(
         }
     };
 
-    let trailing_slash = path_str.ends_with('/');
-
-    // Check if path is a directory
-    let is_dir = host_path.is_dir();
-    let exists = host_path.exists();
-
-    // DIRECTORY flag handling
-    if (oflags & OFLAGS_DIRECTORY) != 0 {
-        if exists && !is_dir {
-            results[0] = Value::I32(ERRNO_NOTDIR);
-            return Ok(());
-        }
-        if !exists {
-            results[0] = Value::I32(ERRNO_NOENT);
-            return Ok(());
-        }
+    if (rights_base & !base_allowed_inh) != 0 || (rights_inh & !base_allowed_inh) != 0 {
+        results[0] = Value::I32(ERRNO_NOTCAPABLE);
+        return Ok(());
     }
-
-    // Trailing slash on a non-directory
-    if trailing_slash && exists && !is_dir {
-        results[0] = Value::I32(ERRNO_NOTDIR);
+    if (oflags & OFLAGS_TRUNC) != 0 && (base_allowed_base & RIGHT_PATH_FILESTAT_SET_SIZE) == 0 {
+        results[0] = Value::I32(ERRNO_NOTCAPABLE);
+        return Ok(());
+    }
+    if (oflags & OFLAGS_CREAT) != 0 && (base_allowed_base & RIGHT_PATH_CREATE_FILE) == 0 {
+        results[0] = Value::I32(ERRNO_NOTCAPABLE);
         return Ok(());
     }
 
-    // Handle opening a directory
-    if is_dir {
-        // Cannot open directory with both read and write
-        if (rights_base & RIGHT_FD_READ) != 0 && (rights_base & RIGHT_FD_WRITE) != 0 {
+    match std::fs::symlink_metadata(&host_path) {
+        Ok(meta) => {
+            if meta.file_type().is_symlink() && (dirflags & 1) == 0 {
+                results[0] = Value::I32(if (oflags & OFLAGS_DIRECTORY) != 0 {
+                    ERRNO_NOTDIR
+                } else {
+                    ERRNO_LOOP
+                });
+                return Ok(());
+            }
+        }
+        Err(_) => {}
+    }
+
+    if had_trailing_slash {
+        match std::fs::symlink_metadata(&host_path) {
+            Ok(meta) => {
+                if meta.is_file() {
+                    results[0] = Value::I32(ERRNO_NOTDIR);
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                results[0] = Value::I32(path_error_to_errno(&e));
+                return Ok(());
+            }
+        }
+    }
+
+    if (oflags & OFLAGS_DIRECTORY) != 0 {
+        match std::fs::metadata(&host_path) {
+            Ok(meta) => {
+                if !meta.is_dir() {
+                    results[0] = Value::I32(ERRNO_NOTDIR);
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                results[0] = Value::I32(path_error_to_errno(&e));
+                return Ok(());
+            }
+        }
+    }
+
+    if host_path.is_dir() {
+        let has_read = (rights_base & RIGHT_FD_READ) != 0;
+        let has_write = (rights_base & RIGHT_FD_WRITE) != 0;
+        if has_read && has_write {
             results[0] = Value::I32(ERRNO_ISDIR);
             return Ok(());
         }
 
-        // Strip non-path rights, keep path rights for dirs
-        let dir_rights = rights_base & (RIGHTS_DIR_BASE | RIGHTS_FILE_BASE);
-        let dir_inh = rights_inh;
-
+        let allowed_dir_base =
+            RIGHT_FD_READDIR | RIGHT_FD_FILESTAT_GET | RIGHT_FD_FILESTAT_SET_TIMES | PATH_RIGHTS;
+        let dir_rights = rights_base & allowed_dir_base;
         let new_fd = super::with_ctx_mut(|ctx| {
             ctx.alloc_fd(FdEntry::Dir {
                 host_path: host_path.clone(),
                 rights_base: dir_rights,
-                rights_inh: dir_inh,
+                rights_inh,
             })
         });
-
         write_u32_le(mem, out_fd_ptr, new_fd as u32)?;
         results[0] = Value::I32(ERRNO_SUCCESS);
         return Ok(());
     }
 
-    // Handle opening a file
-    if exists {
-        // CREAT | EXCL with existing file → error
+    if host_path.is_file() {
         if (oflags & OFLAGS_CREAT) != 0 && (oflags & OFLAGS_EXCL) != 0 {
-            results[0] = Value::I32(20); // ERRNO_EXIST
+            results[0] = Value::I32(ERRNO_EXIST);
             return Ok(());
         }
 
         let mut opts = std::fs::OpenOptions::new();
-        if (rights_base & RIGHT_FD_READ) != 0 {
+        let req_read = (rights_base & RIGHT_FD_READ) != 0;
+        let req_write = (rights_base & RIGHT_FD_WRITE) != 0;
+        if req_read {
             opts.read(true);
         }
-        if (rights_base & RIGHT_FD_WRITE) != 0 {
+        if req_write {
             opts.write(true);
+        }
+        if !req_read && !req_write {
+            opts.read(true);
         }
         if (oflags & OFLAGS_TRUNC) != 0 {
-            opts.truncate(true);
-            // truncate requires write
-            opts.write(true);
-        }
-        if (fdflags & FDFLAGS_APPEND) != 0 {
-            opts.append(true);
+            opts.truncate(true).write(true);
         }
 
         match opts.open(&host_path) {
             Ok(file) => {
-                // Sanitize rights: strip PATH_* bits for file fds
-                let file_rights = rights_base & RIGHTS_FILE_BASE;
+                let file_rights = rights_base & !PATH_RIGHTS;
                 let new_fd = super::with_ctx_mut(|ctx| {
                     ctx.alloc_fd(FdEntry::File {
                         file,
                         host_path: host_path.clone(),
                         rights_base: file_rights,
-                        rights_inh: rights_inh & RIGHTS_FILE_BASE,
+                        rights_inh,
                         fdflags,
                     })
                 });
@@ -1234,38 +1382,70 @@ pub(crate) fn path_open(
                 results[0] = Value::I32(ERRNO_SUCCESS);
             }
             Err(e) => {
-                results[0] = Value::I32(io_error_to_errno(&e));
+                results[0] = Value::I32(path_error_to_errno(&e));
             }
         }
-    } else if (oflags & OFLAGS_CREAT) != 0 {
-        // File doesn't exist, but CREATE flag is set
+        return Ok(());
+    }
+
+    if (oflags & OFLAGS_CREAT) != 0 {
+        if (oflags & OFLAGS_DIRECTORY) != 0 {
+            results[0] = Value::I32(ERRNO_NOENT);
+            return Ok(());
+        }
+
+        let req_read = (rights_base & RIGHT_FD_READ) != 0;
+        let req_write = (rights_base & RIGHT_FD_WRITE) != 0;
+        if !req_write {
+            let mut precreate = std::fs::OpenOptions::new();
+            precreate.write(true);
+            if (oflags & OFLAGS_EXCL) != 0 {
+                precreate.create_new(true);
+            } else {
+                precreate.create(true);
+            }
+            match precreate.open(&host_path) {
+                Ok(_) => {}
+                Err(e) => match e.kind() {
+                    std::io::ErrorKind::AlreadyExists => {}
+                    _ => {
+                        results[0] = Value::I32(path_error_to_errno(&e));
+                        return Ok(());
+                    }
+                },
+            }
+        }
+
         let mut opts = std::fs::OpenOptions::new();
-        opts.create(true);
-        if (rights_base & RIGHT_FD_READ) != 0 {
+        if req_read {
             opts.read(true);
         }
-        if (rights_base & RIGHT_FD_WRITE) != 0 {
-            opts.write(true);
-        } else {
-            // create requires at least write
+        if req_write {
             opts.write(true);
         }
-        if (oflags & OFLAGS_EXCL) != 0 {
-            opts.create_new(true);
+        if !req_read && !req_write {
+            opts.read(true);
         }
-        if (fdflags & FDFLAGS_APPEND) != 0 {
-            opts.append(true);
+        if req_write {
+            if (oflags & OFLAGS_EXCL) != 0 {
+                opts.create_new(true);
+            } else {
+                opts.create(true);
+            }
+        }
+        if (oflags & OFLAGS_TRUNC) != 0 {
+            opts.truncate(true).write(true);
         }
 
         match opts.open(&host_path) {
             Ok(file) => {
-                let file_rights = rights_base & RIGHTS_FILE_BASE;
+                let file_rights = rights_base & !PATH_RIGHTS;
                 let new_fd = super::with_ctx_mut(|ctx| {
                     ctx.alloc_fd(FdEntry::File {
                         file,
                         host_path: host_path.clone(),
                         rights_base: file_rights,
-                        rights_inh: rights_inh & RIGHTS_FILE_BASE,
+                        rights_inh,
                         fdflags,
                     })
                 });
@@ -1273,13 +1453,13 @@ pub(crate) fn path_open(
                 results[0] = Value::I32(ERRNO_SUCCESS);
             }
             Err(e) => {
-                results[0] = Value::I32(io_error_to_errno(&e));
+                results[0] = Value::I32(path_error_to_errno(&e));
             }
         }
-    } else {
-        // File doesn't exist and no CREATE flag
-        results[0] = Value::I32(ERRNO_NOENT);
+        return Ok(());
     }
+
+    results[0] = Value::I32(ERRNO_NOENT);
 
     Ok(())
 }
@@ -1290,118 +1470,654 @@ pub(crate) fn path_open(
 
 pub(crate) fn fd_fdstat_set_flags(
     _caller: &mut Caller,
-    _args: &[Value],
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let flags = as_i32(&args[1])? as u16;
+    let supported =
+        FDFLAGS_APPEND | FDFLAGS_DSYNC | FDFLAGS_NONBLOCK | FDFLAGS_RSYNC | FDFLAGS_SYNC;
+    if (flags & !supported) != 0 {
+        results[0] = Value::I32(ERRNO_INVAL);
+        return Ok(());
+    }
+    if (0..=2).contains(&fd) {
+        let errno = super::with_ctx(|ctx| {
+            if ctx.closed_stdio.contains(&fd) {
+                ERRNO_BADF
+            } else {
+                ERRNO_SUCCESS
+            }
+        });
+        results[0] = Value::I32(errno);
+        return Ok(());
+    }
+
+    let errno = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+        Some(FdEntry::File { fdflags, .. }) => {
+            *fdflags = flags;
+            ERRNO_SUCCESS
+        }
+        Some(FdEntry::Dir { .. }) => ERRNO_ISDIR,
+        None => ERRNO_BADF,
+    });
+    results[0] = Value::I32(errno);
     Ok(())
 }
 
 pub(crate) fn fd_fdstat_set_rights(
     _caller: &mut Caller,
-    _args: &[Value],
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let rights_base_new = as_i64(&args[1])? as u64;
+    let rights_inh_new = as_i64(&args[2])? as u64;
+
+    if (0..=2).contains(&fd) {
+        results[0] = Value::I32(ERRNO_INVAL);
+        return Ok(());
+    }
+
+    let errno = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+        Some(FdEntry::File {
+            rights_base,
+            rights_inh,
+            ..
+        })
+        | Some(FdEntry::Dir {
+            rights_base,
+            rights_inh,
+            ..
+        }) => {
+            if (rights_base_new & !*rights_base) != 0 || (rights_inh_new & !*rights_inh) != 0 {
+                ERRNO_NOTCAPABLE
+            } else {
+                *rights_base = rights_base_new;
+                *rights_inh = rights_inh_new;
+                ERRNO_SUCCESS
+            }
+        }
+        None => ERRNO_BADF,
+    });
+    results[0] = Value::I32(errno);
     Ok(())
 }
 
 pub(crate) fn fd_renumber(
     _caller: &mut Caller,
-    _args: &[Value],
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let from = as_i32(&args[0])?;
+    let to = as_i32(&args[1])?;
+    if from == to {
+        results[0] = Value::I32(ERRNO_SUCCESS);
+        return Ok(());
+    }
+
+    let errno = super::with_ctx_mut(|ctx| {
+        let dest_valid = if (0..=2).contains(&to) {
+            !ctx.closed_stdio.contains(&to)
+        } else if preopen_index_for_fd(ctx, to).is_some() {
+            true
+        } else {
+            ctx.fds.contains_key(&to)
+        };
+        if !dest_valid {
+            return ERRNO_BADF;
+        }
+
+        let movable = if (0..=2).contains(&from) {
+            None
+        } else if let Some(idx) = preopen_index_for_fd(ctx, from) {
+            Some(FdEntry::Dir {
+                host_path: ctx.preopens[idx].host_path.clone(),
+                rights_base: RIGHTS_DIR_BASE,
+                rights_inh: RIGHTS_DIR_INHERITING,
+            })
+        } else if let Some(entry) = ctx.fds.remove(&from) {
+            Some(entry)
+        } else {
+            return ERRNO_BADF;
+        };
+
+        if !(0..=2).contains(&from) {
+            if (0..=2).contains(&to) {
+                ctx.closed_stdio.insert(to);
+            } else if preopen_index_for_fd(ctx, to).is_some() {
+                ctx.closed_preopens.insert(to);
+            } else {
+                let _ = ctx.fds.remove(&to);
+            }
+        }
+
+        if let Some(entry) = movable {
+            ctx.fds.insert(to, entry);
+        }
+
+        if (0..=2).contains(&from) {
+            ctx.closed_stdio.insert(from);
+        } else if preopen_index_for_fd(ctx, from).is_some() {
+            ctx.closed_preopens.insert(from);
+        }
+
+        ERRNO_SUCCESS
+    });
+    results[0] = Value::I32(errno);
     Ok(())
 }
 
 pub(crate) fn fd_filestat_get(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let buf_ptr = as_i32(&args[1])? as u32;
+    let mem = get_mem(caller)?;
+
+    if (0..=2).contains(&fd) {
+        write_filestat(mem, buf_ptr, 1, 2, FILETYPE_CHARACTER_DEVICE, 1, 0, 0, 0, 0)?;
+        results[0] = Value::I32(ERRNO_SUCCESS);
+        return Ok(());
+    }
+
+    enum StatTarget {
+        Path(PathBuf, bool),
+        File(std::fs::Metadata, PathBuf),
+    }
+
+    let target = super::with_ctx(|ctx| {
+        if let Some(idx) = preopen_index_for_fd(ctx, fd) {
+            return Ok(StatTarget::Path(ctx.preopens[idx].host_path.clone(), true));
+        }
+        match ctx.fds.get(&fd) {
+            Some(FdEntry::Dir { host_path, .. }) => Ok(StatTarget::Path(host_path.clone(), true)),
+            Some(FdEntry::File { file, .. }) => match file.metadata() {
+                Ok(meta) => Ok(StatTarget::File(
+                    meta,
+                    entry_host_path(ctx.fds.get(&fd).unwrap()),
+                )),
+                Err(_) => Err(ERRNO_NOENT),
+            },
+            None => Err(ERRNO_BADF),
+        }
+    });
+
+    match target {
+        Ok(StatTarget::Path(host_path, is_dir)) => match std::fs::metadata(&host_path) {
+            Ok(meta) => {
+                let ino = derive_ino_from_meta(&meta, &host_path);
+                write_filestat(
+                    mem,
+                    buf_ptr,
+                    1,
+                    ino,
+                    if is_dir {
+                        FILETYPE_DIRECTORY
+                    } else {
+                        FILETYPE_REGULAR_FILE
+                    },
+                    1,
+                    if meta.is_file() { meta.len() } else { 0 },
+                    timestamp_ns(meta.accessed()),
+                    timestamp_ns(meta.modified()),
+                    timestamp_ns(meta.created()),
+                )?;
+                results[0] = Value::I32(ERRNO_SUCCESS);
+            }
+            Err(_) => results[0] = Value::I32(ERRNO_NOENT),
+        },
+        Ok(StatTarget::File(meta, host_path)) => {
+            let ino = derive_ino_from_meta(&meta, &host_path);
+            write_filestat(
+                mem,
+                buf_ptr,
+                1,
+                ino,
+                FILETYPE_REGULAR_FILE,
+                1,
+                meta.len(),
+                timestamp_ns(meta.accessed()),
+                timestamp_ns(meta.modified()),
+                timestamp_ns(meta.created()),
+            )?;
+            results[0] = Value::I32(ERRNO_SUCCESS);
+        }
+        Err(errno) => results[0] = Value::I32(errno),
+    }
     Ok(())
 }
 
 pub(crate) fn fd_filestat_set_size(
     _caller: &mut Caller,
-    _args: &[Value],
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let size = as_i64(&args[1])? as u64;
+
+    if (0..=2).contains(&fd) {
+        results[0] = Value::I32(ERRNO_INVAL);
+        return Ok(());
+    }
+
+    let errno = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+        Some(FdEntry::File {
+            file, rights_base, ..
+        }) => {
+            if (*rights_base & RIGHT_FD_FILESTAT_SET_SIZE) == 0 {
+                ERRNO_NOTCAPABLE
+            } else if file.set_len(size).is_ok() {
+                ERRNO_SUCCESS
+            } else {
+                ERRNO_IO
+            }
+        }
+        Some(FdEntry::Dir { .. }) => ERRNO_ISDIR,
+        None => ERRNO_BADF,
+    });
+    results[0] = Value::I32(errno);
     Ok(())
 }
 
 pub(crate) fn fd_filestat_set_times(
     _caller: &mut Caller,
-    _args: &[Value],
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    const SET_ATIM: u32 = 1 << 0;
+    const SET_ATIM_NOW: u32 = 1 << 1;
+    const SET_MTIM: u32 = 1 << 2;
+    const SET_MTIM_NOW: u32 = 1 << 3;
+
+    let fd = as_i32(&args[0])?;
+    let atim = as_i64(&args[1])? as u64;
+    let mtim = as_i64(&args[2])? as u64;
+    let fst_flags = as_i32(&args[3])? as u32;
+    let invalid_combo = (fst_flags & SET_ATIM != 0 && fst_flags & SET_ATIM_NOW != 0)
+        || (fst_flags & SET_MTIM != 0 && fst_flags & SET_MTIM_NOW != 0)
+        || (fst_flags & !(SET_ATIM | SET_ATIM_NOW | SET_MTIM | SET_MTIM_NOW) != 0);
+    if invalid_combo {
+        results[0] = Value::I32(ERRNO_INVAL);
+        return Ok(());
+    }
+    if (0..=2).contains(&fd) {
+        results[0] = Value::I32(ERRNO_INVAL);
+        return Ok(());
+    }
+
+    let errno = super::with_ctx(|ctx| match ctx.fds.get(&fd) {
+        Some(FdEntry::File {
+            file, rights_base, ..
+        }) => {
+            if (*rights_base & RIGHT_FD_FILESTAT_SET_TIMES) == 0 {
+                return ERRNO_NOTCAPABLE;
+            }
+            let at_opt = if (fst_flags & SET_ATIM_NOW) != 0 {
+                Some(FileTime::now())
+            } else if (fst_flags & SET_ATIM) != 0 {
+                Some(ns_to_filetime(atim))
+            } else {
+                None
+            };
+            let mt_opt = if (fst_flags & SET_MTIM_NOW) != 0 {
+                Some(FileTime::now())
+            } else if (fst_flags & SET_MTIM) != 0 {
+                Some(ns_to_filetime(mtim))
+            } else {
+                None
+            };
+            if set_file_handle_times(file, at_opt, mt_opt).is_ok() {
+                ERRNO_SUCCESS
+            } else {
+                ERRNO_IO
+            }
+        }
+        Some(FdEntry::Dir { .. }) => ERRNO_INVAL,
+        None => ERRNO_BADF,
+    });
+    results[0] = Value::I32(errno);
     Ok(())
 }
 
 pub(crate) fn fd_sync(
     _caller: &mut Caller,
-    _args: &[Value],
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    if (0..=2).contains(&fd) {
+        results[0] = Value::I32(ERRNO_INVAL);
+        return Ok(());
+    }
+
+    let errno = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+        Some(FdEntry::File {
+            file, rights_base, ..
+        }) => {
+            if (*rights_base & RIGHT_FD_SYNC) == 0 {
+                ERRNO_NOTCAPABLE
+            } else if file.sync_all().is_ok() {
+                ERRNO_SUCCESS
+            } else {
+                ERRNO_IO
+            }
+        }
+        Some(FdEntry::Dir { .. }) => ERRNO_INVAL,
+        None => ERRNO_BADF,
+    });
+    results[0] = Value::I32(errno);
     Ok(())
 }
 
 pub(crate) fn fd_datasync(
     _caller: &mut Caller,
-    _args: &[Value],
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    if (0..=2).contains(&fd) {
+        results[0] = Value::I32(ERRNO_INVAL);
+        return Ok(());
+    }
+
+    let errno = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+        Some(FdEntry::File {
+            file, rights_base, ..
+        }) => {
+            if (*rights_base & RIGHT_FD_DATASYNC) == 0 {
+                ERRNO_NOTCAPABLE
+            } else if file.sync_data().is_ok() {
+                ERRNO_SUCCESS
+            } else {
+                ERRNO_IO
+            }
+        }
+        Some(FdEntry::Dir { .. }) => ERRNO_INVAL,
+        None => ERRNO_BADF,
+    });
+    results[0] = Value::I32(errno);
     Ok(())
 }
 
 pub(crate) fn fd_readdir(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let buf_ptr = as_i32(&args[1])? as u32;
+    let buf_len = as_i32(&args[2])? as u32;
+    let cookie = as_i64(&args[3])? as u64;
+    let used_ptr = as_i32(&args[4])? as u32;
+    let mem = get_mem(caller)?;
+    write_u32_le(mem, used_ptr, 0)?;
+
+    let host_dir = match dir_fd_state(fd) {
+        Ok((host, _, _)) => host,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+
+    let read_dir = match std::fs::read_dir(&host_dir) {
+        Ok(rd) => rd,
+        Err(e) => {
+            results[0] = Value::I32(path_error_to_errno(&e));
+            return Ok(());
+        }
+    };
+
+    let mut entries: Vec<(String, u8, u64)> = Vec::new();
+    entries.push((
+        ".".to_string(),
+        FILETYPE_DIRECTORY,
+        derive_ino_for_path(&host_dir),
+    ));
+    entries.push((
+        "..".to_string(),
+        FILETYPE_DIRECTORY,
+        host_dir.parent().map(derive_ino_for_path).unwrap_or(0),
+    ));
+    let mut rest = Vec::new();
+    for entry in read_dir.flatten() {
+        let name = entry.file_name().to_string_lossy().to_string();
+        let filetype = match entry.file_type() {
+            Ok(ft) => {
+                if ft.is_dir() {
+                    FILETYPE_DIRECTORY
+                } else if ft.is_file() {
+                    FILETYPE_REGULAR_FILE
+                } else if ft.is_symlink() {
+                    FILETYPE_SYMBOLIC_LINK
+                } else {
+                    FILETYPE_UNKNOWN
+                }
+            }
+            Err(_) => FILETYPE_UNKNOWN,
+        };
+        let child_host = host_dir.join(&name);
+        rest.push((name, filetype, derive_ino_for_path(&child_host)));
+    }
+    rest.sort_by(|a, b| a.0.cmp(&b.0));
+    entries.extend(rest);
+
+    let mut idx = cookie as usize;
+    if idx > entries.len() {
+        idx = entries.len();
+    }
+
+    let mut used: u32 = 0;
+    let mut write_off = buf_ptr;
+    while idx < entries.len() {
+        let (name, ftype, ino) = &entries[idx];
+        let name_bytes = name.as_bytes();
+        let record_len = 24 + name_bytes.len() as u32;
+        if used + record_len > buf_len {
+            break;
+        }
+        write_u64_le(mem, write_off, (idx as u64) + 1)?;
+        write_u64_le(mem, write_off + 8, *ino)?;
+        write_u32_le(mem, write_off + 16, name_bytes.len() as u32)?;
+        write_u8_le(mem, write_off + 20, *ftype)?;
+        write_mem(mem, write_off + 24, name_bytes)?;
+        write_off += record_len;
+        used += record_len;
+        idx += 1;
+    }
+
+    write_u32_le(
+        mem,
+        used_ptr,
+        if idx < entries.len() { buf_len } else { used },
+    )?;
+    results[0] = Value::I32(ERRNO_SUCCESS);
     Ok(())
 }
 
 pub(crate) fn fd_pread(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let iovs_ptr = as_i32(&args[1])? as u32;
+    let iovs_len = as_i32(&args[2])? as u32;
+    let offset = as_i64(&args[3])? as u64;
+    let out_ptr = as_i32(&args[4])? as u32;
+    let mem = get_mem(caller)?;
+    write_u32_le(mem, out_ptr, 0)?;
+
+    let mut total: u32 = 0;
+    let errno = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+        Some(FdEntry::File {
+            file, rights_base, ..
+        }) => {
+            if (*rights_base & RIGHT_FD_READ) == 0 {
+                return ERRNO_BADF;
+            }
+            let cur = file.stream_position().ok();
+            if file.seek(SeekFrom::Start(offset)).is_err() {
+                return ERRNO_IO;
+            }
+            for i in 0..iovs_len {
+                let base_ptr = iovs_ptr + i * 8;
+                let ptr = match read_u32_le(mem, base_ptr) {
+                    Ok(v) => v,
+                    Err(_) => return ERRNO_INVAL,
+                };
+                let len = match read_u32_le(mem, base_ptr + 4) {
+                    Ok(v) => v,
+                    Err(_) => return ERRNO_INVAL,
+                };
+                if len == 0 {
+                    continue;
+                }
+                let start = ptr as usize;
+                let end = start + len as usize;
+                if end > mem.len() {
+                    return ERRNO_INVAL;
+                }
+                match file.read(&mut mem[start..end]) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        total = total.saturating_add(n as u32);
+                        if n < len as usize {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+            if let Some(pos) = cur {
+                let _ = file.seek(SeekFrom::Start(pos));
+            }
+            ERRNO_SUCCESS
+        }
+        Some(FdEntry::Dir { .. }) => ERRNO_ISDIR,
+        None => ERRNO_BADF,
+    });
+
+    write_u32_le(mem, out_ptr, total)?;
+    results[0] = Value::I32(errno);
     Ok(())
 }
 
 pub(crate) fn fd_pwrite(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let iovs_ptr = as_i32(&args[1])? as u32;
+    let iovs_len = as_i32(&args[2])? as u32;
+    let offset = as_i64(&args[3])? as u64;
+    let out_ptr = as_i32(&args[4])? as u32;
+    let mem = get_mem(caller)?;
+    write_u32_le(mem, out_ptr, 0)?;
+
+    let mut total: u32 = 0;
+    let errno = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+        Some(FdEntry::File {
+            file, rights_base, ..
+        }) => {
+            if (*rights_base & RIGHT_FD_WRITE) == 0 {
+                return ERRNO_BADF;
+            }
+            let cur = file.stream_position().ok();
+            if file.seek(SeekFrom::Start(offset)).is_err() {
+                return ERRNO_IO;
+            }
+            for i in 0..iovs_len {
+                let base_ptr = iovs_ptr + i * 8;
+                let ptr = match read_u32_le(mem, base_ptr) {
+                    Ok(v) => v,
+                    Err(_) => return ERRNO_INVAL,
+                };
+                let len = match read_u32_le(mem, base_ptr + 4) {
+                    Ok(v) => v,
+                    Err(_) => return ERRNO_INVAL,
+                };
+                if len == 0 {
+                    continue;
+                }
+                let bytes = match read_mem(mem, ptr, len) {
+                    Ok(v) => v,
+                    Err(_) => return ERRNO_INVAL,
+                };
+                if file.write_all(bytes).is_err() {
+                    break;
+                }
+                total = total.saturating_add(len);
+            }
+            if let Some(pos) = cur {
+                let _ = file.seek(SeekFrom::Start(pos));
+            }
+            ERRNO_SUCCESS
+        }
+        Some(FdEntry::Dir { .. }) => ERRNO_ISDIR,
+        None => ERRNO_BADF,
+    });
+
+    write_u32_le(mem, out_ptr, total)?;
+    results[0] = Value::I32(errno);
     Ok(())
 }
 
 pub(crate) fn fd_allocate(
     _caller: &mut Caller,
-    _args: &[Value],
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let offset = as_i64(&args[1])? as u64;
+    let len = as_i64(&args[2])? as u64;
+
+    if (0..=2).contains(&fd) {
+        results[0] = Value::I32(ERRNO_INVAL);
+        return Ok(());
+    }
+
+    let errno = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
+        Some(FdEntry::File {
+            file, rights_base, ..
+        }) => {
+            if (*rights_base & RIGHT_FD_ALLOCATE) == 0 {
+                return ERRNO_NOTCAPABLE;
+            }
+            let want = offset.saturating_add(len);
+            match file.metadata() {
+                Ok(meta) => {
+                    if want > meta.len() && file.set_len(want).is_err() {
+                        ERRNO_IO
+                    } else {
+                        ERRNO_SUCCESS
+                    }
+                }
+                Err(_) => ERRNO_IO,
+            }
+        }
+        Some(FdEntry::Dir { .. }) => ERRNO_ISDIR,
+        None => ERRNO_BADF,
+    });
+    results[0] = Value::I32(errno);
     Ok(())
 }
 
 pub(crate) fn fd_advise(
     _caller: &mut Caller,
-    _args: &[Value],
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    results[0] = Value::I32(if (0..=2).contains(&fd) {
+        ERRNO_INVAL
+    } else {
+        ERRNO_SUCCESS
+    });
     Ok(())
 }
 
@@ -1416,28 +2132,132 @@ pub(crate) fn sched_yield(
 
 pub(crate) fn sock_shutdown(
     _caller: &mut Caller,
-    _args: &[Value],
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let _how = as_i32(&args[1])?;
+    let errno = super::with_ctx(|ctx| {
+        if (0..=2).contains(&fd) {
+            return if ctx.closed_stdio.contains(&fd) {
+                ERRNO_BADF
+            } else {
+                ERRNO_NOTSOCK
+            };
+        }
+        if ctx.fds.contains_key(&fd) {
+            ERRNO_NOTSOCK
+        } else {
+            ERRNO_BADF
+        }
+    });
+    results[0] = Value::I32(errno);
     Ok(())
 }
 
 pub(crate) fn poll_oneoff(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let in_ptr = as_i32(&args[0])? as u32;
+    let out_ptr = as_i32(&args[1])? as u32;
+    let nsubs = as_i32(&args[2])? as u32;
+    let out_nready_ptr = as_i32(&args[3])? as u32;
+    let mem = get_mem(caller)?;
+
+    struct Sub {
+        userdata: [u8; 8],
+        tag: u8,
+        fd: Option<i32>,
+    }
+
+    let mut subs = Vec::with_capacity(nsubs as usize);
+    for i in 0..nsubs {
+        let sub_off = in_ptr + i * 48;
+        let mut userdata = [0u8; 8];
+        userdata.copy_from_slice(read_mem(mem, sub_off, 8)?);
+        let tag = read_mem(mem, sub_off + 8, 1)?[0];
+        let fd = if tag == 1 || tag == 2 {
+            Some(read_u32_le(mem, sub_off + 16)? as i32)
+        } else {
+            None
+        };
+        subs.push(Sub { userdata, tag, fd });
+    }
+
+    let mut ready_indices = Vec::new();
+    let mut clock_index = None;
+    for (i, sub) in subs.iter().enumerate() {
+        match sub.tag {
+            0 => {
+                if clock_index.is_none() {
+                    clock_index = Some(i);
+                }
+            }
+            2 => {
+                if matches!(sub.fd, Some(1 | 2)) {
+                    ready_indices.push(i);
+                }
+            }
+            _ => {}
+        }
+    }
+    if ready_indices.is_empty() {
+        if let Some(idx) = clock_index {
+            ready_indices.push(idx);
+        }
+    }
+    ready_indices.sort_unstable();
+
+    for (out_i, &sub_i) in ready_indices.iter().enumerate() {
+        let sub = &subs[sub_i];
+        let mut out_event = [0u8; 32];
+        out_event[0..8].copy_from_slice(&sub.userdata);
+        out_event[8..10].copy_from_slice(&(ERRNO_SUCCESS as u16).to_le_bytes());
+        out_event[10] = sub.tag;
+        write_mem(mem, out_ptr + (out_i as u32) * 32, &out_event)?;
+    }
+    write_u32_le(mem, out_nready_ptr, ready_indices.len() as u32)?;
+    results[0] = Value::I32(ERRNO_SUCCESS);
     Ok(())
 }
 
 pub(crate) fn path_create_directory(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let path_ptr = as_i32(&args[1])? as u32;
+    let path_len = as_i32(&args[2])? as u32;
+    let mem = get_mem(caller)?;
+
+    let (base_host, _, _) = match dir_fd_state(fd) {
+        Ok(v) => v,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let rel = match validate_path_bytes(read_mem(mem, path_ptr, path_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let host_path = match resolve_under_base(&base_host, &rel) {
+        Ok(p) => p,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    results[0] = Value::I32(match std::fs::create_dir(&host_path) {
+        Ok(()) => ERRNO_SUCCESS,
+        Err(e) => path_error_to_errno(&e),
+    });
     Ok(())
 }
 
@@ -1447,41 +2267,26 @@ pub(crate) fn path_filestat_get(
     results: &mut [Value],
 ) -> Result<(), WasmError> {
     let fd = as_i32(&args[0])?;
-    let _flags = as_i32(&args[1])?; // lookup flags (e.g. symlink follow)
+    let flags = as_i32(&args[1])? as u32;
     let path_ptr = as_i32(&args[2])? as u32;
     let path_len = as_i32(&args[3])? as u32;
     let buf_ptr = as_i32(&args[4])? as u32;
-
     let mem = get_mem(caller)?;
-
-    // Read path from guest memory
-    let path_bytes = read_mem(mem, path_ptr, path_len)?;
-    let path_str = match std::str::from_utf8(path_bytes) {
-        Ok(s) => s.to_string(),
-        Err(_) => {
-            results[0] = Value::I32(ERRNO_ILSEQ);
+    let (base_host, _, _) = match dir_fd_state(fd) {
+        Ok(v) => v,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
             return Ok(());
         }
     };
-
-    // Resolve the base directory from the fd
-    let base_path: Result<PathBuf, i32> = super::with_ctx(|ctx| {
-        let preopen_end = 3 + ctx.preopens.len() as i32;
-        if fd >= 3 && fd < preopen_end {
-            if ctx.closed_preopens.contains(&fd) {
-                return Err(ERRNO_BADF);
-            }
-            let idx = (fd - 3) as usize;
-            return Ok(ctx.preopens[idx].host_path.clone());
+    let rel = match validate_path_bytes(read_mem(mem, path_ptr, path_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
         }
-        match ctx.fds.get(&fd) {
-            Some(FdEntry::Dir { host_path, .. }) => Ok(host_path.clone()),
-            Some(FdEntry::File { .. }) => Err(ERRNO_NOTDIR),
-            None => Err(ERRNO_BADF),
-        }
-    });
-
-    let base = match base_path {
+    };
+    let host_path = match resolve_under_base(&base_host, &rel) {
         Ok(p) => p,
         Err(errno) => {
             results[0] = Value::I32(errno);
@@ -1489,133 +2294,607 @@ pub(crate) fn path_filestat_get(
         }
     };
 
-    let host_path = match resolve_under_base(&base, &path_str) {
-        Ok(p) => p,
-        Err(errno) => {
-            results[0] = Value::I32(errno);
-            return Ok(());
-        }
-    };
-
-    // Get metadata from the host filesystem
-    let metadata = match std::fs::metadata(&host_path) {
+    let metadata = match if (flags & 1) != 0 {
+        std::fs::metadata(&host_path)
+    } else {
+        std::fs::symlink_metadata(&host_path)
+    } {
         Ok(m) => m,
         Err(e) => {
-            results[0] = Value::I32(io_error_to_errno(&e));
+            results[0] = Value::I32(path_error_to_errno(&e));
             return Ok(());
         }
     };
 
-    // Determine filetype
-    let filetype = if metadata.is_dir() {
+    let filetype = if metadata.file_type().is_symlink() {
+        FILETYPE_SYMBOLIC_LINK
+    } else if metadata.is_dir() {
         FILETYPE_DIRECTORY
     } else if metadata.is_file() {
         FILETYPE_REGULAR_FILE
     } else {
         FILETYPE_UNKNOWN
     };
-
-    // Get timestamps (nanoseconds since epoch)
-    let atim = metadata
-        .accessed()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let mtim = metadata
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-    let ctim = metadata
-        .created()
-        .ok()
-        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
-        .map(|d| d.as_nanos() as u64)
-        .unwrap_or(0);
-
-    // Write filestat_t (64 bytes) to guest memory:
-    //   dev:      u64 @ +0
-    //   ino:      u64 @ +8
-    //   filetype: u8  @ +16
-    //   nlink:    u64 @ +24
-    //   size:     u64 @ +32
-    //   atim:     u64 @ +40
-    //   mtim:     u64 @ +48
-    //   ctim:     u64 @ +56
-    write_u64_le(mem, buf_ptr, 0)?; // dev
-    write_u64_le(mem, buf_ptr + 8, 0)?; // ino
-    write_u8_le(mem, buf_ptr + 16, filetype)?;
-    write_u64_le(mem, buf_ptr + 24, 1)?; // nlink
-    write_u64_le(mem, buf_ptr + 32, metadata.len())?;
-    write_u64_le(mem, buf_ptr + 40, atim)?;
-    write_u64_le(mem, buf_ptr + 48, mtim)?;
-    write_u64_le(mem, buf_ptr + 56, ctim)?;
-
+    let size = if metadata.is_file() {
+        metadata.len()
+    } else {
+        0
+    };
+    let ino = derive_ino_from_meta(&metadata, &host_path);
+    write_filestat(
+        mem,
+        buf_ptr,
+        1,
+        ino,
+        filetype,
+        1,
+        size,
+        timestamp_ns(metadata.accessed()),
+        timestamp_ns(metadata.modified()),
+        timestamp_ns(metadata.created()),
+    )?;
     results[0] = Value::I32(ERRNO_SUCCESS);
     Ok(())
 }
 
 pub(crate) fn path_filestat_set_times(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    const SET_ATIM: u32 = 1 << 0;
+    const SET_ATIM_NOW: u32 = 1 << 1;
+    const SET_MTIM: u32 = 1 << 2;
+    const SET_MTIM_NOW: u32 = 1 << 3;
+
+    let fd = as_i32(&args[0])?;
+    let flags = as_i32(&args[1])? as u32;
+    let path_ptr = as_i32(&args[2])? as u32;
+    let path_len = as_i32(&args[3])? as u32;
+    let atim = as_i64(&args[4])? as u64;
+    let mtim = as_i64(&args[5])? as u64;
+    let fst_flags = as_i32(&args[6])? as u32;
+    let invalid_combo = (fst_flags & SET_ATIM != 0 && fst_flags & SET_ATIM_NOW != 0)
+        || (fst_flags & SET_MTIM != 0 && fst_flags & SET_MTIM_NOW != 0)
+        || (fst_flags & !(SET_ATIM | SET_ATIM_NOW | SET_MTIM | SET_MTIM_NOW) != 0);
+    if invalid_combo {
+        results[0] = Value::I32(ERRNO_INVAL);
+        return Ok(());
+    }
+
+    let mem = get_mem(caller)?;
+    let (base_host, base_rights, _) = match dir_fd_state(fd) {
+        Ok(v) => v,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    if (base_rights & RIGHT_PATH_FILESTAT_SET_TIMES) == 0 {
+        results[0] = Value::I32(ERRNO_NOTCAPABLE);
+        return Ok(());
+    }
+    let rel = match validate_path_bytes(read_mem(mem, path_ptr, path_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let host_path = match resolve_under_base(&base_host, &rel) {
+        Ok(p) => p,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    if let Err(e) = std::fs::symlink_metadata(&host_path) {
+        results[0] = Value::I32(path_error_to_errno(&e));
+        return Ok(());
+    }
+
+    let at_opt = if (fst_flags & SET_ATIM_NOW) != 0 {
+        Some(FileTime::now())
+    } else if (fst_flags & SET_ATIM) != 0 {
+        Some(ns_to_filetime(atim))
+    } else {
+        None
+    };
+    let mt_opt = if (fst_flags & SET_MTIM_NOW) != 0 {
+        Some(FileTime::now())
+    } else if (fst_flags & SET_MTIM) != 0 {
+        Some(ns_to_filetime(mtim))
+    } else {
+        None
+    };
+    let result = if (flags & 1) != 0 {
+        set_file_times(
+            &host_path,
+            at_opt.unwrap_or_else(FileTime::now),
+            mt_opt.unwrap_or_else(FileTime::now),
+        )
+    } else {
+        set_symlink_file_times(
+            &host_path,
+            at_opt.unwrap_or_else(FileTime::now),
+            mt_opt.unwrap_or_else(FileTime::now),
+        )
+    };
+    results[0] = Value::I32(if result.is_ok() {
+        ERRNO_SUCCESS
+    } else {
+        ERRNO_IO
+    });
     Ok(())
 }
 
 pub(crate) fn path_readlink(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let path_ptr = as_i32(&args[1])? as u32;
+    let path_len = as_i32(&args[2])? as u32;
+    let buf_ptr = as_i32(&args[3])? as u32;
+    let buf_len = as_i32(&args[4])? as u32;
+    let out_len_ptr = as_i32(&args[5])? as u32;
+    let mem = get_mem(caller)?;
+    write_u32_le(mem, out_len_ptr, 0)?;
+
+    let (base_host, _, _) = match dir_fd_state(fd) {
+        Ok(v) => v,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let rel = match validate_path_bytes(read_mem(mem, path_ptr, path_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let rel_trimmed = rel.trim_end_matches(['/', '\\']).to_string();
+    let host = match resolve_under_base(&base_host, &rel_trimmed) {
+        Ok(p) => p,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    match std::fs::read_link(&host) {
+        Ok(target) => {
+            if target.is_absolute() {
+                results[0] = Value::I32(ERRNO_PERM);
+                return Ok(());
+            }
+            let text = target.to_string_lossy();
+            let bytes = text.as_bytes();
+            let n = bytes.len().min(buf_len as usize);
+            write_mem(mem, buf_ptr, &bytes[..n])?;
+            write_u32_le(mem, out_len_ptr, n as u32)?;
+            results[0] = Value::I32(ERRNO_SUCCESS);
+        }
+        Err(e) => results[0] = Value::I32(path_error_to_errno(&e)),
+    }
     Ok(())
 }
 
 pub(crate) fn path_remove_directory(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let path_ptr = as_i32(&args[1])? as u32;
+    let path_len = as_i32(&args[2])? as u32;
+    let mem = get_mem(caller)?;
+
+    let (base_host, _, _) = match dir_fd_state(fd) {
+        Ok(v) => v,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let rel = match validate_path_bytes(read_mem(mem, path_ptr, path_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let has_trailing_slash = rel.ends_with('/') || rel.ends_with('\\');
+    let rel_trimmed = rel.trim_end_matches(['/', '\\']).to_string();
+    let host = match resolve_under_base(&base_host, &rel_trimmed) {
+        Ok(p) => p,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+
+    if has_trailing_slash {
+        match std::fs::symlink_metadata(&host) {
+            Ok(meta) => {
+                if meta.is_file() {
+                    results[0] = Value::I32(if cfg!(windows) {
+                        ERRNO_NOENT
+                    } else {
+                        ERRNO_NOTDIR
+                    });
+                    return Ok(());
+                }
+            }
+            Err(e) => {
+                results[0] = Value::I32(path_error_to_errno(&e));
+                return Ok(());
+            }
+        }
+    }
+
+    results[0] = Value::I32(match std::fs::remove_dir(&host) {
+        Ok(()) => ERRNO_SUCCESS,
+        Err(e) => path_error_to_errno(&e),
+    });
     Ok(())
 }
 
 pub(crate) fn path_unlink_file(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let path_ptr = as_i32(&args[1])? as u32;
+    let path_len = as_i32(&args[2])? as u32;
+    let mem = get_mem(caller)?;
+
+    let (base_host, _, _) = match dir_fd_state(fd) {
+        Ok(v) => v,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let rel = match validate_path_bytes(read_mem(mem, path_ptr, path_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let has_trailing_slash = rel.ends_with('/') || rel.ends_with('\\');
+    let rel_trimmed = rel.trim_end_matches(['/', '\\']).to_string();
+    let host = match resolve_under_base(&base_host, &rel_trimmed) {
+        Ok(p) => p,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+
+    if has_trailing_slash {
+        match std::fs::symlink_metadata(&host) {
+            Ok(meta) => {
+                results[0] = Value::I32(if meta.is_dir() {
+                    ERRNO_ISDIR
+                } else {
+                    ERRNO_NOTDIR
+                });
+                return Ok(());
+            }
+            Err(e) => {
+                results[0] = Value::I32(path_error_to_errno(&e));
+                return Ok(());
+            }
+        }
+    }
+
+    if let Ok(meta) = std::fs::symlink_metadata(&host) {
+        if meta.file_type().is_symlink() {
+            results[0] = Value::I32(match std::fs::remove_file(&host) {
+                Ok(()) => ERRNO_SUCCESS,
+                Err(e) => {
+                    if e.kind() == std::io::ErrorKind::IsADirectory
+                        || e.kind() == std::io::ErrorKind::PermissionDenied
+                    {
+                        match std::fs::remove_dir(&host) {
+                            Ok(()) => ERRNO_SUCCESS,
+                            Err(e2) => path_error_to_errno(&e2),
+                        }
+                    } else {
+                        path_error_to_errno(&e)
+                    }
+                }
+            });
+            return Ok(());
+        }
+    }
+
+    results[0] = Value::I32(match std::fs::remove_file(&host) {
+        Ok(()) => ERRNO_SUCCESS,
+        Err(e) => path_error_to_errno(&e),
+    });
     Ok(())
 }
 
 pub(crate) fn path_rename(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let fd = as_i32(&args[0])?;
+    let old_ptr = as_i32(&args[1])? as u32;
+    let old_len = as_i32(&args[2])? as u32;
+    let new_fd = as_i32(&args[3])?;
+    let new_ptr = as_i32(&args[4])? as u32;
+    let new_len = as_i32(&args[5])? as u32;
+    let mem = get_mem(caller)?;
+
+    let (base_old, _, _) = match dir_fd_state(fd) {
+        Ok(v) => v,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let (base_new, _, _) = match dir_fd_state(new_fd) {
+        Ok(v) => v,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let old_rel = match validate_path_bytes(read_mem(mem, old_ptr, old_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let new_rel = match validate_path_bytes(read_mem(mem, new_ptr, new_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let old_host = match resolve_under_base(&base_old, &old_rel) {
+        Ok(p) => p,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let new_host = match resolve_under_base(&base_new, &new_rel) {
+        Ok(p) => p,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+
+    if let (Ok(old_meta), Ok(new_meta)) = (
+        std::fs::symlink_metadata(&old_host),
+        std::fs::symlink_metadata(&new_host),
+    ) {
+        if old_meta.is_dir() && new_meta.is_file() {
+            results[0] = Value::I32(ERRNO_NOTDIR);
+            return Ok(());
+        }
+        if old_meta.is_file() && new_meta.is_dir() {
+            results[0] = Value::I32(ERRNO_ISDIR);
+            return Ok(());
+        }
+    }
+
+    results[0] = Value::I32(match std::fs::rename(&old_host, &new_host) {
+        Ok(()) => ERRNO_SUCCESS,
+        Err(e) => path_error_to_errno(&e),
+    });
     Ok(())
 }
 
 pub(crate) fn path_link(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let old_fd = as_i32(&args[0])?;
+    let old_flags = as_i32(&args[1])? as u32;
+    let old_ptr = as_i32(&args[2])? as u32;
+    let old_len = as_i32(&args[3])? as u32;
+    let new_fd = as_i32(&args[4])?;
+    let new_ptr = as_i32(&args[5])? as u32;
+    let new_len = as_i32(&args[6])? as u32;
+    let mem = get_mem(caller)?;
+
+    if (old_flags & 1) != 0 {
+        results[0] = Value::I32(ERRNO_INVAL);
+        return Ok(());
+    }
+
+    let (base_old, _, _) = match dir_fd_state(old_fd) {
+        Ok(v) => v,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let (base_new, _, _) = match dir_fd_state(new_fd) {
+        Ok(v) => v,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let old_rel = match validate_path_bytes(read_mem(mem, old_ptr, old_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let new_rel = match validate_path_bytes(read_mem(mem, new_ptr, new_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    if new_rel.ends_with('/') || new_rel.ends_with('\\') {
+        results[0] = Value::I32(ERRNO_NOENT);
+        return Ok(());
+    }
+    let old_host = match resolve_under_base(&base_old, &old_rel) {
+        Ok(p) => p,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let new_host = match resolve_under_base(&base_new, &new_rel) {
+        Ok(p) => p,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+
+    if std::fs::metadata(&old_host)
+        .map(|m| m.is_dir())
+        .unwrap_or(false)
+    {
+        results[0] = Value::I32(ERRNO_ACCES);
+        return Ok(());
+    }
+
+    results[0] = Value::I32(match std::fs::hard_link(&old_host, &new_host) {
+        Ok(()) => ERRNO_SUCCESS,
+        Err(e) => path_error_to_errno(&e),
+    });
     Ok(())
 }
 
 pub(crate) fn path_symlink(
-    _caller: &mut Caller,
-    _args: &[Value],
+    caller: &mut Caller,
+    args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    results[0] = Value::I32(ERRNO_NOSYS);
+    let old_ptr = as_i32(&args[0])? as u32;
+    let old_len = as_i32(&args[1])? as u32;
+    let fd = as_i32(&args[2])?;
+    let new_ptr = as_i32(&args[3])? as u32;
+    let new_len = as_i32(&args[4])? as u32;
+    let mem = get_mem(caller)?;
+
+    let old = match validate_path_bytes(read_mem(mem, old_ptr, old_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let (base, _, _) = match dir_fd_state(fd) {
+        Ok(v) => v,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+    let new_rel = match validate_path_bytes(read_mem(mem, new_ptr, new_len)?) {
+        Ok(s) => s,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+
+    if new_rel.ends_with('/') || new_rel.ends_with('\\') {
+        #[cfg(windows)]
+        {
+            results[0] = Value::I32(ERRNO_NOENT);
+            return Ok(());
+        }
+        #[cfg(not(windows))]
+        {
+            let trimmed = new_rel.trim_end_matches(['/', '\\']);
+            let candidate = match resolve_under_base(&base, trimmed) {
+                Ok(p) => p,
+                Err(_) => {
+                    results[0] = Value::I32(ERRNO_NOENT);
+                    return Ok(());
+                }
+            };
+            results[0] = Value::I32(match std::fs::symlink_metadata(&candidate) {
+                Ok(meta) => {
+                    if meta.is_dir() {
+                        ERRNO_EXIST
+                    } else if meta.is_file() {
+                        ERRNO_NOTDIR
+                    } else {
+                        ERRNO_EXIST
+                    }
+                }
+                Err(_) => ERRNO_NOENT,
+            });
+            return Ok(());
+        }
+    }
+
+    let old_abs = {
+        let p = Path::new(&old);
+        p.is_absolute() || old.starts_with('/') || old.starts_with('\\')
+    };
+    if old_abs {
+        results[0] = Value::I32(ERRNO_PERM);
+        return Ok(());
+    }
+
+    let new_host = match resolve_under_base(&base, &new_rel) {
+        Ok(p) => p,
+        Err(errno) => {
+            results[0] = Value::I32(errno);
+            return Ok(());
+        }
+    };
+
+    #[cfg(windows)]
+    {
+        if std::fs::symlink_metadata(&new_host).is_ok() {
+            results[0] = Value::I32(ERRNO_NOENT);
+            return Ok(());
+        }
+        let old_norm = PathBuf::from(old.replace('/', "\\"));
+        let is_dir = std::fs::symlink_metadata(Path::new(&base).join(&old_norm))
+            .map(|m| m.is_dir())
+            .unwrap_or(false);
+        let res = if is_dir {
+            std::os::windows::fs::symlink_dir(&old_norm, &new_host)
+        } else {
+            std::os::windows::fs::symlink_file(&old_norm, &new_host)
+        };
+        results[0] = Value::I32(match res {
+            Ok(()) => ERRNO_SUCCESS,
+            Err(e) => match e.kind() {
+                std::io::ErrorKind::AlreadyExists
+                | std::io::ErrorKind::PermissionDenied
+                | std::io::ErrorKind::NotFound => ERRNO_NOENT,
+                _ => ERRNO_IO,
+            },
+        });
+        return Ok(());
+    }
+
+    #[cfg(not(windows))]
+    {
+        results[0] = Value::I32(match std::os::unix::fs::symlink(&old, &new_host) {
+            Ok(()) => ERRNO_SUCCESS,
+            Err(e) => path_error_to_errno(&e),
+        });
+    }
     Ok(())
 }

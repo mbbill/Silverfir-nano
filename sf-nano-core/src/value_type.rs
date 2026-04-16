@@ -1,27 +1,29 @@
-//! WebAssembly 2.0 Type System
+//! WebAssembly 3.0 Type System
 //!
-//! This module implements the WebAssembly 2.0 type system including:
-//! - Number types (i32, i64, f32, f64)
-//! - Vector types (v128)
-//! - Reference types (funcref, externref)
+//! This module keeps nano's `no_std` value-type model aligned with the richer
+//! reference and GC type surface used by `silverfir-rs`.
 
-use crate::collections;
-
-use crate::{error::WasmError, utils::leb128};
+use crate::{
+    collections, error::WasmError, module::type_context::TypeContext,
+    module::type_defs::CompositeType, utils::leb128,
+};
 use core::fmt;
 
-// ============================================================================
-// Heap Types
-// ============================================================================
-
-/// Abstract heap types for WASM 2.0.
-///
-/// Only `Func` and `Extern` are used in WASM 2.0.
 #[repr(u8)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AbstractHeapType {
     Func = 0x70,
+    NoFunc = 0x73,
     Extern = 0x6F,
+    NoExtern = 0x72,
+    Exn = 0x69,
+    NoExn = 0x74,
+    Any = 0x6E,
+    Eq = 0x6D,
+    I31 = 0x6C,
+    Struct = 0x6B,
+    Array = 0x6A,
+    None = 0x71,
 }
 
 impl TryFrom<u8> for AbstractHeapType {
@@ -29,9 +31,77 @@ impl TryFrom<u8> for AbstractHeapType {
 
     fn try_from(value: u8) -> Result<Self, Self::Error> {
         match value {
-            0x70 => Ok(AbstractHeapType::Func),
-            0x6F => Ok(AbstractHeapType::Extern),
+            0x70 => Ok(Self::Func),
+            0x73 => Ok(Self::NoFunc),
+            0x6F => Ok(Self::Extern),
+            0x72 => Ok(Self::NoExtern),
+            0x69 => Ok(Self::Exn),
+            0x74 => Ok(Self::NoExn),
+            0x6E => Ok(Self::Any),
+            0x6D => Ok(Self::Eq),
+            0x6C => Ok(Self::I31),
+            0x6B => Ok(Self::Struct),
+            0x6A => Ok(Self::Array),
+            0x71 => Ok(Self::None),
             _ => Err(()),
+        }
+    }
+}
+
+impl AbstractHeapType {
+    pub fn is_top(&self) -> bool {
+        matches!(self, Self::Func | Self::Extern | Self::Exn | Self::Any)
+    }
+
+    pub fn is_bottom(&self) -> bool {
+        matches!(
+            self,
+            Self::NoFunc | Self::NoExtern | Self::NoExn | Self::None
+        )
+    }
+
+    pub fn top_type(&self) -> Self {
+        match self {
+            Self::Func | Self::NoFunc => Self::Func,
+            Self::Extern | Self::NoExtern => Self::Extern,
+            Self::Exn | Self::NoExn => Self::Exn,
+            Self::Any | Self::Eq | Self::I31 | Self::Struct | Self::Array | Self::None => Self::Any,
+        }
+    }
+
+    pub fn bottom_type(&self) -> Self {
+        match self {
+            Self::Func | Self::NoFunc => Self::NoFunc,
+            Self::Extern | Self::NoExtern => Self::NoExtern,
+            Self::Exn | Self::NoExn => Self::NoExn,
+            Self::Any | Self::Eq | Self::I31 | Self::Struct | Self::Array | Self::None => {
+                Self::None
+            }
+        }
+    }
+
+    pub fn is_eq(&self) -> bool {
+        matches!(
+            self,
+            Self::Eq | Self::I31 | Self::Struct | Self::Array | Self::None
+        )
+    }
+
+    pub fn is_subtype_of(&self, other: &AbstractHeapType) -> bool {
+        if self == other {
+            return true;
+        }
+
+        match (self, other) {
+            (Self::NoFunc, Self::Func) => true,
+            (Self::NoExtern, Self::Extern) => true,
+            (Self::NoExn, Self::Exn) => true,
+            (Self::None, Self::I31 | Self::Struct | Self::Array | Self::Eq | Self::Any) => true,
+            (Self::I31, Self::Eq | Self::Any) => true,
+            (Self::Struct, Self::Eq | Self::Any) => true,
+            (Self::Array, Self::Eq | Self::Any) => true,
+            (Self::Eq, Self::Any) => true,
+            _ => false,
         }
     }
 }
@@ -40,42 +110,41 @@ impl fmt::Display for AbstractHeapType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let s = match self {
             Self::Func => "func",
+            Self::NoFunc => "nofunc",
             Self::Extern => "extern",
+            Self::NoExtern => "noextern",
+            Self::Exn => "exn",
+            Self::NoExn => "noexn",
+            Self::Any => "any",
+            Self::Eq => "eq",
+            Self::I31 => "i31",
+            Self::Struct => "struct",
+            Self::Array => "array",
+            Self::None => "none",
         };
         write!(f, "{}", s)
     }
 }
 
-// ============================================================================
-// Heap Type (abstract or concrete index)
-// ============================================================================
-
-/// Heap type — either an abstract heap type or a concrete type index.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum HeapType {
-    /// Abstract heap type (func, extern)
     Abstract(AbstractHeapType),
-    /// Concrete type index referring to a defined type
     Concrete(u32),
 }
 
 impl HeapType {
-    /// Create a heap type from a type index
     pub fn from_index(idx: u32) -> Self {
         Self::Concrete(idx)
     }
 
-    /// Check if this is an abstract heap type
     pub fn is_abstract(&self) -> bool {
         matches!(self, Self::Abstract(_))
     }
 
-    /// Check if this is a concrete (indexed) heap type
     pub fn is_concrete(&self) -> bool {
         matches!(self, Self::Concrete(_))
     }
 
-    /// Get the abstract heap type if this is abstract
     pub fn as_abstract(&self) -> Option<AbstractHeapType> {
         match self {
             Self::Abstract(aht) => Some(*aht),
@@ -83,7 +152,6 @@ impl HeapType {
         }
     }
 
-    /// Get the type index if this is concrete
     pub fn as_concrete(&self) -> Option<u32> {
         match self {
             Self::Abstract(_) => None,
@@ -91,23 +159,84 @@ impl HeapType {
         }
     }
 
-    /// Parse a heap type from binary format
-    ///
-    /// Heap types are encoded as:
-    /// - Single byte for abstract heap types (0x70, 0x6F)
-    /// - Signed LEB128 for type indices (must be non-negative)
+    pub fn is_subtype_of(&self, other: &HeapType, types: &TypeContext) -> bool {
+        match (self, other) {
+            (a, b) if a == b => true,
+            (Self::Abstract(sub), Self::Abstract(sup)) => sub.is_subtype_of(sup),
+            (Self::Concrete(idx1), Self::Concrete(idx2)) => {
+                if types.types_equivalent(*idx1, *idx2) {
+                    return true;
+                }
+
+                let Some(type1) = types.get(*idx1) else {
+                    return false;
+                };
+                if type1.supertypes.contains(idx2) {
+                    return true;
+                }
+                for &supertype_idx in &type1.supertypes {
+                    if Self::Concrete(supertype_idx).is_subtype_of(&Self::Concrete(*idx2), types) {
+                        return true;
+                    }
+                }
+                false
+            }
+            (Self::Concrete(idx), Self::Abstract(AbstractHeapType::Func)) => types
+                .get(*idx)
+                .is_some_and(|def_type| matches!(def_type.composite, CompositeType::Func(_))),
+            (Self::Concrete(idx), Self::Abstract(AbstractHeapType::Struct)) => types
+                .get(*idx)
+                .is_some_and(|def_type| matches!(def_type.composite, CompositeType::Struct(_))),
+            (Self::Concrete(idx), Self::Abstract(AbstractHeapType::Array)) => types
+                .get(*idx)
+                .is_some_and(|def_type| matches!(def_type.composite, CompositeType::Array(_))),
+            (Self::Concrete(idx), Self::Abstract(AbstractHeapType::Eq | AbstractHeapType::Any)) => {
+                types.get(*idx).is_some_and(|def_type| {
+                    matches!(
+                        def_type.composite,
+                        CompositeType::Struct(_) | CompositeType::Array(_)
+                    )
+                })
+            }
+            (Self::Abstract(AbstractHeapType::NoFunc), Self::Concrete(idx)) => types
+                .get(*idx)
+                .is_some_and(|def_type| matches!(def_type.composite, CompositeType::Func(_))),
+            (Self::Abstract(AbstractHeapType::None), Self::Concrete(idx)) => {
+                types.get(*idx).is_some_and(|def_type| {
+                    matches!(
+                        def_type.composite,
+                        CompositeType::Struct(_) | CompositeType::Array(_)
+                    )
+                })
+            }
+            _ => false,
+        }
+    }
+
+    pub fn top_type(&self, types: &TypeContext) -> HeapType {
+        match self {
+            Self::Abstract(aht) => Self::Abstract(aht.top_type()),
+            Self::Concrete(idx) => match types.get(*idx) {
+                Some(def_type) => match &def_type.composite {
+                    CompositeType::Func(_) => Self::Abstract(AbstractHeapType::Func),
+                    CompositeType::Struct(_) | CompositeType::Array(_) => {
+                        Self::Abstract(AbstractHeapType::Any)
+                    }
+                },
+                None => Self::Abstract(AbstractHeapType::Func),
+            },
+        }
+    }
+
     pub fn parse(payload: &mut crate::utils::payload::Payload) -> Result<HeapType, WasmError> {
         let first_byte = payload.peek_u8().map_err(WasmError::from)?;
 
-        // Try to parse as abstract heap type first
         if let Ok(aht) = AbstractHeapType::try_from(first_byte) {
-            payload.read_u8().map_err(WasmError::from)?; // consume the byte
+            payload.read_u8().map_err(WasmError::from)?;
             return Ok(HeapType::Abstract(aht));
         }
 
-        // Otherwise, it's a type index encoded as signed LEB128
         let type_idx = payload.read_leb128_i32().map_err(WasmError::from)?;
-
         if type_idx < 0 {
             return Err(WasmError::invalid("Type index cannot be negative"));
         }
@@ -115,7 +244,6 @@ impl HeapType {
         Ok(HeapType::Concrete(type_idx as u32))
     }
 
-    /// Encode this heap type to binary format
     pub fn encode(&self) -> collections::Vec<u8> {
         match self {
             HeapType::Abstract(aht) => collections::vec![*aht as u8],
@@ -139,15 +267,6 @@ impl From<AbstractHeapType> for HeapType {
     }
 }
 
-// ============================================================================
-// Reference Types
-// ============================================================================
-
-/// Reference type (WASM 2.0)
-///
-/// A reference type consists of:
-/// - A heap type (what it points to)
-/// - A nullability flag (whether null is allowed)
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RefType {
     pub nullable: bool,
@@ -155,7 +274,6 @@ pub struct RefType {
 }
 
 impl RefType {
-    /// Create a new reference type
     pub fn new(nullable: bool, heap_type: HeapType) -> Self {
         Self {
             nullable,
@@ -163,7 +281,6 @@ impl RefType {
         }
     }
 
-    /// Create a nullable reference to an abstract heap type
     pub fn nullable_abstract(heap_type: AbstractHeapType) -> Self {
         Self {
             nullable: true,
@@ -171,7 +288,6 @@ impl RefType {
         }
     }
 
-    /// Create a non-nullable reference to an abstract heap type
     pub fn non_nullable_abstract(heap_type: AbstractHeapType) -> Self {
         Self {
             nullable: false,
@@ -179,7 +295,6 @@ impl RefType {
         }
     }
 
-    /// Create a nullable reference to a concrete type
     pub fn nullable_concrete(type_idx: u32) -> Self {
         Self {
             nullable: true,
@@ -187,7 +302,6 @@ impl RefType {
         }
     }
 
-    /// Create a non-nullable reference to a concrete type
     pub fn non_nullable_concrete(type_idx: u32) -> Self {
         Self {
             nullable: false,
@@ -195,17 +309,54 @@ impl RefType {
         }
     }
 
-    /// funcref = (ref null func)
     pub fn funcref() -> Self {
         Self::nullable_abstract(AbstractHeapType::Func)
     }
 
-    /// externref = (ref null extern)
     pub fn externref() -> Self {
         Self::nullable_abstract(AbstractHeapType::Extern)
     }
 
-    /// Convert to nullable variant
+    pub fn anyref() -> Self {
+        Self::nullable_abstract(AbstractHeapType::Any)
+    }
+
+    pub fn eqref() -> Self {
+        Self::nullable_abstract(AbstractHeapType::Eq)
+    }
+
+    pub fn i31ref() -> Self {
+        Self::nullable_abstract(AbstractHeapType::I31)
+    }
+
+    pub fn structref() -> Self {
+        Self::nullable_abstract(AbstractHeapType::Struct)
+    }
+
+    pub fn arrayref() -> Self {
+        Self::nullable_abstract(AbstractHeapType::Array)
+    }
+
+    pub fn exnref() -> Self {
+        Self::nullable_abstract(AbstractHeapType::Exn)
+    }
+
+    pub fn nullref() -> Self {
+        Self::nullable_abstract(AbstractHeapType::None)
+    }
+
+    pub fn nullfuncref() -> Self {
+        Self::nullable_abstract(AbstractHeapType::NoFunc)
+    }
+
+    pub fn nullexternref() -> Self {
+        Self::nullable_abstract(AbstractHeapType::NoExtern)
+    }
+
+    pub fn nullexnref() -> Self {
+        Self::nullable_abstract(AbstractHeapType::NoExn)
+    }
+
     pub fn to_nullable(self) -> Self {
         Self {
             nullable: true,
@@ -213,12 +364,6 @@ impl RefType {
         }
     }
 
-    /// Encode RefType into a u64 for passing in instruction immediates.
-    ///
-    /// Encoding:
-    /// - Bit 0: nullable (0 or 1)
-    /// - Bit 1: is_concrete (0 = Abstract, 1 = Concrete)
-    /// - Bits 2+: AbstractHeapType u8 discriminant (if Abstract) or u32 type index (if Concrete)
     pub fn encode_to_u64(&self) -> u64 {
         let mut encoded = if self.nullable { 1u64 } else { 0u64 };
 
@@ -235,16 +380,12 @@ impl RefType {
         encoded
     }
 
-    /// Decode RefType from a u64 immediate value.
-    ///
-    /// The encoded value must have been created by `encode_to_u64`.
     pub fn decode_from_u64(encoded: u64) -> Self {
         let nullable = (encoded & 1) != 0;
         let is_concrete = (encoded & 2) != 0;
 
         let heap_type = if is_concrete {
-            let type_idx = (encoded >> 2) as u32;
-            HeapType::Concrete(type_idx)
+            HeapType::Concrete((encoded >> 2) as u32)
         } else {
             let discriminant = (encoded >> 2) as u8;
             let abstract_type = AbstractHeapType::try_from(discriminant)
@@ -255,7 +396,6 @@ impl RefType {
         Self::new(nullable, heap_type)
     }
 
-    /// Convert to non-nullable variant
     pub fn to_non_nullable(self) -> Self {
         Self {
             nullable: false,
@@ -263,17 +403,25 @@ impl RefType {
         }
     }
 
-    /// Check if this is a funcref-compatible type
     pub fn is_funcref(&self) -> bool {
         matches!(
             self.heap_type,
-            HeapType::Abstract(AbstractHeapType::Func) | HeapType::Concrete(_)
+            HeapType::Abstract(AbstractHeapType::Func | AbstractHeapType::NoFunc)
+                | HeapType::Concrete(_)
         )
     }
 
-    /// Check if this is an externref-compatible type
     pub fn is_externref(&self) -> bool {
-        matches!(self.heap_type, HeapType::Abstract(AbstractHeapType::Extern))
+        matches!(
+            self.heap_type,
+            HeapType::Abstract(AbstractHeapType::Extern | AbstractHeapType::NoExtern)
+        )
+    }
+
+    pub fn is_subtype_of(&self, other: &RefType, types: &TypeContext) -> bool {
+        let nullability_ok = self.nullable == other.nullable || other.nullable;
+        let heap_ok = self.heap_type.is_subtype_of(&other.heap_type, types);
+        nullability_ok && heap_ok
     }
 }
 
@@ -287,40 +435,18 @@ impl fmt::Display for RefType {
     }
 }
 
-// ============================================================================
-// Value Types
-// ============================================================================
-
-/// WebAssembly 2.0 Value Types
-///
-/// Value types classify the individual values that WebAssembly code can
-/// compute with and the values that a variable accepts.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ValueType {
-    // Number types
     I32,
     I64,
     F32,
     F64,
-
-    // Vector types
     V128,
-
-    // Reference types
     Ref(RefType),
-
-    /// Unknown type (called `bot` in the spec) — a bottom type for validation.
-    ///
-    /// Used only during validation for stack-polymorphic typing (e.g., after
-    /// `unreachable` or unconditional branches).
     Unknown,
 }
 
 impl ValueType {
-    // ========================================================================
-    // Constructors for common types
-    // ========================================================================
-
     pub fn funcref() -> Self {
         Self::Ref(RefType::funcref())
     }
@@ -329,11 +455,30 @@ impl ValueType {
         Self::Ref(RefType::externref())
     }
 
-    // ========================================================================
-    // Type Category Checks
-    // ========================================================================
+    pub fn anyref() -> Self {
+        Self::Ref(RefType::anyref())
+    }
 
-    /// Check if this is a number type (i32, i64, f32, f64)
+    pub fn eqref() -> Self {
+        Self::Ref(RefType::eqref())
+    }
+
+    pub fn i31ref() -> Self {
+        Self::Ref(RefType::i31ref())
+    }
+
+    pub fn structref() -> Self {
+        Self::Ref(RefType::structref())
+    }
+
+    pub fn arrayref() -> Self {
+        Self::Ref(RefType::arrayref())
+    }
+
+    pub fn exnref() -> Self {
+        Self::Ref(RefType::exnref())
+    }
+
     #[inline]
     pub fn is_num(&self) -> bool {
         matches!(
@@ -342,33 +487,25 @@ impl ValueType {
         )
     }
 
-    /// Check if this is an integer type (i32, i64)
     #[inline]
     pub fn is_int(&self) -> bool {
         matches!(self, ValueType::I32 | ValueType::I64 | ValueType::Unknown)
     }
 
-    /// Check if this is a float type (f32, f64)
     #[inline]
     pub fn is_float(&self) -> bool {
         matches!(self, ValueType::F32 | ValueType::F64 | ValueType::Unknown)
     }
 
-    /// Check if this is a vector type (v128)
     #[inline]
     pub fn is_vec(&self) -> bool {
         matches!(self, ValueType::V128 | ValueType::Unknown)
     }
 
-    /// Check if this is a reference type
     #[inline]
     pub fn is_ref(&self) -> bool {
         matches!(self, ValueType::Ref(_) | ValueType::Unknown)
     }
-
-    // ========================================================================
-    // Specific Type Checks
-    // ========================================================================
 
     #[inline]
     pub fn is_i32(&self) -> bool {
@@ -395,30 +532,22 @@ impl ValueType {
         matches!(self, ValueType::V128 | ValueType::Unknown)
     }
 
-    /// Check if this is a funcref-compatible type
     pub fn is_funcref(&self) -> bool {
         match self {
-            ValueType::Ref(rt) => matches!(
-                rt.heap_type,
-                HeapType::Abstract(AbstractHeapType::Func) | HeapType::Concrete(_)
-            ),
+            ValueType::Ref(rt) => rt.is_funcref(),
             ValueType::Unknown => true,
             _ => false,
         }
     }
 
-    /// Check if this is an externref-compatible type
     pub fn is_externref(&self) -> bool {
         match self {
-            ValueType::Ref(rt) => {
-                matches!(rt.heap_type, HeapType::Abstract(AbstractHeapType::Extern))
-            }
+            ValueType::Ref(rt) => rt.is_externref(),
             ValueType::Unknown => true,
             _ => false,
         }
     }
 
-    /// Check if this type is nullable
     pub fn is_nullable(&self) -> bool {
         match self {
             ValueType::Ref(rt) => rt.nullable,
@@ -427,12 +556,6 @@ impl ValueType {
         }
     }
 
-    /// Check if this type is defaultable
-    ///
-    /// - Number types have default value 0
-    /// - Vector types have default value 0
-    /// - Nullable references have default value null
-    /// - Non-nullable references have NO default value
     pub fn is_defaultable(&self) -> bool {
         match self {
             ValueType::I32 | ValueType::I64 | ValueType::F32 | ValueType::F64 | ValueType::V128 => {
@@ -443,40 +566,28 @@ impl ValueType {
         }
     }
 
-    // ========================================================================
-    // Type Matching
-    // ========================================================================
-
-    /// Check if this type is compatible with another type (subtype relationship).
-    /// In WASM 2.0: non-nullable ≤ nullable, Concrete(idx) ≤ Abstract(Func).
-    pub fn is_compatible_with(&self, other: &ValueType) -> bool {
-        if self == other || *self == ValueType::Unknown || *other == ValueType::Unknown {
+    pub fn is_subtype_of(&self, other: &ValueType, types: &TypeContext) -> bool {
+        if *self == ValueType::Unknown {
             return true;
         }
-        // Reference subtyping
-        if let (ValueType::Ref(actual_ref), ValueType::Ref(expected_ref)) = (self, other) {
-            // Non-nullable is subtype of nullable (not the reverse)
-            if !expected_ref.nullable && actual_ref.nullable {
-                return false;
-            }
-            if actual_ref.heap_type == expected_ref.heap_type {
-                return true;
-            }
-            // Concrete(idx) is a subtype of Abstract(Func)
-            if let (HeapType::Concrete(_), HeapType::Abstract(AbstractHeapType::Func)) =
-                (actual_ref.heap_type, expected_ref.heap_type)
-            {
-                return true;
-            }
+        if self == other {
+            return true;
         }
-        false
+        match (self, other) {
+            (ValueType::Ref(sub_rt), ValueType::Ref(sup_rt)) => sub_rt.is_subtype_of(sup_rt, types),
+            _ => false,
+        }
     }
 
-    // ========================================================================
-    // Utility Methods
-    // ========================================================================
+    pub fn is_compatible_with(&self, other: &ValueType) -> bool {
+        self == other || *self == ValueType::Unknown || *other == ValueType::Unknown
+    }
 
-    /// Get the bit width of a number or vector type
+    #[inline]
+    pub fn can_initialize(&self, target_type: &ValueType, types: &TypeContext) -> bool {
+        self.is_subtype_of(target_type, types)
+    }
+
     pub fn bit_width(&self) -> Option<u32> {
         match self {
             ValueType::I32 | ValueType::F32 => Some(32),
@@ -486,7 +597,6 @@ impl ValueType {
         }
     }
 
-    /// Convert to nullable variant (only for reference types)
     pub fn to_nullable(&self) -> ValueType {
         match self {
             ValueType::Ref(rt) => ValueType::Ref(rt.to_nullable()),
@@ -494,7 +604,6 @@ impl ValueType {
         }
     }
 
-    /// Convert to non-nullable variant (only for reference types)
     pub fn to_non_nullable(&self) -> ValueType {
         match self {
             ValueType::Ref(rt) => ValueType::Ref(rt.to_non_nullable()),
@@ -502,7 +611,17 @@ impl ValueType {
         }
     }
 
-    /// Returns the lowercase name of this type for IR formatting.
+    pub fn is_subtype_of_eqref(&self) -> bool {
+        use AbstractHeapType::*;
+        match self {
+            ValueType::Ref(rt) => match &rt.heap_type {
+                HeapType::Abstract(aht) => matches!(aht, Eq | I31 | Struct | Array | None),
+                HeapType::Concrete(_) => true,
+            },
+            _ => false,
+        }
+    }
+
     pub fn to_lowercase_name(&self) -> &'static str {
         match self {
             ValueType::I32 => "i32",
@@ -515,54 +634,33 @@ impl ValueType {
         }
     }
 
-    // ========================================================================
-    // Binary Format Parsing
-    // ========================================================================
-
-    /// Parse a value type from a payload
-    ///
-    /// Handles all encoding forms per WASM 2.0:
-    /// - Number types (0x7F, 0x7E, 0x7D, 0x7C)
-    /// - Vector types (0x7B)
-    /// - Short form ref types: single byte abstract heap type = (ref null <heaptype>)
-    /// - General form ref types: 0x63/0x64 prefix + heap type
     pub fn parse(payload: &mut crate::utils::payload::Payload) -> Result<ValueType, WasmError> {
         let first_byte = payload.read_u8().map_err(WasmError::from)?;
 
         match first_byte {
-            // Number types
             0x7F => Ok(ValueType::I32),
             0x7E => Ok(ValueType::I64),
             0x7D => Ok(ValueType::F32),
             0x7C => Ok(ValueType::F64),
-
-            // Vector types
             0x7B => Ok(ValueType::V128),
-
-            // General form: ref null <heaptype>
             0x63 => {
                 let heap_type = HeapType::parse(payload)?;
                 Ok(ValueType::Ref(RefType::new(true, heap_type)))
             }
-
-            // General form: ref <heaptype>
             0x64 => {
                 let heap_type = HeapType::parse(payload)?;
                 Ok(ValueType::Ref(RefType::new(false, heap_type)))
             }
-
-            // Short form: abstract heap type alone = (ref null <heaptype>)
             _ => {
                 if let Ok(aht) = AbstractHeapType::try_from(first_byte) {
                     Ok(ValueType::Ref(RefType::nullable_abstract(aht)))
                 } else {
-                    Err(WasmError::invalid("Invalid value type byte: 0x at position . Expected number type (0x7C-0x7F), vector type (0x7B), ref prefix (0x63/0x64), or abstract heap type (0x6F/0x70)"))
+                    Err(WasmError::invalid("Invalid value type byte"))
                 }
             }
         }
     }
 
-    /// Encode this value type to binary format
     pub fn encode(&self) -> collections::Vec<u8> {
         match self {
             ValueType::I32 => collections::vec![0x7F],
@@ -570,24 +668,18 @@ impl ValueType {
             ValueType::F32 => collections::vec![0x7D],
             ValueType::F64 => collections::vec![0x7C],
             ValueType::V128 => collections::vec![0x7B],
-
             ValueType::Ref(rt) => {
-                // Check if we can use short form (nullable abstract heap type)
                 if rt.nullable {
                     if let HeapType::Abstract(aht) = rt.heap_type {
                         return collections::vec![aht as u8];
                     }
                 }
 
-                // General form required
                 let mut bytes = collections::vec![if rt.nullable { 0x63 } else { 0x64 }];
                 bytes.extend(rt.heap_type.encode());
                 bytes
             }
-
-            ValueType::Unknown => {
-                panic!("Cannot encode Unknown value type")
-            }
+            ValueType::Unknown => panic!("Cannot encode Unknown value type"),
         }
     }
 }

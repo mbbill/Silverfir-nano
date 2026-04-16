@@ -7,11 +7,12 @@ use crate::vm::{
         lower_module,
         machine_ir::{
             is_fp_reg, is_gp_reg, MachineAddr, MachineBlockId, MachineBlockParam,
-            MachineBranchCond, MachineCompareKind, MachineConvertOp, MachineEdge,
-            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction, MachineInstKind,
-            MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
-            MachineModule, MachineReg, MachineRegOwner, MachineSign, MachineStorageType,
-            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
+            MachineBranchCond, MachineCallTarget, MachineCompareKind, MachineConvertOp,
+            MachineEdge, MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction,
+            MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension,
+            MachineMemWidth, MachineModule, MachineReg, MachineRegOwner, MachineSign,
+            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MACHINE_FIXED_REG_COUNT,
         },
         LowerFunctionInput, LowerModuleInput,
     },
@@ -1385,7 +1386,7 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
 }
 
 #[test]
-fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
+fn lowers_call_runtime_through_frame_metadata_without_helper_scratch() {
     let frame = plan_frame_layout(0, 2, 3);
     let ssa = {
         let mut ssa = SsaProgram::default();
@@ -1426,7 +1427,7 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
             result_count: 0,
         }],
     })
-    .expect("external helper lowering should succeed");
+    .expect("runtime-call lowering should succeed");
 
     assert_eq!(lowered.module.consts.len(), 1);
     // Under the new local-call ABI the dead call-link half of the frame
@@ -1436,7 +1437,7 @@ fn lowers_call_external_through_frame_metadata_without_helper_scratch() {
     // future cleanup can drop it to 0 when no helper actually needs it.
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(ops.len(), 3);
-    assert!(matches!(ops[0].kind, MachineInstKind::CallExternal(_)));
+    assert!(matches!(ops[0].kind, MachineInstKind::CallRuntime(_)));
     assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
     assert!(matches!(ops[2].kind, MachineInstKind::Load { .. }));
 }
@@ -1506,7 +1507,7 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
 }
 
 #[test]
-fn flushes_and_reloads_cached_locals_around_call_external() {
+fn flushes_and_reloads_cached_locals_around_call_runtime() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = {
         let mut ssa = SsaProgram::default();
@@ -1567,7 +1568,7 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
             result_count: 0,
         }],
     })
-    .expect("external helper lowering should succeed with cached locals");
+    .expect("runtime-call lowering should succeed with cached locals");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(ops.len(), 5);
@@ -1581,15 +1582,15 @@ fn flushes_and_reloads_cached_locals_around_call_external() {
     ));
     // ops[1]: explicit LocalDropCache flushes cache to frame before the call
     assert!(matches!(ops[1].kind, MachineInstKind::Store { .. }));
-    // ops[2]: external call
-    assert!(matches!(ops[2].kind, MachineInstKind::CallExternal(_)));
+    // ops[2]: runtime call
+    assert!(matches!(ops[2].kind, MachineInstKind::CallRuntime(_)));
     // ops[3-4]: mem0 cache reg refresh only; there is no implicit cached-local reload
     assert!(matches!(ops[3].kind, MachineInstKind::Load { .. }));
     assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]
-fn skips_dead_cached_local_reload_after_direct_external_call() {
+fn skips_dead_cached_local_reload_after_direct_runtime_call() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = {
         let mut ssa = SsaProgram::default();
@@ -1650,13 +1651,13 @@ fn skips_dead_cached_local_reload_after_direct_external_call() {
             result_count: 0,
         }],
     })
-    .expect("direct external call lowering should preserve explicit cache protocol");
+    .expect("direct runtime call lowering should preserve explicit cache protocol");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(ops.len(), 5);
     assert!(matches!(ops[0].kind, MachineInstKind::Move { .. }));
     assert!(matches!(ops[1].kind, MachineInstKind::Store { .. }));
-    assert!(matches!(ops[2].kind, MachineInstKind::CallExternal(_)));
+    assert!(matches!(ops[2].kind, MachineInstKind::CallRuntime(_)));
     assert!(matches!(ops[3].kind, MachineInstKind::Load { .. }));
     assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
 }
@@ -1737,8 +1738,8 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
     ));
     // ops[1]: explicit LocalDropCache flushes before the runtime helper call
     assert!(matches!(ops[1].kind, MachineInstKind::Store { .. }));
-    // ops[2]: call helper (call_external)
-    assert!(matches!(ops[2].kind, MachineInstKind::CallExternal(_)));
+    // ops[2]: call helper (call_runtime)
+    assert!(matches!(ops[2].kind, MachineInstKind::CallRuntime(_)));
     // ops[3-4]: reload mem0 cache regs only
     assert!(matches!(ops[3].kind, MachineInstKind::Load { .. }));
     assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
@@ -1823,8 +1824,8 @@ fn lowers_direct_local_call_with_continuation_block() {
     assert_eq!(caller_program.blocks.len(), 2);
     let call_block = &caller_program.blocks[0];
     let (callee_frame_base, caller_result_base) = match call_block.terminator {
-        MachineTerminator::CallDirect {
-            callee,
+        MachineTerminator::Call {
+            target: MachineCallTarget::Direct(callee),
             callee_frame_base,
             caller_result_base,
             continuation,
@@ -1849,7 +1850,7 @@ fn lowers_direct_local_call_with_continuation_block() {
     // only materializes the callee frame base and caller result base here.
     assert_eq!(call_block.ops.len(), 2);
     // The second op computes `caller_result_base = caller_fp + results_offset`
-    // and is consumed by the `CallDirect` terminator below.
+    // and is consumed by the `Call` terminator below.
     assert!(matches!(
         call_block.ops[1].kind,
         MachineInstKind::IntBinary {
@@ -2030,8 +2031,8 @@ fn flushes_cached_local_before_second_direct_call() {
     );
     assert!(matches!(
         second_call_block.terminator,
-        MachineTerminator::CallDirect {
-            callee: MachineFuncId(1),
+        MachineTerminator::Call {
+            target: MachineCallTarget::Direct(MachineFuncId(1)),
             continuation: MachineBlockId(2),
             ..
         }
@@ -2769,7 +2770,7 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
 }
 
 #[test]
-fn does_not_save_clean_carried_cache_before_external_call() {
+fn does_not_save_clean_carried_cache_before_runtime_call() {
     let frame = plan_frame_layout(1, 1, 4);
     let slot = frame.local_slot(0);
     let ssa = {
@@ -2827,7 +2828,7 @@ fn does_not_save_clean_carried_cache_before_external_call() {
             result_count: 0,
         }],
     })
-    .expect("clean carried cache should not be saved before external call");
+    .expect("clean carried cache should not be saved before runtime call");
 
     let program = &lowered.module.functions[0].program;
     assert!(matches!(
@@ -2839,19 +2840,124 @@ fn does_not_save_clean_carried_cache_before_external_call() {
             .ops
             .iter()
             .all(|inst| !matches!(inst.kind, MachineInstKind::Store { .. })),
-        "clean carried cache should not be spilled before the external call"
+        "clean carried cache should not be spilled before the runtime call"
     );
     assert!(
         program.blocks[1]
             .ops
             .iter()
-            .any(|inst| matches!(inst.kind, MachineInstKind::CallExternal(_))),
-        "expected external call in continuation block"
+            .any(|inst| matches!(inst.kind, MachineInstKind::CallRuntime(_))),
+        "expected runtime call in continuation block"
     );
 }
 
 #[test]
-fn saves_only_dirty_cached_locals_before_external_call() {
+fn preserved_call_keeps_carried_cache_live_across_edge() {
+    let frame = plan_frame_layout(2, 1, 4);
+    let slot0 = frame.local_slot(0);
+    let slot1 = frame.local_slot(1);
+    let ssa = {
+        let mut ssa = SsaProgram::default();
+        ssa.entry = SsaTarget(0);
+        ssa.local_slot_types = collections::vec![ValueType::I32, ValueType::funcref()];
+        ssa.local_slot_info = collections::vec![
+            LocalSlotInfo {
+                is_param: true,
+                reads_before_write: true,
+            },
+            LocalSlotInfo {
+                is_param: false,
+                reads_before_write: false,
+            },
+        ];
+        ssa.block_entry_cached_slots =
+            collections::vec![collections::vec![slot0], collections::vec![slot0]];
+        ssa.block_cfg_origins = collections::vec![];
+        ssa.value_types = collections::vec![ValueType::funcref(), ValueType::I32];
+        ssa.value_sink_local = collections::vec![];
+        let mut __blk0 = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Goto(SsaEdge {
+                target: SsaTarget(1),
+                bindings: collections::vec![],
+            }),
+        };
+        {
+            let __pidx = ssa
+                .intern_primitive(PrimitiveOpKind::RefFunc { func_idx: 0 })
+                .unwrap();
+            __blk0.ops.push(SsaInst::primitive(
+                __pidx,
+                SsaValue(0),
+                [SsaOperand::NONE, SsaOperand::NONE],
+                0u16,
+            ));
+        }
+        __blk0.ops.push(SsaInst::local_set_slot(slot1, SsaValue(0)));
+        ssa.blocks.push(__blk0);
+        let mut __blk1 = SsaBlock {
+            id: SsaTarget(1),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        };
+        __blk1
+            .ops
+            .push(SsaInst::local_get_cache(slot0, SsaValue(1)));
+        ssa.blocks.push(__blk1);
+        ssa
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(1, 4, 0, 2),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("preserved helper call should keep carried cache live across the edge");
+
+    let program = &lowered.module.functions[0].program;
+    let source_block = &program.blocks[0];
+    let target_block = &program.blocks[1];
+
+    assert!(
+        source_block
+            .ops
+            .iter()
+            .any(|inst| matches!(inst.kind, MachineInstKind::RefFunc { .. })),
+        "expected ref.func MIR op in source block"
+    );
+    let MachineTerminator::Jump(edge) = &source_block.terminator else {
+        panic!("expected jump terminator from preserved-call block");
+    };
+    assert_eq!(edge.args.len(), 1, "expected one hidden cache edge arg");
+    assert!(
+        matches!(edge.args[0], MachineValue::Reg(_)),
+        "carried cache should be threaded as a real register value; edge args={:?}",
+        edge.args
+    );
+    assert_eq!(target_block.params.len(), 1);
+    assert!(
+        target_block
+            .ops
+            .iter()
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Load { .. })),
+        "target block should receive the carried cache through params, not reload it from frame; ops={:?}",
+        target_block.ops
+    );
+}
+
+#[test]
+fn saves_only_dirty_cached_locals_before_runtime_call() {
     let frame = plan_frame_layout(2, 1, 4);
     let dirty_slot = frame.local_slot(0);
     let clean_slot = frame.local_slot(1);
@@ -2930,7 +3036,7 @@ fn saves_only_dirty_cached_locals_before_external_call() {
             result_count: 0,
         }],
     })
-    .expect("only dirty caches should be saved before external call");
+    .expect("only dirty caches should be saved before runtime call");
 
     let ops = &lowered.module.functions[0].program.blocks[1].ops;
     let store_count = ops
@@ -2939,12 +3045,12 @@ fn saves_only_dirty_cached_locals_before_external_call() {
         .count();
     assert_eq!(
         store_count, 1,
-        "one dirty cached local and one clean carried local should produce exactly one save store before the external call; ops={ops:?}"
+        "one dirty cached local and one clean carried local should produce exactly one save store before the runtime call; ops={ops:?}"
     );
     assert!(
         ops.iter()
-            .any(|inst| matches!(inst.kind, MachineInstKind::CallExternal(_))),
-        "expected external call in lowered block"
+            .any(|inst| matches!(inst.kind, MachineInstKind::CallRuntime(_))),
+        "expected runtime call in lowered block"
     );
 }
 
@@ -3160,8 +3266,8 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
     ));
     assert!(matches!(
         lowered.module.functions[0].program.blocks[0].terminator,
-        MachineTerminator::CallDirect {
-            callee: MachineFuncId(2),
+        MachineTerminator::Call {
+            target: MachineCallTarget::Direct(MachineFuncId(2)),
             ..
         }
     ));
@@ -3303,7 +3409,7 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
 }
 
 #[test]
-fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
+fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     let frame = plan_frame_layout(0, 6, 4);
     let call_base = frame.operand_slot(0);
     let ssa = {
@@ -3397,7 +3503,8 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     ));
     assert!(matches!(
         program.blocks[9].terminator,
-        MachineTerminator::CallIndirect {
+        MachineTerminator::Call {
+            target: MachineCallTarget::Indirect { .. },
             continuation: MachineBlockId(11),
             ..
         }
@@ -3491,7 +3598,7 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     ));
     assert!(matches!(
         program.blocks[10].ops[0].kind,
-        MachineInstKind::CallExternal(_)
+        MachineInstKind::CallRuntime(_)
     ));
     assert!(matches!(
         program.blocks[10].ops[1].kind,
@@ -3510,6 +3617,124 @@ fn lowers_call_indirect_with_local_and_external_dispatch_paths() {
     ));
     assert!(matches!(
         program.blocks[11].terminator,
+        MachineTerminator::Trap {
+            kind: MachineTrapKind::Unreachable
+        }
+    ));
+}
+
+#[test]
+fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
+    let frame = plan_frame_layout(0, 6, 4);
+    let call_base = frame.operand_slot(0);
+    let ssa = {
+        let mut ssa = SsaProgram::default();
+        ssa.entry = SsaTarget(0);
+        ssa.local_slot_types = collections::vec![];
+        ssa.local_slot_info = collections::vec![];
+        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_cfg_origins = collections::vec![];
+        ssa.value_types = collections::vec![];
+        ssa.value_sink_local = collections::vec![];
+        let mut __blk0 = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::TrapUnreachable,
+        };
+        {
+            let __idx = ssa.push_call_op(SsaCallOp::CallRef {
+                type_idx: 3,
+                ref_slot: call_base.advance(2),
+                args: FrameSpan::new(call_base, 2),
+                results: FrameSpan::new(call_base, 1),
+            });
+            __blk0.ops.push(SsaInst::call(__idx));
+        }
+        ssa.blocks.push(__blk0);
+        ssa
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(0, 4, 0, 2),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("call_ref lowering should succeed");
+
+    assert_eq!(lowered.module.consts.len(), 1);
+
+    let program = &lowered.module.functions[0].program;
+    assert_eq!(program.blocks.len(), 10);
+    assert!(matches!(
+        program.blocks[0].ops[0].kind,
+        MachineInstKind::Load {
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
+            ..
+        }
+    ));
+    assert!(matches!(
+        program.blocks[0].terminator,
+        MachineTerminator::Branch { .. }
+    ));
+    assert!(matches!(
+        program.blocks[1].terminator,
+        MachineTerminator::Trap {
+            kind: MachineTrapKind::InvalidFunctionReference
+        }
+    ));
+    assert!(matches!(
+        program.blocks[2].terminator,
+        MachineTerminator::Branch { .. }
+    ));
+    assert!(matches!(
+        program.blocks[3].terminator,
+        MachineTerminator::Branch { .. }
+    ));
+    assert!(matches!(
+        program.blocks[4].terminator,
+        MachineTerminator::Trap {
+            kind: MachineTrapKind::IndirectCallTypeMismatch
+        }
+    ));
+    assert_eq!(program.blocks[5].params.len(), 1);
+    assert!(matches!(
+        program.blocks[5].terminator,
+        MachineTerminator::Branch { .. }
+    ));
+    assert!(matches!(
+        program.blocks[6].terminator,
+        MachineTerminator::Branch { .. }
+    ));
+    assert!(matches!(
+        program.blocks[7].terminator,
+        MachineTerminator::Call {
+            target: MachineCallTarget::Indirect { .. },
+            continuation: MachineBlockId(9),
+            ..
+        }
+    ));
+    assert!(matches!(
+        program.blocks[8].ops[0].kind,
+        MachineInstKind::CallRuntime(_)
+    ));
+    assert!(matches!(
+        program.blocks[8].terminator,
+        MachineTerminator::Jump(MachineEdge {
+            target: MachineBlockId(9),
+            ..
+        })
+    ));
+    assert!(matches!(
+        program.blocks[9].terminator,
         MachineTerminator::Trap {
             kind: MachineTrapKind::Unreachable
         }

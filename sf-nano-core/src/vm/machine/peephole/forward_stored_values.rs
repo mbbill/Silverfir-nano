@@ -64,7 +64,21 @@ pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendCon
                     });
                 }
             }
-            MachineInstKind::CallExternal(_) => {
+            MachineInstKind::CallRuntime(_)
+            | MachineInstKind::RefFunc { .. }
+            | MachineInstKind::RefAsNonNull { .. }
+            | MachineInstKind::RefEq { .. }
+            | MachineInstKind::RefI31 { .. }
+            | MachineInstKind::I31GetS { .. }
+            | MachineInstKind::I31GetU { .. }
+            | MachineInstKind::AnyConvertExtern { .. }
+            | MachineInstKind::ExternConvertAny { .. }
+            | MachineInstKind::RefTest { .. }
+            | MachineInstKind::RefCast { .. }
+            | MachineInstKind::StructNewDefault { .. }
+            | MachineInstKind::StructGet { .. }
+            | MachineInstKind::StructSet { .. }
+            | MachineInstKind::ArrayNewDefault { .. } => {
                 tracked.clear();
             }
             _ => {}

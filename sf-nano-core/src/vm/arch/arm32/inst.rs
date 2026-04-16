@@ -14,15 +14,15 @@ use crate::{
     vm::{
         arch::common::{scratch_pool::ScratchPool, text_emitter::TextEmitter},
         machine::machine_ir::{
-            fp_reg_index, MachineAddr, MachineBranchCond, MachineCallExternal, MachineCompareKind,
+            fp_reg_index, MachineAddr, MachineBranchCond, MachineCallRuntime, MachineCompareKind,
             MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth,
             MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
             MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp, MachineSign,
             MachineStorageType, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
         },
         runtime::{
-            external::call_external_entry_ptr,
             preserved::{io as preserved_io, op as preserved_op},
+            runtime_call::call_runtime_entry_ptr,
         },
     },
 };
@@ -721,8 +721,8 @@ impl<'a> Arm32Backend<'a> {
                 self.compile_trap_if(*kind, cond)?;
             }
 
-            MachineInstKind::CallExternal(call) => {
-                self.compile_call_external(call)?;
+            MachineInstKind::CallRuntime(call) => {
+                self.compile_call_runtime(call)?;
             }
             MachineInstKind::IndexedLoad {
                 dst,
@@ -790,7 +790,6 @@ impl<'a> Arm32Backend<'a> {
             } => {
                 self.compile_test_bits(*width, *kind, *dst, *src, mask)?;
             }
-
             // ─── Bulk memory / table ops via preserved-helper bridge ──────
             // All these go through the shared `preserved_entry` runtime
             // helper. The bridge in backend.rs handles the I/O area, the
@@ -955,6 +954,176 @@ impl<'a> Arm32Backend<'a> {
                     &[(preserved_io::IMM0, *elem_idx)],
                     &[],
                     None,
+                )?;
+            }
+            MachineInstKind::RefFunc { func_idx, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::REF_FUNC,
+                    *func_idx,
+                    0,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::RefAsNonNull { src, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::REF_AS_NON_NULL,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::RefEq { lhs, rhs, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::REF_EQ,
+                    0,
+                    0,
+                    *lhs,
+                    *rhs,
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::RefI31 { src, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::REF_I31,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::I31GetS { src, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::I31_GET_S,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::I31GetU { src, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::I31_GET_U,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::AnyConvertExtern { src, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::ANY_CONVERT_EXTERN,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::ExternConvertAny { src, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::EXTERN_CONVERT_ANY,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::RefTest { ref_type, src, dst } => {
+                let encoded = ref_type.encode_to_u64();
+                self.compile_preserved_result(
+                    preserved_op::REF_TEST,
+                    encoded as u32,
+                    (encoded >> 32) as u32,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::RefCast { ref_type, src, dst } => {
+                let encoded = ref_type.encode_to_u64();
+                self.compile_preserved_result(
+                    preserved_op::REF_CAST,
+                    encoded as u32,
+                    (encoded >> 32) as u32,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::StructNewDefault { type_idx, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::STRUCT_NEW_DEFAULT,
+                    *type_idx,
+                    0,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::StructGet {
+                type_idx,
+                field_idx,
+                signed,
+                ty,
+                src,
+                dst,
+                dst_hi,
+            } => {
+                self.compile_struct_get(*type_idx, *field_idx, *signed, *ty, *src, *dst, *dst_hi)?;
+            }
+            MachineInstKind::StructSet {
+                type_idx,
+                field_idx,
+                ref_src,
+                value_lo,
+                value_hi,
+            } => {
+                self.compile_struct_set(*type_idx, *field_idx, *ref_src, *value_lo, *value_hi)?;
+            }
+            MachineInstKind::ArrayNewDefault {
+                type_idx,
+                length,
+                dst,
+            } => {
+                self.compile_preserved_result(
+                    preserved_op::ARRAY_NEW_DEFAULT,
+                    *type_idx,
+                    0,
+                    *length,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
                 )?;
             }
         }
@@ -3544,15 +3713,15 @@ impl<'a> Arm32Backend<'a> {
         Ok(())
     }
 
-    // ─── CallExternal ───────────────────────────────────────────────────────
+    // ─── CallRuntime ───────────────────────────────────────────────────────
 
-    fn compile_call_external(&mut self, call: &MachineCallExternal) -> Result<(), WasmError> {
+    fn compile_call_runtime(&mut self, call: &MachineCallRuntime) -> Result<(), WasmError> {
         let metadata =
             self.core.compiled.const_ptr(call.metadata).ok_or_else(|| {
-                WasmError::internal("arm32: external-call metadata is out of range")
+                WasmError::internal("arm32: runtime-call metadata is out of range")
             })?;
 
-        let helper_ptr = call_external_entry_ptr() as usize;
+        let helper_ptr = call_runtime_entry_ptr() as usize;
 
         // Imported calls cross the foreign C ABI, so the caller-saved GP
         // dynamic subset must be spilled explicitly before we stage the ABI
@@ -3585,6 +3754,107 @@ impl<'a> Arm32Backend<'a> {
         self.emit_branch(BranchFixupKind::BCond(Cond::Ne), body_local_error);
 
         Ok(())
+    }
+
+    fn compile_preserved_result(
+        &mut self,
+        op_code: u32,
+        imm0: u32,
+        imm1: u32,
+        arg0: MachineValue,
+        arg1: MachineValue,
+        arg2: MachineValue,
+        ty: MachineStorageType,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        let result = if let Some(width) = ty.float_width() {
+            super::preserved::PreservedResultTarget::Float { dst, width }
+        } else {
+            super::preserved::PreservedResultTarget::GpWord(dst)
+        };
+        self.emit_preserved_helper_call_extended(
+            op_code,
+            &[(preserved_io::IMM0, imm0), (preserved_io::IMM1, imm1)],
+            &[
+                (preserved_io::ARG0, arg0),
+                (preserved_io::ARG1, arg1),
+                (preserved_io::ARG2, arg2),
+            ],
+            None,
+            result,
+        )
+    }
+
+    fn compile_struct_get(
+        &mut self,
+        type_idx: u32,
+        field_idx: u32,
+        signed: Option<bool>,
+        ty: MachineStorageType,
+        src: MachineValue,
+        dst: MachineReg,
+        dst_hi: Option<MachineReg>,
+    ) -> Result<(), WasmError> {
+        let op_code = match signed {
+            None => preserved_op::STRUCT_GET,
+            Some(true) => preserved_op::STRUCT_GET_S,
+            Some(false) => preserved_op::STRUCT_GET_U,
+        };
+        let result = if let Some(dst_hi) = dst_hi {
+            super::preserved::PreservedResultTarget::GpPair {
+                dst_lo: dst,
+                dst_hi,
+            }
+        } else if let Some(width) = ty.float_width() {
+            super::preserved::PreservedResultTarget::Float { dst, width }
+        } else {
+            super::preserved::PreservedResultTarget::GpWord(dst)
+        };
+        self.emit_preserved_helper_call_extended(
+            op_code,
+            &[
+                (preserved_io::IMM0, type_idx),
+                (preserved_io::IMM1, field_idx),
+            ],
+            &[(preserved_io::ARG0, src)],
+            None,
+            result,
+        )
+    }
+
+    fn compile_struct_set(
+        &mut self,
+        type_idx: u32,
+        field_idx: u32,
+        ref_src: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+    ) -> Result<(), WasmError> {
+        match value_hi {
+            Some(value_hi) => self.emit_preserved_helper_call_extended(
+                preserved_op::STRUCT_SET,
+                &[
+                    (preserved_io::IMM0, type_idx),
+                    (preserved_io::IMM1, field_idx),
+                ],
+                &[(preserved_io::ARG0, ref_src)],
+                Some((preserved_io::ARG1, value_lo, value_hi)),
+                super::preserved::PreservedResultTarget::None,
+            ),
+            None => self.emit_preserved_helper_call_extended(
+                preserved_op::STRUCT_SET,
+                &[
+                    (preserved_io::IMM0, type_idx),
+                    (preserved_io::IMM1, field_idx),
+                ],
+                &[
+                    (preserved_io::ARG0, ref_src),
+                    (preserved_io::ARG1, value_lo),
+                ],
+                None,
+                super::preserved::PreservedResultTarget::None,
+            ),
+        }
     }
 } // impl Arm32Backend
 

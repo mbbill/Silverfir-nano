@@ -16,7 +16,7 @@ pub(super) fn eval(
     args: &[Value],
 ) -> Result<ResultBuffer, WasmError> {
     match func_inst {
-        FunctionInst::External {
+        FunctionInst::Host {
             func_type,
             callback,
         } => {
@@ -27,7 +27,10 @@ pub(super) fn eval(
             let mem_slice = if store.module().memories.is_empty() {
                 None
             } else {
-                Some(store.memory_mut(0).data.as_mut_slice())
+                let mem = store.memory_mut(0);
+                let ptr = mem.memory_ptr();
+                let len = mem.memory_len();
+                Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
             };
             let mut caller = Caller::new(mem_slice);
             callback(&mut caller, args, &mut returns)?;
@@ -37,6 +40,21 @@ pub(super) fn eval(
                 out.push(value.to_raw());
             }
             Ok(out)
+        }
+        FunctionInst::Linked { handle, .. } => {
+            let entry = store
+                .function_entry_for_handle(*handle)
+                .ok_or_else(|| WasmError::internal("linked function handle not found"))?;
+            let owner_store = unsafe { entry.store.as_mut() }
+                .ok_or_else(|| WasmError::internal("linked function owner no longer available"))?;
+            let callee_ptr = owner_store
+                .module()
+                .functions
+                .get(entry.local_index)
+                .ok_or_else(|| WasmError::internal("linked function index out of range"))?
+                as *const FunctionInst;
+            let callee = unsafe { &*callee_ptr };
+            eval(callee, owner_store, args)
         }
         FunctionInst::Local { spec, .. } => {
             let active_backend = arch::active_native_backend()

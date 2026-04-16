@@ -5,7 +5,7 @@ use core::mem::{align_of, size_of};
 
 use crate::vm::{
     machine::machine_ir::{MachineConstData, MachineConstId},
-    runtime::external::ExternalCallMeta,
+    runtime::runtime_call::RuntimeCallMeta,
 };
 
 pub(crate) struct ConstPoolBuilder {
@@ -29,7 +29,7 @@ impl ConstPoolBuilder {
         &self.consts
     }
 
-    pub(super) fn call_external_meta(&mut self, meta: ExternalCallMeta) -> MachineConstId {
+    pub(super) fn call_runtime_meta(&mut self, meta: RuntimeCallMeta) -> MachineConstId {
         self.push_encoded(meta)
     }
 

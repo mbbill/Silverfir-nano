@@ -192,6 +192,21 @@ macro_rules! for_each_primitive_op {
             RefNull => (0, 1),
             RefIsNull => (1, 1),
             RefFunc { func_idx: u32 } => (0, 1),
+            RefAsNonNull => (1, 1),
+            RefEq => (2, 1),
+            RefI31 => (1, 1),
+            I31GetS => (1, 1),
+            I31GetU => (1, 1),
+            AnyConvertExtern => (1, 1),
+            ExternConvertAny => (1, 1),
+            RefTest { ref_type: crate::value_type::RefType } => (1, 1),
+            RefCast { ref_type: crate::value_type::RefType } => (1, 1),
+            StructNewDefault { type_idx: u32 } => (0, 1),
+            StructGet { type_idx: u32, field_idx: u32 } => (1, 1),
+            StructGetS { type_idx: u32, field_idx: u32 } => (1, 1),
+            StructGetU { type_idx: u32, field_idx: u32 } => (1, 1),
+            StructSet { type_idx: u32, field_idx: u32 } => (2, 0),
+            ArrayNewDefault { type_idx: u32 } => (1, 1),
             Drop => (1, 0),
             Select => (3, 1),
             Nop => (0, 0),
@@ -433,9 +448,8 @@ pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<ValueType> {
         PrimitiveOpKind::GlobalGet { .. } => return None,
         PrimitiveOpKind::GlobalSet { .. } => return None,
 
-        // Memory/table size => i32
-        PrimitiveOpKind::MemorySize { .. } => ValueType::I32,
-        PrimitiveOpKind::MemoryGrow { .. } => ValueType::I32,
+        // Memory/table size/grow depend on the selected memory/table index type.
+        PrimitiveOpKind::MemorySize { .. } | PrimitiveOpKind::MemoryGrow { .. } => return None,
 
         // Memory/table bulk ops — no result or boundary
         PrimitiveOpKind::MemoryFill { .. }
@@ -448,15 +462,29 @@ pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<ValueType> {
         | PrimitiveOpKind::ElemDrop { .. }
         | PrimitiveOpKind::TableSet { .. } => return None,
 
-        // Table get/size/grow — context-dependent or i32
-        PrimitiveOpKind::TableGet { .. } => return None,
-        PrimitiveOpKind::TableSize { .. } => ValueType::I32,
-        PrimitiveOpKind::TableGrow { .. } => ValueType::I32,
+        // Table get/size/grow — context-dependent
+        PrimitiveOpKind::TableGet { .. }
+        | PrimitiveOpKind::TableSize { .. }
+        | PrimitiveOpKind::TableGrow { .. } => return None,
 
         // References
         PrimitiveOpKind::RefNull => return None,
         PrimitiveOpKind::RefIsNull => ValueType::I32,
         PrimitiveOpKind::RefFunc { .. } => return None,
+        PrimitiveOpKind::RefAsNonNull => ValueType::anyref(),
+        PrimitiveOpKind::RefEq => ValueType::I32,
+        PrimitiveOpKind::RefI31 => ValueType::i31ref(),
+        PrimitiveOpKind::I31GetS | PrimitiveOpKind::I31GetU => ValueType::I32,
+        PrimitiveOpKind::AnyConvertExtern => ValueType::anyref(),
+        PrimitiveOpKind::ExternConvertAny => ValueType::externref(),
+        PrimitiveOpKind::RefTest { .. } => ValueType::I32,
+        PrimitiveOpKind::RefCast { .. } => return None,
+        PrimitiveOpKind::StructNewDefault { .. } => return None,
+        PrimitiveOpKind::StructGet { .. }
+        | PrimitiveOpKind::StructGetS { .. }
+        | PrimitiveOpKind::StructGetU { .. } => return None,
+        PrimitiveOpKind::StructSet { .. } => return None,
+        PrimitiveOpKind::ArrayNewDefault { .. } => return None,
 
         // Stack/control
         PrimitiveOpKind::Drop => return None,

@@ -291,6 +291,7 @@ impl Function {
 pub struct TableSpec {
     value_type: ValueType,
     limits: Limits,
+    init_expr: Option<ConstExpr>,
 }
 
 impl Limitable for TableSpec {
@@ -311,11 +312,35 @@ impl TableSpec {
             limits: limits
                 .with_default_max(default_max)
                 .map_err(|_| WasmError::invalid("table limits"))?,
+            init_expr: None,
+        })
+    }
+
+    pub fn new_with_init(
+        value_type: ValueType,
+        limits: Limits,
+        init_expr: ConstExpr,
+    ) -> Result<Self, WasmError> {
+        let default_max = if limits.is64 {
+            constants::MAX_TABLE_SIZE_64
+        } else {
+            constants::MAX_TABLE_SIZE
+        };
+        Ok(TableSpec {
+            value_type,
+            limits: limits
+                .with_default_max(default_max)
+                .map_err(|_| WasmError::invalid("table limits"))?,
+            init_expr: Some(init_expr),
         })
     }
 
     pub fn value_type(&self) -> ValueType {
         self.value_type
+    }
+
+    pub fn init_expr(&self) -> Option<&ConstExpr> {
+        self.init_expr.as_ref()
     }
 }
 
@@ -340,6 +365,17 @@ impl Table {
         Ok(Table {
             export_names: collections::Vec::new(),
             def: TableDef::Local(TableSpec::new(value_type, limits)?),
+        })
+    }
+
+    pub fn new_local_with_init(
+        value_type: ValueType,
+        limits: Limits,
+        init_expr: ConstExpr,
+    ) -> Result<Self, WasmError> {
+        Ok(Table {
+            export_names: collections::Vec::new(),
+            def: TableDef::Local(TableSpec::new_with_init(value_type, limits, init_expr)?),
         })
     }
 
@@ -584,6 +620,106 @@ impl Global {
         match &self.def {
             GlobalDef::Local(spec) => Some(spec),
             GlobalDef::Import { .. } => None,
+        }
+    }
+
+    pub fn export_names(&self) -> &[String] {
+        &self.export_names
+    }
+
+    pub fn add_export_name(&mut self, name: String) {
+        self.export_names.push(name);
+    }
+}
+
+// ---------------------------------------------------------------------------
+// TagSpec / Tag
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone)]
+pub struct TagSpec {
+    func_type: Rc<FunctionType>,
+    type_index: u32,
+}
+
+impl TagSpec {
+    pub fn new(func_type: Rc<FunctionType>, type_index: u32) -> Self {
+        TagSpec {
+            func_type,
+            type_index,
+        }
+    }
+
+    pub fn func_type(&self) -> &FunctionType {
+        &self.func_type
+    }
+
+    pub fn type_index(&self) -> u32 {
+        self.type_index
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum TagDef {
+    Local(TagSpec),
+    Import {
+        module: String,
+        name: String,
+        func_type: Rc<FunctionType>,
+        type_index: u32,
+    },
+}
+
+#[derive(Debug, Clone)]
+pub struct Tag {
+    export_names: collections::Vec<String>,
+    def: TagDef,
+}
+
+impl Tag {
+    pub fn new_local(func_type: Rc<FunctionType>, type_index: u32) -> Self {
+        Tag {
+            export_names: collections::Vec::new(),
+            def: TagDef::Local(TagSpec::new(func_type, type_index)),
+        }
+    }
+
+    pub fn new_import(
+        module: String,
+        name: String,
+        func_type: Rc<FunctionType>,
+        type_index: u32,
+    ) -> Self {
+        Tag {
+            export_names: collections::Vec::new(),
+            def: TagDef::Import {
+                module,
+                name,
+                func_type,
+                type_index,
+            },
+        }
+    }
+
+    pub fn def(&self) -> &TagDef {
+        &self.def
+    }
+
+    pub fn is_import(&self) -> bool {
+        matches!(self.def, TagDef::Import { .. })
+    }
+
+    pub fn func_type(&self) -> &FunctionType {
+        match &self.def {
+            TagDef::Local(spec) => spec.func_type(),
+            TagDef::Import { func_type, .. } => func_type,
+        }
+    }
+
+    pub fn type_index(&self) -> u32 {
+        match &self.def {
+            TagDef::Local(spec) => spec.type_index(),
+            TagDef::Import { type_index, .. } => *type_index,
         }
     }
 

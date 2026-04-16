@@ -25,6 +25,7 @@ use crate::{
 use super::{
     lower_context::BlockLowerContext,
     lower_regalloc::{canonical_value_mem_width_for_value, lir_value_storage_type},
+    lower_util::{single_arg, single_result, two_args},
 };
 
 pub(super) enum LeafLowering {
@@ -581,6 +582,92 @@ impl<'a> BlockLowerContext<'a> {
         Ok(Some(lowered))
     }
 
+    #[inline]
+    fn lower_pair_aware_operand(
+        &mut self,
+        operand: SsaOperand,
+    ) -> Result<(MachineValue, Option<MachineValue>), WasmError> {
+        match operand.decode() {
+            DecodedOperand::Value(value)
+                if self.gp_reg_width() == 4
+                    && matches!(
+                        lir_value_storage_type(self.program(), value),
+                        MachineStorageType::GpI64
+                    ) =>
+            {
+                let (lo, hi) = self.use_value_regs(value)?;
+                Ok((
+                    MachineValue::Reg(lo),
+                    Some(MachineValue::Reg(hi.expect("pair value"))),
+                ))
+            }
+            _ => Ok((self.lower_operand(operand)?, None)),
+        }
+    }
+
+    #[inline]
+    fn lower_single_result_gp_op(
+        &mut self,
+        results: &[SsaValue],
+        build: impl FnOnce(MachineReg) -> MachineInstKind,
+    ) -> Result<(), WasmError> {
+        let dst = self.alloc_result_value(single_result(results)?)?;
+        self.emit_machine_inst(MachineInst { kind: build(dst) });
+        Ok(())
+    }
+
+    fn lower_struct_get(
+        &mut self,
+        type_idx: u32,
+        field_idx: u32,
+        signed: Option<bool>,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        let src = self.lower_operand(single_arg(args)?)?;
+        let result = single_result(results)?;
+        let result_ty = lir_value_storage_type(self.program(), result);
+        let (dst, dst_hi) = if self.gp_reg_width() == 4 && result_ty == MachineStorageType::GpI64 {
+            let (dst_lo, dst_hi) = self.alloc_i64_value_pair(result)?;
+            (dst_lo, Some(dst_hi))
+        } else {
+            (self.alloc_result_value(result)?, None)
+        };
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::StructGet {
+                type_idx,
+                field_idx,
+                signed,
+                ty: result_ty,
+                src,
+                dst,
+                dst_hi,
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_struct_set(
+        &mut self,
+        type_idx: u32,
+        field_idx: u32,
+        args: &[SsaOperand],
+    ) -> Result<(), WasmError> {
+        let (ref_arg, value_arg) = two_args(args)?;
+        let ref_src = self.lower_operand(ref_arg)?;
+        let (value_lo, value_hi) = self.lower_pair_aware_operand(value_arg)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::StructSet {
+                type_idx,
+                field_idx,
+                ref_src,
+                value_lo,
+                value_hi,
+            },
+        });
+        Ok(())
+    }
+
     pub(super) fn lower_leaf(
         &mut self,
         op: &PrimitiveOpKind,
@@ -615,8 +702,102 @@ impl<'a> BlockLowerContext<'a> {
                 self.lower_float_const(results, MachineFloatWidth::F64, *value)
             }
             P::RefNull => self.lower_const(results, self.gp_word_max_imm()),
-            P::RefFunc { func_idx } => self.lower_const(results, *func_idx as u64),
+            P::RefFunc { func_idx } => {
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::RefFunc {
+                    func_idx: *func_idx,
+                    dst,
+                })
+            }
             P::RefIsNull => self.lower_ref_is_null(args, results),
+            P::RefAsNonNull => {
+                let src = self.lower_operand(single_arg(args)?)?;
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::RefAsNonNull {
+                    src,
+                    dst,
+                })
+            }
+            P::RefEq => {
+                let (lhs, rhs) = two_args(args)?;
+                let lhs = self.lower_operand(lhs)?;
+                let rhs = self.lower_operand(rhs)?;
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::RefEq {
+                    lhs,
+                    rhs,
+                    dst,
+                })
+            }
+            P::RefI31 => {
+                let src = self.lower_operand(single_arg(args)?)?;
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::RefI31 { src, dst })
+            }
+            P::I31GetS => {
+                let src = self.lower_operand(single_arg(args)?)?;
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::I31GetS { src, dst })
+            }
+            P::I31GetU => {
+                let src = self.lower_operand(single_arg(args)?)?;
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::I31GetU { src, dst })
+            }
+            P::AnyConvertExtern => {
+                let src = self.lower_operand(single_arg(args)?)?;
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::AnyConvertExtern {
+                    src,
+                    dst,
+                })
+            }
+            P::ExternConvertAny => {
+                let src = self.lower_operand(single_arg(args)?)?;
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::ExternConvertAny {
+                    src,
+                    dst,
+                })
+            }
+            P::RefTest { ref_type } => {
+                let src = self.lower_operand(single_arg(args)?)?;
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::RefTest {
+                    ref_type: *ref_type,
+                    src,
+                    dst,
+                })
+            }
+            P::RefCast { ref_type } => {
+                let src = self.lower_operand(single_arg(args)?)?;
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::RefCast {
+                    ref_type: *ref_type,
+                    src,
+                    dst,
+                })
+            }
+            P::StructNewDefault { type_idx } => {
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::StructNewDefault {
+                    type_idx: *type_idx,
+                    dst,
+                })
+            }
+            P::StructGet {
+                type_idx,
+                field_idx,
+            } => self.lower_struct_get(*type_idx, *field_idx, None, args, results),
+            P::StructGetS {
+                type_idx,
+                field_idx,
+            } => self.lower_struct_get(*type_idx, *field_idx, Some(true), args, results),
+            P::StructGetU {
+                type_idx,
+                field_idx,
+            } => self.lower_struct_get(*type_idx, *field_idx, Some(false), args, results),
+            P::StructSet {
+                type_idx,
+                field_idx,
+            } => self.lower_struct_set(*type_idx, *field_idx, args),
+            P::ArrayNewDefault { type_idx } => {
+                let length = self.lower_operand(single_arg(args)?)?;
+                self.lower_single_result_gp_op(results, |dst| MachineInstKind::ArrayNewDefault {
+                    type_idx: *type_idx,
+                    length,
+                    dst,
+                })
+            }
             P::Select => self.lower_select(args, results),
             // i32.eqz / i64.eqz lower as IntCompare against zero so that the
             // existing fuse_compare_branch peephole can collapse the common

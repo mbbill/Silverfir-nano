@@ -5,8 +5,8 @@ use crate::vm::backend::BackendConfig;
 use super::machine_ir::is_fp_reg;
 #[cfg(any(debug_assertions, test))]
 use super::machine_ir::{
-    is_dynamic_reg, MachineAddr, MachineConstId, MachineEdge, MachineFloatWidth, MachineFuncId,
-    MachineInst, MachineReg, MachineRegOwner, MachineValue,
+    is_dynamic_reg, MachineAddr, MachineCallTarget, MachineConstId, MachineEdge, MachineFloatWidth,
+    MachineFuncId, MachineInst, MachineReg, MachineRegOwner, MachineValue,
 };
 use super::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineBranchCond, MachineConvertOp, MachineInstKind,
@@ -476,7 +476,50 @@ impl MachineProgram {
             MachineInstKind::TrapIf { cond, .. } => {
                 self.validate_branch_cond(*cond, config)?;
             }
-            MachineInstKind::CallExternal(_) => {}
+            MachineInstKind::CallRuntime(_) => {}
+            MachineInstKind::RefFunc { dst, .. }
+            | MachineInstKind::StructNewDefault { dst, .. }
+            | MachineInstKind::ArrayNewDefault { dst, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
+            }
+            MachineInstKind::RefAsNonNull { src, dst }
+            | MachineInstKind::RefI31 { src, dst }
+            | MachineInstKind::I31GetS { src, dst }
+            | MachineInstKind::I31GetU { src, dst }
+            | MachineInstKind::AnyConvertExtern { src, dst }
+            | MachineInstKind::ExternConvertAny { src, dst }
+            | MachineInstKind::RefTest { src, dst, .. }
+            | MachineInstKind::RefCast { src, dst, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*src, config)?;
+            }
+            MachineInstKind::RefEq { lhs, rhs, dst } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_value(*lhs, config)?;
+                self.validate_value(*rhs, config)?;
+            }
+            MachineInstKind::StructGet {
+                src, dst, dst_hi, ..
+            } => {
+                self.validate_value(*src, config)?;
+                self.validate_reg(*dst, config)?;
+                if let Some(dst_hi) = dst_hi {
+                    self.validate_reg(*dst_hi, config)?;
+                }
+            }
+            MachineInstKind::StructSet {
+                ref_src,
+                value_lo,
+                value_hi,
+                ..
+            } => {
+                self.validate_value(*ref_src, config)?;
+                self.validate_value(*value_lo, config)?;
+                if let Some(value_hi) = value_hi {
+                    self.validate_value(*value_hi, config)?;
+                }
+            }
             MachineInstKind::MemoryGrow { dst, delta, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_value(*delta, config)?;
@@ -540,26 +583,21 @@ impl MachineProgram {
                 }
                 Ok(())
             }
-            MachineTerminator::CallDirect {
+            MachineTerminator::Call {
+                target,
                 callee_frame_base,
                 caller_result_base,
                 continuation,
                 ..
             } => {
-                self.validate_reg(*callee_frame_base, config)?;
-                self.validate_reg(*caller_result_base, config)?;
-                self.validate_block_id(*continuation, source_block, "continuation")
-            }
-            MachineTerminator::CallIndirect {
-                callee_target,
-                callee_entry,
-                callee_frame_base,
-                caller_result_base,
-                continuation,
-                ..
-            } => {
-                self.validate_reg(*callee_target, config)?;
-                self.validate_reg(*callee_entry, config)?;
+                if let MachineCallTarget::Indirect {
+                    callee_target,
+                    callee_entry,
+                } = target
+                {
+                    self.validate_reg(*callee_target, config)?;
+                    self.validate_reg(*callee_entry, config)?;
+                }
                 self.validate_reg(*callee_frame_base, config)?;
                 self.validate_reg(*caller_result_base, config)?;
                 self.validate_block_id(*continuation, source_block, "continuation")
@@ -751,11 +789,15 @@ impl MachineModule {
     ) -> Result<(), WasmError> {
         for (block_idx, block) in program.blocks.iter().enumerate() {
             for inst in &block.ops {
-                if let MachineInstKind::CallExternal(call) = &inst.kind {
+                if let MachineInstKind::CallRuntime(call) = &inst.kind {
                     self.validate_const_id(func, block_idx, call.metadata)?;
                 }
             }
-            if let MachineTerminator::CallDirect { callee, .. } = block.terminator {
+            if let MachineTerminator::Call {
+                target: MachineCallTarget::Direct(callee),
+                ..
+            } = block.terminator
+            {
                 self.validate_func_id(func, block_idx, callee)?;
             }
         }

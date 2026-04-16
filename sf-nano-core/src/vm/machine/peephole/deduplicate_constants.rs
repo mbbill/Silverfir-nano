@@ -19,7 +19,24 @@ pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16)
         collections::Vec::new();
 
     for inst in &mut block.ops {
-        if matches!(inst.kind, MachineInstKind::CallExternal(_)) {
+        if matches!(
+            inst.kind,
+            MachineInstKind::CallRuntime(_)
+                | MachineInstKind::RefFunc { .. }
+                | MachineInstKind::RefAsNonNull { .. }
+                | MachineInstKind::RefEq { .. }
+                | MachineInstKind::RefI31 { .. }
+                | MachineInstKind::I31GetS { .. }
+                | MachineInstKind::I31GetU { .. }
+                | MachineInstKind::AnyConvertExtern { .. }
+                | MachineInstKind::ExternConvertAny { .. }
+                | MachineInstKind::RefTest { .. }
+                | MachineInstKind::RefCast { .. }
+                | MachineInstKind::StructNewDefault { .. }
+                | MachineInstKind::StructGet { .. }
+                | MachineInstKind::StructSet { .. }
+                | MachineInstKind::ArrayNewDefault { .. }
+        ) {
             gp_consts.clear();
             fp_consts.clear();
             continue;

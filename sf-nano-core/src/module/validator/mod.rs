@@ -15,7 +15,7 @@ use crate::{
     module::{entities::ElementInit, Module},
     op_decoder,
     utils::limits::Limitable,
-    value_type::{AbstractHeapType, HeapType, ValueType},
+    value_type::{HeapType, ValueType},
 };
 use tracked_alloc::collections::BTreeSet;
 use tracked_alloc::string::String;
@@ -42,18 +42,13 @@ impl<'a> Validator<'a> {
         // Phase 1: Validate type references in entities
         self.validate_entity_type_references()?;
 
-        // Phase 1b: WASM 2.0 limits — at most one memory
-        if self.module.memories().len() > 1 {
-            return Err(WasmError::invalid("multiple memories"));
-        }
-
-        // Phase 1c: Validate start function
+        // Phase 1b: Validate start function
         if let Some(start_idx) = self.module.start_function_index() {
             if start_idx >= self.module.functions().len() {
                 return Err(WasmError::invalid("unknown function"));
             }
             let func = &self.module.functions()[start_idx];
-            let ft = &self.module.types()[func.type_index() as usize];
+            let ft = func.func_type();
             if !ft.params().is_empty() || !ft.results().is_empty() {
                 return Err(WasmError::invalid("start function"));
             }
@@ -70,13 +65,10 @@ impl<'a> Validator<'a> {
                     WasmError::invalid("Function validation failed: not a local function")
                 })?;
                 let code = spec.code();
-                let mut validator = FunctionValidator::new(self.module, spec)
-                    .map_err(|_e| WasmError::invalid("Function validator setup failed"))?;
+                let mut validator = FunctionValidator::new(self.module, spec)?;
                 let mut decoder = op_decoder::Decoder::new(code);
                 decoder.add_handler(&mut validator);
-                decoder
-                    .decode_function()
-                    .map_err(|_e| WasmError::invalid("Function decode failed"))?;
+                decoder.decode_function()?;
                 Ok::<_, WasmError>(())
             })?;
 
@@ -114,13 +106,36 @@ impl<'a> Validator<'a> {
                     .init_expr()
                     .validate_in_context(self.module, &ctx)?;
                 let global_type = global_spec.value_type();
-                if !is_type_compatible(expr_type, global_type) {
+                if !expr_type.can_initialize(&global_type, self.module.types()) {
                     return Err(WasmError::invalid("type mismatch"));
                 }
                 Ok(())
             })?;
 
-        // Phase 5: Validate element segments
+        // Phase 5: Validate table initializers
+        self.module
+            .tables()
+            .iter()
+            .filter(|t| !t.is_import())
+            .try_for_each(|t| -> Result<(), WasmError> {
+                let table_type = t.value_type();
+                let spec = t.spec();
+
+                if !table_type.is_defaultable() && spec.init_expr().is_none() {
+                    return Err(WasmError::invalid("type mismatch"));
+                }
+
+                if let Some(init_expr) = spec.init_expr() {
+                    let ctx = ValidationContext::table_init();
+                    let expr_type = init_expr.validate_in_context(self.module, &ctx)?;
+                    if !expr_type.can_initialize(&table_type, self.module.types()) {
+                        return Err(WasmError::invalid("type mismatch"));
+                    }
+                }
+                Ok(())
+            })?;
+
+        // Phase 6: Validate element segments
         self.module.elements().iter().try_for_each(|e| {
             if let ElementInit::InitExprs { value_type, exprs } = e.get_init() {
                 let ctx = if matches!(e, Element::Passive { .. }) {
@@ -130,7 +145,7 @@ impl<'a> Validator<'a> {
                 };
                 for expr in exprs {
                     let expr_type = expr.validate_in_context(self.module, &ctx)?;
-                    if !is_type_compatible(expr_type, *value_type) {
+                    if !expr_type.can_initialize(value_type, self.module.types()) {
                         return Err(WasmError::invalid(
                             "element init expression must return , got",
                         ));
@@ -143,7 +158,7 @@ impl<'a> Validator<'a> {
                 init,
             } = e
             {
-                let ctx = ValidationContext::table_init(); // offset uses only imported globals
+                let ctx = ValidationContext::active();
                 let offset_type = offset_expr.validate_in_context(self.module, &ctx)?;
 
                 if *table_index < self.module.tables().len() {
@@ -167,19 +182,21 @@ impl<'a> Validator<'a> {
 
                 // Check element type compatibility with table type
                 if *table_index < self.module.tables().len() {
-                    if let ElementInit::InitExprs { value_type, .. } = init {
-                        let table = &self.module.tables()[*table_index];
-                        let table_elem_type = table.value_type();
-                        if !is_type_compatible(*value_type, table_elem_type) {
-                            return Err(WasmError::invalid("type mismatch"));
-                        }
+                    let table = &self.module.tables()[*table_index];
+                    let table_elem_type = table.value_type();
+                    let init_type = match init {
+                        ElementInit::FunctionIndexes(_) => ValueType::funcref().to_non_nullable(),
+                        ElementInit::InitExprs { value_type, .. } => *value_type,
+                    };
+                    if !init_type.can_initialize(&table_elem_type, self.module.types()) {
+                        return Err(WasmError::invalid("type mismatch"));
                     }
                 }
             }
             Ok(())
         })?;
 
-        // Phase 6: Validate data segments
+        // Phase 7: Validate data segments
         self.module.data().iter().try_for_each(|d| {
             let Data::Active {
                 offset_expr,
@@ -189,7 +206,7 @@ impl<'a> Validator<'a> {
             else {
                 return Ok(());
             };
-            let ctx = ValidationContext::table_init(); // offset uses only imported globals
+            let ctx = ValidationContext::active();
             let offset_type = offset_expr.validate_in_context(self.module, &ctx)?;
 
             if *memory_index >= self.module.memories().len() {
@@ -235,6 +252,10 @@ impl<'a> Validator<'a> {
     fn validate_entity_type_references(&self) -> Result<(), WasmError> {
         let type_count = self.module.types().len();
 
+        for (idx, def_type) in self.module.types().as_slice().iter().enumerate() {
+            def_type.validate_type_references(idx, type_count, self.module.types().as_slice())?;
+        }
+
         // Validate function type indices
         for (_idx, func) in self.module.functions().iter().enumerate() {
             let ti = func.type_index() as usize;
@@ -249,6 +270,12 @@ impl<'a> Validator<'a> {
                 .map_err(|_e| WasmError::invalid("Table"))?;
         }
 
+        // Validate global value types
+        for (_idx, global) in self.module.globals().iter().enumerate() {
+            validate_valtype_ref(&global.value_type(), type_count)
+                .map_err(|_e| WasmError::invalid("Global"))?;
+        }
+
         // Validate element segment value types
         for (_idx, element) in self.module.elements().iter().enumerate() {
             if let ElementInit::InitExprs { value_type, .. } = element.get_init() {
@@ -257,37 +284,18 @@ impl<'a> Validator<'a> {
             }
         }
 
+        // Validate function locals
+        for (_idx, func) in self.module.functions().iter().enumerate() {
+            if let Some(spec) = func.spec() {
+                for local in spec.locals() {
+                    validate_valtype_ref(local, type_count)
+                        .map_err(|_e| WasmError::invalid("Local"))?;
+                }
+            }
+        }
+
         Ok(())
     }
-}
-
-/// WASM 2.0 type compatibility with reference subtyping.
-/// Unknown (bot) is compatible with everything.
-/// Ref subtyping rules:
-///   - non-nullable ≤ nullable (for compatible heap types)
-///   - Concrete(idx) ≤ Abstract(Func) (all concrete types are function types)
-fn is_type_compatible(actual: ValueType, expected: ValueType) -> bool {
-    if actual == expected || actual == ValueType::Unknown || expected == ValueType::Unknown {
-        return true;
-    }
-    // Reference subtyping
-    if let (ValueType::Ref(actual_ref), ValueType::Ref(expected_ref)) = (actual, expected) {
-        // Non-nullable is subtype of nullable (not the reverse)
-        if !expected_ref.nullable && actual_ref.nullable {
-            return false;
-        }
-        // Same heap type is compatible
-        if actual_ref.heap_type == expected_ref.heap_type {
-            return true;
-        }
-        // Concrete(idx) is a subtype of Abstract(Func) — all defined types are func types in WASM 2.0
-        if let (HeapType::Concrete(_), HeapType::Abstract(AbstractHeapType::Func)) =
-            (actual_ref.heap_type, expected_ref.heap_type)
-        {
-            return true;
-        }
-    }
-    false
 }
 
 /// Validate that any concrete heap type index in a value type is within bounds.

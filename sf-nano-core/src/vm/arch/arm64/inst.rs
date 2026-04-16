@@ -185,7 +185,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
     }
 
     /// `bl <label>` — branch with link, populates LR. Used by the public-
-    /// entry caller stub and by `CallDirect` lowering. Resolved at
+    /// entry caller stub and by direct-target `Call` lowering. Resolved at
     /// `patch_fixups()` time.
     pub(super) fn lower_bl(&mut self, label: usize) {
         let inst_offset = self.core.text.emit_u32(enc::bl(0));
@@ -387,9 +387,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 ..
             } => self.lower_select(*ty, *dst, *on_true, *on_false, *cond),
             MachineInstKind::TrapIf { kind, cond } => self.lower_trap_if(*kind, cond),
-            MachineInstKind::CallExternal(call) => {
-                self.lower_call_external(call.metadata.0 as usize)
-            }
+            MachineInstKind::CallRuntime(call) => self.lower_call_runtime(call.metadata.0 as usize),
             MachineInstKind::FloatUnary {
                 width,
                 op,
@@ -520,6 +518,187 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 len,
             } => self.lower_table_init(*table_idx, *elem_idx, *dest, *src, *len),
             MachineInstKind::ElemDrop { elem_idx } => self.lower_elem_drop(*elem_idx),
+            MachineInstKind::RefFunc { func_idx, dst } => self.lower_preserved_result(
+                preserved_op::REF_FUNC,
+                *func_idx,
+                0,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::RefAsNonNull { src, dst } => self.lower_preserved_result(
+                preserved_op::REF_AS_NON_NULL,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::RefEq { lhs, rhs, dst } => self.lower_preserved_result(
+                preserved_op::REF_EQ,
+                0,
+                0,
+                *lhs,
+                *rhs,
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::RefI31 { src, dst } => self.lower_preserved_result(
+                preserved_op::REF_I31,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::I31GetS { src, dst } => self.lower_preserved_result(
+                preserved_op::I31_GET_S,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::I31GetU { src, dst } => self.lower_preserved_result(
+                preserved_op::I31_GET_U,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::AnyConvertExtern { src, dst } => self.lower_preserved_result(
+                preserved_op::ANY_CONVERT_EXTERN,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::ExternConvertAny { src, dst } => self.lower_preserved_result(
+                preserved_op::EXTERN_CONVERT_ANY,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::RefTest { ref_type, src, dst } => {
+                let encoded = ref_type.encode_to_u64();
+                self.lower_preserved_result(
+                    preserved_op::REF_TEST,
+                    encoded as u32,
+                    (encoded >> 32) as u32,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )
+            }
+            MachineInstKind::RefCast { ref_type, src, dst } => {
+                let encoded = ref_type.encode_to_u64();
+                self.lower_preserved_result(
+                    preserved_op::REF_CAST,
+                    encoded as u32,
+                    (encoded >> 32) as u32,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )
+            }
+            MachineInstKind::StructNewDefault { type_idx, dst } => self.lower_preserved_result(
+                preserved_op::STRUCT_NEW_DEFAULT,
+                *type_idx,
+                0,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::StructGet {
+                type_idx,
+                field_idx,
+                signed,
+                ty,
+                src,
+                dst,
+                dst_hi,
+            } => {
+                if dst_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "arm64 backend received pair-valued struct.get".into(),
+                    ));
+                }
+                let op_code = match signed {
+                    None => preserved_op::STRUCT_GET,
+                    Some(true) => preserved_op::STRUCT_GET_S,
+                    Some(false) => preserved_op::STRUCT_GET_U,
+                };
+                self.lower_preserved_result(
+                    op_code,
+                    *type_idx,
+                    *field_idx,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    *ty,
+                    *dst,
+                )
+            }
+            MachineInstKind::StructSet {
+                type_idx,
+                field_idx,
+                ref_src,
+                value_lo,
+                value_hi,
+            } => {
+                if value_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "arm64 backend received pair-valued struct.set".into(),
+                    ));
+                }
+                self.lower_preserved_no_result(
+                    preserved_op::STRUCT_SET,
+                    *type_idx,
+                    *field_idx,
+                    *ref_src,
+                    *value_lo,
+                    MachineValue::Imm64(0),
+                )
+            }
+            MachineInstKind::ArrayNewDefault {
+                type_idx,
+                length,
+                dst,
+            } => self.lower_preserved_result(
+                preserved_op::ARRAY_NEW_DEFAULT,
+                *type_idx,
+                0,
+                *length,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
             // 32-bit legalized instructions -- should not reach arm64 codegen.
             MachineInstKind::Int64PairBinary { .. }
             | MachineInstKind::Int64PairUnary { .. }
@@ -3381,6 +3560,64 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.core
             .text
             .emit_u32(enc::mov_reg_64(dst_gp, result_scratch));
+        self.gp_scratch.free_index(result_scratch_idx);
+        Ok(())
+    }
+
+    fn lower_preserved_no_result(
+        &mut self,
+        op_code: u32,
+        imm0: u32,
+        imm1: u32,
+        arg0: MachineValue,
+        arg1: MachineValue,
+        arg2: MachineValue,
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_frame_open();
+        self.emit_io_store_imm(preserved_io::IMM0, imm0);
+        self.emit_io_store_imm(preserved_io::IMM1, imm1);
+        self.emit_io_store_value(preserved_io::ARG0, arg0)?;
+        self.emit_io_store_value(preserved_io::ARG1, arg1)?;
+        self.emit_io_store_value(preserved_io::ARG2, arg2)?;
+        self.emit_preserved_call_and_close(op_code, None);
+        Ok(())
+    }
+
+    fn lower_preserved_result(
+        &mut self,
+        op_code: u32,
+        imm0: u32,
+        imm1: u32,
+        arg0: MachineValue,
+        arg1: MachineValue,
+        arg2: MachineValue,
+        ty: MachineStorageType,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_frame_open();
+        self.emit_io_store_imm(preserved_io::IMM0, imm0);
+        self.emit_io_store_imm(preserved_io::IMM1, imm1);
+        self.emit_io_store_value(preserved_io::ARG0, arg0)?;
+        self.emit_io_store_value(preserved_io::ARG1, arg1)?;
+        self.emit_io_store_value(preserved_io::ARG2, arg2)?;
+
+        let result_scratch_idx = self.gp_scratch.alloc();
+        let result_scratch = self.gp_scratch.reg(result_scratch_idx);
+        self.emit_preserved_call_and_close(op_code, Some(result_scratch_idx));
+
+        if let Some(width) = ty.float_width() {
+            let dst_fp = self.map_fp_reg(dst)?;
+            self.core.text.emit_u32(match width {
+                MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, result_scratch),
+                MachineFloatWidth::F64 => enc::fmov_d_from_gp(dst_fp, result_scratch),
+            });
+            self.core.set_fp_reg_width(dst, width)?;
+        } else {
+            self.core.text.emit_u32(enc::mov_reg_64(
+                map_gp(self.core.compiled.backend(), dst)?,
+                result_scratch,
+            ));
+        }
         self.gp_scratch.free_index(result_scratch_idx);
         Ok(())
     }

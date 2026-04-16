@@ -136,8 +136,6 @@ fn main() {
             let default_dir = Path::new(manifest_dir)
                 .parent()
                 .unwrap()
-                .parent()
-                .unwrap()
                 .join("target")
                 .join("webassembly-testsuite");
 
@@ -288,7 +286,7 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
 
         if should_skip_test(test_name) || should_skip_test(&full_path) {
             stats.skipped += 1;
-            warn!("SKIP {}: Feature not supported in sf-nano", test_name);
+            info!("SKIP {}: Feature not supported in sf-nano", test_name);
             continue;
         }
 

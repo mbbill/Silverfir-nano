@@ -15,14 +15,20 @@ use crate::{
     module::{
         entities::{
             Bytecode, ConstExpr, Data, Element, ElementInit, Function, FunctionType, Global,
-            Memory, Table,
+            Memory, Table, Tag,
         },
         type_context::TypeContext,
+        type_defs::{
+            ArrayType, CompositeType, DefType, FieldType, PackedType, StorageType, StructType,
+        },
         Module,
     },
     opcodes::Opcode,
-    utils::{limits::Limits, payload::Payload},
-    value_type::ValueType,
+    utils::{
+        limits::{Limits, LimitsError},
+        payload::Payload,
+    },
+    value_type::{HeapType, ValueType},
 };
 
 // ============================================================================
@@ -38,6 +44,7 @@ pub(crate) enum WasmSection {
     Function = 3,
     Table = 4,
     Memory = 5,
+    Tag = 13,
     Global = 6,
     Export = 7,
     Start = 8,
@@ -58,6 +65,7 @@ impl TryFrom<u8> for WasmSection {
             3 => Ok(WasmSection::Function),
             4 => Ok(WasmSection::Table),
             5 => Ok(WasmSection::Memory),
+            13 => Ok(WasmSection::Tag),
             6 => Ok(WasmSection::Global),
             7 => Ok(WasmSection::Export),
             8 => Ok(WasmSection::Start),
@@ -77,6 +85,7 @@ pub(crate) enum ExternalKind {
     Table = 1,
     Memory = 2,
     Global = 3,
+    Tag = 4,
 }
 
 impl TryFrom<u8> for ExternalKind {
@@ -88,6 +97,7 @@ impl TryFrom<u8> for ExternalKind {
             1 => Ok(ExternalKind::Table),
             2 => Ok(ExternalKind::Memory),
             3 => Ok(ExternalKind::Global),
+            4 => Ok(ExternalKind::Tag),
             _ => Err(WasmError::malformed("Invalid external kind")),
         }
     }
@@ -135,6 +145,8 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
         let valid = match (previous_section, current) {
             (WasmSection::Custom, _) => true,
             (WasmSection::DataCount, WasmSection::Code | WasmSection::Data) => true,
+            (WasmSection::Memory, WasmSection::Tag) => true,
+            (WasmSection::Tag, WasmSection::Global) => true,
             _ => {
                 fn section_order(s: WasmSection) -> u8 {
                     match s {
@@ -144,6 +156,7 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
                         WasmSection::Function => 3,
                         WasmSection::Table => 4,
                         WasmSection::Memory => 5,
+                        WasmSection::Tag => 5,
                         WasmSection::Global => 6,
                         WasmSection::Export => 7,
                         WasmSection::Start => 8,
@@ -178,11 +191,12 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
         ));
     }
 
-    let mut types: collections::Vec<Rc<FunctionType>> = collections::Vec::new();
+    let mut types: collections::Vec<Rc<DefType>> = collections::Vec::new();
     let mut functions: collections::Vec<Function> = collections::Vec::new();
     let mut tables: collections::Vec<Table> = collections::Vec::new();
     let mut memories: collections::Vec<Memory> = collections::Vec::new();
     let mut globals: collections::Vec<Global> = collections::Vec::new();
+    let mut tags: collections::Vec<Tag> = collections::Vec::new();
     let mut elements: collections::Vec<Element> = collections::Vec::new();
     let mut data_segments: collections::Vec<Data> = collections::Vec::new();
     let mut start_func_index: Option<usize> = None;
@@ -215,6 +229,7 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
                     &mut tables,
                     &mut memories,
                     &mut globals,
+                    &mut tags,
                     &mut section_payload,
                 )?;
             }
@@ -227,6 +242,9 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
             WasmSection::Memory => {
                 parse_memory_section(&mut memories, &mut section_payload)?;
             }
+            WasmSection::Tag => {
+                parse_tag_section(&types, &mut tags, &mut section_payload)?;
+            }
             WasmSection::Global => {
                 parse_global_section(&mut globals, &mut section_payload)?;
             }
@@ -236,6 +254,7 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
                     &mut tables,
                     &mut memories,
                     &mut globals,
+                    &mut tags,
                     &mut export_names,
                     &mut section_payload,
                 )?;
@@ -282,6 +301,7 @@ pub(crate) fn parse_module(name: &str, bin: &[u8]) -> Result<Module, WasmError> 
         tables,
         memories,
         globals,
+        tags,
         elements,
         data: data_segments,
         start_func_index,
@@ -317,7 +337,65 @@ fn parse_resulttype(payload: &mut Payload) -> Result<collections::Vec<ValueType>
     parse_vec(payload, parse_valtype)
 }
 
-fn parse_limits(payload: &mut Payload) -> Result<Limits, WasmError> {
+fn narrow_memory_limit_u32(value: u32) -> Result<usize, WasmError> {
+    let value = value as usize;
+    if value > constants::MAX_MEM_PAGES_SPEC {
+        return Err(WasmError::invalid("memory size"));
+    }
+    Ok(value.min(constants::MAX_MEM_PAGES))
+}
+
+fn narrow_memory_limit_u64(value: u64) -> Result<usize, WasmError> {
+    if value > constants::MAX_MEM_PAGES_64_SPEC {
+        return Err(WasmError::invalid("memory size"));
+    }
+    Ok(value.min(constants::MAX_MEM_PAGES_64 as u64) as usize)
+}
+
+fn narrow_table_limit_u64(value: u64) -> usize {
+    value.min(usize::MAX as u64) as usize
+}
+
+#[inline]
+fn validate_limit_order<T: Ord>(min: T, max: T) -> Result<(), WasmError> {
+    if max < min {
+        return Err(LimitsError::MinLargerThanMax.into());
+    }
+    Ok(())
+}
+
+fn parse_memory_limits(payload: &mut Payload) -> Result<Limits, WasmError> {
+    let tag = payload.read_u8()?;
+    match tag {
+        0x00 => {
+            let min = narrow_memory_limit_u32(payload.read_leb128_u32()?)?;
+            Ok(Limits::new(min, None)?)
+        }
+        0x01 => {
+            let min_raw = payload.read_leb128_u32()?;
+            let max_raw = payload.read_leb128_u32()?;
+            validate_limit_order(min_raw, max_raw)?;
+            let min = narrow_memory_limit_u32(min_raw)?;
+            let max = narrow_memory_limit_u32(max_raw)?;
+            Ok(Limits::new(min, Some(max))?)
+        }
+        0x04 => {
+            let min = narrow_memory_limit_u64(payload.read_leb128_u64()?)?;
+            Ok(Limits::new_64(min, None)?)
+        }
+        0x05 => {
+            let min_raw = payload.read_leb128_u64()?;
+            let max_raw = payload.read_leb128_u64()?;
+            validate_limit_order(min_raw, max_raw)?;
+            let min = narrow_memory_limit_u64(min_raw)?;
+            let max = narrow_memory_limit_u64(max_raw)?;
+            Ok(Limits::new_64(min, Some(max))?)
+        }
+        _ => Err(WasmError::malformed("malformed memory limits flag: 0x")),
+    }
+}
+
+fn parse_table_limits(payload: &mut Payload) -> Result<Limits, WasmError> {
     let tag = payload.read_u8()?;
     match tag {
         0x00 => {
@@ -330,12 +408,15 @@ fn parse_limits(payload: &mut Payload) -> Result<Limits, WasmError> {
             Ok(Limits::new(min, Some(max))?)
         }
         0x04 => {
-            let min = payload.read_leb128_u64()? as usize;
+            let min = narrow_table_limit_u64(payload.read_leb128_u64()?);
             Ok(Limits::new_64(min, None)?)
         }
         0x05 => {
-            let min = payload.read_leb128_u64()? as usize;
-            let max = payload.read_leb128_u64()? as usize;
+            let min_raw = payload.read_leb128_u64()?;
+            let max_raw = payload.read_leb128_u64()?;
+            validate_limit_order(min_raw, max_raw)?;
+            let min = narrow_table_limit_u64(min_raw);
+            let max = narrow_table_limit_u64(max_raw);
             Ok(Limits::new_64(min, Some(max))?)
         }
         _ => Err(WasmError::malformed("malformed table limits flag: 0x")),
@@ -365,7 +446,7 @@ fn parse_constexpr(payload: &mut Payload) -> Result<ConstExpr, WasmError> {
                 code.read_f64()?;
             }
             REF_NULL => {
-                code.read_u8()?;
+                HeapType::parse(&mut code)?;
             }
             REF_FUNC | GLOBAL_GET => {
                 code.read_leb128_u32()?;
@@ -373,6 +454,22 @@ fn parse_constexpr(payload: &mut Payload) -> Result<ConstExpr, WasmError> {
             // Extended constant expressions (WASM 2.0)
             I32_ADD | I32_SUB | I32_MUL | I64_ADD | I64_SUB | I64_MUL => {
                 // Binary operations have no immediates
+            }
+            PREFIX_FB => {
+                let op_ext: crate::opcodes::OpcodeFB = code.read_leb128_u32()?.try_into()?;
+                use crate::opcodes::OpcodeFB::*;
+                match op_ext {
+                    REF_I31 | ANY_CONVERT_EXTERN | EXTERN_CONVERT_ANY => {}
+                    STRUCT_NEW | STRUCT_NEW_DEFAULT => {
+                        code.read_leb128_u32()?;
+                    }
+                    ARRAY_NEW | ARRAY_NEW_DEFAULT => {
+                        code.read_leb128_u32()?;
+                    }
+                    _ => {
+                        break 'outer Err(WasmError::malformed("Invalid opcode in constexpr"));
+                    }
+                }
             }
             END => {
                 break 'outer Ok(code.position());
@@ -404,7 +501,7 @@ fn parse_tabletype(payload: &mut Payload) -> Result<(ValueType, Limits), WasmErr
     if !value_type.is_ref() {
         return Err(WasmError::invalid("Invalid table type"));
     }
-    let limits = parse_limits(payload)?;
+    let limits = parse_table_limits(payload)?;
     Ok((value_type, limits))
 }
 
@@ -412,33 +509,136 @@ fn parse_tabletype(payload: &mut Payload) -> Result<(ValueType, Limits), WasmErr
 // Section parsers
 // ============================================================================
 
-fn parse_type_section(
+fn parse_type(payload: &mut Payload) -> Result<Rc<DefType>, WasmError> {
+    let peek_byte = payload.peek_u8()?;
+    match peek_byte {
+        0x4E => Err(WasmError::malformed(
+            "Recursive type group should be handled by parse_type_section",
+        )),
+        0x4F | 0x50 => parse_subtype(payload, None),
+        _ => parse_comptype(payload, collections::vec![], true, None),
+    }
+}
+
+fn parse_subtype(payload: &mut Payload, rec_group: Option<u32>) -> Result<Rc<DefType>, WasmError> {
+    match payload.peek_u8()? {
+        0x4F | 0x50 => {
+            let tag = payload.read_u8()?;
+            let is_final = tag == 0x4F;
+            let supertype_count = payload.read_leb128_u32()?;
+            let mut supertypes = collections::Vec::with_capacity(supertype_count as usize);
+            for _ in 0..supertype_count {
+                supertypes.push(payload.read_leb128_u32()?);
+            }
+            parse_comptype(payload, supertypes, is_final, rec_group)
+        }
+        _ => parse_comptype(payload, collections::vec![], true, rec_group),
+    }
+}
+
+fn parse_comptype(
     payload: &mut Payload,
-) -> Result<collections::Vec<Rc<FunctionType>>, WasmError> {
+    supertypes: collections::Vec<u32>,
+    is_final: bool,
+    rec_group: Option<u32>,
+) -> Result<Rc<DefType>, WasmError> {
+    let tag = payload.read_u8()?;
+
+    let composite = match tag {
+        0x60 => {
+            let params = parse_resulttype(payload)?;
+            let results = parse_resulttype(payload)?;
+            CompositeType::Func(Rc::new(FunctionType::new(params, results)))
+        }
+        0x5F => {
+            let field_count = payload.read_leb128_u32()?;
+            let mut fields = collections::Vec::with_capacity(field_count as usize);
+            for _ in 0..field_count {
+                fields.push(parse_fieldtype(payload)?);
+            }
+            CompositeType::Struct(StructType::new(fields))
+        }
+        0x5E => CompositeType::Array(ArrayType::new(parse_fieldtype(payload)?)),
+        _ => return Err(WasmError::malformed("Invalid composite type tag")),
+    };
+
+    Ok(Rc::new(DefType {
+        composite,
+        supertypes,
+        is_final,
+        rec_group,
+    }))
+}
+
+fn parse_fieldtype(payload: &mut Payload) -> Result<FieldType, WasmError> {
+    let storage = parse_storagetype(payload)?;
+    let mutable = match payload.read_u8()? {
+        0x00 => false,
+        0x01 => true,
+        _ => return Err(WasmError::malformed("Invalid mutability flag")),
+    };
+    Ok(FieldType::new(storage, mutable))
+}
+
+fn parse_storagetype(payload: &mut Payload) -> Result<StorageType, WasmError> {
+    match payload.peek_u8()? {
+        0x77 => {
+            payload.read_u8()?;
+            Ok(StorageType::Packed(PackedType::I16))
+        }
+        0x78 => {
+            payload.read_u8()?;
+            Ok(StorageType::Packed(PackedType::I8))
+        }
+        _ => Ok(StorageType::Val(parse_valtype(payload)?)),
+    }
+}
+
+fn parse_type_section(payload: &mut Payload) -> Result<collections::Vec<Rc<DefType>>, WasmError> {
     let count = payload.read_leb128_u32()?;
     let mut types = collections::Vec::with_capacity(count as usize);
+    let mut i = 0;
+    let mut next_rec_group_id = 0u32;
 
-    for _ in 0..count {
-        let tag = payload.read_u8()?;
-        if tag != 0x60 {
-            return Err(WasmError::malformed(
-                "Invalid type tag: 0x (expected 0x60 for function type)",
-            ));
+    while i < count {
+        if payload.peek_u8()? == 0x4E {
+            payload.read_u8()?;
+            let group_count = payload.read_leb128_u32()?;
+            let rec_group_id = next_rec_group_id;
+            next_rec_group_id += 1;
+
+            for _ in 0..group_count {
+                types.push(parse_subtype(payload, Some(rec_group_id))?);
+            }
+            i += 1;
+        } else {
+            types.push(parse_type(payload)?);
+            i += 1;
         }
-        let params = parse_resulttype(payload)?;
-        let results = parse_resulttype(payload)?;
-        types.push(Rc::new(FunctionType::new(params, results)));
     }
 
     Ok(types)
 }
 
+fn get_function_type(types: &[Rc<DefType>], index: u32) -> Result<Rc<FunctionType>, WasmError> {
+    let def_type = types
+        .get(index as usize)
+        .ok_or_else(|| WasmError::invalid("Invalid function type index"))?;
+    match &def_type.composite {
+        CompositeType::Func(func_type) => Ok(func_type.clone()),
+        _ => Err(WasmError::invalid(
+            "Type index does not reference a function type",
+        )),
+    }
+}
+
 fn parse_import_section(
-    types: &[Rc<FunctionType>],
+    types: &[Rc<DefType>],
     functions: &mut collections::Vec<Function>,
     tables: &mut collections::Vec<Table>,
     memories: &mut collections::Vec<Memory>,
     globals: &mut collections::Vec<Global>,
+    tags: &mut collections::Vec<Tag>,
     payload: &mut Payload,
 ) -> Result<(), WasmError> {
     let count = payload.read_leb128_u32()?;
@@ -451,13 +651,11 @@ fn parse_import_section(
         match kind {
             ExternalKind::Function => {
                 let type_index = payload.read_leb128_u32()?;
-                let func_type = types
-                    .get(type_index as usize)
-                    .ok_or_else(|| WasmError::invalid("Invalid function type index"))?;
+                let func_type = get_function_type(types, type_index)?;
                 functions.push(Function::new_import(
                     module_name,
                     field_name,
-                    func_type.clone(),
+                    func_type,
                     type_index,
                 ));
             }
@@ -471,7 +669,7 @@ fn parse_import_section(
                 )?);
             }
             ExternalKind::Memory => {
-                let limits = parse_limits(payload)?;
+                let limits = parse_memory_limits(payload)?;
                 memories.push(Memory::new_import(module_name, field_name, limits)?);
             }
             ExternalKind::Global => {
@@ -483,22 +681,34 @@ fn parse_import_section(
                     mutable,
                 ));
             }
+            ExternalKind::Tag => {
+                let attribute = payload.read_u8()?;
+                if attribute != 0x00 {
+                    return Err(WasmError::malformed("Invalid tag attribute"));
+                }
+                let type_index = payload.read_leb128_u32()?;
+                let func_type = get_function_type(types, type_index)?;
+                tags.push(Tag::new_import(
+                    module_name,
+                    field_name,
+                    func_type,
+                    type_index,
+                ));
+            }
         }
     }
     Ok(())
 }
 
 fn parse_function_section(
-    types: &[Rc<FunctionType>],
+    types: &[Rc<DefType>],
     functions: &mut collections::Vec<Function>,
     payload: &mut Payload,
 ) -> Result<(), WasmError> {
     let indices = parse_vec(payload, parse_indices)?;
     for index in indices {
-        let func_type = types
-            .get(index)
-            .ok_or_else(|| WasmError::invalid("Invalid function type index"))?;
-        functions.push(Function::new_local(func_type.clone(), index as u32));
+        let func_type = get_function_type(types, index as u32)?;
+        functions.push(Function::new_local(func_type, index as u32));
     }
     Ok(())
 }
@@ -509,8 +719,22 @@ fn parse_table_section(
 ) -> Result<(), WasmError> {
     let count = payload.read_leb128_u32()?;
     for _ in 0..count {
-        let (value_type, limits) = parse_tabletype(payload)?;
-        tables.push(Table::new_local(value_type, limits)?);
+        let first_byte = payload.read_u8()?;
+        if first_byte == 0x40 {
+            let reserved = payload.read_u8()?;
+            if reserved != 0x00 {
+                return Err(WasmError::malformed(
+                    "Invalid reserved byte after table initializer marker",
+                ));
+            }
+            let (value_type, limits) = parse_tabletype(payload)?;
+            let init_expr = parse_constexpr(payload)?;
+            tables.push(Table::new_local_with_init(value_type, limits, init_expr)?);
+        } else {
+            payload.rewind(1).map_err(WasmError::from)?;
+            let (value_type, limits) = parse_tabletype(payload)?;
+            tables.push(Table::new_local(value_type, limits)?);
+        }
     }
     Ok(())
 }
@@ -519,7 +743,7 @@ fn parse_memory_section(
     memories: &mut collections::Vec<Memory>,
     payload: &mut Payload,
 ) -> Result<(), WasmError> {
-    let mem_limits = parse_vec(payload, parse_limits)?;
+    let mem_limits = parse_vec(payload, parse_memory_limits)?;
     for limits in mem_limits {
         memories.push(Memory::new_local(limits)?);
     }
@@ -543,11 +767,30 @@ fn parse_global_section(
     Ok(())
 }
 
+fn parse_tag_section(
+    types: &[Rc<DefType>],
+    tags: &mut collections::Vec<Tag>,
+    payload: &mut Payload,
+) -> Result<(), WasmError> {
+    let count = payload.read_leb128_u32()?;
+    for _ in 0..count {
+        let attribute = payload.read_u8()?;
+        if attribute != 0x00 {
+            return Err(WasmError::malformed("Invalid tag attribute"));
+        }
+        let type_index = payload.read_leb128_u32()?;
+        let func_type = get_function_type(types, type_index)?;
+        tags.push(Tag::new_local(func_type, type_index));
+    }
+    Ok(())
+}
+
 fn parse_export_section(
     functions: &mut [Function],
     tables: &mut [Table],
     memories: &mut [Memory],
     globals: &mut [Global],
+    tags: &mut [Tag],
     export_names: &mut collections::Vec<String>,
     payload: &mut Payload,
 ) -> Result<(), WasmError> {
@@ -588,6 +831,12 @@ fn parse_export_section(
                     .get_mut(index)
                     .ok_or_else(|| WasmError::invalid("Invalid export global index"))?;
                 g.add_export_name(name);
+            }
+            ExternalKind::Tag => {
+                let tag = tags
+                    .get_mut(index)
+                    .ok_or_else(|| WasmError::invalid("Invalid export tag index"))?;
+                tag.add_export_name(name);
             }
         }
     }
@@ -799,4 +1048,73 @@ fn parse_custom_section<'a>(payload: &mut Payload<'a>) -> Result<(), WasmError> 
     let _name = payload.read_length_prefixed_utf8()?;
     let _ = payload.advance_and_split_at(payload.remaining_slice().len())?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::vec::Vec;
+
+    fn encode_uleb_u64(mut value: u64) -> Vec<u8> {
+        let mut out = Vec::new();
+        loop {
+            let mut byte = (value & 0x7f) as u8;
+            value >>= 7;
+            if value != 0 {
+                byte |= 0x80;
+            }
+            out.push(byte);
+            if value == 0 {
+                break;
+            }
+        }
+        out
+    }
+
+    fn encoded_limits(tag: u8, values: &[u64]) -> Vec<u8> {
+        let mut out = Vec::with_capacity(1 + values.len() * 5);
+        out.push(tag);
+        for &value in values {
+            out.extend(encode_uleb_u64(value));
+        }
+        out
+    }
+
+    #[test]
+    fn parse_memory64_limits_rejects_raw_min_larger_than_max_before_clamp() {
+        let bytes = encoded_limits(
+            0x05,
+            &[
+                constants::MAX_MEM_PAGES_64_SPEC,
+                constants::MAX_MEM_PAGES_64_SPEC - 1,
+            ],
+        );
+        let mut payload: Payload = bytes.as_slice().into();
+
+        let err = parse_memory_limits(&mut payload).unwrap_err();
+
+        assert_eq!(err, WasmError::invalid("min larger than max"));
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn parse_memory32_limits_rejects_raw_min_larger_than_max_before_clamp() {
+        let bytes = encoded_limits(0x01, &[constants::MAX_MEM_PAGES_SPEC as u64, 65535]);
+        let mut payload: Payload = bytes.as_slice().into();
+
+        let err = parse_memory_limits(&mut payload).unwrap_err();
+
+        assert_eq!(err, WasmError::invalid("min larger than max"));
+    }
+
+    #[cfg(target_pointer_width = "32")]
+    #[test]
+    fn parse_table64_limits_rejects_raw_min_larger_than_max_before_clamp() {
+        let bytes = encoded_limits(0x05, &[u64::from(u32::MAX) + 1, u64::from(u32::MAX)]);
+        let mut payload: Payload = bytes.as_slice().into();
+
+        let err = parse_table_limits(&mut payload).unwrap_err();
+
+        assert_eq!(err, WasmError::invalid("min larger than max"));
+    }
 }

@@ -239,8 +239,7 @@ fn emit_guard_pages_cfg() {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
     let pw = env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_default();
-    let os_ok = matches!(os.as_str(), "macos" | "linux")
-        || (os == "windows" && arch == "x86_64");
+    let os_ok = matches!(os.as_str(), "macos" | "linux") || (os == "windows" && arch == "x86_64");
     if pw == "64" && os_ok && matches!(arch.as_str(), "x86_64" | "aarch64") {
         println!("cargo:rustc-cfg=sf_has_guard_pages");
     }

@@ -195,6 +195,13 @@ fn find_return_sites(callee: &SemanticProgram) -> collections::Vec<ReturnSite> {
                 depth -= *params as i32;
                 depth += *results as i32;
             }
+            SemanticOpKind::CallRef {
+                params, results, ..
+            } => {
+                depth -= 1;
+                depth -= *params as i32;
+                depth += *results as i32;
+            }
             SemanticOpKind::Primitive(p) => {
                 let (pops, pushes) = super::primitive_op::stack_effect(p);
                 depth -= pops as i32;
@@ -533,6 +540,13 @@ fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
                 depth += *results as i32;
             }
             SemanticOpKind::CallIndirect {
+                params, results, ..
+            } => {
+                depth -= 1;
+                depth -= *params as i32;
+                depth += *results as i32;
+            }
+            SemanticOpKind::CallRef {
                 params, results, ..
             } => {
                 depth -= 1;

@@ -2,7 +2,7 @@ use tracked_alloc::string::String;
 
 use crate::collections;
 
-use entities::{Data, Element, Function, Global, Memory, Table};
+use entities::{Data, Element, Function, Global, Memory, Table, Tag};
 
 pub mod builder;
 pub mod entities;
@@ -23,6 +23,7 @@ pub struct Module {
     tables: collections::Vec<Table>,
     memories: collections::Vec<Memory>,
     globals: collections::Vec<Global>,
+    tags: collections::Vec<Tag>,
     elements: collections::Vec<Element>,
     data: collections::Vec<Data>,
     start_func_index: Option<usize>,
@@ -62,6 +63,10 @@ impl Module {
         &self.globals
     }
 
+    pub fn tags(&self) -> &[Tag] {
+        &self.tags
+    }
+
     pub fn elements(&self) -> &[Element] {
         &self.elements
     }
@@ -87,6 +92,7 @@ impl Module {
         collections::Vec<Table>,
         collections::Vec<Memory>,
         collections::Vec<Global>,
+        collections::Vec<Tag>,
         collections::Vec<Element>,
         collections::Vec<Data>,
         Option<usize>,
@@ -97,6 +103,7 @@ impl Module {
             self.tables,
             self.memories,
             self.globals,
+            self.tags,
             self.elements,
             self.data,
             self.start_func_index,

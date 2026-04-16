@@ -45,7 +45,7 @@ pub(crate) struct CompilerCore<'a> {
     pub current_edge_target: Option<MachineBlockId>,
     pub stack_overflow_label: usize,
     /// Trap propagation label inside a function body. Reached from trap
-    /// stubs (`lower_trap_dispatch`), `CallExternal` post-helper status
+    /// stubs (`lower_trap_dispatch`), `CallRuntime` post-helper status
     /// checks, and post-BL status checks at every local-call site. Lowered
     /// as the body-local error tail (pop link save, pop call record,
     /// restore fp_reg, native return) — does NOT touch `C_RET0` so the
@@ -313,8 +313,7 @@ impl<'a> CompilerCore<'a> {
                         worklist.push(edge.target);
                     }
                 }
-                MachineTerminator::CallDirect { continuation, .. }
-                | MachineTerminator::CallIndirect { continuation, .. } => {
+                MachineTerminator::Call { continuation, .. } => {
                     fallthrough = Some(*continuation);
                 }
                 MachineTerminator::Return | MachineTerminator::Trap { .. } => {}

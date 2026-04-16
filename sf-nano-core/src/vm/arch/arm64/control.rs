@@ -2,8 +2,8 @@
 
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
-    MachineBlockId, MachineBranchCond, MachineCompareKind, MachineConstId, MachineEdge,
-    MachineFuncId, MachineReg, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
+    MachineBlockId, MachineBranchCond, MachineCallTarget, MachineCompareKind, MachineConstId,
+    MachineEdge, MachineReg, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
     MACHINE_FP_REG,
 };
 
@@ -14,7 +14,7 @@ use super::{abi, enc};
 use crate::vm::arch::common::helpers::trap_code;
 use crate::vm::arch::common::types::{LocalPtrPatch, PendingLocalPtrPatch};
 use crate::vm::arch::shared_64::is_fallthrough_edge;
-use crate::vm::runtime::{external::call_external_entry_ptr, trap::raise_trap};
+use crate::vm::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
 
 impl<'a> super::backend::Arm64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────────
@@ -52,27 +52,13 @@ impl<'a> super::backend::Arm64Backend<'a> {
             MachineTerminator::JumpTable { index, entries } => {
                 self.lower_jump_table(*index, entries)
             }
-            MachineTerminator::CallDirect {
-                callee,
+            MachineTerminator::Call {
+                target,
                 callee_frame_base,
                 caller_result_base,
                 continuation,
-            } => self.lower_call_direct(
-                *callee,
-                *callee_frame_base,
-                *caller_result_base,
-                *continuation,
-                fallthrough,
-            ),
-            MachineTerminator::CallIndirect {
-                callee_target,
-                callee_entry,
-                callee_frame_base,
-                caller_result_base,
-                continuation,
-            } => self.lower_call_indirect(
-                *callee_target,
-                *callee_entry,
+            } => self.lower_call(
+                target,
                 *callee_frame_base,
                 *caller_result_base,
                 *continuation,
@@ -295,11 +281,11 @@ impl<'a> super::backend::Arm64Backend<'a> {
         Ok(())
     }
 
-    // ── Direct call ──────────────────────────────────────────────────────────────
+    // ── Compiled call ────────────────────────────────────────────────────────────
 
-    fn lower_call_direct(
+    fn lower_call(
         &mut self,
-        callee: MachineFuncId,
+        target: &MachineCallTarget,
         callee_frame_base: MachineReg,
         caller_result_base: MachineReg,
         continuation: MachineBlockId,
@@ -327,24 +313,34 @@ impl<'a> super::backend::Arm64Backend<'a> {
         // Switch fp_reg to the callee's frame base.
         self.core.text.emit_u32(enc::mov_reg_64(fp_reg, callee_fp));
 
-        // Load the callee's internal entry address from a patchable literal
-        // and BLR to it. The literal itself is deferred to the per-function
-        // literal pool (flushed by `lower_function_literal_pool`); the LDR
-        // here is emitted with a placeholder offset and patched at flush
-        // time. Deferring the literal lets us elide the trailing
-        // `b continuation` when the continuation block is the next emitted
-        // block — without that deferral, falling through would land in
-        // the inline literal bytes.
-        let s0_idx = self.gp_scratch.alloc();
-        let s0 = self.gp_scratch.reg(s0_idx);
-        let callee_load = self.core.text.emit_u32(enc::ldr_lit_64(s0, 0));
-        self.core.text.emit_u32(enc::blr(s0));
-        self.pending_call_literals
-            .push(super::backend::PendingCallLiteral {
-                ldr_offset: callee_load,
-                scratch_reg: s0,
-                callee,
-            });
+        let scratch_idx = match target {
+            MachineCallTarget::Direct(callee) => {
+                // Load the callee's internal entry address from a patchable literal
+                // and BLR to it. The literal itself is deferred to the per-function
+                // literal pool (flushed by `lower_function_literal_pool`); the LDR
+                // here is emitted with a placeholder offset and patched at flush
+                // time. Deferring the literal lets us elide the trailing
+                // `b continuation` when the continuation block is the next emitted
+                // block — without that deferral, falling through would land in
+                // the inline literal bytes.
+                let scratch_idx = self.gp_scratch.alloc();
+                let scratch = self.gp_scratch.reg(scratch_idx);
+                let callee_load = self.core.text.emit_u32(enc::ldr_lit_64(scratch, 0));
+                self.core.text.emit_u32(enc::blr(scratch));
+                self.pending_call_literals
+                    .push(super::backend::PendingCallLiteral {
+                        ldr_offset: callee_load,
+                        scratch_reg: scratch,
+                        callee: *callee,
+                    });
+                Some(scratch_idx)
+            }
+            MachineCallTarget::Indirect { callee_entry, .. } => {
+                let callee_entry = self.map_gp_reg(*callee_entry)?;
+                self.core.text.emit_u32(enc::blr(callee_entry));
+                None
+            }
+        };
 
         // --- callee returns here. C_RET0 holds 0 (success) or trap kind
         // (error). Status check propagates to body_local_error_label.
@@ -359,7 +355,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
             self.lower_b(continuation_label);
         }
 
-        self.gp_scratch.free_index(s0_idx);
+        if let Some(scratch_idx) = scratch_idx {
+            self.gp_scratch.free_index(scratch_idx);
+        }
         Ok(())
     }
 
@@ -510,60 +508,16 @@ impl<'a> super::backend::Arm64Backend<'a> {
         Ok(())
     }
 
-    // ── Indirect call ────────────────────────────────────────────────────────────
+    // ── Call runtime ─────────────────────────────────────────────────────────────
 
-    fn lower_call_indirect(
-        &mut self,
-        _callee_target: MachineReg,
-        callee_entry: MachineReg,
-        callee_frame_base: MachineReg,
-        caller_result_base: MachineReg,
-        continuation: MachineBlockId,
-        fallthrough: Option<MachineBlockId>,
-    ) -> Result<(), WasmError> {
-        let callee_fp = self.map_gp_reg(callee_frame_base)?;
-        let caller_result_base = self.map_gp_reg(caller_result_base)?;
-        let callee_entry = self.map_gp_reg(callee_entry)?;
-        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        let body_local_error_label = self.core.body_local_error_label;
-        let continuation_label = self.core.block_label(continuation)?;
-        let continuation_is_fallthrough = fallthrough == Some(continuation);
-
-        // Push the backend-private call record (same shape as CallDirect).
-        self.core.text.emit_u32(enc::stp_64_pre_index(
-            caller_result_base,
-            fp_reg,
-            abi::stack_reg(),
-            -16,
-        ));
-
-        // Switch fp_reg to the callee's frame base.
-        self.core.text.emit_u32(enc::mov_reg_64(fp_reg, callee_fp));
-
-        // BLR to the runtime-resolved callee entry. Populates LR for the
-        // callee's eventual `ret`. Indirect calls have no inline literal,
-        // so the trailing branch can be elided as soon as the continuation
-        // block is the next emitted block.
-        self.core.text.emit_u32(enc::blr(callee_entry));
-
-        // --- callee returns here. Status check + continuation branch.
-        self.lower_cbnz(abi::C_RET0, body_local_error_label);
-        if !continuation_is_fallthrough {
-            self.lower_b(continuation_label);
-        }
-        Ok(())
-    }
-
-    // ── Call external ────────────────────────────────────────────────────────────
-
-    pub(super) fn lower_call_external(&mut self, const_idx: usize) -> Result<(), WasmError> {
+    pub(super) fn lower_call_runtime(&mut self, const_idx: usize) -> Result<(), WasmError> {
         let metadata = self
             .core
             .compiled
             .const_ptr(MachineConstId(const_idx as u32))
-            .ok_or_else(|| WasmError::internal("arm64 external-call metadata is out of range"))?;
+            .ok_or_else(|| WasmError::internal("arm64 runtime-call metadata is out of range"))?;
 
-        // External calls are inline runtime calls, not CFG terminators. Pass the
+        // Runtime calls are inline runtime calls, not CFG terminators. Pass the
         // current context, the active Wasm frame pointer, and the constant-pool
         // metadata record that describes where args/results live in that frame.
         self.core
@@ -575,7 +529,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.materialize_u64(abi::C_ARG2, metadata as u64);
         let call_scratch_idx = self.gp_scratch.alloc();
         let call_scratch = self.gp_scratch.reg(call_scratch_idx);
-        self.materialize_u64(call_scratch, call_external_entry_ptr() as usize as u64);
+        self.materialize_u64(call_scratch, call_runtime_entry_ptr() as usize as u64);
         self.core.text.emit_u32(enc::blr(call_scratch));
         self.gp_scratch.free_index(call_scratch_idx);
 

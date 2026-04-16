@@ -6,26 +6,28 @@ use super::types::{
     MachineRegOwner, MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind,
     MachineValue,
 };
+use crate::value_type::RefType;
 
-/// Inline external call that falls through in the same function.
+/// Inline runtime-dispatch call that falls through in the same function.
 ///
 /// This is the MachineIR representation for operations that cross into the
-/// runtime external-call ABI but do not transfer control to another compiled
-/// MachineIR function. In particular, external Wasm calls lower to this form:
-/// they are semantically leaf runtime calls that return inline to the same
-/// block, so they are modeled as instructions rather than CFG terminators.
+/// runtime-call ABI but do not transfer control to another compiled MachineIR
+/// function. In particular, Wasm calls that must round-trip through runtime
+/// dispatch lower to this form: they are semantically calls, but they return
+/// inline to the same block, so they are modeled as instructions rather than
+/// CFG terminators.
 ///
-/// By contrast, local Wasm calls become [`MachineTerminator::CallDirect`] or
-/// [`MachineTerminator::CallIndirect`] because they leave the current MachineIR
-/// block and resume at an explicit continuation block.
+/// By contrast, compiled Wasm calls become [`MachineTerminator::Call`] because
+/// they leave the current MachineIR block and resume at an explicit
+/// continuation block.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct MachineCallExternal {
+pub(crate) struct MachineCallRuntime {
     /// Read-only constant-pool metadata for this call site.
     ///
     /// The backend treats this as an opaque constant-pool reference and always
-    /// lowers this instruction to the shared `call_external_entry` runtime ABI.
-    /// The metadata record describes how the entrypoint finds the external target
-    /// and the frame regions used for arguments and results.
+    /// lowers this instruction to the shared `call_runtime_entry` runtime ABI.
+    /// The metadata record describes how the entrypoint finds the runtime-call
+    /// target and the frame regions used for arguments and results.
     pub metadata: MachineConstId,
 }
 
@@ -313,11 +315,11 @@ pub(crate) enum MachineInstKind {
     /// needed around the call. The ISA/backend only performs the actual foreign
     /// call ABI sequence for the helper target.
     ///
-    /// Direct and indirect *external* Wasm calls use this path today because
+    /// Wasm calls that stay on the runtime-dispatch path use this form because
     /// they do not create a new compiled-frame activation or a MachineIR
-    /// continuation edge; they simply invoke the runtime helper and continue in
+    /// continuation edge; they simply invoke the runtime entry and continue in
     /// the same function.
-    CallExternal(MachineCallExternal),
+    CallRuntime(MachineCallRuntime),
     MemoryGrow {
         mem_idx: u32,
         dst: MachineReg,
@@ -375,6 +377,74 @@ pub(crate) enum MachineInstKind {
     ElemDrop {
         elem_idx: u32,
     },
+    RefFunc {
+        func_idx: u32,
+        dst: MachineReg,
+    },
+    RefAsNonNull {
+        src: MachineValue,
+        dst: MachineReg,
+    },
+    RefEq {
+        lhs: MachineValue,
+        rhs: MachineValue,
+        dst: MachineReg,
+    },
+    RefI31 {
+        src: MachineValue,
+        dst: MachineReg,
+    },
+    I31GetS {
+        src: MachineValue,
+        dst: MachineReg,
+    },
+    I31GetU {
+        src: MachineValue,
+        dst: MachineReg,
+    },
+    AnyConvertExtern {
+        src: MachineValue,
+        dst: MachineReg,
+    },
+    ExternConvertAny {
+        src: MachineValue,
+        dst: MachineReg,
+    },
+    RefTest {
+        ref_type: RefType,
+        src: MachineValue,
+        dst: MachineReg,
+    },
+    RefCast {
+        ref_type: RefType,
+        src: MachineValue,
+        dst: MachineReg,
+    },
+    StructNewDefault {
+        type_idx: u32,
+        dst: MachineReg,
+    },
+    StructGet {
+        type_idx: u32,
+        field_idx: u32,
+        signed: Option<bool>,
+        ty: MachineStorageType,
+        src: MachineValue,
+        dst: MachineReg,
+        dst_hi: Option<MachineReg>,
+    },
+    StructSet {
+        type_idx: u32,
+        field_idx: u32,
+        ref_src: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+    },
+    ArrayNewDefault {
+        type_idx: u32,
+        length: MachineValue,
+        dst: MachineReg,
+    },
 }
 
 impl MachineInstKind {
@@ -409,11 +479,30 @@ impl MachineInstKind {
             | Self::Convert { .. }
             | Self::Select { .. }
             | Self::MemoryGrow { .. }
-            | Self::TableGrow { .. } => Some(MachineRegOwner::LinearValue),
+            | Self::TableGrow { .. }
+            | Self::RefFunc { .. }
+            | Self::RefAsNonNull { .. }
+            | Self::RefEq { .. }
+            | Self::RefI31 { .. }
+            | Self::I31GetS { .. }
+            | Self::I31GetU { .. }
+            | Self::AnyConvertExtern { .. }
+            | Self::ExternConvertAny { .. }
+            | Self::RefTest { .. }
+            | Self::RefCast { .. }
+            | Self::StructNewDefault { .. }
+            | Self::ArrayNewDefault { .. } => Some(MachineRegOwner::LinearValue),
+            Self::StructGet { dst_hi, .. } => {
+                if dst_hi.is_some() {
+                    None
+                } else {
+                    Some(MachineRegOwner::LinearValue)
+                }
+            }
             Self::Store { .. }
             | Self::IndexedStore { .. }
             | Self::TrapIf { .. }
-            | Self::CallExternal(_)
+            | Self::CallRuntime(_)
             | Self::MemoryFill { .. }
             | Self::MemoryCopy { .. }
             | Self::MemoryInit { .. }
@@ -421,7 +510,8 @@ impl MachineInstKind {
             | Self::TableFill { .. }
             | Self::TableCopy { .. }
             | Self::TableInit { .. }
-            | Self::ElemDrop { .. } => None,
+            | Self::ElemDrop { .. }
+            | Self::StructSet { .. } => None,
         }
     }
 }

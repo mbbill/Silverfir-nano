@@ -879,7 +879,11 @@ mod tests {
     use super::ensure_module_compiled;
     use crate::collections;
     use crate::{
-        module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType},
+        module::{
+            entities::FunctionSpec,
+            type_context::TypeContext,
+            type_defs::{CompositeType, DefType, FunctionType},
+        },
         utils::limits::Limits,
         value_type::ValueType,
         vm::{
@@ -951,14 +955,23 @@ mod tests {
         code
     }
 
+    fn func_def(
+        params: collections::Vec<ValueType>,
+        results: collections::Vec<ValueType>,
+    ) -> Rc<DefType> {
+        Rc::new(DefType {
+            composite: CompositeType::Func(Rc::new(FunctionType::new(params, results))),
+            supertypes: collections::vec![],
+            is_final: true,
+            rec_group: None,
+        })
+    }
+
     #[test]
     fn compiles_all_local_functions_once() {
         let types = TypeContext::new(collections::vec![
-            Rc::new(FunctionType::new(collections::vec![], collections::vec![])),
-            Rc::new(FunctionType::new(
-                collections::vec![ValueType::I32],
-                collections::vec![]
-            )),
+            func_def(collections::vec![], collections::vec![]),
+            func_def(collections::vec![ValueType::I32], collections::vec![]),
         ]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec0 = FunctionSpec::new(
@@ -1005,11 +1018,11 @@ mod tests {
         let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu64);
 
         let types = TypeContext::new(collections::vec![
-            Rc::new(FunctionType::new(collections::vec![], collections::vec![])),
-            Rc::new(FunctionType::new(
+            func_def(collections::vec![], collections::vec![]),
+            func_def(
                 collections::vec![ValueType::I32],
                 collections::vec![ValueType::I32],
-            )),
+            ),
         ]);
         let mut module = ModuleInst::new(String::from("m"), types);
 
@@ -1056,10 +1069,10 @@ mod tests {
     fn compiles_function_with_f64_local() {
         // (func (param f64) (result f64) (local.get 0))
         // Bytecode: local.get 0, end
-        let types = TypeContext::new(collections::vec![Rc::new(FunctionType::new(
+        let types = TypeContext::new(collections::vec![func_def(
             collections::vec![ValueType::F64],
             collections::vec![ValueType::F64],
-        ))]);
+        )]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
@@ -1082,10 +1095,10 @@ mod tests {
     fn compiles_function_with_f32_local_and_add() {
         // (func (param f32 f32) (result f32) (f32.add (local.get 0) (local.get 1)))
         // Bytecode: local.get 0, local.get 1, f32.add, end
-        let types = TypeContext::new(collections::vec![Rc::new(FunctionType::new(
+        let types = TypeContext::new(collections::vec![func_def(
             collections::vec![ValueType::F32, ValueType::F32],
             collections::vec![ValueType::F32],
-        ))]);
+        )]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
@@ -1119,10 +1132,10 @@ mod tests {
         //   f32.const 0     ;; 0x43 0x00 0x00 0x00 0x00
         //   end              ;; 0x0b
         //   end              ;; 0x0b
-        let types = TypeContext::new(collections::vec![Rc::new(FunctionType::new(
+        let types = TypeContext::new(collections::vec![func_def(
             collections::vec![ValueType::F32, ValueType::I32],
             collections::vec![ValueType::F32],
-        ))]);
+        )]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
@@ -1169,7 +1182,10 @@ mod tests {
             collections::vec![ValueType::I32, ValueType::I32],
             collections::vec![ValueType::F32],
         ));
-        let types = TypeContext::new(collections::vec![Rc::clone(&ty)]);
+        let types = TypeContext::new(collections::vec![func_def(
+            collections::vec![ValueType::I32, ValueType::I32],
+            collections::vec![ValueType::F32],
+        )]);
         let mut module = ModuleInst::new(String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_locals(collections::vec![
@@ -1339,8 +1355,11 @@ mod tests {
             collections::vec![ValueType::I32],
         ));
         let types = TypeContext::new(collections::vec![
-            Rc::clone(&helper_type),
-            Rc::clone(&caller_type)
+            func_def(helper_params.clone(), collections::vec![ValueType::I32]),
+            func_def(
+                collections::vec![ValueType::I32],
+                collections::vec![ValueType::I32],
+            ),
         ]);
         let mut module = ModuleInst::new(String::from("m"), types);
 

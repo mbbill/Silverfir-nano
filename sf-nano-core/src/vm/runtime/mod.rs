@@ -4,6 +4,7 @@ use crate::vm::entities::FunctionInst;
 use crate::vm::result_buffer::ResultBuffer;
 use crate::vm::store::Store;
 use crate::vm::value::Value;
+use crate::vm::value_encoding::normalize_machine_raw;
 
 #[cfg(sf_jit)]
 pub use crate::vm::arch::ReferenceBackendMode;
@@ -36,8 +37,6 @@ pub(crate) mod context;
 #[cfg(sf_jit)]
 pub(crate) mod dispatch_view;
 #[cfg(sf_jit)]
-pub(crate) mod external;
-#[cfg(sf_jit)]
 #[cfg(sf_has_guard_pages)]
 pub(crate) mod guard_pages;
 #[cfg(sf_jit)]
@@ -46,6 +45,8 @@ pub(crate) mod layout;
 pub(crate) mod os;
 #[cfg(sf_jit)]
 pub(crate) mod preserved;
+#[cfg(sf_jit)]
+pub(crate) mod runtime_call;
 #[cfg(sf_jit)]
 pub(crate) mod trap;
 #[cfg(sf_jit)]
@@ -159,10 +160,7 @@ pub(crate) unsafe fn collect_native_results_from_stack(
 ) -> ResultBuffer {
     let mut out = ResultBuffer::with_exact_capacity(result_types.len());
     for (index, ty) in result_types.iter().enumerate() {
-        let mut raw = unsafe { *stack_base.add(index) };
-        if gp_unit_bytes == 4 && matches!(ty, ValueType::Ref(_)) && raw == u64::from(u32::MAX) {
-            raw = usize::MAX as u64;
-        }
+        let raw = normalize_machine_raw(unsafe { *stack_base.add(index) }, *ty, gp_unit_bytes);
         out.push(raw);
     }
     out

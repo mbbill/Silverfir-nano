@@ -11,12 +11,13 @@ categories = ["wasm", "no-std"]
 [dependencies]
 paste = "1.0"
 tracked_alloc = { package = "sf-nano-tracked-alloc", path = "../tools/tracked-alloc" }
+filetime = { version = "0.2", optional = true }
 
 [features]
 default = ["jit", "guard-pages"]
 jit = []
 emulator = ["jit"]
-wasi = []
+wasi = ["dep:filetime"]
 validator = []
 call-trace = ["jit"]
 guard-pages = ["jit"]

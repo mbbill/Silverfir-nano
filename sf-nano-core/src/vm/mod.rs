@@ -15,13 +15,15 @@ pub(crate) mod build;
 pub(crate) mod debug;
 pub(crate) mod entities;
 pub(crate) mod expr_eval;
+pub(crate) mod gc_heap;
+pub(crate) mod gc_type_check;
 pub(crate) mod instance;
 #[cfg(sf_jit)]
 pub(crate) mod machine;
 pub(crate) mod middle;
-pub(crate) mod raw_value;
 pub(crate) mod result_buffer;
 pub(crate) mod runtime;
 pub(crate) mod store;
 pub(crate) mod value;
+pub(crate) mod value_encoding;
 pub(crate) mod wasm;

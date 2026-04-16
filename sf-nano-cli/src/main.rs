@@ -267,7 +267,7 @@ fn print_usage(program_name: &str) {
     eprintln!();
     eprintln!("USAGE:");
     eprintln!(
-        "  {program_name} [--backend <auto|native>] [--emu64|--emu32] [--dir <path>] [--memprof] [--memprof-report <html>] <wasm-file> [args...]"
+        "  {program_name} [--backend <auto|native>] [--emu64|--emu32] [--dir <guest::host|path>] [--memprof] [--memprof-report <html>] <wasm-file> [args...]"
     );
     eprintln!();
     eprintln!("Run a WebAssembly module with WASI support.");

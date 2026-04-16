@@ -755,6 +755,12 @@ pub(crate) enum SsaCallOp {
         args: FrameSpan,
         results: FrameSpan,
     },
+    CallRef {
+        type_idx: u32,
+        ref_slot: FrameSlot,
+        args: FrameSpan,
+        results: FrameSpan,
+    },
 }
 
 /// Explicit CFG terminator.

@@ -22,16 +22,61 @@ use crate::{
 use super::{
     lower_context::BlockLowerContext,
     lower_inst::LeafLowering,
+    lower_regalloc::lir_value_storage_type,
     lower_util::{single_arg, single_result, three_args, two_args},
 };
 
 impl<'a> BlockLowerContext<'a> {
+    #[inline]
+    fn use_memory_index_word(
+        &mut self,
+        value: SsaValue,
+    ) -> Result<(MachineReg, Option<MachineReg>), WasmError> {
+        if self.gp_reg_width() == 4 {
+            if let Some((_, Some(_))) = self.try_value_regs(value) {
+                let (lo, hi) = self.use_i64_value_pair(value)?;
+                return Ok((lo, Some(hi)));
+            }
+        }
+        Ok((self.use_value(value)?, None))
+    }
+
+    #[inline]
+    fn emit_memory_index_high_trap_if_nonzero(&mut self, hi: Option<MachineReg>) {
+        let Some(hi) = hi else {
+            return;
+        };
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::TrapIf {
+                kind: MachineTrapKind::MemoryOutOfBounds,
+                cond: MachineBranchCond::IntCompare {
+                    width: self.gp_word_int_width(),
+                    kind: MachineCompareKind::Ne,
+                    sign: MachineSign::Unsigned,
+                    lhs: MachineValue::Reg(hi),
+                    rhs: MachineValue::Imm64(0),
+                },
+            },
+        });
+    }
+
     pub(super) fn lower_memory_size(
         &mut self,
         mem_idx: u32,
         results: &[SsaValue],
     ) -> Result<(), WasmError> {
-        let dst = self.alloc_result_value(single_result(results)?)?;
+        let result = single_result(results)?;
+        let pair_result = self.gp_reg_width() == 4
+            && matches!(
+                lir_value_storage_type(self.program(), result),
+                MachineStorageType::GpI64
+            );
+        let (dst, dst_hi) = if pair_result {
+            let (lo, hi) = self.alloc_i64_value_pair(result)?;
+            (lo, Some(hi))
+        } else {
+            (self.alloc_result_value(result)?, None)
+        };
         if mem_idx == 0 {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
@@ -79,6 +124,16 @@ impl<'a> BlockLowerContext<'a> {
                 rhs: MachineValue::Imm64(crate::constants::WASM_PAGE_SIZE.trailing_zeros() as u64),
             },
         });
+        if let Some(dst_hi) = dst_hi {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Move {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_hi,
+                    src: MachineValue::Imm64(0),
+                },
+            });
+        }
         Ok(())
     }
 
@@ -88,8 +143,73 @@ impl<'a> BlockLowerContext<'a> {
         args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<(), WasmError> {
+        let result = single_result(results)?;
+        let pair_result = self.gp_reg_width() == 4
+            && matches!(
+                lir_value_storage_type(self.program(), result),
+                MachineStorageType::GpI64
+            );
+        if pair_result {
+            let delta_value = single_arg(args)?.unwrap_value();
+            let (delta_lo, delta_hi) = self.use_memory_index_word(delta_value)?;
+            let (dst_lo, dst_hi) =
+                self.alloc_i64_value_pair_reusing_dead_inputs(result, &[delta_value])?;
+            let delta = if delta_hi.is_some() {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntCompare {
+                        width: self.gp_word_int_width(),
+                        kind: MachineCompareKind::Ne,
+                        sign: MachineSign::Unsigned,
+                        dst: dst_hi,
+                        lhs: MachineValue::Reg(delta_hi.expect("checked above")),
+                        rhs: MachineValue::Imm64(0),
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Select {
+                        ty: MachineStorageType::GpWord,
+                        dst: dst_hi,
+                        on_true: MachineValue::Imm64(u32::MAX as u64),
+                        on_false: MachineValue::Reg(delta_lo),
+                        cond: MachineValue::Reg(dst_hi),
+                    },
+                });
+                MachineValue::Reg(dst_hi)
+            } else {
+                MachineValue::Reg(delta_lo)
+            };
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::MemoryGrow {
+                    mem_idx,
+                    dst: dst_lo,
+                    delta,
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntCompare {
+                    width: self.gp_word_int_width(),
+                    kind: MachineCompareKind::Eq,
+                    sign: MachineSign::Unsigned,
+                    dst: dst_hi,
+                    lhs: MachineValue::Reg(dst_lo),
+                    rhs: MachineValue::Imm64(u32::MAX as u64),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Select {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_hi,
+                    on_true: MachineValue::Imm64(u32::MAX as u64),
+                    on_false: MachineValue::Imm64(0),
+                    cond: MachineValue::Reg(dst_hi),
+                },
+            });
+            self.emit_reload_mem0_cache_regs();
+            return Ok(());
+        }
+
         let delta = self.lower_operand(single_arg(args)?)?;
-        let dst = self.alloc_result_value(single_result(results)?)?;
+        let dst = self.alloc_result_value(result)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::MemoryGrow {
                 mem_idx,
@@ -178,10 +298,75 @@ impl<'a> BlockLowerContext<'a> {
         args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<(), WasmError> {
-        let (init_val, delta) = two_args(args)?;
-        let init_val = self.lower_operand(init_val)?;
-        let delta = self.lower_operand(delta)?;
-        let dst = self.alloc_result_value(single_result(results)?)?;
+        let result = single_result(results)?;
+        let pair_result = self.gp_reg_width() == 4
+            && matches!(
+                lir_value_storage_type(self.program(), result),
+                MachineStorageType::GpI64
+            );
+        let (init_arg, delta_arg) = two_args(args)?;
+        let init_val = self.lower_operand(init_arg)?;
+        if pair_result {
+            let delta_value = delta_arg.unwrap_value();
+            let (delta_lo, delta_hi) = self.use_memory_index_word(delta_value)?;
+            let (dst_lo, dst_hi) =
+                self.alloc_i64_value_pair_reusing_dead_inputs(result, &[delta_value])?;
+            let delta = if delta_hi.is_some() {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntCompare {
+                        width: self.gp_word_int_width(),
+                        kind: MachineCompareKind::Ne,
+                        sign: MachineSign::Unsigned,
+                        dst: dst_hi,
+                        lhs: MachineValue::Reg(delta_hi.expect("checked above")),
+                        rhs: MachineValue::Imm64(0),
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Select {
+                        ty: MachineStorageType::GpWord,
+                        dst: dst_hi,
+                        on_true: MachineValue::Imm64(u32::MAX as u64),
+                        on_false: MachineValue::Reg(delta_lo),
+                        cond: MachineValue::Reg(dst_hi),
+                    },
+                });
+                MachineValue::Reg(dst_hi)
+            } else {
+                MachineValue::Reg(delta_lo)
+            };
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::TableGrow {
+                    table_idx,
+                    dst: dst_lo,
+                    init_val,
+                    delta,
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntCompare {
+                    width: self.gp_word_int_width(),
+                    kind: MachineCompareKind::Eq,
+                    sign: MachineSign::Unsigned,
+                    dst: dst_hi,
+                    lhs: MachineValue::Reg(dst_lo),
+                    rhs: MachineValue::Imm64(u32::MAX as u64),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Select {
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_hi,
+                    on_true: MachineValue::Imm64(u32::MAX as u64),
+                    on_false: MachineValue::Imm64(0),
+                    cond: MachineValue::Reg(dst_hi),
+                },
+            });
+            return Ok(());
+        }
+
+        let delta = self.lower_operand(delta_arg)?;
+        let dst = self.alloc_result_value(result)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::TableGrow {
                 table_idx,
@@ -468,7 +653,18 @@ impl<'a> BlockLowerContext<'a> {
         table_idx: u32,
         results: &[SsaValue],
     ) -> Result<(), WasmError> {
-        let dst = self.alloc_result_value(single_result(results)?)?;
+        let result = single_result(results)?;
+        let pair_result = self.gp_reg_width() == 4
+            && matches!(
+                lir_value_storage_type(self.program(), result),
+                MachineStorageType::GpI64
+            );
+        let (dst, dst_hi) = if pair_result {
+            let (lo, hi) = self.alloc_i64_value_pair(result)?;
+            (lo, Some(hi))
+        } else {
+            (self.alloc_result_value(result)?, None)
+        };
         let table_views = self.borrow_free_gp_dynamic_regs(1)?[0];
         let runtime_layout = self.runtime_abi_layout();
         self.emit_machine_inst(MachineInst {
@@ -496,6 +692,16 @@ impl<'a> BlockLowerContext<'a> {
                 extension: MachineLoadExtension::None,
             },
         });
+        if let Some(dst_hi) = dst_hi {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Move {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpWord,
+                    dst: dst_hi,
+                    src: MachineValue::Imm64(0),
+                },
+            });
+        }
         Ok(())
     }
 
@@ -604,7 +810,8 @@ impl<'a> BlockLowerContext<'a> {
         results: &[SsaValue],
     ) -> Result<LeafLowering, WasmError> {
         let addr_value = single_arg(args)?.unwrap_value();
-        let addr = self.use_value(addr_value)?;
+        let (addr, addr_hi) = self.use_memory_index_word(addr_value)?;
+        self.emit_memory_index_high_trap_if_nonzero(addr_hi);
         let fp_load_usable = spec.ty.float_width().is_some()
             && (spec.memidx != 0
                 || self.dead_value_reg(addr_value).is_some()
@@ -684,7 +891,8 @@ impl<'a> BlockLowerContext<'a> {
             let (a, b) = two_args(args)?;
             (a.unwrap_value(), b.unwrap_value())
         };
-        let addr = self.use_value(addr_value)?;
+        let (addr, addr_hi) = self.use_memory_index_word(addr_value)?;
+        self.emit_memory_index_high_trap_if_nonzero(addr_hi);
         let src = self.use_value(src_value)?;
         let access_bytes = spec.access_bytes();
         if spec.memidx == 0 {
@@ -729,7 +937,8 @@ impl<'a> BlockLowerContext<'a> {
         results: &[SsaValue],
     ) -> Result<LeafLowering, WasmError> {
         let addr_value = single_arg(args)?.unwrap_value();
-        let addr = self.use_value(addr_value)?;
+        let (addr, addr_hi) = self.use_memory_index_word(addr_value)?;
+        self.emit_memory_index_high_trap_if_nonzero(addr_hi);
         let (dst_lo, dst_hi) =
             self.alloc_i64_value_pair_reusing_dead_inputs(single_result(results)?, &[addr_value])?;
         let access_bytes = spec.access_bytes();
@@ -779,7 +988,8 @@ impl<'a> BlockLowerContext<'a> {
             let (a, b) = two_args(args)?;
             (a.unwrap_value(), b.unwrap_value())
         };
-        let addr = self.use_value(addr_value)?;
+        let (addr, addr_hi) = self.use_memory_index_word(addr_value)?;
+        self.emit_memory_index_high_trap_if_nonzero(addr_hi);
         let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
         let access_bytes = spec.access_bytes();
         if spec.memidx == 0 {
@@ -852,8 +1062,18 @@ impl<'a> BlockLowerContext<'a> {
             });
             return Ok(0);
         }
-        if let Ok(free) = self.borrow_free_gp_dynamic_regs(1) {
-            let check_reg = free[0];
+        // Guard against aliasing the borrowed check register with either the
+        // live effective-address register or the memory-length scratch. Those
+        // values may still appear "free" to the allocator when they came from
+        // dead-value reuse, but clobbering either one while still reporting a
+        // zero residual silently shifts the final memory address (for example,
+        // `load8` from memidx!=0 starts reading at `addr+1`).
+        if let Some(check_reg) = self
+            .borrow_free_gp_dynamic_regs(1)
+            .ok()
+            .map(|s| s[0])
+            .filter(|r| *r != addr32 && *r != scratch)
+        {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::IntBinary {
                     width: self.gp_word_int_width(),
@@ -1849,26 +2069,29 @@ pub(super) fn append_i64_load_ops(
 ) {
     match width {
         MachineMemWidth::U64 => {
-            ops.push(MachineInst {
-                kind: MachineInstKind::Load {
-                    owner: MachineRegOwner::LinearValue,
-                    ty: MachineStorageType::GpWord,
-                    dst: dst_hi,
-                    addr: MachineAddr { base, offset: 4 },
-                    width: MachineMemWidth::U32,
-                    extension: MachineLoadExtension::None,
-                },
-            });
-            ops.push(MachineInst {
-                kind: MachineInstKind::Load {
-                    owner: MachineRegOwner::LinearValue,
-                    ty: MachineStorageType::GpWord,
-                    dst: dst_lo,
-                    addr: MachineAddr { base, offset: 0 },
-                    width: MachineMemWidth::U32,
-                    extension: MachineLoadExtension::None,
-                },
-            });
+            let load_lo_first = base == dst_hi;
+            let first = if load_lo_first {
+                (dst_lo, 0)
+            } else {
+                (dst_hi, 4)
+            };
+            let second = if load_lo_first {
+                (dst_hi, 4)
+            } else {
+                (dst_lo, 0)
+            };
+            for (dst, offset) in [first, second] {
+                ops.push(MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst,
+                        addr: MachineAddr { base, offset },
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                });
+            }
         }
         MachineMemWidth::U8 | MachineMemWidth::U16 => {
             ops.push(MachineInst {
