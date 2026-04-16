@@ -1,122 +1,168 @@
-# ALGORITHM4 + Lane Mapping
+# ALGORITHM4: Cost-Optimal Public Cache Residency for a WebAssembly JIT
 
-This file merges the original design docs:
+## Abstract
 
-- `sf-nano-core/src/vm/middle/ALGORITHM4.md`
-- `sf-nano-core/src/vm/middle/LANE_MAPPING.md`
+This document specifies `ALGORITHM4` and its companion lane-mapping phase, the
+middle-end public-cache allocator used by Silverfir-nano, a WebAssembly 2.0
+JIT-only runtime. `ALGORITHM4` selects the set of locals that are publicly
+resident in register lanes across each region of a function, minimizing a
+single weighted-frame-op cost function that combines access benefit, call tax,
+and boundary transition cost subject to per-region capacity. A second phase
+assigns the chosen residents to physical lanes with sticky inheritance,
+leaving holes after drops instead of compacting, and remapping only when
+unavoidable.
 
-The text below stays intentionally close to those originals. I have only made
-small edits where needed to add implementation-status notes or to fold the two
-docs into one file.
+The algorithmic components — hierarchical region-based allocation
+[[CK91](#ck91)], region-based register promotion [[CL97](#cl97)], Lagrangian
+relaxation on tree-structured problems [[Fis81](#fis81)], biased coloring
+[[CACCHM81](#cacchm81), [BCT94](#bct94)], and lane placement with lifetime
+holes [[PS99](#ps99)] — each have established prior art. The contribution of
+this work is not a new algorithm but a *good fit*: Wasm's structured control
+flow delivers the region tree for free, and JIT-scale problem sizes make
+Lagrangian iteration cheap enough to run per-function without amortization.
 
-## Current Status
+## 1. Introduction
 
-- The public resident-set solver from `ALGORITHM4` is mostly implemented in
-  `sf-nano-core/src/vm/middle/joint_plan/region_solver.rs`.
-- The final extraction differs slightly from the original Step 5 description:
-  the current code does a recursive per-region capacity-constrained extraction
-  instead of a marginal-value projection pass.
-- Rewrite-side public-state use and edge repair are implemented, including
-  `LocalEnsureCache`, `LocalDropCache`, and `LocalReserveCache`.
-- Machine-side lane mapping is now mostly implemented in
-  `sf-nano-core/src/vm/machine/lower_cache_layout.rs`.
-- Still not yet implemented:
-  - private flex promotion for non-resident locals as described below
-  - feeding lane-remap cost back into `ALGORITHM4`'s residency objective
-  - subtree-stickiness as an explicit objective in machine-side micro-repack
-  - exact fragmented FP micro-repack analogous to the GP exact search
+Silverfir-nano compiles WebAssembly through a three-stage pipeline: structured
+IR (`wasm/`) → SSA-IR (`middle/`) → MachineIR (`machine/`) → native code
+(`arch/`). Locals in WebAssembly are named frame slots; reading or writing a
+local in the straight lowering costs one memory operation. A per-function
+cache maps a subset of locals into dynamic register lanes so that subsequent
+`local.get`, `local.set`, and `local.tee` on those locals become register
+operations.
 
-## Algorithm 4: Cost-Optimal Public Residency via Region-Tree DP
+The question this document answers is: *which locals should occupy cache
+lanes, in which regions of the function, and in which physical lanes?*
 
-### Problem
+### 1.1 Why the naive approaches fail
 
-See `PRESSURE.md` for measured data.
+A per-block cache planner that minimizes per-block frame access cost ignores
+transition cost at edges. The result is boundary churn: locals are repeatedly
+ensured and dropped as control flow crosses block boundaries that do not
+agree on the resident set. Structural alternatives — fixing one global set,
+or fixing a root set with loop-local overrides — treat stability as a
+constraint rather than a cost to optimize. They are approximations of what
+the allocator should do directly: minimize total cost.
 
-The current per-block cache planner minimizes per-block frame access cost but
-ignores transition cost at edges. The result is massive boundary churn.
+### 1.2 Design rationale: why the formulation fits the setting
 
-Previous algorithms (`ALGORITHM2`: global set, `ALGORITHM3`: root + loop
-override) treat stability as a structural constraint rather than a cost to
-optimize. They work, but they are approximations of what the algorithm should
-really do: minimize total cost.
+Two properties of the environment make this problem tractable in ways that
+general register allocation is not.
 
-### First-principles objective
+**Structured control flow gives the region tree for free.** WebAssembly's
+control-flow constructs (`block`, `loop`, `if`) are well-nested by
+construction [[HRS+17](#hrs17)]. There is no SCC discovery, no irreducibility
+handling, and no heuristic region formation. Every `loop` instruction defines
+a region whose header, back edge, and exit set are immediate from the
+syntactic structure. This is exactly the setting envisioned by
+Callahan-Koblenz hierarchical allocation [[CK91](#ck91)], but delivered
+without the analysis cost that general CFGs require.
 
-For one register bank, let:
+**JIT budget makes Lagrangian iteration cheap.** The problem instance size is
+small — a typical Wasm function has tens of locals and single-digit to low
+tens of regions. A per-local tree DP with `O(regions)` work per iteration,
+run for a fixed 8–12 subgradient rounds, costs a few thousand operations per
+function. This is well below the per-function cost of instruction selection
+and register allocation downstream. Lagrangian relaxation has been used in
+compilers before [[AG01](#ag01)], but typically as the heavyweight branch of
+a two-tier allocator that amortizes over long-running code; at JIT scale it
+can be the only path.
 
-- `x[R,L] ∈ {0,1}`: local `L` is publicly resident in region `R`
-- `units(L)`: register units consumed by `L` (`i64` on 32-bit = 2, else 1)
-- `benefit(R,L)`: weighted frame ops saved inside `R` if `L` is resident
-- `call_tax(R,L)`: weighted cost of keeping `L` across calls inside `R`
-- `entry_freq(R)`: estimated frequency of entering `R` from its parent
-- `exit_freq(R)`: estimated frequency of leaving `R` to its parent
-- `trans_cost(L)`: cost of one ensure or drop transition for `L` (= 1
-  frame-op equivalent per unit)
-- `cap(R)`: available register-unit capacity at `R` after transient headroom
+Together, these mean the algorithm can be stated in the form a textbook would
+expect — per-region capacity constraints, per-local tree DP, dual prices
+updated by subgradient steps — without resorting to heuristic surrogates.
 
-All cost terms are in the same unit: weighted frame-op equivalents.
-`benefit` and `call_tax` are pre-weighted by block frequency during
-construction. The objective contains no additional `freq(R)` multiplier.
+## 2. Problem Statement
 
-Objective:
+### 2.1 Notation
+
+For a single register bank, let:
+
+| Symbol | Meaning |
+| --- | --- |
+| `x[R,L] ∈ {0,1}` | local `L` is publicly resident in region `R` |
+| `units(L)` | register units consumed by `L` (`i64` on 32-bit = 2, else 1) |
+| `benefit(R,L)` | weighted frame ops saved inside `R` if `L` is resident |
+| `call_tax(R,L)` | weighted cost of keeping `L` across calls inside `R` |
+| `entry_freq(R)` | estimated frequency of entering `R` from its parent |
+| `exit_freq(R)` | estimated frequency of leaving `R` to its parent |
+| `trans_cost(L)` | cost of one ensure or drop transition for `L` (one frame-op equivalent per unit) |
+| `cap(R)` | available register-unit capacity at `R` after transient headroom |
+
+All cost terms are in one unit: weighted frame-op equivalents. `benefit` and
+`call_tax` are pre-weighted by block frequency during construction, so the
+objective carries no additional `freq(R)` multiplier.
+
+### 2.2 Objective
 
 ```text
 maximize
-    Σ(R,L) benefit(R,L) * x[R,L]
-  - Σ(R,L) call_tax(R,L) * x[R,L]
+    Σ(R,L) benefit(R,L) · x[R,L]
+  - Σ(R,L) call_tax(R,L) · x[R,L]
   - Σ(R)   mismatch_cost(R)
 
 subject to
-    Σ_L units(L) * x[R,L] <= cap(R)     for every region R
+    Σ_L units(L) · x[R,L] ≤ cap(R)     for every region R
 ```
 
-Where `mismatch_cost(R)` charges for every residency change at the boundary
-between region `R` and its parent:
+where `mismatch_cost(R)` charges for every residency change at the boundary
+between `R` and its parent:
 
 ```text
 mismatch_cost(R) =
     Σ_L edge_cost(x[parent(R),L], x[R,L], R, L)
 ```
 
+### 2.3 Edge costs
+
 For loop regions, residency changes cost on both entry and exit:
 
 ```text
 edge_cost(p, s, R_loop, L) =
-    if p == s: 0
-    else:      (entry_freq(R) + exit_freq(R)) * trans_cost(L)
+    0                                            if p == s
+    (entry_freq(R) + exit_freq(R)) · trans_cost(L)  otherwise
 ```
 
-This is symmetric: adding a local at a loop boundary costs the same as
-removing one, because both require one op on entry and one on exit.
+The symmetry is deliberate: adding a local at a loop boundary costs one op on
+entry to ensure and one on exit to drop back to the parent state; removing
+one is the reverse. Both cost the same.
 
-For the root region, there is no parent to restore on function return.
-The only cost is one-time entry materialization:
+For the root region there is no parent state to restore on function return
+(the frame is discarded), so only entry materialization is charged:
 
 ```text
 edge_cost(0, s, R_root, L) =
-    if s == 0: 0
-    if s == 1: entry_freq(root) * trans_cost(L)
+    0                                  if s == 0
+    entry_freq(root) · trans_cost(L)   if s == 1
 ```
 
-The root is always evaluated with parent state = 0.
+The root is always evaluated with parent state `p = 0`.
 
-### Why this formulation is right
+### 2.4 Why this formulation is right
 
-- Whole-function stability emerges if transition costs dominate benefit
-  for most locals. No stability constraint needed.
-- Loop-specific overrides emerge when a local's in-loop benefit exceeds
-  the transition cost at the loop boundary. No loop special-case needed.
-- Call cost is internalized as a penalty on residency, not a structural
+The formulation has a property that the earlier approximations lacked: the
+qualitative behaviors we want are not *designed in*, they *emerge* from
+optimizing the cost.
+
+- Whole-function stability emerges when transition cost dominates benefit
+  for most locals. No stability constraint is needed.
+- Loop-specific overrides emerge when in-loop benefit exceeds the loop
+  boundary cost. No loop special case is needed.
+- Call cost is internalized as a per-residency penalty, not a structural
   barrier. Call-heavy loops naturally get smaller resident sets.
 - Capacity is a real constraint, not a heuristic cutoff.
-- `i64` unit cost is built in via `units(L)`.
-- One unit system: everything is weighted frame-op equivalents.
+- `i64` pair cost on 32-bit is internalized via `units(L)`.
+- One unit system means `benefit − call_tax − λ · units` is dimensionally
+  meaningful. Most RA cost models paper over unit mismatches.
 
-### Practical solver: region-tree DP with capacity prices
+## 3. Region Solver: Tree DP with Capacity Prices
 
-#### Step 1: Build the region tree and compute inputs
+The core solver is an alternation between a *primal* step (per-local tree DP
+at fixed prices) and a *dual* step (subgradient update on capacity prices).
+This is standard Lagrangian relaxation [[Fis81](#fis81)] specialized to the
+region tree.
 
-Use the Wasm structured loop hierarchy directly. No SCC discovery needed.
+### 3.1 Step 1: Build the region tree
 
 ```text
 Regions = { root } ∪ { one region per Wasm loop instruction }
@@ -124,613 +170,316 @@ parent(R) = enclosing loop, or root if top-level
 OwnedBlocks(R) = blocks in R not inside any child loop
 ```
 
-For each region `R`, compute from its owned blocks:
+No SCC discovery is required; the structure is read off the Wasm decode. This
+is the `CK91` tile tree, obtained without analysis.
 
-##### benefit(R, L)
+### 3.2 Step 2: Compute inputs per region
 
-```text
-benefit(R, L) = Σ B in OwnedBlocks(R):
-    block_weight(B) * access_count(B, L)
-```
-
-`access_count(B, L)` = total `local.get` + `local.set` + `local.tee` of `L`
-in block `B`. Each such access costs one frame op if uncached, zero if cached.
-
-`block_weight(B)` = estimated execution frequency. Default: `10^loop_depth(B)`.
-
-The result is in weighted-frame-op units. No further `freq(R)` multiplier is
-applied when this term enters the objective.
-
-##### call_tax(R, L)
+**Benefit.**
 
 ```text
-call_tax(R, L) = Σ B in OwnedBlocks(R):
-    block_weight(B) * calls_in_block(B) * keep_cost(L)
+benefit(R, L) = Σ B ∈ OwnedBlocks(R):
+    block_weight(B) · access_count(B, L)
 ```
 
-`keep_cost(L)` depends on the current call implementation:
+`access_count(B, L)` is `local.get + local.set + local.tee` count for `L` in
+block `B`. Each such access costs one frame op if uncached, zero if cached.
+`block_weight(B) = 10^loop_depth(B)` by default.
 
-| Strategy | keep_cost(L) |
-| --- | --- |
-| Re-ensure after every call | `units(L)` |
-| Callee-saved subset | `0 if fits, else units(L)` |
-| Machine-level save/restore | `0` |
+**Call tax.**
 
-For v1, use `keep_cost(L) = units(L)` (re-ensure). Conservative and simple.
+```text
+call_tax(R, L) = Σ B ∈ OwnedBlocks(R):
+    block_weight(B) · calls_in_block(B) · keep_cost(L)
+```
 
-Already in weighted-frame-op units.
+`keep_cost(L)` depends on the call protocol. The current v1 uses the
+re-ensure model: `keep_cost(L) = units(L)`. Conservative and simple.
 
-##### entry_freq(R) and exit_freq(R)
+**Frequencies.**
 
 ```text
 entry_freq(R) = block_weight(header(R)) / assumed_trip_count
-exit_freq(R) = entry_freq(R)
+exit_freq(R)  = entry_freq(R)
+entry_freq(root) = 1
 ```
 
-For the root: `entry_freq = 1`.
+`assumed_trip_count = 8` is a tuning constant. It affects the ratio between
+per-iteration benefit and per-entry transition cost, and nothing else; it
+does not need to be accurate.
 
-`assumed_trip_count` is a tuning constant (default: 8). It only affects the
-ratio between per-iteration benefit and per-entry transition cost. It does
-not need to be accurate.
+**Transition cost.** `trans_cost(L) = units(L)`.
 
-##### trans_cost(L)
+**Capacity.**
 
 ```text
-trans_cost(L) = units(L)
+cap(R) = dynamic_budget − headroom(R)
+headroom(R) = max B ∈ OwnedBlocks(R): peak_live_transient_units(B)
 ```
 
-One frame op per register unit per transition (ensure or drop).
+`peak_live_transient_units(B)` counts, at the highest-pressure point in
+block `B`, register units occupied by transient SSA values that are not
+public-resident locals. It is computed from the semantic stack shapes and
+slot-only SSA, reusing the infrastructure in `joint_plan/entry_region.rs` and
+`joint_plan/pressure.rs`.
 
-##### cap(R): available cache capacity
+On x86_64 (budget = 9) or ARMv7a (budget = 8) this headroom eats a
+significant fraction of the budget and naturally limits residency. The
+headroom is exact, not softened. If one pathological block has high
+transient pressure the region's capacity shrinks accordingly, and the cost
+model decides which locals are still worth caching at the reduced capacity —
+a local that barely justified residency will be priced out, which is the
+correct behavior.
 
-```text
-cap(R) = dynamic_budget - headroom(R)
-```
-
-`headroom(R)` must account for the full live transient pressure at any point
-inside the region, not just the stack-depth swing. This includes:
-
-- carried entry-stack values that remain live inside the block
-- block-internal computation results (leaf op outputs, `local.get` results for
-  non-resident locals)
-- values live across spill points
-
-The existing rewriter tracks this via `fits_with_cached_locals` and
-`count_live_bank_budget_units`. The region solver should use the same
-computation, evaluated at the worst-case block within the region:
-
-```text
-headroom(R) = max over B in OwnedBlocks(R) of:
-    peak_live_transient_units(B)
-```
-
-Where `peak_live_transient_units(B)` counts, at the highest-pressure point
-in block `B`, the total register units occupied by transient values
-(SSA values that are not public-resident locals). This is computed from the
-semantic stack shapes and the slot-only SSA, reusing the existing
-infrastructure in `joint_plan/entry_region.rs` and `joint_plan/pressure.rs`.
-
-On x86_64 (budget=9) or ARMv7a (budget=8), this headroom eats a larger
-fraction of the budget, naturally limiting how many locals can be resident.
-
-The headroom is exact, not softened. No upper clamp is applied. If one
-pathological block in a region has very high transient pressure, the region's
-capacity shrinks accordingly. The cost model then decides which locals are
-still worth caching at the reduced capacity: a local that barely justified
-residency will be priced out, which is the correct behavior.
-
-The only floor is `MIN_HEADROOM = 3` (worst-case single-op semantic
-requirement), ensuring the solver never promises more capacity than exists.
+The only floor is `MIN_HEADROOM = 3`, the worst-case single-op semantic
+requirement, so the solver never promises more capacity than exists.
 
 If a rare block's actual transient pressure exceeds even the exact headroom
-(due to estimation error or edge cases), the rewriter's pressure fallback
-handles it: temporarily evict the weakest public local within that block and
-restore before the terminator. This is a safety net, not a normal path.
+(edge cases, estimation error), the rewriter's pressure fallback handles it:
+temporarily evict the weakest public local within that block and restore
+before the terminator. This is a safety net, not a normal path.
 
-Status note:
+*Status.* The current code computes exact per-bank peak live transient units
+from `OpPlan.before` and `OpPlan.after` and subtracts those from the dynamic
+bank budgets. `MIN_HEADROOM` is not literally implemented; the rewriter
+covers the residual cases.
 
-- The current code does compute exact per-bank peak live transient units from
-  `OpPlan.before` and `OpPlan.after`, and subtracts those from the dynamic bank
-  budgets.
-- The current code does not literally implement the `MIN_HEADROOM` floor
-  described above.
-- Rare over-budget cases are handled by rewrite-time pressure fallback.
+### 3.3 Step 3: Capacity prices
 
-#### Step 2: Introduce capacity prices
-
-For each region `R`, maintain a dual price `λ[R] >= 0` representing the
-marginal cost of one register unit at `R`.
-
-Define the price-adjusted reward for the DP:
+For each region `R`, maintain a dual price `λ[R] ≥ 0`, the marginal cost of
+one register unit at `R`. Define the price-adjusted reward:
 
 ```text
-reward(R, L) = benefit(R, L) - call_tax(R, L) - λ[R] * units(L)
+reward(R, L) = benefit(R, L) − call_tax(R, L) − λ[R] · units(L)
 ```
 
-All three terms are in weighted frame-op equivalents. The subtraction is
-meaningful.
+When `λ[R] = 0`, every local with positive `benefit − call_tax` wants
+residency. As `λ[R]` rises, weaker locals are priced out. The price balances
+demand (locals wanting residency) against supply (capacity).
 
-When `λ[R] = 0`, every local with `benefit > call_tax` wants residency.
-As `λ[R]` rises, weaker locals get priced out. The price balances supply
-(capacity) and demand (locals wanting residency).
+### 3.4 Step 4: Per-local tree DP
 
-#### Step 3: Per-local tree DP (the core)
-
-For fixed `λ`, each local `L` is an independent optimization on the region
-tree.
-
-The DP computes, for each region `R` and parent state `p ∈ {0,1}`, the
-maximum net value of the subtree rooted at `R`:
+For fixed `λ`, each local `L` becomes an independent optimization on the
+region tree. This is the key decomposition property of the Lagrangian
+relaxation: dualizing the per-region capacity constraint separates the
+locals, which otherwise compete for the same capacity.
 
 ```text
-DP[R, p] =
-    max over s ∈ {0,1} of:
-        V(R, p, s)
+DP[R, p] = max over s ∈ {0,1} of V(R, p, s)
 
-V(R, p, s) =
-    reward(R, L) * s
-  - edge_cost(p, s, R, L)
-  + Σ child C of R: DP[C, s]
+V(R, p, s) = reward(R, L) · s
+           − edge_cost(p, s, R, L)
+           + Σ child C of R: DP[C, s]
 ```
-
-Edge cost depends on whether `R` is the root or a loop:
-
-```text
-edge_cost(p, s, R, L) =
-    if p == s:
-        0
-    elif R is root:
-        // Function entry: materialize once. No restore on function return
-        // (the frame is discarded). Only pay when s=1 (adding a local).
-        if s == 1: entry_freq(root) * trans_cost(L)
-        else:      0   // root can't have p=1 (parent_state is always 0)
-    else:
-        // Loop boundary: pay on both entry and exit edges.
-        // Entry: ensure (if 0→1) or drop (if 1→0).
-        // Exit: reverse op to restore parent state.
-        (entry_freq(R) + exit_freq(R)) * trans_cost(L)
-```
-
-Note: the root is always evaluated with `p=0` (nothing cached before
-function entry), so the `s=0` branch of the root case is unreachable.
-The formula is stated explicitly for completeness.
 
 Solve bottom-up (leaves first). Extract decisions top-down starting from
-`DP[root, p=0]`.
+`DP[root, p = 0]`.
 
 Complexity: `O(regions)` per local per iteration.
 
-#### Step 4: Update capacity prices
+### 3.5 Step 5: Subgradient price update
 
-After solving all locals for the current `λ`:
+After solving all locals at the current `λ`:
 
 ```text
-demand[R] = Σ_L units(L) * x[R,L]
-overload[R] = demand[R] - cap(R)
-λ[R] = max(0, λ[R] + step * overload[R])
+demand[R]   = Σ_L units(L) · x[R,L]
+overload[R] = demand[R] − cap(R)
+λ[R]        = max(0, λ[R] + step · overload[R])
+step        = 1.0 / cap(R)
 ```
 
-A reasonable step size: `step = 1.0 / cap(R)`.
+Repeat Steps 4–5 for a small number of iterations. Convergence is fast
+because the region tree is small (typically 5–20 nodes), each local's DP is
+`O(regions)`, and most locals have clear benefit rankings with few on the
+margin.
 
-Repeat steps 3-4 for a small number of iterations (3-8).
+*Status.* The current implementation uses a fixed `PRICE_ITERS = 12`.
 
-Convergence is fast because:
+### 3.6 Step 6: Projection to feasibility
 
-- The region tree is small (typically 5-20 nodes)
-- Each local's DP is `O(regions)`
-- Most locals have clear benefit rankings; few are on the margin
-
-Status note:
-
-- The current implementation does this with a fixed `PRICE_ITERS = 12`.
-
-#### Step 5: Final projection
-
-After the last iteration, some regions may still slightly exceed capacity
-(the Lagrangian relaxation provides an upper bound, not a feasible solution).
-
-Project to feasibility using the DP's own subtree values:
+After the last iteration some regions may still exceed capacity. Lagrangian
+relaxation provides an upper bound on the primal, not a feasible solution,
+so a final projection is needed:
 
 ```text
 for each region R where demand[R] > cap(R):
     for each resident L at R:
-        marginal_value[L] = V(R, parent_state, s=1) - V(R, parent_state, s=0)
-        // This is the full subtree impact of removing L at R,
-        // including propagated effects on child regions.
+        marginal_value[L] = V(R, parent_state, s=1) − V(R, parent_state, s=0)
     sort residents by marginal_value ascending
     while demand[R] > cap(R):
         remove the lowest-marginal-value resident
         recompute affected child DP entries
-        demand[R] -= units(L)
+        demand[R] −= units(L)
 ```
 
-`marginal_value` uses the DP's own `V` function, which accounts for the
-subtree impact. A local that is cheap locally but stabilizes several child
-regions will have high marginal value and survive the projection.
+`marginal_value` uses the DP's own `V`, so it accounts for the subtree
+impact. A local that is cheap locally but stabilizes several child regions
+has high marginal value and survives the projection.
 
-Status note:
+*Status.* This is where the current code diverges most from the original
+sketch. The implementation performs a recursive per-region/bank feasible
+extraction using a capacity-constrained knapsack over the already-computed
+DP values, instead of a marginal-value projection pass. The substitution is
+an engineering convenience, not a material change to the algorithm.
 
-- This is the main place where the current code differs from the original
-  sketch. The implementation does a recursive per-region/bank feasible
-  extraction using a capacity-constrained knapsack over the already-computed DP
-  values, rather than a marginal-value projection pass.
+### 3.7 Emergent behavior
 
-### What emerges naturally
+Low-pressure function (10 locals, budget = 22). Every local has positive
+reward at `λ = 0`. Capacity is never tight. All locals are resident at root,
+no loop overrides. One stable global set, without asserting one.
 
-#### Low-pressure function (e.g. 10 locals, budget=22)
+Hot loop with different locals. High benefit inside the loop, low at the
+root. Transition cost amortizes over many iterations. A few locals appear at
+the loop boundary, a few parent locals drop. Root-plus-loop-override
+behavior, derived rather than hard-coded.
 
-All locals have positive reward at `λ=0`. Capacity is never tight. Every local
-is resident at root. No loop overrides (already resident everywhere).
+Call-heavy loop. `call_tax` reduces reward for every resident. The solver
+caches fewer locals near calls.
 
-Result: one stable set. Same as `ALGORITHM2`.
+Tiny cold loop. Low frequency, transition cost dominates. Parent state
+inherits; no override.
 
-#### Hot loop with different locals
+Tight budget (x86_64 = 9, ARMv7a = 8). Smaller `cap(R)` drives higher `λ`.
+Fewer locals resident anywhere, but still optimally chosen. On ARMv7a with
+`i64` locals, `units(L) = 2`, so each `i64` costs twice as much capacity and
+twice as much transition cost; the solver naturally prefers `i32` locals
+when capacity is tight.
 
-The DP finds high benefit inside the loop, low in the root. Transition cost is
-amortized over many iterations. The solver adds a few locals at the loop
-boundary and drops a few parent locals.
+## 4. Lane Mapping: Order-Aware Public Cache Placement
 
-Result: root + loop-specific override. Same as `ALGORITHM3`, but derived.
+### 4.1 Problem
 
-#### Call-heavy loop
-
-`call_tax` reduces reward for every resident. The solver naturally caches
-fewer locals in call-heavy loops.
-
-Result: smaller resident set near calls. No special logic.
-
-#### Tiny cold loop
-
-Low benefit (low freq). Transition cost dominates. Solver keeps parent state.
-
-Result: inherits parent. No overhead.
-
-#### x86_64 (budget=9) and ARMv7a (budget=8)
-
-Smaller `cap(R)` -> higher `λ`. Fewer locals resident anywhere. But the
-solver still allocates optimally given the budget.
-
-On ARMv7a with `i64` locals: `units(L) = 2`, so each `i64` costs twice as much
-capacity and twice as much transition cost. The solver naturally prefers `i32`
-locals when capacity is tight.
-
-### Integration with the pipeline
-
-```text
-1. cfg::build_semantic_cfg()             // unchanged
-2. slot_ssa::lower_slot_only_ssa()       // unchanged
-3. region_solver::solve()                // NEW: replaces joint_plan internals
-   a. build region tree from Wasm loop structure
-   b. compute benefit, call_tax, headroom, cap per (region, local)
-   c. run DP iterations with dual price updates (3-8 rounds)
-   d. extract final x[R,L] assignments
-4. rewrite::rewrite_function()           // SIMPLIFIED
-   - block_open: return region's public set
-   - no tentative/finalize loop
-   - no per-block cache selection
-   - emit ensure/drop only at region transitions
-5. cleanup::cleanup_program()            // mostly no-op
-6. optimize::optimize_program()          // unchanged
-7. sink_plan::plan_sinks()               // unchanged
-```
-
-The existing analysis infrastructure (`entry_region.rs` for access counts,
-`cfg.rs` for loop structure, `pressure.rs` for live-transient computation)
-provides the input data. The region solver replaces the per-block tentative
-entry logic in `joint_plan/build.rs`.
-
-Status note:
-
-- The overall split above is mostly implemented.
-- One detail is slightly different in the current code: rewrite still filters
-  the emitted `block_entry_cached_slots` down to the subset the block actually
-  needs to materialize or carry through, and then inserts edge repair blocks.
-- Rewrite also still has mid-block pressure fallback drops.
-
-### Lowering policy
-
-#### Public state
-
-At each block, the public state is `{L : x[Owner(B), L] = 1}`.
-
-All blocks in the same region share the same public state. No per-block
-variation.
-
-#### Private flex promotion
-
-Non-resident locals can be temporarily cached inside a block using spare
-register capacity. Private promotions die before the terminator.
-
-Status note:
-
-- This private flex promotion policy is not yet implemented as described here.
-- The current `local_access` policy is intentionally simpler: a local op uses
-  cache form if the slot is already resident or if the block's solved public
-  set includes it.
-
-#### Pressure fallback
-
-If a block's actual transient pressure exceeds headroom:
-
-1. Spill cold deep stack values
-2. Evict private flex promotions
-3. Temporarily evict weakest public local (rare, restore before terminator)
-
-Status note:
-
-- Rewrite does implement pressure fallback and weakest-public-local eviction.
-- Since private flex promotion is not yet implemented, the fallback currently
-  operates on public cached locals plus transient values.
-
-#### Region transitions
-
-At edges where `Owner(pred) ≠ Owner(succ)`:
-
-- `LocalDropCache` for locals in pred's state but not succ's state
-- `LocalEnsureCache` for locals in succ's state but not pred's state
-
-Emitted as:
-
-- Inline at end of predecessor (if single successor)
-- In a synthetic edge block (if needed for multi-predecessor targets)
-
-Status note:
-
-- This is implemented.
-- The current rewrite also uses `LocalReserveCache` for write-first block
-  entries that need the cache lane but not the incoming value.
-
-### Complexity budget
-
-| Phase | Cost |
-| --- | --- |
-| Region tree + inputs | `O(blocks × locals_accessed)` |
-| Per DP iteration | `O(locals × regions)` |
-| Price update | `O(regions)` |
-| Total solver (I iterations) | `O(I × locals × regions)` |
-| Final projection | `O(regions × locals × regions)` |
-| Total | `O(blocks × L + I × L × R)` |
-
-With `L=50`, `R=10`, `I=5`: solver = 2,500 ops. Negligible.
-With `L=200`, `R=50`, `I=8`: solver = 80,000 ops. Still fast.
-
-### Summary
-
-1. Formulate public residency as cost minimization in one unit system
-   (weighted frame-op equivalents): benefit minus call tax minus transition
-   cost, subject to per-region capacity.
-2. Solve on the Wasm region tree using per-local tree DP with capacity
-   dual prices. Mismatch cost is symmetric and charges both entry and exit.
-3. Lower each block with its region's solved public state. Private flex
-   promotion handles non-resident locals within blocks.
-
-Stability, loop overrides, call awareness, unit-cost sensitivity, and
-small-budget behavior all emerge from the cost model.
-
-## Lane Mapping: Order-Aware Public Cache Placement
-
-### Problem
-
-`ALGORITHM4.md` chooses the public resident set for each region:
-
-- which locals are public-resident
-- which locals are not
-
-It does not choose the physical cache lane for each resident local.
-
-That is a separate problem, and it matters.
+`ALGORITHM4` chooses the public resident set for each region; it does not
+choose the physical cache lane for each resident local. That is a separate
+problem, and it matters.
 
 Two regions can have almost the same resident set and still churn if shared
-locals slide to different lanes.
-
-Example:
+locals slide to different lanes. Example:
 
 ```text
 global deterministic order = [a, b, c]
-
 parent resident set = {a, c}
 child  resident set = {c}
 ```
 
-If the implementation always compacts by order, then:
+If the backend compacts by order:
 
 ```text
 parent lanes: a@0, c@1
 child  lanes: c@0
 ```
 
-`c` is resident on both sides, but still moves every time the edge executes.
-That is churn.
+`c` is resident on both sides but still moves every time the edge executes.
+The real public state is not just *resident set* but *resident set + lane
+map*.
 
-So the real public state is not just:
+### 4.2 Backend history
 
-```text
-resident set
-```
+Earlier versions of this backend imposed a deterministic compact order: middle
+IR carried `block_entry_cached_slots`, machine lowering built a global
+`cached_locals` order from first appearance, and each block's entry slots
+were sorted by that global order and assigned sequential dynamic registers.
+Deterministic, but not edge-optimal.
 
-It is:
+*Status.* This history is now historical. The current machine backend has a
+dedicated cache-layout pass in
+`sf-nano-core/src/vm/machine/lower_cache_layout.rs` implementing sticky
+inheritance, hole filling, and GP exact repack. What remains unimplemented
+is lane-remap cost feedback into `ALGORITHM4` and the subtree-stickiness
+objective described in §4.6.
 
-```text
-resident set + lane map
-```
+### 4.3 Goal
 
-### Current backend behavior
+Given a region tree from `ALGORITHM4` and a solved resident set `S[R]` per
+region and bank, choose for each region `R` a lane map `M[R, L]` = concrete
+lane segment for local `L`, such that:
 
-Today, the backend effectively imposes a deterministic compact order:
+1. shared locals keep the same lane across region edges whenever possible;
+2. dropped locals free lanes without forcing remaining locals to slide;
+3. new locals fill free holes before moving shared locals;
+4. unavoidable remap is performed with register moves, not frame churn;
+5. GP/FP banks and 32-bit `i64` pair constraints are respected.
 
-- middle IR carries `block_entry_cached_slots`
-- machine lowering builds a global `cached_locals` order from first appearance
-- each block's entry slots are sorted by that global order
-- entry cache params are then assigned sequential dynamic registers
-
-This is deterministic, but not edge-optimal.
-
-It avoids arbitrary order noise, but it still causes avoidable moves when:
-
-- a shared local stays resident across an edge
-- an earlier-ordered local is dropped or added
-- the shared local gets renumbered to a different lane by compaction
-
-Status note:
-
-- This section is now historical. The current machine backend has a dedicated
-  cache-layout pass in `sf-nano-core/src/vm/machine/lower_cache_layout.rs`.
-- That pass now does sticky inheritance, hole filling, and GP exact repack.
-- What is still not yet implemented is feeding remap cost back into
-  `ALGORITHM4`, plus the subtree-stickiness objective described below.
-
-### Goal
-
-Given:
-
-- a region tree from `ALGORITHM4`
-- a solved resident set `S[R]` for each region and bank
-
-Choose, for each region `R`, a lane map:
-
-```text
-M[R, L] = concrete lane segment for local L
-```
-
-such that:
-
-1. shared locals keep the same lane across region edges whenever possible
-2. dropped locals free lanes without forcing remaining locals to slide
-3. new locals fill free holes before moving shared locals
-4. remap, when unavoidable, is done with register moves, not frame churn
-5. GP/FP banks and 32-bit `i64` pair constraints are respected
-
-### Key rule
-
-Do not compact after drops.
+### 4.4 Key rule: do not compact after drops
 
 If a local is shared across an edge and its old lane is still legal, keep it
-there and leave holes behind dropped locals.
+there. Leave holes behind dropped locals. This is the main difference from
+compact-by-order behavior, and it is the same policy used by linear-scan
+allocators that track lifetime holes [[PS99](#ps99); [TWH98](#twh98)].
 
-This is the main difference from the current compact-by-order behavior.
+### 4.5 Data model
 
-### Data model
+Solve each bank independently. For one bank:
 
-Solve each bank independently.
-
-For one bank:
-
-- `K`: total physical dynamic lanes in that bank
-- `S[R]`: locals resident in region `R`
-- `w(L)`: width of local `L` in lane units
-  - `1` for normal GP/FP values
-  - `2` for GP `i64` on 32-bit
+- `K`: total physical dynamic lanes
+- `S[R]`: locals resident in `R`
+- `w(L)`: width of `L` in lane units (1 for normal GP/FP; 2 for GP `i64` on
+  32-bit)
 - `seg(i, w)`: contiguous lane interval `[i, i+w)`
-- `M[R, L]`: assigned segment for `L` in region `R`
+- `M[R, L]`: assigned segment for `L` in `R`
 
-Feasibility:
+Feasibility: `M[R, L]` exists iff `L ∈ S[R]`; segments do not overlap;
+`len(M[R, L]) = w(L)`; GP `i64` on 32-bit occupies a contiguous pair.
 
-- `M[R, L]` exists iff `L in S[R]`
-- segments do not overlap
-- `len(M[R, L]) = w(L)`
-- GP `i64` on 32-bit must occupy a contiguous pair
+### 4.6 Cost model
 
-### Cost model
+`ALGORITHM4` already prices add/drop membership changes, call tax, and
+capacity pressure. Lane mapping adds a secondary cost: the extra
+register-move cost from changing the lane of a local that is resident on
+both sides of an edge.
 
-`ALGORITHM4` already prices:
-
-- add/drop membership changes
-- call tax
-- public-capacity pressure
-
-Lane mapping adds a secondary cost: the extra register-move cost from
-changing the lane of a local that is resident on both sides of an edge.
-
-For one tree edge `P -> R`:
+For tree edge `P → R`:
 
 ```text
-extra_lane_cost(P -> R) =
-    sum over L in (S[P] ∩ S[R]):
-        edge_freq(P -> R) * move_cost(L) * [M[P,L] != M[R,L]]
+extra_lane_cost(P → R) =
+    Σ L ∈ (S[P] ∩ S[R]):
+        edge_freq(P → R) · move_cost(L) · [M[P,L] ≠ M[R,L]]
 ```
 
-Where:
+with `move_cost(L) = w(L)`. One register move per unit is a good v1
+approximation.
 
-```text
-move_cost(L) = w(L)
-```
+Only shared locals that change lanes pay extra lane cost. Add and drop costs
+are priced by `ALGORITHM4` and are not double-counted here.
 
-One register move per unit is a good v1 approximation.
-
-Important:
-
-- `L in S[P] \ S[R]`: add no lane cost here; that drop is already priced by
-  `ALGORITHM4`
-- `L in S[R] \ S[P]`: add no lane cost here; that ensure/reserve is already
-  priced by `ALGORITHM4`
-- only shared locals that change lanes pay extra lane cost
-
-#### Relationship to `ALGORITHM4`'s cost model
+#### 4.6.1 Relationship to `ALGORITHM4`'s cost model
 
 `ALGORITHM4`'s `edge_cost` does not include `extra_lane_cost`. The two cost
 models are intentionally separate in v1:
 
 - `ALGORITHM4` chooses resident sets assuming transitions cost
-  `(entry_freq + exit_freq) * trans_cost(L)` per membership change.
-- `LANE_MAPPING` minimizes the secondary lane-remap cost given those solved
-  sets.
+  `(entry_freq + exit_freq) · trans_cost(L)` per membership change.
+- Lane mapping minimizes the secondary lane-remap cost given those sets.
 
-This means `ALGORITHM4` may approve a transition that is slightly more
-expensive than it believes, because a shared local gets remapped. In practice,
-sticky inheritance and no-compaction make such remaps rare.
+`ALGORITHM4` may therefore approve a transition that is slightly more
+expensive than it believes, because a shared local gets remapped. In
+practice, sticky inheritance and no-compaction make such remaps rare. If
+profiling shows material remap cost, the fix is to add an estimated remap
+penalty back into `ALGORITHM4`'s `edge_cost` — a tuning change, not an
+architectural one.
 
-If profiling later shows material remap cost, the fix is to add an estimated
-remap penalty back into `ALGORITHM4`'s `edge_cost` function. That is a
-tuning change, not an architectural one.
+*Status.* This feedback loop is not yet implemented.
 
-Status note:
+### 4.7 Algorithm
 
-- This remap cost is still not fed back into the middle-end solver.
+Top-down region-tree assignment with sticky inheritance, a pattern used in
+biased-preferencing graph allocators [[CACCHM81](#cacchm81);
+[BCT94](#bct94)].
 
-### Output contract
+**Step 1: Root layout.** Choose a deterministic seed layout. Recommended:
 
-Lane mapping is a second phase after `ALGORITHM4`:
+1. sort root residents by (larger width first, larger `ALGORITHM4` root
+   marginal value first, then slot id);
+2. place them into the lowest legal free segments.
 
-1. `ALGORITHM4` chooses `S[R]`
-2. lane mapping chooses `M[R, L]`
+Global optimality at the root is not required — once chosen, child regions
+inherit from it, which is what removes churn.
 
-The mapping should live at machine-lowering level, not in the region solver.
+*Status.* The current implementation seeds layouts from the entry/root side
+deterministically but does not explicitly compute or use `ALGORITHM4` root
+marginal values.
 
-That keeps responsibilities clean:
-
-- `ALGORITHM4`: set selection
-- `LANE_MAPPING`: physical placement
-
-### Core algorithm
-
-Use a top-down region-tree assignment with sticky inheritance.
-
-#### Step 1: Root layout
-
-Choose one concrete mapping for the root.
-
-Root has no parent, so this is just a deterministic seed layout.
-
-Recommended policy:
-
-1. sort root residents by:
-   - larger width first
-   - larger `ALGORITHM4` root marginal value first
-   - tie by slot id
-2. place them into the lowest legal free segments
-
-This does not need to be globally optimal. Once chosen, child regions inherit
-from it, which is what removes churn.
-
-Status note:
-
-- The current machine implementation seeds layouts from the entry/root side and
-  uses deterministic ordering, but it does not explicitly compute or use
-  `ALGORITHM4` root marginal values.
-
-#### Step 2: Child inherits parent lanes
-
-For child region `R` with parent `P`, partition:
+**Step 2: Child inherits parent lanes.** For child `R` with parent `P`:
 
 ```text
 Keep = S[P] ∩ S[R]
@@ -738,88 +487,59 @@ Drop = S[P] \ S[R]
 Add  = S[R] \ S[P]
 ```
 
-Start `M[R]` by copying every kept local into the same segment:
+Start `M[R]` by copying every kept local into its parent segment:
 
 ```text
-for L in Keep:
-    M[R, L] = M[P, L]
+for L ∈ Keep: M[R, L] = M[P, L]
 ```
 
-This is the default. Shared locals do not move unless there is a concrete
-reason.
+Dropped locals disappear, leaving holes.
 
-Dropped locals simply disappear, leaving holes.
+**Step 3: Fill holes with new locals.** Assign `Add` into free segments:
 
-#### Step 3: Fill holes with new locals
+1. place width-2 locals first;
+2. prefer exact-fit holes;
+3. then best-fit holes;
+4. then lower lane index for determinism.
 
-Assign new locals from `Add` into the currently free segments.
+If all additions fit into holes, done.
 
-Policy:
+**Step 4: Rare micro-repack.** If fragmentation blocks additions, run a
+small exact search on the affected bank. This happens mainly for GP `i64`
+pairs on 32-bit (the current backend requires two adjacent dynamic regs;
+there is no even-parity alignment requirement — see `lower_context.rs` and
+`lower_regalloc.rs`) and for multiple additions competing for fragmented
+holes.
 
-1. place width-2 locals first
-2. prefer exact-fit holes
-3. then prefer best-fit holes
-4. then prefer lower lane index for determinism
+Frontier: all `Add` locals plus any `Keep` locals whose current segment
+overlaps a needed placement or blocks formation of a required contiguous
+hole. Do not repack the entire bank.
 
-If all additions fit into holes, stop. No shared local moved.
-
-#### Step 4: Rare micro-repack
-
-If additions do not fit because of fragmentation, run a small exact search on
-the affected bank.
-
-This only happens when contiguity matters, mainly:
-
-- GP `i64` on 32-bit requiring a contiguous pair (no even-parity alignment
-  requirement in the current backend: `lower_context.rs` and
-  `lower_regalloc.rs` only require two adjacent dynamic regs, not an
-  even-aligned pair)
-- multiple additions competing for fragmented holes
-
-Search frontier:
-
-- all `Add` locals
-- only those `Keep` locals whose current segment overlaps a needed placement or
-  blocks formation of a required contiguous hole
-
-Do not repack the entire bank by default.
-
-Objective for the frontier:
+Objective:
 
 ```text
 minimize
-    sum over L in Keep_frontier:
-        edge_freq(P -> R) * move_cost(L) * [new_seg(L) != M[P,L]]
+    Σ L ∈ Keep_frontier:
+        edge_freq(P → R) · move_cost(L) · [new_seg(L) ≠ M[P,L]]
 ```
 
-Secondary objective (recommended, not optional for v1):
+Secondary objective: prefer keeping high-stickiness locals in place (§4.8).
+Tie-break on lower lane indices.
 
-- prefer keeping high-stickiness locals in place (see below)
-- among equal-cost solutions, move less subtree-sticky locals first
+Exhaustive search is acceptable: x86_64 has 9 lanes, ARMv7a has 8. Even the
+all-scalar worst case is at most `8! = 40320` candidate layouts, and pair
+constraints shrink the feasible set further. In practice the frontier
+contains 2–4 locals, making the search trivially cheap.
 
-Final tie-break:
+*Status.* The current GP machine implementation has an exact repack that
+minimizes moved shared-local cost and prefers parent-preserved placement,
+but does not explicitly model subtree stickiness. FP does not have an
+analogous fragmented repack path.
 
-- lower lane indices
+### 4.8 Subtree stickiness
 
-Exhaustive search is acceptable. The hard-target GP bank sizes are tiny:
-x86_64 = 9 lanes, ARMv7a = 8 lanes. Even an all-scalar worst case is at most
-`8! = 40,320` candidate layouts. With pair constraints the feasible set is
-smaller. In practice the frontier contains 2-4 locals, making the search
-trivially cheap.
-
-Status note:
-
-- The current GP machine implementation does have an exact repack search.
-- It minimizes moved shared-local cost and prefers parent-preserved placement,
-  but it does not explicitly model subtree stickiness.
-- FP currently does not have an analogous exact fragmented repack path.
-
-### Subtree stickiness
-
-When micro-repack must choose which shared local to move, it should prefer to
-keep locals that remain resident through more of the subtree.
-
-Define:
+When micro-repack must choose which shared local to move, it should prefer
+to keep locals that remain resident through more of the subtree. Define:
 
 ```text
 stickiness(R, L) =
@@ -827,106 +547,68 @@ stickiness(R, L) =
 ```
 
 High-stickiness locals are expensive to move because all descendants inherit
-the moved lane. A move at region `R` does not directly force sibling regions
-to move (siblings inherit from the parent, not from each other), but it does
-propagate down into `R`'s descendants: every child, grandchild, etc. inherits
-the new lane, potentially creating new fragmentation and remap cascades in the
-subtree below.
-
+the moved lane. A move at `R` does not directly force siblings to move
+(siblings inherit from the parent), but it propagates into `R`'s
+descendants, potentially creating cascading fragmentation and remap damage.
 Low-stickiness locals (resident only in `R` and few descendants) are better
-move candidates.
+move candidates. This should be the default secondary objective in
+micro-repack, not an optional tie-break.
 
-This should be the default secondary objective in micro-repack, not an
-optional tie-break. The common case (inherit + fill holes) does not need it,
-but the rare fragmented case absolutely should consider subtree cost to avoid
-cascading remap damage.
+*Status.* Not explicitly implemented yet.
 
-Status note:
+### 4.9 Why holes are correct
 
-- This subtree-stickiness objective is not explicitly implemented yet.
-
-### Why holes are correct
-
-Leaving a hole is not waste.
-
-Example:
+Leaving a hole is not waste. Example:
 
 ```text
 parent: a@0, c@1
 child:  c@1
 ```
 
-Lane `0` is free in the child. That lane can still be used by transient values.
-The child does not need to compact `c` down to lane `0`.
+Lane 0 is free in the child and can still be used by transient values. The
+child does not need to compact `c` down to lane 0. Occupancy is sparse;
+shared locals preserve identity; transients use whatever dynamic lanes are
+free at the point of use. This is the behavior we want.
 
-So:
+### 4.10 Backend support
 
-- occupancy is sparse
-- shared locals preserve identity
-- transients use whatever dynamic lanes are free at the point of use
+Sparse lane assignment was not originally a backend property. The edge
+protocol is already explicit-reg based (edge stubs in `lower_module.rs`,
+`pipeline.rs`, `lower_inst.rs` thread specific reserved regs and emit
+parallel moves), so the required changes were:
 
-This is exactly what we want.
+1. `target_entry_cache_params()` accepts a sparse lane map instead of
+   compacting by order.
+2. `bind_cached_local_to_regs` binds to the map-specified lane, not the
+   next sequential register.
+3. Transient allocation skips occupied lanes instead of assuming a prefix
+   layout.
 
-### Backend prerequisites
+The edge ABI itself did not change.
 
-Sparse lane assignment is not an existing backend property. The current
-entry-lane code is compact and sequential:
+*Status.* The current machine backend implements sparse per-block cache
+layouts and threads explicit cache-entry params accordingly.
 
-- `target_entry_cache_params()` in `lower_context.rs` sorts block entry
-  slots by global `cached_locals` order and assigns sequential dynamic
-  registers.
-- `bind_cached_local_to_regs` and related functions assume a contiguous prefix of
-  dynamic registers holds cached locals.
+#### 4.10.1 Required edge cases
 
-However, the generic edge protocol is already explicit-reg based, not
-prefix-layout based. Edge stubs in `lower_module.rs`, `pipeline.rs`, and
-`lower_inst.rs` already thread specific reserved regs and emit parallel
-moves. So the real required change set is:
+1. Shared local, same lane: thread in-place with reserved-reg params. Zero
+   extra work.
+2. Shared local, different lane: emit parallel register moves in the edge
+   block. No frame load/store.
+3. Membership change: `Ensure/Reserve/Drop`, priced by `ALGORITHM4`.
 
-1. Replace compact entry assignment: `target_entry_cache_params()` must
-   accept a sparse lane map instead of compacting by order.
-2. Replace cache-binding assumptions: `bind_cached_local_to_regs` must bind to the
-   lane specified by the map, not the next sequential register.
-3. Transient allocation must skip occupied lanes: the allocator must treat
-   cache-occupied lanes as unavailable, not assume they form a prefix.
+Lane remap is not the same as membership repair. Boissinot et al.'s
+out-of-SSA translation work [[BDR+09](#bdr09)] covers the parallel-copy
+lowering on which step 2 rests.
 
-The edge ABI itself does not need to change.
+#### 4.10.2 Middle IR impact
 
-Status note:
+No middle-IR lane annotation is required for v1. Middle IR stays set-based
+(`block_entry_cached_slots`; `LocalEnsureCache` / `LocalDropCache` /
+`LocalReserveCache`). Lane mapping is computed at the machine layer, once
+exact bank sizes, lane widths, and the physical register file are known.
 
-- This prerequisites section is also now mostly historical.
-- The current machine backend does implement sparse per-block cache layouts and
-  threads explicit cache-entry params accordingly.
-- What remains missing is mostly in the objective refinement and special-case
-  search polish described elsewhere in this merged doc.
-
-#### Required edge cases
-
-When a shared local must change lanes, that should not become frame churn.
-The machine layer needs cache remap support via register moves:
-
-1. shared local, same lane: thread in-place with reserved-reg params.
-   Zero extra work.
-2. shared local, different lane: emit parallel register moves in the
-   edge block. No frame load/store.
-3. membership change: existing `Ensure/Reserve/Drop` behavior, already
-   handled by `ALGORITHM4`.
-
-Lane remap is not the same as membership repair.
-
-#### Middle IR impact
-
-No middle-IR lane annotation is required for v1.
-
-Middle IR stays set-based:
-
-- `block_entry_cached_slots`
-- `LocalEnsureCache` / `LocalDropCache` / `LocalReserveCache`
-
-Lane mapping is computed at the machine layer, once exact bank sizes, lane
-widths, and the physical register file are known.
-
-### Pseudocode
+### 4.11 Pseudocode
 
 ```text
 solve_lane_mapping(region_tree, resident_sets):
@@ -936,67 +618,310 @@ solve_lane_mapping(region_tree, resident_sets):
 
 assign_children(parent, bank):
     for child in children(parent):
-        M[child, bank] = inherit_kept_lanes(M[parent, bank], S[parent], S[child])
-
+        M[child, bank] = inherit_kept_lanes(M[parent, bank],
+                                            S[parent], S[child])
         if place_additions_into_holes(M[child, bank], S[child]):
             commit
         else:
             M[child, bank] = micro_repack(parent, child, bank)
-
         assign_children(child, bank)
 ```
 
-`micro_repack(parent, child, bank)`:
+## 5. Lowering Policy
+
+### 5.1 Public state
+
+At each block the public state is `{ L : x[Owner(B), L] = 1 }`. All blocks
+in the same region share the same public state. No per-block variation.
+
+### 5.2 Private flex promotion
+
+Non-resident locals can be temporarily cached inside a block using spare
+register capacity. Private promotions die before the terminator.
+
+*Status.* Not yet implemented as described. The current `local_access`
+policy is intentionally simpler: a local op uses cache form if the slot is
+already resident or if the block's solved public set includes it.
+
+### 5.3 Pressure fallback
+
+If a block's actual transient pressure exceeds headroom:
+
+1. spill cold deep stack values;
+2. evict private flex promotions;
+3. temporarily evict the weakest public local (rare; restore before
+   terminator).
+
+*Status.* Rewrite implements pressure fallback and weakest-public-local
+eviction. Since private flex promotion is not yet implemented, the fallback
+currently operates on public cached locals plus transient values.
+
+### 5.4 Region transitions
+
+At edges where `Owner(pred) ≠ Owner(succ)`:
+
+- `LocalDropCache` for locals in pred's state but not succ's state;
+- `LocalEnsureCache` for locals in succ's state but not pred's state.
+
+Emitted either inline at the end of the predecessor (single successor) or in
+a synthetic edge block (multi-predecessor targets).
+
+*Status.* Implemented. The current rewrite also uses `LocalReserveCache`
+for write-first block entries that need the cache lane but not the incoming
+value.
+
+## 6. Pipeline Integration
 
 ```text
-frontier = additions
-         + kept locals blocking required placements
-
-search all feasible assignments for frontier
-minimize moved shared-local cost
-keep non-frontier kept locals fixed
+1. cfg::build_semantic_cfg()
+2. slot_ssa::lower_slot_only_ssa()
+3. region_solver::solve()                // REPLACES per-block tentative logic
+   a. build region tree from Wasm loop structure
+   b. compute benefit, call_tax, headroom, cap per (region, local)
+   c. run DP iterations with dual price updates
+   d. extract final x[R,L]
+4. rewrite::rewrite_function()           // SIMPLIFIED
+   - block_open returns the region's public set
+   - no tentative/finalize loop
+   - no per-block cache selection
+   - ensure/drop only at region transitions
+5. cleanup::cleanup_program()
+6. optimize::optimize_program()
+7. sink_plan::plan_sinks()
 ```
 
-### Complexity
+The existing analysis (`entry_region.rs` for access counts, `cfg.rs` for
+loop structure, `pressure.rs` for live-transient counts) provides the input
+data. The region solver replaces the per-block tentative entry logic in
+`joint_plan/build.rs`.
 
-Common case:
+*Status.* The split above is largely implemented. Two residual details:
 
-- `O(|S[R]|)` per region
-- just inherit + fill holes
+1. Rewrite still filters `block_entry_cached_slots` down to the subset the
+   block actually needs and inserts edge repair blocks;
+2. Rewrite retains mid-block pressure fallback drops.
 
-Rare fragmented case:
+## 7. Complexity
 
-- exact search over a tiny frontier
-- frontier is usually very small because most locals remain fixed
+| Phase | Cost |
+| --- | --- |
+| Region tree + inputs | `O(blocks × locals_accessed)` |
+| Per DP iteration | `O(locals × regions)` |
+| Price update | `O(regions)` |
+| Total solver (I iterations) | `O(I × locals × regions)` |
+| Final projection | `O(regions × locals × regions)` |
+| Total | `O(blocks · L + I · L · R)` |
 
-This is cheap enough for a JIT because:
+With `L = 50, R = 10, I = 5`: solver ≈ 2,500 ops. Negligible.
+With `L = 200, R = 50, I = 8`: solver ≈ 80,000 ops. Still fast.
 
-- lane count is small
-- region count is small
-- micro-repack is uncommon
+This fits well within a JIT budget and does not require amortization.
 
-### Relationship to `ALGORITHM4`
+## 8. Implementation Status Summary
 
-`ALGORITHM4` is still the right algorithm for choosing which locals should
-be public-resident.
+Implemented:
 
-This document adds the missing second half:
+- Region solver `region_solver.rs` (resident-set selection with Lagrangian
+  DP).
+- Edge repair at region transitions (`LocalEnsureCache`, `LocalDropCache`,
+  `LocalReserveCache`).
+- Sparse per-block cache layouts and explicit cache-entry params.
+- Machine-side lane-mapping pass `lower_cache_layout.rs` with sticky
+  inheritance, hole filling, and GP exact repack.
+- Rewrite-time pressure fallback with weakest-public-local eviction.
 
-- `ALGORITHM4`: resident-set optimization
-- `LANE_MAPPING`: physical lane preservation
+Not yet implemented:
 
-Without this phase, membership churn is reduced but not eliminated.
-With this phase, stability extends to lane identity as well.
+- Private flex promotion for non-resident locals.
+- Lane-remap cost feedback into `ALGORITHM4`'s residency objective.
+- Subtree-stickiness as an explicit objective in machine-side micro-repack.
+- Exact fragmented FP micro-repack analogous to the GP exact search.
+- Literal `MIN_HEADROOM = 3` floor (rewriter covers the residual cases).
 
-### Summary
+## 9. Related Work
 
-The correct public-cache pipeline is:
+### 9.1 Hierarchical and region-based register allocation
 
-1. solve resident sets by cost (`ALGORITHM4`)
-2. assign concrete lanes per region with sticky inheritance
-3. leave holes after drops instead of compacting
-4. fill holes with additions
-5. only remap shared locals when fragmentation makes it necessary
-6. lower remaps as register moves, not frame reload/store churn
+The closest overall architectural precedent is Callahan and Koblenz's
+hierarchical graph coloring [[CK91](#ck91)], which builds a tile tree from
+loop nesting and allocates hierarchically, using preferencing to bias colors
+at tile boundaries. A later study [[CK05](#ck05)] compares it with
+Chaitin-Briggs. Lueh, Gross, and Adl-Tabatabai's graph-fusion allocator
+[[LGA00](#lga00)] is another region-based approach that uses program
+structure to guide splitting and spilling decisions.
 
-That is the missing piece needed to make public residency actually stable.
+`ALGORITHM4` adopts the tile-tree idea but replaces per-tile graph coloring
+with per-local tree DP coupled through Lagrangian capacity prices. The
+dimensions swap: Callahan-Koblenz is per-tile (solve all locals at a tile,
+propagate across tiles), whereas this work is per-local (solve one local on
+the whole tree at fixed prices, iterate to balance capacity).
+
+### 9.2 Register promotion
+
+Cooper and Lu [[CL97](#cl97)] address a problem very close to this one —
+deciding when to keep memory values in registers across program regions —
+using SSA and dominance analysis rather than optimization. Their region
+shape and the transition-cost intuition are similar; the mechanism differs.
+
+### 9.3 SSA-based register allocation
+
+Hack, Grund, and Goos [[HGG06](#hgg06)] observe that SSA interference graphs
+are chordal and decouple coloring, spilling, and coalescing. This work
+inherits that spirit in separating set selection (§3) from lane placement
+(§4), though on a different substrate.
+
+### 9.4 Lagrangian relaxation and ILP approaches
+
+Lagrangian relaxation of integer programs is classical [[Fis81](#fis81)].
+Its application to compiler problems is less common, but Appel and George's
+optimal spilling work [[AG01](#ag01)] shows that ILP-based allocation can
+be practical. This work differs in two ways: (i) it uses Lagrangian
+relaxation rather than full ILP, and (ii) the relaxation decomposes the
+problem along the *local* axis so each subproblem is a tree DP, making
+primal recovery trivially fast. The fit is exactly what the JIT setting
+needs.
+
+### 9.5 Tree DP for register decisions
+
+The Sethi-Ullman algorithm [[SU70](#su70)] is the foundational tree DP for
+register allocation on expression trees, generalized by Appel and Supowit
+[[AS87](#as87)]. `ALGORITHM4`'s per-local tree DP operates on a different
+tree (regions, not expressions) and a different per-node decision (residency,
+not evaluation order), but shares the pattern.
+
+### 9.6 Linear scan and lifetime holes
+
+Poletto and Sarkar's linear scan [[PS99](#ps99)] is the canonical fast
+allocator; Traub, Holloway, and Smith [[TWH98](#twh98)] extend it with
+lifetime holes. The "don't compact after drops, fill holes later" policy
+in §4 is the same idea.
+
+### 9.7 Biased preferencing and SSA destruction
+
+Chaitin et al.'s original graph coloring allocator [[CACCHM81](#cacchm81)]
+and Briggs, Cooper, and Torczon's refinements [[BCT94](#bct94)] pioneered
+coalescing and biasing for move minimization across moves and copies.
+Boissinot and collaborators' work on liveness and out-of-SSA translation
+[[BHM+08](#bhm08); [BDR+09](#bdr09)] covers the parallel-copy lowering
+required at the machine layer for lane remaps.
+
+### 9.8 WebAssembly baseline compilation
+
+Haas et al. describe the Wasm design rationale [[HRS+17](#hrs17)]. V8's
+Liftoff [[V8L18](#v8l18)] and Titzer's survey of baseline compilers
+[[Tit23](#tit23)] establish the context in which this work sits: structured
+CFG, single-pass compilation, and the register-allocation-in-baseline
+tradition that motivates treating the public-cache problem as a
+self-contained middle-end phase.
+
+### 9.9 What is new
+
+The specific Lagrangian decomposition that makes each local an independent
+tree DP problem on a Wasm region tree, with asymmetric root-vs-loop boundary
+costs and an explicit subtree-stickiness tie-breaker in lane mapping, is —
+to our knowledge — novel in combination. Each ingredient has prior art; the
+assembled recipe does not. The practical contribution is more accurately
+described as a fit argument: Wasm's structured CFG and the JIT cost budget
+make an otherwise textbook formulation directly deployable.
+
+## 10. Summary
+
+1. Public residency is formulated as cost minimization in one unit system
+   (weighted frame-op equivalents): benefit minus call tax minus transition
+   cost, subject to per-region capacity.
+2. The problem is solved on the Wasm region tree using per-local tree DP
+   with capacity dual prices. Mismatch cost is symmetric and charges both
+   entry and exit at loop boundaries; root pays only one-time entry
+   materialization.
+3. Lane mapping is a second phase: sticky inheritance from the parent, holes
+   after drops, fill holes with additions, micro-repack with register moves
+   only when fragmentation forces it.
+4. Stability, loop overrides, call awareness, unit-cost sensitivity, and
+   small-budget behavior all emerge from the cost model rather than being
+   hard-coded.
+
+The algorithm is standard in its components and uncommon only in its fit:
+the region tree is free, the subproblems are small, and the Lagrangian
+iteration is cheap enough for a JIT. That fit is the contribution.
+
+## References
+
+<a id="ag01"></a>
+**[AG01]** Andrew W. Appel and Lal George. *Optimal spilling for CISC
+machines with few registers.* PLDI 2001, pp. 243–253.
+
+<a id="as87"></a>
+**[AS87]** Andrew W. Appel and Kenneth J. Supowit. *Generalizations of the
+Sethi-Ullman algorithm for register allocation.* Software: Practice and
+Experience, 17(6):417–421, 1987.
+
+<a id="bct94"></a>
+**[BCT94]** Preston Briggs, Keith D. Cooper, and Linda Torczon.
+*Improvements to graph coloring register allocation.* ACM TOPLAS
+16(3):428–455, 1994.
+
+<a id="bdr09"></a>
+**[BDR+09]** Benoit Boissinot, Alain Darte, Fabrice Rastello, Benoît Dupont
+de Dinechin, and Christophe Guillon. *Revisiting out-of-SSA translation for
+correctness, code quality, and efficiency.* CGO 2009.
+
+<a id="bhm08"></a>
+**[BHM+08]** Benoit Boissinot, Sebastian Hack, Daniel Grund, Benoît Dupont
+de Dinechin, and Fabrice Rastello. *Fast liveness checking for SSA-form
+programs.* CGO 2008.
+
+<a id="cacchm81"></a>
+**[CACCHM81]** Gregory J. Chaitin, Marc A. Auslander, Ashok K. Chandra, John
+Cocke, Martin E. Hopkins, and Peter W. Markstein. *Register allocation via
+coloring.* Computer Languages 6(1):47–57, 1981.
+
+<a id="ck91"></a>
+**[CK91]** David Callahan and Brian Koblenz. *Register allocation via
+hierarchical graph coloring.* PLDI 1991, pp. 192–203.
+
+<a id="ck05"></a>
+**[CK05]** Keith D. Cooper, Anshuman Dasgupta, and Jason Eckhardt.
+*Revisiting graph coloring register allocation: a study of the
+Chaitin-Briggs and Callahan-Koblenz algorithms.* LCPC 2005.
+
+<a id="cl97"></a>
+**[CL97]** Keith D. Cooper and John Lu. *Register promotion in C programs.*
+PLDI 1997.
+
+<a id="fis81"></a>
+**[Fis81]** Marshall L. Fisher. *The Lagrangian relaxation method for
+solving integer programming problems.* Management Science 27(1):1–18, 1981.
+
+<a id="hgg06"></a>
+**[HGG06]** Sebastian Hack, Daniel Grund, and Gerhard Goos. *Register
+allocation for programs in SSA-form.* Compiler Construction 2006 (LNCS
+3923), pp. 247–262.
+
+<a id="hrs17"></a>
+**[HRS+17]** Andreas Haas, Andreas Rossberg, Derek L. Schuff, Ben L.
+Titzer, Michael Holman, Dan Gohman, Luke Wagner, Alon Zakai, and JF
+Bastien. *Bringing the web up to speed with WebAssembly.* PLDI 2017.
+
+<a id="lga00"></a>
+**[LGA00]** Guei-Yuan Lueh, Thomas Gross, and Ali-Reza Adl-Tabatabai.
+*Fusion-based register allocation.* ACM TOPLAS 22(3):431–470, 2000.
+
+<a id="ps99"></a>
+**[PS99]** Massimiliano Poletto and Vivek Sarkar. *Linear scan register
+allocation.* ACM TOPLAS 21(5):895–913, 1999.
+
+<a id="su70"></a>
+**[SU70]** Ravi Sethi and Jeffrey D. Ullman. *The generation of optimal
+code for arithmetic expressions.* Journal of the ACM 17(4):715–728, 1970.
+
+<a id="tit23"></a>
+**[Tit23]** Ben L. Titzer. *Whose baseline compiler is it anyway?* arXiv
+preprint arXiv:2305.13241, 2023.
+
+<a id="twh98"></a>
+**[TWH98]** Omri Traub, Glenn Holloway, and Michael D. Smith. *Quality and
+speed in linear-scan register allocation.* PLDI 1998.
+
+<a id="v8l18"></a>
+**[V8L18]** Clemens Backes et al. *Liftoff: a new baseline compiler for
+WebAssembly in V8.* V8 blog, 2018.
