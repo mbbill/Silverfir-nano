@@ -1,6 +1,6 @@
 # Silverfir-nano
 
-## A compact, secure WebAssembly JIT engine built for on-device AI — from Apple silicon down to a Raspberry Pi Pico 2.
+## A compact, optimizing WebAssembly JIT for on-device AI.
 
 Silverfir-nano is a `no_std` WebAssembly JIT engine designed around four
 things that matter when you want to run AI on edge devices:
