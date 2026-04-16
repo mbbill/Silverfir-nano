@@ -46,19 +46,33 @@ Silverfir-nano closes that gap: a single small engine that verifies and
 JITs the guest on the device itself, on everything from an M4 laptop to a
 tiny MCU.
 
-## Headline: JIT WebAssembly on a Cortex-M
+## One engine, from x86_64 to Cortex-M
 
-Silverfir-nano ships a **Thumb-2 backend** covering
-**ARMv7-M and above**. It generates native Thumb-2 code into a small
-executable SRAM arena and executes it in place.
+Silverfir-nano has four native backends:
 
-What makes that possible is not any one trick but the shape of the compiler:
+- **x86_64**
+- **ARM64 (A64)**
+- **ARMv7-A (A32)**
+- **ARMv7-M and above (Thumb-2)** — tested through ARMv8-M / Cortex-M33
+
+They all share the same frontend, middle-end, and register allocator.
+Codegen quality doesn't degrade as you step down to smaller targets: the
+same compiler that produces Cranelift-competitive output on Apple M4 also
+runs on a Raspberry Pi Pico 2 (RP2350, Cortex-M33), emitting native Thumb-2
+into a small executable SRAM arena and running it in place.
+
+Most WebAssembly runtimes aimed at microcontrollers are interpreters, often
+with instruction fusion or a threaded dispatcher on top. Silverfir-nano takes
+a different route and emits native machine code on the device itself, even
+on a Cortex-M.
+
+What makes that credible is not any one trick but the shape of the compiler:
 
 - **The compiler pipeline is streamable end-to-end.** Each IR transform
   stage — Wasm decode, semantic IR, SSA-IR, MachineIR, native emission —
   consumes its input and produces its output incrementally, per function.
   A fully materialized IR for the whole module is never held in memory,
-  which is what makes JIT-on-MCU credible in the first place.
+  which is what makes JIT-on-MCU possible at all.
 - **The middle-end allocator is designed for JIT budget *and* good
   codegen.** `ALGORITHM4` is a region-based cost-optimal public-cache
   residency allocator driven by Lagrangian relaxation over the structured
@@ -66,10 +80,6 @@ What makes that possible is not any one trick but the shape of the compiler:
   in a few thousand operations, and the output competes with what much
   heavier optimizing compilers produce. See `docs/ALGORITHM4.md` for the
   full treatment.
-
-Backends currently supported: **ARM64 (A64)**, **ARMv7-A (A32)**,
-**ARMv7-M and above (Thumb-2, tested through ARMv8-M / Cortex-M33)**, and
-**x86_64**.
 
 ## Performance (Apple M4)
 
