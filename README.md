@@ -1,58 +1,93 @@
 # Silverfir-nano
 
-## A compact no_std WebAssembly JIT engine that goes head-to-head with V8 and Wasmtime.
+## A compact, secure WebAssembly JIT engine built for on-device AI — from Apple silicon down to a Raspberry Pi Pico 2.
 
+Silverfir-nano is a `no_std` WebAssembly JIT engine designed around four
+things that matter when you want to run AI on edge devices:
 
-On Apple M4, Silverfir-nano **beats Wasmtime's Cranelift** on multiple benchmarks and **goes head-to-head with V8 TurboFan**, while staying ultra-compact and `no_std`-compatible.
+1. **Small** — the minimal stripped binary lives in the few-hundred-KB range,
+   with zero runtime dependencies and only `alloc` required.
+2. **Fast** — not a single-pass baseline JIT. Silverfir-nano emits
+   register-allocated, region-optimized native code: on Apple M4 it beats
+   Wasmtime's fully-optimizing Cranelift on most workloads and goes
+   head-to-head with V8 TurboFan. The same engine, same codegen quality,
+   also runs on a Raspberry Pi Pico 2 — an optimizing Wasm JIT on a
+   Cortex-M is something the field hasn't really seen before.
+3. **Secure** — every guest runs inside the WebAssembly sandbox:
+   memory-isolated, capability-gated, portable, and auditable. You ship a
+   `.wasm` binary, not a pre-compiled machine-code blob — so the artifact you
+   deploy is the same one you can re-verify on-device before it ever runs.
+   No native plugins, no ad-hoc FFI trust boundaries.
+4. **Updatable** — one `.wasm` blob, one verification surface, atomic swap in
+   the field. The runtime stays fixed; models, policies, and agent tools move
+   as portable artifacts.
 
-## Performance
+## Why this matters for edge AI
 
-All benchmarks on Apple M4 (MacBook Air, macOS 26). Silverfir vs Wasmtime Cranelift (optimizing JIT) and V8 TurboFan (Node.js 25.4).
+Edge AI devices don't look like servers. They have kilobytes-to-megabytes of
+RAM, tight power budgets, and a hard requirement to stay updatable in the
+field without becoming a supply-chain incident.
+
+The usual options force a bad trade:
+
+- **Native code per device** — fast, but no sandbox, no portable updates,
+  and every shipped binary is a fresh attack surface.
+- **Ahead-of-time Wasm toolchains** — portable in theory, but the thing
+  you actually ship to the device is a relocatable machine-code binary.
+  That artifact is much harder to verify than the original `.wasm`, and a
+  corrupted or tampered AOT blob is indistinguishable from a valid one
+  without a separate signing and attestation path. You've traded the Wasm
+  sandbox for "trust the builder."
+- **Pure interpreters on MCU** — tiny and safe, but an order of magnitude
+  too slow for anything resembling on-device inference, DSP, or fast agent
+  tool use.
+
+Silverfir-nano closes that gap: a single small engine that verifies and
+JITs the guest on the device itself, on everything from an M4 laptop to a
+tiny MCU.
+
+## Headline: JIT WebAssembly on a Cortex-M
+
+Silverfir-nano ships a **Thumb-2 backend** covering
+**ARMv7-M and above**. It generates native Thumb-2 code into a small
+executable SRAM arena and executes it in place.
+
+What makes that possible is not any one trick but the shape of the compiler:
+
+- **The compiler pipeline is streamable end-to-end.** Each IR transform
+  stage — Wasm decode, semantic IR, SSA-IR, MachineIR, native emission —
+  consumes its input and produces its output incrementally, per function.
+  A fully materialized IR for the whole module is never held in memory,
+  which is what makes JIT-on-MCU credible in the first place.
+- **The middle-end allocator is designed for JIT budget *and* good
+  codegen.** `ALGORITHM4` is a region-based cost-optimal public-cache
+  residency allocator driven by Lagrangian relaxation over the structured
+  region tree that Wasm gives for free. It runs per-function at JIT scale
+  in a few thousand operations, and the output competes with what much
+  heavier optimizing compilers produce. See `docs/ALGORITHM4.md` for the
+  full treatment.
+
+Backends currently supported: **ARM64 (A64)**, **ARMv7-A (A32)**,
+**ARMv7-M and above (Thumb-2, tested through ARMv8-M / Cortex-M33)**, and
+**x86_64**.
+
+## Performance (Apple M4)
+
+Silverfir vs Wasmtime Cranelift (optimizing JIT) and V8 TurboFan (Node.js 25.4).
 
 ### Integer / Control Flow
-
 ![Integer benchmarks](benchmarks/wasi/benchmark_integer.svg)
 
 ### Lua Interpreter
-
 ![Lua benchmarks](benchmarks/wasi/benchmark_lua.svg)
 
 ### Floating Point
-
 ![FP benchmarks](benchmarks/wasi/benchmark_fp.svg)
 
 ### Memory Bound (STREAM)
-
 ![Memory benchmarks](benchmarks/wasi/benchmark_memory.svg)
 
-### Summary
-
-See the charts above and [full benchmark results](benchmarks/wasi/RESULTS.md) for numbers.
-
-## Highlights
-
-- **Competes with optimizing JITs** — beats Cranelift on CoreMark and Lua benchmarks, beats V8 on STREAM and floating-point workloads
-- **Compact** — the minimal `no_std` JIT binary stays in the few-hundred-KB range stripped, with zero runtime dependencies; exact size depends on target, toolchain, and enabled features
-- **Full WebAssembly 2.0** — multi-value, reference types, bulk memory, multiple tables
-- **`no_std`** — core library requires only `alloc`; runs on embedded and bare-metal
-
-## Architecture
-
-Silverfir-nano uses a micro-JIT that translates WebAssembly to native ARM64 machine code at function granularity. Key techniques:
-
-- **Native code generation** — direct ARM64 emission, no interpreter dispatch overhead
-- **Register allocation** — maps WebAssembly locals and stack to hardware registers
-- **Inline operations** — arithmetic, comparisons, and memory access compiled to native instructions
-
-## Interpreter-Only Mode
-
-If you need a pure interpreter without JIT (e.g., for platforms without executable memory), check out the `interp` branch:
-
-```bash
-git checkout interp
-```
-
-This branch includes the fast interpreter with instruction fusion and register caching, but no native code generation.
+See [full benchmark results](benchmarks/wasi/RESULTS.md)
 
 ## Building
 
@@ -66,23 +101,25 @@ cargo build --release
 # Run benchmarks
 python3 benchmarks/wasi/run_tests.py
 
-# Run benchmarks in V8 (Node.js)
+# Run the full validation gate (feature matrix, target matrix, spectest, WASI)
+./scripts/check_all.sh
+
+# Run only the WASI testsuite matrix
+./scripts/wasitest_all.sh
+
+# Run benchmarks under V8 (Node.js) for comparison
 node benchmarks/wasi/run_v8.mjs
 
-# Minimal no_std build (few-hundred-KB stripped, no WASI, JIT only)
-# Must be built standalone (excluded from workspace due to no_std)
+# Minimal no_std build (~400 KB stripped, no WASI, JIT only).
+# Built standalone — excluded from the workspace due to no_std.
 cd sf-nano-cli-minimal && cargo run --release
 ```
 
-## WebAssembly 2.0 Compatibility
+## WebAssembly Compatibility
 
-Tested against the official [WebAssembly spec testsuite](https://github.com/WebAssembly/spec/tree/main/test):
-
-- Multi-value returns
-- Reference types (`funcref`, `externref`)
-- Bulk memory operations
-- Multiple tables
-- Mutable globals import/export
+Silverfir-nano covers a substantial parts
+of WebAssembly 3.0, validated against the official
+[WebAssembly spec testsuite](https://github.com/WebAssembly/spec/tree/main/test).
 
 ## License
 
