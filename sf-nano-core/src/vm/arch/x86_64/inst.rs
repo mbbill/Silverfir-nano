@@ -329,12 +329,23 @@ impl<'a> X86_64Backend<'a> {
                 MachineFloatWidth::F64 => enc::xorpd(&mut self.core.text, dst_fp, dst_fp),
             };
         } else {
-            let scratch = self.gp_scratch.scoped_alloc().detach();
-            self.materialize_u64(*scratch, imm);
-            match width {
-                MachineFloatWidth::F32 => enc::movd_xmm_r32(&mut self.core.text, dst_fp, *scratch),
-                MachineFloatWidth::F64 => enc::movq_xmm_r64(&mut self.core.text, dst_fp, *scratch),
+            // Emit a RIP-relative load from the per-function constant pool.
+            // The pool is emitted at end-of-body by
+            // `lower_function_literal_pool`, which dedupes values and
+            // patches the disp32 of every fixup recorded here.
+            let disp32_offset = match width {
+                MachineFloatWidth::F32 => {
+                    enc::movss_xmm_rip_rel32(&mut self.core.text, dst_fp)
+                }
+                MachineFloatWidth::F64 => {
+                    enc::movsd_xmm_rip_rel32(&mut self.core.text, dst_fp)
+                }
             };
+            self.fp_const_fixups
+                .push(super::backend::FpConstFixup {
+                    disp32_offset,
+                    value: imm,
+                });
         }
         self.core.set_fp_reg_width(dst, width)?;
         Ok(())

@@ -20,7 +20,7 @@ use super::{
 use crate::vm::arch::common::helpers::trap_code;
 use crate::vm::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
 use crate::vm::arch::shared_64::is_fallthrough_edge;
-use crate::vm::runtime::{external::call_external_entry_ptr, trap::raise_trap};
+use crate::vm::runtime::trap::raise_trap;
 
 impl<'a> X86_64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────
@@ -348,8 +348,6 @@ impl<'a> X86_64Backend<'a> {
         let body_local_error_label = self.core.body_local_error_label;
         let continuation_label = self.core.block_label(continuation)?;
         let continuation_is_fallthrough = fallthrough == Some(continuation);
-        let call_scratch = self.gp_scratch.claim_rax().detach();
-
         // Push the call record: caller_fp at higher slot, caller_result_base
         // at lower slot. Matches the layout consumed by the body's unified
         // Return and body_local_error_tail.
@@ -359,16 +357,14 @@ impl<'a> X86_64Backend<'a> {
         // Switch fp_reg to the callee's frame base.
         enc::mov_rr_64(&mut self.core.text, fp_reg, callee_fp);
 
-        // Load the callee's internal entry address via patchable movabs.
-        enc::movabs_ri_64(&mut self.core.text, *call_scratch, 0);
-        let callee_imm_offset = self.core.text.len() - 8;
+        // CALL rel32 — patched at module-link time with a buffer-relative
+        // displacement to the callee's internal entry. All functions live
+        // in the same code buffer, so rel32 always reaches.
+        let rel32_offset = enc::call_rel32(&mut self.core.text);
         self.core.direct_call_patches.push(DirectCallPatch {
-            literal_offset: callee_imm_offset,
+            literal_offset: rel32_offset,
             callee,
         });
-        // CALL scratch — pushes the return address (= this call site's
-        // fall-through) onto the host stack.
-        enc::call_reg(&mut self.core.text, *call_scratch);
 
         // --- callee returns here. C_RET0 holds 0 (success) or trap kind
         //     (error). Status check propagates to body_local_error_label.
@@ -434,8 +430,10 @@ impl<'a> X86_64Backend<'a> {
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
         enc::mov_rr_64(&mut self.core.text, C_ARG1, map_fixed_reg(MACHINE_FP_REG));
         self.materialize_u64(C_ARG2, metadata as u64);
+        // Load the external-call entry pointer from the stash slot at [rsp]
+        // set up by `lower_body_prelude`. Saves a 10-byte movabs per site.
         let call_scratch = self.gp_scratch.claim_rax().detach();
-        self.materialize_u64(*call_scratch, call_external_entry_ptr() as usize as u64);
+        enc::load_64(&mut self.core.text, *call_scratch, X86Reg::RSP, 0);
         enc::call_reg(&mut self.core.text, *call_scratch);
 
         // Nonzero helper status → propagate via body_local_error_label.

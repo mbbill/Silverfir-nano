@@ -229,7 +229,28 @@ fn patch_code_buffer_word(
     value: usize,
 ) {
     match patch_encoding(active_backend) {
-        PendingPatchEncoding::U64 => executable.patch_u64(code_offset, value as u64),
+        PendingPatchEncoding::U64 => {
+            // x86_64: the backend may emit `call rel32` (E8 cd) instead of
+            // the legacy `movabs + call *rax`. Detect via the opcode byte
+            // immediately before the patch slot and write a rel32
+            // displacement instead of an absolute u64.
+            #[cfg(sf_arch_x64)]
+            if matches!(active_backend, arch::NativeBackend::X86_64)
+                && code_offset >= 1
+                && executable.byte(code_offset - 1) == 0xE8
+            {
+                let call_site_abs = unsafe { executable.ptr(code_offset) } as usize;
+                let next_inst_abs = call_site_abs + 4;
+                let rel = (value as isize).wrapping_sub(next_inst_abs as isize);
+                debug_assert!(
+                    (i32::MIN as isize..=i32::MAX as isize).contains(&rel),
+                    "x86_64 direct call rel32 overflow",
+                );
+                executable.patch_u32(code_offset, (rel as i32) as u32);
+                return;
+            }
+            executable.patch_u64(code_offset, value as u64)
+        }
         #[cfg(any(sf_arch_armv7a, sf_arch_thumbm))]
         PendingPatchEncoding::MovwMovt => {
             #[cfg(any(sf_arch_armv7a, sf_arch_thumbm))]

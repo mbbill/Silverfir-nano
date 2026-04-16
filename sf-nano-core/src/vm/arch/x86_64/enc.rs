@@ -1060,6 +1060,37 @@ pub(crate) fn xorps(e: &mut TextEmitter, dst: Xmm, src: Xmm) {
     sse_rr(e, 0, 0x0F, 0x57, dst, src);
 }
 
+// --- FP RIP-relative loads (constant pool) ---
+
+/// Internal helper: emit `[prefix] [REX.R] 0F 10 ModRM(mod=00,rm=101) disp32`.
+/// Returns the offset of the 4-byte `disp32` field so the caller can patch it.
+fn sse_load_rip_rel32(e: &mut TextEmitter, prefix: u8, dst: Xmm) -> usize {
+    if prefix != 0 {
+        e.emit_u8(prefix);
+    }
+    if dst >= 8 {
+        e.emit_u8(rex(false, true, false, false));
+    }
+    e.emit_u8(0x0F);
+    e.emit_u8(0x10);
+    // ModRM: mod=00, reg=dst[0..3], rm=101 (RIP-relative)
+    e.emit_u8(modrm(0b00, dst & 7, 0b101));
+    let patch = e.len();
+    emit_i32(e, 0);
+    patch
+}
+
+/// MOVSD xmm, [RIP + disp32] — F2 [REX.R] 0F 10 /r disp32.
+/// Returns the offset of the disp32 field for later patching.
+pub(crate) fn movsd_xmm_rip_rel32(e: &mut TextEmitter, dst: Xmm) -> usize {
+    sse_load_rip_rel32(e, 0xF2, dst)
+}
+
+/// MOVSS xmm, [RIP + disp32] — F3 [REX.R] 0F 10 /r disp32.
+pub(crate) fn movss_xmm_rip_rel32(e: &mut TextEmitter, dst: Xmm) -> usize {
+    sse_load_rip_rel32(e, 0xF3, dst)
+}
+
 // --- FP conversions ---
 
 /// CVTSD2SS xmm, xmm (F64 -> F32): F2 0F 5A

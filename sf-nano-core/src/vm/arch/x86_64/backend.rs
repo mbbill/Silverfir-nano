@@ -72,12 +72,25 @@ pub(crate) struct CompiledX86_64Entry {
 
 // ── X86_64Backend ────────────────────────────────────────────────────────────
 
+/// Fixup for a RIP-relative FP constant load emitted at `disp32_offset`
+/// that should reach the pool slot holding `value`. The pool is laid out
+/// and the fixups patched by `lower_function_literal_pool`.
+#[derive(Clone, Copy, Debug)]
+pub(super) struct FpConstFixup {
+    pub disp32_offset: usize,
+    pub value: u64,
+}
+
 #[derive(Debug)]
 pub(crate) struct X86_64Backend<'a> {
     pub core: CompilerCore<'a>,
     pub(super) fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: GpScratchPool,
     pub(super) fp_scratch: ScratchPool<u32, 2>,
+    /// Pending RIP-relative FP-constant loads. Flushed at end-of-body by
+    /// `lower_function_literal_pool`, which dedupes values and emits the
+    /// pool immediately after the body + edges.
+    pub(super) fp_const_fixups: collections::Vec<FpConstFixup>,
 }
 
 // ── ArchBackend trait implementation ─────────────────────────────────────────
@@ -98,6 +111,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
             fixups: collections::Vec::new(),
             gp_scratch: GpScratchPool::new(abi::gp_backend_owned_regs()),
             fp_scratch: abi::new_fp_scratch_pool(),
+            fp_const_fixups: collections::Vec::new(),
         }
     }
 
@@ -182,8 +196,20 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
     ///
     /// The body's unified Return and `body_local_error_label` both `add
     /// rsp, 8` before popping the call record, mirroring this shim.
+    ///
+    /// Also stashes `call_external_entry_ptr()` into the alignment slot at
+    /// `[rsp]` so each `CallExternal` site can load the target with a
+    /// 4-byte `mov` instead of a 10-byte `movabs`. The slot is otherwise
+    /// unused padding and gets discarded by `add rsp, 8` on body exit.
     fn lower_body_prelude(&mut self) {
         enc::sub_rsp_imm8(&mut self.core.text, 8);
+        // Stash the external-call entry pointer at [rsp].
+        let scratch = self.gp_scratch.claim_rax().detach();
+        self.materialize_u64(
+            *scratch,
+            crate::vm::runtime::external::call_external_entry_ptr() as usize as u64,
+        );
+        enc::store_64(&mut self.core.text, X86Reg::RSP, 0, *scratch);
     }
 
     /// Body-local error tail (`body_local_error_label`). Reached from trap
@@ -210,6 +236,49 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         // ret 16 — pops return address, then releases the 16-byte call
         // record. C_RET0 untouched — preserves the error code.
         enc::ret_imm16(&mut self.core.text, 16);
+    }
+
+    /// Emit the per-function FP constant pool and patch every pending
+    /// RIP-relative load to point at its value's slot. Dedupes values so
+    /// each unique 64-bit pattern appears once.
+    fn lower_function_literal_pool(&mut self) -> Result<(), WasmError> {
+        let fixups = core::mem::take(&mut self.fp_const_fixups);
+        if fixups.is_empty() {
+            return Ok(());
+        }
+        // Align the pool to 8 bytes so each slot is naturally aligned.
+        let align_padding = (8 - (self.core.text.len() & 7)) & 7;
+        for _ in 0..align_padding {
+            self.core.text.emit_u8(0xCC);
+        }
+        // Collect unique values in first-seen order and remember their slot.
+        let mut unique_values: collections::Vec<u64> = collections::Vec::new();
+        let mut slot_offsets: collections::Vec<usize> = collections::Vec::new();
+        for fx in &fixups {
+            if !unique_values.iter().any(|&v| v == fx.value) {
+                unique_values.push(fx.value);
+                let slot = self.core.text.emit_u64(fx.value);
+                slot_offsets.push(slot);
+            }
+        }
+        // Patch each fixup's disp32 to reach its slot.
+        //   next_inst = disp32_offset + 4  (end of movsd instruction)
+        //   rel32     = slot_offset - next_inst
+        for fx in &fixups {
+            let idx = unique_values
+                .iter()
+                .position(|&v| v == fx.value)
+                .expect("fp const fixup value missing from unique list");
+            let slot = slot_offsets[idx];
+            let next_inst = fx.disp32_offset + 4;
+            let rel = slot as i64 - next_inst as i64;
+            debug_assert!(
+                rel >= i32::MIN as i64 && rel <= i32::MAX as i64,
+                "x86_64 fp const pool rel32 overflow",
+            );
+            self.core.text.patch_i32(fx.disp32_offset, rel as i32);
+        }
+        Ok(())
     }
 
     fn lower_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
@@ -350,6 +419,7 @@ impl<'a> crate::vm::arch::shared_64::ModuleLinkBackend64<'a> for X86_64Backend<'
             debug_regions: emitted.debug_regions.clone(),
         }
     }
+
 }
 
 // ── Inherent helper methods ──────────────────────────────────────────────────
