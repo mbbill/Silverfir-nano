@@ -758,9 +758,7 @@ pub(super) fn do_array_init_data(
             .data
             .get(data_idx as usize)
             .ok_or_else(|| trap_error("out of bounds memory access"))?;
-        let src_byte = src_index
-            .checked_mul(elem_size)
-            .ok_or_else(|| trap_error("out of bounds memory access"))?;
+        let src_byte = src_index;
         if len == 0 {
             if src_byte > data.bytes.len() || dst_index > array_len {
                 return Err(trap_error("out of bounds memory access"));
@@ -819,9 +817,7 @@ pub(super) fn do_array_new_data(
         .data
         .get(data_idx as usize)
         .ok_or_else(|| trap_error("out of bounds memory access"))?;
-    let src_byte = src_index
-        .checked_mul(elem_size)
-        .ok_or_else(|| trap_error("out of bounds memory access"))?;
+    let src_byte = src_index;
     if len == 0 {
         if src_byte > data.bytes.len() {
             return Err(trap_error("out of bounds memory access"));

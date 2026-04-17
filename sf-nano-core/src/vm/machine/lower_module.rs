@@ -427,7 +427,7 @@ fn lower_function(
                         //   current_block
                         //     -> trap_invalid_ref
                         //     -> type_check
-                        //          -> trap_type
+                        //          -> runtime_call
                         //          -> dispatch
                         //               -> local_prepare
                         //                    -> local_transfer
@@ -439,7 +439,6 @@ fn lower_function(
                         let trap_invalid_ref = extra_block_ids.alloc();
                         let type_check = extra_block_ids.alloc();
                         let dispatch = extra_block_ids.alloc();
-                        let trap_type = extra_block_ids.alloc();
                         let local_prepare = extra_block_ids.alloc();
                         let local_zero_loop = extra_block_ids.alloc();
                         let local_transfer = extra_block_ids.alloc();
@@ -499,7 +498,7 @@ fn lower_function(
                                     rhs: MachineValue::Reg(indirect_temps.lane2),
                                 },
                                 then_edge: MachineEdge {
-                                    target: trap_type,
+                                    target: runtime_call,
                                     args: collections::Vec::new(),
                                 },
                                 else_edge: MachineEdge {
@@ -532,16 +531,6 @@ fn lower_function(
                                     target: runtime_call,
                                     args: collections::Vec::new(),
                                 },
-                            },
-                        )?;
-                        push_lowered_block(
-                            trap_type,
-                            &mut original_blocks,
-                            &mut extra_blocks,
-                            collections::Vec::new(),
-                            collections::Vec::new(),
-                            MachineTerminator::Trap {
-                                kind: MachineTrapKind::IndirectCallTypeMismatch,
                             },
                         )?;
                         push_lowered_block(
@@ -684,7 +673,6 @@ fn lower_function(
                         let type_check = extra_block_ids.alloc();
                         let trap_invalid_ref = extra_block_ids.alloc();
                         let dispatch = extra_block_ids.alloc();
-                        let trap_type = extra_block_ids.alloc();
                         let local_prepare = extra_block_ids.alloc();
                         let local_zero_loop = extra_block_ids.alloc();
                         let local_transfer = extra_block_ids.alloc();
@@ -784,7 +772,7 @@ fn lower_function(
                                     rhs: MachineValue::Reg(indirect_temps.lane2),
                                 },
                                 then_edge: MachineEdge {
-                                    target: trap_type,
+                                    target: runtime_call,
                                     args: collections::Vec::new(),
                                 },
                                 else_edge: MachineEdge {
@@ -829,16 +817,6 @@ fn lower_function(
                                     target: runtime_call,
                                     args: collections::Vec::new(),
                                 },
-                            },
-                        )?;
-                        push_lowered_block(
-                            trap_type,
-                            &mut original_blocks,
-                            &mut extra_blocks,
-                            collections::Vec::new(),
-                            collections::Vec::new(),
-                            MachineTerminator::Trap {
-                                kind: MachineTrapKind::IndirectCallTypeMismatch,
                             },
                         )?;
                         // `local_prepare` is the first local-only stage. It computes the callee
@@ -921,6 +899,7 @@ fn lower_function(
                             },
                         )?;
                         let metadata = lower.build_call_runtime_meta_indirect(
+                            type_idx,
                             func_idx_slot,
                             args,
                             results,

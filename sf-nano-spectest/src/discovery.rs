@@ -46,41 +46,6 @@ pub fn should_skip_test(test_name: &str) -> bool {
 
     // Skip WebAssembly 3.0 features not yet implemented
 
-    // Official array spectests remain disabled while broader GC-array
-    // conformance work is still in flight. Targeted runtime regressions for
-    // post-call OOB propagation live in `sf-nano-core/tests/array_ops.rs`.
-    if test_name.starts_with("array") {
-        return true;
-    }
-
-    // Type recursion tests: DISABLED due to our own overly-permissive type
-    // equivalence for `func` types. (The prior comment blamed the wast
-    // encoder; audit on 2026-04-17 showed the encoder is correct — it's our
-    // validator that accepts modules the spec says should be rejected.)
-    //
-    // Repro (type-rec directive #5):
-    //   (module
-    //     (rec (type $ft (func)) (type (func)))
-    //     (func $f)                         ;; implicit type is NOT $ft
-    //     (global (ref $ft) (ref.func $f))) ;; must be rejected
-    //
-    // wast encodes `$f`'s implicit type as a standalone type 2 (its own
-    // single-type rec group). The spec says type 2 (rg = [func()]) and type 0
-    // (rg = [func(), func()]) are NOT equivalent because their rec groups are
-    // not isomorphic. So `ref 2 </: ref 0`, and the global init must be
-    // invalid.
-    //
-    // Our `type_context.rs:86-102` compares `func` types purely structurally
-    // (same params/results), ignoring rec-group membership. That admits
-    // `ref 2 <: ref 0` and accepts the module.
-    //
-    // Fix: implement proper isorecursive equivalence for all composite types
-    // (func, struct, array) — two types are equivalent iff both rec groups
-    // are structurally isomorphic AND indices match.
-    if test_name == "type-rec" || test_name == "type-subtyping" {
-        return true;
-    }
-
     // `br_on_cast*.wast` still trips the current `wast`/`wat` encoder on GC
     // array ops (`array.get_u` in folded forms and direct `array.set` were
     // observed to encode incorrectly on April 16, 2026), so keep the upstream
@@ -119,6 +84,13 @@ mod tests {
     #[test]
     fn call_ref_is_not_skipped() {
         assert!(!should_skip_test("call_ref"));
+    }
+
+    #[test]
+    fn gc_array_and_recursive_type_tests_are_not_skipped() {
+        assert!(!should_skip_test("array"));
+        assert!(!should_skip_test("type-rec"));
+        assert!(!should_skip_test("type-subtyping"));
     }
 
     #[test]

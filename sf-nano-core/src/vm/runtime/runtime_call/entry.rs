@@ -4,7 +4,7 @@ use crate::collections;
 
 use crate::{
     error::WasmError,
-    module::type_context::check_function_types_equivalent,
+    module::type_context::{check_function_types_equivalent, concrete_type_matches_cross_context},
     vm::{
         arch::active_backend_config,
         entities::{Caller, FunctionInst},
@@ -20,7 +20,9 @@ use crate::{
     },
 };
 
-use super::abi::{RuntimeCallFrameRegion, RuntimeCallMeta, RuntimeCallTargetKind};
+use super::abi::{
+    RuntimeCallFrameRegion, RuntimeCallMeta, RuntimeCallTargetKind, RuntimeCallTypeCheckKind,
+};
 
 /// Uniform entrypoint used by MachineIR runtime calls.
 pub(crate) type RuntimeCallEntry =
@@ -129,6 +131,7 @@ fn invoke_runtime_call(
                     active_gp_unit_bytes(),
                 ),
                 meta.expected_type_idx,
+                meta.type_check_kind()?,
                 meta.args,
                 meta.results,
             )
@@ -166,6 +169,7 @@ fn call_runtime_by_handle(
     frame: *mut u64,
     handle: RefHandle,
     expected_type_idx: u32,
+    type_check_kind: RuntimeCallTypeCheckKind,
     args_region: RuntimeCallFrameRegion,
     results_region: RuntimeCallFrameRegion,
 ) -> Result<(), WasmError> {
@@ -193,18 +197,35 @@ fn call_runtime_by_handle(
         let caller_store = ctx
             .store()
             .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
-        let expected_type = caller_store
-            .module()
-            .get_type(expected_type_idx)
-            .ok_or_else(|| internal_error("call_ref expected type index is out of range"))?;
-        let compatible = expected_type.as_ref() == callee.func_type()
-            || check_function_types_equivalent(
-                expected_type.as_ref(),
-                callee.func_type(),
+        let actual_type_idx = callee.type_index();
+        let compatible = if actual_type_idx != u32::MAX {
+            concrete_type_matches_cross_context(
+                &owner_store.module().types,
+                actual_type_idx,
                 &caller_store.module().types,
-            );
+                expected_type_idx,
+            )
+        } else {
+            let expected_type = caller_store
+                .module()
+                .get_type(expected_type_idx)
+                .ok_or_else(|| {
+                    internal_error("runtime-call expected type index is out of range")
+                })?;
+            expected_type.as_ref() == callee.func_type()
+                || check_function_types_equivalent(
+                    expected_type.as_ref(),
+                    callee.func_type(),
+                    &caller_store.module().types,
+                )
+        };
         if !compatible {
-            return Err(trap_error("call_ref type mismatch"));
+            let trap = match type_check_kind {
+                RuntimeCallTypeCheckKind::CallRef => "call_ref type mismatch",
+                RuntimeCallTypeCheckKind::IndirectCall => "indirect call type mismatch",
+                RuntimeCallTypeCheckKind::None => "call_ref type mismatch",
+            };
+            return Err(trap_error(trap));
         }
     }
     invoke_runtime_target(ctx, frame, owner_store, callee, args_region, results_region)
@@ -270,6 +291,7 @@ fn invoke_runtime_target(
                 frame,
                 *handle,
                 u32::MAX,
+                RuntimeCallTypeCheckKind::None,
                 args_region,
                 results_region,
             );
@@ -368,6 +390,7 @@ mod tests {
             func_idx_source: 0,
             func_idx_source_kind: RuntimeCallTargetKind::Immediate as u32,
             expected_type_idx: u32::MAX,
+            type_check_kind: RuntimeCallTypeCheckKind::None as u32,
             args: RuntimeCallFrameRegion {
                 base_slot: 0,
                 slots: 2,
@@ -422,6 +445,7 @@ mod tests {
             func_idx_source: 2,
             func_idx_source_kind: RuntimeCallTargetKind::FrameSlot as u32,
             expected_type_idx: u32::MAX,
+            type_check_kind: RuntimeCallTypeCheckKind::None as u32,
             args: RuntimeCallFrameRegion {
                 base_slot: 0,
                 slots: 2,

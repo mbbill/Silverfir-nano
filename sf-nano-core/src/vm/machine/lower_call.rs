@@ -8,7 +8,10 @@ use crate::{
             MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::frame::{FrameSlot, FrameSpan},
-        runtime::runtime_call::{RuntimeCallFrameRegion, RuntimeCallMeta, RuntimeCallTargetKind},
+        runtime::runtime_call::{
+            RuntimeCallFrameRegion, RuntimeCallMeta, RuntimeCallTargetKind,
+            RuntimeCallTypeCheckKind,
+        },
     },
 };
 
@@ -157,6 +160,7 @@ impl<'a> BlockLowerContext<'a> {
             func_idx_source: func_idx,
             func_idx_source_kind: RuntimeCallTargetKind::Immediate as u32,
             expected_type_idx: u32::MAX,
+            type_check_kind: RuntimeCallTypeCheckKind::None as u32,
             args: runtime_call_region(args),
             results: runtime_call_region(results),
         })
@@ -164,6 +168,7 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn build_call_runtime_meta_indirect(
         &self,
+        type_idx: u32,
         func_idx_slot: FrameSlot,
         args: FrameSpan,
         results: FrameSpan,
@@ -175,7 +180,8 @@ impl<'a> BlockLowerContext<'a> {
         const_pool.call_runtime_meta(RuntimeCallMeta {
             func_idx_source: func_idx_slot.0 as u32,
             func_idx_source_kind: RuntimeCallTargetKind::FrameSlot as u32,
-            expected_type_idx: u32::MAX,
+            expected_type_idx: type_idx,
+            type_check_kind: RuntimeCallTypeCheckKind::IndirectCall as u32,
             args: runtime_call_region(args),
             results: runtime_call_region(results),
         })
@@ -193,6 +199,7 @@ impl<'a> BlockLowerContext<'a> {
             func_idx_source: ref_slot.0 as u32,
             func_idx_source_kind: RuntimeCallTargetKind::FrameSlot as u32,
             expected_type_idx: type_idx,
+            type_check_kind: RuntimeCallTypeCheckKind::CallRef as u32,
             args: runtime_call_region(args),
             results: runtime_call_region(results),
         })

@@ -23,6 +23,29 @@ impl TryFrom<u32> for RuntimeCallTargetKind {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(u32)]
+pub(crate) enum RuntimeCallTypeCheckKind {
+    None = 0,
+    CallRef = 1,
+    IndirectCall = 2,
+}
+
+impl TryFrom<u32> for RuntimeCallTypeCheckKind {
+    type Error = WasmError;
+
+    fn try_from(value: u32) -> Result<Self, Self::Error> {
+        match value {
+            0 => Ok(Self::None),
+            1 => Ok(Self::CallRef),
+            2 => Ok(Self::IndirectCall),
+            _ => Err(internal_error(
+                "runtime-call entry received unknown type-check kind",
+            )),
+        }
+    }
+}
+
 /// One frame-relative region passed to the runtime-call entrypoint.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -45,6 +68,7 @@ pub(crate) struct RuntimeCallMeta {
     /// Expected caller-side function type index for `call_ref`.
     /// `u32::MAX` disables dynamic type checking in the runtime entry.
     pub expected_type_idx: u32,
+    pub type_check_kind: u32,
     pub args: RuntimeCallFrameRegion,
     pub results: RuntimeCallFrameRegion,
 }
@@ -53,5 +77,10 @@ impl RuntimeCallMeta {
     #[inline]
     pub(crate) fn target_kind(self) -> Result<RuntimeCallTargetKind, WasmError> {
         self.func_idx_source_kind.try_into()
+    }
+
+    #[inline]
+    pub(crate) fn type_check_kind(self) -> Result<RuntimeCallTypeCheckKind, WasmError> {
+        self.type_check_kind.try_into()
     }
 }

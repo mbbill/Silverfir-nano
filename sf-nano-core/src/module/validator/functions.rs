@@ -1326,7 +1326,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.pop_val(Some(elem_type))?;
                 self.context.pop_val(Some(I32))?;
                 self.context.pop_val(Some(I32))?;
-                let array_ref = ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx)));
+                let array_ref = ValueType::Ref(RefType::new(true, HeapType::Concrete(typeidx)));
                 self.context.pop_val(Some(array_ref))?;
                 Ok(())
             }
@@ -1348,10 +1348,10 @@ impl<'a> FunctionValidator<'a> {
                 }
                 self.context.pop_val(Some(I32))?;
                 self.context.pop_val(Some(I32))?;
-                let src_ref = ValueType::Ref(RefType::new(false, HeapType::Concrete(src_typeidx)));
+                let src_ref = ValueType::Ref(RefType::new(true, HeapType::Concrete(src_typeidx)));
                 self.context.pop_val(Some(src_ref))?;
                 self.context.pop_val(Some(I32))?;
-                let dst_ref = ValueType::Ref(RefType::new(false, HeapType::Concrete(dst_typeidx)));
+                let dst_ref = ValueType::Ref(RefType::new(true, HeapType::Concrete(dst_typeidx)));
                 self.context.pop_val(Some(dst_ref))?;
                 Ok(())
             }
@@ -1375,7 +1375,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.pop_val(Some(I32))?;
                 self.context.pop_val(Some(I32))?;
                 self.context.pop_val(Some(I32))?;
-                let array_ref = ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx)));
+                let array_ref = ValueType::Ref(RefType::new(true, HeapType::Concrete(typeidx)));
                 self.context.pop_val(Some(array_ref))?;
                 Ok(())
             }
@@ -1403,7 +1403,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.pop_val(Some(I32))?;
                 self.context.pop_val(Some(I32))?;
                 self.context.pop_val(Some(I32))?;
-                let array_ref = ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx)));
+                let array_ref = ValueType::Ref(RefType::new(true, HeapType::Concrete(typeidx)));
                 self.context.pop_val(Some(array_ref))?;
                 Ok(())
             }

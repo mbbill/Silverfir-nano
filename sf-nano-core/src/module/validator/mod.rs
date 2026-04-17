@@ -12,7 +12,11 @@
 use self::{expressions::ValidationContext, functions::FunctionValidator};
 use crate::{
     error::WasmError,
-    module::{entities::ElementInit, Module},
+    module::{
+        entities::ElementInit,
+        type_defs::{CompositeType, FieldType, StorageType},
+        Module,
+    },
     op_decoder,
     utils::limits::Limitable,
     value_type::{HeapType, ValueType},
@@ -41,6 +45,7 @@ impl<'a> Validator<'a> {
 
         // Phase 1: Validate type references in entities
         self.validate_entity_type_references()?;
+        self.validate_declared_subtypes()?;
 
         // Phase 1b: Validate start function
         if let Some(start_idx) = self.module.start_function_index() {
@@ -295,6 +300,99 @@ impl<'a> Validator<'a> {
         }
 
         Ok(())
+    }
+
+    fn validate_declared_subtypes(&self) -> Result<(), WasmError> {
+        for def_type in self.module.types().as_slice() {
+            for &super_idx in &def_type.supertypes {
+                let super_type = self
+                    .module
+                    .types()
+                    .get(super_idx)
+                    .ok_or_else(|| WasmError::invalid("unknown supertype"))?;
+                if super_type.is_final || !self.def_type_is_subtype_of(def_type, super_type) {
+                    return Err(WasmError::invalid("sub type"));
+                }
+            }
+        }
+
+        Ok(())
+    }
+
+    fn def_type_is_subtype_of(
+        &self,
+        sub_type: &crate::module::type_defs::DefType,
+        super_type: &crate::module::type_defs::DefType,
+    ) -> bool {
+        match (&sub_type.composite, &super_type.composite) {
+            (CompositeType::Func(sub_func), CompositeType::Func(super_func)) => {
+                if sub_func.params().len() != super_func.params().len()
+                    || sub_func.results().len() != super_func.results().len()
+                {
+                    return false;
+                }
+
+                for (sub_param, super_param) in sub_func.params().iter().zip(super_func.params()) {
+                    if !super_param.is_subtype_of(sub_param, self.module.types()) {
+                        return false;
+                    }
+                }
+                for (sub_result, super_result) in
+                    sub_func.results().iter().zip(super_func.results())
+                {
+                    if !sub_result.is_subtype_of(super_result, self.module.types()) {
+                        return false;
+                    }
+                }
+                true
+            }
+            (CompositeType::Struct(sub_struct), CompositeType::Struct(super_struct)) => {
+                if sub_struct.fields.len() < super_struct.fields.len() {
+                    return false;
+                }
+                sub_struct
+                    .fields
+                    .iter()
+                    .zip(super_struct.fields.iter())
+                    .all(|(sub_field, super_field)| {
+                        self.field_is_subtype_of(sub_field, super_field)
+                    })
+            }
+            (CompositeType::Array(sub_array), CompositeType::Array(super_array)) => {
+                self.field_is_subtype_of(&sub_array.element, &super_array.element)
+            }
+            _ => false,
+        }
+    }
+
+    fn field_is_subtype_of(&self, sub_field: &FieldType, super_field: &FieldType) -> bool {
+        if sub_field.mutable != super_field.mutable {
+            return false;
+        }
+
+        if super_field.mutable {
+            self.storage_types_equal(&sub_field.storage, &super_field.storage)
+        } else {
+            self.storage_type_is_subtype_of(&sub_field.storage, &super_field.storage)
+        }
+    }
+
+    fn storage_types_equal(&self, lhs: &StorageType, rhs: &StorageType) -> bool {
+        match (lhs, rhs) {
+            (StorageType::Packed(lhs), StorageType::Packed(rhs)) => lhs == rhs,
+            (StorageType::Val(lhs), StorageType::Val(rhs)) => lhs == rhs,
+            _ => false,
+        }
+    }
+
+    fn storage_type_is_subtype_of(&self, sub: &StorageType, sup: &StorageType) -> bool {
+        match (sub, sup) {
+            (StorageType::Packed(sub), StorageType::Packed(sup)) => sub == sup,
+            (StorageType::Val(sub), StorageType::Val(sup)) => {
+                sub.is_subtype_of(sup, self.module.types())
+            }
+            _ => false,
+        }
     }
 }
 

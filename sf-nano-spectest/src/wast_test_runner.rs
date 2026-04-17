@@ -1200,13 +1200,19 @@ impl WastTestRunner {
                                     find_exported_function_index(&module, export_name)
                                 {
                                     if let Some(handle) = instance.function_handle_at(func_idx) {
-                                        imports.push(Import::linked_func_typed_with_context(
-                                            registered_name,
-                                            export_name,
-                                            handle,
-                                            ft,
-                                            type_ctx.clone(),
-                                        ));
+                                        let type_index = instance
+                                            .function_type_index_at(func_idx)
+                                            .unwrap_or(u32::MAX);
+                                        imports.push(
+                                            Import::linked_func_typed_with_context_and_index(
+                                                registered_name,
+                                                export_name,
+                                                handle,
+                                                ft,
+                                                type_index,
+                                                type_ctx.clone(),
+                                            ),
+                                        );
                                     }
                                 }
                             }

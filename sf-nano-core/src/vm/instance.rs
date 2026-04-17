@@ -12,7 +12,8 @@ use crate::module::entities::{
     ConstExpr, Data, Element, ElementInit, FunctionDef, GlobalDef, MemoryDef, TableDef, TagDef,
 };
 use crate::module::type_context::{
-    check_function_types_equivalent, value_types_equivalent_cross_module, TypeContext,
+    check_function_types_equivalent, concrete_type_matches_cross_context,
+    value_types_equivalent_cross_module, TypeContext,
 };
 use crate::module::type_defs::FunctionType;
 use crate::module::Module;
@@ -52,6 +53,7 @@ pub enum ImportedFunction {
     Linked {
         handle: RefHandle,
         func_type: FunctionType,
+        type_index: u32,
         type_ctx: Option<TypeContext>,
     },
 }
@@ -113,7 +115,14 @@ impl Import {
         handle: RefHandle,
         func_type: FunctionType,
     ) -> Self {
-        Self::linked_func_typed_with_context(module, name, handle, func_type, TypeContext::empty())
+        Self::linked_func_typed_with_context_and_index(
+            module,
+            name,
+            handle,
+            func_type,
+            u32::MAX,
+            TypeContext::empty(),
+        )
     }
 
     pub fn linked_func_typed_with_context(
@@ -123,12 +132,31 @@ impl Import {
         func_type: FunctionType,
         type_ctx: TypeContext,
     ) -> Self {
+        Self::linked_func_typed_with_context_and_index(
+            module,
+            name,
+            handle,
+            func_type,
+            u32::MAX,
+            type_ctx,
+        )
+    }
+
+    pub fn linked_func_typed_with_context_and_index(
+        module: &str,
+        name: &str,
+        handle: RefHandle,
+        func_type: FunctionType,
+        type_index: u32,
+        type_ctx: TypeContext,
+    ) -> Self {
         Import {
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Func(ImportedFunction::Linked {
                 handle,
                 func_type,
+                type_index,
                 type_ctx: Some(type_ctx),
             }),
         }
@@ -383,20 +411,31 @@ impl Instance {
                             value: ImportValue::Func(imported_func),
                             ..
                         }) => {
-                            let (actual_type, import_type_ctx) = match imported_func {
-                                ImportedFunction::Host {
-                                    func_type,
-                                    type_ctx,
-                                    ..
-                                } => (func_type.as_ref(), type_ctx.as_ref()),
-                                ImportedFunction::Linked {
-                                    func_type,
-                                    type_ctx,
-                                    ..
-                                } => (Some(func_type), type_ctx.as_ref()),
-                            };
+                            let (actual_type, actual_type_idx, import_type_ctx) =
+                                match imported_func {
+                                    ImportedFunction::Host {
+                                        func_type,
+                                        type_ctx,
+                                        ..
+                                    } => (func_type.as_ref(), u32::MAX, type_ctx.as_ref()),
+                                    ImportedFunction::Linked {
+                                        func_type,
+                                        type_index,
+                                        type_ctx,
+                                        ..
+                                    } => (Some(func_type), *type_index, type_ctx.as_ref()),
+                                };
                             if let Some(actual_type) = actual_type {
-                                let compatible = if actual_type == &*func_type {
+                                let compatible = if actual_type_idx != u32::MAX {
+                                    import_type_ctx.is_some_and(|type_ctx| {
+                                        concrete_type_matches_cross_context(
+                                            type_ctx,
+                                            actual_type_idx,
+                                            &types,
+                                            type_index,
+                                        )
+                                    })
+                                } else if actual_type == &*func_type {
                                     true
                                 } else if let Some(type_ctx) = import_type_ctx {
                                     check_function_types_equivalent(
@@ -1054,6 +1093,14 @@ impl Instance {
             .functions
             .get(idx)
             .map(|func| func.func_type().clone())
+    }
+
+    pub fn function_type_index_at(&self, idx: usize) -> Option<u32> {
+        self.store
+            .module()
+            .functions
+            .get(idx)
+            .map(FunctionInst::type_index)
     }
 
     pub fn function_handle_at(&self, idx: usize) -> Option<RefHandle> {
