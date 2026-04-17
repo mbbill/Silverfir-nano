@@ -1,15 +1,15 @@
 #!/usr/bin/env bash
 #
-# check-targets.sh — cross-compile `cargo check` for sf-nano-core, sf-nano-cli,
-# and sf-nano-spectest against every supported target in the host's installed
-# rustup target set.
+# check-targets.sh — cross-compile `cargo check` for the main binaries and test
+# harnesses against every supported target in the host's installed rustup
+# target set.
 #
 # What it does
 # ------------
 # Runs `cargo check --target <t>` for each target in the matrix below and
 # reports per-package pass/fail plus warning counts. arm64 and x86_64 targets
-# are included by default. Pass `--all` to include the still-noisy armv7a
-# target as well.
+# are included by default. Pass `--all` to include the armv7a / Thumb-2 rows
+# as well.
 #
 # Usage
 # -----
@@ -21,18 +21,26 @@
 #
 # Target matrix
 # -------------
-# | target                             | pkg set                | exercises                |
-# |------------------------------------|------------------------|---------------------------|
-# | aarch64-apple-darwin (host)        | core + cli + spectest  | runtime/os/macos.rs       |
-# | aarch64-unknown-linux-gnu          | core + cli + spectest  | runtime/os/linux.rs       |
-# | aarch64-unknown-none               | core only (1)          | runtime/os/none.rs        |
-# | x86_64-apple-darwin                | core + cli + spectest  | runtime/os/macos.rs + x64 backend |
-# | x86_64-unknown-linux-gnu           | core + cli + spectest  | runtime/os/linux.rs + x64 trap handler |
-# | x86_64-pc-windows-gnu              | core + cli + spectest  | runtime/os/windows.rs     |
-# | armv7-unknown-linux-musleabihf     | core + cli + spectest  | runtime/os/linux.rs (32-bit) |
+# | target                             | pkg set                           | exercises                |
+# |------------------------------------|-----------------------------------|---------------------------|
+# | aarch64-apple-darwin (host)        | core + cli + spectest + wasitest  | runtime/os/macos.rs       |
+# | aarch64-unknown-linux-gnu          | core + cli + spectest + wasitest  | runtime/os/linux.rs       |
+# | aarch64-unknown-none               | bare-smoke (1)                    | arm64 backend × runtime/os/none.rs |
+# | thumbv8m.main-none-eabihf          | bare-smoke (1)                    | arm32 (Thumb-2) × runtime/os/none.rs (Pico 2 / Cortex-M33) |
+# | x86_64-apple-darwin                | core + cli + spectest + wasitest  | runtime/os/macos.rs + x64 backend |
+# | x86_64-unknown-linux-gnu           | core + cli + spectest + wasitest  | runtime/os/linux.rs + x64 trap handler |
+# | x86_64-pc-windows-gnu              | core + cli + spectest + wasitest  | runtime/os/windows.rs     |
+# | armv7-unknown-linux-musleabihf     | core + cli + spectest + wasitest  | runtime/os/linux.rs (32-bit) |
 #
-# (1) Must be built with --no-default-features --features jit (no guard-pages on bare-metal).
-# (2) armv7a still fails today; keep it behind --all until that backend catches up.
+# (1) Bare rows are run via the standalone `sf-nano-bare-smoke` crate, which
+#     supplies stub implementations of the embedder-provided extern symbols
+#     declared in `runtime/os/none.rs`. The stubs only have to type-check —
+#     the smoke test proves the *contract* compiles, not that the runtime
+#     functions. Both pointer widths are checked because `runtime/os/none.rs`
+#     is the only place where a 32-bit-vs-64-bit signature drift in the
+#     extern shims would be caught.
+# (2) The standalone script keeps armv7 rows behind --all to preserve the
+#     smaller default target set; check_all.sh opts into them by default.
 
 set -u
 
@@ -63,7 +71,7 @@ done
 # ------
 #   label                         — human-readable row name in the matrix
 #   target                        — rustc target triple
-#   kind                          — "hosted" (core+cli+spectest) / "bare" (core only)
+#   kind                          — "hosted" (core+cli+spectest+wasitest) / "bare" (core only)
 #   core_extra                    — extra cargo args forwarded only to the core check
 #   cli_spectest_features_override— if non-empty, replaces the default
 #                                   `--no-default-features --features jit` for the
@@ -114,7 +122,7 @@ mkdir -p "$LOG_DIR"
 BUILD_DIR="$ROOT_DIR/target/check-targets-build"
 mkdir -p "$BUILD_DIR"
 
-PACKAGES=(core cli spectest)
+PACKAGES=(core cli spectest wasitest)
 
 warning_count_from_log() {
     local log="$1"
@@ -195,6 +203,9 @@ run_package_check() {
                 cargo_args=(-p sf-nano-spectest --no-default-features --features jit)
             fi
             ;;
+        wasitest)
+            cargo_args=(-p sf-nano-wasitest)
+            ;;
         *)
             echo "internal error: unknown package key '$package_key'" >&2
             return 2
@@ -210,8 +221,8 @@ run_package_check() {
 
 failure_details=()
 
-printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' "label" "target" "core" "cli" "spectest"
-printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' "-----" "------" "----" "---" "--------"
+printf '%-14s  %-32s  %-12s  %-12s  %-12s  %-12s\n' "label" "target" "core" "cli" "spectest" "wasitest"
+printf '%-14s  %-32s  %-12s  %-12s  %-12s  %-12s\n' "-----" "------" "----" "---" "--------" "--------"
 
 fail=0
 for entry in "${TARGETS[@]}"; do
@@ -219,17 +230,21 @@ for entry in "${TARGETS[@]}"; do
     core_cell=""
     cli_cell=""
     spectest_cell=""
+    wasitest_cell=""
 
     if ! ensure_installed "$target"; then
         core_cell=$(format_cell skip)
         if [[ "$kind" == "hosted" ]]; then
             cli_cell=$(format_cell skip)
             spectest_cell=$(format_cell skip)
+            wasitest_cell=$(format_cell skip)
         else
             cli_cell=$(format_cell na)
             spectest_cell=$(format_cell na)
+            wasitest_cell=$(format_cell na)
         fi
-        printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' "$label" "$target" "$core_cell" "$cli_cell" "$spectest_cell"
+        printf '%-14s  %-32s  %-12s  %-12s  %-12s  %-12s\n' \
+            "$label" "$target" "$core_cell" "$cli_cell" "$spectest_cell" "$wasitest_cell"
         continue
     fi
 
@@ -247,6 +262,7 @@ for entry in "${TARGETS[@]}"; do
                 core) core_cell=$(format_cell "$pkg_status" "$pkg_warnings") ;;
                 cli) cli_cell=$(format_cell "$pkg_status" "$pkg_warnings") ;;
                 spectest) spectest_cell=$(format_cell "$pkg_status" "$pkg_warnings") ;;
+                wasitest) wasitest_cell=$(format_cell "$pkg_status" "$pkg_warnings") ;;
             esac
         done
     else
@@ -259,26 +275,50 @@ for entry in "${TARGETS[@]}"; do
         fi
         cli_cell=$(format_cell na)
         spectest_cell=$(format_cell na)
+        wasitest_cell=$(format_cell na)
     fi
 
-    printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' "$label" "$target" "$core_cell" "$cli_cell" "$spectest_cell"
+    printf '%-14s  %-32s  %-12s  %-12s  %-12s  %-12s\n' \
+        "$label" "$target" "$core_cell" "$cli_cell" "$spectest_cell" "$wasitest_cell"
 done
 
-# Bare-metal smoke crate: a standalone package that pins its own target
-# in `.cargo/config.toml` and exercises `runtime/os/none.rs` by providing
-# the embedder-side extern symbols. Run as a sibling check so it's part
-# of the same pass/fail gate.
+# Bare-metal smoke crate: a standalone package that supplies stub
+# implementations of the extern symbols declared in `runtime/os/none.rs`,
+# letting `sf-nano-core` build cleanly on `target_os = "none"` triples.
+# Checked against both pointer widths so a 32-bit-vs-64-bit signature
+# drift in the embedder contract is caught — and so each (arch backend ×
+# none.rs) combination compiles together:
+#
+#   aarch64-unknown-none       — arm64 backend  × runtime/os/none.rs
+#   thumbv8m.main-none-eabihf  — arm32 (Thumb-2) backend × runtime/os/none.rs
+#                                (Pico 2 / RP2350 Cortex-M33 and similar)
+#
+# Each row gets its own CARGO_TARGET_DIR so the two builds don't clobber
+# each other's incremental cache.
+BARE_SMOKE_TARGETS=(
+    "aarch64-unknown-none"
+    "thumbv8m.main-none-eabihf"
+)
 if [[ -d "$BARE_SMOKE_DIR" ]]; then
-    log="$LOG_DIR/bare-smoke.log"
-    if (cd "$BARE_SMOKE_DIR" && cargo check) >"$log" 2>&1; then
-        printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' \
-            "bare-smoke" "(aarch64-unknown-none)" "$(format_cell ok)" "$(format_cell na)" "$(format_cell na)"
-    else
-        printf '%-14s  %-32s  %-12s  %-12s  %-12s\n' \
-            "bare-smoke" "(aarch64-unknown-none)" "$(format_cell fail)" "$(format_cell na)" "$(format_cell na)"
-        fail=1
-        failure_details+=("bare-smoke/core -> $log")
-    fi
+    for bare_target in "${BARE_SMOKE_TARGETS[@]}"; do
+        log="$LOG_DIR/bare-smoke.$bare_target.log"
+        target_dir="$BUILD_DIR/bare-smoke-$bare_target"
+        if ! ensure_installed "$bare_target"; then
+            printf '%-14s  %-32s  %-12s  %-12s  %-12s  %-12s\n' \
+                "bare-smoke" "($bare_target)" "$(format_cell skip)" "$(format_cell na)" "$(format_cell na)" "$(format_cell na)"
+            continue
+        fi
+        mkdir -p "$target_dir"
+        if (cd "$BARE_SMOKE_DIR" && CARGO_TARGET_DIR="$target_dir" cargo check --target "$bare_target") >"$log" 2>&1; then
+            printf '%-14s  %-32s  %-12s  %-12s  %-12s  %-12s\n' \
+                "bare-smoke" "($bare_target)" "$(format_cell ok)" "$(format_cell na)" "$(format_cell na)" "$(format_cell na)"
+        else
+            printf '%-14s  %-32s  %-12s  %-12s  %-12s  %-12s\n' \
+                "bare-smoke" "($bare_target)" "$(format_cell fail)" "$(format_cell na)" "$(format_cell na)" "$(format_cell na)"
+            fail=1
+            failure_details+=("bare-smoke/$bare_target -> $log")
+        fi
+    done
 fi
 
 if [[ ${#failure_details[@]} -gt 0 ]]; then

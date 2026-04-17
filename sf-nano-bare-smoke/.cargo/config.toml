@@ -1,6 +1,11 @@
 [build]
-# Pin the default build target so `cargo check` inside this crate always
-# exercises the `target_os = "none"` code path in sf-nano-core, not the
-# host. Callers can still override with `--target <t>` if they want to
-# verify a different bare-metal triple (e.g. `thumbv7em-none-eabihf`).
+# Pin a sensible default target so an ad-hoc `cargo check` inside this
+# crate always exercises the `target_os = "none"` code path in
+# sf-nano-core, not the host. CI (`scripts/check_targets.sh`) overrides
+# with `--target <t>` to also cover the 32-bit / arm32-Thumb-2 row:
+#
+#   aarch64-unknown-none        — 64-bit, arm64 backend × runtime/os/none.rs
+#                                 (Cortex-A bare-metal: hypervisors, RTOS, …)
+#   thumbv8m.main-none-eabihf   — 32-bit, arm32 (Thumb-2) backend × none.rs
+#                                 (Cortex-M33 / Pico 2 RP2350 and similar)
 target = "aarch64-unknown-none"

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 #
-# Build and run spectest for all supported native backends in both debug and
-# release profiles: arm64, x64, emu64, emu32, armv7a (A32 JIT), then armv7m
-# (Thumb-2 JIT). Stops on first failure.
+# Build and run spectest for all supported native backends: arm64, x64, emu64,
+# emu32, armv7a (A32 JIT), then armv7m (Thumb-2 JIT). By default both debug
+# and release profiles are exercised. Stops on first failure.
 #
 # The armv7a and armv7m rows share the same target triple
 # (armv7-unknown-linux-musleabihf); armv7m adds `--features thumb2-test` so
@@ -12,7 +12,10 @@
 # before the next build clobbers it.
 #
 # Usage:
-#   ./scripts/spectest_all.sh [-- extra spectest args...]
+#   ./scripts/spectest_all.sh
+#   ./scripts/spectest_all.sh --debug-only
+#   ./scripts/spectest_all.sh --release-only
+#   ./scripts/spectest_all.sh -- extra spectest args...
 
 set -euo pipefail
 
@@ -23,10 +26,28 @@ ARMV7_TARGET=armv7-unknown-linux-musleabihf
 export TESTSUITE_DIR
 
 EXTRA_ARGS=()
+RUN_DEBUG=1
+RUN_RELEASE=1
 while [[ $# -gt 0 ]]; do
     case "$1" in
+        --debug-only)
+            RUN_RELEASE=0
+            shift
+            ;;
+        --release-only)
+            RUN_DEBUG=0
+            shift
+            ;;
+        -h|--help)
+            sed -n '3,18p' "$0"
+            exit 0
+            ;;
         --) shift; EXTRA_ARGS=("$@"); break ;;
-        *) echo "Unknown option: $1"; echo "Usage: $0 [-- extra spectest args...]"; exit 1 ;;
+        *)
+            echo "Unknown option: $1" >&2
+            echo "Usage: $0 [--debug-only|--release-only] [-- extra spectest args...]" >&2
+            exit 1
+            ;;
     esac
 done
 
@@ -208,9 +229,25 @@ run_profile() {
     echo
 }
 
+if [[ $RUN_DEBUG -eq 0 && $RUN_RELEASE -eq 0 ]]; then
+    echo "ERROR: nothing to run (both profiles disabled)" >&2
+    exit 2
+fi
+
 ensure_colima_ready
 
-run_profile debug
-run_profile release
+if [[ $RUN_DEBUG -eq 1 ]]; then
+    run_profile debug
+fi
 
-echo "=== All spectests passed (debug + release) ==="
+if [[ $RUN_RELEASE -eq 1 ]]; then
+    run_profile release
+fi
+
+if [[ $RUN_DEBUG -eq 1 && $RUN_RELEASE -eq 1 ]]; then
+    echo "=== All spectests passed (debug + release) ==="
+elif [[ $RUN_DEBUG -eq 1 ]]; then
+    echo "=== All spectests passed (debug) ==="
+else
+    echo "=== All spectests passed (release) ==="
+fi
