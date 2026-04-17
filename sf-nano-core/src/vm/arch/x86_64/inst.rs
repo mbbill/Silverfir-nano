@@ -314,6 +314,32 @@ impl<'a> X86_64Backend<'a> {
                     *dst,
                 )
             }
+            MachineInstKind::StructNew {
+                type_idx,
+                field_count,
+                fields,
+                dst,
+            } => {
+                if fields
+                    .iter()
+                    .take(*field_count as usize)
+                    .any(|(_, value_hi)| value_hi.is_some())
+                {
+                    return Err(WasmError::internal(
+                        "x86_64 backend received pair-valued struct.new".into(),
+                    ));
+                }
+                self.lower_preserved_result(
+                    crate::vm::runtime::preserved::op::STRUCT_NEW,
+                    *type_idx,
+                    0,
+                    fields[0].0,
+                    fields[1].0,
+                    fields[2].0,
+                    MachineStorageType::GpWord,
+                    *dst,
+                )
+            }
             MachineInstKind::StructNewDefault { type_idx, dst } => self.lower_preserved_result(
                 crate::vm::runtime::preserved::op::STRUCT_NEW_DEFAULT,
                 *type_idx,
@@ -375,6 +401,29 @@ impl<'a> X86_64Backend<'a> {
                     MachineValue::Imm64(0),
                 )
             }
+            MachineInstKind::ArrayNew {
+                type_idx,
+                init_lo,
+                init_hi,
+                length,
+                dst,
+            } => {
+                if init_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "x86_64 backend received pair-valued array.new".into(),
+                    ));
+                }
+                self.lower_preserved_result(
+                    crate::vm::runtime::preserved::op::ARRAY_NEW,
+                    *type_idx,
+                    0,
+                    *init_lo,
+                    *length,
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )
+            }
             MachineInstKind::ArrayNewDefault {
                 type_idx,
                 length,
@@ -384,6 +433,196 @@ impl<'a> X86_64Backend<'a> {
                 *type_idx,
                 0,
                 *length,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::ArrayNewFixed {
+                type_idx,
+                elements,
+                dst,
+            } => self.lower_array_new_fixed(*type_idx, elements, *dst),
+            MachineInstKind::ArrayNewData {
+                type_idx,
+                data_idx,
+                src,
+                len,
+                dst,
+            } => self.lower_preserved_result_extended(
+                crate::vm::runtime::preserved::op::ARRAY_NEW_DATA,
+                &[
+                    (crate::vm::runtime::preserved::io::IMM0, *type_idx),
+                    (crate::vm::runtime::preserved::io::IMM1, *data_idx),
+                ],
+                &[
+                    (crate::vm::runtime::preserved::io::ARG0, *src),
+                    (crate::vm::runtime::preserved::io::ARG1, *len),
+                ],
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::ArrayNewElem {
+                type_idx,
+                elem_idx,
+                src,
+                len,
+                dst,
+            } => self.lower_preserved_result_extended(
+                crate::vm::runtime::preserved::op::ARRAY_NEW_ELEM,
+                &[
+                    (crate::vm::runtime::preserved::io::IMM0, *type_idx),
+                    (crate::vm::runtime::preserved::io::IMM1, *elem_idx),
+                ],
+                &[
+                    (crate::vm::runtime::preserved::io::ARG0, *src),
+                    (crate::vm::runtime::preserved::io::ARG1, *len),
+                ],
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::ArrayGet {
+                type_idx,
+                signed,
+                ty,
+                ref_src,
+                index,
+                dst,
+                dst_hi,
+            } => {
+                if dst_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "x86_64 backend received pair-valued array.get".into(),
+                    ));
+                }
+                let op_code = match signed {
+                    None => crate::vm::runtime::preserved::op::ARRAY_GET,
+                    Some(true) => crate::vm::runtime::preserved::op::ARRAY_GET_S,
+                    Some(false) => crate::vm::runtime::preserved::op::ARRAY_GET_U,
+                };
+                self.lower_preserved_result(
+                    op_code,
+                    *type_idx,
+                    0,
+                    *ref_src,
+                    *index,
+                    MachineValue::Imm64(0),
+                    *ty,
+                    *dst,
+                )
+            }
+            MachineInstKind::ArraySet {
+                type_idx,
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+            } => {
+                if value_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "x86_64 backend received pair-valued array.set".into(),
+                    ));
+                }
+                self.lower_preserved_no_result(
+                    crate::vm::runtime::preserved::op::ARRAY_SET,
+                    *type_idx,
+                    0,
+                    *ref_src,
+                    *index,
+                    *value_lo,
+                )
+            }
+            MachineInstKind::ArrayFill {
+                type_idx,
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+                len,
+            } => {
+                if value_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "x86_64 backend received pair-valued array.fill".into(),
+                    ));
+                }
+                self.lower_preserved_no_result_extended(
+                    crate::vm::runtime::preserved::op::ARRAY_FILL,
+                    &[(crate::vm::runtime::preserved::io::IMM0, *type_idx)],
+                    &[
+                        (crate::vm::runtime::preserved::io::ARG0, *ref_src),
+                        (crate::vm::runtime::preserved::io::ARG1, *index),
+                        (crate::vm::runtime::preserved::io::ARG2, *value_lo),
+                        (crate::vm::runtime::preserved::io::ARG3, *len),
+                    ],
+                )
+            }
+            MachineInstKind::ArrayCopy {
+                dst_type_idx,
+                src_type_idx,
+                dst_ref,
+                dst_index,
+                src_ref,
+                src_index,
+                len,
+            } => self.lower_preserved_no_result_extended(
+                crate::vm::runtime::preserved::op::ARRAY_COPY,
+                &[
+                    (crate::vm::runtime::preserved::io::IMM0, *dst_type_idx),
+                    (crate::vm::runtime::preserved::io::IMM1, *src_type_idx),
+                ],
+                &[
+                    (crate::vm::runtime::preserved::io::ARG0, *dst_ref),
+                    (crate::vm::runtime::preserved::io::ARG1, *dst_index),
+                    (crate::vm::runtime::preserved::io::ARG2, *src_ref),
+                    (crate::vm::runtime::preserved::io::ARG3, *src_index),
+                    (crate::vm::runtime::preserved::io::ARG4, *len),
+                ],
+            ),
+            MachineInstKind::ArrayInitData {
+                type_idx,
+                data_idx,
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+            } => self.lower_preserved_no_result_extended(
+                crate::vm::runtime::preserved::op::ARRAY_INIT_DATA,
+                &[
+                    (crate::vm::runtime::preserved::io::IMM0, *type_idx),
+                    (crate::vm::runtime::preserved::io::IMM1, *data_idx),
+                ],
+                &[
+                    (crate::vm::runtime::preserved::io::ARG0, *ref_src),
+                    (crate::vm::runtime::preserved::io::ARG1, *dst_index),
+                    (crate::vm::runtime::preserved::io::ARG2, *src_index),
+                    (crate::vm::runtime::preserved::io::ARG3, *len),
+                ],
+            ),
+            MachineInstKind::ArrayInitElem {
+                type_idx,
+                elem_idx,
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+            } => self.lower_preserved_no_result_extended(
+                crate::vm::runtime::preserved::op::ARRAY_INIT_ELEM,
+                &[
+                    (crate::vm::runtime::preserved::io::IMM0, *type_idx),
+                    (crate::vm::runtime::preserved::io::IMM1, *elem_idx),
+                ],
+                &[
+                    (crate::vm::runtime::preserved::io::ARG0, *ref_src),
+                    (crate::vm::runtime::preserved::io::ARG1, *dst_index),
+                    (crate::vm::runtime::preserved::io::ARG2, *src_index),
+                    (crate::vm::runtime::preserved::io::ARG3, *len),
+                ],
+            ),
+            MachineInstKind::ArrayLen { src, dst } => self.lower_preserved_result(
+                crate::vm::runtime::preserved::op::ARRAY_LEN,
+                0,
+                0,
+                *src,
                 MachineValue::Imm64(0),
                 MachineValue::Imm64(0),
                 MachineStorageType::GpWord,
@@ -2427,6 +2666,23 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
+    fn lower_preserved_no_result_extended(
+        &mut self,
+        op_code: u32,
+        imms: &[(usize, u32)],
+        args: &[(usize, MachineValue)],
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_io_open();
+        for &(slot, imm) in imms {
+            self.emit_io_store_imm(slot, imm);
+        }
+        for &(slot, value) in args {
+            self.emit_io_store_value(slot, value)?;
+        }
+        self.emit_preserved_call_and_close(op_code, None);
+        Ok(())
+    }
+
     fn lower_preserved_result(
         &mut self,
         op_code: u32,
@@ -2463,6 +2719,80 @@ impl<'a> X86_64Backend<'a> {
             let dst_gp = self.map_gp_reg(dst)?;
             self.emit_preserved_call_and_close(op_code, Some(dst_gp));
         }
+        Ok(())
+    }
+
+    fn lower_preserved_result_extended(
+        &mut self,
+        op_code: u32,
+        imms: &[(usize, u32)],
+        args: &[(usize, MachineValue)],
+        ty: MachineStorageType,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_io_open();
+        for &(slot, imm) in imms {
+            self.emit_io_store_imm(slot, imm);
+        }
+        for &(slot, value) in args {
+            self.emit_io_store_value(slot, value)?;
+        }
+        if let Some(width) = ty.float_width() {
+            self.emit_preserved_call_and_close(op_code, Some(X86Reg::RCX));
+            let dst_fp = self.map_fp_reg(dst)? as u8;
+            match width {
+                MachineFloatWidth::F32 => {
+                    enc::movd_xmm_r32(&mut self.core.text, dst_fp, X86Reg::RCX)
+                }
+                MachineFloatWidth::F64 => {
+                    enc::movq_xmm_r64(&mut self.core.text, dst_fp, X86Reg::RCX)
+                }
+            }
+            self.core.set_fp_reg_width(dst, width)?;
+        } else {
+            let dst_gp = self.map_gp_reg(dst)?;
+            self.emit_preserved_call_and_close(op_code, Some(dst_gp));
+        }
+        Ok(())
+    }
+
+    fn lower_array_new_fixed(
+        &mut self,
+        type_idx: u32,
+        elements: &[(MachineValue, Option<MachineValue>)],
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        let payload_bytes = ((elements.len() as u32 * 8) + 15) & !15;
+        self.emit_preserved_io_open_with_prefix(payload_bytes);
+        for (index, (value_lo, value_hi)) in elements.iter().enumerate() {
+            if value_hi.is_some() {
+                return Err(WasmError::internal(
+                    "x86_64 backend received pair-valued array.new_fixed".into(),
+                ));
+            }
+            self.emit_io_store_value_at(0, index, *value_lo)?;
+        }
+        self.emit_io_store_imm_at(payload_bytes, preserved_io::IMM0, type_idx);
+        self.emit_io_store_imm_at(payload_bytes, preserved_io::IMM1, elements.len() as u32);
+        if elements.is_empty() {
+            self.emit_io_store_imm_at(payload_bytes, preserved_io::ARG0, 0);
+        } else {
+            let scratch = self.gp_scratch.scoped_alloc().detach();
+            enc::mov_rr_64(&mut self.core.text, *scratch, X86Reg::RSP);
+            enc::store_64(
+                &mut self.core.text,
+                X86Reg::RSP,
+                payload_bytes as i32 + preserved_io::ARG0 as i32 * 8,
+                *scratch,
+            );
+        }
+        let dst_gp = self.map_gp_reg(dst)?;
+        self.emit_preserved_call_and_close_with_prefix(
+            op::ARRAY_NEW_FIXED,
+            Some(dst_gp),
+            payload_bytes,
+        );
         Ok(())
     }
 

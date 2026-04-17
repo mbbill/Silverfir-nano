@@ -141,3 +141,25 @@ pub(super) fn three_args(
         )),
     }
 }
+
+pub(super) fn four_args(
+    args: &[SsaOperand],
+) -> Result<(SsaOperand, SsaOperand, SsaOperand, SsaOperand), WasmError> {
+    match args {
+        [a, b, c, d] => Ok((*a, *b, *c, *d)),
+        _ => Err(WasmError::internal(
+            "machine lowering expected exactly four arguments".into(),
+        )),
+    }
+}
+
+pub(super) fn five_args(
+    args: &[SsaOperand],
+) -> Result<(SsaOperand, SsaOperand, SsaOperand, SsaOperand, SsaOperand), WasmError> {
+    match args {
+        [a, b, c, d, e] => Ok((*a, *b, *c, *d, *e)),
+        _ => Err(WasmError::internal(
+            "machine lowering expected exactly five arguments".into(),
+        )),
+    }
+}

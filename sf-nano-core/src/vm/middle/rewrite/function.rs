@@ -524,6 +524,19 @@ fn apply_inline_prefix(
             inline_fill_for_operands(state, frame, values, keep_live)?;
             inline_spill_all_except_top(state, frame, keep_live)?;
         }
+        SemanticOpKind::BrOnNull { arity, .. } => {
+            let keep_live = arity.saturating_add(1);
+            inline_fill_for_operands(state, frame, values, keep_live)?;
+            inline_spill_all_except_top(state, frame, keep_live)?;
+        }
+        SemanticOpKind::BrOnNonNull { arity, .. } => {
+            inline_fill_for_operands(state, frame, values, *arity)?;
+            inline_spill_all_except_top(state, frame, *arity)?;
+        }
+        SemanticOpKind::BrOnCast { arity, .. } | SemanticOpKind::BrOnCastFail { arity, .. } => {
+            inline_fill_for_operands(state, frame, values, *arity)?;
+            inline_spill_all_except_top(state, frame, *arity)?;
+        }
         SemanticOpKind::BrTable { entries } => {
             let arity = entries.first().map(|entry| entry.arity).unwrap_or(0);
             let keep_live = arity.saturating_add(1);
@@ -833,6 +846,10 @@ fn lower_block_body_op(
         SemanticOpKind::If { .. }
         | SemanticOpKind::Br { .. }
         | SemanticOpKind::BrIf { .. }
+        | SemanticOpKind::BrOnNull { .. }
+        | SemanticOpKind::BrOnNonNull { .. }
+        | SemanticOpKind::BrOnCast { .. }
+        | SemanticOpKind::BrOnCastFail { .. }
         | SemanticOpKind::BrTable { .. }
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
@@ -895,10 +912,10 @@ fn lower_primitive(
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "primitive op")
 }
 
-/// Package args for a primitive op into the 2-inline + optional extra_args
-/// slot layout. Returns the inline `[SsaOperand; 2]` and the extra-arg index
-/// (0 if no third operand). All rewrite-originated primitive args are
-/// `SsaValue` operands.
+/// Package args for a primitive op into the 2-inline + overflow-extra_args
+/// slot layout. Returns the inline `[SsaOperand; 2]` and the start index of
+/// any overflow operands (0 if there are none). All rewrite-originated
+/// primitive args are `SsaValue` operands.
 fn pack_primitive_args(
     args: &[SsaValue],
     extra_args: &mut collections::Vec<SsaOperand>,
@@ -907,22 +924,25 @@ fn pack_primitive_args(
         0 => Ok(([SsaOperand::NONE, SsaOperand::NONE], 0)),
         1 => Ok(([SsaOperand::value(args[0]), SsaOperand::NONE], 0)),
         2 => Ok(([SsaOperand::value(args[0]), SsaOperand::value(args[1])], 0)),
-        3 => {
-            if extra_args.len() >= u16::MAX as usize {
+        _ => {
+            let extra_count = args.len() - 2;
+            let Some(new_len) = extra_args.len().checked_add(extra_count) else {
                 return Err(WasmError::internal(
-                    "block extra_args overflow while lowering 3-arg primitive",
+                    "block extra_args overflow while lowering primitive operands",
+                ));
+            };
+            if new_len > u16::MAX as usize {
+                return Err(WasmError::internal(
+                    "block extra_args overflow while lowering primitive operands",
                 ));
             }
             let idx = extra_args.len() as u16;
-            extra_args.push(SsaOperand::value(args[2]));
+            extra_args.extend(args[2..].iter().copied().map(SsaOperand::value));
             Ok((
                 [SsaOperand::value(args[0]), SsaOperand::value(args[1])],
                 idx,
             ))
         }
-        _ => Err(WasmError::internal(
-            "primitive op has >3 args; unsupported in flat SsaInst layout",
-        )),
     }
 }
 
@@ -1133,6 +1153,77 @@ fn call_base_slot(frame: FrameLayoutPlan, stack_height: u16, consumed: u16) -> F
 #[inline]
 fn cached_local_get_can_source_alias(ty: ValueType, gp_unit_bytes: u8) -> bool {
     !(matches!(ty, ValueType::I64) && gp_unit_bytes == 4)
+}
+
+fn emit_ref_is_null_condition(
+    ref_value: SsaValue,
+    state: &mut BlockState,
+    builder: &mut ProgramBuilder,
+    values: &mut ValueAlloc,
+) -> Result<SsaValue, WasmError> {
+    let cond = values.fresh_typed(ValueType::I32);
+    let pool_idx = builder.intern_primitive(PrimitiveOpKind::RefIsNull)?;
+    let (inline_args, extra_idx) = pack_primitive_args(&[ref_value], &mut state.extra_args)?;
+    state
+        .ops
+        .push(SsaInst::primitive(pool_idx, cond, inline_args, extra_idx));
+    Ok(cond)
+}
+
+fn emit_ref_test_condition(
+    ref_value: SsaValue,
+    target_type: ValueType,
+    state: &mut BlockState,
+    builder: &mut ProgramBuilder,
+    values: &mut ValueAlloc,
+) -> Result<SsaValue, WasmError> {
+    let ValueType::Ref(ref_type) = target_type else {
+        return Err(WasmError::internal(
+            "br_on_cast target type must be a reference".into(),
+        ));
+    };
+    let cond = values.fresh_typed(ValueType::I32);
+    let pool_idx = builder.intern_primitive(PrimitiveOpKind::RefTest { ref_type })?;
+    let (inline_args, extra_idx) = pack_primitive_args(&[ref_value], &mut state.extra_args)?;
+    state
+        .ops
+        .push(SsaInst::primitive(pool_idx, cond, inline_args, extra_idx));
+    Ok(cond)
+}
+
+fn split_ref_value_for_null_test(
+    ref_value: SsaValue,
+    cond_ty: ValueType,
+    refined_ty: ValueType,
+    slot: FrameSlot,
+    state: &mut BlockState,
+    values: &mut ValueAlloc,
+) -> (SsaValue, SsaValue) {
+    let cond_ref = values.fresh_typed(cond_ty);
+    let refined = values.fresh_typed(refined_ty);
+    state.ops.push(SsaInst::spill(slot, ref_value));
+    state.ops.push(SsaInst::fill(slot, cond_ref));
+    state.ops.push(SsaInst::fill(slot, refined));
+    (cond_ref, refined)
+}
+
+fn split_ref_value_for_cast_test(
+    ref_value: SsaValue,
+    cond_ty: ValueType,
+    source_ty: ValueType,
+    cast_ty: ValueType,
+    slot: FrameSlot,
+    state: &mut BlockState,
+    values: &mut ValueAlloc,
+) -> (SsaValue, SsaValue, SsaValue) {
+    let cond_ref = values.fresh_typed(cond_ty);
+    let source_ref = values.fresh_typed(source_ty);
+    let cast_ref = values.fresh_typed(cast_ty);
+    state.ops.push(SsaInst::spill(slot, ref_value));
+    state.ops.push(SsaInst::fill(slot, cond_ref));
+    state.ops.push(SsaInst::fill(slot, source_ref));
+    state.ops.push(SsaInst::fill(slot, cast_ref));
+    (cond_ref, source_ref, cast_ref)
 }
 
 fn branch_payload(
@@ -1560,6 +1651,222 @@ fn lower_block_terminator(
                     else_edge,
                 }))
             }
+        }
+        SemanticOpKind::BrOnNull {
+            stack_drop,
+            arity,
+            target,
+            ref_type,
+        } => {
+            let ref_value = state.pop_one()?;
+            let ref_slot = frame.operand_slot(state.height());
+            let (cond_ref, refined) = split_ref_value_for_null_test(
+                ref_value,
+                values.value_type(ref_value),
+                *ref_type,
+                ref_slot,
+                state,
+                values,
+            );
+            let cond = emit_ref_is_null_condition(cond_ref, state, builder, values)?;
+            if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
+                publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
+            }
+            let then_edge = edge_to_target(
+                *target,
+                state,
+                EdgeMapping::TakenBranch {
+                    stack_drop: *stack_drop,
+                    payload: branch_payload(frame, state.height(), *stack_drop, *arity),
+                },
+                frame,
+                values,
+                semantic_to_block,
+                block_params,
+                planner,
+            )?;
+            state.push_results(collections::vec![refined], collections::vec![*ref_type])?;
+            let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
+            maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
+            let else_edge = next_edge(
+                semantic_index,
+                semantic.ops.len(),
+                state,
+                frame,
+                values,
+                semantic_to_block,
+                block_params,
+                planner,
+            )?;
+            Ok(LoweredTerminator::new(SsaTerminator::Branch {
+                cond,
+                then_edge,
+                else_edge,
+            }))
+        }
+        SemanticOpKind::BrOnNonNull {
+            stack_drop,
+            arity,
+            target,
+            ref_type,
+        } => {
+            let ref_value = state.pop_one()?;
+            let ref_slot = frame.operand_slot(state.height());
+            let (cond_ref, refined) = split_ref_value_for_null_test(
+                ref_value,
+                values.value_type(ref_value),
+                *ref_type,
+                ref_slot,
+                state,
+                values,
+            );
+            let cond = emit_ref_is_null_condition(cond_ref, state, builder, values)?;
+            let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
+            maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
+            let then_edge = next_edge(
+                semantic_index,
+                semantic.ops.len(),
+                state,
+                frame,
+                values,
+                semantic_to_block,
+                block_params,
+                planner,
+            )?;
+            state.push_results(collections::vec![refined], collections::vec![*ref_type])?;
+            if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
+                publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
+            }
+            let else_edge = edge_to_target(
+                *target,
+                state,
+                EdgeMapping::TakenBranch {
+                    stack_drop: *stack_drop,
+                    payload: branch_payload(frame, state.height(), *stack_drop, *arity),
+                },
+                frame,
+                values,
+                semantic_to_block,
+                block_params,
+                planner,
+            )?;
+            Ok(LoweredTerminator::new(SsaTerminator::Branch {
+                cond,
+                then_edge,
+                else_edge,
+            }))
+        }
+        SemanticOpKind::BrOnCast {
+            stack_drop,
+            arity,
+            target,
+            fail_type,
+            cast_type,
+        } => {
+            let ref_value = state.pop_one()?;
+            let ref_slot = frame.operand_slot(state.height());
+            let (cond_ref, source_ref, cast_ref) = split_ref_value_for_cast_test(
+                ref_value,
+                values.value_type(ref_value),
+                *fail_type,
+                *cast_type,
+                ref_slot,
+                state,
+                values,
+            );
+            let cond = emit_ref_test_condition(cond_ref, *cast_type, state, builder, values)?;
+            state.push_results(collections::vec![cast_ref], collections::vec![*cast_type])?;
+            if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
+                publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
+            }
+            let then_edge = edge_to_target(
+                *target,
+                state,
+                EdgeMapping::TakenBranch {
+                    stack_drop: *stack_drop,
+                    payload: branch_payload(frame, state.height(), *stack_drop, *arity),
+                },
+                frame,
+                values,
+                semantic_to_block,
+                block_params,
+                planner,
+            )?;
+            state.consume_top(1)?;
+            state.push_results(collections::vec![source_ref], collections::vec![*fail_type])?;
+            let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
+            maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
+            let else_edge = next_edge(
+                semantic_index,
+                semantic.ops.len(),
+                state,
+                frame,
+                values,
+                semantic_to_block,
+                block_params,
+                planner,
+            )?;
+            Ok(LoweredTerminator::new(SsaTerminator::Branch {
+                cond,
+                then_edge,
+                else_edge,
+            }))
+        }
+        SemanticOpKind::BrOnCastFail {
+            stack_drop,
+            arity,
+            target,
+            fail_type,
+            cast_type,
+        } => {
+            let ref_value = state.pop_one()?;
+            let ref_slot = frame.operand_slot(state.height());
+            let (cond_ref, source_ref, cast_ref) = split_ref_value_for_cast_test(
+                ref_value,
+                values.value_type(ref_value),
+                *fail_type,
+                *cast_type,
+                ref_slot,
+                state,
+                values,
+            );
+            let cond = emit_ref_test_condition(cond_ref, *cast_type, state, builder, values)?;
+            state.push_results(collections::vec![cast_ref], collections::vec![*cast_type])?;
+            let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
+            maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
+            let then_edge = next_edge(
+                semantic_index,
+                semantic.ops.len(),
+                state,
+                frame,
+                values,
+                semantic_to_block,
+                block_params,
+                planner,
+            )?;
+            state.consume_top(1)?;
+            state.push_results(collections::vec![source_ref], collections::vec![*fail_type])?;
+            if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
+                publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
+            }
+            let else_edge = edge_to_target(
+                *target,
+                state,
+                EdgeMapping::TakenBranch {
+                    stack_drop: *stack_drop,
+                    payload: branch_payload(frame, state.height(), *stack_drop, *arity),
+                },
+                frame,
+                values,
+                semantic_to_block,
+                block_params,
+                planner,
+            )?;
+            Ok(LoweredTerminator::new(SsaTerminator::Branch {
+                cond,
+                then_edge,
+                else_edge,
+            }))
         }
         SemanticOpKind::BrTable { entries } => {
             let index = state.pop_one()?;

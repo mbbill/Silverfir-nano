@@ -624,6 +624,32 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     *dst,
                 )
             }
+            MachineInstKind::StructNew {
+                type_idx,
+                field_count,
+                fields,
+                dst,
+            } => {
+                if fields
+                    .iter()
+                    .take(*field_count as usize)
+                    .any(|(_, value_hi)| value_hi.is_some())
+                {
+                    return Err(WasmError::internal(
+                        "arm64 backend received pair-valued struct.new".into(),
+                    ));
+                }
+                self.lower_preserved_result(
+                    preserved_op::STRUCT_NEW,
+                    *type_idx,
+                    0,
+                    fields[0].0,
+                    fields[1].0,
+                    fields[2].0,
+                    MachineStorageType::GpWord,
+                    *dst,
+                )
+            }
             MachineInstKind::StructNewDefault { type_idx, dst } => self.lower_preserved_result(
                 preserved_op::STRUCT_NEW_DEFAULT,
                 *type_idx,
@@ -685,6 +711,29 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     MachineValue::Imm64(0),
                 )
             }
+            MachineInstKind::ArrayNew {
+                type_idx,
+                init_lo,
+                init_hi,
+                length,
+                dst,
+            } => {
+                if init_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "arm64 backend received pair-valued array.new".into(),
+                    ));
+                }
+                self.lower_preserved_result(
+                    preserved_op::ARRAY_NEW,
+                    *type_idx,
+                    0,
+                    *init_lo,
+                    *length,
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )
+            }
             MachineInstKind::ArrayNewDefault {
                 type_idx,
                 length,
@@ -694,6 +743,190 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 *type_idx,
                 0,
                 *length,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::ArrayNewFixed {
+                type_idx,
+                elements,
+                dst,
+            } => self.lower_array_new_fixed(*type_idx, elements, *dst),
+            MachineInstKind::ArrayNewData {
+                type_idx,
+                data_idx,
+                src,
+                len,
+                dst,
+            } => self.lower_preserved_result_extended(
+                preserved_op::ARRAY_NEW_DATA,
+                &[
+                    (preserved_io::IMM0, *type_idx),
+                    (preserved_io::IMM1, *data_idx),
+                ],
+                &[(preserved_io::ARG0, *src), (preserved_io::ARG1, *len)],
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::ArrayNewElem {
+                type_idx,
+                elem_idx,
+                src,
+                len,
+                dst,
+            } => self.lower_preserved_result_extended(
+                preserved_op::ARRAY_NEW_ELEM,
+                &[
+                    (preserved_io::IMM0, *type_idx),
+                    (preserved_io::IMM1, *elem_idx),
+                ],
+                &[(preserved_io::ARG0, *src), (preserved_io::ARG1, *len)],
+                MachineStorageType::GpWord,
+                *dst,
+            ),
+            MachineInstKind::ArrayGet {
+                type_idx,
+                signed,
+                ty,
+                ref_src,
+                index,
+                dst,
+                dst_hi,
+            } => {
+                if dst_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "arm64 backend received pair-valued array.get".into(),
+                    ));
+                }
+                let op_code = match signed {
+                    None => preserved_op::ARRAY_GET,
+                    Some(true) => preserved_op::ARRAY_GET_S,
+                    Some(false) => preserved_op::ARRAY_GET_U,
+                };
+                self.lower_preserved_result(
+                    op_code,
+                    *type_idx,
+                    0,
+                    *ref_src,
+                    *index,
+                    MachineValue::Imm64(0),
+                    *ty,
+                    *dst,
+                )
+            }
+            MachineInstKind::ArraySet {
+                type_idx,
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+            } => {
+                if value_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "arm64 backend received pair-valued array.set".into(),
+                    ));
+                }
+                self.lower_preserved_no_result(
+                    preserved_op::ARRAY_SET,
+                    *type_idx,
+                    0,
+                    *ref_src,
+                    *index,
+                    *value_lo,
+                )
+            }
+            MachineInstKind::ArrayFill {
+                type_idx,
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+                len,
+            } => {
+                if value_hi.is_some() {
+                    return Err(WasmError::internal(
+                        "arm64 backend received pair-valued array.fill".into(),
+                    ));
+                }
+                self.lower_preserved_no_result_extended(
+                    preserved_op::ARRAY_FILL,
+                    &[(preserved_io::IMM0, *type_idx)],
+                    &[
+                        (preserved_io::ARG0, *ref_src),
+                        (preserved_io::ARG1, *index),
+                        (preserved_io::ARG2, *value_lo),
+                        (preserved_io::ARG3, *len),
+                    ],
+                )
+            }
+            MachineInstKind::ArrayCopy {
+                dst_type_idx,
+                src_type_idx,
+                dst_ref,
+                dst_index,
+                src_ref,
+                src_index,
+                len,
+            } => self.lower_preserved_no_result_extended(
+                preserved_op::ARRAY_COPY,
+                &[
+                    (preserved_io::IMM0, *dst_type_idx),
+                    (preserved_io::IMM1, *src_type_idx),
+                ],
+                &[
+                    (preserved_io::ARG0, *dst_ref),
+                    (preserved_io::ARG1, *dst_index),
+                    (preserved_io::ARG2, *src_ref),
+                    (preserved_io::ARG3, *src_index),
+                    (preserved_io::ARG4, *len),
+                ],
+            ),
+            MachineInstKind::ArrayInitData {
+                type_idx,
+                data_idx,
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+            } => self.lower_preserved_no_result_extended(
+                preserved_op::ARRAY_INIT_DATA,
+                &[
+                    (preserved_io::IMM0, *type_idx),
+                    (preserved_io::IMM1, *data_idx),
+                ],
+                &[
+                    (preserved_io::ARG0, *ref_src),
+                    (preserved_io::ARG1, *dst_index),
+                    (preserved_io::ARG2, *src_index),
+                    (preserved_io::ARG3, *len),
+                ],
+            ),
+            MachineInstKind::ArrayInitElem {
+                type_idx,
+                elem_idx,
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+            } => self.lower_preserved_no_result_extended(
+                preserved_op::ARRAY_INIT_ELEM,
+                &[
+                    (preserved_io::IMM0, *type_idx),
+                    (preserved_io::IMM1, *elem_idx),
+                ],
+                &[
+                    (preserved_io::ARG0, *ref_src),
+                    (preserved_io::ARG1, *dst_index),
+                    (preserved_io::ARG2, *src_index),
+                    (preserved_io::ARG3, *len),
+                ],
+            ),
+            MachineInstKind::ArrayLen { src, dst } => self.lower_preserved_result(
+                preserved_op::ARRAY_LEN,
+                0,
+                0,
+                *src,
                 MachineValue::Imm64(0),
                 MachineValue::Imm64(0),
                 MachineStorageType::GpWord,
@@ -3583,6 +3816,23 @@ impl<'a> super::backend::Arm64Backend<'a> {
         Ok(())
     }
 
+    fn lower_preserved_no_result_extended(
+        &mut self,
+        op_code: u32,
+        imms: &[(usize, u32)],
+        args: &[(usize, MachineValue)],
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_frame_open();
+        for &(slot, imm) in imms {
+            self.emit_io_store_imm(slot, imm);
+        }
+        for &(slot, value) in args {
+            self.emit_io_store_value(slot, value)?;
+        }
+        self.emit_preserved_call_and_close(op_code, None);
+        Ok(())
+    }
+
     fn lower_preserved_result(
         &mut self,
         op_code: u32,
@@ -3618,6 +3868,90 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 result_scratch,
             ));
         }
+        self.gp_scratch.free_index(result_scratch_idx);
+        Ok(())
+    }
+
+    fn lower_preserved_result_extended(
+        &mut self,
+        op_code: u32,
+        imms: &[(usize, u32)],
+        args: &[(usize, MachineValue)],
+        ty: MachineStorageType,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_frame_open();
+        for &(slot, imm) in imms {
+            self.emit_io_store_imm(slot, imm);
+        }
+        for &(slot, value) in args {
+            self.emit_io_store_value(slot, value)?;
+        }
+
+        let result_scratch_idx = self.gp_scratch.alloc();
+        let result_scratch = self.gp_scratch.reg(result_scratch_idx);
+        self.emit_preserved_call_and_close(op_code, Some(result_scratch_idx));
+
+        if let Some(width) = ty.float_width() {
+            let dst_fp = self.map_fp_reg(dst)?;
+            self.core.text.emit_u32(match width {
+                MachineFloatWidth::F32 => enc::fmov_s_from_gp(dst_fp, result_scratch),
+                MachineFloatWidth::F64 => enc::fmov_d_from_gp(dst_fp, result_scratch),
+            });
+            self.core.set_fp_reg_width(dst, width)?;
+        } else {
+            self.core.text.emit_u32(enc::mov_reg_64(
+                map_gp(self.core.compiled.backend(), dst)?,
+                result_scratch,
+            ));
+        }
+        self.gp_scratch.free_index(result_scratch_idx);
+        Ok(())
+    }
+
+    fn lower_array_new_fixed(
+        &mut self,
+        type_idx: u32,
+        elements: &[(MachineValue, Option<MachineValue>)],
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        let payload_bytes = ((elements.len() as u32 * 8) + 15) & !15;
+        let payload_slots = (payload_bytes / 8) as usize;
+        self.emit_preserved_frame_open_with_prefix(payload_bytes);
+        for (index, (value_lo, value_hi)) in elements.iter().enumerate() {
+            if value_hi.is_some() {
+                return Err(WasmError::internal(
+                    "arm64 backend received pair-valued array.new_fixed".into(),
+                ));
+            }
+            self.emit_io_store_value_at(0, index, *value_lo)?;
+        }
+        self.emit_io_store_imm_at(payload_slots, preserved_io::IMM0, type_idx);
+        self.emit_io_store_imm_at(payload_slots, preserved_io::IMM1, elements.len() as u32);
+        if elements.is_empty() {
+            self.emit_io_store_imm_at(payload_slots, preserved_io::ARG0, 0);
+        } else {
+            let scratch = *self.gp_scratch.scoped_alloc();
+            self.core
+                .text
+                .emit_u32(enc::add_imm_64(scratch, abi::stack_reg(), 0));
+            self.core.text.emit_u32(enc::str_64(
+                scratch,
+                abi::stack_reg(),
+                (payload_slots + preserved_io::ARG0) as u32,
+            ));
+        }
+        let result_scratch_idx = self.gp_scratch.alloc();
+        let result_scratch = self.gp_scratch.reg(result_scratch_idx);
+        self.emit_preserved_call_and_close_with_prefix(
+            preserved_op::ARRAY_NEW_FIXED,
+            Some(result_scratch_idx),
+            payload_bytes,
+        );
+        self.core.text.emit_u32(enc::mov_reg_64(
+            map_gp(self.core.compiled.backend(), dst)?,
+            result_scratch,
+        ));
         self.gp_scratch.free_index(result_scratch_idx);
         Ok(())
     }

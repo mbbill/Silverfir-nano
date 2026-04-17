@@ -169,7 +169,7 @@ impl<'a> Arm32Backend<'a> {
             op_code,
             imms,
             args,
-            None,
+            &[],
             match result_dst {
                 Some(dst) => PreservedResultTarget::GpWord(dst),
                 None => PreservedResultTarget::None,
@@ -182,7 +182,7 @@ impl<'a> Arm32Backend<'a> {
         op_code: u32,
         imms: &[(usize, u32)],
         args: &[(usize, MachineValue)],
-        pair_arg: Option<(usize, MachineValue, MachineValue)>,
+        pair_args: &[(usize, MachineValue, MachineValue)],
         result: PreservedResultTarget,
     ) -> Result<(), WasmError> {
         use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
@@ -212,7 +212,7 @@ impl<'a> Arm32Backend<'a> {
         for &(slot, value) in args {
             self.emit_preserved_io_store_value(slot, value)?;
         }
-        if let Some((slot, lo, hi)) = pair_arg {
+        for &(slot, lo, hi) in pair_args {
             self.emit_preserved_io_store_pair(slot, lo, hi)?;
         }
 

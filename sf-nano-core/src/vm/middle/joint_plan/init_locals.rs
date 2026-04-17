@@ -175,6 +175,22 @@ pub(crate) fn locals_reads_before_write(semantic: &SemanticProgram) -> collectio
                     }
                 }
             }
+            SemanticOpKind::BrOnNull { .. }
+            | SemanticOpKind::BrOnNonNull { .. }
+            | SemanticOpKind::BrOnCast { .. }
+            | SemanticOpKind::BrOnCastFail { .. } => {
+                if reachable {
+                    for frame in stack.iter_mut() {
+                        if frame.kind == FrameKind::Loop {
+                            continue;
+                        }
+                        frame.branch_def_set = Some(match &frame.branch_def_set {
+                            Some(existing) => intersect_vecs(existing, &def_set),
+                            None => def_set.clone(),
+                        });
+                    }
+                }
+            }
             SemanticOpKind::BrTable { .. } => {
                 if reachable {
                     for frame in stack.iter_mut() {

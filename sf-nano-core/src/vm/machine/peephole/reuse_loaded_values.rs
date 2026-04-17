@@ -80,10 +80,15 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
             | MachineInstKind::ExternConvertAny { .. }
             | MachineInstKind::RefTest { .. }
             | MachineInstKind::RefCast { .. }
+            | MachineInstKind::StructNew { .. }
             | MachineInstKind::StructNewDefault { .. }
             | MachineInstKind::StructGet { .. }
             | MachineInstKind::StructSet { .. }
-            | MachineInstKind::ArrayNewDefault { .. } => {
+            | MachineInstKind::ArrayNew { .. }
+            | MachineInstKind::ArrayNewDefault { .. }
+            | MachineInstKind::ArrayGet { .. }
+            | MachineInstKind::ArraySet { .. }
+            | MachineInstKind::ArrayLen { .. } => {
                 tracked.clear();
             }
             _ => {}

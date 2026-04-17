@@ -466,6 +466,10 @@ fn parse_constexpr(payload: &mut Payload) -> Result<ConstExpr, WasmError> {
                     ARRAY_NEW | ARRAY_NEW_DEFAULT => {
                         code.read_leb128_u32()?;
                     }
+                    ARRAY_NEW_FIXED => {
+                        code.read_leb128_u32()?;
+                        code.read_leb128_u32()?;
+                    }
                     _ => {
                         break 'outer Err(WasmError::malformed("Invalid opcode in constexpr"));
                     }

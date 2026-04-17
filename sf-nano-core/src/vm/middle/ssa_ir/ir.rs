@@ -24,8 +24,8 @@
 //! - `call_ops: Vec<SsaCallOp>` backs the `Call` variant; `SsaInst.meta` is
 //!   the index
 //!
-//! Three-arg primitives (Select + memory/table bulk ops) store their third
-//! operand inside `SsaBlock.extra_args`; `SsaInst.meta` holds the index.
+//! Primitive ops with more than two operands spill the overflow operands into
+//! `SsaBlock.extra_args`; `SsaInst.meta` holds the start index.
 //!
 //! Use [`SsaInst::view`] or [`SsaBlock::view`] to decode an instruction into
 //! a pattern-matchable [`SsaInstView`] enum.
@@ -208,7 +208,8 @@ pub(crate) struct LocalSlotInfo {
 pub(crate) struct SsaInst {
     pub op: SsaOp,
     /// Secondary scalar: slot index for Fill/Spill/Local*, call-op index for
-    /// Call, extra-arg index for 3-arg primitives, unused (0) otherwise.
+    /// Call index for `Call`, start index into `extra_args` for primitive ops
+    /// with more than two operands, unused (0) otherwise.
     pub meta: u16,
     /// Destination value; `SsaValue::NONE` when the op has no result.
     pub result: SsaValue,
@@ -326,9 +327,9 @@ impl SsaInst {
 
     /// Build a primitive op instruction.
     ///
-    /// `args` must have length 0-3; the third arg (if present) must already
-    /// have been pushed into the enclosing `SsaBlock.extra_args` and its
-    /// index passed as `extra_args_idx`.
+    /// `args` must contain the inline operands. Any operands beyond the first
+    /// two must already have been pushed into the enclosing
+    /// `SsaBlock.extra_args`, and `extra_args_idx` must point at their start.
     #[inline]
     pub(crate) fn primitive(
         pool_idx: u32,
@@ -406,23 +407,18 @@ pub(crate) enum SsaInstView<'a> {
     },
 }
 
-/// Argument list view for a Value instruction: up to 2 inline slots plus an
-/// optional third arg drawn from the enclosing block's `extra_args`.
+/// Argument list view for a Value instruction: up to 2 inline slots plus any
+/// overflow args drawn from the enclosing block's `extra_args`.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct SsaArgs<'a> {
     inline: [SsaOperand; 2],
-    extra: Option<SsaOperand>,
-    _marker: core::marker::PhantomData<&'a ()>,
+    extra: &'a [SsaOperand],
 }
 
 impl<'a> SsaArgs<'a> {
     #[inline]
-    fn from_parts(inline: [SsaOperand; 2], extra: Option<SsaOperand>) -> Self {
-        Self {
-            inline,
-            extra,
-            _marker: core::marker::PhantomData,
-        }
+    fn from_parts(inline: [SsaOperand; 2], extra: &'a [SsaOperand]) -> Self {
+        Self { inline, extra }
     }
 
     #[inline]
@@ -435,25 +431,20 @@ impl<'a> SsaArgs<'a> {
                 break;
             }
         }
-        if self.extra.is_some() {
-            n += 1;
-        }
-        n
+        n + self.extra.len()
     }
 
     #[inline]
     pub(crate) fn get(&self, idx: usize) -> Option<SsaOperand> {
-        match idx {
-            0 | 1 => {
-                let a = self.inline[idx];
-                if a.is_none() {
-                    None
-                } else {
-                    Some(a)
-                }
+        if idx < 2 {
+            let a = self.inline[idx];
+            if a.is_none() {
+                None
+            } else {
+                Some(a)
             }
-            2 => self.extra,
-            _ => None,
+        } else {
+            self.extra.get(idx - 2).copied().filter(|a| !a.is_none())
         }
     }
 
@@ -545,10 +536,18 @@ fn decode_view<'a>(inst: SsaInst, program: &'a SsaProgram, block: &'a SsaBlock) 
                 .primitive_pool
                 .get(pool_idx)
                 .expect("primitive op index out of range for primitive_pool");
-            let extra = if primitive_op::stack_effect(kind).0 == 3 {
-                block.extra_args.get(inst.meta as usize).copied()
+            let extra_count = primitive_op::stack_effect(kind).0.saturating_sub(2);
+            let start = inst.meta as usize;
+            let end = start
+                .checked_add(extra_count)
+                .expect("primitive extra_args index overflow");
+            let extra = if extra_count == 0 {
+                &[][..]
             } else {
-                None
+                block
+                    .extra_args
+                    .get(start..end)
+                    .expect("primitive extra_args range out of bounds")
             };
             SsaInstView::Value {
                 op: kind,
@@ -701,8 +700,8 @@ pub(crate) struct SsaBlock {
     pub id: SsaTarget,
     pub params: collections::Vec<SsaValue>,
     pub ops: collections::Vec<SsaInst>,
-    /// Overflow slot for the third operand of 3-arg primitive ops (Select,
-    /// memory/table bulk ops). `SsaInst.meta` indexes this vector.
+    /// Overflow storage for primitive operands beyond the first two.
+    /// `SsaInst.meta` stores the start index for the current instruction.
     pub extra_args: collections::Vec<SsaOperand>,
     pub terminator: SsaTerminator,
 }

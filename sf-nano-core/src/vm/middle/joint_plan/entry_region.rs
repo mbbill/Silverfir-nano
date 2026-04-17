@@ -186,6 +186,10 @@ fn clears_cache_region(kind: &SemanticOpKind) -> bool {
             | SemanticOpKind::End
             | SemanticOpKind::Br { .. }
             | SemanticOpKind::BrIf { .. }
+            | SemanticOpKind::BrOnNull { .. }
+            | SemanticOpKind::BrOnNonNull { .. }
+            | SemanticOpKind::BrOnCast { .. }
+            | SemanticOpKind::BrOnCastFail { .. }
             | SemanticOpKind::BrTable { .. }
             | SemanticOpKind::CallDirect { .. }
             | SemanticOpKind::CallIndirect { .. }
@@ -314,6 +318,10 @@ fn analyze_entry_stack_region(
             | SemanticOpKind::Else { .. }
             | SemanticOpKind::Br { .. }
             | SemanticOpKind::BrIf { .. }
+            | SemanticOpKind::BrOnNull { .. }
+            | SemanticOpKind::BrOnNonNull { .. }
+            | SemanticOpKind::BrOnCast { .. }
+            | SemanticOpKind::BrOnCastFail { .. }
             | SemanticOpKind::BrTable { .. }
             | SemanticOpKind::CallDirect { .. }
             | SemanticOpKind::CallIndirect { .. }
@@ -453,6 +461,15 @@ fn apply_transient_analysis_effect(
         }
         SemanticOpKind::BrIf { arity, .. } => {
             touch_transient_top(stack, arity.saturating_add(1) as usize, block_offset, infos);
+        }
+        SemanticOpKind::BrOnNull { arity, .. } => {
+            touch_transient_top(stack, arity.saturating_add(1) as usize, block_offset, infos);
+        }
+        SemanticOpKind::BrOnNonNull { arity, .. } => {
+            touch_transient_top(stack, *arity as usize, block_offset, infos);
+        }
+        SemanticOpKind::BrOnCast { arity, .. } | SemanticOpKind::BrOnCastFail { arity, .. } => {
+            touch_transient_top(stack, *arity as usize, block_offset, infos);
         }
         SemanticOpKind::Br { arity, .. } => {
             touch_transient_top(stack, *arity as usize, block_offset, infos);

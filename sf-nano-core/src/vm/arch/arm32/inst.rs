@@ -1078,6 +1078,14 @@ impl<'a> Arm32Backend<'a> {
                     *dst,
                 )?;
             }
+            MachineInstKind::StructNew {
+                type_idx,
+                field_count,
+                fields,
+                dst,
+            } => {
+                self.compile_struct_new(*type_idx, *field_count, fields, *dst)?;
+            }
             MachineInstKind::StructNewDefault { type_idx, dst } => {
                 self.compile_preserved_result(
                     preserved_op::STRUCT_NEW_DEFAULT,
@@ -1110,6 +1118,15 @@ impl<'a> Arm32Backend<'a> {
             } => {
                 self.compile_struct_set(*type_idx, *field_idx, *ref_src, *value_lo, *value_hi)?;
             }
+            MachineInstKind::ArrayNew {
+                type_idx,
+                init_lo,
+                init_hi,
+                length,
+                dst,
+            } => {
+                self.compile_array_new(*type_idx, *init_lo, *init_hi, *length, *dst)?;
+            }
             MachineInstKind::ArrayNewDefault {
                 type_idx,
                 length,
@@ -1120,6 +1137,116 @@ impl<'a> Arm32Backend<'a> {
                     *type_idx,
                     0,
                     *length,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
+            MachineInstKind::ArrayNewFixed {
+                type_idx,
+                elements,
+                dst,
+            } => {
+                self.compile_array_new_fixed(*type_idx, elements, *dst)?;
+            }
+            MachineInstKind::ArrayNewData {
+                type_idx,
+                data_idx,
+                src,
+                len,
+                dst,
+            } => {
+                self.compile_array_new_data(*type_idx, *data_idx, *src, *len, *dst)?;
+            }
+            MachineInstKind::ArrayNewElem {
+                type_idx,
+                elem_idx,
+                src,
+                len,
+                dst,
+            } => {
+                self.compile_array_new_elem(*type_idx, *elem_idx, *src, *len, *dst)?;
+            }
+            MachineInstKind::ArrayGet {
+                type_idx,
+                signed,
+                ty,
+                ref_src,
+                index,
+                dst,
+                dst_hi,
+            } => {
+                self.compile_array_get(*type_idx, *signed, *ty, *ref_src, *index, *dst, *dst_hi)?;
+            }
+            MachineInstKind::ArraySet {
+                type_idx,
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+            } => {
+                self.compile_array_set(*type_idx, *ref_src, *index, *value_lo, *value_hi)?;
+            }
+            MachineInstKind::ArrayFill {
+                type_idx,
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+                len,
+            } => {
+                self.compile_array_fill(*type_idx, *ref_src, *index, *value_lo, *value_hi, *len)?;
+            }
+            MachineInstKind::ArrayCopy {
+                dst_type_idx,
+                src_type_idx,
+                dst_ref,
+                dst_index,
+                src_ref,
+                src_index,
+                len,
+            } => {
+                self.compile_array_copy(
+                    *dst_type_idx,
+                    *src_type_idx,
+                    *dst_ref,
+                    *dst_index,
+                    *src_ref,
+                    *src_index,
+                    *len,
+                )?;
+            }
+            MachineInstKind::ArrayInitData {
+                type_idx,
+                data_idx,
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+            } => {
+                self.compile_array_init_data(
+                    *type_idx, *data_idx, *ref_src, *dst_index, *src_index, *len,
+                )?;
+            }
+            MachineInstKind::ArrayInitElem {
+                type_idx,
+                elem_idx,
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+            } => {
+                self.compile_array_init_elem(
+                    *type_idx, *elem_idx, *ref_src, *dst_index, *src_index, *len,
+                )?;
+            }
+            MachineInstKind::ArrayLen { src, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::ARRAY_LEN,
+                    0,
+                    0,
+                    *src,
                     MachineValue::Imm64(0),
                     MachineValue::Imm64(0),
                     MachineStorageType::GpWord,
@@ -3780,8 +3907,38 @@ impl<'a> Arm32Backend<'a> {
                 (preserved_io::ARG1, arg1),
                 (preserved_io::ARG2, arg2),
             ],
-            None,
+            &[],
             result,
+        )
+    }
+
+    fn compile_struct_new(
+        &mut self,
+        type_idx: u32,
+        field_count: u8,
+        fields: &[(MachineValue, Option<MachineValue>); 3],
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        let mut args = [(0usize, MachineValue::Imm64(0)); 3];
+        let mut arg_count = 0usize;
+        let mut pair_args = [(0usize, MachineValue::Imm64(0), MachineValue::Imm64(0)); 3];
+        let mut pair_count = 0usize;
+        for (index, (value_lo, value_hi)) in fields.iter().take(field_count as usize).enumerate() {
+            let slot = preserved_io::ARG0 + index;
+            if let Some(value_hi) = value_hi {
+                pair_args[pair_count] = (slot, *value_lo, *value_hi);
+                pair_count += 1;
+            } else {
+                args[arg_count] = (slot, *value_lo);
+                arg_count += 1;
+            }
+        }
+        self.emit_preserved_helper_call_extended(
+            preserved_op::STRUCT_NEW,
+            &[(preserved_io::IMM0, type_idx), (preserved_io::IMM1, 0)],
+            &args[..arg_count],
+            &pair_args[..pair_count],
+            super::preserved::PreservedResultTarget::GpWord(dst),
         )
     }
 
@@ -3817,7 +3974,7 @@ impl<'a> Arm32Backend<'a> {
                 (preserved_io::IMM1, field_idx),
             ],
             &[(preserved_io::ARG0, src)],
-            None,
+            &[],
             result,
         )
     }
@@ -3838,7 +3995,7 @@ impl<'a> Arm32Backend<'a> {
                     (preserved_io::IMM1, field_idx),
                 ],
                 &[(preserved_io::ARG0, ref_src)],
-                Some((preserved_io::ARG1, value_lo, value_hi)),
+                &[(preserved_io::ARG1, value_lo, value_hi)],
                 super::preserved::PreservedResultTarget::None,
             ),
             None => self.emit_preserved_helper_call_extended(
@@ -3851,10 +4008,286 @@ impl<'a> Arm32Backend<'a> {
                     (preserved_io::ARG0, ref_src),
                     (preserved_io::ARG1, value_lo),
                 ],
-                None,
+                &[],
                 super::preserved::PreservedResultTarget::None,
             ),
         }
+    }
+
+    fn compile_array_new(
+        &mut self,
+        type_idx: u32,
+        init_lo: MachineValue,
+        init_hi: Option<MachineValue>,
+        length: MachineValue,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        let result = super::preserved::PreservedResultTarget::GpWord(dst);
+        match init_hi {
+            Some(init_hi) => self.emit_preserved_helper_call_extended(
+                preserved_op::ARRAY_NEW,
+                &[(preserved_io::IMM0, type_idx), (preserved_io::IMM1, 0)],
+                &[(preserved_io::ARG1, length)],
+                &[(preserved_io::ARG0, init_lo, init_hi)],
+                result,
+            ),
+            None => self.emit_preserved_helper_call_extended(
+                preserved_op::ARRAY_NEW,
+                &[(preserved_io::IMM0, type_idx), (preserved_io::IMM1, 0)],
+                &[(preserved_io::ARG0, init_lo), (preserved_io::ARG1, length)],
+                &[],
+                result,
+            ),
+        }
+    }
+
+    fn compile_array_new_fixed(
+        &mut self,
+        type_idx: u32,
+        elements: &[(MachineValue, Option<MachineValue>)],
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        self.compile_preserved_result(
+            preserved_op::ARRAY_NEW_DEFAULT,
+            type_idx,
+            0,
+            MachineValue::Imm64(elements.len() as u64),
+            MachineValue::Imm64(0),
+            MachineValue::Imm64(0),
+            MachineStorageType::GpWord,
+            dst,
+        )?;
+        let ref_src = MachineValue::Reg(dst);
+        for (index, (value_lo, value_hi)) in elements.iter().enumerate() {
+            self.compile_array_set(
+                type_idx,
+                ref_src,
+                MachineValue::Imm64(index as u64),
+                *value_lo,
+                *value_hi,
+            )?;
+        }
+        Ok(())
+    }
+
+    fn compile_array_new_data(
+        &mut self,
+        type_idx: u32,
+        data_idx: u32,
+        src: MachineValue,
+        len: MachineValue,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_helper_call_extended(
+            preserved_op::ARRAY_NEW_DATA,
+            &[
+                (preserved_io::IMM0, type_idx),
+                (preserved_io::IMM1, data_idx),
+            ],
+            &[(preserved_io::ARG0, src), (preserved_io::ARG1, len)],
+            &[],
+            super::preserved::PreservedResultTarget::GpWord(dst),
+        )
+    }
+
+    fn compile_array_new_elem(
+        &mut self,
+        type_idx: u32,
+        elem_idx: u32,
+        src: MachineValue,
+        len: MachineValue,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_helper_call_extended(
+            preserved_op::ARRAY_NEW_ELEM,
+            &[
+                (preserved_io::IMM0, type_idx),
+                (preserved_io::IMM1, elem_idx),
+            ],
+            &[(preserved_io::ARG0, src), (preserved_io::ARG1, len)],
+            &[],
+            super::preserved::PreservedResultTarget::GpWord(dst),
+        )
+    }
+
+    fn compile_array_get(
+        &mut self,
+        type_idx: u32,
+        signed: Option<bool>,
+        ty: MachineStorageType,
+        ref_src: MachineValue,
+        index: MachineValue,
+        dst: MachineReg,
+        dst_hi: Option<MachineReg>,
+    ) -> Result<(), WasmError> {
+        let op_code = match signed {
+            None => preserved_op::ARRAY_GET,
+            Some(true) => preserved_op::ARRAY_GET_S,
+            Some(false) => preserved_op::ARRAY_GET_U,
+        };
+        let result = if let Some(dst_hi) = dst_hi {
+            super::preserved::PreservedResultTarget::GpPair {
+                dst_lo: dst,
+                dst_hi,
+            }
+        } else if let Some(width) = ty.float_width() {
+            super::preserved::PreservedResultTarget::Float { dst, width }
+        } else {
+            super::preserved::PreservedResultTarget::GpWord(dst)
+        };
+        self.emit_preserved_helper_call_extended(
+            op_code,
+            &[(preserved_io::IMM0, type_idx), (preserved_io::IMM1, 0)],
+            &[(preserved_io::ARG0, ref_src), (preserved_io::ARG1, index)],
+            &[],
+            result,
+        )
+    }
+
+    fn compile_array_set(
+        &mut self,
+        type_idx: u32,
+        ref_src: MachineValue,
+        index: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+    ) -> Result<(), WasmError> {
+        match value_hi {
+            Some(value_hi) => self.emit_preserved_helper_call_extended(
+                preserved_op::ARRAY_SET,
+                &[(preserved_io::IMM0, type_idx), (preserved_io::IMM1, 0)],
+                &[(preserved_io::ARG0, ref_src), (preserved_io::ARG1, index)],
+                &[(preserved_io::ARG2, value_lo, value_hi)],
+                super::preserved::PreservedResultTarget::None,
+            ),
+            None => self.emit_preserved_helper_call_extended(
+                preserved_op::ARRAY_SET,
+                &[(preserved_io::IMM0, type_idx), (preserved_io::IMM1, 0)],
+                &[
+                    (preserved_io::ARG0, ref_src),
+                    (preserved_io::ARG1, index),
+                    (preserved_io::ARG2, value_lo),
+                ],
+                &[],
+                super::preserved::PreservedResultTarget::None,
+            ),
+        }
+    }
+
+    fn compile_array_fill(
+        &mut self,
+        type_idx: u32,
+        ref_src: MachineValue,
+        index: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        match value_hi {
+            Some(value_hi) => self.emit_preserved_helper_call_extended(
+                preserved_op::ARRAY_FILL,
+                &[(preserved_io::IMM0, type_idx)],
+                &[
+                    (preserved_io::ARG0, ref_src),
+                    (preserved_io::ARG1, index),
+                    (preserved_io::ARG3, len),
+                ],
+                &[(preserved_io::ARG2, value_lo, value_hi)],
+                super::preserved::PreservedResultTarget::None,
+            ),
+            None => self.emit_preserved_helper_call_extended(
+                preserved_op::ARRAY_FILL,
+                &[(preserved_io::IMM0, type_idx)],
+                &[
+                    (preserved_io::ARG0, ref_src),
+                    (preserved_io::ARG1, index),
+                    (preserved_io::ARG2, value_lo),
+                    (preserved_io::ARG3, len),
+                ],
+                &[],
+                super::preserved::PreservedResultTarget::None,
+            ),
+        }
+    }
+
+    fn compile_array_copy(
+        &mut self,
+        dst_type_idx: u32,
+        src_type_idx: u32,
+        dst_ref: MachineValue,
+        dst_index: MachineValue,
+        src_ref: MachineValue,
+        src_index: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_helper_call_extended(
+            preserved_op::ARRAY_COPY,
+            &[
+                (preserved_io::IMM0, dst_type_idx),
+                (preserved_io::IMM1, src_type_idx),
+            ],
+            &[
+                (preserved_io::ARG0, dst_ref),
+                (preserved_io::ARG1, dst_index),
+                (preserved_io::ARG2, src_ref),
+                (preserved_io::ARG3, src_index),
+                (preserved_io::ARG4, len),
+            ],
+            &[],
+            super::preserved::PreservedResultTarget::None,
+        )
+    }
+
+    fn compile_array_init_data(
+        &mut self,
+        type_idx: u32,
+        data_idx: u32,
+        ref_src: MachineValue,
+        dst_index: MachineValue,
+        src_index: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_helper_call_extended(
+            preserved_op::ARRAY_INIT_DATA,
+            &[
+                (preserved_io::IMM0, type_idx),
+                (preserved_io::IMM1, data_idx),
+            ],
+            &[
+                (preserved_io::ARG0, ref_src),
+                (preserved_io::ARG1, dst_index),
+                (preserved_io::ARG2, src_index),
+                (preserved_io::ARG3, len),
+            ],
+            &[],
+            super::preserved::PreservedResultTarget::None,
+        )
+    }
+
+    fn compile_array_init_elem(
+        &mut self,
+        type_idx: u32,
+        elem_idx: u32,
+        ref_src: MachineValue,
+        dst_index: MachineValue,
+        src_index: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_helper_call_extended(
+            preserved_op::ARRAY_INIT_ELEM,
+            &[
+                (preserved_io::IMM0, type_idx),
+                (preserved_io::IMM1, elem_idx),
+            ],
+            &[
+                (preserved_io::ARG0, ref_src),
+                (preserved_io::ARG1, dst_index),
+                (preserved_io::ARG2, src_index),
+                (preserved_io::ARG3, len),
+            ],
+            &[],
+            super::preserved::PreservedResultTarget::None,
+        )
     }
 } // impl Arm32Backend
 

@@ -12,10 +12,14 @@ pub(crate) mod io {
     pub(crate) const ARG1: usize = 3;
     /// Third Wasm stack operand.
     pub(crate) const ARG2: usize = 4;
+    /// Fourth Wasm stack operand.
+    pub(crate) const ARG3: usize = 5;
+    /// Fifth Wasm stack operand.
+    pub(crate) const ARG4: usize = 6;
     /// Result written by the helper.
-    pub(crate) const RET0: usize = 5;
+    pub(crate) const RET0: usize = 7;
     /// Total number of 8-byte slots in the I/O area.
-    pub(crate) const SLOT_COUNT: usize = 8;
+    pub(crate) const SLOT_COUNT: usize = 10;
 }
 
 /// Op-code constants for the preserved-helper entry.
@@ -38,12 +42,26 @@ pub(crate) mod op {
     pub(crate) const I31_GET_U: u32 = 15;
     pub(crate) const ANY_CONVERT_EXTERN: u32 = 16;
     pub(crate) const EXTERN_CONVERT_ANY: u32 = 17;
-    pub(crate) const STRUCT_NEW_DEFAULT: u32 = 18;
-    pub(crate) const ARRAY_NEW_DEFAULT: u32 = 19;
-    pub(crate) const REF_TEST: u32 = 20;
-    pub(crate) const REF_CAST: u32 = 21;
-    pub(crate) const STRUCT_GET: u32 = 22;
-    pub(crate) const STRUCT_GET_S: u32 = 23;
-    pub(crate) const STRUCT_GET_U: u32 = 24;
-    pub(crate) const STRUCT_SET: u32 = 25;
+    pub(crate) const STRUCT_NEW: u32 = 18;
+    pub(crate) const STRUCT_NEW_DEFAULT: u32 = 19;
+    pub(crate) const ARRAY_NEW: u32 = 20;
+    pub(crate) const ARRAY_NEW_DEFAULT: u32 = 21;
+    pub(crate) const REF_TEST: u32 = 22;
+    pub(crate) const REF_CAST: u32 = 23;
+    pub(crate) const STRUCT_GET: u32 = 24;
+    pub(crate) const STRUCT_GET_S: u32 = 25;
+    pub(crate) const STRUCT_GET_U: u32 = 26;
+    pub(crate) const STRUCT_SET: u32 = 27;
+    pub(crate) const ARRAY_GET: u32 = 28;
+    pub(crate) const ARRAY_GET_S: u32 = 29;
+    pub(crate) const ARRAY_GET_U: u32 = 30;
+    pub(crate) const ARRAY_LEN: u32 = 31;
+    pub(crate) const ARRAY_SET: u32 = 32;
+    pub(crate) const ARRAY_NEW_FIXED: u32 = 33;
+    pub(crate) const ARRAY_FILL: u32 = 34;
+    pub(crate) const ARRAY_COPY: u32 = 35;
+    pub(crate) const ARRAY_INIT_DATA: u32 = 36;
+    pub(crate) const ARRAY_INIT_ELEM: u32 = 37;
+    pub(crate) const ARRAY_NEW_DATA: u32 = 38;
+    pub(crate) const ARRAY_NEW_ELEM: u32 = 39;
 }

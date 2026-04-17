@@ -70,6 +70,32 @@ pub(crate) enum SemanticOpKind {
         arity: u16,
         target: SemanticTarget,
     },
+    BrOnNull {
+        stack_drop: u32,
+        arity: u16,
+        target: SemanticTarget,
+        ref_type: ValueType,
+    },
+    BrOnNonNull {
+        stack_drop: u32,
+        arity: u16,
+        target: SemanticTarget,
+        ref_type: ValueType,
+    },
+    BrOnCast {
+        stack_drop: u32,
+        arity: u16,
+        target: SemanticTarget,
+        fail_type: ValueType,
+        cast_type: ValueType,
+    },
+    BrOnCastFail {
+        stack_drop: u32,
+        arity: u16,
+        target: SemanticTarget,
+        fail_type: ValueType,
+        cast_type: ValueType,
+    },
     BrTable {
         entries: collections::Vec<BrTableEntry>,
     },
@@ -157,7 +183,12 @@ impl SemanticProgram {
                 SemanticOpKind::Else { end_target } => {
                     validate_target(*end_target, len)?;
                 }
-                SemanticOpKind::Br { target, .. } | SemanticOpKind::BrIf { target, .. } => {
+                SemanticOpKind::Br { target, .. }
+                | SemanticOpKind::BrIf { target, .. }
+                | SemanticOpKind::BrOnNull { target, .. }
+                | SemanticOpKind::BrOnNonNull { target, .. }
+                | SemanticOpKind::BrOnCast { target, .. }
+                | SemanticOpKind::BrOnCastFail { target, .. } => {
                     validate_target(*target, len)?;
                 }
                 SemanticOpKind::BrTable { entries } => {

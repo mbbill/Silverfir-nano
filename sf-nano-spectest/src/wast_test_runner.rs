@@ -1909,6 +1909,365 @@ mod tests {
     }
 
     #[test]
+    fn native_regress_br_on_cast_with_i31ref() {
+        set_reference_backend(true).expect("enable emulator backend");
+        set_backend_mode(BackendMode::Native);
+
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (table 2 anyref)
+
+              (func (export "init")
+                (table.set (i32.const 0) (ref.i31 (i32.const 7)))
+                (table.set (i32.const 1) (ref.null any)))
+
+              (func (export "br_on_cast") (param $i i32) (result i32)
+                (block $l (result (ref i31))
+                  (br_on_cast $l anyref (ref i31) (table.get (local.get $i)))
+                  (return (i32.const -1)))
+                (i31.get_u))
+
+              (func (export "br_on_cast_fail") (param $i i32) (result i32)
+                (block $l (result anyref)
+                  (br_on_cast_fail $l anyref (ref i31) (table.get (local.get $i)))
+                  (return (i31.get_u)))
+                (return (i32.const -1))))
+            "#,
+        )
+        .expect("compile wat");
+
+        let mut runner = WastTestRunner::new();
+        let mut instance = runner
+            .try_instantiate_temp(&wasm_bytes)
+            .expect("instantiate temp module");
+
+        instance.invoke("init", &[]).expect("invoke init");
+
+        let cast_hit = instance
+            .invoke("br_on_cast", &[Value::I32(0)])
+            .expect("invoke br_on_cast success");
+        assert_eq!(cast_hit, vec![Value::I32(7)]);
+
+        let cast_miss = instance
+            .invoke("br_on_cast", &[Value::I32(1)])
+            .expect("invoke br_on_cast failure");
+        assert_eq!(cast_miss, vec![Value::I32(-1)]);
+
+        let cast_fail_miss = instance
+            .invoke("br_on_cast_fail", &[Value::I32(0)])
+            .expect("invoke br_on_cast_fail success");
+        assert_eq!(cast_fail_miss, vec![Value::I32(7)]);
+
+        let cast_fail_hit = instance
+            .invoke("br_on_cast_fail", &[Value::I32(1)])
+            .expect("invoke br_on_cast_fail branch");
+        assert_eq!(cast_fail_hit, vec![Value::I32(-1)]);
+    }
+
+    #[test]
+    fn native_regress_struct_new_and_struct_get() {
+        set_reference_backend(true).expect("enable emulator backend");
+        set_backend_mode(BackendMode::Native);
+
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (type $st (struct (field i16)))
+
+              (func (export "make_field") (result i32)
+                i32.const 6
+                struct.new $st
+                struct.get_s $st 0)
+            )
+            "#,
+        )
+        .expect("compile wat");
+
+        let mut runner = WastTestRunner::new();
+        let mut instance = runner
+            .try_instantiate_temp(&wasm_bytes)
+            .expect("instantiate temp module");
+
+        let field = instance
+            .invoke("make_field", &[])
+            .expect("invoke make_field");
+        assert_eq!(field, vec![Value::I32(6)]);
+    }
+
+    #[test]
+    fn native_regress_array_set_and_get() {
+        set_reference_backend(true).expect("enable emulator backend");
+        set_backend_mode(BackendMode::Native);
+
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (type $arr (array (mut i32)))
+
+              (func (export "write_then_read") (result i32)
+                (local $tmp (ref $arr))
+                i32.const 2
+                array.new_default $arr
+                local.set $tmp
+                local.get $tmp
+                i32.const 1
+                i32.const 7
+                array.set $arr
+                local.get $tmp
+                i32.const 1
+                array.get $arr)
+            )
+            "#,
+        )
+        .expect("compile wat");
+        let mut wasm_bytes = wasm_bytes;
+        if let Some(op_idx) = wasm_bytes
+            .windows(3)
+            .position(|window| window == [0xfb, 0x0e, 0x00])
+        {
+            // As observed on April 16, 2026, the current `wat` encoder in this
+            // tree can mis-encode `array.set` as `array.get_s` for GC arrays.
+            wasm_bytes[op_idx + 1] = 0x0c;
+        }
+
+        let mut runner = WastTestRunner::new();
+        let mut instance = runner
+            .try_instantiate_temp(&wasm_bytes)
+            .expect("instantiate temp module");
+
+        let value = instance
+            .invoke("write_then_read", &[])
+            .expect("invoke write_then_read");
+        assert_eq!(value, vec![Value::I32(7)]);
+    }
+
+    #[test]
+    fn native_regress_array_new_fixed_fill_and_copy() {
+        set_reference_backend(true).expect("enable emulator backend");
+        set_backend_mode(BackendMode::Native);
+
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (type $arr (array (mut i32)))
+
+              (func (export "fixed_sum") (result i32)
+                (local $tmp (ref $arr))
+                i32.const 4
+                i32.const 5
+                i32.const 6
+                array.new_fixed $arr 3
+                local.set $tmp
+                local.get $tmp
+                i32.const 0
+                array.get $arr
+                local.get $tmp
+                i32.const 1
+                array.get $arr
+                i32.add
+                local.get $tmp
+                i32.const 2
+                array.get $arr
+                i32.add)
+
+              (func (export "fill_copy") (result i32)
+                (local $src (ref $arr))
+                (local $dst (ref $arr))
+                i32.const 3
+                array.new_default $arr
+                local.set $src
+                local.get $src
+                i32.const 0
+                i32.const 9
+                i32.const 3
+                array.fill $arr
+                i32.const 3
+                array.new_default $arr
+                local.set $dst
+                local.get $dst
+                i32.const 0
+                local.get $src
+                i32.const 0
+                i32.const 3
+                array.copy $arr $arr
+                local.get $dst
+                i32.const 2
+                array.get $arr)
+            )
+            "#,
+        )
+        .expect("compile wat");
+
+        let mut runner = WastTestRunner::new();
+        let mut instance = runner
+            .try_instantiate_temp(&wasm_bytes)
+            .expect("instantiate temp module");
+
+        let fixed_sum = instance.invoke("fixed_sum", &[]).expect("invoke fixed_sum");
+        assert_eq!(fixed_sum, vec![Value::I32(15)]);
+
+        let copied = instance.invoke("fill_copy", &[]).expect("invoke fill_copy");
+        assert_eq!(copied, vec![Value::I32(9)]);
+    }
+
+    #[test]
+    fn native_regress_array_new_fixed_const_expr() {
+        set_reference_backend(true).expect("enable emulator backend");
+        set_backend_mode(BackendMode::Native);
+
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (type $arr (array (mut i32)))
+              (global $g (ref $arr)
+                i32.const 3
+                i32.const 4
+                array.new_fixed $arr 2)
+
+              (func (export "read") (result i32)
+                global.get $g
+                i32.const 1
+                array.get $arr)
+            )
+            "#,
+        )
+        .expect("compile wat");
+
+        let mut runner = WastTestRunner::new();
+        let mut instance = runner
+            .try_instantiate_temp(&wasm_bytes)
+            .expect("instantiate temp module");
+
+        let value = instance.invoke("read", &[]).expect("invoke read");
+        assert_eq!(value, vec![Value::I32(4)]);
+    }
+
+    #[test]
+    fn native_regress_array_new_data_and_init_data() {
+        set_reference_backend(true).expect("enable emulator backend");
+        set_backend_mode(BackendMode::Native);
+
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (type $arr (array (mut i8)))
+              (data "ABCD")
+
+              (func (export "new_data_second") (result i32)
+                i32.const 0
+                i32.const 4
+                array.new_data $arr 0
+                i32.const 1
+                array.get_s $arr)
+
+              (func (export "init_data_third") (result i32)
+                (local $tmp (ref $arr))
+                i32.const 4
+                array.new_default $arr
+                local.set $tmp
+                local.get $tmp
+                i32.const 1
+                i32.const 1
+                i32.const 2
+                array.init_data $arr 0
+                local.get $tmp
+                i32.const 2
+                array.get_s $arr)
+            )
+            "#,
+        )
+        .expect("compile wat");
+        let mut wasm_bytes = wasm_bytes;
+        for op_idx in wasm_bytes
+            .windows(3)
+            .enumerate()
+            .filter_map(|(idx, window)| (window == [0xfb, 0x0c, 0x00]).then_some(idx))
+            .collect::<Vec<_>>()
+        {
+            // As observed on April 16, 2026, the current `wat` encoder in this
+            // tree can swap packed `array.get_s` with `array.set` for GC arrays.
+            wasm_bytes[op_idx + 1] = 0x0e;
+        }
+
+        let mut runner = WastTestRunner::new();
+        let mut instance = runner
+            .try_instantiate_temp(&wasm_bytes)
+            .expect("instantiate temp module");
+
+        let new_data = instance
+            .invoke("new_data_second", &[])
+            .expect("invoke new_data_second");
+        assert_eq!(new_data, vec![Value::I32(i32::from(b'B'))]);
+
+        let init_data = instance
+            .invoke("init_data_third", &[])
+            .expect("invoke init_data_third");
+        assert_eq!(init_data, vec![Value::I32(i32::from(b'C'))]);
+    }
+
+    #[test]
+    fn native_regress_array_new_elem_and_init_elem() {
+        set_reference_backend(true).expect("enable emulator backend");
+        set_backend_mode(BackendMode::Native);
+
+        let wasm_bytes = wat::parse_str(
+            r#"
+            (module
+              (type $arr (array (mut funcref)))
+              (func $f0)
+              (func $f1)
+              (elem func $f0 $f1)
+
+              (func (export "new_elem_non_null") (result i32)
+                (local $tmp (ref $arr))
+                i32.const 0
+                i32.const 2
+                array.new_elem $arr 0
+                local.set $tmp
+                local.get $tmp
+                i32.const 1
+                array.get $arr
+                ref.is_null
+                i32.eqz)
+
+              (func (export "init_elem_non_null") (result i32)
+                (local $tmp (ref $arr))
+                i32.const 2
+                array.new_default $arr
+                local.set $tmp
+                local.get $tmp
+                i32.const 0
+                i32.const 0
+                i32.const 2
+                array.init_elem $arr 0
+                local.get $tmp
+                i32.const 0
+                array.get $arr
+                ref.is_null
+                i32.eqz)
+            )
+            "#,
+        )
+        .expect("compile wat");
+
+        let mut runner = WastTestRunner::new();
+        let mut instance = runner
+            .try_instantiate_temp(&wasm_bytes)
+            .expect("instantiate temp module");
+
+        let new_elem = instance
+            .invoke("new_elem_non_null", &[])
+            .expect("invoke new_elem_non_null");
+        assert_eq!(new_elem, vec![Value::I32(1)]);
+
+        let init_elem = instance
+            .invoke("init_elem_non_null", &[])
+            .expect("invoke init_elem_non_null");
+        assert_eq!(init_elem, vec![Value::I32(1)]);
+    }
+
+    #[test]
     fn spectest_if_wast_passes() {
         match run_wast_fixture("if.wast") {
             TestResult::Pass => {}
@@ -1968,6 +2327,7 @@ mod tests {
                 );
             }
             FunctionInst::Host { .. } => panic!("expected local export"),
+            FunctionInst::Linked { .. } => panic!("expected local export"),
         }
     }
 

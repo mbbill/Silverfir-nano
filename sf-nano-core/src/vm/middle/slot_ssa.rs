@@ -179,6 +179,10 @@ fn lower_body_inst_kind(kind: &SemanticOpKind) -> Option<SlotInstKind> {
         | SemanticOpKind::End
         | SemanticOpKind::Br { .. }
         | SemanticOpKind::BrIf { .. }
+        | SemanticOpKind::BrOnNull { .. }
+        | SemanticOpKind::BrOnNonNull { .. }
+        | SemanticOpKind::BrOnCast { .. }
+        | SemanticOpKind::BrOnCastFail { .. }
         | SemanticOpKind::BrTable { .. }
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
@@ -208,9 +212,16 @@ fn lower_terminator_kind(
             SlotTerminatorKind::Return
         }
         SemanticOpKind::Br { target, .. } => SlotTerminatorKind::Goto(target_block(cfg, *target)?),
-        SemanticOpKind::BrIf { target, .. } => SlotTerminatorKind::Branch {
+        SemanticOpKind::BrIf { target, .. }
+        | SemanticOpKind::BrOnNull { target, .. }
+        | SemanticOpKind::BrOnCast { target, .. } => SlotTerminatorKind::Branch {
             then_target: target_block(cfg, *target)?,
             else_target: fallthrough()?,
+        },
+        SemanticOpKind::BrOnNonNull { target, .. }
+        | SemanticOpKind::BrOnCastFail { target, .. } => SlotTerminatorKind::Branch {
+            then_target: fallthrough()?,
+            else_target: target_block(cfg, *target)?,
         },
         SemanticOpKind::BrTable { entries } => SlotTerminatorKind::BrTable {
             targets: entries

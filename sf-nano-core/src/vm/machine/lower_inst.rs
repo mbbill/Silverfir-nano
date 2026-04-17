@@ -25,7 +25,7 @@ use crate::{
 use super::{
     lower_context::BlockLowerContext,
     lower_regalloc::{canonical_value_mem_width_for_value, lir_value_storage_type},
-    lower_util::{single_arg, single_result, two_args},
+    lower_util::{five_args, four_args, single_arg, single_result, three_args, two_args},
 };
 
 pub(super) enum LeafLowering {
@@ -647,6 +647,30 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    fn lower_struct_new(
+        &mut self,
+        type_idx: u32,
+        field_count: u8,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        if field_count as usize > 3 {
+            return Err(WasmError::invalid(
+                "struct.new with more than three fields is not yet supported",
+            ));
+        }
+        let mut fields = [(MachineValue::Imm64(0), None); 3];
+        for (index, arg) in args.iter().take(field_count as usize).copied().enumerate() {
+            fields[index] = self.lower_pair_aware_operand(arg)?;
+        }
+        self.lower_single_result_gp_op(results, |dst| MachineInstKind::StructNew {
+            type_idx,
+            field_count,
+            fields,
+            dst,
+        })
+    }
+
     fn lower_struct_set(
         &mut self,
         type_idx: u32,
@@ -666,6 +690,230 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
         Ok(())
+    }
+
+    fn lower_array_new(
+        &mut self,
+        type_idx: u32,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        let (init_arg, length_arg) = two_args(args)?;
+        let (init_lo, init_hi) = self.lower_pair_aware_operand(init_arg)?;
+        let length = self.lower_operand(length_arg)?;
+        self.lower_single_result_gp_op(results, |dst| MachineInstKind::ArrayNew {
+            type_idx,
+            init_lo,
+            init_hi,
+            length,
+            dst,
+        })
+    }
+
+    fn lower_array_new_fixed(
+        &mut self,
+        type_idx: u32,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        let mut elements = collections::Vec::with_capacity(args.len());
+        for &arg in args {
+            elements.push(self.lower_pair_aware_operand(arg)?);
+        }
+        self.lower_single_result_gp_op(results, |dst| MachineInstKind::ArrayNewFixed {
+            type_idx,
+            elements,
+            dst,
+        })
+    }
+
+    fn lower_array_new_data(
+        &mut self,
+        type_idx: u32,
+        data_idx: u32,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        let (src_arg, len_arg) = two_args(args)?;
+        let src = self.lower_operand(src_arg)?;
+        let len = self.lower_operand(len_arg)?;
+        self.lower_single_result_gp_op(results, |dst| MachineInstKind::ArrayNewData {
+            type_idx,
+            data_idx,
+            src,
+            len,
+            dst,
+        })
+    }
+
+    fn lower_array_new_elem(
+        &mut self,
+        type_idx: u32,
+        elem_idx: u32,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        let (src_arg, len_arg) = two_args(args)?;
+        let src = self.lower_operand(src_arg)?;
+        let len = self.lower_operand(len_arg)?;
+        self.lower_single_result_gp_op(results, |dst| MachineInstKind::ArrayNewElem {
+            type_idx,
+            elem_idx,
+            src,
+            len,
+            dst,
+        })
+    }
+
+    fn lower_array_get(
+        &mut self,
+        type_idx: u32,
+        signed: Option<bool>,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        let (ref_arg, index_arg) = two_args(args)?;
+        let ref_src = self.lower_operand(ref_arg)?;
+        let index = self.lower_operand(index_arg)?;
+        let result = single_result(results)?;
+        let result_ty = lir_value_storage_type(self.program(), result);
+        let (dst, dst_hi) = if self.gp_reg_width() == 4 && result_ty == MachineStorageType::GpI64 {
+            let (dst_lo, dst_hi) = self.alloc_i64_value_pair(result)?;
+            (dst_lo, Some(dst_hi))
+        } else {
+            (self.alloc_result_value(result)?, None)
+        };
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::ArrayGet {
+                type_idx,
+                signed,
+                ty: result_ty,
+                ref_src,
+                index,
+                dst,
+                dst_hi,
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_array_set(&mut self, type_idx: u32, args: &[SsaOperand]) -> Result<(), WasmError> {
+        let (ref_arg, index_arg, value_arg) = three_args(args)?;
+        let ref_src = self.lower_operand(ref_arg)?;
+        let index = self.lower_operand(index_arg)?;
+        let (value_lo, value_hi) = self.lower_pair_aware_operand(value_arg)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::ArraySet {
+                type_idx,
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_array_fill(&mut self, type_idx: u32, args: &[SsaOperand]) -> Result<(), WasmError> {
+        let (ref_arg, index_arg, value_arg, len_arg) = four_args(args)?;
+        let ref_src = self.lower_operand(ref_arg)?;
+        let index = self.lower_operand(index_arg)?;
+        let (value_lo, value_hi) = self.lower_pair_aware_operand(value_arg)?;
+        let len = self.lower_operand(len_arg)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::ArrayFill {
+                type_idx,
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+                len,
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_array_copy(
+        &mut self,
+        dst_type_idx: u32,
+        src_type_idx: u32,
+        args: &[SsaOperand],
+    ) -> Result<(), WasmError> {
+        let (dst_ref_arg, dst_index_arg, src_ref_arg, src_index_arg, len_arg) = five_args(args)?;
+        let dst_ref = self.lower_operand(dst_ref_arg)?;
+        let dst_index = self.lower_operand(dst_index_arg)?;
+        let src_ref = self.lower_operand(src_ref_arg)?;
+        let src_index = self.lower_operand(src_index_arg)?;
+        let len = self.lower_operand(len_arg)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::ArrayCopy {
+                dst_type_idx,
+                src_type_idx,
+                dst_ref,
+                dst_index,
+                src_ref,
+                src_index,
+                len,
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_array_init_data(
+        &mut self,
+        type_idx: u32,
+        data_idx: u32,
+        args: &[SsaOperand],
+    ) -> Result<(), WasmError> {
+        let (ref_arg, dst_index_arg, src_index_arg, len_arg) = four_args(args)?;
+        let ref_src = self.lower_operand(ref_arg)?;
+        let dst_index = self.lower_operand(dst_index_arg)?;
+        let src_index = self.lower_operand(src_index_arg)?;
+        let len = self.lower_operand(len_arg)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::ArrayInitData {
+                type_idx,
+                data_idx,
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_array_init_elem(
+        &mut self,
+        type_idx: u32,
+        elem_idx: u32,
+        args: &[SsaOperand],
+    ) -> Result<(), WasmError> {
+        let (ref_arg, dst_index_arg, src_index_arg, len_arg) = four_args(args)?;
+        let ref_src = self.lower_operand(ref_arg)?;
+        let dst_index = self.lower_operand(dst_index_arg)?;
+        let src_index = self.lower_operand(src_index_arg)?;
+        let len = self.lower_operand(len_arg)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::ArrayInitElem {
+                type_idx,
+                elem_idx,
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+            },
+        });
+        Ok(())
+    }
+
+    fn lower_array_len(
+        &mut self,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        let src = self.lower_operand(single_arg(args)?)?;
+        self.lower_single_result_gp_op(results, |dst| MachineInstKind::ArrayLen { src, dst })
     }
 
     pub(super) fn lower_leaf(
@@ -768,6 +1016,10 @@ impl<'a> BlockLowerContext<'a> {
                     dst,
                 })
             }
+            P::StructNew {
+                type_idx,
+                field_count,
+            } => self.lower_struct_new(*type_idx, *field_count, args, results),
             P::StructNewDefault { type_idx } => {
                 self.lower_single_result_gp_op(results, |dst| MachineInstKind::StructNewDefault {
                     type_idx: *type_idx,
@@ -790,6 +1042,7 @@ impl<'a> BlockLowerContext<'a> {
                 type_idx,
                 field_idx,
             } => self.lower_struct_set(*type_idx, *field_idx, args),
+            P::ArrayNew { type_idx } => self.lower_array_new(*type_idx, args, results),
             P::ArrayNewDefault { type_idx } => {
                 let length = self.lower_operand(single_arg(args)?)?;
                 self.lower_single_result_gp_op(results, |dst| MachineInstKind::ArrayNewDefault {
@@ -798,6 +1051,33 @@ impl<'a> BlockLowerContext<'a> {
                     dst,
                 })
             }
+            P::ArrayNewFixed { type_idx, .. } => {
+                self.lower_array_new_fixed(*type_idx, args, results)
+            }
+            P::ArrayNewData { type_idx, data_idx } => {
+                self.lower_array_new_data(*type_idx, *data_idx, args, results)
+            }
+            P::ArrayNewElem { type_idx, elem_idx } => {
+                self.lower_array_new_elem(*type_idx, *elem_idx, args, results)
+            }
+            P::ArrayGet { type_idx } => self.lower_array_get(*type_idx, None, args, results),
+            P::ArrayGetS { type_idx } => self.lower_array_get(*type_idx, Some(true), args, results),
+            P::ArrayGetU { type_idx } => {
+                self.lower_array_get(*type_idx, Some(false), args, results)
+            }
+            P::ArraySet { type_idx } => self.lower_array_set(*type_idx, args),
+            P::ArrayFill { type_idx } => self.lower_array_fill(*type_idx, args),
+            P::ArrayCopy {
+                dst_type_idx,
+                src_type_idx,
+            } => self.lower_array_copy(*dst_type_idx, *src_type_idx, args),
+            P::ArrayInitData { type_idx, data_idx } => {
+                self.lower_array_init_data(*type_idx, *data_idx, args)
+            }
+            P::ArrayInitElem { type_idx, elem_idx } => {
+                self.lower_array_init_elem(*type_idx, *elem_idx, args)
+            }
+            P::ArrayLen => self.lower_array_len(args, results),
             P::Select => self.lower_select(args, results),
             // i32.eqz / i64.eqz lower as IntCompare against zero so that the
             // existing fuse_compare_branch peephole can collapse the common

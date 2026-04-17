@@ -12,31 +12,74 @@ use super::{abi, enc};
 impl<'a> Arm64Backend<'a> {
     // ── Frame open / close ──────────────────────────────────────────────────
 
+    fn emit_adjust_stack_down(&mut self, mut bytes: u32) {
+        while bytes > 4080 {
+            self.core
+                .text
+                .emit_u32(enc::sub_imm_64(abi::stack_reg(), abi::stack_reg(), 4080));
+            bytes -= 4080;
+        }
+        if bytes != 0 {
+            self.core
+                .text
+                .emit_u32(enc::sub_imm_64(abi::stack_reg(), abi::stack_reg(), bytes));
+        }
+    }
+
+    fn emit_adjust_stack_up(&mut self, mut bytes: u32) {
+        while bytes > 4080 {
+            self.core
+                .text
+                .emit_u32(enc::add_imm_64(abi::stack_reg(), abi::stack_reg(), 4080));
+            bytes -= 4080;
+        }
+        if bytes != 0 {
+            self.core
+                .text
+                .emit_u32(enc::add_imm_64(abi::stack_reg(), abi::stack_reg(), bytes));
+        }
+    }
+
     /// Open the preserved-helper frame: allocate stack space, save all
     /// caller-clobbered JIT registers.  After this, the I/O area is at SP+0
     /// and all JIT register values are preserved on the native stack.
     pub(super) fn emit_preserved_frame_open(&mut self) {
-        self.core.text.emit_u32(enc::sub_imm_64(
-            abi::stack_reg(),
-            abi::stack_reg(),
-            abi::PRESERVED_HELPER_FRAME_SIZE,
-        ));
-        self.emit_save_preserved_gp();
-        self.emit_save_preserved_fp();
+        self.emit_preserved_frame_open_with_prefix(0);
+    }
+
+    pub(super) fn emit_preserved_frame_open_with_prefix(&mut self, prefix_bytes: u32) {
+        self.emit_adjust_stack_down(abi::PRESERVED_HELPER_FRAME_SIZE + prefix_bytes);
+        self.emit_save_preserved_gp(prefix_bytes);
+        self.emit_save_preserved_fp(prefix_bytes);
     }
 
     /// Store a u32 immediate into an I/O slot.
     pub(super) fn emit_io_store_imm(&mut self, slot: usize, value: u32) {
+        self.emit_io_store_imm_at(0, slot, value);
+    }
+
+    pub(super) fn emit_io_store_imm_at(&mut self, base_slots: usize, slot: usize, value: u32) {
         let scratch = *self.gp_scratch.scoped_alloc();
         materialize_u64_into(&mut self.core.text, scratch, value as u64);
-        self.core
-            .text
-            .emit_u32(enc::str_64(scratch, abi::stack_reg(), slot as u32));
+        self.core.text.emit_u32(enc::str_64(
+            scratch,
+            abi::stack_reg(),
+            (base_slots + slot) as u32,
+        ));
     }
 
     /// Store a MachineValue into an I/O slot.
     pub(super) fn emit_io_store_value(
         &mut self,
+        slot: usize,
+        value: MachineValue,
+    ) -> Result<(), WasmError> {
+        self.emit_io_store_value_at(0, slot, value)
+    }
+
+    pub(super) fn emit_io_store_value_at(
+        &mut self,
+        base_slots: usize,
         slot: usize,
         value: MachineValue,
     ) -> Result<(), WasmError> {
@@ -47,9 +90,11 @@ impl<'a> Arm64Backend<'a> {
             &self.gp_scratch,
             value,
         )?;
-        self.core
-            .text
-            .emit_u32(enc::str_64(*gp, abi::stack_reg(), slot as u32));
+        self.core.text.emit_u32(enc::str_64(
+            *gp,
+            abi::stack_reg(),
+            (base_slots + slot) as u32,
+        ));
         Ok(())
     }
 
@@ -66,6 +111,15 @@ impl<'a> Arm64Backend<'a> {
         op_code: u32,
         result_scratch_idx: Option<u8>,
     ) {
+        self.emit_preserved_call_and_close_with_prefix(op_code, result_scratch_idx, 0);
+    }
+
+    pub(super) fn emit_preserved_call_and_close_with_prefix(
+        &mut self,
+        op_code: u32,
+        result_scratch_idx: Option<u8>,
+        prefix_bytes: u32,
+    ) {
         use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
 
         let call_scratch_idx = result_scratch_idx.unwrap_or_else(|| self.gp_scratch.alloc());
@@ -79,9 +133,20 @@ impl<'a> Arm64Backend<'a> {
             abi::map_fixed_reg(MACHINE_CTX_REG),
         ));
         materialize_u64_into(&mut self.core.text, abi::C_ARG1, op_code as u64);
-        self.core
-            .text
-            .emit_u32(enc::add_imm_64(abi::C_ARG2, abi::stack_reg(), 0));
+        if prefix_bytes == 0 {
+            self.core
+                .text
+                .emit_u32(enc::add_imm_64(abi::C_ARG2, abi::stack_reg(), 0));
+        } else if prefix_bytes <= 4095 {
+            self.core
+                .text
+                .emit_u32(enc::add_imm_64(abi::C_ARG2, abi::stack_reg(), prefix_bytes));
+        } else {
+            materialize_u64_into(&mut self.core.text, abi::C_ARG2, prefix_bytes as u64);
+            self.core
+                .text
+                .emit_u32(enc::add_reg_64(abi::C_ARG2, abi::stack_reg(), abi::C_ARG2));
+        }
         materialize_u64_into(
             &mut self.core.text,
             call_scratch,
@@ -97,20 +162,16 @@ impl<'a> Arm64Backend<'a> {
             self.core.text.emit_u32(enc::ldr_64(
                 call_scratch,
                 abi::stack_reg(),
-                preserved_io::RET0 as u32,
+                prefix_bytes / 8 + preserved_io::RET0 as u32,
             ));
         }
 
         // Restore all caller-clobbered JIT registers.
-        self.emit_restore_preserved_fp();
-        self.emit_restore_preserved_gp();
+        self.emit_restore_preserved_fp(prefix_bytes);
+        self.emit_restore_preserved_gp(prefix_bytes);
 
         // Deallocate frame.
-        self.core.text.emit_u32(enc::add_imm_64(
-            abi::stack_reg(),
-            abi::stack_reg(),
-            abi::PRESERVED_HELPER_FRAME_SIZE,
-        ));
+        self.emit_adjust_stack_up(abi::PRESERVED_HELPER_FRAME_SIZE + prefix_bytes);
 
         // Check status. Non-zero means the helper trapped — branch to the
         // body-local error tail to propagate via the unified Return.
@@ -125,8 +186,8 @@ impl<'a> Arm64Backend<'a> {
 
     // ── Register save/restore ───────────────────────────────────────────────
 
-    fn emit_save_preserved_gp(&mut self) {
-        let base_off = abi::PRESERVED_HELPER_GP_OFFSET;
+    fn emit_save_preserved_gp(&mut self, prefix_bytes: u32) {
+        let base_off = abi::PRESERVED_HELPER_GP_OFFSET + prefix_bytes;
         let mut slot = 0u32;
         let regs = abi::gp_dynamic_caller_saved_regs();
         let mut i = 0;
@@ -149,8 +210,8 @@ impl<'a> Arm64Backend<'a> {
         }
     }
 
-    fn emit_restore_preserved_gp(&mut self) {
-        let base_off = abi::PRESERVED_HELPER_GP_OFFSET;
+    fn emit_restore_preserved_gp(&mut self, prefix_bytes: u32) {
+        let base_off = abi::PRESERVED_HELPER_GP_OFFSET + prefix_bytes;
         let mut slot = 0u32;
         let regs = abi::gp_dynamic_caller_saved_regs();
         let mut i = 0;
@@ -173,8 +234,8 @@ impl<'a> Arm64Backend<'a> {
         }
     }
 
-    fn emit_save_preserved_fp(&mut self) {
-        let base_off = abi::PRESERVED_HELPER_FP_OFFSET;
+    fn emit_save_preserved_fp(&mut self, prefix_bytes: u32) {
+        let base_off = abi::PRESERVED_HELPER_FP_OFFSET + prefix_bytes;
         let mut slot = 0u32;
         for reg in abi::fp_dynamic_caller_saved_regs().iter().copied() {
             self.core
@@ -184,8 +245,8 @@ impl<'a> Arm64Backend<'a> {
         }
     }
 
-    fn emit_restore_preserved_fp(&mut self) {
-        let base_off = abi::PRESERVED_HELPER_FP_OFFSET;
+    fn emit_restore_preserved_fp(&mut self, prefix_bytes: u32) {
+        let base_off = abi::PRESERVED_HELPER_FP_OFFSET + prefix_bytes;
         let mut slot = 0u32;
         for reg in abi::fp_dynamic_caller_saved_regs().iter().copied() {
             self.core

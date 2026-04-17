@@ -6,6 +6,7 @@ use super::types::{
     MachineRegOwner, MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind,
     MachineValue,
 };
+use crate::collections;
 use crate::value_type::RefType;
 
 /// Inline runtime-dispatch call that falls through in the same function.
@@ -420,6 +421,12 @@ pub(crate) enum MachineInstKind {
         src: MachineValue,
         dst: MachineReg,
     },
+    StructNew {
+        type_idx: u32,
+        field_count: u8,
+        fields: [(MachineValue, Option<MachineValue>); 3],
+        dst: MachineReg,
+    },
     StructNewDefault {
         type_idx: u32,
         dst: MachineReg,
@@ -440,9 +447,88 @@ pub(crate) enum MachineInstKind {
         value_lo: MachineValue,
         value_hi: Option<MachineValue>,
     },
+    ArrayNew {
+        type_idx: u32,
+        init_lo: MachineValue,
+        init_hi: Option<MachineValue>,
+        length: MachineValue,
+        dst: MachineReg,
+    },
     ArrayNewDefault {
         type_idx: u32,
         length: MachineValue,
+        dst: MachineReg,
+    },
+    ArrayNewFixed {
+        type_idx: u32,
+        elements: collections::Vec<(MachineValue, Option<MachineValue>)>,
+        dst: MachineReg,
+    },
+    ArrayNewData {
+        type_idx: u32,
+        data_idx: u32,
+        src: MachineValue,
+        len: MachineValue,
+        dst: MachineReg,
+    },
+    ArrayNewElem {
+        type_idx: u32,
+        elem_idx: u32,
+        src: MachineValue,
+        len: MachineValue,
+        dst: MachineReg,
+    },
+    ArrayGet {
+        type_idx: u32,
+        signed: Option<bool>,
+        ty: MachineStorageType,
+        ref_src: MachineValue,
+        index: MachineValue,
+        dst: MachineReg,
+        dst_hi: Option<MachineReg>,
+    },
+    ArraySet {
+        type_idx: u32,
+        ref_src: MachineValue,
+        index: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+    },
+    ArrayFill {
+        type_idx: u32,
+        ref_src: MachineValue,
+        index: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+        len: MachineValue,
+    },
+    ArrayCopy {
+        dst_type_idx: u32,
+        src_type_idx: u32,
+        dst_ref: MachineValue,
+        dst_index: MachineValue,
+        src_ref: MachineValue,
+        src_index: MachineValue,
+        len: MachineValue,
+    },
+    ArrayInitData {
+        type_idx: u32,
+        data_idx: u32,
+        ref_src: MachineValue,
+        dst_index: MachineValue,
+        src_index: MachineValue,
+        len: MachineValue,
+    },
+    ArrayInitElem {
+        type_idx: u32,
+        elem_idx: u32,
+        ref_src: MachineValue,
+        dst_index: MachineValue,
+        src_index: MachineValue,
+        len: MachineValue,
+    },
+    ArrayLen {
+        src: MachineValue,
         dst: MachineReg,
     },
 }
@@ -490,15 +576,16 @@ impl MachineInstKind {
             | Self::ExternConvertAny { .. }
             | Self::RefTest { .. }
             | Self::RefCast { .. }
+            | Self::StructNew { .. }
             | Self::StructNewDefault { .. }
-            | Self::ArrayNewDefault { .. } => Some(MachineRegOwner::LinearValue),
-            Self::StructGet { dst_hi, .. } => {
-                if dst_hi.is_some() {
-                    None
-                } else {
-                    Some(MachineRegOwner::LinearValue)
-                }
-            }
+            | Self::ArrayNew { .. }
+            | Self::ArrayNewDefault { .. }
+            | Self::ArrayNewFixed { .. }
+            | Self::ArrayNewData { .. }
+            | Self::ArrayNewElem { .. }
+            | Self::StructGet { .. }
+            | Self::ArrayGet { .. } => Some(MachineRegOwner::LinearValue),
+            Self::ArrayLen { .. } => Some(MachineRegOwner::LinearValue),
             Self::Store { .. }
             | Self::IndexedStore { .. }
             | Self::TrapIf { .. }
@@ -511,7 +598,12 @@ impl MachineInstKind {
             | Self::TableCopy { .. }
             | Self::TableInit { .. }
             | Self::ElemDrop { .. }
-            | Self::StructSet { .. } => None,
+            | Self::StructSet { .. }
+            | Self::ArraySet { .. }
+            | Self::ArrayFill { .. }
+            | Self::ArrayCopy { .. }
+            | Self::ArrayInitData { .. }
+            | Self::ArrayInitElem { .. } => None,
         }
     }
 }

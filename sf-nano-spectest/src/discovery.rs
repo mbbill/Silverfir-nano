@@ -23,15 +23,10 @@ pub fn find_wast_files(dir: &Path) -> Vec<std::path::PathBuf> {
 
 /// Determines if a test should be skipped based on feature support.
 ///
-/// Current Status (as of Oct 2025):
-/// - Total Tests: 270
-/// - Passing: 169 (62.6%) ← GC types + recursion groups enabled! ✓
-/// - Failing: 0 (0.0%)
-/// - Skipped: 101 (37.4%) - WebAssembly 3.0 features not yet implemented or wast crate bugs
-///
-/// This interpreter targets WebAssembly 2.0 + GC proposal. The official test suite has
-/// been updated to WebAssembly 3.0, which includes many new proposals. We skip tests for
-/// features not yet implemented and focus on WebAssembly 2.0/GC compliance and bug fixes.
+/// This interpreter currently implements a partial WebAssembly 3.0 surface.
+/// The upstream testsuite includes features that still need parser, validator,
+/// lowering, and runtime work, so we skip them here until the implementation is
+/// complete.
 pub fn should_skip_test(test_name: &str) -> bool {
     // Skip advanced features that may not be implemented yet
 
@@ -51,21 +46,9 @@ pub fn should_skip_test(test_name: &str) -> bool {
 
     // Skip WebAssembly 3.0 features not yet implemented
 
-    // Array tests: DISABLED due to wast crate encoder bug
-    // The wast crate (v235.0) incorrectly encodes array.set (0xFB 0x0C) as
-    // array.get_s (0xFB 0x0E), causing all array.set operations to fail validation.
-    // Our GC implementation is correct - the testsuite binaries are malformed.
-    //
-    // Evidence:
-    // - Test source: (array.set $type ...)
-    // - Expected binary: 0xFB 0x0C
-    // - Actual binary: 0xFB 0x0E (array.get_s)
-    // - Result: Type mismatch (array.get_s pops i32 first, array.set pops value first)
-    //
-    // Affected tests: array, array_copy, array_fill, array_init_data,
-    //                 array_init_elem, array_new_data, array_new_elem
-    //
-    // TODO: Re-enable when wast crate is fixed or use alternative test compilation
+    // Array tests still need runtime and lowering work. Some files also trip
+    // known wast encoding issues, so keep the whole group disabled until the
+    // implementation and test ingestion story are both in better shape.
     if test_name.starts_with("array") {
         return true;
     }
@@ -101,16 +84,12 @@ pub fn should_skip_test(test_name: &str) -> bool {
         return true;
     }
 
-    // Other GC features not yet implemented
-    if test_name.starts_with("br_on_cast")
-        || test_name == "br_on_null"
-        || test_name == "br_on_non_null"
-    {
-        return true;
-    }
-
-    // Typed function references (part of GC proposal)
-    if test_name == "call_ref" {
+    // `br_on_cast*.wast` still trips the current `wast`/`wat` encoder on GC
+    // array ops (`array.get_u` in folded forms and direct `array.set` were
+    // observed to encode incorrectly on April 16, 2026), so keep the upstream
+    // files disabled until the runner or dependency stack can ingest those
+    // modules faithfully.
+    if test_name.starts_with("br_on_cast") {
         return true;
     }
 
@@ -134,4 +113,19 @@ pub fn should_skip_test(test_name: &str) -> bool {
     test_name.starts_with("proposals\\") || // Windows paths
     test_name.contains("/proposals/") ||    // Unix paths (anywhere in path)
     test_name.contains("\\proposals\\") // Windows paths (anywhere in path)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_skip_test;
+
+    #[test]
+    fn call_ref_is_not_skipped() {
+        assert!(!should_skip_test("call_ref"));
+    }
+
+    #[test]
+    fn tail_call_tests_remain_skipped() {
+        assert!(should_skip_test("return_call_ref"));
+    }
 }

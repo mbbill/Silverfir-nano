@@ -85,10 +85,22 @@ pub(super) fn copy_propagate(
                 | MachineInstKind::ExternConvertAny { .. }
                 | MachineInstKind::RefTest { .. }
                 | MachineInstKind::RefCast { .. }
+                | MachineInstKind::StructNew { .. }
                 | MachineInstKind::StructNewDefault { .. }
                 | MachineInstKind::StructGet { .. }
                 | MachineInstKind::StructSet { .. }
+                | MachineInstKind::ArrayNew { .. }
                 | MachineInstKind::ArrayNewDefault { .. }
+                | MachineInstKind::ArrayNewFixed { .. }
+                | MachineInstKind::ArrayNewData { .. }
+                | MachineInstKind::ArrayNewElem { .. }
+                | MachineInstKind::ArrayGet { .. }
+                | MachineInstKind::ArraySet { .. }
+                | MachineInstKind::ArrayFill { .. }
+                | MachineInstKind::ArrayCopy { .. }
+                | MachineInstKind::ArrayInitData { .. }
+                | MachineInstKind::ArrayInitElem { .. }
+                | MachineInstKind::ArrayLen { .. }
         ) {
             clear_aliases(aliases);
             clear_aliases(float_aliases);
@@ -166,10 +178,22 @@ fn can_elide_reg_move(
                 | MachineInstKind::ExternConvertAny { .. }
                 | MachineInstKind::RefTest { .. }
                 | MachineInstKind::RefCast { .. }
+                | MachineInstKind::StructNew { .. }
                 | MachineInstKind::StructNewDefault { .. }
                 | MachineInstKind::StructGet { .. }
                 | MachineInstKind::StructSet { .. }
+                | MachineInstKind::ArrayNew { .. }
                 | MachineInstKind::ArrayNewDefault { .. }
+                | MachineInstKind::ArrayNewFixed { .. }
+                | MachineInstKind::ArrayNewData { .. }
+                | MachineInstKind::ArrayNewElem { .. }
+                | MachineInstKind::ArrayGet { .. }
+                | MachineInstKind::ArraySet { .. }
+                | MachineInstKind::ArrayFill { .. }
+                | MachineInstKind::ArrayCopy { .. }
+                | MachineInstKind::ArrayInitData { .. }
+                | MachineInstKind::ArrayInitElem { .. }
+                | MachineInstKind::ArrayLen { .. }
         ) {
             // copy_propagate clears aliases at helper calls, so a move can only
             // disappear here if its destination is dead after the barrier.
@@ -296,7 +320,20 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
         }
         MachineInstKind::TrapIf { cond, .. } => rewrite_branch_cond(cond, aliases),
         MachineInstKind::CallRuntime(_) => {}
-        MachineInstKind::RefFunc { .. } | MachineInstKind::StructNewDefault { .. } => {}
+        MachineInstKind::RefFunc { .. } => {}
+        MachineInstKind::StructNew {
+            fields,
+            field_count,
+            ..
+        } => {
+            for (value_lo, value_hi) in fields.iter_mut().take(*field_count as usize) {
+                rewrite_value(value_lo, aliases);
+                if let Some(value_hi) = value_hi {
+                    rewrite_value(value_hi, aliases);
+                }
+            }
+        }
+        MachineInstKind::StructNewDefault { .. } => {}
         MachineInstKind::RefAsNonNull { src, .. }
         | MachineInstKind::RefI31 { src, .. }
         | MachineInstKind::I31GetS { src, .. }
@@ -306,12 +343,105 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
         | MachineInstKind::RefTest { src, .. }
         | MachineInstKind::RefCast { src, .. }
         | MachineInstKind::StructGet { src, .. }
-        | MachineInstKind::ArrayNewDefault { length: src, .. } => {
+        | MachineInstKind::ArrayNewDefault { length: src, .. }
+        | MachineInstKind::ArrayLen { src, .. } => {
             rewrite_value(src, aliases);
+        }
+        MachineInstKind::ArrayNew {
+            init_lo,
+            init_hi,
+            length,
+            ..
+        } => {
+            rewrite_value(init_lo, aliases);
+            if let Some(init_hi) = init_hi {
+                rewrite_value(init_hi, aliases);
+            }
+            rewrite_value(length, aliases);
+        }
+        MachineInstKind::ArrayNewFixed { elements, .. } => {
+            for (value_lo, value_hi) in elements {
+                rewrite_value(value_lo, aliases);
+                if let Some(value_hi) = value_hi {
+                    rewrite_value(value_hi, aliases);
+                }
+            }
+        }
+        MachineInstKind::ArrayNewData { src, len, .. }
+        | MachineInstKind::ArrayNewElem { src, len, .. } => {
+            rewrite_value(src, aliases);
+            rewrite_value(len, aliases);
         }
         MachineInstKind::RefEq { lhs, rhs, .. } => {
             rewrite_value(lhs, aliases);
             rewrite_value(rhs, aliases);
+        }
+        MachineInstKind::ArrayGet { ref_src, index, .. } => {
+            rewrite_value(ref_src, aliases);
+            rewrite_value(index, aliases);
+        }
+        MachineInstKind::ArraySet {
+            ref_src,
+            index,
+            value_lo,
+            value_hi,
+            ..
+        } => {
+            rewrite_value(ref_src, aliases);
+            rewrite_value(index, aliases);
+            rewrite_value(value_lo, aliases);
+            if let Some(value_hi) = value_hi {
+                rewrite_value(value_hi, aliases);
+            }
+        }
+        MachineInstKind::ArrayFill {
+            ref_src,
+            index,
+            value_lo,
+            value_hi,
+            len,
+            ..
+        } => {
+            rewrite_value(ref_src, aliases);
+            rewrite_value(index, aliases);
+            rewrite_value(value_lo, aliases);
+            if let Some(value_hi) = value_hi {
+                rewrite_value(value_hi, aliases);
+            }
+            rewrite_value(len, aliases);
+        }
+        MachineInstKind::ArrayCopy {
+            dst_ref,
+            dst_index,
+            src_ref,
+            src_index,
+            len,
+            ..
+        } => {
+            rewrite_value(dst_ref, aliases);
+            rewrite_value(dst_index, aliases);
+            rewrite_value(src_ref, aliases);
+            rewrite_value(src_index, aliases);
+            rewrite_value(len, aliases);
+        }
+        MachineInstKind::ArrayInitData {
+            ref_src,
+            dst_index,
+            src_index,
+            len,
+            ..
+        }
+        | MachineInstKind::ArrayInitElem {
+            ref_src,
+            dst_index,
+            src_index,
+            len,
+            ..
+        } => {
+            rewrite_value(ref_src, aliases);
+            rewrite_value(dst_index, aliases);
+            rewrite_value(src_index, aliases);
+            rewrite_value(len, aliases);
         }
         MachineInstKind::StructSet {
             ref_src,

@@ -149,15 +149,111 @@ ensure_colima_ready() {
 make_arm_wrapper() {
     local label="$1"
     local cli_bin="$2"
+    local shared_tmpdir="$3"
     local home_dir="${HOME:-$REPO_ROOT}"
+    local ssh_config="${COLIMA_SSH_CONFIG:-$HOME/.colima/ssh_config}"
     local wrapper
     wrapper="$(mktemp "/tmp/${label}.XXXXXX")"
     TEMP_FILES+=("$wrapper")
     cat >"$wrapper" <<EOF
 #!/usr/bin/env bash
 set -euo pipefail
+
+SSH_CONFIG="$ssh_config"
+REMOTE_HOST="colima"
+CLI_BIN="$cli_bin"
+SHARED_TMPDIR="$shared_tmpdir"
 export HOME="$home_dir"
-exec colima ssh -- sh -lc 'exec qemu-arm-static -cpu cortex-a15 "\$@"' sh "$cli_bin" "\$@"
+
+cleanup() {
+    if [[ -n "\${ENV_FILE:-}" ]]; then
+        rm -f "\$ENV_FILE" 2>/dev/null || true
+    fi
+    if [[ -n "\${ARGS_FILE:-}" ]]; then
+        rm -f "\$ARGS_FILE" 2>/dev/null || true
+    fi
+    if [[ \${#REMOTE_CLEANUPS[@]} -gt 0 ]]; then
+        ssh -F "\$SSH_CONFIG" "\$REMOTE_HOST" rm -rf "\${REMOTE_CLEANUPS[@]}" >/dev/null 2>&1 || true
+    fi
+}
+trap cleanup EXIT
+
+mkdir -p "\$SHARED_TMPDIR"
+ENV_FILE="\$(mktemp "\$SHARED_TMPDIR/${label}.env.XXXXXX")"
+ARGS_FILE="\$(mktemp "\$SHARED_TMPDIR/${label}.args.XXXXXX")"
+REMOTE_CLEANUPS=()
+
+# Forward the sanitized test environment to the remote CLI verbatim, including
+# values that contain embedded newlines.
+while IFS= read -r name; do
+    case "\$name" in
+        HOME|PATH|PWD|OLDPWD|SHLVL|_)
+            continue
+            ;;
+    esac
+    printf '%s=%s\0' "\$name" "\${!name}" >> "\$ENV_FILE"
+done < <(compgen -e)
+
+forwarded_args=()
+while [[ \$# -gt 0 ]]; do
+    case "\$1" in
+        --dir)
+            if [[ \$# -lt 2 ]]; then
+                echo "missing argument for --dir" >&2
+                exit 2
+            fi
+            spec="\$2"
+            shift 2
+            if [[ "\$spec" == *::* ]]; then
+                guest="\${spec%%::*}"
+                host_path="\${spec#*::}"
+            else
+                guest="."
+                host_path="\$spec"
+            fi
+            remote_dir="/tmp/${label}-preopen-\$\$-\${#REMOTE_CLEANUPS[@]}"
+            ssh -F "\$SSH_CONFIG" "\$REMOTE_HOST" mkdir -p "\$remote_dir"
+            if [[ -d "\$host_path" ]]; then
+                ssh -T -F "\$SSH_CONFIG" "\$REMOTE_HOST" bash -s -- "\$host_path" "\$remote_dir" <<'SSH_COPY_DIR'
+set -euo pipefail
+cp -a "\$1"/. "\$2"/
+SSH_COPY_DIR
+            elif [[ -e "\$host_path" ]]; then
+                ssh -T -F "\$SSH_CONFIG" "\$REMOTE_HOST" bash -s -- "\$host_path" "\$remote_dir" <<'SSH_COPY_FILE'
+set -euo pipefail
+cp -a "\$1" "\$2"/
+SSH_COPY_FILE
+            fi
+            REMOTE_CLEANUPS+=("\$remote_dir")
+            forwarded_args+=("--dir" "\$guest::\$remote_dir")
+            ;;
+        *)
+            forwarded_args+=("\$1")
+            shift
+            ;;
+    esac
+done
+
+# Forward argv through a NUL-delimited sidecar file so spaces/quotes survive
+# the ssh remote-command shell hop unchanged.
+for arg in "\${forwarded_args[@]}"; do
+    printf '%s\0' "\$arg" >> "\$ARGS_FILE"
+done
+
+exec ssh -T -F "\$SSH_CONFIG" "\$REMOTE_HOST" bash -s -- "\$ENV_FILE" "\$ARGS_FILE" "\$CLI_BIN" <<'SSH_RUN'
+set -euo pipefail
+env_args=()
+while IFS= read -r -d "" kv; do
+    env_args+=("\$kv")
+done < "\$1"
+shift
+remote_args=()
+while IFS= read -r -d "" arg; do
+    remote_args+=("\$arg")
+done < "\$1"
+shift
+exec env -i "\${env_args[@]}" qemu-arm-static -cpu cortex-a15 "\$1" "\${remote_args[@]}"
+SSH_RUN
 EOF
     chmod +x "$wrapper"
     echo "$wrapper"
@@ -195,6 +291,7 @@ run_release_cross_targets() {
 
     need_command arch
     need_command colima
+    need_command ssh
     ensure_colima_ready
     arm_tmpdir="$REPO_ROOT/tmp/wasitest-all"
     mkdir -p "$arm_tmpdir"
@@ -219,7 +316,7 @@ run_release_cross_targets() {
     saved_bin="$cli_bin.armv7a"
     cp -f "$cli_bin" "$saved_bin"
     TEMP_FILES+=("$saved_bin")
-    wrapper="$(make_arm_wrapper wasitest-armv7a "$saved_bin")"
+    wrapper="$(make_arm_wrapper wasitest-armv7a "$saved_bin" "$arm_tmpdir")"
     echo
 
     echo "=== wasitest: armv7a / A32 JIT (release) ==="
@@ -233,7 +330,7 @@ run_release_cross_targets() {
     saved_bin="$cli_bin.armv7m"
     cp -f "$cli_bin" "$saved_bin"
     TEMP_FILES+=("$saved_bin")
-    wrapper="$(make_arm_wrapper wasitest-armv7m "$saved_bin")"
+    wrapper="$(make_arm_wrapper wasitest-armv7m "$saved_bin" "$arm_tmpdir")"
     echo
 
     echo "=== wasitest: armv7m / Thumb-2 JIT (release) ==="

@@ -249,9 +249,25 @@ fn build_terminator(
                 collections::vec![edge],
             )
         }
-        SemanticOpKind::BrIf { target, .. } => {
+        SemanticOpKind::BrIf { target, .. }
+        | SemanticOpKind::BrOnNull { target, .. }
+        | SemanticOpKind::BrOnCast { target, .. } => {
             let then_edge = map_edge(source, *target, semantic_to_block);
             let else_edge = fallthrough().unwrap_or(then_edge);
+            (
+                CfgTerminator::Branch {
+                    op_index,
+                    then_edge,
+                    else_edge,
+                },
+                dedup_edges(collections::vec![then_edge, else_edge]),
+            )
+        }
+        SemanticOpKind::BrOnNonNull { target, .. }
+        | SemanticOpKind::BrOnCastFail { target, .. } => {
+            let then_edge =
+                fallthrough().unwrap_or_else(|| map_edge(source, *target, semantic_to_block));
+            let else_edge = map_edge(source, *target, semantic_to_block);
             (
                 CfgTerminator::Branch {
                     op_index,
@@ -374,11 +390,20 @@ fn for_each_semantic_successor(
         SemanticOpKind::Br { target, .. } => {
             f(*target);
         }
-        SemanticOpKind::BrIf { target, .. } => {
+        SemanticOpKind::BrIf { target, .. }
+        | SemanticOpKind::BrOnNull { target, .. }
+        | SemanticOpKind::BrOnCast { target, .. } => {
             f(*target);
             if let Some(ft) = fallthrough() {
                 f(ft);
             }
+        }
+        SemanticOpKind::BrOnNonNull { target, .. }
+        | SemanticOpKind::BrOnCastFail { target, .. } => {
+            if let Some(ft) = fallthrough() {
+                f(ft);
+            }
+            f(*target);
         }
         SemanticOpKind::BrTable { entries } => {
             for entry in entries {
@@ -410,6 +435,10 @@ fn is_plain_fallthrough(index: usize, len: usize, op: &SemanticOp) -> bool {
         | SemanticOpKind::Return { .. }
         | SemanticOpKind::Br { .. }
         | SemanticOpKind::BrIf { .. }
+        | SemanticOpKind::BrOnNull { .. }
+        | SemanticOpKind::BrOnNonNull { .. }
+        | SemanticOpKind::BrOnCast { .. }
+        | SemanticOpKind::BrOnCastFail { .. }
         | SemanticOpKind::BrTable { .. }
         | SemanticOpKind::If { .. }
         | SemanticOpKind::Else { .. } => false,
@@ -424,6 +453,10 @@ fn splits_after(kind: &SemanticOpKind) -> bool {
             | SemanticOpKind::Else { .. }
             | SemanticOpKind::Br { .. }
             | SemanticOpKind::BrIf { .. }
+            | SemanticOpKind::BrOnNull { .. }
+            | SemanticOpKind::BrOnNonNull { .. }
+            | SemanticOpKind::BrOnCast { .. }
+            | SemanticOpKind::BrOnCastFail { .. }
             | SemanticOpKind::BrTable { .. }
             | SemanticOpKind::ReturnVoid
             | SemanticOpKind::ReturnOne

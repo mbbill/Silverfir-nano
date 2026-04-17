@@ -77,22 +77,30 @@ fn movaps_load_rsp(e: &mut TextEmitter, xmm: u32, disp: i32) {
 
 impl<'a> X86_64Backend<'a> {
     pub(super) fn emit_preserved_io_open(&mut self) {
+        self.emit_preserved_io_open_with_prefix(0);
+    }
+
+    pub(super) fn emit_preserved_io_open_with_prefix(&mut self, prefix_bytes: u32) {
         self.save_caller_clobbered_gp_dynamic();
-        enc::sub_rsp_imm32(&mut self.core.text, PRESERVED_FRAME_BYTES);
+        enc::sub_rsp_imm32(&mut self.core.text, PRESERVED_FRAME_BYTES + prefix_bytes);
         for index in 0..abi::FP_MACHINE_REG_COUNT {
             let xmm = abi::fp_machine_reg(index).expect("x86_64 FP dynamic reg");
-            let disp = PRESERVED_IO_BYTES as i32 + (index as i32) * 16;
+            let disp = prefix_bytes as i32 + PRESERVED_IO_BYTES as i32 + (index as i32) * 16;
             movaps_store_rsp(&mut self.core.text, xmm, disp);
         }
     }
 
     pub(super) fn emit_io_store_imm(&mut self, slot: usize, value: u32) {
+        self.emit_io_store_imm_at(0, slot, value);
+    }
+
+    pub(super) fn emit_io_store_imm_at(&mut self, base_offset: u32, slot: usize, value: u32) {
         let scratch = self.gp_scratch.scoped_alloc().detach();
         self.materialize_u64(*scratch, value as u64);
         enc::store_64(
             &mut self.core.text,
             X86Reg::RSP,
-            (slot as i32) * 8,
+            base_offset as i32 + (slot as i32) * 8,
             *scratch,
         );
     }
@@ -102,9 +110,23 @@ impl<'a> X86_64Backend<'a> {
         slot: usize,
         value: MachineValue,
     ) -> Result<(), WasmError> {
+        self.emit_io_store_value_at(0, slot, value)
+    }
+
+    pub(super) fn emit_io_store_value_at(
+        &mut self,
+        base_offset: u32,
+        slot: usize,
+        value: MachineValue,
+    ) -> Result<(), WasmError> {
         let scratch = self.gp_scratch.scoped_alloc().detach();
         let gp = self.materialize_value(*scratch, value)?;
-        enc::store_64(&mut self.core.text, X86Reg::RSP, (slot as i32) * 8, gp);
+        enc::store_64(
+            &mut self.core.text,
+            X86Reg::RSP,
+            base_offset as i32 + (slot as i32) * 8,
+            gp,
+        );
         Ok(())
     }
 
@@ -146,6 +168,15 @@ impl<'a> X86_64Backend<'a> {
         op_code: u32,
         result_dst: Option<X86Reg>,
     ) {
+        self.emit_preserved_call_and_close_with_prefix(op_code, result_dst, 0);
+    }
+
+    pub(super) fn emit_preserved_call_and_close_with_prefix(
+        &mut self,
+        op_code: u32,
+        result_dst: Option<X86Reg>,
+        prefix_bytes: u32,
+    ) {
         use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
 
         // `R11` is volatile on both SysV and Win64 and is not used for any
@@ -159,6 +190,9 @@ impl<'a> X86_64Backend<'a> {
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
         self.materialize_u64(C_ARG1, op_code as u64);
         enc::mov_rr_64(&mut self.core.text, C_ARG2, X86Reg::RSP);
+        if prefix_bytes != 0 {
+            enc::add_ri_64(&mut self.core.text, C_ARG2, prefix_bytes as i32);
+        }
         self.materialize_u64(call_target, preserved_entry as usize as u64);
         enc::call_reg(&mut self.core.text, call_target);
 
@@ -170,18 +204,18 @@ impl<'a> X86_64Backend<'a> {
                 &mut self.core.text,
                 result_scratch,
                 X86Reg::RSP,
-                preserved_io::RET0 as i32 * 8,
+                prefix_bytes as i32 + preserved_io::RET0 as i32 * 8,
             );
         }
 
         for index in 0..abi::FP_MACHINE_REG_COUNT {
             let xmm = abi::fp_machine_reg(index).expect("x86_64 FP dynamic reg");
-            let disp = PRESERVED_IO_BYTES as i32 + (index as i32) * 16;
+            let disp = prefix_bytes as i32 + PRESERVED_IO_BYTES as i32 + (index as i32) * 16;
             movaps_load_rsp(&mut self.core.text, xmm, disp);
         }
 
         // Tear down the preserved frame before popping caller-clobbered regs.
-        enc::add_rsp_imm32(&mut self.core.text, PRESERVED_FRAME_BYTES);
+        enc::add_rsp_imm32(&mut self.core.text, PRESERVED_FRAME_BYTES + prefix_bytes);
 
         // Status lives in RAX and survives the dynamic restore because RAX is
         // backend-owned on x86_64, not part of the saved dynamic subset.

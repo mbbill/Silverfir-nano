@@ -174,11 +174,15 @@ _run_step() {
 
     echo "=== $name ==="
     if [[ "$mode" == "compact" ]]; then
-        if "$@" >"$log" 2>&1; then
-            rc=0
-        else
-            rc=$?
-        fi
+        # Stream the child's own `=== section ===` heartbeat lines to
+        # stdout as they appear so a long run still shows progress, while
+        # the full child output is captured in $log. PIPESTATUS[0] gives
+        # the child's real exit code regardless of whether grep matched.
+        "$@" 2>&1 \
+            | tee "$log" \
+            | { grep --line-buffered -E '^===' || true; } \
+            | awk '{ print "  " $0; fflush() }'
+        rc="${PIPESTATUS[0]:-0}"
     else
         if "$@" 2>&1 | tee "$log"; then
             rc=0

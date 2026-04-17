@@ -1,6 +1,6 @@
 use crate::collections;
 
-use crate::value_type::ValueType;
+use crate::value_type::{HeapType, RefType, ValueType};
 use crate::vm::middle::tests::helpers::{
     block_for_semantic_index, host_config, op, plan_program, prepare_program, prim, target,
     typed_program,
@@ -495,6 +495,85 @@ fn br_if_value_inside_void_block_keeps_fallthrough_value_live_for_following_unar
             op(SemanticOpKind::ReturnVoid),
         ],
     );
+
+    let _prepared = prepare_program(&semantic, 7, 13);
+}
+
+#[test]
+fn br_on_null_fallthrough_value_prepares_successfully() {
+    let nullable_func_ref = ValueType::Ref(RefType::new(true, HeapType::Concrete(0)));
+    let nonnull_func_ref = nullable_func_ref.to_non_nullable();
+    let mut semantic = typed_program(
+        collections::vec![nullable_func_ref],
+        collections::vec![ValueType::I32],
+        1,
+        collections::vec![
+            op(SemanticOpKind::Block {
+                params: 0,
+                results: 0,
+            }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            op(SemanticOpKind::BrOnNull {
+                stack_drop: 0,
+                arity: 0,
+                target: target(5),
+                ref_type: nonnull_func_ref,
+            }),
+            op(SemanticOpKind::CallRef {
+                type_idx: 0,
+                params: 0,
+                results: 1,
+            }),
+            op(SemanticOpKind::ReturnOne),
+            op(SemanticOpKind::End),
+            prim(PrimitiveOpKind::I32Const { value: u32::MAX }),
+            op(SemanticOpKind::ReturnOne),
+        ],
+    );
+    semantic
+        .op_result_types
+        .insert(3, collections::vec![ValueType::I32]);
+
+    let _prepared = prepare_program(&semantic, 7, 13);
+}
+
+#[test]
+fn br_on_non_null_branch_payload_prepares_successfully() {
+    let nullable_func_ref = ValueType::Ref(RefType::new(true, HeapType::Concrete(0)));
+    let nonnull_func_ref = nullable_func_ref.to_non_nullable();
+    let mut semantic = typed_program(
+        collections::vec![nullable_func_ref],
+        collections::vec![ValueType::I32],
+        1,
+        collections::vec![
+            op(SemanticOpKind::Block {
+                params: 0,
+                results: 1,
+            }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            op(SemanticOpKind::BrOnNonNull {
+                stack_drop: 0,
+                arity: 1,
+                target: target(5),
+                ref_type: nonnull_func_ref,
+            }),
+            prim(PrimitiveOpKind::I32Const { value: u32::MAX }),
+            op(SemanticOpKind::ReturnOne),
+            op(SemanticOpKind::End),
+            op(SemanticOpKind::CallRef {
+                type_idx: 0,
+                params: 0,
+                results: 1,
+            }),
+            op(SemanticOpKind::ReturnOne),
+        ],
+    );
+    semantic
+        .op_result_types
+        .insert(0, collections::vec![nonnull_func_ref]);
+    semantic
+        .op_result_types
+        .insert(6, collections::vec![ValueType::I32]);
 
     let _prepared = prepare_program(&semantic, 7, 13);
 }

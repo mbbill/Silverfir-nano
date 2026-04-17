@@ -700,11 +700,13 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     BR_ON_CAST | BR_ON_CAST_FAIL => {
                         let flags = payload.read_u8()?;
                         let label_idx = payload.read_leb128_u32()?;
-                        let rt1 = ValueType::parse(&mut payload)?;
-                        let rt2 = ValueType::parse(&mut payload)?;
-                        if !rt1.is_ref() || !rt2.is_ref() {
-                            return Err(WasmError::invalid("br_on_cast requires reference types"));
+                        if flags & !0b11 != 0 {
+                            return Err(WasmError::invalid("invalid br_on_cast flags"));
                         }
+                        let from_heap = HeapType::parse(&mut payload)?;
+                        let to_heap = HeapType::parse(&mut payload)?;
+                        let rt1 = ValueType::Ref(RefType::new((flags & 0b01) != 0, from_heap));
+                        let rt2 = ValueType::Ref(RefType::new((flags & 0b10) != 0, to_heap));
                         let wasm_op = FB(op_ext);
                         let imm = Immediate::BrOnCast {
                             flags,
@@ -841,8 +843,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 }
             }
             PREFIX_FD => {
-                // SIMD opcodes not supported in sf-nano
-                unimplemented!("Vector opcodes are not implemented!");
+                return Err(WasmError::invalid("SIMD opcodes are not yet supported"));
             }
             NOP | ELSE | RETURN | DROP | SELECT | I32_EQZ | I32_EQ | I32_NE | I32_LT_S
             | I32_LT_U | I32_GT_S | I32_GT_U | I32_LE_S | I32_LE_U | I32_GE_S | I32_GE_U
@@ -987,5 +988,51 @@ impl OpcodeHandler for OpcodePrinter {
 
     fn on_decode_end(&mut self) -> Result<(), WasmError> {
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{Decoder, OpStream, OpcodeHandler};
+    use crate::{
+        error::WasmError,
+        opcodes::OPCODE_CONSTANTS::{END, PREFIX_FD},
+    };
+
+    struct DrainHandler;
+
+    impl OpcodeHandler for DrainHandler {
+        fn on_decode_begin(&mut self) -> Result<(), WasmError> {
+            Ok(())
+        }
+
+        fn on_stream<'x, 'y, 'z>(
+            &mut self,
+            stream: &mut OpStream<'x, 'y, 'z>,
+        ) -> Result<(), WasmError> {
+            while stream.next()?.is_some() {}
+            Ok(())
+        }
+
+        fn on_decode_end(&mut self) -> Result<(), WasmError> {
+            Ok(())
+        }
+    }
+
+    #[test]
+    fn simd_prefix_reports_invalid_instead_of_panicking() {
+        let code = [PREFIX_FD, 0x00, END];
+        let mut decoder = Decoder::new(&code);
+        let mut handler = DrainHandler;
+        decoder.add_handler(&mut handler);
+
+        let err = decoder
+            .decode_function()
+            .expect_err("SIMD opcodes should be rejected cleanly");
+
+        assert_eq!(
+            err,
+            WasmError::invalid("SIMD opcodes are not yet supported")
+        );
     }
 }

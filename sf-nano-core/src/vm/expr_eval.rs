@@ -152,14 +152,10 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, store: &mut Store) -> Result<Val
                             RefType::new(false, HeapType::Concrete(type_idx)),
                         ));
                     }
-                    OpcodeFB::ARRAY_NEW | OpcodeFB::ARRAY_NEW_DEFAULT => {
+                    OpcodeFB::ARRAY_NEW
+                    | OpcodeFB::ARRAY_NEW_DEFAULT
+                    | OpcodeFB::ARRAY_NEW_FIXED => {
                         let type_idx = code.read_leb128_u32()?;
-                        let len = pop_i32(&mut stack, "array.new length must be i32")?;
-                        if len < 0 {
-                            return Err(WasmError::invalid(
-                                "array.new length must be non-negative",
-                            ));
-                        }
                         let elements = {
                             let def_type = store.module().types.get(type_idx).ok_or_else(|| {
                                 WasmError::invalid("array type index out of range")
@@ -168,16 +164,43 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, store: &mut Store) -> Result<Val
                                 CompositeType::Array(array_type) => array_type,
                                 _ => return Err(WasmError::invalid("expected array type")),
                             };
-                            let init = if matches!(fb_opcode, OpcodeFB::ARRAY_NEW) {
-                                stack.pop().ok_or_else(|| {
-                                    WasmError::invalid("not enough operands for array.new")
-                                })?
-                            } else {
-                                Value::default_for_type(array_type.element.storage.to_valtype())
-                            };
-                            let mut elements = collections::Vec::with_capacity(len as usize);
-                            elements.resize(len as usize, init);
-                            elements
+                            match fb_opcode {
+                                OpcodeFB::ARRAY_NEW | OpcodeFB::ARRAY_NEW_DEFAULT => {
+                                    let len = pop_i32(&mut stack, "array.new length must be i32")?;
+                                    if len < 0 {
+                                        return Err(WasmError::invalid(
+                                            "array.new length must be non-negative",
+                                        ));
+                                    }
+                                    let init = if matches!(fb_opcode, OpcodeFB::ARRAY_NEW) {
+                                        stack.pop().ok_or_else(|| {
+                                            WasmError::invalid("not enough operands for array.new")
+                                        })?
+                                    } else {
+                                        Value::default_for_type(
+                                            array_type.element.storage.to_valtype(),
+                                        )
+                                    };
+                                    let mut elements =
+                                        collections::Vec::with_capacity(len as usize);
+                                    elements.resize(len as usize, init);
+                                    elements
+                                }
+                                OpcodeFB::ARRAY_NEW_FIXED => {
+                                    let count = code.read_leb128_u32()? as usize;
+                                    let mut elements = collections::Vec::with_capacity(count);
+                                    for _ in 0..count {
+                                        elements.push(stack.pop().ok_or_else(|| {
+                                            WasmError::invalid(
+                                                "not enough operands for array.new_fixed",
+                                            )
+                                        })?);
+                                    }
+                                    elements.reverse();
+                                    elements
+                                }
+                                _ => unreachable!(),
+                            }
                         };
                         let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
                         let handle = store.register_gc_ref(gc_ref);

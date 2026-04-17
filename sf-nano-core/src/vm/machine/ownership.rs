@@ -80,7 +80,17 @@ fn for_each_defined_reg(kind: &MachineInstKind, mut f: impl FnMut(MachineReg)) {
         | MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. }
         | MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. }
         | MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
-        | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+        | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. }
+        | MachineInstKind::StructGet {
+            dst: dst_lo,
+            dst_hi: Some(dst_hi),
+            ..
+        }
+        | MachineInstKind::ArrayGet {
+            dst: dst_lo,
+            dst_hi: Some(dst_hi),
+            ..
+        } => {
             f(*dst_lo);
             f(*dst_hi);
         }
@@ -115,9 +125,16 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::ExternConvertAny { dst, .. }
         | MachineInstKind::RefTest { dst, .. }
         | MachineInstKind::RefCast { dst, .. }
+        | MachineInstKind::StructNew { dst, .. }
         | MachineInstKind::StructNewDefault { dst, .. }
-        | MachineInstKind::ArrayNewDefault { dst, .. } => Some(*dst),
-        MachineInstKind::StructGet { dst, dst_hi, .. } => dst_hi.is_none().then_some(*dst),
+        | MachineInstKind::ArrayNew { dst, .. }
+        | MachineInstKind::ArrayNewDefault { dst, .. }
+        | MachineInstKind::ArrayNewFixed { dst, .. }
+        | MachineInstKind::ArrayNewData { dst, .. }
+        | MachineInstKind::ArrayNewElem { dst, .. }
+        | MachineInstKind::ArrayLen { dst, .. } => Some(*dst),
+        MachineInstKind::StructGet { dst, dst_hi, .. }
+        | MachineInstKind::ArrayGet { dst, dst_hi, .. } => dst_hi.is_none().then_some(*dst),
         MachineInstKind::MemoryGrow { dst, .. } | MachineInstKind::TableGrow { dst, .. } => {
             Some(*dst)
         }
@@ -129,7 +146,12 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::TableCopy { .. }
         | MachineInstKind::TableInit { .. }
         | MachineInstKind::ElemDrop { .. }
-        | MachineInstKind::StructSet { .. } => None,
+        | MachineInstKind::StructSet { .. }
+        | MachineInstKind::ArraySet { .. }
+        | MachineInstKind::ArrayFill { .. }
+        | MachineInstKind::ArrayCopy { .. }
+        | MachineInstKind::ArrayInitData { .. }
+        | MachineInstKind::ArrayInitElem { .. } => None,
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,

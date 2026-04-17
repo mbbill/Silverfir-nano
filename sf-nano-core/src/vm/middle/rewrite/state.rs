@@ -75,10 +75,10 @@ pub(super) struct BlockState {
     /// `type_stack[spill_depth..] == live_types`.
     type_stack: collections::Vec<ValueType>,
     pub(super) ops: collections::Vec<SsaInst>,
-    /// Overflow storage for the third operand of 3-arg primitive ops
-    /// (Select, memory/table bulk ops). Index published via
-    /// [`SsaInst.meta`] for the primitive variant. Transferred into the
-    /// finalized [`SsaBlock.extra_args`] when the block is closed.
+    /// Overflow storage for primitive operands beyond the first two. The
+    /// primitive variant publishes the start index via [`SsaInst.meta`].
+    /// Transferred into the finalized [`SsaBlock.extra_args`] when the block
+    /// is closed.
     pub(super) extra_args: collections::Vec<SsaOperand>,
 }
 

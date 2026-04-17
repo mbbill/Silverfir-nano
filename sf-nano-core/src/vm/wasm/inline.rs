@@ -158,6 +158,12 @@ fn find_return_sites(callee: &SemanticProgram) -> collections::Vec<ReturnSite> {
             SemanticOpKind::BrIf { .. } => {
                 depth -= 1;
             }
+            SemanticOpKind::BrOnNull { .. }
+            | SemanticOpKind::BrOnCast { .. }
+            | SemanticOpKind::BrOnCastFail { .. } => {}
+            SemanticOpKind::BrOnNonNull { .. } => {
+                depth -= 1;
+            }
             SemanticOpKind::ReturnVoid => {
                 sites.push(ReturnSite {
                     op_index: i,
@@ -533,6 +539,12 @@ fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
             SemanticOpKind::BrIf { .. } => {
                 depth -= 1;
             }
+            SemanticOpKind::BrOnNull { .. }
+            | SemanticOpKind::BrOnCast { .. }
+            | SemanticOpKind::BrOnCastFail { .. } => {}
+            SemanticOpKind::BrOnNonNull { .. } => {
+                depth -= 1;
+            }
             SemanticOpKind::CallDirect {
                 params, results, ..
             } => {
@@ -604,6 +616,54 @@ fn remap_op(kind: &SemanticOpKind, local_offset: u16, target_offset: usize) -> S
             arity: *arity,
             target: offset_target(*target, target_offset),
         },
+        SemanticOpKind::BrOnNull {
+            stack_drop,
+            arity,
+            target,
+            ref_type,
+        } => SemanticOpKind::BrOnNull {
+            stack_drop: *stack_drop,
+            arity: *arity,
+            target: offset_target(*target, target_offset),
+            ref_type: *ref_type,
+        },
+        SemanticOpKind::BrOnNonNull {
+            stack_drop,
+            arity,
+            target,
+            ref_type,
+        } => SemanticOpKind::BrOnNonNull {
+            stack_drop: *stack_drop,
+            arity: *arity,
+            target: offset_target(*target, target_offset),
+            ref_type: *ref_type,
+        },
+        SemanticOpKind::BrOnCast {
+            stack_drop,
+            arity,
+            target,
+            fail_type,
+            cast_type,
+        } => SemanticOpKind::BrOnCast {
+            stack_drop: *stack_drop,
+            arity: *arity,
+            target: offset_target(*target, target_offset),
+            fail_type: *fail_type,
+            cast_type: *cast_type,
+        },
+        SemanticOpKind::BrOnCastFail {
+            stack_drop,
+            arity,
+            target,
+            fail_type,
+            cast_type,
+        } => SemanticOpKind::BrOnCastFail {
+            stack_drop: *stack_drop,
+            arity: *arity,
+            target: offset_target(*target, target_offset),
+            fail_type: *fail_type,
+            cast_type: *cast_type,
+        },
         SemanticOpKind::BrTable { entries } => SemanticOpKind::BrTable {
             entries: entries
                 .iter()
@@ -660,7 +720,12 @@ fn offset_target(target: SemanticTarget, offset: usize) -> SemanticTarget {
 fn shift_targets_after(ops: &mut [SemanticOp], after: usize, shift: i64) {
     for op in ops.iter_mut() {
         match &mut op.kind {
-            SemanticOpKind::Br { target, .. } | SemanticOpKind::BrIf { target, .. } => {
+            SemanticOpKind::Br { target, .. }
+            | SemanticOpKind::BrIf { target, .. }
+            | SemanticOpKind::BrOnNull { target, .. }
+            | SemanticOpKind::BrOnNonNull { target, .. }
+            | SemanticOpKind::BrOnCast { target, .. }
+            | SemanticOpKind::BrOnCastFail { target, .. } => {
                 *target = shift_target(*target, after, shift);
             }
             SemanticOpKind::BrTable { entries } => {

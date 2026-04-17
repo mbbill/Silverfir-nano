@@ -403,6 +403,13 @@ impl RefType {
         }
     }
 
+    pub fn difference(a: RefType, b: RefType) -> Self {
+        Self {
+            nullable: if b.nullable { false } else { a.nullable },
+            heap_type: a.heap_type,
+        }
+    }
+
     pub fn is_funcref(&self) -> bool {
         matches!(
             self.heap_type,

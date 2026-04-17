@@ -53,7 +53,11 @@ impl SemanticBuilder {
                 SemanticOpKind::If { else_target, .. } => *else_target = target,
                 SemanticOpKind::Else { end_target } => *end_target = target,
                 SemanticOpKind::Br { target: branch, .. }
-                | SemanticOpKind::BrIf { target: branch, .. } => *branch = target,
+                | SemanticOpKind::BrIf { target: branch, .. }
+                | SemanticOpKind::BrOnNull { target: branch, .. }
+                | SemanticOpKind::BrOnNonNull { target: branch, .. }
+                | SemanticOpKind::BrOnCast { target: branch, .. }
+                | SemanticOpKind::BrOnCastFail { target: branch, .. } => *branch = target,
                 _ => {}
             }
         }
@@ -117,6 +121,8 @@ struct DecodeControlFrame {
     start_height: usize,
     param_count: u16,
     result_count: u16,
+    param_types: collections::Vec<ValueType>,
+    result_types: collections::Vec<ValueType>,
     start_inst_idx: SemanticTarget,
     if_inst_idx: Option<SemanticIndex>,
     pending_fixups: collections::Vec<PendingBranchFixup>,
@@ -130,6 +136,7 @@ pub(crate) struct DecodeContext<'a> {
     height: usize,
     max_height: usize,
     unreachable: bool,
+    type_stack: collections::Vec<ValueType>,
     /// Per-op result types for calls and typed blocks.
     op_result_types: BTreeMap<usize, collections::Vec<ValueType>>,
 }
@@ -144,6 +151,8 @@ impl<'a> DecodeContext<'a> {
                 start_height: 0,
                 param_count: 0,
                 result_count: compile.results,
+                param_types: collections::Vec::new(),
+                result_types: compile.result_types.to_vec().into(),
                 start_inst_idx: SemanticTarget::new(0),
                 if_inst_idx: None,
                 pending_fixups: collections::Vec::new(),
@@ -151,6 +160,7 @@ impl<'a> DecodeContext<'a> {
             height: 0,
             max_height: 0,
             unreachable: false,
+            type_stack: collections::Vec::new(),
             op_result_types: BTreeMap::new(),
         }
     }
@@ -204,8 +214,74 @@ impl<'a> DecodeContext<'a> {
     }
 
     #[inline]
+    fn push_typed_value(&mut self, ty: ValueType) {
+        if !self.unreachable {
+            self.type_stack.push(ty);
+        }
+        self.push_value();
+    }
+
+    #[inline]
+    fn push_typed_values(&mut self, tys: &[ValueType]) {
+        for ty in tys {
+            self.push_typed_value(*ty);
+        }
+    }
+
+    #[inline]
+    fn pop_typed_values(&mut self, count: usize) {
+        if !self.unreachable {
+            let new_len = self.type_stack.len().saturating_sub(count);
+            self.type_stack.truncate(new_len);
+        }
+        self.pop_values(count);
+    }
+
+    #[inline]
+    fn pop_typed_value(&mut self) -> ValueType {
+        if self.unreachable {
+            self.pop_values(1);
+            return ValueType::Unknown;
+        }
+        let ty = self.type_stack.pop().unwrap_or(ValueType::Unknown);
+        self.pop_values(1);
+        ty
+    }
+
+    #[inline]
+    fn top_type(&self) -> ValueType {
+        if self.unreachable {
+            ValueType::Unknown
+        } else {
+            self.type_stack
+                .last()
+                .copied()
+                .unwrap_or(ValueType::Unknown)
+        }
+    }
+
+    #[inline]
     fn set_unreachable(&mut self) {
+        if let Some(frame) = self.control.last() {
+            self.type_stack.truncate(frame.start_height);
+        }
         self.unreachable = true;
+    }
+
+    fn types_at(&self, start: usize, count: u16) -> collections::Vec<ValueType> {
+        let end = start.saturating_add(count as usize);
+        if end <= self.type_stack.len() {
+            self.type_stack[start..end].to_vec().into()
+        } else {
+            (0..count as usize)
+                .map(|idx| {
+                    self.type_stack
+                        .get(start + idx)
+                        .copied()
+                        .unwrap_or(ValueType::Unknown)
+                })
+                .collect()
+        }
     }
 
     fn enter_block(
@@ -213,13 +289,22 @@ impl<'a> DecodeContext<'a> {
         kind: DecodeBlockKind,
         params: u16,
         results: u16,
+        result_types: collections::Vec<ValueType>,
         start_inst_idx: SemanticTarget,
     ) {
+        let start_height = self.height.saturating_sub(params as usize);
+        let param_types = if self.unreachable {
+            collections::Vec::new()
+        } else {
+            self.types_at(start_height, params)
+        };
         self.control.push(DecodeControlFrame {
             kind,
-            start_height: self.height.saturating_sub(params as usize),
+            start_height,
             param_count: params,
             result_count: results,
+            param_types,
+            result_types,
             start_inst_idx,
             if_inst_idx: None,
             pending_fixups: collections::Vec::new(),
@@ -235,6 +320,8 @@ impl<'a> DecodeContext<'a> {
     fn enter_else(&mut self) {
         if let Some(frame) = self.control.last() {
             self.height = frame.start_height + frame.param_count as usize;
+            self.type_stack.truncate(frame.start_height);
+            self.type_stack.extend_from_slice(&frame.param_types);
             self.unreachable = false;
         }
     }
@@ -242,6 +329,8 @@ impl<'a> DecodeContext<'a> {
     fn exit_block(&mut self) -> Option<DecodeControlFrame> {
         let frame = self.control.pop()?;
         self.height = frame.start_height + frame.result_count as usize;
+        self.type_stack.truncate(frame.start_height);
+        self.type_stack.extend_from_slice(&frame.result_types);
         self.unreachable = false;
         Some(frame)
     }
@@ -265,6 +354,17 @@ impl<'a> DecodeContext<'a> {
                 }
             })
             .unwrap_or(0)
+    }
+
+    fn branch_types(&self, depth: u32) -> collections::Vec<ValueType> {
+        self.frame_at_depth(depth)
+            .map(|frame| match frame.kind {
+                DecodeBlockKind::Loop => frame.param_types.clone(),
+                DecodeBlockKind::Function | DecodeBlockKind::Block | DecodeBlockKind::If => {
+                    frame.result_types.clone()
+                }
+            })
+            .unwrap_or_else(collections::Vec::new)
     }
 
     fn branch_info(&self, depth: u32) -> (u32, Option<SemanticTarget>) {
@@ -306,9 +406,22 @@ impl<'a> DecodeContext<'a> {
 
     fn handle_primitive(&mut self, kind: PrimitiveOpKind) {
         let (pops, pushes) = primitive_op::stack_effect(&kind);
-        self.pop_values(pops as usize);
+        let result_ty = if matches!(kind, PrimitiveOpKind::Select) && pops >= 2 {
+            self.type_stack
+                .len()
+                .checked_sub(2)
+                .and_then(|idx| self.type_stack.get(idx).copied())
+                .unwrap_or(ValueType::I64)
+        } else if let Some(ty) = primitive_op::result_type(&kind) {
+            ty
+        } else {
+            ValueType::I64
+        };
+        self.pop_typed_values(pops as usize);
         self.push_op(kind.clone());
-        self.push_values(pushes as usize);
+        if pushes != 0 {
+            self.push_typed_values(&collections::vec![result_ty; pushes as usize]);
+        }
         if matches!(kind, PrimitiveOpKind::Unreachable) {
             self.set_unreachable();
         }
@@ -342,13 +455,14 @@ impl<'a> DecodeContext<'a> {
             let func = self.compile.store.function(func_idx as usize);
             self.record_result_types(idx, func.func_type().results());
         }
-        self.pop_values(params as usize);
-        self.push_values(results as usize);
+        self.pop_typed_values(params as usize);
+        let func = self.compile.store.function(func_idx as usize);
+        self.push_typed_values(func.func_type().results());
     }
 
     fn handle_call_indirect(&mut self, type_idx: u32, table_idx: u32) {
         let (params, results) = self.compile.resolve_type_index(type_idx);
-        self.pop_values(1);
+        self.pop_typed_values(1);
         let idx = self.push_op(SemanticOpKind::CallIndirect {
             type_idx,
             table_idx,
@@ -360,8 +474,12 @@ impl<'a> DecodeContext<'a> {
                 self.record_result_types(idx, ty.results());
             }
         }
-        self.pop_values(params as usize);
-        self.push_values(results as usize);
+        self.pop_typed_values(params as usize);
+        if let Some(ty) = self.compile.types.get_function_type(type_idx) {
+            self.push_typed_values(ty.results());
+        } else {
+            self.push_values(results as usize);
+        }
     }
 
     fn handle_call_ref(&mut self, type_idx: u32) {
@@ -376,8 +494,12 @@ impl<'a> DecodeContext<'a> {
                 self.record_result_types(idx, ty.results());
             }
         }
-        self.pop_values(params.saturating_add(1) as usize);
-        self.push_values(results as usize);
+        self.pop_typed_values(params.saturating_add(1) as usize);
+        if let Some(ty) = self.compile.types.get_function_type(type_idx) {
+            self.push_typed_values(ty.results());
+        } else {
+            self.push_values(results as usize);
+        }
     }
 
     fn finish(self) -> SemanticProgram {
@@ -400,12 +522,18 @@ impl<'a> DecodeContext<'a> {
             OP(LOCAL_GET) => {
                 if let Immediate::LocalIndex(idx) = imm {
                     self.push_op(SemanticOpKind::LocalGet { idx: *idx as u16 });
-                    self.push_value();
+                    let local_ty = self
+                        .compile
+                        .local_types
+                        .get(*idx as usize)
+                        .copied()
+                        .unwrap_or(ValueType::I64);
+                    self.push_typed_value(local_ty);
                 }
             }
             OP(LOCAL_SET) => {
                 if let Immediate::LocalIndex(idx) = imm {
-                    self.pop_values(1);
+                    self.pop_typed_values(1);
                     self.push_op(SemanticOpKind::LocalSet { idx: *idx as u16 });
                 }
             }
@@ -832,11 +960,26 @@ impl<'a> DecodeContext<'a> {
                 self.handle_primitive(PrimitiveOpKind::RefNull);
                 if let Immediate::RefType(vt) = imm {
                     self.record_result_types(op_idx, &[*vt]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = *vt;
+                        }
+                    }
                 }
             }
             OP(REF_IS_NULL) => self.handle_primitive(PrimitiveOpKind::RefIsNull),
             OP(REF_EQ) => self.handle_primitive(PrimitiveOpKind::RefEq),
-            OP(REF_AS_NON_NULL) => self.handle_primitive(PrimitiveOpKind::RefAsNonNull),
+            OP(REF_AS_NON_NULL) => {
+                let result_ty = self.top_type().to_non_nullable();
+                let op_idx = self.current_index();
+                self.handle_primitive(PrimitiveOpKind::RefAsNonNull);
+                self.record_result_types(op_idx, &[result_ty]);
+                if !self.unreachable {
+                    if let Some(last) = self.type_stack.last_mut() {
+                        *last = result_ty;
+                    }
+                }
+            }
             OP(REF_FUNC) => {
                 if let Immediate::FunctionIndex(func_idx) = imm {
                     let op_idx = self.current_index();
@@ -847,6 +990,11 @@ impl<'a> DecodeContext<'a> {
                         self.compile.store.function(*func_idx as usize).type_index();
                     let ty = ValueType::Ref(RefType::new(false, HeapType::Concrete(func_type_idx)));
                     self.record_result_types(op_idx, &[ty]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = ty;
+                        }
+                    }
                 }
             }
 
@@ -859,7 +1007,13 @@ impl<'a> DecodeContext<'a> {
                 let idx = self.push_op(SemanticOpKind::Block { params, results });
                 self.record_result_types(idx, &result_types);
                 let target = SemanticTarget::new(self.current_index().as_usize());
-                self.enter_block(DecodeBlockKind::Block, params, results, target);
+                self.enter_block(
+                    DecodeBlockKind::Block,
+                    params,
+                    results,
+                    result_types,
+                    target,
+                );
             }
             OP(LOOP) => {
                 let (params, results) = self.compile.resolve_block_type_from_imm(imm);
@@ -867,10 +1021,10 @@ impl<'a> DecodeContext<'a> {
                 let idx = self.push_op(SemanticOpKind::Loop { params, results });
                 self.record_result_types(idx, &result_types);
                 let target = SemanticTarget::new(self.current_index().as_usize());
-                self.enter_block(DecodeBlockKind::Loop, params, results, target);
+                self.enter_block(DecodeBlockKind::Loop, params, results, result_types, target);
             }
             OP(IF) => {
-                self.pop_values(1);
+                self.pop_typed_values(1);
                 let (params, results) = self.compile.resolve_block_type_from_imm(imm);
                 let result_types = self.compile.resolve_block_result_types_from_imm(imm);
                 let idx = self.push_op(SemanticOpKind::If {
@@ -880,7 +1034,7 @@ impl<'a> DecodeContext<'a> {
                 });
                 self.record_result_types(idx, &result_types);
                 let target = SemanticTarget::new(self.current_index().as_usize());
-                self.enter_block(DecodeBlockKind::If, params, results, target);
+                self.enter_block(DecodeBlockKind::If, params, results, result_types, target);
                 self.set_if_inst(idx);
             }
             OP(ELSE) => {
@@ -950,7 +1104,7 @@ impl<'a> DecodeContext<'a> {
             }
             OP(BR_IF) => {
                 if let Immediate::LabelIndex(label) = imm {
-                    self.pop_values(1);
+                    self.pop_typed_values(1);
                     let arity = self.branch_arity(*label);
                     let (stack_drop, target) = self.branch_info(*label);
                     let idx = self.push_op(SemanticOpKind::BrIf {
@@ -965,9 +1119,173 @@ impl<'a> DecodeContext<'a> {
                     }
                 }
             }
+            OP(BR_ON_NULL) => {
+                if let Immediate::LabelIndex(label) = imm {
+                    if self.unreachable {
+                        self.handle_primitive(PrimitiveOpKind::Nop);
+                    } else {
+                        let ref_ty = self.pop_typed_value();
+                        let refined_ty = ref_ty.to_non_nullable();
+                        let arity = self.branch_arity(*label);
+                        let (stack_drop, target) = self.branch_info(*label);
+                        let idx = self.push_op(SemanticOpKind::BrOnNull {
+                            stack_drop,
+                            arity,
+                            target: target.unwrap_or_else(SemanticTarget::pending),
+                            ref_type: refined_ty,
+                        });
+                        if let Some(target) = target {
+                            self.patch_target(idx, target);
+                        } else {
+                            self.register_forward_branch(*label, idx, None);
+                        }
+                        self.push_typed_value(refined_ty);
+                    }
+                }
+            }
+            OP(BR_ON_NON_NULL) => {
+                if let Immediate::LabelIndex(label) = imm {
+                    if self.unreachable {
+                        self.handle_primitive(PrimitiveOpKind::Nop);
+                    } else {
+                        let ref_ty = self.pop_typed_value();
+                        let label_types = self.branch_types(*label);
+                        let branch_ref_ty = label_types
+                            .last()
+                            .copied()
+                            .unwrap_or_else(|| ref_ty.to_non_nullable());
+                        let arity = label_types.len() as u16;
+                        let Some(frame) = self.frame_at_depth(*label) else {
+                            return Err(WasmError::invalid("invalid frame index"));
+                        };
+                        let stack_drop = self
+                            .height
+                            .saturating_add(1)
+                            .saturating_sub(frame.start_height.saturating_add(arity as usize))
+                            as u32;
+                        let target = match frame.kind {
+                            DecodeBlockKind::Loop => Some(frame.start_inst_idx),
+                            DecodeBlockKind::Function
+                            | DecodeBlockKind::Block
+                            | DecodeBlockKind::If => None,
+                        };
+                        let idx = self.push_op(SemanticOpKind::BrOnNonNull {
+                            stack_drop,
+                            arity,
+                            target: target.unwrap_or_else(SemanticTarget::pending),
+                            ref_type: branch_ref_ty,
+                        });
+                        if let Some(target) = target {
+                            self.patch_target(idx, target);
+                        } else {
+                            self.register_forward_branch(*label, idx, None);
+                        }
+                    }
+                }
+            }
+            FB(OpcodeFB::BR_ON_CAST) => {
+                if let Immediate::BrOnCast {
+                    label_idx,
+                    rt1,
+                    rt2,
+                    ..
+                } = imm
+                {
+                    if self.unreachable {
+                        self.handle_primitive(PrimitiveOpKind::Nop);
+                    } else {
+                        let _actual_ref_ty = self.pop_typed_value();
+                        let fail_type = match (*rt1, *rt2) {
+                            (ValueType::Ref(from_ref), ValueType::Ref(to_ref)) => {
+                                ValueType::Ref(RefType::difference(from_ref, to_ref))
+                            }
+                            _ => ValueType::Unknown,
+                        };
+                        let label_types = self.branch_types(*label_idx);
+                        let arity = label_types.len() as u16;
+                        let Some(frame) = self.frame_at_depth(*label_idx) else {
+                            return Err(WasmError::invalid("invalid frame index"));
+                        };
+                        let stack_drop = self
+                            .height
+                            .saturating_add(1)
+                            .saturating_sub(frame.start_height.saturating_add(arity as usize))
+                            as u32;
+                        let target = match frame.kind {
+                            DecodeBlockKind::Loop => Some(frame.start_inst_idx),
+                            DecodeBlockKind::Function
+                            | DecodeBlockKind::Block
+                            | DecodeBlockKind::If => None,
+                        };
+                        let idx = self.push_op(SemanticOpKind::BrOnCast {
+                            stack_drop,
+                            arity,
+                            target: target.unwrap_or_else(SemanticTarget::pending),
+                            fail_type,
+                            cast_type: *rt2,
+                        });
+                        if let Some(target) = target {
+                            self.patch_target(idx, target);
+                        } else {
+                            self.register_forward_branch(*label_idx, idx, None);
+                        }
+                        self.push_typed_value(fail_type);
+                    }
+                }
+            }
+            FB(OpcodeFB::BR_ON_CAST_FAIL) => {
+                if let Immediate::BrOnCast {
+                    label_idx,
+                    rt1,
+                    rt2,
+                    ..
+                } = imm
+                {
+                    if self.unreachable {
+                        self.handle_primitive(PrimitiveOpKind::Nop);
+                    } else {
+                        let _actual_ref_ty = self.pop_typed_value();
+                        let fail_type = match (*rt1, *rt2) {
+                            (ValueType::Ref(from_ref), ValueType::Ref(to_ref)) => {
+                                ValueType::Ref(RefType::difference(from_ref, to_ref))
+                            }
+                            _ => ValueType::Unknown,
+                        };
+                        let label_types = self.branch_types(*label_idx);
+                        let arity = label_types.len() as u16;
+                        let Some(frame) = self.frame_at_depth(*label_idx) else {
+                            return Err(WasmError::invalid("invalid frame index"));
+                        };
+                        let stack_drop = self
+                            .height
+                            .saturating_add(1)
+                            .saturating_sub(frame.start_height.saturating_add(arity as usize))
+                            as u32;
+                        let target = match frame.kind {
+                            DecodeBlockKind::Loop => Some(frame.start_inst_idx),
+                            DecodeBlockKind::Function
+                            | DecodeBlockKind::Block
+                            | DecodeBlockKind::If => None,
+                        };
+                        let idx = self.push_op(SemanticOpKind::BrOnCastFail {
+                            stack_drop,
+                            arity,
+                            target: target.unwrap_or_else(SemanticTarget::pending),
+                            fail_type,
+                            cast_type: *rt2,
+                        });
+                        if let Some(target) = target {
+                            self.patch_target(idx, target);
+                        } else {
+                            self.register_forward_branch(*label_idx, idx, None);
+                        }
+                        self.push_typed_value(*rt2);
+                    }
+                }
+            }
             OP(BR_TABLE) => {
                 if let Immediate::BrLabels(labels, default_label) = imm {
-                    self.pop_values(1);
+                    self.pop_typed_values(1);
                     let all_labels = labels
                         .iter()
                         .copied()
@@ -1044,19 +1362,53 @@ impl<'a> DecodeContext<'a> {
                     self.record_result_types(op_idx, &[ValueType::Ref(*ref_type)]);
                 }
             }
+            FB(OpcodeFB::STRUCT_NEW) => {
+                if let Immediate::TypeIndex(type_idx) = imm {
+                    let def_type =
+                        self.compile.types.get(*type_idx).ok_or_else(|| {
+                            WasmError::invalid("struct.new type index out of bounds")
+                        })?;
+                    let struct_type = match &def_type.composite {
+                        crate::module::type_defs::CompositeType::Struct(struct_type) => struct_type,
+                        _ => return Err(WasmError::invalid("struct.new expected struct type")),
+                    };
+                    let field_count = u8::try_from(struct_type.fields.len()).map_err(|_| {
+                        WasmError::invalid("struct.new field count exceeds decoder limit")
+                    })?;
+                    if field_count > 3 {
+                        return Err(WasmError::invalid(
+                            "struct.new with more than three fields is not yet supported",
+                        ));
+                    }
+                    let result_ty =
+                        ValueType::Ref(RefType::new(false, HeapType::Concrete(*type_idx)));
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::StructNew {
+                        type_idx: *type_idx,
+                        field_count,
+                    });
+                    self.record_result_types(op_idx, &[result_ty]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = result_ty;
+                        }
+                    }
+                }
+            }
             FB(OpcodeFB::STRUCT_NEW_DEFAULT) => {
                 if let Immediate::TypeIndex(type_idx) = imm {
+                    let result_ty =
+                        ValueType::Ref(RefType::new(false, HeapType::Concrete(*type_idx)));
                     let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::StructNewDefault {
                         type_idx: *type_idx,
                     });
-                    self.record_result_types(
-                        op_idx,
-                        &[ValueType::Ref(RefType::new(
-                            false,
-                            HeapType::Concrete(*type_idx),
-                        ))],
-                    );
+                    self.record_result_types(op_idx, &[result_ty]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = result_ty;
+                        }
+                    }
                 }
             }
             FB(OpcodeFB::STRUCT_GET) => {
@@ -1140,23 +1492,196 @@ impl<'a> DecodeContext<'a> {
                     });
                 }
             }
+            FB(OpcodeFB::ARRAY_NEW) => {
+                if let Immediate::TypeIndex(type_idx) = imm {
+                    let result_ty =
+                        ValueType::Ref(RefType::new(false, HeapType::Concrete(*type_idx)));
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::ArrayNew {
+                        type_idx: *type_idx,
+                    });
+                    self.record_result_types(op_idx, &[result_ty]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = result_ty;
+                        }
+                    }
+                }
+            }
             FB(OpcodeFB::ARRAY_NEW_DEFAULT) => {
                 if let Immediate::TypeIndex(type_idx) = imm {
+                    let result_ty =
+                        ValueType::Ref(RefType::new(false, HeapType::Concrete(*type_idx)));
                     let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::ArrayNewDefault {
                         type_idx: *type_idx,
                     });
-                    self.record_result_types(
-                        op_idx,
-                        &[ValueType::Ref(RefType::new(
-                            false,
-                            HeapType::Concrete(*type_idx),
-                        ))],
-                    );
+                    self.record_result_types(op_idx, &[result_ty]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = result_ty;
+                        }
+                    }
                 }
             }
-            FB(_op) => {
-                return Err(WasmError::invalid("unsupported semantic decode GC opcode"));
+            FB(OpcodeFB::ARRAY_GET) => {
+                if let Immediate::TypeIndex(type_idx) = imm {
+                    let def_type =
+                        self.compile.types.get(*type_idx).ok_or_else(|| {
+                            WasmError::invalid("array.get type index out of bounds")
+                        })?;
+                    let array_type = match &def_type.composite {
+                        crate::module::type_defs::CompositeType::Array(array_type) => array_type,
+                        _ => return Err(WasmError::invalid("array.get expected array type")),
+                    };
+                    let result_ty = array_type.element.storage.to_valtype();
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::ArrayGet {
+                        type_idx: *type_idx,
+                    });
+                    self.record_result_types(op_idx, &[result_ty]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = result_ty;
+                        }
+                    }
+                }
+            }
+            FB(OpcodeFB::ARRAY_GET_S) => {
+                if let Immediate::TypeIndex(type_idx) = imm {
+                    let def_type = self.compile.types.get(*type_idx).ok_or_else(|| {
+                        WasmError::invalid("array.get_s type index out of bounds")
+                    })?;
+                    let array_type = match &def_type.composite {
+                        crate::module::type_defs::CompositeType::Array(array_type) => array_type,
+                        _ => return Err(WasmError::invalid("array.get_s expected array type")),
+                    };
+                    let result_ty = array_type.element.storage.to_valtype();
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::ArrayGetS {
+                        type_idx: *type_idx,
+                    });
+                    self.record_result_types(op_idx, &[result_ty]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = result_ty;
+                        }
+                    }
+                }
+            }
+            FB(OpcodeFB::ARRAY_GET_U) => {
+                if let Immediate::TypeIndex(type_idx) = imm {
+                    let def_type = self.compile.types.get(*type_idx).ok_or_else(|| {
+                        WasmError::invalid("array.get_u type index out of bounds")
+                    })?;
+                    let array_type = match &def_type.composite {
+                        crate::module::type_defs::CompositeType::Array(array_type) => array_type,
+                        _ => return Err(WasmError::invalid("array.get_u expected array type")),
+                    };
+                    let result_ty = array_type.element.storage.to_valtype();
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::ArrayGetU {
+                        type_idx: *type_idx,
+                    });
+                    self.record_result_types(op_idx, &[result_ty]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = result_ty;
+                        }
+                    }
+                }
+            }
+            FB(OpcodeFB::ARRAY_LEN) => {
+                self.handle_primitive(PrimitiveOpKind::ArrayLen);
+            }
+            FB(OpcodeFB::ARRAY_SET) => {
+                if let Immediate::TypeIndex(type_idx) = imm {
+                    self.handle_primitive(PrimitiveOpKind::ArraySet {
+                        type_idx: *type_idx,
+                    });
+                }
+            }
+            FB(OpcodeFB::ARRAY_FILL) => {
+                if let Immediate::TypeIndex(type_idx) = imm {
+                    self.handle_primitive(PrimitiveOpKind::ArrayFill {
+                        type_idx: *type_idx,
+                    });
+                }
+            }
+            FB(OpcodeFB::ARRAY_COPY) => {
+                if let Immediate::TwoTypeIndices { type1, type2 } = imm {
+                    self.handle_primitive(PrimitiveOpKind::ArrayCopy {
+                        dst_type_idx: *type1,
+                        src_type_idx: *type2,
+                    });
+                }
+            }
+            FB(OpcodeFB::ARRAY_INIT_DATA) => {
+                if let Immediate::TwoU32s { value1, value2 } = imm {
+                    self.handle_primitive(PrimitiveOpKind::ArrayInitData {
+                        type_idx: *value1,
+                        data_idx: *value2,
+                    });
+                }
+            }
+            FB(OpcodeFB::ARRAY_INIT_ELEM) => {
+                if let Immediate::TwoU32s { value1, value2 } = imm {
+                    self.handle_primitive(PrimitiveOpKind::ArrayInitElem {
+                        type_idx: *value1,
+                        elem_idx: *value2,
+                    });
+                }
+            }
+            FB(OpcodeFB::ARRAY_NEW_FIXED) => {
+                if let Immediate::ArrayNewFixed { typeidx, n } = imm {
+                    let result_ty =
+                        ValueType::Ref(RefType::new(false, HeapType::Concrete(*typeidx)));
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::ArrayNewFixed {
+                        type_idx: *typeidx,
+                        count: *n,
+                    });
+                    self.record_result_types(op_idx, &[result_ty]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = result_ty;
+                        }
+                    }
+                }
+            }
+            FB(OpcodeFB::ARRAY_NEW_DATA) => {
+                if let Immediate::TwoU32s { value1, value2 } = imm {
+                    let result_ty =
+                        ValueType::Ref(RefType::new(false, HeapType::Concrete(*value1)));
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::ArrayNewData {
+                        type_idx: *value1,
+                        data_idx: *value2,
+                    });
+                    self.record_result_types(op_idx, &[result_ty]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = result_ty;
+                        }
+                    }
+                }
+            }
+            FB(OpcodeFB::ARRAY_NEW_ELEM) => {
+                if let Immediate::TwoU32s { value1, value2 } = imm {
+                    let result_ty =
+                        ValueType::Ref(RefType::new(false, HeapType::Concrete(*value1)));
+                    let op_idx = self.current_index();
+                    self.handle_primitive(PrimitiveOpKind::ArrayNewElem {
+                        type_idx: *value1,
+                        elem_idx: *value2,
+                    });
+                    self.record_result_types(op_idx, &[result_ty]);
+                    if !self.unreachable {
+                        if let Some(last) = self.type_stack.last_mut() {
+                            *last = result_ty;
+                        }
+                    }
+                }
             }
 
             _ => {

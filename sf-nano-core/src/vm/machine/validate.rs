@@ -508,6 +508,54 @@ impl MachineProgram {
                     self.validate_reg(*dst_hi, config)?;
                 }
             }
+            MachineInstKind::ArrayGet {
+                ref_src,
+                index,
+                dst,
+                dst_hi,
+                ..
+            } => {
+                self.validate_value(*ref_src, config)?;
+                self.validate_value(*index, config)?;
+                self.validate_reg(*dst, config)?;
+                if let Some(dst_hi) = dst_hi {
+                    self.validate_reg(*dst_hi, config)?;
+                }
+            }
+            MachineInstKind::ArraySet {
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+                ..
+            } => {
+                self.validate_value(*ref_src, config)?;
+                self.validate_value(*index, config)?;
+                self.validate_value(*value_lo, config)?;
+                if let Some(value_hi) = value_hi {
+                    self.validate_value(*value_hi, config)?;
+                }
+            }
+            MachineInstKind::StructNew {
+                dst,
+                fields,
+                field_count,
+                ..
+            } => {
+                if *field_count as usize > fields.len() {
+                    return Err(WasmError::internal(
+                        "struct.new field count exceeds encoded operands".into(),
+                    ));
+                }
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
+                for (value_lo, value_hi) in fields.iter().take(*field_count as usize) {
+                    self.validate_value(*value_lo, config)?;
+                    if let Some(value_hi) = value_hi {
+                        self.validate_value(*value_hi, config)?;
+                    }
+                }
+            }
             MachineInstKind::StructSet {
                 ref_src,
                 value_lo,
@@ -519,6 +567,92 @@ impl MachineProgram {
                 if let Some(value_hi) = value_hi {
                     self.validate_value(*value_hi, config)?;
                 }
+            }
+            MachineInstKind::ArrayNew {
+                dst,
+                init_lo,
+                init_hi,
+                length,
+                ..
+            } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
+                self.validate_value(*init_lo, config)?;
+                if let Some(init_hi) = init_hi {
+                    self.validate_value(*init_hi, config)?;
+                }
+                self.validate_value(*length, config)?;
+            }
+            MachineInstKind::ArrayNewFixed { dst, elements, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
+                for (value_lo, value_hi) in elements {
+                    self.validate_value(*value_lo, config)?;
+                    if let Some(value_hi) = value_hi {
+                        self.validate_value(*value_hi, config)?;
+                    }
+                }
+            }
+            MachineInstKind::ArrayNewData { dst, src, len, .. }
+            | MachineInstKind::ArrayNewElem { dst, src, len, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
+                self.validate_value(*src, config)?;
+                self.validate_value(*len, config)?;
+            }
+            MachineInstKind::ArrayLen { src, dst } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
+                self.validate_value(*src, config)?;
+            }
+            MachineInstKind::ArrayFill {
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+                len,
+                ..
+            } => {
+                self.validate_value(*ref_src, config)?;
+                self.validate_value(*index, config)?;
+                self.validate_value(*value_lo, config)?;
+                if let Some(value_hi) = value_hi {
+                    self.validate_value(*value_hi, config)?;
+                }
+                self.validate_value(*len, config)?;
+            }
+            MachineInstKind::ArrayCopy {
+                dst_ref,
+                dst_index,
+                src_ref,
+                src_index,
+                len,
+                ..
+            } => {
+                self.validate_value(*dst_ref, config)?;
+                self.validate_value(*dst_index, config)?;
+                self.validate_value(*src_ref, config)?;
+                self.validate_value(*src_index, config)?;
+                self.validate_value(*len, config)?;
+            }
+            MachineInstKind::ArrayInitData {
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+                ..
+            }
+            | MachineInstKind::ArrayInitElem {
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+                ..
+            } => {
+                self.validate_value(*ref_src, config)?;
+                self.validate_value(*dst_index, config)?;
+                self.validate_value(*src_index, config)?;
+                self.validate_value(*len, config)?;
             }
             MachineInstKind::MemoryGrow { dst, delta, .. } => {
                 self.validate_reg(*dst, config)?;

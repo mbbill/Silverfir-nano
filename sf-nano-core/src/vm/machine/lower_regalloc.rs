@@ -786,7 +786,17 @@ fn for_each_inst_defined_reg(kind: &MachineInstKind, mut f: impl FnMut(MachineRe
         | MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. }
         | MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. }
         | MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
-        | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+        | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. }
+        | MachineInstKind::StructGet {
+            dst: dst_lo,
+            dst_hi: Some(dst_hi),
+            ..
+        }
+        | MachineInstKind::ArrayGet {
+            dst: dst_lo,
+            dst_hi: Some(dst_hi),
+            ..
+        } => {
             f(*dst_lo);
             f(*dst_hi);
         }
@@ -821,9 +831,16 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::ExternConvertAny { dst, .. }
         | MachineInstKind::RefTest { dst, .. }
         | MachineInstKind::RefCast { dst, .. }
+        | MachineInstKind::StructNew { dst, .. }
         | MachineInstKind::StructNewDefault { dst, .. }
-        | MachineInstKind::ArrayNewDefault { dst, .. } => Some(*dst),
-        MachineInstKind::StructGet { dst, dst_hi, .. } => dst_hi.is_none().then_some(*dst),
+        | MachineInstKind::ArrayNew { dst, .. }
+        | MachineInstKind::ArrayNewDefault { dst, .. }
+        | MachineInstKind::ArrayNewFixed { dst, .. }
+        | MachineInstKind::ArrayNewData { dst, .. }
+        | MachineInstKind::ArrayNewElem { dst, .. }
+        | MachineInstKind::ArrayLen { dst, .. } => Some(*dst),
+        MachineInstKind::StructGet { dst, dst_hi, .. }
+        | MachineInstKind::ArrayGet { dst, dst_hi, .. } => dst_hi.is_none().then_some(*dst),
         MachineInstKind::MemoryGrow { dst, .. } | MachineInstKind::TableGrow { dst, .. } => {
             Some(*dst)
         }
@@ -835,7 +852,12 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::TableCopy { .. }
         | MachineInstKind::TableInit { .. }
         | MachineInstKind::ElemDrop { .. }
-        | MachineInstKind::StructSet { .. } => None,
+        | MachineInstKind::StructSet { .. }
+        | MachineInstKind::ArraySet { .. }
+        | MachineInstKind::ArrayFill { .. }
+        | MachineInstKind::ArrayCopy { .. }
+        | MachineInstKind::ArrayInitData { .. }
+        | MachineInstKind::ArrayInitElem { .. } => None,
         MachineInstKind::Int64PairBinary { .. } => None,
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
@@ -967,7 +989,20 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
             visit_branch_cond_regs(cond, &mut visit);
         }
         MachineInstKind::CallRuntime(_) => {}
-        MachineInstKind::RefFunc { .. } | MachineInstKind::StructNewDefault { .. } => {}
+        MachineInstKind::RefFunc { .. } => {}
+        MachineInstKind::StructNew {
+            fields,
+            field_count,
+            ..
+        } => {
+            for (value_lo, value_hi) in fields.iter().take(*field_count as usize) {
+                visit_value_reg(value_lo, &mut visit);
+                if let Some(value_hi) = value_hi {
+                    visit_value_reg(value_hi, &mut visit);
+                }
+            }
+        }
+        MachineInstKind::StructNewDefault { .. } => {}
         MachineInstKind::RefAsNonNull { src, .. }
         | MachineInstKind::RefI31 { src, .. }
         | MachineInstKind::I31GetS { src, .. }
@@ -977,12 +1012,105 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         | MachineInstKind::RefTest { src, .. }
         | MachineInstKind::RefCast { src, .. }
         | MachineInstKind::StructGet { src, .. }
-        | MachineInstKind::ArrayNewDefault { length: src, .. } => {
+        | MachineInstKind::ArrayNewDefault { length: src, .. }
+        | MachineInstKind::ArrayLen { src, .. } => {
             visit_value_reg(src, &mut visit);
+        }
+        MachineInstKind::ArrayNew {
+            init_lo,
+            init_hi,
+            length,
+            ..
+        } => {
+            visit_value_reg(init_lo, &mut visit);
+            if let Some(init_hi) = init_hi {
+                visit_value_reg(init_hi, &mut visit);
+            }
+            visit_value_reg(length, &mut visit);
+        }
+        MachineInstKind::ArrayNewFixed { elements, .. } => {
+            for (value_lo, value_hi) in elements {
+                visit_value_reg(value_lo, &mut visit);
+                if let Some(value_hi) = value_hi {
+                    visit_value_reg(value_hi, &mut visit);
+                }
+            }
+        }
+        MachineInstKind::ArrayNewData { src, len, .. }
+        | MachineInstKind::ArrayNewElem { src, len, .. } => {
+            visit_value_reg(src, &mut visit);
+            visit_value_reg(len, &mut visit);
         }
         MachineInstKind::RefEq { lhs, rhs, .. } => {
             visit_value_reg(lhs, &mut visit);
             visit_value_reg(rhs, &mut visit);
+        }
+        MachineInstKind::ArrayGet { ref_src, index, .. } => {
+            visit_value_reg(ref_src, &mut visit);
+            visit_value_reg(index, &mut visit);
+        }
+        MachineInstKind::ArraySet {
+            ref_src,
+            index,
+            value_lo,
+            value_hi,
+            ..
+        } => {
+            visit_value_reg(ref_src, &mut visit);
+            visit_value_reg(index, &mut visit);
+            visit_value_reg(value_lo, &mut visit);
+            if let Some(value_hi) = value_hi {
+                visit_value_reg(value_hi, &mut visit);
+            }
+        }
+        MachineInstKind::ArrayFill {
+            ref_src,
+            index,
+            value_lo,
+            value_hi,
+            len,
+            ..
+        } => {
+            visit_value_reg(ref_src, &mut visit);
+            visit_value_reg(index, &mut visit);
+            visit_value_reg(value_lo, &mut visit);
+            if let Some(value_hi) = value_hi {
+                visit_value_reg(value_hi, &mut visit);
+            }
+            visit_value_reg(len, &mut visit);
+        }
+        MachineInstKind::ArrayCopy {
+            dst_ref,
+            dst_index,
+            src_ref,
+            src_index,
+            len,
+            ..
+        } => {
+            visit_value_reg(dst_ref, &mut visit);
+            visit_value_reg(dst_index, &mut visit);
+            visit_value_reg(src_ref, &mut visit);
+            visit_value_reg(src_index, &mut visit);
+            visit_value_reg(len, &mut visit);
+        }
+        MachineInstKind::ArrayInitData {
+            ref_src,
+            dst_index,
+            src_index,
+            len,
+            ..
+        }
+        | MachineInstKind::ArrayInitElem {
+            ref_src,
+            dst_index,
+            src_index,
+            len,
+            ..
+        } => {
+            visit_value_reg(ref_src, &mut visit);
+            visit_value_reg(dst_index, &mut visit);
+            visit_value_reg(src_index, &mut visit);
+            visit_value_reg(len, &mut visit);
         }
         MachineInstKind::StructSet {
             ref_src,

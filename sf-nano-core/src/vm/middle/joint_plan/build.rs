@@ -589,6 +589,34 @@ fn apply_semantic_effect(
                 state.type_stack.truncate(state.height as usize);
             }
         }
+        SemanticOpKind::BrOnNull { ref_type, .. } => {
+            if !state.unreachable {
+                let base = state.height.saturating_sub(1) as usize;
+                state.type_stack.truncate(base);
+                state.type_stack.push(*ref_type);
+            }
+        }
+        SemanticOpKind::BrOnNonNull { .. } => {
+            if !state.unreachable {
+                state.height = state.height.saturating_sub(1);
+                state.spill_depth = state.spill_depth.min(state.height);
+                state.type_stack.truncate(state.height as usize);
+            }
+        }
+        SemanticOpKind::BrOnCast { fail_type, .. } => {
+            if !state.unreachable {
+                let base = state.height.saturating_sub(1) as usize;
+                state.type_stack.truncate(base);
+                state.type_stack.push(*fail_type);
+            }
+        }
+        SemanticOpKind::BrOnCastFail { cast_type, .. } => {
+            if !state.unreachable {
+                let base = state.height.saturating_sub(1) as usize;
+                state.type_stack.truncate(base);
+                state.type_stack.push(*cast_type);
+            }
+        }
         SemanticOpKind::BrTable { .. } => {
             if !state.unreachable {
                 state.height = state.height.saturating_sub(1);
@@ -850,6 +878,19 @@ fn apply_structural_prefix(op: &SemanticOp, state: &mut PrepareState) {
             let keep_live = arity.saturating_add(1);
             lightweight_fill_for_operands(state, keep_live, true);
             lightweight_spill_all_except_top(state, keep_live);
+        }
+        SemanticOpKind::BrOnNull { arity, .. } => {
+            let keep_live = arity.saturating_add(1);
+            lightweight_fill_for_operands(state, keep_live, true);
+            lightweight_spill_all_except_top(state, keep_live);
+        }
+        SemanticOpKind::BrOnNonNull { arity, .. } => {
+            lightweight_fill_for_operands(state, *arity, true);
+            lightweight_spill_all_except_top(state, *arity);
+        }
+        SemanticOpKind::BrOnCast { arity, .. } | SemanticOpKind::BrOnCastFail { arity, .. } => {
+            lightweight_fill_for_operands(state, *arity, true);
+            lightweight_spill_all_except_top(state, *arity);
         }
         SemanticOpKind::BrTable { entries } => {
             let arity = entries.first().map(|entry| entry.arity).unwrap_or(0);

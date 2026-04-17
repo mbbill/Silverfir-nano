@@ -278,7 +278,7 @@ impl ConstExpr {
                                 ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx)));
                             stack.push(struct_ref);
                         }
-                        ARRAY_NEW | ARRAY_NEW_DEFAULT => {
+                        ARRAY_NEW | ARRAY_NEW_DEFAULT | ARRAY_NEW_FIXED => {
                             let typeidx = code.read_leb128_u32()?;
                             let def_type = module
                                 .types()
@@ -288,28 +288,52 @@ impl ConstExpr {
                                 crate::module::type_defs::CompositeType::Array(a) => a,
                                 _ => return Err(WasmError::invalid("Expected array type")),
                             };
-                            if stack.is_empty() {
-                                return Err(WasmError::invalid(
-                                    "Not enough operands for array.new",
-                                ));
-                            }
-                            let len = stack.pop().unwrap();
-                            if len != ValueType::I32 {
-                                return Err(WasmError::invalid("array.new length expects i32"));
-                            }
-                            if matches!(fb_opcode, ARRAY_NEW) {
-                                if stack.is_empty() {
-                                    return Err(WasmError::invalid(
-                                        "Not enough operands for array.new",
-                                    ));
+                            match fb_opcode {
+                                ARRAY_NEW | ARRAY_NEW_DEFAULT => {
+                                    if stack.is_empty() {
+                                        return Err(WasmError::invalid(
+                                            "Not enough operands for array.new",
+                                        ));
+                                    }
+                                    let len = stack.pop().unwrap();
+                                    if len != ValueType::I32 {
+                                        return Err(WasmError::invalid(
+                                            "array.new length expects i32",
+                                        ));
+                                    }
+                                    if matches!(fb_opcode, ARRAY_NEW) {
+                                        if stack.is_empty() {
+                                            return Err(WasmError::invalid(
+                                                "Not enough operands for array.new",
+                                            ));
+                                        }
+                                        let init = stack.pop().unwrap();
+                                        let expected_type = array_type.element.storage.to_valtype();
+                                        if init != expected_type {
+                                            return Err(WasmError::invalid(
+                                                "array.new element type mismatch",
+                                            ));
+                                        }
+                                    }
                                 }
-                                let init = stack.pop().unwrap();
-                                let expected_type = array_type.element.storage.to_valtype();
-                                if init != expected_type {
-                                    return Err(WasmError::invalid(
-                                        "array.new element type mismatch",
-                                    ));
+                                ARRAY_NEW_FIXED => {
+                                    let count = code.read_leb128_u32()? as usize;
+                                    let expected_type = array_type.element.storage.to_valtype();
+                                    for _ in 0..count {
+                                        if stack.is_empty() {
+                                            return Err(WasmError::invalid(
+                                                "Not enough operands for array.new_fixed",
+                                            ));
+                                        }
+                                        let value = stack.pop().unwrap();
+                                        if value != expected_type {
+                                            return Err(WasmError::invalid(
+                                                "array.new_fixed element type mismatch",
+                                            ));
+                                        }
+                                    }
                                 }
+                                _ => unreachable!(),
                             }
                             let array_ref =
                                 ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx)));

@@ -162,14 +162,19 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
                     still_used[value.0 as usize] = true;
                 }
             }
-            // 3-arg primitives pull their third operand from extra_args via
-            // `meta`. We consult stack_effect to know whether this applies.
             let pool_idx = inst.op.as_primitive_idx().expect("primitive op") as usize;
             let kind = &program.primitive_pool[pool_idx];
-            if primitive_op::stack_effect(kind).0 == 3 {
-                if let Some(operand) = extra_args.get(inst.meta as usize) {
-                    if let Some(value) = operand.as_value() {
-                        still_used[value.0 as usize] = true;
+            let extra_count = primitive_op::stack_effect(kind).0.saturating_sub(2);
+            if extra_count != 0 {
+                let start = inst.meta as usize;
+                let end = start
+                    .checked_add(extra_count)
+                    .expect("primitive extra_args index overflow");
+                if let Some(operands) = extra_args.get(start..end) {
+                    for operand in operands {
+                        if let Some(value) = operand.as_value() {
+                            still_used[value.0 as usize] = true;
+                        }
                     }
                 }
             }
@@ -998,8 +1003,8 @@ fn max_value_index_parts(
             if inst.result.is_some() {
                 max_value = max_value.max(Some(inst.result));
             }
-            // 3-arg primitives' third operand is in extra_args[meta]. Covered
-            // by the blanket scan below.
+            // Primitive overflow operands live in `extra_args`; covered by the
+            // blanket scan below.
             let _ = program;
         } else {
             match inst.op {

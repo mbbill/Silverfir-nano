@@ -1,7 +1,8 @@
 use crate::{
     constants::WASM_PAGE_SIZE,
     error::WasmError,
-    module::type_defs::{CompositeType, PackedType, StorageType},
+    module::type_defs::{CompositeType, FieldType, PackedType, StorageType},
+    value_type::ValueType,
     vm::{
         arch::active_backend_config,
         entities::{MemInst, TableInst},
@@ -224,6 +225,39 @@ pub(super) fn do_struct_new_default(
     Ok(ref_to_machine(handle))
 }
 
+pub(super) fn do_struct_new(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+    raw_fields: [u64; 3],
+) -> Result<u64, WasmError> {
+    let store = current_store_mut(ctx)?;
+    let fields = {
+        let def_type = store
+            .module()
+            .types
+            .get(type_idx)
+            .ok_or_else(|| internal_error("preserved helper referenced invalid type index"))?;
+        let struct_type = match &def_type.composite {
+            CompositeType::Struct(struct_type) => struct_type,
+            _ => return Err(internal_error("preserved helper expected a struct type")),
+        };
+        if struct_type.fields.len() > raw_fields.len() {
+            return Err(WasmError::invalid(
+                "struct.new with more than three fields is not yet supported",
+            ));
+        }
+        struct_type
+            .fields
+            .iter()
+            .enumerate()
+            .map(|(index, field)| value_from_machine(raw_fields[index], field.storage.to_valtype()))
+            .collect()
+    };
+    let gc_ref = store.gc_heap().borrow_mut().alloc_struct(type_idx, fields);
+    let handle = store.register_gc_ref(gc_ref);
+    Ok(ref_to_machine(handle))
+}
+
 fn struct_field_storage(
     store: &Store,
     type_idx: u32,
@@ -279,6 +313,86 @@ fn extend_packed_field(value: Value, storage: StorageType, signed: bool) -> Valu
             }
         }
         _ => value,
+    }
+}
+
+fn array_element_field(store: &Store, type_idx: u32) -> Result<FieldType, WasmError> {
+    let def_type = store
+        .module()
+        .types
+        .get(type_idx)
+        .ok_or_else(|| internal_error("preserved helper referenced invalid type index"))?;
+    let array_type = match &def_type.composite {
+        CompositeType::Array(array_type) => array_type,
+        _ => return Err(internal_error("preserved helper expected an array type")),
+    };
+    Ok(array_type.element)
+}
+
+fn array_element_storage(store: &Store, type_idx: u32) -> Result<StorageType, WasmError> {
+    Ok(array_element_field(store, type_idx)?.storage)
+}
+
+fn data_array_element_size(storage: StorageType) -> Result<usize, WasmError> {
+    match storage {
+        StorageType::Packed(PackedType::I8) => Ok(1),
+        StorageType::Packed(PackedType::I16) => Ok(2),
+        StorageType::Val(ValueType::I32 | ValueType::F32) => Ok(4),
+        StorageType::Val(ValueType::I64 | ValueType::F64) => Ok(8),
+        StorageType::Val(ValueType::V128) => Err(internal_error(
+            "v128 arrays are not supported by preserved helpers",
+        )),
+        StorageType::Val(ValueType::Ref(_) | ValueType::Unknown) => Err(internal_error(
+            "preserved helper expected a numeric array element type",
+        )),
+    }
+}
+
+fn value_from_data_bytes(storage: StorageType, bytes: &[u8]) -> Result<Value, WasmError> {
+    Ok(match storage {
+        StorageType::Packed(PackedType::I8) => Value::I32(i32::from(bytes[0])),
+        StorageType::Packed(PackedType::I16) => {
+            Value::I32(i32::from(u16::from_le_bytes([bytes[0], bytes[1]])))
+        }
+        StorageType::Val(ValueType::I32) => {
+            Value::I32(i32::from_le_bytes(bytes.try_into().unwrap()))
+        }
+        StorageType::Val(ValueType::I64) => {
+            Value::I64(i64::from_le_bytes(bytes.try_into().unwrap()))
+        }
+        StorageType::Val(ValueType::F32) => Value::F32(f32::from_bits(u32::from_le_bytes(
+            bytes.try_into().unwrap(),
+        ))),
+        StorageType::Val(ValueType::F64) => Value::F64(f64::from_bits(u64::from_le_bytes(
+            bytes.try_into().unwrap(),
+        ))),
+        StorageType::Val(ValueType::V128) => {
+            return Err(internal_error(
+                "v128 arrays are not supported by preserved helpers",
+            ));
+        }
+        StorageType::Val(ValueType::Ref(_) | ValueType::Unknown) => {
+            return Err(internal_error(
+                "preserved helper expected a numeric array element type",
+            ));
+        }
+    })
+}
+
+fn resolve_array_ref(
+    store: &Store,
+    handle: RefHandle,
+) -> Result<(*mut Store, crate::vm::gc_heap::GcRef), WasmError> {
+    if handle.is_null() {
+        return Err(trap_error("null array reference"));
+    }
+    if handle.is_extern() {
+        return Err(trap_error("invalid array reference"));
+    }
+
+    match store.ref_entry_for_handle(handle) {
+        Some(RefRegistryEntry::Gc { store, gc_ref }) => Ok((store, gc_ref)),
+        _ => Err(trap_error("invalid array reference")),
     }
 }
 
@@ -370,6 +484,481 @@ pub(super) fn do_array_new_default(
         .try_reserve(length)
         .map_err(|_| trap_error("out of memory"))?;
     elements.resize(length, init);
+    let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
+    let handle = store.register_gc_ref(gc_ref);
+    Ok(ref_to_machine(handle))
+}
+
+pub(super) fn do_array_new(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+    init_raw: u64,
+    length_raw: u64,
+) -> Result<u64, WasmError> {
+    let store = current_store_mut(ctx)?;
+    let (elem_type, length) = {
+        let storage = array_element_storage(store, type_idx)?;
+        (storage.to_valtype(), length_raw as u32 as usize)
+    };
+    let init = value_from_machine(init_raw, elem_type);
+    let mut elements = crate::collections::Vec::new();
+    elements
+        .try_reserve(length)
+        .map_err(|_| trap_error("out of memory"))?;
+    elements.resize(length, init);
+    let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
+    let handle = store.register_gc_ref(gc_ref);
+    Ok(ref_to_machine(handle))
+}
+
+pub(super) fn do_array_get(
+    ctx: &NativeContext,
+    type_idx: u32,
+    raw_ref: u64,
+    raw_index: u64,
+    signed: Option<bool>,
+) -> Result<u64, WasmError> {
+    let current = current_store(ctx)?;
+    let storage = array_element_storage(current, type_idx)?;
+    let handle = ref_from_machine(raw_ref);
+    let (origin_store_ptr, gc_ref) = resolve_array_ref(current, handle)?;
+    let index = raw_index as u32 as usize;
+    let origin_store = unsafe { origin_store_ptr.as_ref() }
+        .ok_or_else(|| internal_error("array ref points to missing store"))?;
+    let value = origin_store
+        .gc_heap()
+        .borrow()
+        .get_array(gc_ref)
+        .map_err(|_| trap_error("invalid array reference"))?
+        .elements
+        .get(index)
+        .copied()
+        .ok_or_else(|| trap_error("array element index out of bounds"))?;
+    let value = match signed {
+        Some(is_signed) => extend_packed_field(value, storage, is_signed),
+        None => value,
+    };
+    Ok(value_to_machine(value))
+}
+
+pub(super) fn do_array_len(ctx: &NativeContext, raw_ref: u64) -> Result<u64, WasmError> {
+    let current = current_store(ctx)?;
+    let handle = ref_from_machine(raw_ref);
+    let (origin_store_ptr, gc_ref) = resolve_array_ref(current, handle)?;
+    let origin_store = unsafe { origin_store_ptr.as_ref() }
+        .ok_or_else(|| internal_error("array ref points to missing store"))?;
+    let len = origin_store
+        .gc_heap()
+        .borrow()
+        .get_array(gc_ref)
+        .map_err(|_| trap_error("invalid array reference"))?
+        .elements
+        .len();
+    Ok(len as u32 as u64)
+}
+
+pub(super) fn do_array_set(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+    raw_ref: u64,
+    raw_index: u64,
+    raw_value: u64,
+) -> Result<(), WasmError> {
+    let handle = ref_from_machine(raw_ref);
+    let index = raw_index as u32 as usize;
+    let (storage, origin_ref) = {
+        let current = current_store(ctx)?;
+        (
+            array_element_storage(current, type_idx)?,
+            resolve_array_ref(current, handle)?,
+        )
+    };
+    let (origin_store_ptr, gc_ref) = origin_ref;
+    let value = value_from_machine(raw_value, storage.to_valtype());
+    let origin_store = unsafe { origin_store_ptr.as_mut() }
+        .ok_or_else(|| internal_error("array ref points to missing store"))?;
+    let mut gc_heap = origin_store.gc_heap().borrow_mut();
+    let gc_array = gc_heap
+        .get_array_mut(gc_ref)
+        .map_err(|_| trap_error("invalid array reference"))?;
+    let Some(element) = gc_array.elements.get_mut(index) else {
+        return Err(trap_error("array element index out of bounds"));
+    };
+    *element = value;
+    Ok(())
+}
+
+pub(super) fn do_array_new_fixed(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+    payload_ptr: u64,
+    count: u32,
+) -> Result<u64, WasmError> {
+    let store = current_store_mut(ctx)?;
+    let storage = array_element_storage(store, type_idx)?;
+    let count = count as usize;
+    let raw_values = if count == 0 {
+        &[][..]
+    } else {
+        let ptr = payload_ptr as usize as *const u64;
+        if ptr.is_null() {
+            return Err(internal_error("array.new_fixed payload pointer was null"));
+        }
+        unsafe { core::slice::from_raw_parts(ptr, count) }
+    };
+    let mut elements = crate::collections::Vec::new();
+    elements
+        .try_reserve(count)
+        .map_err(|_| trap_error("out of memory"))?;
+    for raw in raw_values {
+        elements.push(value_from_machine(*raw, storage.to_valtype()));
+    }
+    let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
+    let handle = store.register_gc_ref(gc_ref);
+    Ok(ref_to_machine(handle))
+}
+
+pub(super) fn do_array_fill(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+    raw_ref: u64,
+    raw_index: u64,
+    raw_value: u64,
+    raw_len: u64,
+) -> Result<(), WasmError> {
+    let handle = ref_from_machine(raw_ref);
+    let index = raw_index as u32 as usize;
+    let len = raw_len as u32 as usize;
+    let (storage, origin_ref) = {
+        let current = current_store(ctx)?;
+        (
+            array_element_storage(current, type_idx)?,
+            resolve_array_ref(current, handle)?,
+        )
+    };
+    let (origin_store_ptr, gc_ref) = origin_ref;
+    let value = value_from_machine(raw_value, storage.to_valtype());
+    let origin_store = unsafe { origin_store_ptr.as_mut() }
+        .ok_or_else(|| internal_error("array ref points to missing store"))?;
+    let mut gc_heap = origin_store.gc_heap().borrow_mut();
+    let gc_array = gc_heap
+        .get_array_mut(gc_ref)
+        .map_err(|_| trap_error("invalid array reference"))?;
+    if index.saturating_add(len) > gc_array.elements.len() {
+        return Err(trap_error("array element index out of bounds"));
+    }
+    gc_array.elements[index..index + len].fill(value);
+    Ok(())
+}
+
+pub(super) fn do_array_copy(
+    ctx: &mut NativeContext,
+    _dst_type_idx: u32,
+    _src_type_idx: u32,
+    raw_dst_ref: u64,
+    raw_dst_index: u64,
+    raw_src_ref: u64,
+    raw_src_index: u64,
+    raw_len: u64,
+) -> Result<(), WasmError> {
+    let current = current_store(ctx)?;
+    let dst_handle = ref_from_machine(raw_dst_ref);
+    let src_handle = ref_from_machine(raw_src_ref);
+    let dst_index = raw_dst_index as u32 as usize;
+    let src_index = raw_src_index as u32 as usize;
+    let len = raw_len as u32 as usize;
+    let (dst_store_ptr, dst_gc_ref) = resolve_array_ref(current, dst_handle)?;
+    let (src_store_ptr, src_gc_ref) = resolve_array_ref(current, src_handle)?;
+
+    if dst_store_ptr == src_store_ptr && dst_gc_ref == src_gc_ref {
+        let origin_store = unsafe { dst_store_ptr.as_mut() }
+            .ok_or_else(|| internal_error("array ref points to missing store"))?;
+        let mut gc_heap = origin_store.gc_heap().borrow_mut();
+        let gc_array = gc_heap
+            .get_array_mut(dst_gc_ref)
+            .map_err(|_| trap_error("invalid array reference"))?;
+        if src_index.saturating_add(len) > gc_array.elements.len()
+            || dst_index.saturating_add(len) > gc_array.elements.len()
+        {
+            return Err(trap_error("array element index out of bounds"));
+        }
+        gc_array
+            .elements
+            .copy_within(src_index..src_index + len, dst_index);
+        return Ok(());
+    }
+
+    let copied = {
+        let src_store = unsafe { src_store_ptr.as_ref() }
+            .ok_or_else(|| internal_error("array ref points to missing store"))?;
+        let gc_heap = src_store.gc_heap().borrow();
+        let src_array = gc_heap
+            .get_array(src_gc_ref)
+            .map_err(|_| trap_error("invalid array reference"))?;
+        if src_index.saturating_add(len) > src_array.elements.len() {
+            return Err(trap_error("array element index out of bounds"));
+        }
+        src_array.elements[src_index..src_index + len].to_vec()
+    };
+
+    let dst_store = unsafe { dst_store_ptr.as_mut() }
+        .ok_or_else(|| internal_error("array ref points to missing store"))?;
+    let mut gc_heap = dst_store.gc_heap().borrow_mut();
+    let dst_array = gc_heap
+        .get_array_mut(dst_gc_ref)
+        .map_err(|_| trap_error("invalid array reference"))?;
+    if dst_index.saturating_add(len) > dst_array.elements.len() {
+        return Err(trap_error("array element index out of bounds"));
+    }
+    dst_array.elements[dst_index..dst_index + len].copy_from_slice(&copied);
+    Ok(())
+}
+
+pub(super) fn do_array_init_data(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+    data_idx: u32,
+    raw_ref: u64,
+    raw_dst_index: u64,
+    raw_src_index: u64,
+    raw_len: u64,
+) -> Result<(), WasmError> {
+    let handle = ref_from_machine(raw_ref);
+    let dst_index = raw_dst_index as u32 as usize;
+    let src_index = raw_src_index as u32 as usize;
+    let len = raw_len as u32 as usize;
+    let (storage, origin_ref, values) = {
+        let current = current_store(ctx)?;
+        let storage = array_element_storage(current, type_idx)?;
+        let elem_size = data_array_element_size(storage)?;
+        let origin_ref = resolve_array_ref(current, handle)?;
+        let (origin_store_ptr, gc_ref) = origin_ref;
+        let origin_store = unsafe { origin_store_ptr.as_ref() }
+            .ok_or_else(|| internal_error("array ref points to missing store"))?;
+        let array_len = origin_store
+            .gc_heap()
+            .borrow()
+            .get_array(gc_ref)
+            .map_err(|_| trap_error("invalid array reference"))?
+            .elements
+            .len();
+        let module = current.module();
+        let data = module
+            .data
+            .get(data_idx as usize)
+            .ok_or_else(|| trap_error("out of bounds memory access"))?;
+        let src_byte = src_index
+            .checked_mul(elem_size)
+            .ok_or_else(|| trap_error("out of bounds memory access"))?;
+        if len == 0 {
+            if src_byte > data.bytes.len() || dst_index > array_len {
+                return Err(trap_error("out of bounds memory access"));
+            }
+            return Ok(());
+        }
+        if data.is_dropped() {
+            return Err(trap_error("out of bounds memory access"));
+        }
+        let byte_len = len
+            .checked_mul(elem_size)
+            .ok_or_else(|| trap_error("out of bounds memory access"))?;
+        if src_byte.saturating_add(byte_len) > data.bytes.len()
+            || dst_index.saturating_add(len) > array_len
+        {
+            return Err(trap_error("out of bounds memory access"));
+        }
+        let mut values = crate::collections::Vec::new();
+        values
+            .try_reserve(len)
+            .map_err(|_| trap_error("out of memory"))?;
+        for offset in 0..len {
+            let start = src_byte + offset * elem_size;
+            values.push(value_from_data_bytes(
+                storage,
+                &data.bytes[start..start + elem_size],
+            )?);
+        }
+        (storage, origin_ref, values)
+    };
+    let _ = storage;
+    let (origin_store_ptr, gc_ref) = origin_ref;
+    let origin_store = unsafe { origin_store_ptr.as_mut() }
+        .ok_or_else(|| internal_error("array ref points to missing store"))?;
+    let mut gc_heap = origin_store.gc_heap().borrow_mut();
+    let dst_array = gc_heap
+        .get_array_mut(gc_ref)
+        .map_err(|_| trap_error("invalid array reference"))?;
+    dst_array.elements[dst_index..dst_index + len].copy_from_slice(&values);
+    Ok(())
+}
+
+pub(super) fn do_array_new_data(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+    data_idx: u32,
+    raw_src_index: u64,
+    raw_len: u64,
+) -> Result<u64, WasmError> {
+    let store = current_store_mut(ctx)?;
+    let storage = array_element_storage(store, type_idx)?;
+    let elem_size = data_array_element_size(storage)?;
+    let src_index = raw_src_index as u32 as usize;
+    let len = raw_len as u32 as usize;
+    let data = store
+        .module()
+        .data
+        .get(data_idx as usize)
+        .ok_or_else(|| trap_error("out of bounds memory access"))?;
+    let src_byte = src_index
+        .checked_mul(elem_size)
+        .ok_or_else(|| trap_error("out of bounds memory access"))?;
+    if len == 0 {
+        if src_byte > data.bytes.len() {
+            return Err(trap_error("out of bounds memory access"));
+        }
+    } else {
+        if data.is_dropped() {
+            return Err(trap_error("out of bounds memory access"));
+        }
+        let byte_len = len
+            .checked_mul(elem_size)
+            .ok_or_else(|| trap_error("out of bounds memory access"))?;
+        if src_byte.saturating_add(byte_len) > data.bytes.len() {
+            return Err(trap_error("out of bounds memory access"));
+        }
+    }
+    let mut elements = crate::collections::Vec::new();
+    elements
+        .try_reserve(len)
+        .map_err(|_| trap_error("out of memory"))?;
+    for offset in 0..len {
+        let start = src_byte + offset * elem_size;
+        elements.push(value_from_data_bytes(
+            storage,
+            &data.bytes[start..start + elem_size],
+        )?);
+    }
+    let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
+    let handle = store.register_gc_ref(gc_ref);
+    Ok(ref_to_machine(handle))
+}
+
+pub(super) fn do_array_init_elem(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+    elem_idx: u32,
+    raw_ref: u64,
+    raw_dst_index: u64,
+    raw_src_index: u64,
+    raw_len: u64,
+) -> Result<(), WasmError> {
+    let handle = ref_from_machine(raw_ref);
+    let dst_index = raw_dst_index as u32 as usize;
+    let src_index = raw_src_index as u32 as usize;
+    let len = raw_len as u32 as usize;
+    let (element_ref_type, origin_ref, values) = {
+        let current = current_store(ctx)?;
+        let element_ref_type = match array_element_field(current, type_idx)?.storage {
+            StorageType::Val(ValueType::Ref(ref_type)) => ref_type,
+            _ => {
+                return Err(internal_error(
+                    "preserved helper expected a reference array element type",
+                ));
+            }
+        };
+        let origin_ref = resolve_array_ref(current, handle)?;
+        let (origin_store_ptr, gc_ref) = origin_ref;
+        let origin_store = unsafe { origin_store_ptr.as_ref() }
+            .ok_or_else(|| internal_error("array ref points to missing store"))?;
+        let array_len = origin_store
+            .gc_heap()
+            .borrow()
+            .get_array(gc_ref)
+            .map_err(|_| trap_error("invalid array reference"))?
+            .elements
+            .len();
+        let module = current.module();
+        let elem = module
+            .elements
+            .get(elem_idx as usize)
+            .ok_or_else(|| trap_error("out of bounds table access"))?;
+        if len == 0 {
+            if src_index > elem.refs.len() || dst_index > array_len {
+                return Err(trap_error("out of bounds table access"));
+            }
+            return Ok(());
+        }
+        if elem.is_dropped() {
+            return Err(trap_error("out of bounds table access"));
+        }
+        if src_index.saturating_add(len) > elem.refs.len()
+            || dst_index.saturating_add(len) > array_len
+        {
+            return Err(trap_error("out of bounds table access"));
+        }
+        let mut values = crate::collections::Vec::new();
+        values
+            .try_reserve(len)
+            .map_err(|_| trap_error("out of memory"))?;
+        for handle in &elem.refs[src_index..src_index + len] {
+            values.push(Value::Ref(*handle, element_ref_type));
+        }
+        (element_ref_type, origin_ref, values)
+    };
+    let _ = element_ref_type;
+    let (origin_store_ptr, gc_ref) = origin_ref;
+    let origin_store = unsafe { origin_store_ptr.as_mut() }
+        .ok_or_else(|| internal_error("array ref points to missing store"))?;
+    let mut gc_heap = origin_store.gc_heap().borrow_mut();
+    let dst_array = gc_heap
+        .get_array_mut(gc_ref)
+        .map_err(|_| trap_error("invalid array reference"))?;
+    dst_array.elements[dst_index..dst_index + len].copy_from_slice(&values);
+    Ok(())
+}
+
+pub(super) fn do_array_new_elem(
+    ctx: &mut NativeContext,
+    type_idx: u32,
+    elem_idx: u32,
+    raw_src_index: u64,
+    raw_len: u64,
+) -> Result<u64, WasmError> {
+    let store = current_store_mut(ctx)?;
+    let element_ref_type = match array_element_field(store, type_idx)?.storage {
+        StorageType::Val(ValueType::Ref(ref_type)) => ref_type,
+        _ => {
+            return Err(internal_error(
+                "preserved helper expected a reference array element type",
+            ));
+        }
+    };
+    let src_index = raw_src_index as u32 as usize;
+    let len = raw_len as u32 as usize;
+    let elem = store
+        .module()
+        .elements
+        .get(elem_idx as usize)
+        .ok_or_else(|| trap_error("out of bounds table access"))?;
+    if len == 0 {
+        if src_index > elem.refs.len() {
+            return Err(trap_error("out of bounds table access"));
+        }
+    } else {
+        if elem.is_dropped() {
+            return Err(trap_error("out of bounds table access"));
+        }
+        if src_index.saturating_add(len) > elem.refs.len() {
+            return Err(trap_error("out of bounds table access"));
+        }
+    }
+    let mut elements = crate::collections::Vec::new();
+    elements
+        .try_reserve(len)
+        .map_err(|_| trap_error("out of memory"))?;
+    for handle in &elem.refs[src_index..src_index + len] {
+        elements.push(Value::Ref(*handle, element_ref_type));
+    }
     let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
     let handle = store.register_gc_ref(gc_ref);
     Ok(ref_to_machine(handle))

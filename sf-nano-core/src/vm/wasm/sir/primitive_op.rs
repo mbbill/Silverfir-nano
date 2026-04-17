@@ -201,12 +201,26 @@ macro_rules! for_each_primitive_op {
             ExternConvertAny => (1, 1),
             RefTest { ref_type: crate::value_type::RefType } => (1, 1),
             RefCast { ref_type: crate::value_type::RefType } => (1, 1),
+            StructNew { type_idx: u32, field_count: u8 } => (usize::from(*field_count), 1),
             StructNewDefault { type_idx: u32 } => (0, 1),
             StructGet { type_idx: u32, field_idx: u32 } => (1, 1),
             StructGetS { type_idx: u32, field_idx: u32 } => (1, 1),
             StructGetU { type_idx: u32, field_idx: u32 } => (1, 1),
             StructSet { type_idx: u32, field_idx: u32 } => (2, 0),
+            ArrayNew { type_idx: u32 } => (2, 1),
             ArrayNewDefault { type_idx: u32 } => (1, 1),
+            ArrayNewFixed { type_idx: u32, count: u32 } => (*count as usize, 1),
+            ArrayNewData { type_idx: u32, data_idx: u32 } => (2, 1),
+            ArrayNewElem { type_idx: u32, elem_idx: u32 } => (2, 1),
+            ArrayGet { type_idx: u32 } => (2, 1),
+            ArrayGetS { type_idx: u32 } => (2, 1),
+            ArrayGetU { type_idx: u32 } => (2, 1),
+            ArraySet { type_idx: u32 } => (3, 0),
+            ArrayFill { type_idx: u32 } => (4, 0),
+            ArrayCopy { dst_type_idx: u32, src_type_idx: u32 } => (5, 0),
+            ArrayInitData { type_idx: u32, data_idx: u32 } => (4, 0),
+            ArrayInitElem { type_idx: u32, elem_idx: u32 } => (4, 0),
+            ArrayLen => (1, 1),
             Drop => (1, 0),
             Select => (3, 1),
             Nop => (0, 0),
@@ -231,10 +245,11 @@ macro_rules! define_primitive_ops {
             $( $name $( { $($field : $ty),* } )?, )*
         }
 
+        #[allow(unused_variables)]
         #[inline]
-        pub(crate) fn stack_effect(kind: &PrimitiveOpKind) -> (u8, u8) {
+        pub(crate) fn stack_effect(kind: &PrimitiveOpKind) -> (usize, usize) {
             match kind {
-                $( PrimitiveOpKind::$name $( { $($field: _),* } )? => ($pops, $pushes), )*
+                $( PrimitiveOpKind::$name $( { $($field),* } )? => ($pops, $pushes), )*
             }
         }
     };
@@ -479,12 +494,26 @@ pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<ValueType> {
         PrimitiveOpKind::ExternConvertAny => ValueType::externref(),
         PrimitiveOpKind::RefTest { .. } => ValueType::I32,
         PrimitiveOpKind::RefCast { .. } => return None,
+        PrimitiveOpKind::StructNew { .. } => return None,
         PrimitiveOpKind::StructNewDefault { .. } => return None,
         PrimitiveOpKind::StructGet { .. }
         | PrimitiveOpKind::StructGetS { .. }
         | PrimitiveOpKind::StructGetU { .. } => return None,
         PrimitiveOpKind::StructSet { .. } => return None,
+        PrimitiveOpKind::ArrayNew { .. } => return None,
         PrimitiveOpKind::ArrayNewDefault { .. } => return None,
+        PrimitiveOpKind::ArrayNewFixed { .. } => return None,
+        PrimitiveOpKind::ArrayNewData { .. } => return None,
+        PrimitiveOpKind::ArrayNewElem { .. } => return None,
+        PrimitiveOpKind::ArrayGet { .. }
+        | PrimitiveOpKind::ArrayGetS { .. }
+        | PrimitiveOpKind::ArrayGetU { .. } => return None,
+        PrimitiveOpKind::ArraySet { .. } => return None,
+        PrimitiveOpKind::ArrayFill { .. } => return None,
+        PrimitiveOpKind::ArrayCopy { .. } => return None,
+        PrimitiveOpKind::ArrayInitData { .. } => return None,
+        PrimitiveOpKind::ArrayInitElem { .. } => return None,
+        PrimitiveOpKind::ArrayLen => ValueType::I32,
 
         // Stack/control
         PrimitiveOpKind::Drop => return None,

@@ -12,9 +12,11 @@ use crate::{
 use super::{
     abi::{io, op},
     ops::{
-        do_any_convert_extern, do_array_new_default, do_extern_convert_any, do_i31_get_s,
+        do_any_convert_extern, do_array_copy, do_array_fill, do_array_get, do_array_init_data,
+        do_array_init_elem, do_array_len, do_array_new, do_array_new_data, do_array_new_default,
+        do_array_new_elem, do_array_new_fixed, do_array_set, do_extern_convert_any, do_i31_get_s,
         do_i31_get_u, do_memory_copy, do_memory_grow, do_memory_init, do_ref_as_non_null,
-        do_ref_cast, do_ref_eq, do_ref_func, do_ref_i31, do_ref_test, do_struct_get,
+        do_ref_cast, do_ref_eq, do_ref_func, do_ref_i31, do_ref_test, do_struct_get, do_struct_new,
         do_struct_new_default, do_struct_set, do_table_copy, do_table_grow, do_table_init,
     },
 };
@@ -214,9 +216,30 @@ unsafe fn dispatch_preserved(
             }
             Ok(())
         }
+        op::STRUCT_NEW => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let arg0 = unsafe { *io_ptr.add(io::ARG0) };
+            let arg1 = unsafe { *io_ptr.add(io::ARG1) };
+            let arg2 = unsafe { *io_ptr.add(io::ARG2) };
+            let result = do_struct_new(ctx, type_idx, [arg0, arg1, arg2])?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
         op::STRUCT_NEW_DEFAULT => {
             let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
             let result = do_struct_new_default(ctx, type_idx)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::ARRAY_NEW => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let init = unsafe { *io_ptr.add(io::ARG0) };
+            let len = unsafe { *io_ptr.add(io::ARG1) };
+            let result = do_array_new(ctx, type_idx, init, len)?;
             unsafe {
                 *io_ptr.add(io::RET0) = result;
             }
@@ -287,6 +310,128 @@ unsafe fn dispatch_preserved(
             let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
             let raw_value = unsafe { *io_ptr.add(io::ARG1) };
             do_struct_set(ctx, type_idx, field_idx, raw_ref, raw_value)
+        }
+        op::ARRAY_GET => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let index = unsafe { *io_ptr.add(io::ARG1) };
+            let result = do_array_get(ctx, type_idx, raw_ref, index, None)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::ARRAY_GET_S => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let index = unsafe { *io_ptr.add(io::ARG1) };
+            let result = do_array_get(ctx, type_idx, raw_ref, index, Some(true))?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::ARRAY_GET_U => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let index = unsafe { *io_ptr.add(io::ARG1) };
+            let result = do_array_get(ctx, type_idx, raw_ref, index, Some(false))?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::ARRAY_LEN => {
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_array_len(ctx, raw_ref)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::ARRAY_SET => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let index = unsafe { *io_ptr.add(io::ARG1) };
+            let raw_value = unsafe { *io_ptr.add(io::ARG2) };
+            do_array_set(ctx, type_idx, raw_ref, index, raw_value)
+        }
+        op::ARRAY_NEW_FIXED => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let count = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let payload_ptr = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_array_new_fixed(ctx, type_idx, payload_ptr, count)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::ARRAY_FILL => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let index = unsafe { *io_ptr.add(io::ARG1) };
+            let raw_value = unsafe { *io_ptr.add(io::ARG2) };
+            let len = unsafe { *io_ptr.add(io::ARG3) };
+            do_array_fill(ctx, type_idx, raw_ref, index, raw_value, len)
+        }
+        op::ARRAY_COPY => {
+            let dst_type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let src_type_idx = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let dst_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let dst_index = unsafe { *io_ptr.add(io::ARG1) };
+            let src_ref = unsafe { *io_ptr.add(io::ARG2) };
+            let src_index = unsafe { *io_ptr.add(io::ARG3) };
+            let len = unsafe { *io_ptr.add(io::ARG4) };
+            do_array_copy(
+                ctx,
+                dst_type_idx,
+                src_type_idx,
+                dst_ref,
+                dst_index,
+                src_ref,
+                src_index,
+                len,
+            )
+        }
+        op::ARRAY_INIT_DATA => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let data_idx = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let dst_index = unsafe { *io_ptr.add(io::ARG1) };
+            let src_index = unsafe { *io_ptr.add(io::ARG2) };
+            let len = unsafe { *io_ptr.add(io::ARG3) };
+            do_array_init_data(ctx, type_idx, data_idx, raw_ref, dst_index, src_index, len)
+        }
+        op::ARRAY_INIT_ELEM => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let elem_idx = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let dst_index = unsafe { *io_ptr.add(io::ARG1) };
+            let src_index = unsafe { *io_ptr.add(io::ARG2) };
+            let len = unsafe { *io_ptr.add(io::ARG3) };
+            do_array_init_elem(ctx, type_idx, elem_idx, raw_ref, dst_index, src_index, len)
+        }
+        op::ARRAY_NEW_DATA => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let data_idx = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let src_index = unsafe { *io_ptr.add(io::ARG0) };
+            let len = unsafe { *io_ptr.add(io::ARG1) };
+            let result = do_array_new_data(ctx, type_idx, data_idx, src_index, len)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::ARRAY_NEW_ELEM => {
+            let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let elem_idx = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let src_index = unsafe { *io_ptr.add(io::ARG0) };
+            let len = unsafe { *io_ptr.add(io::ARG1) };
+            let result = do_array_new_elem(ctx, type_idx, elem_idx, src_index, len)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
         }
         _ => Err(internal_error("unknown preserved-helper op code")),
     }

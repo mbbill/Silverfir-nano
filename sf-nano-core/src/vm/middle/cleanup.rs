@@ -266,7 +266,7 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
         // `[pred.extra_args ++ succ.extra_args]`. `SsaInst.meta` indexes
         // extra_args with a u16, so the combined length must fit in u16.
         // If it wouldn't, skip this merge rather than wrap indices and
-        // miscompile 3-arg primitives.
+        // miscompile primitive overflow-operand ranges.
         let Some(combined_extra) = program.blocks[pred_index]
             .extra_args
             .len()
@@ -289,10 +289,11 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
             },
         );
 
-        // Precompute 3-arg-ness for each succ op while primitive_pool is
-        // borrowable. We need this when rebasing extra_args indices: only
-        // true 3-arg primitives read `meta` as an extra_args index.
-        let three_arg_flags: collections::Vec<bool> = succ
+        // Precompute whether each succ op uses overflow operands while the
+        // primitive pool is borrowable. We need this when rebasing
+        // `extra_args` indices: only primitives with more than two operands
+        // read `meta` as an extra_args start index.
+        let has_extra_args: collections::Vec<bool> = succ
             .ops
             .iter()
             .map(|inst| {
@@ -300,7 +301,7 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
                     crate::vm::wasm::primitive_op::stack_effect(
                         &program.primitive_pool[idx as usize],
                     )
-                    .0 == 3
+                    .0 > 2
                 })
             })
             .collect();
@@ -319,9 +320,9 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
         let merged_ops = succ
             .ops
             .into_iter()
-            .zip(three_arg_flags.into_iter())
-            .map(|(inst, is_three_arg)| {
-                substitute_inst(inst, &subst, extra_args_base, is_three_arg)
+            .zip(has_extra_args.into_iter())
+            .map(|(inst, has_extra_args)| {
+                substitute_inst(inst, &subst, extra_args_base, has_extra_args)
             })
             .collect::<collections::Vec<_>>();
         let merged_terminator = substitute_terminator(succ.terminator, &subst);
@@ -452,10 +453,11 @@ fn binding_substitution(
 }
 
 /// Rewrite the value references in an instruction according to `subst`, and
-/// for 3-arg primitives shift the extra-args index by `extra_args_base`.
+/// for primitives with overflow operands shift the extra-args index by
+/// `extra_args_base`.
 ///
-/// `is_three_arg` must be `true` exactly when `inst.op` is a primitive op
-/// whose `stack_effect(...).0 == 3`; for everything else (non-primitives and
+/// `has_extra_args` must be `true` exactly when `inst.op` is a primitive op
+/// whose `stack_effect(...).0 > 2`; for everything else (non-primitives and
 /// 0/1/2-arg primitives) `meta` is left untouched.
 ///
 /// Callers must ensure the merged block's total extra_args length stays
@@ -464,10 +466,10 @@ fn substitute_inst(
     mut inst: SsaInst,
     subst: &[ValueSubstitution],
     extra_args_base: u16,
-    is_three_arg: bool,
+    has_extra_args: bool,
 ) -> SsaInst {
     if inst.op.is_primitive() {
-        if is_three_arg {
+        if has_extra_args {
             // Pre-checked by the caller: combined extra_args len <= u16::MAX.
             // `inst.meta` is a valid index into the source block's extra_args
             // (< succ.extra_args.len()); shifting by `extra_args_base` (which

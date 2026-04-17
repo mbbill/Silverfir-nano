@@ -944,6 +944,14 @@ impl<'a> Emulator<'a> {
                     None,
                 )?;
             }
+            MachineInstKind::StructNew {
+                type_idx,
+                field_count,
+                fields,
+                dst,
+            } => {
+                self.execute_struct_new(*type_idx, *field_count, fields, *dst)?;
+            }
             MachineInstKind::StructNewDefault { type_idx, dst } => {
                 self.execute_preserved_result(
                     preserved_op::STRUCT_NEW_DEFAULT,
@@ -992,6 +1000,15 @@ impl<'a> Emulator<'a> {
             } => {
                 self.execute_struct_set(*type_idx, *field_idx, *ref_src, *value_lo, *value_hi)?;
             }
+            MachineInstKind::ArrayNew {
+                type_idx,
+                init_lo,
+                init_hi,
+                length,
+                dst,
+            } => {
+                self.execute_array_new(*type_idx, *init_lo, *init_hi, *length, *dst)?;
+            }
             MachineInstKind::ArrayNewDefault {
                 type_idx,
                 length,
@@ -1002,6 +1019,132 @@ impl<'a> Emulator<'a> {
                     *type_idx,
                     0,
                     *length,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                    None,
+                )?;
+            }
+            MachineInstKind::ArrayNewFixed {
+                type_idx,
+                elements,
+                dst,
+            } => {
+                self.execute_array_new_fixed(*type_idx, elements, *dst)?;
+            }
+            MachineInstKind::ArrayNewData {
+                type_idx,
+                data_idx,
+                src,
+                len,
+                dst,
+            } => {
+                self.execute_array_new_data(*type_idx, *data_idx, *src, *len, *dst)?;
+            }
+            MachineInstKind::ArrayNewElem {
+                type_idx,
+                elem_idx,
+                src,
+                len,
+                dst,
+            } => {
+                self.execute_array_new_elem(*type_idx, *elem_idx, *src, *len, *dst)?;
+            }
+            MachineInstKind::ArrayGet {
+                type_idx,
+                signed,
+                ty,
+                ref_src,
+                index,
+                dst,
+                dst_hi,
+            } => {
+                let op_code = match signed {
+                    None => preserved_op::ARRAY_GET,
+                    Some(true) => preserved_op::ARRAY_GET_S,
+                    Some(false) => preserved_op::ARRAY_GET_U,
+                };
+                self.execute_preserved_result(
+                    op_code,
+                    *type_idx,
+                    0,
+                    *ref_src,
+                    *index,
+                    MachineValue::Imm64(0),
+                    *ty,
+                    *dst,
+                    *dst_hi,
+                )?;
+            }
+            MachineInstKind::ArraySet {
+                type_idx,
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+            } => {
+                self.execute_array_set(*type_idx, *ref_src, *index, *value_lo, *value_hi)?;
+            }
+            MachineInstKind::ArrayFill {
+                type_idx,
+                ref_src,
+                index,
+                value_lo,
+                value_hi,
+                len,
+            } => {
+                self.execute_array_fill(*type_idx, *ref_src, *index, *value_lo, *value_hi, *len)?;
+            }
+            MachineInstKind::ArrayCopy {
+                dst_type_idx,
+                src_type_idx,
+                dst_ref,
+                dst_index,
+                src_ref,
+                src_index,
+                len,
+            } => {
+                self.execute_array_copy(
+                    *dst_type_idx,
+                    *src_type_idx,
+                    *dst_ref,
+                    *dst_index,
+                    *src_ref,
+                    *src_index,
+                    *len,
+                )?;
+            }
+            MachineInstKind::ArrayInitData {
+                type_idx,
+                data_idx,
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+            } => {
+                self.execute_array_init_data(
+                    *type_idx, *data_idx, *ref_src, *dst_index, *src_index, *len,
+                )?;
+            }
+            MachineInstKind::ArrayInitElem {
+                type_idx,
+                elem_idx,
+                ref_src,
+                dst_index,
+                src_index,
+                len,
+            } => {
+                self.execute_array_init_elem(
+                    *type_idx, *elem_idx, *ref_src, *dst_index, *src_index, *len,
+                )?;
+            }
+            MachineInstKind::ArrayLen { src, dst } => {
+                self.execute_preserved_result(
+                    preserved_op::ARRAY_LEN,
+                    0,
+                    0,
+                    *src,
                     MachineValue::Imm64(0),
                     MachineValue::Imm64(0),
                     MachineStorageType::GpWord,
@@ -1067,6 +1210,36 @@ impl<'a> Emulator<'a> {
         Ok(())
     }
 
+    fn pack_preserved_io_value(
+        &mut self,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+    ) -> Result<u64, WasmError> {
+        Ok(if let Some(value_hi) = value_hi {
+            u64::from(self.read_value(value_lo)? as u32)
+                | (u64::from(self.read_value(value_hi)? as u32) << 32)
+        } else {
+            self.read_value(value_lo)?
+        })
+    }
+
+    fn execute_struct_new(
+        &mut self,
+        type_idx: u32,
+        field_count: u8,
+        fields: &[(MachineValue, Option<MachineValue>); 3],
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(type_idx);
+        for (index, (value_lo, value_hi)) in fields.iter().take(field_count as usize).enumerate() {
+            io[preserved_io::ARG0 + index] = self.pack_preserved_io_value(*value_lo, *value_hi)?;
+        }
+        self.execute_preserved_helper(preserved_op::STRUCT_NEW, &mut io)?;
+        self.write_reg_with_kind(dst, io[preserved_io::RET0], fixed_reg_addr_kind(dst))?;
+        Ok(())
+    }
+
     fn execute_struct_set(
         &mut self,
         type_idx: u32,
@@ -1079,13 +1252,177 @@ impl<'a> Emulator<'a> {
         io[preserved_io::IMM0] = u64::from(type_idx);
         io[preserved_io::IMM1] = u64::from(field_idx);
         io[preserved_io::ARG0] = self.read_value(ref_src)?;
-        io[preserved_io::ARG1] = if let Some(value_hi) = value_hi {
-            u64::from(self.read_value(value_lo)? as u32)
-                | (u64::from(self.read_value(value_hi)? as u32) << 32)
-        } else {
-            self.read_value(value_lo)?
-        };
+        io[preserved_io::ARG1] = self.pack_preserved_io_value(value_lo, value_hi)?;
         self.execute_preserved_helper(preserved_op::STRUCT_SET, &mut io)
+    }
+
+    fn execute_array_new(
+        &mut self,
+        type_idx: u32,
+        init_lo: MachineValue,
+        init_hi: Option<MachineValue>,
+        length: MachineValue,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(type_idx);
+        io[preserved_io::ARG0] = self.pack_preserved_io_value(init_lo, init_hi)?;
+        io[preserved_io::ARG1] = self.read_value(length)?;
+        self.execute_preserved_helper(preserved_op::ARRAY_NEW, &mut io)?;
+        self.write_reg_with_kind(dst, io[preserved_io::RET0], fixed_reg_addr_kind(dst))?;
+        Ok(())
+    }
+
+    fn execute_array_new_fixed(
+        &mut self,
+        type_idx: u32,
+        elements: &[(MachineValue, Option<MachineValue>)],
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        let mut payload = collections::Vec::with_capacity(elements.len());
+        for (value_lo, value_hi) in elements {
+            payload.push(self.pack_preserved_io_value(*value_lo, *value_hi)?);
+        }
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(type_idx);
+        io[preserved_io::IMM1] = elements.len() as u64;
+        io[preserved_io::ARG0] = if payload.is_empty() {
+            0
+        } else {
+            payload.as_ptr() as usize as u64
+        };
+        self.execute_preserved_helper(preserved_op::ARRAY_NEW_FIXED, &mut io)?;
+        self.write_reg_with_kind(dst, io[preserved_io::RET0], fixed_reg_addr_kind(dst))?;
+        Ok(())
+    }
+
+    fn execute_array_new_data(
+        &mut self,
+        type_idx: u32,
+        data_idx: u32,
+        src: MachineValue,
+        len: MachineValue,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(type_idx);
+        io[preserved_io::IMM1] = u64::from(data_idx);
+        io[preserved_io::ARG0] = self.read_value(src)?;
+        io[preserved_io::ARG1] = self.read_value(len)?;
+        self.execute_preserved_helper(preserved_op::ARRAY_NEW_DATA, &mut io)?;
+        self.write_reg_with_kind(dst, io[preserved_io::RET0], fixed_reg_addr_kind(dst))?;
+        Ok(())
+    }
+
+    fn execute_array_new_elem(
+        &mut self,
+        type_idx: u32,
+        elem_idx: u32,
+        src: MachineValue,
+        len: MachineValue,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(type_idx);
+        io[preserved_io::IMM1] = u64::from(elem_idx);
+        io[preserved_io::ARG0] = self.read_value(src)?;
+        io[preserved_io::ARG1] = self.read_value(len)?;
+        self.execute_preserved_helper(preserved_op::ARRAY_NEW_ELEM, &mut io)?;
+        self.write_reg_with_kind(dst, io[preserved_io::RET0], fixed_reg_addr_kind(dst))?;
+        Ok(())
+    }
+
+    fn execute_array_set(
+        &mut self,
+        type_idx: u32,
+        ref_src: MachineValue,
+        index: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+    ) -> Result<(), WasmError> {
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(type_idx);
+        io[preserved_io::ARG0] = self.read_value(ref_src)?;
+        io[preserved_io::ARG1] = self.read_value(index)?;
+        io[preserved_io::ARG2] = self.pack_preserved_io_value(value_lo, value_hi)?;
+        self.execute_preserved_helper(preserved_op::ARRAY_SET, &mut io)
+    }
+
+    fn execute_array_fill(
+        &mut self,
+        type_idx: u32,
+        ref_src: MachineValue,
+        index: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(type_idx);
+        io[preserved_io::ARG0] = self.read_value(ref_src)?;
+        io[preserved_io::ARG1] = self.read_value(index)?;
+        io[preserved_io::ARG2] = self.pack_preserved_io_value(value_lo, value_hi)?;
+        io[preserved_io::ARG3] = self.read_value(len)?;
+        self.execute_preserved_helper(preserved_op::ARRAY_FILL, &mut io)
+    }
+
+    fn execute_array_copy(
+        &mut self,
+        dst_type_idx: u32,
+        src_type_idx: u32,
+        dst_ref: MachineValue,
+        dst_index: MachineValue,
+        src_ref: MachineValue,
+        src_index: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(dst_type_idx);
+        io[preserved_io::IMM1] = u64::from(src_type_idx);
+        io[preserved_io::ARG0] = self.read_value(dst_ref)?;
+        io[preserved_io::ARG1] = self.read_value(dst_index)?;
+        io[preserved_io::ARG2] = self.read_value(src_ref)?;
+        io[preserved_io::ARG3] = self.read_value(src_index)?;
+        io[preserved_io::ARG4] = self.read_value(len)?;
+        self.execute_preserved_helper(preserved_op::ARRAY_COPY, &mut io)
+    }
+
+    fn execute_array_init_data(
+        &mut self,
+        type_idx: u32,
+        data_idx: u32,
+        ref_src: MachineValue,
+        dst_index: MachineValue,
+        src_index: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(type_idx);
+        io[preserved_io::IMM1] = u64::from(data_idx);
+        io[preserved_io::ARG0] = self.read_value(ref_src)?;
+        io[preserved_io::ARG1] = self.read_value(dst_index)?;
+        io[preserved_io::ARG2] = self.read_value(src_index)?;
+        io[preserved_io::ARG3] = self.read_value(len)?;
+        self.execute_preserved_helper(preserved_op::ARRAY_INIT_DATA, &mut io)
+    }
+
+    fn execute_array_init_elem(
+        &mut self,
+        type_idx: u32,
+        elem_idx: u32,
+        ref_src: MachineValue,
+        dst_index: MachineValue,
+        src_index: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        let mut io = [0u64; preserved_io::SLOT_COUNT];
+        io[preserved_io::IMM0] = u64::from(type_idx);
+        io[preserved_io::IMM1] = u64::from(elem_idx);
+        io[preserved_io::ARG0] = self.read_value(ref_src)?;
+        io[preserved_io::ARG1] = self.read_value(dst_index)?;
+        io[preserved_io::ARG2] = self.read_value(src_index)?;
+        io[preserved_io::ARG3] = self.read_value(len)?;
+        self.execute_preserved_helper(preserved_op::ARRAY_INIT_ELEM, &mut io)
     }
 
     fn execute_preserved_helper(

@@ -32,10 +32,15 @@ pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16)
                 | MachineInstKind::ExternConvertAny { .. }
                 | MachineInstKind::RefTest { .. }
                 | MachineInstKind::RefCast { .. }
+                | MachineInstKind::StructNew { .. }
                 | MachineInstKind::StructNewDefault { .. }
                 | MachineInstKind::StructGet { .. }
                 | MachineInstKind::StructSet { .. }
+                | MachineInstKind::ArrayNew { .. }
                 | MachineInstKind::ArrayNewDefault { .. }
+                | MachineInstKind::ArrayGet { .. }
+                | MachineInstKind::ArraySet { .. }
+                | MachineInstKind::ArrayLen { .. }
         ) {
             gp_consts.clear();
             fp_consts.clear();

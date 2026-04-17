@@ -1021,6 +1021,27 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         MachineInstKind::RefCast { ref_type, src, dst } => {
             format!("ref.cast {} {} -> r{}", ref_type, mval(src), dst.0)
         }
+        MachineInstKind::StructNew {
+            type_idx,
+            field_count,
+            fields,
+            dst,
+        } => {
+            let mut args = collections::Vec::new();
+            for (value_lo, value_hi) in fields.iter().take(*field_count as usize) {
+                args.push(if let Some(value_hi) = value_hi {
+                    format!("{}, {}", mval(value_lo), mval(value_hi))
+                } else {
+                    mval(value_lo)
+                });
+            }
+            format!(
+                "struct.new type={} [{}] -> r{}",
+                type_idx,
+                args.join(", "),
+                dst.0
+            )
+        }
         MachineInstKind::StructNewDefault { type_idx, dst } => {
             format!("struct.new_default type={} -> r{}", type_idx, dst.0)
         }
@@ -1084,6 +1105,210 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 mval(length),
                 dst.0
             )
+        }
+        MachineInstKind::ArrayNew {
+            type_idx,
+            init_lo,
+            init_hi,
+            length,
+            dst,
+        } => {
+            let init = if let Some(init_hi) = init_hi {
+                format!("{}, {}", mval(init_lo), mval(init_hi))
+            } else {
+                mval(init_lo)
+            };
+            format!(
+                "array.new type={} {} {} -> r{}",
+                type_idx,
+                init,
+                mval(length),
+                dst.0
+            )
+        }
+        MachineInstKind::ArrayNewFixed {
+            type_idx,
+            elements,
+            dst,
+        } => {
+            let elems = elements
+                .iter()
+                .map(|(value_lo, value_hi)| {
+                    if let Some(value_hi) = value_hi {
+                        format!("{}, {}", mval(value_lo), mval(value_hi))
+                    } else {
+                        mval(value_lo)
+                    }
+                })
+                .collect::<collections::Vec<_>>();
+            format!(
+                "array.new_fixed type={} [{}] -> r{}",
+                type_idx,
+                elems.join(", "),
+                dst.0
+            )
+        }
+        MachineInstKind::ArrayNewData {
+            type_idx,
+            data_idx,
+            src,
+            len,
+            dst,
+        } => {
+            format!(
+                "array.new_data type={} data={} {} {} -> r{}",
+                type_idx,
+                data_idx,
+                mval(src),
+                mval(len),
+                dst.0
+            )
+        }
+        MachineInstKind::ArrayNewElem {
+            type_idx,
+            elem_idx,
+            src,
+            len,
+            dst,
+        } => {
+            format!(
+                "array.new_elem type={} elem={} {} {} -> r{}",
+                type_idx,
+                elem_idx,
+                mval(src),
+                mval(len),
+                dst.0
+            )
+        }
+        MachineInstKind::ArrayGet {
+            type_idx,
+            signed,
+            ty,
+            ref_src,
+            index,
+            dst,
+            dst_hi,
+        } => {
+            let op = match signed {
+                None => "array.get",
+                Some(true) => "array.get_s",
+                Some(false) => "array.get_u",
+            };
+            let result = if let Some(dst_hi) = dst_hi {
+                format!("r{},r{}", dst.0, dst_hi.0)
+            } else {
+                format!("r{}", dst.0)
+            };
+            format!(
+                "{} type={} {:?} {} {} -> {}",
+                op,
+                type_idx,
+                ty,
+                mval(ref_src),
+                mval(index),
+                result
+            )
+        }
+        MachineInstKind::ArraySet {
+            type_idx,
+            ref_src,
+            index,
+            value_lo,
+            value_hi,
+        } => {
+            let value = if let Some(value_hi) = value_hi {
+                format!("{}, {}", mval(value_lo), mval(value_hi))
+            } else {
+                mval(value_lo)
+            };
+            format!(
+                "array.set type={} {} {} {}",
+                type_idx,
+                mval(ref_src),
+                mval(index),
+                value
+            )
+        }
+        MachineInstKind::ArrayFill {
+            type_idx,
+            ref_src,
+            index,
+            value_lo,
+            value_hi,
+            len,
+        } => {
+            let value = if let Some(value_hi) = value_hi {
+                format!("{}, {}", mval(value_lo), mval(value_hi))
+            } else {
+                mval(value_lo)
+            };
+            format!(
+                "array.fill type={} {} {} {} {}",
+                type_idx,
+                mval(ref_src),
+                mval(index),
+                value,
+                mval(len)
+            )
+        }
+        MachineInstKind::ArrayCopy {
+            dst_type_idx,
+            src_type_idx,
+            dst_ref,
+            dst_index,
+            src_ref,
+            src_index,
+            len,
+        } => {
+            format!(
+                "array.copy dst_type={} src_type={} {} {} {} {} {}",
+                dst_type_idx,
+                src_type_idx,
+                mval(dst_ref),
+                mval(dst_index),
+                mval(src_ref),
+                mval(src_index),
+                mval(len)
+            )
+        }
+        MachineInstKind::ArrayInitData {
+            type_idx,
+            data_idx,
+            ref_src,
+            dst_index,
+            src_index,
+            len,
+        } => {
+            format!(
+                "array.init_data type={} data={} {} {} {} {}",
+                type_idx,
+                data_idx,
+                mval(ref_src),
+                mval(dst_index),
+                mval(src_index),
+                mval(len)
+            )
+        }
+        MachineInstKind::ArrayInitElem {
+            type_idx,
+            elem_idx,
+            ref_src,
+            dst_index,
+            src_index,
+            len,
+        } => {
+            format!(
+                "array.init_elem type={} elem={} {} {} {} {}",
+                type_idx,
+                elem_idx,
+                mval(ref_src),
+                mval(dst_index),
+                mval(src_index),
+                mval(len)
+            )
+        }
+        MachineInstKind::ArrayLen { src, dst } => {
+            format!("array.len {} -> r{}", mval(src), dst.0)
         }
     }
 }
