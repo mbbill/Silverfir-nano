@@ -6,6 +6,7 @@ use core::fmt;
 use crate::{
     error::WasmError,
     opcodes::{self, *},
+    simd,
     utils::payload::Payload,
     value_type::{HeapType, RefType, ValueType},
 };
@@ -304,11 +305,15 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     0x64 | 0x63 => {
                         payload.rewind(1)?;
                         let value_type = ValueType::parse(&mut payload)?;
+                        simd::ensure_simd_value_type_supported(value_type)?;
                         BlockType::ValueType(value_type)
                     }
 
                     _ => match ValueType::try_from(byte1) {
-                        Ok(value_type) => BlockType::ValueType(value_type),
+                        Ok(value_type) => {
+                            simd::ensure_simd_value_type_supported(value_type)?;
+                            BlockType::ValueType(value_type)
+                        }
                         Err(_) => {
                             payload.rewind(1)?;
                             let value = payload.read_leb128_i32()?;
@@ -584,6 +589,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let mut vec = collections::Vec::new();
                 for _ in 0..len {
                     let valtype: ValueType = payload.read_u8()?.try_into()?;
+                    simd::ensure_simd_value_type_supported(valtype)?;
                     vec.push(valtype);
                 }
                 let wasm_op = OP(op);
@@ -877,7 +883,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 }
             }
             PREFIX_FD => {
-                return Err(WasmError::invalid("SIMD opcodes are not yet supported"));
+                return Err(simd::simd_unsupported_error());
             }
             NOP | ELSE | RETURN | DROP | SELECT | I32_EQZ | I32_EQ | I32_NE | I32_LT_S
             | I32_LT_U | I32_GT_S | I32_GT_U | I32_LE_S | I32_LE_U | I32_GE_S | I32_GE_U
@@ -1030,7 +1036,8 @@ mod tests {
     use super::{Decoder, OpStream, OpcodeHandler};
     use crate::{
         error::WasmError,
-        opcodes::OPCODE_CONSTANTS::{END, PREFIX_FD},
+        opcodes::OPCODE_CONSTANTS::{BLOCK, END, PREFIX_FD},
+        simd,
     };
 
     struct DrainHandler;
@@ -1064,9 +1071,20 @@ mod tests {
             .decode_function()
             .expect_err("SIMD opcodes should be rejected cleanly");
 
-        assert_eq!(
-            err,
-            WasmError::invalid("SIMD opcodes are not yet supported")
-        );
+        assert_eq!(err, simd::simd_unsupported_error());
+    }
+
+    #[test]
+    fn v128_block_type_reports_invalid_instead_of_panicking() {
+        let code = [BLOCK, 0x7b, END, END];
+        let mut decoder = Decoder::new(&code);
+        let mut handler = DrainHandler;
+        decoder.add_handler(&mut handler);
+
+        let err = decoder
+            .decode_function()
+            .expect_err("v128 block types should be rejected cleanly");
+
+        assert_eq!(err, simd::simd_unsupported_error());
     }
 }

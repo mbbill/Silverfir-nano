@@ -1,6 +1,7 @@
 use tracked_alloc::string::String;
 
 use crate::collections;
+use crate::simd;
 
 use entities::{Data, Element, Function, Global, Memory, Table, Tag};
 
@@ -32,7 +33,9 @@ pub struct Module {
 
 impl Module {
     pub fn new(name: &str, bin: &[u8]) -> Result<Self, WasmError> {
-        parser::parse_module(name, bin)
+        let module = parser::parse_module(name, bin)?;
+        simd::validate_simd_module(&module)?;
+        Ok(module)
     }
 
     pub fn name(&self) -> &str {
@@ -108,5 +111,22 @@ impl Module {
             self.data,
             self.start_func_index,
         )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Module;
+    use crate::simd;
+
+    #[test]
+    fn parser_rejects_simd_value_types() {
+        let wasm = wat::parse_str("(module (type (func (param v128))))")
+            .expect("wat should encode a module with a v128 parameter");
+
+        let err = Module::new("simd-types", &wasm)
+            .expect_err("non-SIMD builds should reject v128 value types");
+
+        assert_eq!(err, simd::simd_unsupported_error());
     }
 }

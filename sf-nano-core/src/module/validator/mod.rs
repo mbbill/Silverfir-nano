@@ -17,7 +17,7 @@ use crate::{
         type_defs::{CompositeType, FieldType, StorageType},
         Module,
     },
-    op_decoder,
+    op_decoder, simd,
     utils::limits::Limitable,
     value_type::{HeapType, ValueType},
 };
@@ -39,6 +39,8 @@ impl<'a> Validator<'a> {
     }
 
     pub fn validate(&mut self) -> Result<(), WasmError> {
+        simd::validate_simd_module(self.module)?;
+
         if self.module.version() != 1 {
             return Err(WasmError::malformed("unknown binary version"));
         }

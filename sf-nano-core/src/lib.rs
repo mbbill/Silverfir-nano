@@ -10,6 +10,7 @@ pub mod error;
 pub mod module;
 pub mod op_decoder;
 pub mod opcodes;
+pub(crate) mod simd;
 pub(crate) mod utils;
 pub mod value_type;
 pub mod vm;

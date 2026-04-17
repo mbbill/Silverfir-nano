@@ -17,6 +17,7 @@ use crate::module::type_context::{
 };
 use crate::module::type_defs::FunctionType;
 use crate::module::Module;
+use crate::simd;
 use crate::utils::limits::{Limitable, Limits};
 use crate::vm::entities::{
     DataInst, ElementInst, FunctionInst, GlobalInst, HostFn, MemInst, ModuleInst, TableInst,
@@ -344,6 +345,8 @@ impl Instance {
         imports: &[Import],
         registry: &LinkRegistry,
     ) -> Result<Self, InstanceInstantiationError> {
+        simd::validate_simd_module(&module).map_err(InstanceInstantiationError::Complete)?;
+
         #[cfg(sf_module_validator)]
         {
             use crate::module::validator::Validator;
@@ -1299,6 +1302,7 @@ mod tests {
             builder::ModuleBuilder,
             entities::{Memory, Table},
         },
+        simd,
         utils::limits::Limits,
         value_type::ValueType,
     };
@@ -1385,5 +1389,25 @@ mod tests {
 
         assert_eq!(instance.store.table(0).size(), 2);
         assert_eq!(instance.store.table(0).limits.max(), Some(2));
+    }
+
+    #[test]
+    fn instantiation_rejects_builder_modules_with_simd_types() {
+        let mut builder = ModuleBuilder::new();
+        builder.with_name("simd-builder");
+        builder.with_binary_version(1);
+        builder.with_function_types(crate::collections::vec![tracked_alloc::rc::Rc::new(
+            crate::FunctionType::new(
+                crate::collections::vec![ValueType::V128],
+                crate::collections::Vec::new(),
+            ),
+        )]);
+
+        let err = match Instance::from_module(builder.build(), &[]) {
+            Ok(_) => panic!("instantiation should reject unsupported SIMD-shaped modules"),
+            Err(err) => err,
+        };
+
+        assert_eq!(err, simd::simd_unsupported_error());
     }
 }

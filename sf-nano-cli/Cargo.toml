@@ -13,6 +13,7 @@ path = "src/main.rs"
 [features]
 default = ["jit"]
 jit = ["sf-nano-core/jit"]
+simd = ["sf-nano-core/simd"]
 call-trace = ["sf-nano-core/call-trace"]
 memprof = ["sf-nano-core/memprof", "dep:tracked_alloc", "dep:memprof_report"]
 # Pass-through of sf-nano-core's thumb2-test. Enables emitting Thumb-2 JIT

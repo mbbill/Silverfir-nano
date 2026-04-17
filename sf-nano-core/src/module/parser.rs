@@ -5,6 +5,7 @@
 //! Returns **malformed** errors for structural/format issues.
 
 use crate::collections;
+use crate::simd;
 
 use tracked_alloc::rc::Rc;
 use tracked_alloc::string::{String, ToString};
@@ -330,7 +331,9 @@ fn parse_indices(payload: &mut Payload) -> Result<usize, WasmError> {
 }
 
 fn parse_valtype(payload: &mut Payload) -> Result<ValueType, WasmError> {
-    ValueType::parse(payload)
+    let value_type = ValueType::parse(payload)?;
+    simd::ensure_simd_value_type_supported(value_type)?;
+    Ok(value_type)
 }
 
 fn parse_resulttype(payload: &mut Payload) -> Result<collections::Vec<ValueType>, WasmError> {

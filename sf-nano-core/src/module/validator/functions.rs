@@ -11,6 +11,7 @@ use crate::{
     },
     op_decoder::{BlockType, Immediate, OpStream, OpcodeHandler},
     opcodes::{Opcode, OpcodeFB, OpcodeFC, WasmOpcode},
+    simd,
     utils::limits::Limitable,
     value_type::{HeapType, RefType, ValueType},
 };
@@ -48,7 +49,7 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
                     decoded.imm.clone(),
                 )?,
                 WasmOpcode::FD(_op) => {
-                    return Err(WasmError::invalid("SIMD opcodes are not yet supported"));
+                    return Err(simd::simd_unsupported_error());
                 }
             }
         }
