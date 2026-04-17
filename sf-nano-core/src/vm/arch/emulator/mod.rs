@@ -946,11 +946,10 @@ impl<'a> Emulator<'a> {
             }
             MachineInstKind::StructNew {
                 type_idx,
-                field_count,
                 fields,
                 dst,
             } => {
-                self.execute_struct_new(*type_idx, *field_count, fields, *dst)?;
+                self.execute_struct_new(*type_idx, fields, *dst)?;
             }
             MachineInstKind::StructNewDefault { type_idx, dst } => {
                 self.execute_preserved_result(
@@ -1226,15 +1225,23 @@ impl<'a> Emulator<'a> {
     fn execute_struct_new(
         &mut self,
         type_idx: u32,
-        field_count: u8,
-        fields: &[(MachineValue, Option<MachineValue>); 3],
+        fields: &[(MachineValue, Option<MachineValue>)],
         dst: MachineReg,
     ) -> Result<(), WasmError> {
+        // Keep the packed payload alive across the helper call; the helper only
+        // borrows this buffer for the duration of `execute_preserved_helper`.
+        let mut payload = collections::Vec::with_capacity(fields.len());
+        for (value_lo, value_hi) in fields {
+            payload.push(self.pack_preserved_io_value(*value_lo, *value_hi)?);
+        }
         let mut io = [0u64; preserved_io::SLOT_COUNT];
         io[preserved_io::IMM0] = u64::from(type_idx);
-        for (index, (value_lo, value_hi)) in fields.iter().take(field_count as usize).enumerate() {
-            io[preserved_io::ARG0 + index] = self.pack_preserved_io_value(*value_lo, *value_hi)?;
-        }
+        io[preserved_io::IMM1] = fields.len() as u64;
+        io[preserved_io::ARG0] = if payload.is_empty() {
+            0
+        } else {
+            payload.as_ptr() as usize as u64
+        };
         self.execute_preserved_helper(preserved_op::STRUCT_NEW, &mut io)?;
         self.write_reg_with_kind(dst, io[preserved_io::RET0], fixed_reg_addr_kind(dst))?;
         Ok(())

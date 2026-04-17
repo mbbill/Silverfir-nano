@@ -423,8 +423,7 @@ pub(crate) enum MachineInstKind {
     },
     StructNew {
         type_idx: u32,
-        field_count: u8,
-        fields: [(MachineValue, Option<MachineValue>); 3],
+        fields: collections::Vec<(MachineValue, Option<MachineValue>)>,
         dst: MachineReg,
     },
     StructNewDefault {

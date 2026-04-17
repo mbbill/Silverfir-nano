@@ -626,30 +626,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
             }
             MachineInstKind::StructNew {
                 type_idx,
-                field_count,
                 fields,
                 dst,
-            } => {
-                if fields
-                    .iter()
-                    .take(*field_count as usize)
-                    .any(|(_, value_hi)| value_hi.is_some())
-                {
-                    return Err(WasmError::internal(
-                        "arm64 backend received pair-valued struct.new".into(),
-                    ));
-                }
-                self.lower_preserved_result(
-                    preserved_op::STRUCT_NEW,
-                    *type_idx,
-                    0,
-                    fields[0].0,
-                    fields[1].0,
-                    fields[2].0,
-                    MachineStorageType::GpWord,
-                    *dst,
-                )
-            }
+            } => self.lower_struct_new(*type_idx, fields, *dst),
             MachineInstKind::StructNewDefault { type_idx, dst } => self.lower_preserved_result(
                 preserved_op::STRUCT_NEW_DEFAULT,
                 *type_idx,
@@ -3915,20 +3894,50 @@ impl<'a> super::backend::Arm64Backend<'a> {
         elements: &[(MachineValue, Option<MachineValue>)],
         dst: MachineReg,
     ) -> Result<(), WasmError> {
-        let payload_bytes = ((elements.len() as u32 * 8) + 15) & !15;
+        self.lower_payload_preserved_op(
+            preserved_op::ARRAY_NEW_FIXED,
+            type_idx,
+            elements,
+            dst,
+            "arm64 backend received pair-valued array.new_fixed",
+        )
+    }
+
+    fn lower_struct_new(
+        &mut self,
+        type_idx: u32,
+        fields: &[(MachineValue, Option<MachineValue>)],
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        self.lower_payload_preserved_op(
+            preserved_op::STRUCT_NEW,
+            type_idx,
+            fields,
+            dst,
+            "arm64 backend received pair-valued struct.new",
+        )
+    }
+
+    fn lower_payload_preserved_op(
+        &mut self,
+        op_code: u32,
+        type_idx: u32,
+        items: &[(MachineValue, Option<MachineValue>)],
+        dst: MachineReg,
+        pair_error: &'static str,
+    ) -> Result<(), WasmError> {
+        let payload_bytes = ((items.len() as u32 * 8) + 15) & !15;
         let payload_slots = (payload_bytes / 8) as usize;
         self.emit_preserved_frame_open_with_prefix(payload_bytes);
-        for (index, (value_lo, value_hi)) in elements.iter().enumerate() {
+        for (index, (value_lo, value_hi)) in items.iter().enumerate() {
             if value_hi.is_some() {
-                return Err(WasmError::internal(
-                    "arm64 backend received pair-valued array.new_fixed".into(),
-                ));
+                return Err(WasmError::internal(pair_error));
             }
             self.emit_io_store_value_at(0, index, *value_lo)?;
         }
         self.emit_io_store_imm_at(payload_slots, preserved_io::IMM0, type_idx);
-        self.emit_io_store_imm_at(payload_slots, preserved_io::IMM1, elements.len() as u32);
-        if elements.is_empty() {
+        self.emit_io_store_imm_at(payload_slots, preserved_io::IMM1, items.len() as u32);
+        if items.is_empty() {
             self.emit_io_store_imm_at(payload_slots, preserved_io::ARG0, 0);
         } else {
             let scratch = *self.gp_scratch.scoped_alloc();
@@ -3944,7 +3953,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         let result_scratch_idx = self.gp_scratch.alloc();
         let result_scratch = self.gp_scratch.reg(result_scratch_idx);
         self.emit_preserved_call_and_close_with_prefix(
-            preserved_op::ARRAY_NEW_FIXED,
+            op_code,
             Some(result_scratch_idx),
             payload_bytes,
         );

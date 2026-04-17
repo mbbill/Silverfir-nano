@@ -228,9 +228,20 @@ pub(super) fn do_struct_new_default(
 pub(super) fn do_struct_new(
     ctx: &mut NativeContext,
     type_idx: u32,
-    raw_fields: [u64; 3],
+    payload_ptr: u64,
+    count: u32,
 ) -> Result<u64, WasmError> {
     let store = current_store_mut(ctx)?;
+    let count = count as usize;
+    let raw_fields = if count == 0 {
+        &[][..]
+    } else {
+        let ptr = payload_ptr as usize as *const u64;
+        if ptr.is_null() {
+            return Err(internal_error("struct.new payload pointer was null"));
+        }
+        unsafe { core::slice::from_raw_parts(ptr, count) }
+    };
     let fields = {
         let def_type = store
             .module()
@@ -241,16 +252,16 @@ pub(super) fn do_struct_new(
             CompositeType::Struct(struct_type) => struct_type,
             _ => return Err(internal_error("preserved helper expected a struct type")),
         };
-        if struct_type.fields.len() > raw_fields.len() {
+        if struct_type.fields.len() != count {
             return Err(internal_error(
-                "struct.new with more than three fields is not yet supported",
+                "struct.new field count mismatches struct type",
             ));
         }
         struct_type
             .fields
             .iter()
-            .enumerate()
-            .map(|(index, field)| value_from_machine(raw_fields[index], field.storage.to_valtype()))
+            .zip(raw_fields)
+            .map(|(field, raw)| value_from_machine(*raw, field.storage.to_valtype()))
             .collect()
     };
     let gc_ref = store.gc_heap().borrow_mut().alloc_struct(type_idx, fields);

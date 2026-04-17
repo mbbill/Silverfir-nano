@@ -536,20 +536,10 @@ impl MachineProgram {
                     self.validate_value(*value_hi, config)?;
                 }
             }
-            MachineInstKind::StructNew {
-                dst,
-                fields,
-                field_count,
-                ..
-            } => {
-                if *field_count as usize > fields.len() {
-                    return Err(WasmError::internal(
-                        "struct.new field count exceeds encoded operands".into(),
-                    ));
-                }
+            MachineInstKind::StructNew { dst, fields, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
-                for (value_lo, value_hi) in fields.iter().take(*field_count as usize) {
+                for (value_lo, value_hi) in fields {
                     self.validate_value(*value_lo, config)?;
                     if let Some(value_hi) = value_hi {
                         self.validate_value(*value_hi, config)?;

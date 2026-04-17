@@ -337,12 +337,8 @@ pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
         MachineInstKind::TrapIf { cond, .. } => visit_branch_cond_values(cond, &mut f),
         MachineInstKind::CallRuntime(_) => {}
         MachineInstKind::RefFunc { .. } => {}
-        MachineInstKind::StructNew {
-            fields,
-            field_count,
-            ..
-        } => {
-            for (value_lo, value_hi) in fields.iter().take(*field_count as usize) {
+        MachineInstKind::StructNew { fields, .. } => {
+            for (value_lo, value_hi) in fields {
                 f(value_lo);
                 if let Some(value_hi) = value_hi {
                     f(value_hi);

@@ -1372,14 +1372,9 @@ impl<'a> DecodeContext<'a> {
                         crate::module::type_defs::CompositeType::Struct(struct_type) => struct_type,
                         _ => return Err(WasmError::invalid("struct.new expected struct type")),
                     };
-                    let field_count = u8::try_from(struct_type.fields.len()).map_err(|_| {
+                    let field_count = u32::try_from(struct_type.fields.len()).map_err(|_| {
                         WasmError::invalid("struct.new field count exceeds decoder limit")
                     })?;
-                    if field_count > 3 {
-                        return Err(WasmError::internal(
-                            "struct.new with more than three fields is not yet supported",
-                        ));
-                    }
                     let result_ty =
                         ValueType::Ref(RefType::new(false, HeapType::Concrete(*type_idx)));
                     let op_idx = self.current_index();

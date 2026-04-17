@@ -98,10 +98,9 @@ impl<'a> Arm64Backend<'a> {
         Ok(())
     }
 
-    /// Emit the BLR call to the preserved runtime entry, stash status in a scratch register
-    /// and optionally keep the helper result in a caller-owned scratch register,
-    /// restore all JIT registers, deallocate the frame, and branch to the error
-    /// path on nonzero status.
+    /// Emit the BLR call to the preserved runtime entry, branch immediately on
+    /// `C_RET0` if the helper trapped, and otherwise keep the helper result in
+    /// a caller-owned scratch register while restoring the preserved JIT state.
     ///
     /// When `result_scratch_idx` is `Some`, the caller must have reserved that GP
     /// scratch slot already and remains responsible for freeing it after consuming
@@ -123,9 +122,7 @@ impl<'a> Arm64Backend<'a> {
         use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
 
         let call_scratch_idx = result_scratch_idx.unwrap_or_else(|| self.gp_scratch.alloc());
-        let status_scratch_idx = self.gp_scratch.alloc();
         let call_scratch = self.gp_scratch.reg(call_scratch_idx);
-        let status_scratch = self.gp_scratch.reg(status_scratch_idx);
 
         // Set up C calling convention: x0=ctx, x1=op_code, x2=io (=SP).
         self.core.text.emit_u32(enc::mov_reg_64(
@@ -154,10 +151,14 @@ impl<'a> Arm64Backend<'a> {
         );
         self.core.text.emit_u32(enc::blr(call_scratch));
 
-        // Stash status and result in scratch regs before restoring.
-        self.core
-            .text
-            .emit_u32(enc::mov_reg_64(status_scratch, abi::C_RET0));
+        // Errors exit the current function via `body_local_error_label`, so
+        // they only need to discard the preserved frame and keep `C_RET0`
+        // intact. Prior to this branch-first shape, restoring the GP save set
+        // could clobber x0/x1 and silently drop post-call helper traps.
+        // Success keeps the helper result live across the restore.
+        let error_path = self.core.new_label();
+        self.lower_cbnz(abi::C_RET0, error_path);
+
         if result_scratch_idx.is_some() {
             self.core.text.emit_u32(enc::ldr_64(
                 call_scratch,
@@ -173,12 +174,15 @@ impl<'a> Arm64Backend<'a> {
         // Deallocate frame.
         self.emit_adjust_stack_up(abi::PRESERVED_HELPER_FRAME_SIZE + prefix_bytes);
 
-        // Check status. Non-zero means the helper trapped — branch to the
-        // body-local error tail to propagate via the unified Return.
-        let body_local_error_label = self.core.body_local_error_label;
-        self.lower_cbnz(status_scratch, body_local_error_label);
+        let done = self.core.new_label();
+        self.lower_b(done);
 
-        self.gp_scratch.free_index(status_scratch_idx);
+        self.core.bind_label(error_path);
+        self.emit_adjust_stack_up(abi::PRESERVED_HELPER_FRAME_SIZE + prefix_bytes);
+        let body_local_error_label = self.core.body_local_error_label;
+        self.lower_b(body_local_error_label);
+
+        self.core.bind_label(done);
         if result_scratch_idx.is_none() {
             self.gp_scratch.free_index(call_scratch_idx);
         }

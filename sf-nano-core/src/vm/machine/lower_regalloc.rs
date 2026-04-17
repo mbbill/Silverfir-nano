@@ -990,12 +990,8 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         }
         MachineInstKind::CallRuntime(_) => {}
         MachineInstKind::RefFunc { .. } => {}
-        MachineInstKind::StructNew {
-            fields,
-            field_count,
-            ..
-        } => {
-            for (value_lo, value_hi) in fields.iter().take(*field_count as usize) {
+        MachineInstKind::StructNew { fields, .. } => {
+            for (value_lo, value_hi) in fields {
                 visit_value_reg(value_lo, &mut visit);
                 if let Some(value_hi) = value_hi {
                     visit_value_reg(value_hi, &mut visit);

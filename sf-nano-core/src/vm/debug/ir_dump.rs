@@ -1023,18 +1023,19 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         }
         MachineInstKind::StructNew {
             type_idx,
-            field_count,
             fields,
             dst,
         } => {
-            let mut args = collections::Vec::new();
-            for (value_lo, value_hi) in fields.iter().take(*field_count as usize) {
-                args.push(if let Some(value_hi) = value_hi {
-                    format!("{}, {}", mval(value_lo), mval(value_hi))
-                } else {
-                    mval(value_lo)
-                });
-            }
+            let args = fields
+                .iter()
+                .map(|(value_lo, value_hi)| {
+                    if let Some(value_hi) = value_hi {
+                        format!("{}, {}", mval(value_lo), mval(value_hi))
+                    } else {
+                        mval(value_lo)
+                    }
+                })
+                .collect::<collections::Vec<_>>();
             format!(
                 "struct.new type={} [{}] -> r{}",
                 type_idx,

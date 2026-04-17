@@ -321,12 +321,8 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
         MachineInstKind::TrapIf { cond, .. } => rewrite_branch_cond(cond, aliases),
         MachineInstKind::CallRuntime(_) => {}
         MachineInstKind::RefFunc { .. } => {}
-        MachineInstKind::StructNew {
-            fields,
-            field_count,
-            ..
-        } => {
-            for (value_lo, value_hi) in fields.iter_mut().take(*field_count as usize) {
+        MachineInstKind::StructNew { fields, .. } => {
+            for (value_lo, value_hi) in fields.iter_mut() {
                 rewrite_value(value_lo, aliases);
                 if let Some(value_hi) = value_hi {
                     rewrite_value(value_hi, aliases);

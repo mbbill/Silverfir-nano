@@ -201,7 +201,7 @@ macro_rules! for_each_primitive_op {
             ExternConvertAny => (1, 1),
             RefTest { ref_type: crate::value_type::RefType } => (1, 1),
             RefCast { ref_type: crate::value_type::RefType } => (1, 1),
-            StructNew { type_idx: u32, field_count: u8 } => (usize::from(*field_count), 1),
+            StructNew { type_idx: u32, field_count: u32 } => (*field_count as usize, 1),
             StructNewDefault { type_idx: u32 } => (0, 1),
             StructGet { type_idx: u32, field_idx: u32 } => (1, 1),
             StructGetS { type_idx: u32, field_idx: u32 } => (1, 1),

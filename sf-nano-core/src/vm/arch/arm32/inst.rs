@@ -1080,11 +1080,10 @@ impl<'a> Arm32Backend<'a> {
             }
             MachineInstKind::StructNew {
                 type_idx,
-                field_count,
                 fields,
                 dst,
             } => {
-                self.compile_struct_new(*type_idx, *field_count, fields, *dst)?;
+                self.compile_struct_new(*type_idx, fields, *dst)?;
             }
             MachineInstKind::StructNewDefault { type_idx, dst } => {
                 self.compile_preserved_result(
@@ -3915,29 +3914,19 @@ impl<'a> Arm32Backend<'a> {
     fn compile_struct_new(
         &mut self,
         type_idx: u32,
-        field_count: u8,
-        fields: &[(MachineValue, Option<MachineValue>); 3],
+        fields: &[(MachineValue, Option<MachineValue>)],
         dst: MachineReg,
     ) -> Result<(), WasmError> {
-        let mut args = [(0usize, MachineValue::Imm64(0)); 3];
-        let mut arg_count = 0usize;
-        let mut pair_args = [(0usize, MachineValue::Imm64(0), MachineValue::Imm64(0)); 3];
-        let mut pair_count = 0usize;
-        for (index, (value_lo, value_hi)) in fields.iter().take(field_count as usize).enumerate() {
-            let slot = preserved_io::ARG0 + index;
-            if let Some(value_hi) = value_hi {
-                pair_args[pair_count] = (slot, *value_lo, *value_hi);
-                pair_count += 1;
-            } else {
-                args[arg_count] = (slot, *value_lo);
-                arg_count += 1;
-            }
-        }
-        self.emit_preserved_helper_call_extended(
+        self.emit_preserved_helper_call_extended_with_payload(
             preserved_op::STRUCT_NEW,
-            &[(preserved_io::IMM0, type_idx), (preserved_io::IMM1, 0)],
-            &args[..arg_count],
-            &pair_args[..pair_count],
+            &[
+                (preserved_io::IMM0, type_idx),
+                (preserved_io::IMM1, fields.len() as u32),
+            ],
+            &[],
+            &[],
+            fields,
+            Some(preserved_io::ARG0),
             super::preserved::PreservedResultTarget::GpWord(dst),
         )
     }

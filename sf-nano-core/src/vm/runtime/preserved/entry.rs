@@ -218,10 +218,9 @@ unsafe fn dispatch_preserved(
         }
         op::STRUCT_NEW => {
             let type_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
-            let arg0 = unsafe { *io_ptr.add(io::ARG0) };
-            let arg1 = unsafe { *io_ptr.add(io::ARG1) };
-            let arg2 = unsafe { *io_ptr.add(io::ARG2) };
-            let result = do_struct_new(ctx, type_idx, [arg0, arg1, arg2])?;
+            let count = unsafe { *io_ptr.add(io::IMM1) } as u32;
+            let payload_ptr = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_struct_new(ctx, type_idx, payload_ptr, count)?;
             unsafe {
                 *io_ptr.add(io::RET0) = result;
             }

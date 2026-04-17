@@ -46,40 +46,37 @@ pub fn should_skip_test(test_name: &str) -> bool {
 
     // Skip WebAssembly 3.0 features not yet implemented
 
-    // Array tests still need runtime and lowering work. Some files also trip
-    // known wast encoding issues, so keep the whole group disabled until the
-    // implementation and test ingestion story are both in better shape.
+    // Official array spectests remain disabled while broader GC-array
+    // conformance work is still in flight. Targeted runtime regressions for
+    // post-call OOB propagation live in `sf-nano-core/tests/array_ops.rs`.
     if test_name.starts_with("array") {
         return true;
     }
 
-    // Type recursion tests: DISABLED due to wast crate encoder bug
-    // The wast crate incorrectly encodes WAT with recursion groups, creating extra
-    // types outside the rec group when handling implicit function types.
+    // Type recursion tests: DISABLED due to our own overly-permissive type
+    // equivalence for `func` types. (The prior comment blamed the wast
+    // encoder; audit on 2026-04-17 showed the encoder is correct — it's our
+    // validator that accepts modules the spec says should be rejected.)
     //
-    // Issue:
-    // - WAT: (rec (type $ft (func)) (type (func))) (func $f)
-    // - Expected: Rec group with 2 types (indices 0-1), function $f uses type 1
-    // - Actual: Rec group with 2 types (indices 0-1), PLUS type 2 outside rec group, function $f
-    //   uses type 2
-    // - Result: Our validator correctly applies structural equivalence between type 2 (not in rec
-    //   group) and type 0 (in rec group), accepting the module
-    // - Expected: Test expects rejection because function should use type 1 (which IS in the same
-    //   rec group as type 0), requiring nominal typing within the rec group
+    // Repro (type-rec directive #5):
+    //   (module
+    //     (rec (type $ft (func)) (type (func)))
+    //     (func $f)                         ;; implicit type is NOT $ft
+    //     (global (ref $ft) (ref.func $f))) ;; must be rejected
     //
-    // Our type equivalence implementation is correct per WebAssembly 3.0 spec:
-    // - Types in SAME rec group: nominal typing (must have same index)
-    // - Types in DIFFERENT rec groups or one/both not in any rec group: structural (isorecursive)
-    //   equivalence
-    // - Function types: structural equivalence across rec groups
-    // - Struct/Array types: not equivalent across different rec groups
+    // wast encodes `$f`'s implicit type as a standalone type 2 (its own
+    // single-type rec group). The spec says type 2 (rg = [func()]) and type 0
+    // (rg = [func(), func()]) are NOT equivalent because their rec groups are
+    // not isomorphic. So `ref 2 </: ref 0`, and the global init must be
+    // invalid.
     //
-    // Affected tests: type-rec (directive #5), type-subtyping (directive #10)
-    // Status: Our implementation is correct; the wast crate's encoding creates
-    //         binaries that don't match the intended WAT semantics
+    // Our `type_context.rs:86-102` compares `func` types purely structurally
+    // (same params/results), ignoring rec-group membership. That admits
+    // `ref 2 <: ref 0` and accepts the module.
     //
-    // TODO: Re-enable when wast crate encoding is fixed
-    // Tested with wast 239.0 (latest as of Oct 2025) - issue persists
+    // Fix: implement proper isorecursive equivalence for all composite types
+    // (func, struct, array) — two types are equivalent iff both rec groups
+    // are structurally isomorphic AND indices match.
     if test_name == "type-rec" || test_name == "type-subtyping" {
         return true;
     }
@@ -89,9 +86,9 @@ pub fn should_skip_test(test_name: &str) -> bool {
     // observed to encode incorrectly on April 16, 2026), so keep the upstream
     // files disabled until the runner or dependency stack can ingest those
     // modules faithfully.
-    if test_name.starts_with("br_on_cast") {
-        return true;
-    }
+    // (The legacy `br_on_cast` skip was removed on 2026-04-17; the underlying
+    // breakage was our own opcode-table shift for array ops, not a wast
+    // encoder bug. The test passes cleanly now.)
 
     // Exception Handling proposal
     if test_name.starts_with("tag")

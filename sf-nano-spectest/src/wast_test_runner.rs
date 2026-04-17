@@ -110,6 +110,8 @@ pub enum WastValue {
     AnyI31Ref(RefType),
     AnyStructRef(RefType),
     AnyArrayRef(RefType),
+    AnyEqRef(RefType),
+    AnyAnyRef(RefType),
     Ref(Option<u32>, RefType),
 }
 
@@ -144,6 +146,12 @@ impl From<WastValue> for Value {
             }
             WastValue::AnyArrayRef(_) => {
                 panic!("AnyArrayRef should not be converted to Value")
+            }
+            WastValue::AnyEqRef(_) => {
+                panic!("AnyEqRef should not be converted to Value")
+            }
+            WastValue::AnyAnyRef(_) => {
+                panic!("AnyAnyRef should not be converted to Value")
             }
             WastValue::Ref(Some(idx), ref_type) => {
                 let handle = match ref_type.heap_type {
@@ -1618,14 +1626,14 @@ impl WastTestRunner {
                 false,
                 AbstractHeapType::Array.into(),
             ))),
-            WastRetCore::RefAny => Some(WastValue::Ref(
-                None,
-                RefType::new(false, AbstractHeapType::Any.into()),
-            )),
-            WastRetCore::RefEq => Some(WastValue::Ref(
-                None,
-                RefType::new(false, AbstractHeapType::Eq.into()),
-            )),
+            WastRetCore::RefAny => Some(WastValue::AnyAnyRef(RefType::new(
+                false,
+                AbstractHeapType::Any.into(),
+            ))),
+            WastRetCore::RefEq => Some(WastValue::AnyEqRef(RefType::new(
+                false,
+                AbstractHeapType::Eq.into(),
+            ))),
             _ => None,
         }
     }
@@ -1729,6 +1737,38 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
                 HeapType::Abstract(AbstractHeapType::Array)
                 | HeapType::Abstract(AbstractHeapType::Any)
                 | HeapType::Abstract(AbstractHeapType::Eq)
+                | HeapType::Concrete(_) => true,
+                _ => false,
+            }
+        }
+        (Value::Ref(actual_ref, actual_rt), WastValue::AnyEqRef(_)) => {
+            if actual_ref.is_null() {
+                return false;
+            }
+            match actual_rt.heap_type {
+                HeapType::Abstract(
+                    AbstractHeapType::Eq
+                    | AbstractHeapType::Any
+                    | AbstractHeapType::I31
+                    | AbstractHeapType::Struct
+                    | AbstractHeapType::Array,
+                )
+                | HeapType::Concrete(_) => true,
+                _ => false,
+            }
+        }
+        (Value::Ref(actual_ref, actual_rt), WastValue::AnyAnyRef(_)) => {
+            if actual_ref.is_null() {
+                return false;
+            }
+            match actual_rt.heap_type {
+                HeapType::Abstract(
+                    AbstractHeapType::Any
+                    | AbstractHeapType::Eq
+                    | AbstractHeapType::I31
+                    | AbstractHeapType::Struct
+                    | AbstractHeapType::Array,
+                )
                 | HeapType::Concrete(_) => true,
                 _ => false,
             }

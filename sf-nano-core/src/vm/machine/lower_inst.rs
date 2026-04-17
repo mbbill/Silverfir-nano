@@ -650,22 +650,15 @@ impl<'a> BlockLowerContext<'a> {
     fn lower_struct_new(
         &mut self,
         type_idx: u32,
-        field_count: u8,
         args: &[SsaOperand],
         results: &[SsaValue],
     ) -> Result<(), WasmError> {
-        if field_count as usize > 3 {
-            return Err(WasmError::internal(
-                "struct.new with more than three fields is not yet supported",
-            ));
-        }
-        let mut fields = [(MachineValue::Imm64(0), None); 3];
-        for (index, arg) in args.iter().take(field_count as usize).copied().enumerate() {
-            fields[index] = self.lower_pair_aware_operand(arg)?;
+        let mut fields = collections::Vec::with_capacity(args.len());
+        for &arg in args {
+            fields.push(self.lower_pair_aware_operand(arg)?);
         }
         self.lower_single_result_gp_op(results, |dst| MachineInstKind::StructNew {
             type_idx,
-            field_count,
             fields,
             dst,
         })
@@ -1016,10 +1009,7 @@ impl<'a> BlockLowerContext<'a> {
                     dst,
                 })
             }
-            P::StructNew {
-                type_idx,
-                field_count,
-            } => self.lower_struct_new(*type_idx, *field_count, args, results),
+            P::StructNew { type_idx, .. } => self.lower_struct_new(*type_idx, args, results),
             P::StructNewDefault { type_idx } => {
                 self.lower_single_result_gp_op(results, |dst| MachineInstKind::StructNewDefault {
                     type_idx: *type_idx,
