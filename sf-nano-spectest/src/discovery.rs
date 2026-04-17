@@ -46,14 +46,9 @@ pub fn should_skip_test(test_name: &str) -> bool {
 
     // Skip WebAssembly 3.0 features not yet implemented
 
-    // `br_on_cast*.wast` still trips the current `wast`/`wat` encoder on GC
-    // array ops (`array.get_u` in folded forms and direct `array.set` were
-    // observed to encode incorrectly on April 16, 2026), so keep the upstream
-    // files disabled until the runner or dependency stack can ingest those
-    // modules faithfully.
-    // (The legacy `br_on_cast` skip was removed on 2026-04-17; the underlying
-    // breakage was our own opcode-table shift for array ops, not a wast
-    // encoder bug. The test passes cleanly now.)
+    // `br_on_cast*.wast` is no longer skipped. The earlier failure mode was
+    // our own GC array opcode-table bug, not a persistent upstream `wast`/`wat`
+    // limitation, and the targeted spectests now pass again.
 
     // Exception Handling proposal
     if test_name.starts_with("tag")

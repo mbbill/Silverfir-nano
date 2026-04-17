@@ -1,9 +1,9 @@
 use std::{env, fs, path::Path, process::Command};
 
 const TESTSUITE_URL: &str =
-    "https://github.com/WebAssembly/testsuite/archive/e999a1051925895022ab06abc25b23ca300ab0d0.tar.gz";
+    "https://github.com/WebAssembly/testsuite/archive/51279a9d02cbba193cb25142d115388d7b83299c.tar.gz";
 const TESTSUITE_VERSION_FILE: &str = "testsuite_version.txt";
-const TESTSUITE_VERSION: &str = "e999a1051925895022ab06abc25b23ca300ab0d0";
+const TESTSUITE_VERSION: &str = "51279a9d02cbba193cb25142d115388d7b83299c";
 
 fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();

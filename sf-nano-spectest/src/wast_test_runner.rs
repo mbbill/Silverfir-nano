@@ -2067,15 +2067,6 @@ mod tests {
             "#,
         )
         .expect("compile wat");
-        let mut wasm_bytes = wasm_bytes;
-        if let Some(op_idx) = wasm_bytes
-            .windows(3)
-            .position(|window| window == [0xfb, 0x0e, 0x00])
-        {
-            // As observed on April 16, 2026, the current `wat` encoder in this
-            // tree can mis-encode `array.set` as `array.get_s` for GC arrays.
-            wasm_bytes[op_idx + 1] = 0x0c;
-        }
 
         let mut runner = WastTestRunner::new();
         let mut instance = runner
@@ -2224,17 +2215,6 @@ mod tests {
             "#,
         )
         .expect("compile wat");
-        let mut wasm_bytes = wasm_bytes;
-        for op_idx in wasm_bytes
-            .windows(3)
-            .enumerate()
-            .filter_map(|(idx, window)| (window == [0xfb, 0x0c, 0x00]).then_some(idx))
-            .collect::<Vec<_>>()
-        {
-            // As observed on April 16, 2026, the current `wat` encoder in this
-            // tree can swap packed `array.get_s` with `array.set` for GC arrays.
-            wasm_bytes[op_idx + 1] = 0x0e;
-        }
 
         let mut runner = WastTestRunner::new();
         let mut instance = runner

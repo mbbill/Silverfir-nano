@@ -14,7 +14,7 @@ tracked_alloc = { package = "sf-nano-tracked-alloc", path = "../tools/tracked-al
 filetime = { version = "0.2", optional = true }
 
 [dev-dependencies]
-wat = "1.239"
+wat = "1.246.2"
 
 [features]
 default = ["jit", "guard-pages"]

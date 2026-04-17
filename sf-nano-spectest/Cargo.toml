@@ -20,5 +20,5 @@ sf-nano-core = { path = "../sf-nano-core", features = ["validator", "emulator"] 
 log = { version = "0.4", features = ["release_max_level_debug"] }
 env_logger = "0.9"
 structopt = "0.3"
-wast = "239.0"
-wat = "1.239"
+wast = "246.0.2"
+wat = "1.246.2"
