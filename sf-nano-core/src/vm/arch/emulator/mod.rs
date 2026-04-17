@@ -1279,6 +1279,8 @@ impl<'a> Emulator<'a> {
         elements: &[(MachineValue, Option<MachineValue>)],
         dst: MachineReg,
     ) -> Result<(), WasmError> {
+        // Keep the packed payload alive across the helper call; the helper only
+        // borrows this buffer for the duration of `execute_preserved_helper`.
         let mut payload = collections::Vec::with_capacity(elements.len());
         for (value_lo, value_hi) in elements {
             payload.push(self.pack_preserved_io_value(*value_lo, *value_hi)?);

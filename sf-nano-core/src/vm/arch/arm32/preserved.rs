@@ -9,10 +9,11 @@
 //! Layout while the helper runs:
 //!
 //!   sp +  0  ─┐  io[0..SLOT_COUNT] (`io::SLOT_COUNT × 8` bytes: IMM0, IMM1,
-//!              │                   ARG0, ARG1, ARG2, RET0, scratch, scratch)
-//!   sp + 64  ─┘
-//!   sp + 64  ─┐  R0..R3, R9 spill area (24 bytes)
-//!   sp + 88  ─┘
+//!              │                   ARG0, ARG1, ARG2, ARG3, ARG4, RET0)
+//!   sp + 64  ─┤  optional payload area for helpers like `array.new_fixed`
+//!   sp + 64+N ┘
+//!   sp + 64+N ─┐  R0..R3, R9 spill area (24 bytes)
+//!   sp + 88+N ─┘
 
 use crate::{
     error::WasmError,
@@ -48,17 +49,55 @@ pub(super) enum PreservedResultTarget {
 }
 
 impl<'a> Arm32Backend<'a> {
+    fn emit_adjust_sp_down(&mut self, bytes: u32) {
+        if bytes == 0 {
+            return;
+        }
+        if let Some((imm8, rot)) = enc::encode_arm_imm(bytes) {
+            self.core
+                .text
+                .emit_u32(enc::sub_imm(Arm32Reg::SP, Arm32Reg::SP, imm8, rot));
+            return;
+        }
+        let scratch = self.gp_scratch.scoped_alloc();
+        emit_load_u32_into(&mut self.core.text, *scratch, bytes);
+        self.core
+            .text
+            .emit_u32(enc::sub_reg(Arm32Reg::SP, Arm32Reg::SP, *scratch));
+    }
+
+    fn emit_adjust_sp_up(&mut self, bytes: u32) {
+        if bytes == 0 {
+            return;
+        }
+        if let Some((imm8, rot)) = enc::encode_arm_imm(bytes) {
+            self.core
+                .text
+                .emit_u32(enc::add_imm(Arm32Reg::SP, Arm32Reg::SP, imm8, rot));
+            return;
+        }
+        let scratch = self.gp_scratch.scoped_alloc();
+        emit_load_u32_into(&mut self.core.text, *scratch, bytes);
+        self.core
+            .text
+            .emit_u32(enc::add_reg(Arm32Reg::SP, Arm32Reg::SP, *scratch));
+    }
+
     /// Encode a u32 immediate write into io[slot] (low + zero high half).
     fn emit_preserved_io_store_imm(&mut self, slot: usize, value: u32) {
+        self.emit_preserved_io_store_imm_at_offset((slot * 8) as i32, value);
+    }
+
+    fn emit_preserved_io_store_imm_at_offset(&mut self, offset: i32, value: u32) {
         let s = self.gp_scratch.scoped_alloc();
         emit_load_u32_into(&mut self.core.text, *s, value);
         self.core
             .text
-            .emit_u32(enc::str_imm(*s, Arm32Reg::SP, (slot * 8) as i32));
+            .emit_u32(enc::str_imm(*s, Arm32Reg::SP, offset));
         emit_load_u32_into(&mut self.core.text, *s, 0);
         self.core
             .text
-            .emit_u32(enc::str_imm(*s, Arm32Reg::SP, (slot * 8 + 4) as i32));
+            .emit_u32(enc::str_imm(*s, Arm32Reg::SP, offset + 4));
     }
 
     /// Encode a `MachineValue` write into io[slot]. Wasm-side values fit in
@@ -66,6 +105,14 @@ impl<'a> Arm32Backend<'a> {
     fn emit_preserved_io_store_value(
         &mut self,
         slot: usize,
+        value: MachineValue,
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_io_store_value_at_offset((slot * 8) as i32, value)
+    }
+
+    fn emit_preserved_io_store_value_at_offset(
+        &mut self,
+        offset: i32,
         value: MachineValue,
     ) -> Result<(), WasmError> {
         match value {
@@ -76,44 +123,36 @@ impl<'a> Arm32Backend<'a> {
                         MachineFloatWidth::F32 => {
                             let s = self.gp_scratch.scoped_alloc();
                             self.core.text.emit_u32(enc::vmov_r_s(*s, fp * 2));
-                            self.core.text.emit_u32(enc::str_imm(
-                                *s,
-                                Arm32Reg::SP,
-                                (slot * 8) as i32,
-                            ));
+                            self.core
+                                .text
+                                .emit_u32(enc::str_imm(*s, Arm32Reg::SP, offset));
                             emit_load_u32_into(&mut self.core.text, *s, 0);
-                            self.core.text.emit_u32(enc::str_imm(
-                                *s,
-                                Arm32Reg::SP,
-                                (slot * 8 + 4) as i32,
-                            ));
+                            self.core
+                                .text
+                                .emit_u32(enc::str_imm(*s, Arm32Reg::SP, offset + 4));
                         }
                         MachineFloatWidth::F64 => {
                             let lo = self.gp_scratch.scoped_alloc();
                             let hi = self.gp_scratch.scoped_alloc();
                             self.core.text.emit_u32(enc::vmov_rr_d(*lo, *hi, fp));
-                            self.core.text.emit_u32(enc::str_imm(
-                                *lo,
-                                Arm32Reg::SP,
-                                (slot * 8) as i32,
-                            ));
-                            self.core.text.emit_u32(enc::str_imm(
-                                *hi,
-                                Arm32Reg::SP,
-                                (slot * 8 + 4) as i32,
-                            ));
+                            self.core
+                                .text
+                                .emit_u32(enc::str_imm(*lo, Arm32Reg::SP, offset));
+                            self.core
+                                .text
+                                .emit_u32(enc::str_imm(*hi, Arm32Reg::SP, offset + 4));
                         }
                     }
                 } else {
                     let src = map_reg(r)?;
                     self.core
                         .text
-                        .emit_u32(enc::str_imm(src, Arm32Reg::SP, (slot * 8) as i32));
+                        .emit_u32(enc::str_imm(src, Arm32Reg::SP, offset));
                     let s = self.gp_scratch.scoped_alloc();
                     emit_load_u32_into(&mut self.core.text, *s, 0);
                     self.core
                         .text
-                        .emit_u32(enc::str_imm(*s, Arm32Reg::SP, (slot * 8 + 4) as i32));
+                        .emit_u32(enc::str_imm(*s, Arm32Reg::SP, offset + 4));
                 }
             }
             MachineValue::Imm64(v) => {
@@ -121,11 +160,11 @@ impl<'a> Arm32Backend<'a> {
                 emit_load_u32_into(&mut self.core.text, *s, v as u32);
                 self.core
                     .text
-                    .emit_u32(enc::str_imm(*s, Arm32Reg::SP, (slot * 8) as i32));
+                    .emit_u32(enc::str_imm(*s, Arm32Reg::SP, offset));
                 emit_load_u32_into(&mut self.core.text, *s, (v >> 32) as u32);
                 self.core
                     .text
-                    .emit_u32(enc::str_imm(*s, Arm32Reg::SP, (slot * 8 + 4) as i32));
+                    .emit_u32(enc::str_imm(*s, Arm32Reg::SP, offset + 4));
             }
             MachineValue::ReservedReg(_reg) => {
                 return Err(WasmError::internal(
@@ -142,14 +181,23 @@ impl<'a> Arm32Backend<'a> {
         lo: MachineValue,
         hi: MachineValue,
     ) -> Result<(), WasmError> {
+        self.emit_preserved_io_store_pair_at_offset((slot * 8) as i32, lo, hi)
+    }
+
+    fn emit_preserved_io_store_pair_at_offset(
+        &mut self,
+        offset: i32,
+        lo: MachineValue,
+        hi: MachineValue,
+    ) -> Result<(), WasmError> {
         let lo = prepare_gp(&mut self.core.text, &self.gp_scratch, lo)?;
         let hi = prepare_gp(&mut self.core.text, &self.gp_scratch, hi)?;
         self.core
             .text
-            .emit_u32(enc::str_imm(*lo, Arm32Reg::SP, (slot * 8) as i32));
+            .emit_u32(enc::str_imm(*lo, Arm32Reg::SP, offset));
         self.core
             .text
-            .emit_u32(enc::str_imm(*hi, Arm32Reg::SP, (slot * 8 + 4) as i32));
+            .emit_u32(enc::str_imm(*hi, Arm32Reg::SP, offset + 4));
         Ok(())
     }
 
@@ -185,24 +233,51 @@ impl<'a> Arm32Backend<'a> {
         pair_args: &[(usize, MachineValue, MachineValue)],
         result: PreservedResultTarget,
     ) -> Result<(), WasmError> {
+        self.emit_preserved_helper_call_extended_with_payload(
+            op_code,
+            imms,
+            args,
+            pair_args,
+            &[],
+            None,
+            result,
+        )
+    }
+
+    pub(super) fn emit_preserved_helper_call_extended_with_payload(
+        &mut self,
+        op_code: u32,
+        imms: &[(usize, u32)],
+        args: &[(usize, MachineValue)],
+        pair_args: &[(usize, MachineValue, MachineValue)],
+        payload_words: &[(MachineValue, Option<MachineValue>)],
+        payload_ptr_slot: Option<usize>,
+        result: PreservedResultTarget,
+    ) -> Result<(), WasmError> {
         use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
+        let payload_bytes = payload_words.len() as u32 * 8;
 
         // Step 1: spill R0..R3, R9 onto the host stack so the JIT register
         // file survives the helper call. After this `sp -= 24` and the saved
         // area lives at sp[0..20].
         self.spill_caller_saved_gp_regs();
 
-        // Step 2: allocate the I/O area below the spilled GP region. After
-        // this, sp[0..PRESERVED_IO_BYTES] = io area and
-        // sp[PRESERVED_IO_BYTES..PRESERVED_IO_BYTES+24] = saved GPs.
-        self.core.text.emit_u32(enc::sub_imm(
-            Arm32Reg::SP,
-            Arm32Reg::SP,
-            PRESERVED_IO_BYTES,
-            0,
-        ));
+        // Step 2: allocate the I/O area plus any optional payload below the
+        // spilled GP region. The helper ABI still sees the I/O block at `sp`;
+        // payload words live immediately above it.
+        self.emit_adjust_sp_down(PRESERVED_IO_BYTES + payload_bytes);
 
-        // Step 3: populate IMM and ARG slots. R0..R3 / R9 are still live
+        // Step 3: materialize any payload words. Helpers like array.new_fixed
+        // consume these through a pointer stored in the I/O block.
+        for (index, (lo, hi)) in payload_words.iter().enumerate() {
+            let offset = PRESERVED_IO_BYTES as i32 + (index as i32 * 8);
+            match hi {
+                Some(hi) => self.emit_preserved_io_store_pair_at_offset(offset, *lo, *hi)?,
+                None => self.emit_preserved_io_store_value_at_offset(offset, *lo)?,
+            }
+        }
+
+        // Step 4: populate IMM and ARG slots. R0..R3 / R9 are still live
         // here (the spill only copied them; it did not modify them), so
         // `map_reg` lookups for ARG MachineValues read the correct physical
         // registers.
@@ -215,8 +290,25 @@ impl<'a> Arm32Backend<'a> {
         for &(slot, lo, hi) in pair_args {
             self.emit_preserved_io_store_pair(slot, lo, hi)?;
         }
+        if let Some(slot) = payload_ptr_slot {
+            if payload_words.is_empty() {
+                self.emit_preserved_io_store_imm(slot, 0);
+            } else {
+                let ptr = self.gp_scratch.scoped_alloc();
+                self.core
+                    .text
+                    .emit_u32(enc::add_imm(*ptr, Arm32Reg::SP, PRESERVED_IO_BYTES, 0));
+                self.core
+                    .text
+                    .emit_u32(enc::str_imm(*ptr, Arm32Reg::SP, (slot * 8) as i32));
+                emit_load_u32_into(&mut self.core.text, *ptr, 0);
+                self.core
+                    .text
+                    .emit_u32(enc::str_imm(*ptr, Arm32Reg::SP, (slot * 8 + 4) as i32));
+            }
+        }
 
-        // Step 4: set up the C calling convention. C_ARG0 = ctx, C_ARG1 = op_code,
+        // Step 5: set up the C calling convention. C_ARG0 = ctx, C_ARG1 = op_code,
         // C_ARG2 = io_ptr (= sp). `emit_host_call` below will save/restore D3-D7
         // around the BLX via the per-function helper_scratch.
         self.core
@@ -225,10 +317,10 @@ impl<'a> Arm32Backend<'a> {
         self.emit_load_u32(C_ARG1, op_code);
         self.core.text.emit_u32(enc::mov_reg(C_ARG2, Arm32Reg::SP));
 
-        // Step 5: dispatch the helper.
+        // Step 6: dispatch the helper.
         self.emit_host_call(preserved_entry as usize);
 
-        // Step 6: stash status (R0) and optionally result into GP scratches.
+        // Step 7: stash status (R0) and optionally result into GP scratches.
         // After this we commit to two diverging tails — success and error —
         // that need to restore the JIT register file in different ways.
         // Note that R0 itself is not yet clobbered: the success-path restore
@@ -238,7 +330,7 @@ impl<'a> Arm32Backend<'a> {
         let status_s = self.gp_scratch.scoped_alloc().detach();
         self.core.text.emit_u32(enc::mov_reg(*status_s, C_RET0));
 
-        // Step 7: read the result (if any) into a second GP scratch.
+        // Step 8: read the result (if any) into a second GP scratch.
         let result_lo_s = if !matches!(result, PreservedResultTarget::None) {
             let s = self.gp_scratch.scoped_alloc().detach();
             self.core.text.emit_u32(enc::ldr_imm(
@@ -267,15 +359,10 @@ impl<'a> Arm32Backend<'a> {
             _ => None,
         };
 
-        // Step 8: free the I/O area. Both tails need this.
-        self.core.text.emit_u32(enc::add_imm(
-            Arm32Reg::SP,
-            Arm32Reg::SP,
-            PRESERVED_IO_BYTES,
-            0,
-        ));
+        // Step 9: free the I/O area and payload. Both tails need this.
+        self.emit_adjust_sp_up(PRESERVED_IO_BYTES + payload_bytes);
 
-        // Step 9: branch on status. The two tails differ in how they pop the
+        // Step 10: branch on status. The two tails differ in how they pop the
         // spill area: the success path runs `restore_caller_saved_gp_regs`
         // (which restores R0..R3, R9 from the spill and pops 24 bytes), while
         // the error path uses a bare `add sp, #24` so R0 retains the helper's

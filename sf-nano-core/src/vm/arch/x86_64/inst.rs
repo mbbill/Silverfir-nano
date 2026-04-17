@@ -2,11 +2,15 @@
 
 use crate::{
     error::WasmError,
-    vm::machine::machine_ir::{
-        MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
-        MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp,
-        MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
-        MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
+    vm::{
+        machine::machine_ir::{
+            MachineCompareKind, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
+            MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind,
+            MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
+            MachineMemWidth, MachineReg, MachineShiftOp, MachineSign, MachineStorageType,
+            MachineTrapKind, MachineValue,
+        },
+        runtime::preserved,
     },
 };
 
@@ -209,7 +213,7 @@ impl<'a> X86_64Backend<'a> {
             }
             MachineInstKind::ElemDrop { elem_idx } => self.lower_elem_drop(*elem_idx),
             MachineInstKind::RefFunc { func_idx, dst } => self.lower_preserved_result(
-                crate::vm::runtime::preserved::op::REF_FUNC,
+                preserved::op::REF_FUNC,
                 *func_idx,
                 0,
                 MachineValue::Imm64(0),
@@ -219,7 +223,7 @@ impl<'a> X86_64Backend<'a> {
                 *dst,
             ),
             MachineInstKind::RefAsNonNull { src, dst } => self.lower_preserved_result(
-                crate::vm::runtime::preserved::op::REF_AS_NON_NULL,
+                preserved::op::REF_AS_NON_NULL,
                 0,
                 0,
                 *src,
@@ -229,7 +233,7 @@ impl<'a> X86_64Backend<'a> {
                 *dst,
             ),
             MachineInstKind::RefEq { lhs, rhs, dst } => self.lower_preserved_result(
-                crate::vm::runtime::preserved::op::REF_EQ,
+                preserved::op::REF_EQ,
                 0,
                 0,
                 *lhs,
@@ -239,7 +243,7 @@ impl<'a> X86_64Backend<'a> {
                 *dst,
             ),
             MachineInstKind::RefI31 { src, dst } => self.lower_preserved_result(
-                crate::vm::runtime::preserved::op::REF_I31,
+                preserved::op::REF_I31,
                 0,
                 0,
                 *src,
@@ -249,7 +253,7 @@ impl<'a> X86_64Backend<'a> {
                 *dst,
             ),
             MachineInstKind::I31GetS { src, dst } => self.lower_preserved_result(
-                crate::vm::runtime::preserved::op::I31_GET_S,
+                preserved::op::I31_GET_S,
                 0,
                 0,
                 *src,
@@ -259,7 +263,7 @@ impl<'a> X86_64Backend<'a> {
                 *dst,
             ),
             MachineInstKind::I31GetU { src, dst } => self.lower_preserved_result(
-                crate::vm::runtime::preserved::op::I31_GET_U,
+                preserved::op::I31_GET_U,
                 0,
                 0,
                 *src,
@@ -269,7 +273,7 @@ impl<'a> X86_64Backend<'a> {
                 *dst,
             ),
             MachineInstKind::AnyConvertExtern { src, dst } => self.lower_preserved_result(
-                crate::vm::runtime::preserved::op::ANY_CONVERT_EXTERN,
+                preserved::op::ANY_CONVERT_EXTERN,
                 0,
                 0,
                 *src,
@@ -279,7 +283,7 @@ impl<'a> X86_64Backend<'a> {
                 *dst,
             ),
             MachineInstKind::ExternConvertAny { src, dst } => self.lower_preserved_result(
-                crate::vm::runtime::preserved::op::EXTERN_CONVERT_ANY,
+                preserved::op::EXTERN_CONVERT_ANY,
                 0,
                 0,
                 *src,
@@ -291,7 +295,7 @@ impl<'a> X86_64Backend<'a> {
             MachineInstKind::RefTest { ref_type, src, dst } => {
                 let encoded = ref_type.encode_to_u64();
                 self.lower_preserved_result(
-                    crate::vm::runtime::preserved::op::REF_TEST,
+                    preserved::op::REF_TEST,
                     encoded as u32,
                     (encoded >> 32) as u32,
                     *src,
@@ -304,7 +308,7 @@ impl<'a> X86_64Backend<'a> {
             MachineInstKind::RefCast { ref_type, src, dst } => {
                 let encoded = ref_type.encode_to_u64();
                 self.lower_preserved_result(
-                    crate::vm::runtime::preserved::op::REF_CAST,
+                    preserved::op::REF_CAST,
                     encoded as u32,
                     (encoded >> 32) as u32,
                     *src,
@@ -330,7 +334,7 @@ impl<'a> X86_64Backend<'a> {
                     ));
                 }
                 self.lower_preserved_result(
-                    crate::vm::runtime::preserved::op::STRUCT_NEW,
+                    preserved::op::STRUCT_NEW,
                     *type_idx,
                     0,
                     fields[0].0,
@@ -341,7 +345,7 @@ impl<'a> X86_64Backend<'a> {
                 )
             }
             MachineInstKind::StructNewDefault { type_idx, dst } => self.lower_preserved_result(
-                crate::vm::runtime::preserved::op::STRUCT_NEW_DEFAULT,
+                preserved::op::STRUCT_NEW_DEFAULT,
                 *type_idx,
                 0,
                 MachineValue::Imm64(0),
@@ -365,9 +369,9 @@ impl<'a> X86_64Backend<'a> {
                     ));
                 }
                 let op_code = match signed {
-                    None => crate::vm::runtime::preserved::op::STRUCT_GET,
-                    Some(true) => crate::vm::runtime::preserved::op::STRUCT_GET_S,
-                    Some(false) => crate::vm::runtime::preserved::op::STRUCT_GET_U,
+                    None => preserved::op::STRUCT_GET,
+                    Some(true) => preserved::op::STRUCT_GET_S,
+                    Some(false) => preserved::op::STRUCT_GET_U,
                 };
                 self.lower_preserved_result(
                     op_code,
@@ -393,7 +397,7 @@ impl<'a> X86_64Backend<'a> {
                     ));
                 }
                 self.lower_preserved_no_result(
-                    crate::vm::runtime::preserved::op::STRUCT_SET,
+                    preserved::op::STRUCT_SET,
                     *type_idx,
                     *field_idx,
                     *ref_src,
@@ -414,7 +418,7 @@ impl<'a> X86_64Backend<'a> {
                     ));
                 }
                 self.lower_preserved_result(
-                    crate::vm::runtime::preserved::op::ARRAY_NEW,
+                    preserved::op::ARRAY_NEW,
                     *type_idx,
                     0,
                     *init_lo,
@@ -429,7 +433,7 @@ impl<'a> X86_64Backend<'a> {
                 length,
                 dst,
             } => self.lower_preserved_result(
-                crate::vm::runtime::preserved::op::ARRAY_NEW_DEFAULT,
+                preserved::op::ARRAY_NEW_DEFAULT,
                 *type_idx,
                 0,
                 *length,
@@ -450,14 +454,14 @@ impl<'a> X86_64Backend<'a> {
                 len,
                 dst,
             } => self.lower_preserved_result_extended(
-                crate::vm::runtime::preserved::op::ARRAY_NEW_DATA,
+                preserved::op::ARRAY_NEW_DATA,
                 &[
-                    (crate::vm::runtime::preserved::io::IMM0, *type_idx),
-                    (crate::vm::runtime::preserved::io::IMM1, *data_idx),
+                    (preserved::io::IMM0, *type_idx),
+                    (preserved::io::IMM1, *data_idx),
                 ],
                 &[
-                    (crate::vm::runtime::preserved::io::ARG0, *src),
-                    (crate::vm::runtime::preserved::io::ARG1, *len),
+                    (preserved::io::ARG0, *src),
+                    (preserved::io::ARG1, *len),
                 ],
                 MachineStorageType::GpWord,
                 *dst,
@@ -469,14 +473,14 @@ impl<'a> X86_64Backend<'a> {
                 len,
                 dst,
             } => self.lower_preserved_result_extended(
-                crate::vm::runtime::preserved::op::ARRAY_NEW_ELEM,
+                preserved::op::ARRAY_NEW_ELEM,
                 &[
-                    (crate::vm::runtime::preserved::io::IMM0, *type_idx),
-                    (crate::vm::runtime::preserved::io::IMM1, *elem_idx),
+                    (preserved::io::IMM0, *type_idx),
+                    (preserved::io::IMM1, *elem_idx),
                 ],
                 &[
-                    (crate::vm::runtime::preserved::io::ARG0, *src),
-                    (crate::vm::runtime::preserved::io::ARG1, *len),
+                    (preserved::io::ARG0, *src),
+                    (preserved::io::ARG1, *len),
                 ],
                 MachineStorageType::GpWord,
                 *dst,
@@ -496,9 +500,9 @@ impl<'a> X86_64Backend<'a> {
                     ));
                 }
                 let op_code = match signed {
-                    None => crate::vm::runtime::preserved::op::ARRAY_GET,
-                    Some(true) => crate::vm::runtime::preserved::op::ARRAY_GET_S,
-                    Some(false) => crate::vm::runtime::preserved::op::ARRAY_GET_U,
+                    None => preserved::op::ARRAY_GET,
+                    Some(true) => preserved::op::ARRAY_GET_S,
+                    Some(false) => preserved::op::ARRAY_GET_U,
                 };
                 self.lower_preserved_result(
                     op_code,
@@ -524,7 +528,7 @@ impl<'a> X86_64Backend<'a> {
                     ));
                 }
                 self.lower_preserved_no_result(
-                    crate::vm::runtime::preserved::op::ARRAY_SET,
+                    preserved::op::ARRAY_SET,
                     *type_idx,
                     0,
                     *ref_src,
@@ -546,13 +550,13 @@ impl<'a> X86_64Backend<'a> {
                     ));
                 }
                 self.lower_preserved_no_result_extended(
-                    crate::vm::runtime::preserved::op::ARRAY_FILL,
-                    &[(crate::vm::runtime::preserved::io::IMM0, *type_idx)],
+                    preserved::op::ARRAY_FILL,
+                    &[(preserved::io::IMM0, *type_idx)],
                     &[
-                        (crate::vm::runtime::preserved::io::ARG0, *ref_src),
-                        (crate::vm::runtime::preserved::io::ARG1, *index),
-                        (crate::vm::runtime::preserved::io::ARG2, *value_lo),
-                        (crate::vm::runtime::preserved::io::ARG3, *len),
+                        (preserved::io::ARG0, *ref_src),
+                        (preserved::io::ARG1, *index),
+                        (preserved::io::ARG2, *value_lo),
+                        (preserved::io::ARG3, *len),
                     ],
                 )
             }
@@ -565,17 +569,17 @@ impl<'a> X86_64Backend<'a> {
                 src_index,
                 len,
             } => self.lower_preserved_no_result_extended(
-                crate::vm::runtime::preserved::op::ARRAY_COPY,
+                preserved::op::ARRAY_COPY,
                 &[
-                    (crate::vm::runtime::preserved::io::IMM0, *dst_type_idx),
-                    (crate::vm::runtime::preserved::io::IMM1, *src_type_idx),
+                    (preserved::io::IMM0, *dst_type_idx),
+                    (preserved::io::IMM1, *src_type_idx),
                 ],
                 &[
-                    (crate::vm::runtime::preserved::io::ARG0, *dst_ref),
-                    (crate::vm::runtime::preserved::io::ARG1, *dst_index),
-                    (crate::vm::runtime::preserved::io::ARG2, *src_ref),
-                    (crate::vm::runtime::preserved::io::ARG3, *src_index),
-                    (crate::vm::runtime::preserved::io::ARG4, *len),
+                    (preserved::io::ARG0, *dst_ref),
+                    (preserved::io::ARG1, *dst_index),
+                    (preserved::io::ARG2, *src_ref),
+                    (preserved::io::ARG3, *src_index),
+                    (preserved::io::ARG4, *len),
                 ],
             ),
             MachineInstKind::ArrayInitData {
@@ -586,16 +590,16 @@ impl<'a> X86_64Backend<'a> {
                 src_index,
                 len,
             } => self.lower_preserved_no_result_extended(
-                crate::vm::runtime::preserved::op::ARRAY_INIT_DATA,
+                preserved::op::ARRAY_INIT_DATA,
                 &[
-                    (crate::vm::runtime::preserved::io::IMM0, *type_idx),
-                    (crate::vm::runtime::preserved::io::IMM1, *data_idx),
+                    (preserved::io::IMM0, *type_idx),
+                    (preserved::io::IMM1, *data_idx),
                 ],
                 &[
-                    (crate::vm::runtime::preserved::io::ARG0, *ref_src),
-                    (crate::vm::runtime::preserved::io::ARG1, *dst_index),
-                    (crate::vm::runtime::preserved::io::ARG2, *src_index),
-                    (crate::vm::runtime::preserved::io::ARG3, *len),
+                    (preserved::io::ARG0, *ref_src),
+                    (preserved::io::ARG1, *dst_index),
+                    (preserved::io::ARG2, *src_index),
+                    (preserved::io::ARG3, *len),
                 ],
             ),
             MachineInstKind::ArrayInitElem {
@@ -606,20 +610,20 @@ impl<'a> X86_64Backend<'a> {
                 src_index,
                 len,
             } => self.lower_preserved_no_result_extended(
-                crate::vm::runtime::preserved::op::ARRAY_INIT_ELEM,
+                preserved::op::ARRAY_INIT_ELEM,
                 &[
-                    (crate::vm::runtime::preserved::io::IMM0, *type_idx),
-                    (crate::vm::runtime::preserved::io::IMM1, *elem_idx),
+                    (preserved::io::IMM0, *type_idx),
+                    (preserved::io::IMM1, *elem_idx),
                 ],
                 &[
-                    (crate::vm::runtime::preserved::io::ARG0, *ref_src),
-                    (crate::vm::runtime::preserved::io::ARG1, *dst_index),
-                    (crate::vm::runtime::preserved::io::ARG2, *src_index),
-                    (crate::vm::runtime::preserved::io::ARG3, *len),
+                    (preserved::io::ARG0, *ref_src),
+                    (preserved::io::ARG1, *dst_index),
+                    (preserved::io::ARG2, *src_index),
+                    (preserved::io::ARG3, *len),
                 ],
             ),
             MachineInstKind::ArrayLen { src, dst } => self.lower_preserved_result(
-                crate::vm::runtime::preserved::op::ARRAY_LEN,
+                preserved::op::ARRAY_LEN,
                 0,
                 0,
                 *src,
@@ -2637,7 +2641,7 @@ impl<'a> X86_64Backend<'a> {
         dst: MachineReg,
         delta: MachineValue,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        use preserved::{io as preserved_io, op};
         let dst_gp = self.map_gp_reg(dst)?;
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
@@ -2655,7 +2659,7 @@ impl<'a> X86_64Backend<'a> {
         arg1: MachineValue,
         arg2: MachineValue,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::io as preserved_io;
+        use preserved::io as preserved_io;
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, imm0);
         self.emit_io_store_imm(preserved_io::IMM1, imm1);
@@ -2694,7 +2698,7 @@ impl<'a> X86_64Backend<'a> {
         ty: MachineStorageType,
         dst: MachineReg,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::io as preserved_io;
+        use preserved::io as preserved_io;
 
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, imm0);
@@ -2762,7 +2766,7 @@ impl<'a> X86_64Backend<'a> {
         elements: &[(MachineValue, Option<MachineValue>)],
         dst: MachineReg,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        use preserved::{io as preserved_io, op};
         let payload_bytes = ((elements.len() as u32 * 8) + 15) & !15;
         self.emit_preserved_io_open_with_prefix(payload_bytes);
         for (index, (value_lo, value_hi)) in elements.iter().enumerate() {
@@ -2803,7 +2807,7 @@ impl<'a> X86_64Backend<'a> {
         val: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
         self.emit_io_store_u32_value(preserved_io::ARG0, dest)?;
@@ -2821,7 +2825,7 @@ impl<'a> X86_64Backend<'a> {
         src: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, dst_mem);
         self.emit_io_store_imm(preserved_io::IMM1, src_mem);
@@ -2840,7 +2844,7 @@ impl<'a> X86_64Backend<'a> {
         src: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
         self.emit_io_store_imm(preserved_io::IMM1, data_idx);
@@ -2852,7 +2856,7 @@ impl<'a> X86_64Backend<'a> {
     }
 
     fn lower_data_drop(&mut self, data_idx: u32) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, data_idx);
         self.emit_preserved_call_and_close(op::DATA_DROP, None);
@@ -2866,7 +2870,7 @@ impl<'a> X86_64Backend<'a> {
         init_val: MachineValue,
         delta: MachineValue,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        use preserved::{io as preserved_io, op};
         let dst_gp = self.map_gp_reg(dst)?;
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, table_idx);
@@ -2883,7 +2887,7 @@ impl<'a> X86_64Backend<'a> {
         val: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, table_idx);
         self.emit_io_store_u32_value(preserved_io::ARG0, start)?;
@@ -2901,7 +2905,7 @@ impl<'a> X86_64Backend<'a> {
         src: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, dst_tbl);
         self.emit_io_store_imm(preserved_io::IMM1, src_tbl);
@@ -2920,7 +2924,7 @@ impl<'a> X86_64Backend<'a> {
         src: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, table_idx);
         self.emit_io_store_imm(preserved_io::IMM1, elem_idx);
@@ -2932,7 +2936,7 @@ impl<'a> X86_64Backend<'a> {
     }
 
     fn lower_elem_drop(&mut self, elem_idx: u32) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, op};
+        use preserved::{io as preserved_io, op};
         self.emit_preserved_io_open();
         self.emit_io_store_imm(preserved_io::IMM0, elem_idx);
         self.emit_preserved_call_and_close(op::ELEM_DROP, None);

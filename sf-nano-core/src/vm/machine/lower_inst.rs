@@ -655,7 +655,7 @@ impl<'a> BlockLowerContext<'a> {
         results: &[SsaValue],
     ) -> Result<(), WasmError> {
         if field_count as usize > 3 {
-            return Err(WasmError::invalid(
+            return Err(WasmError::internal(
                 "struct.new with more than three fields is not yet supported",
             ));
         }

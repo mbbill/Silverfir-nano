@@ -1376,7 +1376,7 @@ impl<'a> DecodeContext<'a> {
                         WasmError::invalid("struct.new field count exceeds decoder limit")
                     })?;
                     if field_count > 3 {
-                        return Err(WasmError::invalid(
+                        return Err(WasmError::internal(
                             "struct.new with more than three fields is not yet supported",
                         ));
                     }
@@ -1534,6 +1534,14 @@ impl<'a> DecodeContext<'a> {
                         crate::module::type_defs::CompositeType::Array(array_type) => array_type,
                         _ => return Err(WasmError::invalid("array.get expected array type")),
                     };
+                    if matches!(
+                        array_type.element.storage,
+                        crate::module::type_defs::StorageType::Packed(_)
+                    ) {
+                        return Err(WasmError::invalid(
+                            "array.get requires an unpacked array element type",
+                        ));
+                    }
                     let result_ty = array_type.element.storage.to_valtype();
                     let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::ArrayGet {
@@ -1556,6 +1564,14 @@ impl<'a> DecodeContext<'a> {
                         crate::module::type_defs::CompositeType::Array(array_type) => array_type,
                         _ => return Err(WasmError::invalid("array.get_s expected array type")),
                     };
+                    if matches!(
+                        array_type.element.storage,
+                        crate::module::type_defs::StorageType::Val(_)
+                    ) {
+                        return Err(WasmError::invalid(
+                            "array.get_s requires a packed array element type",
+                        ));
+                    }
                     let result_ty = array_type.element.storage.to_valtype();
                     let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::ArrayGetS {
@@ -1578,6 +1594,14 @@ impl<'a> DecodeContext<'a> {
                         crate::module::type_defs::CompositeType::Array(array_type) => array_type,
                         _ => return Err(WasmError::invalid("array.get_u expected array type")),
                     };
+                    if matches!(
+                        array_type.element.storage,
+                        crate::module::type_defs::StorageType::Val(_)
+                    ) {
+                        return Err(WasmError::invalid(
+                            "array.get_u requires a packed array element type",
+                        ));
+                    }
                     let result_ty = array_type.element.storage.to_valtype();
                     let op_idx = self.current_index();
                     self.handle_primitive(PrimitiveOpKind::ArrayGetU {

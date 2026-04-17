@@ -19,7 +19,7 @@ pub(crate) mod io {
     /// Result written by the helper.
     pub(crate) const RET0: usize = 7;
     /// Total number of 8-byte slots in the I/O area.
-    pub(crate) const SLOT_COUNT: usize = 10;
+    pub(crate) const SLOT_COUNT: usize = 8;
 }
 
 /// Op-code constants for the preserved-helper entry.

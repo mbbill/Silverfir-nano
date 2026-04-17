@@ -242,7 +242,7 @@ pub(super) fn do_struct_new(
             _ => return Err(internal_error("preserved helper expected a struct type")),
         };
         if struct_type.fields.len() > raw_fields.len() {
-            return Err(WasmError::invalid(
+            return Err(internal_error(
                 "struct.new with more than three fields is not yet supported",
             ));
         }
@@ -727,7 +727,7 @@ pub(super) fn do_array_init_data(
     let dst_index = raw_dst_index as u32 as usize;
     let src_index = raw_src_index as u32 as usize;
     let len = raw_len as u32 as usize;
-    let (storage, origin_ref, values) = {
+    let (origin_ref, values) = {
         let current = current_store(ctx)?;
         let storage = array_element_storage(current, type_idx)?;
         let elem_size = data_array_element_size(storage)?;
@@ -778,9 +778,8 @@ pub(super) fn do_array_init_data(
                 &data.bytes[start..start + elem_size],
             )?);
         }
-        (storage, origin_ref, values)
+        (origin_ref, values)
     };
-    let _ = storage;
     let (origin_store_ptr, gc_ref) = origin_ref;
     let origin_store = unsafe { origin_store_ptr.as_mut() }
         .ok_or_else(|| internal_error("array ref points to missing store"))?;
@@ -856,7 +855,7 @@ pub(super) fn do_array_init_elem(
     let dst_index = raw_dst_index as u32 as usize;
     let src_index = raw_src_index as u32 as usize;
     let len = raw_len as u32 as usize;
-    let (element_ref_type, origin_ref, values) = {
+    let (origin_ref, values) = {
         let current = current_store(ctx)?;
         let element_ref_type = match array_element_field(current, type_idx)?.storage {
             StorageType::Val(ValueType::Ref(ref_type)) => ref_type,
@@ -903,9 +902,8 @@ pub(super) fn do_array_init_elem(
         for handle in &elem.refs[src_index..src_index + len] {
             values.push(Value::Ref(*handle, element_ref_type));
         }
-        (element_ref_type, origin_ref, values)
+        (origin_ref, values)
     };
-    let _ = element_ref_type;
     let (origin_store_ptr, gc_ref) = origin_ref;
     let origin_store = unsafe { origin_store_ptr.as_mut() }
         .ok_or_else(|| internal_error("array ref points to missing store"))?;

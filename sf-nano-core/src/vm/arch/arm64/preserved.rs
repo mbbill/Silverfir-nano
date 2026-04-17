@@ -192,12 +192,26 @@ impl<'a> Arm64Backend<'a> {
         let regs = abi::gp_dynamic_caller_saved_regs();
         let mut i = 0;
         while i + 1 < regs.len() {
-            self.core.text.emit_u32(enc::stp_64(
-                regs[i],
-                regs[i + 1],
-                abi::stack_reg(),
-                ((base_off + slot * 8) / 8) as i32,
-            ));
+            let offset_units = ((base_off + slot * 8) / 8) as i32;
+            if (-64..64).contains(&offset_units) {
+                self.core.text.emit_u32(enc::stp_64(
+                    regs[i],
+                    regs[i + 1],
+                    abi::stack_reg(),
+                    offset_units,
+                ));
+            } else {
+                self.core.text.emit_u32(enc::str_64(
+                    regs[i],
+                    abi::stack_reg(),
+                    (base_off + slot * 8) / 8,
+                ));
+                self.core.text.emit_u32(enc::str_64(
+                    regs[i + 1],
+                    abi::stack_reg(),
+                    (base_off + (slot + 1) * 8) / 8,
+                ));
+            }
             slot += 2;
             i += 2;
         }
@@ -216,12 +230,26 @@ impl<'a> Arm64Backend<'a> {
         let regs = abi::gp_dynamic_caller_saved_regs();
         let mut i = 0;
         while i + 1 < regs.len() {
-            self.core.text.emit_u32(enc::ldp_64(
-                regs[i],
-                regs[i + 1],
-                abi::stack_reg(),
-                ((base_off + slot * 8) / 8) as i32,
-            ));
+            let offset_units = ((base_off + slot * 8) / 8) as i32;
+            if (-64..64).contains(&offset_units) {
+                self.core.text.emit_u32(enc::ldp_64(
+                    regs[i],
+                    regs[i + 1],
+                    abi::stack_reg(),
+                    offset_units,
+                ));
+            } else {
+                self.core.text.emit_u32(enc::ldr_64(
+                    regs[i],
+                    abi::stack_reg(),
+                    (base_off + slot * 8) / 8,
+                ));
+                self.core.text.emit_u32(enc::ldr_64(
+                    regs[i + 1],
+                    abi::stack_reg(),
+                    (base_off + (slot + 1) * 8) / 8,
+                ));
+            }
             slot += 2;
             i += 2;
         }

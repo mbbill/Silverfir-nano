@@ -1208,7 +1208,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_val(array_ref)?;
                 Ok(())
             }
-            ARRAY_GET | ARRAY_GET_S | ARRAY_GET_U => {
+            ARRAY_GET => {
                 let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
                 let def_type = self
                     .module
@@ -1221,9 +1221,42 @@ impl<'a> FunctionValidator<'a> {
                 };
                 self.context.pop_val(Some(I32))?;
                 let array_ref =
-                    ValueType::Ref(RefType::new(false, HeapType::Concrete(typeidx as u32)));
+                    ValueType::Ref(RefType::new(true, HeapType::Concrete(typeidx as u32)));
                 self.context.pop_val(Some(array_ref))?;
-                let elem_type = array_type.element.storage.to_valtype();
+                let elem_type = match array_type.element.storage {
+                    StorageType::Packed(_) => {
+                        return Err(WasmError::invalid(
+                            "array.get requires an unpacked array element type",
+                        ));
+                    }
+                    _ => array_type.element.storage.to_valtype(),
+                };
+                self.context.push_val(elem_type)?;
+                Ok(())
+            }
+            ARRAY_GET_S | ARRAY_GET_U => {
+                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let def_type = self
+                    .module
+                    .types()
+                    .get(typeidx as u32)
+                    .ok_or_else(|| WasmError::invalid("Type index out of bounds"))?;
+                let array_type = match &def_type.composite {
+                    CompositeType::Array(a) => a,
+                    _ => return Err(WasmError::invalid("Expected array type")),
+                };
+                self.context.pop_val(Some(I32))?;
+                let array_ref =
+                    ValueType::Ref(RefType::new(true, HeapType::Concrete(typeidx as u32)));
+                self.context.pop_val(Some(array_ref))?;
+                let elem_type = match array_type.element.storage {
+                    StorageType::Val(_) => {
+                        return Err(WasmError::invalid(
+                            "array.get_s/u requires a packed array element type",
+                        ));
+                    }
+                    _ => array_type.element.storage.to_valtype(),
+                };
                 self.context.push_val(elem_type)?;
                 Ok(())
             }
@@ -1258,7 +1291,7 @@ impl<'a> FunctionValidator<'a> {
             }
             ARRAY_LEN => {
                 let array_ref = ValueType::Ref(RefType::new(
-                    false,
+                    true,
                     HeapType::Abstract(AbstractHeapType::Array),
                 ));
                 self.context.pop_val(Some(array_ref))?;

@@ -4047,27 +4047,18 @@ impl<'a> Arm32Backend<'a> {
         elements: &[(MachineValue, Option<MachineValue>)],
         dst: MachineReg,
     ) -> Result<(), WasmError> {
-        self.compile_preserved_result(
-            preserved_op::ARRAY_NEW_DEFAULT,
-            type_idx,
-            0,
-            MachineValue::Imm64(elements.len() as u64),
-            MachineValue::Imm64(0),
-            MachineValue::Imm64(0),
-            MachineStorageType::GpWord,
-            dst,
-        )?;
-        let ref_src = MachineValue::Reg(dst);
-        for (index, (value_lo, value_hi)) in elements.iter().enumerate() {
-            self.compile_array_set(
-                type_idx,
-                ref_src,
-                MachineValue::Imm64(index as u64),
-                *value_lo,
-                *value_hi,
-            )?;
-        }
-        Ok(())
+        self.emit_preserved_helper_call_extended_with_payload(
+            preserved_op::ARRAY_NEW_FIXED,
+            &[
+                (preserved_io::IMM0, type_idx),
+                (preserved_io::IMM1, elements.len() as u32),
+            ],
+            &[],
+            &[],
+            elements,
+            Some(preserved_io::ARG0),
+            super::preserved::PreservedResultTarget::GpWord(dst),
+        )
     }
 
     fn compile_array_new_data(

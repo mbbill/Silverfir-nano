@@ -216,6 +216,7 @@ fn fp_ldst_register_offset(
 }
 
 fn load_store_pair(base: u32, rt: Arm64Reg, rt2: Arm64Reg, rn: Arm64Reg, imm7: i32) -> u32 {
+    debug_assert!((-64..64).contains(&imm7));
     let imm7_bits = (imm7 as u32) & 0x7f;
     base | (imm7_bits << 15) | (rt2.index() << 10) | (rn.index() << 5) | rt.index()
 }
