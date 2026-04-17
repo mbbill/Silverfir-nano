@@ -164,6 +164,22 @@ pub(crate) enum MachineTerminator {
         /// Caller CFG block to resume after a successful return.
         continuation: MachineBlockId,
     },
+    /// Tail call transfer into another compiled MachineIR function.
+    ///
+    /// Unlike [`MachineTerminator::Call`], this does not create a new
+    /// backend-private call record and it does not return to the current
+    /// function. The backend:
+    /// - reuses the current caller's call record
+    /// - switches `MACHINE_FP_REG` to `callee_frame_base`
+    /// - undoes the current function's body-entry shim/link save so the host
+    ///   stack matches the callee body's expected entry shape
+    /// - jumps to the callee internal entry described by `target`
+    ///
+    /// The callee then returns or traps directly to this function's caller.
+    TailCall {
+        target: MachineCallTarget,
+        callee_frame_base: MachineReg,
+    },
     /// Return from the function. The backend's `Return` lowering pops the
     /// backend-private call record left behind by the caller's `Call`,
     /// copies the function's `return_results` region

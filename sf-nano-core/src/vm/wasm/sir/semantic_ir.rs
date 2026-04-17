@@ -115,6 +115,22 @@ pub(crate) enum SemanticOpKind {
         params: u16,
         results: u16,
     },
+    ReturnCallDirect {
+        callee: u32,
+        params: u16,
+        results: u16,
+    },
+    ReturnCallIndirect {
+        type_idx: u32,
+        table_idx: u32,
+        params: u16,
+        results: u16,
+    },
+    ReturnCallRef {
+        type_idx: u32,
+        params: u16,
+        results: u16,
+    },
     ReturnVoid,
     ReturnOne,
     Return {
@@ -152,7 +168,10 @@ pub(crate) fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
     match kind {
         SemanticOpKind::CallDirect { results, .. }
         | SemanticOpKind::CallIndirect { results, .. }
-        | SemanticOpKind::CallRef { results, .. } => Some(*results as usize),
+        | SemanticOpKind::CallRef { results, .. }
+        | SemanticOpKind::ReturnCallDirect { results, .. }
+        | SemanticOpKind::ReturnCallIndirect { results, .. }
+        | SemanticOpKind::ReturnCallRef { results, .. } => Some(*results as usize),
         SemanticOpKind::Block { results, .. }
         | SemanticOpKind::Loop { results, .. }
         | SemanticOpKind::If { results, .. } => Some(*results as usize),
@@ -209,6 +228,15 @@ impl SemanticProgram {
                 SemanticOpKind::Return { arity } if *arity != self.results => {
                     return Err(WasmError::internal(
                         "semantic return at op has arity , expected",
+                    ));
+                }
+                SemanticOpKind::ReturnCallDirect { results, .. }
+                | SemanticOpKind::ReturnCallIndirect { results, .. }
+                | SemanticOpKind::ReturnCallRef { results, .. }
+                    if *results != self.results =>
+                {
+                    return Err(WasmError::internal(
+                        "semantic tail call at op does not match function result arity",
                     ));
                 }
                 _ => {}

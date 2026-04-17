@@ -316,7 +316,9 @@ impl<'a> CompilerCore<'a> {
                 MachineTerminator::Call { continuation, .. } => {
                     fallthrough = Some(*continuation);
                 }
-                MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+                MachineTerminator::TailCall { .. }
+                | MachineTerminator::Return
+                | MachineTerminator::Trap { .. } => {}
             }
 
             current = fallthrough.filter(|target| !seen[target.as_usize()]);

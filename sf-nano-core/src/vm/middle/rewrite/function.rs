@@ -546,6 +546,9 @@ fn apply_inline_prefix(
         SemanticOpKind::CallDirect { .. }
         | SemanticOpKind::CallIndirect { .. }
         | SemanticOpKind::CallRef { .. }
+        | SemanticOpKind::ReturnCallDirect { .. }
+        | SemanticOpKind::ReturnCallIndirect { .. }
+        | SemanticOpKind::ReturnCallRef { .. }
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => {
@@ -851,6 +854,9 @@ fn lower_block_body_op(
         | SemanticOpKind::BrOnCast { .. }
         | SemanticOpKind::BrOnCastFail { .. }
         | SemanticOpKind::BrTable { .. }
+        | SemanticOpKind::ReturnCallDirect { .. }
+        | SemanticOpKind::ReturnCallIndirect { .. }
+        | SemanticOpKind::ReturnCallRef { .. }
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => Err(WasmError::internal(
@@ -1144,6 +1150,57 @@ fn lower_call_ref(
     resident_cache.clear();
     materialized_cache.clear();
     Ok(())
+}
+
+fn lower_tail_call_direct(
+    callee: u32,
+    params: u16,
+    results: u16,
+    frame: FrameLayoutPlan,
+    state: &BlockState,
+) -> SsaTerminator {
+    let args = FrameSpan::new(call_base_slot(frame, state.height(), params), params);
+    SsaTerminator::TailCallDirect {
+        callee,
+        args,
+        return_results: return_results(frame, results),
+    }
+}
+
+fn lower_tail_call_indirect(
+    type_idx: u32,
+    table_idx: u32,
+    params: u16,
+    results: u16,
+    frame: FrameLayoutPlan,
+    state: &BlockState,
+) -> SsaTerminator {
+    let consumed = params.saturating_add(1);
+    let call_base = call_base_slot(frame, state.height(), consumed);
+    SsaTerminator::TailCallIndirect {
+        type_idx,
+        table_idx,
+        index_slot: call_base.advance(params),
+        args: FrameSpan::new(call_base, params),
+        return_results: return_results(frame, results),
+    }
+}
+
+fn lower_tail_call_ref(
+    type_idx: u32,
+    params: u16,
+    results: u16,
+    frame: FrameLayoutPlan,
+    state: &BlockState,
+) -> SsaTerminator {
+    let consumed = params.saturating_add(1);
+    let call_base = call_base_slot(frame, state.height(), consumed);
+    SsaTerminator::TailCallRef {
+        type_idx,
+        ref_slot: call_base.advance(params),
+        args: FrameSpan::new(call_base, params),
+        return_results: return_results(frame, results),
+    }
 }
 
 fn call_base_slot(frame: FrameLayoutPlan, stack_height: u16, consumed: u16) -> FrameSlot {
@@ -2022,6 +2079,28 @@ fn lower_block_terminator(
                 return_results(frame, *arity)
             },
         })),
+        SemanticOpKind::ReturnCallDirect {
+            callee,
+            params,
+            results,
+        } => Ok(LoweredTerminator::new(lower_tail_call_direct(
+            *callee, *params, *results, frame, state,
+        ))),
+        SemanticOpKind::ReturnCallIndirect {
+            type_idx,
+            table_idx,
+            params,
+            results,
+        } => Ok(LoweredTerminator::new(lower_tail_call_indirect(
+            *type_idx, *table_idx, *params, *results, frame, state,
+        ))),
+        SemanticOpKind::ReturnCallRef {
+            type_idx,
+            params,
+            results,
+        } => Ok(LoweredTerminator::new(lower_tail_call_ref(
+            *type_idx, *params, *results, frame, state,
+        ))),
     }
 }
 

@@ -123,6 +123,151 @@ impl<'a> BlockLowerContext<'a> {
         })
     }
 
+    pub(super) fn lower_tail_call_internal(
+        &mut self,
+        callee: u32,
+        args: FrameSpan,
+        return_results: Option<FrameSpan>,
+    ) -> Result<MachineTerminator, WasmError> {
+        self.ensure_no_live_values(
+            "prepared SSA-IR tail call reached native lowering with live linear SSA values; values must be published before the tail transfer",
+        )?;
+
+        let callee_id = MachineFuncId(callee);
+        let (callee_frame_prefix_slots, callee_total_frame_slots, callee_results) = {
+            let callee_runtime = self.runtime_for_func(callee_id)?;
+            let results_count = callee_runtime
+                .return_results
+                .map(|region| region.slots)
+                .unwrap_or(0);
+            (
+                callee_runtime.frame_prefix_slots,
+                callee_runtime.total_frame_slots,
+                results_count,
+            )
+        };
+        if args.count > callee_frame_prefix_slots {
+            return Err(WasmError::internal(
+                "direct local tail call passes more arguments than fit in the callee local prefix"
+                    .into(),
+            ));
+        }
+        let return_slots = return_results.map(|region| region.count).unwrap_or(0);
+        if callee_results != return_slots {
+            return Err(WasmError::internal(
+                "direct local tail call result span does not match the callee return-result contract"
+                    .into(),
+            ));
+        }
+
+        self.emit_save_dirty_cached_locals()?;
+
+        let call_regs = self.borrow_free_gp_dynamic_regs(2)?;
+        let callee_frame_base = call_regs[0];
+        let stack_limit = call_regs[1];
+        self.emit_repack_tail_call_args_to_frame_prefix(args)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Move {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: callee_frame_base,
+                src: MachineValue::Reg(self.frame_base_reg()),
+            },
+        });
+
+        self.emit_direct_call_stack_precheck(
+            callee_frame_base,
+            stack_limit,
+            callee_total_frame_slots,
+        )?;
+
+        Ok(MachineTerminator::TailCall {
+            target: MachineCallTarget::Direct(callee_id),
+            callee_frame_base,
+        })
+    }
+
+    pub(super) fn emit_repack_tail_call_args_to_frame_prefix(
+        &mut self,
+        args: FrameSpan,
+    ) -> Result<(), WasmError> {
+        if args.start == FrameSlot(0) {
+            return Ok(());
+        }
+
+        if self.gp_reg_width() == 4 {
+            let temps = self.borrow_free_gp_dynamic_regs(2)?;
+            let tmp_lo = temps[0];
+            let tmp_hi = temps[1];
+            for index in 0..args.count {
+                let src_slot = args.start.advance(index);
+                let dst_slot = FrameSlot(index);
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: tmp_lo,
+                        addr: self.frame_addr_offset(src_slot, 0)?,
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: tmp_hi,
+                        addr: self.frame_addr_offset(src_slot, 4)?,
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: self.frame_addr_offset(dst_slot, 0)?,
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(tmp_lo),
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: self.frame_addr_offset(dst_slot, 4)?,
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(tmp_hi),
+                    },
+                });
+            }
+        } else {
+            let temps = self.borrow_free_gp_dynamic_regs(1)?;
+            let tmp = temps[0];
+            for index in 0..args.count {
+                let src_slot = args.start.advance(index);
+                let dst_slot = FrameSlot(index);
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: tmp,
+                        addr: self.frame_addr(src_slot)?,
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: self.frame_addr(dst_slot)?,
+                        width: MachineMemWidth::U64,
+                        src: MachineValue::Reg(tmp),
+                    },
+                });
+            }
+        }
+        Ok(())
+    }
+
     pub(super) fn lower_call_runtime(
         &mut self,
         func_idx: u32,

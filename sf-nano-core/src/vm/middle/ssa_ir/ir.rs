@@ -778,5 +778,23 @@ pub(crate) enum SsaTerminator {
     Return {
         results: Option<FrameSpan>,
     },
+    TailCallDirect {
+        callee: u32,
+        args: FrameSpan,
+        return_results: Option<FrameSpan>,
+    },
+    TailCallIndirect {
+        type_idx: u32,
+        table_idx: u32,
+        index_slot: FrameSlot,
+        args: FrameSpan,
+        return_results: Option<FrameSpan>,
+    },
+    TailCallRef {
+        type_idx: u32,
+        ref_slot: FrameSlot,
+        args: FrameSpan,
+        return_results: Option<FrameSpan>,
+    },
     TrapUnreachable,
 }

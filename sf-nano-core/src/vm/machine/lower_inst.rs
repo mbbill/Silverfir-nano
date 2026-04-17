@@ -78,6 +78,11 @@ impl<'a> BlockLowerContext<'a> {
                 }
                 Ok(MachineTerminator::Return)
             }
+            SsaTerminator::TailCallDirect { .. }
+            | SsaTerminator::TailCallIndirect { .. }
+            | SsaTerminator::TailCallRef { .. } => Err(WasmError::internal(
+                "SSA-IR tail calls must be lowered in lower_module before generic terminator lowering",
+            )),
             SsaTerminator::TrapUnreachable => Ok(MachineTerminator::Trap {
                 kind: MachineTrapKind::Unreachable,
             }),

@@ -59,7 +59,11 @@ pub(super) fn compute_remaining_uses(
                 count_edge_uses(edge, &mut uses);
             }
         }
-        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+        SsaTerminator::Return { .. }
+        | SsaTerminator::TailCallDirect { .. }
+        | SsaTerminator::TailCallIndirect { .. }
+        | SsaTerminator::TailCallRef { .. }
+        | SsaTerminator::TrapUnreachable => {}
     }
 
     // Linear-SSA invariant: within the op stream, every SsaValue operand is

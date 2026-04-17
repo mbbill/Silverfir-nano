@@ -542,8 +542,42 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     imm,
                 });
             }
-            RETURN_CALL | RETURN_CALL_INDIRECT | RETURN_CALL_REF => {
-                return Err(WasmError::invalid("Opcode not yet supported in decoder"));
+            RETURN_CALL => {
+                let func_idx = payload.read_leb128_u32()?;
+                let wasm_op = OP(op);
+                let imm = Immediate::FunctionIndex(func_idx);
+                let next_off = payload.position();
+                self.decoded_ops.borrow_mut().push(DecodedOp {
+                    wasm_op,
+                    op_offset,
+                    next_op_offset: next_off,
+                    imm,
+                });
+            }
+            RETURN_CALL_INDIRECT => {
+                let typeidx = payload.read_leb128_u32()?;
+                let tableidx = payload.read_leb128_u32()?;
+                let wasm_op = OP(op);
+                let imm = Immediate::CallIndirectArgs { typeidx, tableidx };
+                let next_off = payload.position();
+                self.decoded_ops.borrow_mut().push(DecodedOp {
+                    wasm_op,
+                    op_offset,
+                    next_op_offset: next_off,
+                    imm,
+                });
+            }
+            RETURN_CALL_REF => {
+                let typeidx = payload.read_leb128_u32()?;
+                let wasm_op = OP(op);
+                let imm = Immediate::TypeIndex(typeidx);
+                let next_off = payload.position();
+                self.decoded_ops.borrow_mut().push(DecodedOp {
+                    wasm_op,
+                    op_offset,
+                    next_op_offset: next_off,
+                    imm,
+                });
             }
             SELECT_T => {
                 let len = payload.read_leb128_u32()?;

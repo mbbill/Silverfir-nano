@@ -412,7 +412,11 @@ fn incoming_edge_locations(
                     }
                 }
             }
-            SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+            SsaTerminator::Return { .. }
+            | SsaTerminator::TailCallDirect { .. }
+            | SsaTerminator::TailCallIndirect { .. }
+            | SsaTerminator::TailCallRef { .. }
+            | SsaTerminator::TrapUnreachable => {}
         }
     }
     incoming
@@ -523,6 +527,39 @@ fn substitute_terminator(terminator: SsaTerminator, subst: &[ValueSubstitution])
                 .collect(),
         },
         SsaTerminator::Return { results } => SsaTerminator::Return { results },
+        SsaTerminator::TailCallDirect {
+            callee,
+            args,
+            return_results,
+        } => SsaTerminator::TailCallDirect {
+            callee,
+            args,
+            return_results,
+        },
+        SsaTerminator::TailCallIndirect {
+            type_idx,
+            table_idx,
+            index_slot,
+            args,
+            return_results,
+        } => SsaTerminator::TailCallIndirect {
+            type_idx,
+            table_idx,
+            index_slot,
+            args,
+            return_results,
+        },
+        SsaTerminator::TailCallRef {
+            type_idx,
+            ref_slot,
+            args,
+            return_results,
+        } => SsaTerminator::TailCallRef {
+            type_idx,
+            ref_slot,
+            args,
+            return_results,
+        },
         SsaTerminator::TrapUnreachable => SsaTerminator::TrapUnreachable,
     }
 }
@@ -735,7 +772,11 @@ fn remap_terminator_targets(term: &mut SsaTerminator, mapping: &[SsaTarget]) {
                 edge.target = mapping[edge.target.as_usize()];
             }
         }
-        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+        SsaTerminator::Return { .. }
+        | SsaTerminator::TailCallDirect { .. }
+        | SsaTerminator::TailCallIndirect { .. }
+        | SsaTerminator::TailCallRef { .. }
+        | SsaTerminator::TrapUnreachable => {}
     }
 }
 
@@ -757,7 +798,11 @@ fn remap_terminator_target_after_single_removal(term: &mut SsaTerminator, remove
                 remap_target_after_single_removal(&mut edge.target, removed_index);
             }
         }
-        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+        SsaTerminator::Return { .. }
+        | SsaTerminator::TailCallDirect { .. }
+        | SsaTerminator::TailCallIndirect { .. }
+        | SsaTerminator::TailCallRef { .. }
+        | SsaTerminator::TrapUnreachable => {}
     }
 }
 
@@ -786,7 +831,11 @@ fn visit_outgoing_edges(term: &SsaTerminator, mut visit: impl FnMut(&SsaEdge)) {
                 visit(edge);
             }
         }
-        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+        SsaTerminator::Return { .. }
+        | SsaTerminator::TailCallDirect { .. }
+        | SsaTerminator::TailCallIndirect { .. }
+        | SsaTerminator::TailCallRef { .. }
+        | SsaTerminator::TrapUnreachable => {}
     }
 }
 

@@ -1099,6 +1099,45 @@ impl<'a> Arm32Backend<'a> {
         Ok(())
     }
 
+    pub(super) fn emit_tail_call(
+        &mut self,
+        target: &MachineCallTarget,
+        callee_frame_base: MachineReg,
+    ) -> Result<(), WasmError> {
+        let callee_fp = map_reg(callee_frame_base)?;
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+
+        self.core
+            .text
+            .emit_u32(enc::ldr_imm(Arm32Reg::R14, Arm32Reg::SP, 0));
+        self.core
+            .text
+            .emit_u32(enc::add_imm(Arm32Reg::SP, Arm32Reg::SP, 8, 0));
+        self.core.text.emit_u32(enc::mov_reg(fp_reg, callee_fp));
+
+        match target {
+            MachineCallTarget::Direct(callee) => {
+                // Tail calls must restore LR before the final branch so the
+                // callee can preserve the caller's return address in its own
+                // body prelude. That rules out using LR as the patchable target
+                // temp here, so materialize the direct entry in IP explicitly.
+                let callee_patch = emit_patchable_addr_into(&mut self.core.text, Arm32Reg::R12);
+                self.core.direct_call_patches.push(
+                    crate::vm::arch::common::types::DirectCallPatch {
+                        literal_offset: callee_patch,
+                        callee: *callee,
+                    },
+                );
+                self.core.text.emit_u32(enc::bx(Arm32Reg::R12));
+            }
+            MachineCallTarget::Indirect { callee_entry, .. } => {
+                let callee_entry = map_reg(*callee_entry)?;
+                self.core.text.emit_u32(enc::bx(callee_entry));
+            }
+        }
+        Ok(())
+    }
+
     /// Unified return sequence. Inline at every `MachineTerminator::Return`.
     /// Pops the body prelude link save and the caller's call record from
     /// the host stack, copies the function's `return_results` region into

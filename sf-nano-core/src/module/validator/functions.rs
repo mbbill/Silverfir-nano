@@ -427,8 +427,77 @@ impl<'a> FunctionValidator<'a> {
                 self.context.pop_vals(function_type.params())?;
                 self.context.push_vals(function_type.results())
             }
-            RETURN_CALL | RETURN_CALL_INDIRECT | RETURN_CALL_REF => {
-                Err(WasmError::invalid("Opcode not implemented"))
+            RETURN_CALL => {
+                let function_index = extract_imm!(imm, Immediate::FunctionIndex);
+                let function = self
+                    .module
+                    .functions()
+                    .get(function_index as usize)
+                    .ok_or_else(|| WasmError::invalid("function index out of range"))?;
+                let function_type = function.func_type();
+                let func_label_types = self.context.frame_last()?.label_types();
+                if function_type.results().len() != func_label_types.len() {
+                    return Err(WasmError::invalid("type mismatch"));
+                }
+                self.context.pop_vals(function_type.params())?;
+                self.context.push_vals(function_type.results())?;
+                self.context.pop_vals(&func_label_types)?;
+                self.context.mark_unreachable()?;
+                Ok(())
+            }
+            RETURN_CALL_INDIRECT => {
+                let Immediate::CallIndirectArgs { typeidx, tableidx } = imm else {
+                    unreachable!()
+                };
+                let table = self
+                    .module
+                    .tables()
+                    .get(tableidx as usize)
+                    .ok_or_else(|| WasmError::invalid("invalid table index"))?;
+                let is_table64 = table.spec().limits().is64;
+                let idx_type = if is_table64 { I64 } else { I32 };
+                self.context.pop_val(Some(idx_type))?;
+                let function_type = self
+                    .module
+                    .types()
+                    .get_function_type(typeidx)
+                    .cloned()
+                    .ok_or_else(|| WasmError::invalid("invalid function type index"))?;
+                let table_type = table.value_type();
+                if !table_type.is_funcref() {
+                    return Err(WasmError::invalid(
+                        "call_indirect requires funcref table, got",
+                    ));
+                }
+                let func_label_types = self.context.frame_last()?.label_types();
+                if function_type.results().len() != func_label_types.len() {
+                    return Err(WasmError::invalid("type mismatch"));
+                }
+                self.context.pop_vals(function_type.params())?;
+                self.context.push_vals(function_type.results())?;
+                self.context.pop_vals(&func_label_types)?;
+                self.context.mark_unreachable()?;
+                Ok(())
+            }
+            RETURN_CALL_REF => {
+                let type_idx = extract_imm!(imm, Immediate::TypeIndex);
+                let function_type = self
+                    .module
+                    .types()
+                    .get_function_type(type_idx)
+                    .cloned()
+                    .ok_or_else(|| WasmError::invalid("invalid function type index"))?;
+                let func_label_types = self.context.frame_last()?.label_types();
+                if function_type.results().len() != func_label_types.len() {
+                    return Err(WasmError::invalid("type mismatch"));
+                }
+                self.context
+                    .pop_val(Some(ValueType::Ref(RefType::nullable_concrete(type_idx))))?;
+                self.context.pop_vals(function_type.params())?;
+                self.context.push_vals(function_type.results())?;
+                self.context.pop_vals(&func_label_types)?;
+                self.context.mark_unreachable()?;
+                Ok(())
             }
             DROP => {
                 self.context.pop_val(None)?;

@@ -74,7 +74,11 @@ pub(super) fn insert_boundary_repair_blocks(
                     edge_slots.push((EdgeSlot::BrTable(idx), edge.target));
                 }
             }
-            SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+            SsaTerminator::Return { .. }
+            | SsaTerminator::TailCallDirect { .. }
+            | SsaTerminator::TailCallIndirect { .. }
+            | SsaTerminator::TailCallRef { .. }
+            | SsaTerminator::TrapUnreachable => {}
         }
 
         for i in 0..edge_slots.len() {

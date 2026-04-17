@@ -64,6 +64,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 *continuation,
                 fallthrough,
             ),
+            MachineTerminator::TailCall {
+                target,
+                callee_frame_base,
+            } => self.lower_tail_call(target, *callee_frame_base),
         }
     }
 
@@ -353,6 +357,56 @@ impl<'a> super::backend::Arm64Backend<'a> {
         // case and the explicit `b` is dead code we can elide.
         if !continuation_is_fallthrough {
             self.lower_b(continuation_label);
+        }
+
+        if let Some(scratch_idx) = scratch_idx {
+            self.gp_scratch.free_index(scratch_idx);
+        }
+        Ok(())
+    }
+
+    fn lower_tail_call(
+        &mut self,
+        target: &MachineCallTarget,
+        callee_frame_base: MachineReg,
+    ) -> Result<(), WasmError> {
+        let callee_fp = self.map_gp_reg(callee_frame_base)?;
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        let x29 = abi::host_fp_reg();
+        let x30 = abi::host_lr_reg();
+
+        let scratch_idx = match target {
+            MachineCallTarget::Direct(callee) => {
+                let scratch_idx = self.gp_scratch.alloc();
+                let scratch = self.gp_scratch.reg(scratch_idx);
+                let callee_load = self.core.text.emit_u32(enc::ldr_lit_64(scratch, 0));
+                self.pending_call_literals
+                    .push(super::backend::PendingCallLiteral {
+                        ldr_offset: callee_load,
+                        scratch_reg: scratch,
+                        callee: *callee,
+                    });
+                Some(scratch_idx)
+            }
+            MachineCallTarget::Indirect { .. } => None,
+        };
+
+        self.core
+            .text
+            .emit_u32(enc::ldp_64_post_index(x29, x30, abi::stack_reg(), 16));
+        self.core.text.emit_u32(enc::mov_reg_64(fp_reg, callee_fp));
+
+        match target {
+            MachineCallTarget::Direct(_) => {
+                let scratch = self
+                    .gp_scratch
+                    .reg(scratch_idx.expect("direct tail-call scratch"));
+                self.core.text.emit_u32(enc::br(scratch));
+            }
+            MachineCallTarget::Indirect { callee_entry, .. } => {
+                let callee_entry = self.map_gp_reg(*callee_entry)?;
+                self.core.text.emit_u32(enc::br(callee_entry));
+            }
         }
 
         if let Some(scratch_idx) = scratch_idx {

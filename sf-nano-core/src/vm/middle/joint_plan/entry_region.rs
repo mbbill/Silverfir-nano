@@ -326,6 +326,9 @@ fn analyze_entry_stack_region(
             | SemanticOpKind::CallDirect { .. }
             | SemanticOpKind::CallIndirect { .. }
             | SemanticOpKind::CallRef { .. }
+            | SemanticOpKind::ReturnCallDirect { .. }
+            | SemanticOpKind::ReturnCallIndirect { .. }
+            | SemanticOpKind::ReturnCallRef { .. }
             | SemanticOpKind::ReturnVoid
             | SemanticOpKind::ReturnOne
             | SemanticOpKind::Return { .. } => break,
@@ -505,6 +508,18 @@ fn apply_transient_analysis_effect(
                 infos,
             );
             push_fresh_transient_symbols(stack, infos, next_symbol, *results as usize);
+        }
+        SemanticOpKind::ReturnCallDirect { params, .. } => {
+            touch_transient_top(stack, *params as usize, block_offset, infos);
+        }
+        SemanticOpKind::ReturnCallIndirect { params, .. }
+        | SemanticOpKind::ReturnCallRef { params, .. } => {
+            touch_transient_top(
+                stack,
+                params.saturating_add(1) as usize,
+                block_offset,
+                infos,
+            );
         }
         SemanticOpKind::ReturnVoid => {}
         SemanticOpKind::ReturnOne => {

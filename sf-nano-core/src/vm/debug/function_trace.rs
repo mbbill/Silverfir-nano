@@ -379,6 +379,20 @@ mod imp {
         );
     }
 
+    #[allow(dead_code)]
+    pub(crate) fn native_function_trace_tail_call_enter_func_idx(
+        ctx: &mut NativeContext,
+        func_idx: u32,
+    ) {
+        if !enabled() {
+            return;
+        }
+        if !ctx.trace_stack.is_empty() {
+            ctx.trace_stack.pop();
+        }
+        native_function_trace_enter_func_idx(ctx, func_idx);
+    }
+
     #[unsafe(no_mangle)]
     pub(crate) unsafe extern "C" fn native_function_trace_enter_func_idx_entry(
         ctx: *mut NativeContext,
@@ -420,3 +434,61 @@ mod imp {
 }
 
 pub(crate) use imp::*;
+
+#[cfg(test)]
+mod tests {
+    use std::{
+        path::PathBuf,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    use tracked_alloc::format;
+    use tracked_alloc::string::String;
+
+    use super::imp::*;
+    use crate::module::type_context::TypeContext;
+    use crate::vm::{entities::ModuleInst, runtime::context::NativeContext, store::Store};
+
+    struct TraceTestGuard {
+        path: PathBuf,
+    }
+
+    impl TraceTestGuard {
+        fn new() -> Self {
+            let unique = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .expect("system time")
+                .as_nanos();
+            let path = std::env::temp_dir().join(format!("sf-function-trace-{unique}.log"));
+            unsafe {
+                std::env::set_var("SF_FUNCTION_TRACE", &path);
+                std::env::remove_var("SF_FUNCTION_TRACE_MEMORY");
+            }
+            init_from_env();
+            Self { path }
+        }
+    }
+
+    impl Drop for TraceTestGuard {
+        fn drop(&mut self) {
+            unsafe {
+                std::env::remove_var("SF_FUNCTION_TRACE");
+                std::env::remove_var("SF_FUNCTION_TRACE_MEMORY");
+            }
+            init_from_env();
+            let _ = std::fs::remove_file(&self.path);
+        }
+    }
+
+    #[test]
+    fn tail_call_entry_replaces_active_trace_frame() {
+        let _guard = TraceTestGuard::new();
+        let mut store = Store::new(ModuleInst::new(String::from("m"), TypeContext::empty()));
+        let mut ctx = NativeContext::new((&mut store) as *mut Store, core::ptr::null_mut());
+
+        native_function_trace_enter_func_idx(&mut ctx, 7);
+        native_function_trace_tail_call_enter_func_idx(&mut ctx, 9);
+
+        assert_eq!(ctx.trace_stack.as_slice(), &[9]);
+    }
+}

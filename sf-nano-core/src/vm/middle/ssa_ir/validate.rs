@@ -73,7 +73,11 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
                     validate_edge(program, edge)?;
                 }
             }
-            SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+            SsaTerminator::Return { .. }
+            | SsaTerminator::TailCallDirect { .. }
+            | SsaTerminator::TailCallIndirect { .. }
+            | SsaTerminator::TailCallRef { .. }
+            | SsaTerminator::TrapUnreachable => {}
         }
     }
 
@@ -146,7 +150,11 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
                     validate_edge_values(edge, &check)?;
                 }
             }
-            SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+            SsaTerminator::Return { .. }
+            | SsaTerminator::TailCallDirect { .. }
+            | SsaTerminator::TailCallIndirect { .. }
+            | SsaTerminator::TailCallRef { .. }
+            | SsaTerminator::TrapUnreachable => {}
         }
     }
     Ok(())

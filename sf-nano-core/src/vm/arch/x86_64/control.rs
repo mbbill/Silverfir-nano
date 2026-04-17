@@ -69,6 +69,10 @@ impl<'a> X86_64Backend<'a> {
                 *continuation,
                 fallthrough,
             ),
+            MachineTerminator::TailCall {
+                target,
+                callee_frame_base,
+            } => self.lower_tail_call(target, *callee_frame_base),
         }
     }
 
@@ -371,6 +375,51 @@ impl<'a> X86_64Backend<'a> {
         // continuation block.
         if !continuation_is_fallthrough {
             self.emit_jmp(continuation_label);
+        }
+        Ok(())
+    }
+
+    fn lower_tail_call(
+        &mut self,
+        target: &MachineCallTarget,
+        callee_frame_base: MachineReg,
+    ) -> Result<(), WasmError> {
+        let callee_fp = self.map_gp_reg(callee_frame_base)?;
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+
+        let scratch_idx = match target {
+            MachineCallTarget::Direct(callee) => {
+                let scratch_idx = self.gp_scratch.alloc();
+                let scratch = self.gp_scratch.reg(scratch_idx);
+                enc::movabs_ri_64(&mut self.core.text, scratch, 0);
+                let callee_imm_offset = self.core.text.len() - 8;
+                self.core.direct_call_patches.push(DirectCallPatch {
+                    literal_offset: callee_imm_offset,
+                    callee: *callee,
+                });
+                Some(scratch_idx)
+            }
+            MachineCallTarget::Indirect { .. } => None,
+        };
+
+        enc::add_rsp_imm8(&mut self.core.text, 8);
+        enc::mov_rr_64(&mut self.core.text, fp_reg, callee_fp);
+
+        match target {
+            MachineCallTarget::Direct(_) => {
+                let scratch = self
+                    .gp_scratch
+                    .reg(scratch_idx.expect("direct tail-call scratch"));
+                enc::jmp_reg(&mut self.core.text, scratch);
+            }
+            MachineCallTarget::Indirect { callee_entry, .. } => {
+                let callee_entry = self.map_gp_reg(*callee_entry)?;
+                enc::jmp_reg(&mut self.core.text, callee_entry);
+            }
+        }
+
+        if let Some(scratch_idx) = scratch_idx {
+            self.gp_scratch.free_index(scratch_idx);
         }
         Ok(())
     }

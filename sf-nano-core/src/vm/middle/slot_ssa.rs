@@ -186,7 +186,10 @@ fn lower_body_inst_kind(kind: &SemanticOpKind) -> Option<SlotInstKind> {
         | SemanticOpKind::BrTable { .. }
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
-        | SemanticOpKind::Return { .. } => None,
+        | SemanticOpKind::Return { .. }
+        | SemanticOpKind::ReturnCallDirect { .. }
+        | SemanticOpKind::ReturnCallIndirect { .. }
+        | SemanticOpKind::ReturnCallRef { .. } => None,
     }
 }
 
@@ -208,9 +211,12 @@ fn lower_terminator_kind(
         SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => {
             SlotTerminatorKind::TrapUnreachable
         }
-        SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
-            SlotTerminatorKind::Return
-        }
+        SemanticOpKind::ReturnVoid
+        | SemanticOpKind::ReturnOne
+        | SemanticOpKind::Return { .. }
+        | SemanticOpKind::ReturnCallDirect { .. }
+        | SemanticOpKind::ReturnCallIndirect { .. }
+        | SemanticOpKind::ReturnCallRef { .. } => SlotTerminatorKind::Return,
         SemanticOpKind::Br { target, .. } => SlotTerminatorKind::Goto(target_block(cfg, *target)?),
         SemanticOpKind::BrIf { target, .. }
         | SemanticOpKind::BrOnNull { target, .. }

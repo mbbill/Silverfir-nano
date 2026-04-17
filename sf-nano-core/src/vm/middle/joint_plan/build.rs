@@ -667,7 +667,12 @@ fn apply_semantic_effect(
                 push_result_types(&mut state.type_stack, *results, op_index, op_result_types);
             }
         }
-        SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
+        SemanticOpKind::ReturnVoid
+        | SemanticOpKind::ReturnOne
+        | SemanticOpKind::Return { .. }
+        | SemanticOpKind::ReturnCallDirect { .. }
+        | SemanticOpKind::ReturnCallIndirect { .. }
+        | SemanticOpKind::ReturnCallRef { .. } => {
             state.mark_unreachable();
         }
     }
@@ -901,6 +906,9 @@ fn apply_structural_prefix(op: &SemanticOp, state: &mut PrepareState) {
         SemanticOpKind::CallDirect { .. }
         | SemanticOpKind::CallIndirect { .. }
         | SemanticOpKind::CallRef { .. }
+        | SemanticOpKind::ReturnCallDirect { .. }
+        | SemanticOpKind::ReturnCallIndirect { .. }
+        | SemanticOpKind::ReturnCallRef { .. }
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => {

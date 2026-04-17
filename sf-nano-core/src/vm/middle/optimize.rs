@@ -978,7 +978,11 @@ fn mark_terminator_uses(term: &SsaTerminator, used: &mut [bool]) {
                 }
             }
         }
-        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+        SsaTerminator::Return { .. }
+        | SsaTerminator::TailCallDirect { .. }
+        | SsaTerminator::TailCallIndirect { .. }
+        | SsaTerminator::TailCallRef { .. }
+        | SsaTerminator::TrapUnreachable => {}
     }
 }
 
@@ -1050,7 +1054,11 @@ fn max_value_index_parts(
                 max_value = max_value.max(edge.bindings.iter().map(|binding| binding.value).max());
             }
         }
-        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => {}
+        SsaTerminator::Return { .. }
+        | SsaTerminator::TailCallDirect { .. }
+        | SsaTerminator::TailCallIndirect { .. }
+        | SsaTerminator::TailCallRef { .. }
+        | SsaTerminator::TrapUnreachable => {}
     }
 
     max_value

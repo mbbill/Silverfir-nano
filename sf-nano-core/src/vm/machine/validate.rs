@@ -726,6 +726,20 @@ impl MachineProgram {
                 self.validate_reg(*caller_result_base, config)?;
                 self.validate_block_id(*continuation, source_block, "continuation")
             }
+            MachineTerminator::TailCall {
+                target,
+                callee_frame_base,
+            } => {
+                if let MachineCallTarget::Indirect {
+                    callee_target,
+                    callee_entry,
+                } = target
+                {
+                    self.validate_reg(*callee_target, config)?;
+                    self.validate_reg(*callee_entry, config)?;
+                }
+                self.validate_reg(*callee_frame_base, config)
+            }
             MachineTerminator::Return => Ok(()),
             MachineTerminator::Trap { .. } => Ok(()),
         }
@@ -917,12 +931,18 @@ impl MachineModule {
                     self.validate_const_id(func, block_idx, call.metadata)?;
                 }
             }
-            if let MachineTerminator::Call {
-                target: MachineCallTarget::Direct(callee),
-                ..
-            } = block.terminator
-            {
-                self.validate_func_id(func, block_idx, callee)?;
+            match block.terminator {
+                MachineTerminator::Call {
+                    target: MachineCallTarget::Direct(callee),
+                    ..
+                }
+                | MachineTerminator::TailCall {
+                    target: MachineCallTarget::Direct(callee),
+                    ..
+                } => {
+                    self.validate_func_id(func, block_idx, callee)?;
+                }
+                _ => {}
             }
         }
         Ok(())

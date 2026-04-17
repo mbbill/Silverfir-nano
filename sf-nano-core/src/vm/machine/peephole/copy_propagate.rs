@@ -518,6 +518,20 @@ fn rewrite_terminator_sources(term: &mut MachineTerminator, aliases: &[Option<Ma
             *callee_frame_base = resolve_alias(*callee_frame_base, aliases);
             *caller_result_base = resolve_alias(*caller_result_base, aliases);
         }
+        MachineTerminator::TailCall {
+            target,
+            callee_frame_base,
+        } => {
+            if let MachineCallTarget::Indirect {
+                callee_target,
+                callee_entry,
+            } = target
+            {
+                *callee_target = resolve_alias(*callee_target, aliases);
+                *callee_entry = resolve_alias(*callee_entry, aliases);
+            }
+            *callee_frame_base = resolve_alias(*callee_frame_base, aliases);
+        }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
     }
 }
@@ -531,6 +545,7 @@ fn rewrite_float_alias_terminator_sources(
         MachineTerminator::Jump(_)
         | MachineTerminator::JumpTable { .. }
         | MachineTerminator::Call { .. }
+        | MachineTerminator::TailCall { .. }
         | MachineTerminator::Return
         | MachineTerminator::Trap { .. } => {}
     }

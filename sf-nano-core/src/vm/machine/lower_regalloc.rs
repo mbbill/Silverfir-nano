@@ -1207,6 +1207,20 @@ fn visit_term_source_regs(term: &MachineTerminator, mut visit: impl FnMut(Machin
             visit(*callee_frame_base);
             visit(*caller_result_base);
         }
+        MachineTerminator::TailCall {
+            target,
+            callee_frame_base,
+        } => {
+            if let MachineCallTarget::Indirect {
+                callee_target,
+                callee_entry,
+            } = target
+            {
+                visit(*callee_target);
+                visit(*callee_entry);
+            }
+            visit(*callee_frame_base);
+        }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
     }
 }

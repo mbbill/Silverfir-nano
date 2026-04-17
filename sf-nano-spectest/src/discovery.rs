@@ -46,10 +46,6 @@ pub fn should_skip_test(test_name: &str) -> bool {
 
     // Skip WebAssembly 3.0 features not yet implemented
 
-    // `br_on_cast*.wast` is no longer skipped. The earlier failure mode was
-    // our own GC array opcode-table bug, not a persistent upstream `wast`/`wat`
-    // limitation, and the targeted spectests now pass again.
-
     // Exception Handling proposal
     if test_name.starts_with("tag")
         || test_name.starts_with("throw")
@@ -57,11 +53,6 @@ pub fn should_skip_test(test_name: &str) -> bool {
         || test_name.starts_with("try_")
         || test_name.starts_with("instance")
     {
-        return true;
-    }
-
-    // Skip Tail Call proposal
-    if test_name.starts_with("return_call") {
         return true;
     }
 
@@ -89,7 +80,7 @@ mod tests {
     }
 
     #[test]
-    fn tail_call_tests_remain_skipped() {
-        assert!(should_skip_test("return_call_ref"));
+    fn tail_call_tests_are_not_skipped() {
+        assert!(!should_skip_test("return_call_ref"));
     }
 }

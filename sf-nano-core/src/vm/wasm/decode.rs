@@ -482,6 +482,41 @@ impl<'a> DecodeContext<'a> {
         }
     }
 
+    fn handle_return_call(&mut self, func_idx: u32) {
+        let (params, results) = self.compile.resolve_func_type(func_idx);
+        self.push_op(SemanticOpKind::ReturnCallDirect {
+            callee: func_idx,
+            params,
+            results,
+        });
+        self.pop_typed_values(params as usize);
+        self.set_unreachable();
+    }
+
+    fn handle_return_call_indirect(&mut self, type_idx: u32, table_idx: u32) {
+        let (params, results) = self.compile.resolve_type_index(type_idx);
+        self.pop_typed_values(1);
+        self.push_op(SemanticOpKind::ReturnCallIndirect {
+            type_idx,
+            table_idx,
+            params,
+            results,
+        });
+        self.pop_typed_values(params as usize);
+        self.set_unreachable();
+    }
+
+    fn handle_return_call_ref(&mut self, type_idx: u32) {
+        let (params, results) = self.compile.resolve_type_index(type_idx);
+        self.push_op(SemanticOpKind::ReturnCallRef {
+            type_idx,
+            params,
+            results,
+        });
+        self.pop_typed_values(params.saturating_add(1) as usize);
+        self.set_unreachable();
+    }
+
     fn handle_call_ref(&mut self, type_idx: u32) {
         let (params, results) = self.compile.resolve_type_index(type_idx);
         let idx = self.push_op(SemanticOpKind::CallRef {
@@ -1320,9 +1355,27 @@ impl<'a> DecodeContext<'a> {
                     self.handle_call(*func_idx);
                 }
             }
+            OP(RETURN_CALL) => {
+                if let Immediate::FunctionIndex(func_idx) = imm {
+                    if self.unreachable {
+                        self.handle_primitive(PrimitiveOpKind::Nop);
+                    } else {
+                        self.handle_return_call(*func_idx);
+                    }
+                }
+            }
             OP(CALL_INDIRECT) => {
                 if let Immediate::CallIndirectArgs { typeidx, tableidx } = imm {
                     self.handle_call_indirect(*typeidx, *tableidx);
+                }
+            }
+            OP(RETURN_CALL_INDIRECT) => {
+                if let Immediate::CallIndirectArgs { typeidx, tableidx } = imm {
+                    if self.unreachable {
+                        self.handle_primitive(PrimitiveOpKind::Nop);
+                    } else {
+                        self.handle_return_call_indirect(*typeidx, *tableidx);
+                    }
                 }
             }
             OP(CALL_REF) => {
@@ -1331,6 +1384,15 @@ impl<'a> DecodeContext<'a> {
                         self.handle_primitive(PrimitiveOpKind::Nop);
                     } else {
                         self.handle_call_ref(*typeidx);
+                    }
+                }
+            }
+            OP(RETURN_CALL_REF) => {
+                if let Immediate::TypeIndex(typeidx) = imm {
+                    if self.unreachable {
+                        self.handle_primitive(PrimitiveOpKind::Nop);
+                    } else {
+                        self.handle_return_call_ref(*typeidx);
                     }
                 }
             }

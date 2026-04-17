@@ -568,6 +568,16 @@ pub(super) fn terminator_uses_reg(term: &MachineTerminator, reg: MachineReg) -> 
                     || *caller_result_base == reg
             }
         },
+        MachineTerminator::TailCall {
+            target,
+            callee_frame_base,
+        } => match target {
+            MachineCallTarget::Direct(_) => *callee_frame_base == reg,
+            MachineCallTarget::Indirect {
+                callee_target,
+                callee_entry,
+            } => *callee_target == reg || *callee_entry == reg || *callee_frame_base == reg,
+        },
         MachineTerminator::Return | MachineTerminator::Trap { .. } => false,
     }
 }

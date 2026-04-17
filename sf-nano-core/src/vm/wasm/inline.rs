@@ -188,6 +188,11 @@ fn find_return_sites(callee: &SemanticProgram) -> collections::Vec<ReturnSite> {
                 });
                 unreachable = true;
             }
+            SemanticOpKind::ReturnCallDirect { .. }
+            | SemanticOpKind::ReturnCallIndirect { .. }
+            | SemanticOpKind::ReturnCallRef { .. } => {
+                unreachable = true;
+            }
             SemanticOpKind::CallDirect {
                 params, results, ..
             } => {
@@ -533,7 +538,10 @@ fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
             | SemanticOpKind::BrTable { .. }
             | SemanticOpKind::ReturnVoid
             | SemanticOpKind::ReturnOne
-            | SemanticOpKind::Return { .. } => {
+            | SemanticOpKind::Return { .. }
+            | SemanticOpKind::ReturnCallDirect { .. }
+            | SemanticOpKind::ReturnCallIndirect { .. }
+            | SemanticOpKind::ReturnCallRef { .. } => {
                 unreachable = true;
             }
             SemanticOpKind::BrIf { .. } => {

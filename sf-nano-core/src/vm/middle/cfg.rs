@@ -239,7 +239,12 @@ fn build_terminator(
             CfgTerminator::TrapUnreachable { op_index },
             collections::Vec::new(),
         ),
-        SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
+        SemanticOpKind::ReturnVoid
+        | SemanticOpKind::ReturnOne
+        | SemanticOpKind::Return { .. }
+        | SemanticOpKind::ReturnCallDirect { .. }
+        | SemanticOpKind::ReturnCallIndirect { .. }
+        | SemanticOpKind::ReturnCallRef { .. } => {
             (CfgTerminator::Return { op_index }, collections::Vec::new())
         }
         SemanticOpKind::Br { target, .. } => {
@@ -386,7 +391,10 @@ fn for_each_semantic_successor(
         SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
-        | SemanticOpKind::Return { .. } => {}
+        | SemanticOpKind::Return { .. }
+        | SemanticOpKind::ReturnCallDirect { .. }
+        | SemanticOpKind::ReturnCallIndirect { .. }
+        | SemanticOpKind::ReturnCallRef { .. } => {}
         SemanticOpKind::Br { target, .. } => {
             f(*target);
         }
@@ -433,6 +441,9 @@ fn is_plain_fallthrough(index: usize, len: usize, op: &SemanticOp) -> bool {
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. }
+        | SemanticOpKind::ReturnCallDirect { .. }
+        | SemanticOpKind::ReturnCallIndirect { .. }
+        | SemanticOpKind::ReturnCallRef { .. }
         | SemanticOpKind::Br { .. }
         | SemanticOpKind::BrIf { .. }
         | SemanticOpKind::BrOnNull { .. }
@@ -461,6 +472,9 @@ fn splits_after(kind: &SemanticOpKind) -> bool {
             | SemanticOpKind::ReturnVoid
             | SemanticOpKind::ReturnOne
             | SemanticOpKind::Return { .. }
+            | SemanticOpKind::ReturnCallDirect { .. }
+            | SemanticOpKind::ReturnCallIndirect { .. }
+            | SemanticOpKind::ReturnCallRef { .. }
             | SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
     )
 }

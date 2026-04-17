@@ -20,7 +20,7 @@ use crate::{
             MachineModuleAbi, MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator,
             MachineValue,
         },
-        middle::frame::FrameSlot,
+        middle::frame::{FrameSlot, FrameSpan},
         middle::ssa_ir::ir::{
             DecodedOperand, SsaBinding, SsaBlock, SsaCallOp, SsaInst, SsaInstView, SsaOperand,
             SsaProgram, SsaTerminator,
@@ -419,7 +419,49 @@ fn render_lir_terminator(term: &SsaTerminator) -> String {
             Some(span) => format!("return fp[{}..{})", span.start.0, span.start.0 + span.count),
             None => "return void".into(),
         },
+        SsaTerminator::TailCallDirect {
+            callee,
+            args,
+            return_results,
+        } => format!(
+            "tail_call f{callee} args=fp[{}..{}) results={}",
+            args.start.0,
+            args.start.0 + args.count,
+            render_frame_span_or_void(*return_results),
+        ),
+        SsaTerminator::TailCallIndirect {
+            type_idx,
+            table_idx,
+            index_slot,
+            args,
+            return_results,
+        } => format!(
+            "tail_call_indirect type={type_idx} table={table_idx} index=fp[{}] args=fp[{}..{}) results={}",
+            index_slot.0,
+            args.start.0,
+            args.start.0 + args.count,
+            render_frame_span_or_void(*return_results),
+        ),
+        SsaTerminator::TailCallRef {
+            type_idx,
+            ref_slot,
+            args,
+            return_results,
+        } => format!(
+            "tail_call_ref type={type_idx} ref=fp[{}] args=fp[{}..{}) results={}",
+            ref_slot.0,
+            args.start.0,
+            args.start.0 + args.count,
+            render_frame_span_or_void(*return_results),
+        ),
         SsaTerminator::TrapUnreachable => "trap_unreachable".into(),
+    }
+}
+
+fn render_frame_span_or_void(span: Option<FrameSpan>) -> String {
+    match span {
+        Some(span) => format!("fp[{}..{})", span.start.0, span.start.0 + span.count),
+        None => "void".into(),
     }
 }
 
@@ -1363,6 +1405,24 @@ fn render_machine_term(term: &MachineTerminator) -> String {
                 callee_frame_base.0,
                 caller_result_base.0,
                 continuation.0
+            ),
+        },
+        MachineTerminator::TailCall {
+            target,
+            callee_frame_base,
+        } => match target {
+            MachineCallTarget::Direct(callee) => {
+                format!(
+                    "tail_call f{} frame_base=r{}",
+                    callee.0, callee_frame_base.0
+                )
+            }
+            MachineCallTarget::Indirect {
+                callee_target,
+                callee_entry,
+            } => format!(
+                "tail_call target=r{} entry=r{} frame_base=r{}",
+                callee_target.0, callee_entry.0, callee_frame_base.0
             ),
         },
         MachineTerminator::Return => "return".into(),

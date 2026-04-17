@@ -752,6 +752,9 @@ impl<'a> BlockLowerContext<'a> {
             SsaTerminator::Branch { .. }
             | SsaTerminator::BrTable { .. }
             | SsaTerminator::Return { .. }
+            | SsaTerminator::TailCallDirect { .. }
+            | SsaTerminator::TailCallIndirect { .. }
+            | SsaTerminator::TailCallRef { .. }
             | SsaTerminator::TrapUnreachable => None,
         }
     }

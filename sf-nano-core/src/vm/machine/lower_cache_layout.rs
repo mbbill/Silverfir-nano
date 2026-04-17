@@ -882,6 +882,10 @@ fn block_successors(terminator: &SsaTerminator) -> collections::Vec<SsaTarget> {
         SsaTerminator::BrTable { entries, .. } => {
             entries.iter().map(|entry| entry.target).collect()
         }
-        SsaTerminator::Return { .. } | SsaTerminator::TrapUnreachable => collections::Vec::new(),
+        SsaTerminator::Return { .. }
+        | SsaTerminator::TailCallDirect { .. }
+        | SsaTerminator::TailCallIndirect { .. }
+        | SsaTerminator::TailCallRef { .. }
+        | SsaTerminator::TrapUnreachable => collections::Vec::new(),
     }
 }

@@ -74,6 +74,13 @@ impl<'a> Arm32Backend<'a> {
                 )?;
             }
 
+            MachineTerminator::TailCall {
+                target,
+                callee_frame_base,
+            } => {
+                self.emit_tail_call(target, *callee_frame_base)?;
+            }
+
             MachineTerminator::JumpTable { index, entries } => {
                 if entries.is_empty() {
                     return Err(WasmError::internal(

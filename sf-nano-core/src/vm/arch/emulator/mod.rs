@@ -249,6 +249,10 @@ impl<'a> Emulator<'a> {
                     *caller_result_base,
                     *continuation,
                 ),
+                MachineTerminator::TailCall {
+                    target,
+                    callee_frame_base,
+                } => self.enter_tail_call(target, *callee_frame_base),
                 MachineTerminator::Return => {
                     if self.handle_return()? {
                         return Ok(());
@@ -1523,6 +1527,23 @@ impl<'a> Emulator<'a> {
         )
     }
 
+    fn enter_tail_call(
+        &mut self,
+        target: &MachineCallTarget,
+        callee_frame_base: MachineReg,
+    ) -> Result<(), WasmError> {
+        let (callee, check_stack_capacity) = match target {
+            MachineCallTarget::Direct(callee) => (*callee, true),
+            MachineCallTarget::Indirect { callee_target, .. } => {
+                (MachineFuncId(self.read_reg(*callee_target)? as u32), false)
+            }
+        };
+        let callee_fp = self
+            .address_space
+            .host_stack_ptr(self.read_reg(callee_frame_base)?)?;
+        self.enter_tail_callee(callee, callee_fp, check_stack_capacity)
+    }
+
     fn enter_callee(
         &mut self,
         callee: MachineFuncId,
@@ -1570,6 +1591,41 @@ impl<'a> Emulator<'a> {
         self.addr_kinds = init_entry_addr_kinds(self.compiled.backend().total_reg_count());
         #[cfg(sf_call_trace)]
         function_trace::native_function_trace_enter_func_idx(self.ctx, callee.0);
+        Ok(())
+    }
+
+    fn enter_tail_callee(
+        &mut self,
+        callee: MachineFuncId,
+        callee_fp: *mut u64,
+        check_stack_capacity: bool,
+    ) -> Result<(), WasmError> {
+        let callee_function = self
+            .compiled
+            .function(callee)
+            .ok_or_else(|| WasmError::internal("machine local callee is out of range"))?;
+        let callee_runtime = self.runtime_for(callee)?;
+        if check_stack_capacity {
+            ensure_stack_capacity(
+                callee_fp,
+                self.ctx.stack_end,
+                callee_runtime.total_frame_slots,
+            )?;
+        }
+        self.func_id = callee;
+        self.fp = callee_fp;
+        self.block_id = callee_function.program.entry;
+        self.regs = init_entry_regs(
+            self.compiled,
+            self.compiled.backend().total_reg_count(),
+            self.address_space.runtime_base_value(self.ctx),
+            self.address_space.frame_base_value(callee_fp)?,
+            self.address_space.mem0_base_value(self.ctx),
+            self.ctx.mem0_size,
+        );
+        self.addr_kinds = init_entry_addr_kinds(self.compiled.backend().total_reg_count());
+        #[cfg(sf_call_trace)]
+        function_trace::native_function_trace_tail_call_enter_func_idx(self.ctx, callee.0);
         Ok(())
     }
 
