@@ -9,7 +9,7 @@ use std::os::fd::FromRawFd;
 use std::os::unix::ffi::OsStrExt;
 use std::path::Path;
 
-#[cfg(sf_arch_arm64)]
+#[cfg(sf_backend_arm64)]
 use super::EM_AARCH64;
 use super::EM_NONE;
 
@@ -58,11 +58,11 @@ pub(super) fn monotonic_timestamp_nanos() -> u64 {
 }
 
 pub(super) fn elf_machine_arch() -> u32 {
-    #[cfg(sf_arch_arm64)]
+    #[cfg(sf_backend_arm64)]
     {
         EM_AARCH64
     }
-    #[cfg(not(sf_arch_arm64))]
+    #[cfg(not(sf_backend_arm64))]
     {
         EM_NONE
     }

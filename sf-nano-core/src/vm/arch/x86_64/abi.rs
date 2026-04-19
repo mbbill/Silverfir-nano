@@ -105,13 +105,15 @@ pub(super) use super::callconv::{C_ARG0, C_ARG1, C_ARG2, C_RET0};
 
 // ── Derived config ───────────────────────────────────────────────────────────
 
+const SCALAR_CALL_SCRATCH_SLOTS: u16 = 3;
+
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
     BackendConfig::new(
+        REG_PLAN.gp_unit_bytes,
         REG_PLAN.gp_dynamic.len() as u8,
         REG_PLAN.fp_dynamic.len() as u8,
-        REG_PLAN.gp_unit_bytes,
-        3,
+        SCALAR_CALL_SCRATCH_SLOTS,
     )
 }
 

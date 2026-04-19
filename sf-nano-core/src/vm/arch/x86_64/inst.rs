@@ -55,6 +55,26 @@ pub(super) fn convert_op_code(op: MachineConvertOp) -> u32 {
 impl<'a> X86_64Backend<'a> {
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
+            MachineInstKind::Move {
+                ty: MachineStorageType::V128,
+                ..
+            }
+            | MachineInstKind::V128Const { .. }
+            | MachineInstKind::V128FromRaw { .. }
+            | MachineInstKind::V128ToRaw { .. }
+            | MachineInstKind::SimdUnary { .. }
+            | MachineInstKind::SimdBinary { .. }
+            | MachineInstKind::SimdTernary { .. }
+            | MachineInstKind::SimdShift { .. }
+            | MachineInstKind::SimdExtractLane { .. }
+            | MachineInstKind::SimdReplaceLane { .. }
+            | MachineInstKind::SimdShuffle { .. }
+            | MachineInstKind::SimdLoad { .. }
+            | MachineInstKind::SimdStore { .. }
+            | MachineInstKind::SimdLoadLane { .. }
+            | MachineInstKind::SimdStoreLane { .. } => Err(WasmError::internal(
+                "SIMD native codegen is not implemented yet",
+            )),
             MachineInstKind::Move { dst, src, ty, .. } => self.lower_move(*ty, *dst, *src),
             MachineInstKind::FloatConst { width, dst, bits } => {
                 self.lower_float_const(*width, *dst, *bits)

@@ -138,7 +138,7 @@ impl CompiledNativeModule {
         self.module = None;
     }
 
-    #[cfg(sf_emulator)]
+    #[cfg(any(sf_backend_emu64, sf_backend_emu32))]
     #[inline]
     pub(crate) fn function(
         &self,

@@ -6,20 +6,23 @@
 // place where those translate into the `sf_*` vocabulary.
 //
 // Naming scheme:
-//   sf_arch_* — selected target architecture (exactly one set when supported)
-//   sf_os_*   — selected target OS           (exactly one set when supported)
-//   sf_has_*  — derived target capability
-//   sf_*      — user-enabled subsystem
+//   sf_backend_* — selected execution backend ABI/codegen target
+//                  (exactly one set when supported)
+//   sf_os_*      — selected target OS           (exactly one set when supported)
+//   sf_has_*     — derived target capability
+//   sf_*         — user-enabled subsystem
 //
-// Arch cfgs (from CARGO_CFG_TARGET_ARCH):
-//   aarch64                → sf_arch_arm64
-//   arm + thumbv*-none-*   → sf_arch_thumbm   (arm32 module, Thumb-2 encoding)
-//   arm (everything else)  → sf_arch_armv7a   (arm32 module, A32 encoding)
-//   x86_64                 → sf_arch_x64
+// Backend cfgs:
+//   aarch64                → sf_backend_arm64
+//   arm + thumbv*-none-*   → sf_backend_thumbm   (arm32 module, Thumb-2 encoding)
+//   arm (everything else)  → sf_backend_armv7a   (arm32 module, A32 encoding)
+//   x86_64                 → sf_backend_x64
+//   feature backend-emu64  → sf_backend_emu64
+//   feature backend-emu32  → sf_backend_emu32
 //
-// Encoder-variant cfg (independent of sf_arch_*):
+// Encoder-variant cfg (independent of sf_backend_*):
 //   sf_arm32_isa_thumb — arm32 module emits Thumb-2 via enc_t2.rs. Set for
-//     any sf_arch_thumbm target, and also for sf_arch_armv7a when the
+//     any sf_backend_thumbm target, and also for sf_backend_armv7a when the
 //     `thumb2-test` cargo feature is on (used to run the existing armv7-A
 //     qemu harness against Thumb-2 output for encoder validation).
 //
@@ -29,25 +32,29 @@
 //   windows → sf_os_windows
 //   none    → sf_os_none    (bare-metal; embedder provides OS shims)
 //
-// Supported (arch × os) matrix:
+// Supported (backend × os) matrix:
 //   arm64  × { linux, macos, none }
 //   x86_64 × { linux, macos, windows, none }
 //   arm    × { linux, none }
+//   emu64  × { linux, macos, windows, none, ...host OS passthrough... }
+//   emu32  × { linux, macos, windows, none, ...host OS passthrough... }
 //
-// Unsupported combos are not validated here — the source simply falls through
-// to the emulator backend, matching today's behavior.
+// Unsupported combos are not validated here. If no host-native backend matches
+// and no explicit emulator backend feature is selected, the crate builds with
+// no `sf_backend_*` cfg and later code reports the backend as unavailable.
 //
 // Feature → cfg mapping:
 //   (derived)      → sf_has_std          (set whenever any feature that needs libstd is on:
 //                                          wasi, call-trace, guard-pages)
-//   (derived)      → sf_has_guard_pages  (guard-pages + jit + 64-bit + macOS|Linux + x64|arm64)
+//   (derived)      → sf_has_guard_pages  (guard-pages + jit + native 64-bit backend + supported OS)
 //   (derived)      → sf_has_debug_regions (set when any consumer of DebugRegion is compiled
 //                                          in: sf_ir_dump or sf_jitdump)
+//   (derived)      → sf_has_simd         (x64 with SSE2, arm64 with NEON)
 //   jit            → sf_jit
-//   emulator       → sf_emulator
+//   backend-emu64  → sf_backend_emu64
+//   backend-emu32  → sf_backend_emu32
 //   wasi           → sf_wasi_host
 //   validator      → sf_module_validator
-//   simd           → sf_simd
 //   call-trace     → sf_call_trace
 //   ir-dump        → sf_ir_dump          (also auto-on when PROFILE=debug; requires std)
 //   jitdump        → sf_jitdump          (emits JIT symbol/code info for external profilers
@@ -61,10 +68,12 @@
 use std::env;
 
 const DECLARED_CFGS: &[&str] = &[
-    "sf_arch_arm64",
-    "sf_arch_armv7a",
-    "sf_arch_thumbm",
-    "sf_arch_x64",
+    "sf_backend_arm64",
+    "sf_backend_armv7a",
+    "sf_backend_thumbm",
+    "sf_backend_x64",
+    "sf_backend_emu64",
+    "sf_backend_emu32",
     "sf_arm32_isa_thumb",
     "sf_os_linux",
     "sf_os_macos",
@@ -75,10 +84,9 @@ const DECLARED_CFGS: &[&str] = &[
     "sf_has_guard_pages",
     "sf_has_debug_regions",
     "sf_jit",
-    "sf_emulator",
     "sf_wasi_host",
     "sf_module_validator",
-    "sf_simd",
+    "sf_has_simd",
     "sf_call_trace",
     "sf_fp_dp",
     "sf_ir_dump",
@@ -90,7 +98,8 @@ fn main() {
         println!("cargo::rustc-check-cfg=cfg({name})");
     }
 
-    emit_arch_cfgs();
+    emit_backend_cfgs();
+    emit_simd_cfg();
     emit_os_cfgs();
     emit_has_std_cfg();
     emit_subsystem_cfgs();
@@ -110,37 +119,75 @@ fn main() {
     emit_guard_pages_cfg();
 }
 
-fn emit_arch_cfgs() {
-    // Source code uses `sf_arch_*` cfgs instead of raw `target_arch = ...`.
-    // Exactly one `sf_arch_*` is set on the three supported architectures;
-    // unsupported targets set none and fall through to the emulator.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SelectedBackend {
+    Arm64,
+    Armv7a,
+    ThumbM,
+    X64,
+    Emu64,
+    Emu32,
+}
+
+fn selected_backend() -> Option<SelectedBackend> {
+    let emu64 = env::var_os("CARGO_FEATURE_BACKEND_EMU64").is_some();
+    let emu32 = env::var_os("CARGO_FEATURE_BACKEND_EMU32").is_some();
+    match (emu64, emu32) {
+        // `--all-features` turns on both emulator selectors. Treat that as
+        // "no explicit emulator override" so the host-native backend still
+        // typechecks under the broadest feature sweep.
+        (true, true) => {}
+        (true, false) => return Some(SelectedBackend::Emu64),
+        (false, true) => return Some(SelectedBackend::Emu32),
+        (false, false) => {}
+    }
+
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target = env::var("TARGET").unwrap_or_default();
     match arch.as_str() {
-        "aarch64" => println!("cargo:rustc-cfg=sf_arch_arm64"),
+        "aarch64" => Some(SelectedBackend::Arm64),
         "arm" => {
             if target.starts_with("thumbv") {
-                println!("cargo:rustc-cfg=sf_arch_thumbm");
-                println!("cargo:rustc-cfg=sf_arm32_isa_thumb");
-                // sf_fp_dp stays off on thumbm: no M-profile FPU offers
-                // double-precision arithmetic (FPv5-SP-D16 is SP-only, and
-                // no DP variant exists for M-profile). Wasm f64 on thumbm
-                // requires a separate legalization story and is out of
-                // scope for the initial bring-up.
+                Some(SelectedBackend::ThumbM)
             } else {
-                println!("cargo:rustc-cfg=sf_arch_armv7a");
-                // ARMv7-A targets with IDIV always have VFPv3-D16+.
-                println!("cargo:rustc-cfg=sf_fp_dp");
-                // Opt-in Thumb-2 emit path for encoder validation under
-                // the armv7-A qemu harness. A32 Rust ↔ Thumb-2 JIT code
-                // bridge via ARM/Thumb interworking at BX/BLX boundaries.
-                if env::var_os("CARGO_FEATURE_THUMB2_TEST").is_some() {
-                    println!("cargo:rustc-cfg=sf_arm32_isa_thumb");
-                }
+                Some(SelectedBackend::Armv7a)
             }
         }
-        "x86_64" => println!("cargo:rustc-cfg=sf_arch_x64"),
-        _ => {}
+        "x86_64" => Some(SelectedBackend::X64),
+        _ => None,
+    }
+}
+
+fn emit_backend_cfgs() {
+    // Source code uses `sf_backend_*` cfgs instead of raw `target_arch = ...`.
+    // Exactly one backend cfg is set when the build selects a supported
+    // backend.
+    match selected_backend() {
+        Some(SelectedBackend::Arm64) => println!("cargo:rustc-cfg=sf_backend_arm64"),
+        Some(SelectedBackend::Armv7a) => {
+            println!("cargo:rustc-cfg=sf_backend_armv7a");
+            // ARMv7-A targets with IDIV always have VFPv3-D16+.
+            println!("cargo:rustc-cfg=sf_fp_dp");
+            // Opt-in Thumb-2 emit path for encoder validation under
+            // the armv7-A qemu harness. A32 Rust ↔ Thumb-2 JIT code
+            // bridge via ARM/Thumb interworking at BX/BLX boundaries.
+            if env::var_os("CARGO_FEATURE_THUMB2_TEST").is_some() {
+                println!("cargo:rustc-cfg=sf_arm32_isa_thumb");
+            }
+        }
+        Some(SelectedBackend::ThumbM) => {
+            println!("cargo:rustc-cfg=sf_backend_thumbm");
+            println!("cargo:rustc-cfg=sf_arm32_isa_thumb");
+            // sf_fp_dp stays off on thumbm: no M-profile FPU offers
+            // double-precision arithmetic (FPv5-SP-D16 is SP-only, and
+            // no DP variant exists for M-profile). Wasm f64 on thumbm
+            // requires a separate legalization story and is out of
+            // scope for the initial bring-up.
+        }
+        Some(SelectedBackend::X64) => println!("cargo:rustc-cfg=sf_backend_x64"),
+        Some(SelectedBackend::Emu64) => println!("cargo:rustc-cfg=sf_backend_emu64"),
+        Some(SelectedBackend::Emu32) => println!("cargo:rustc-cfg=sf_backend_emu32"),
+        None => {}
     }
 }
 
@@ -175,21 +222,48 @@ fn emit_subsystem_cfgs() {
     if env::var_os("CARGO_FEATURE_JIT").is_some() {
         println!("cargo:rustc-cfg=sf_jit");
     }
-    if env::var_os("CARGO_FEATURE_EMULATOR").is_some() {
-        println!("cargo:rustc-cfg=sf_emulator");
-    }
     if env::var_os("CARGO_FEATURE_WASI").is_some() {
         println!("cargo:rustc-cfg=sf_wasi_host");
     }
     if env::var_os("CARGO_FEATURE_VALIDATOR").is_some() {
         println!("cargo:rustc-cfg=sf_module_validator");
     }
-    if env::var_os("CARGO_FEATURE_SIMD").is_some() {
-        println!("cargo:rustc-cfg=sf_simd");
-    }
     if env::var_os("CARGO_FEATURE_CALL_TRACE").is_some() {
         println!("cargo:rustc-cfg=sf_call_trace");
     }
+}
+
+fn emit_simd_cfg() {
+    match selected_backend() {
+        Some(SelectedBackend::X64) => {
+            require_target_feature("sse2", "x86_64 SIMD support requires SSE2");
+            println!("cargo:rustc-cfg=sf_has_simd");
+        }
+        Some(SelectedBackend::Arm64) => {
+            require_target_feature("neon", "arm64 SIMD support requires NEON");
+            println!("cargo:rustc-cfg=sf_has_simd");
+        }
+        _ => {}
+    }
+}
+
+fn require_target_feature(feature: &str, message: &str) {
+    if target_features().iter().any(|enabled| *enabled == feature) {
+        return;
+    }
+
+    let target = env::var("TARGET").unwrap_or_default();
+    let feature_list = env::var("CARGO_CFG_TARGET_FEATURE").unwrap_or_default();
+    panic!("{message} (target={target}, target_feature={feature_list})");
+}
+
+fn target_features() -> Vec<String> {
+    env::var("CARGO_CFG_TARGET_FEATURE")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|feature| !feature.is_empty())
+        .map(str::to_owned)
+        .collect()
 }
 
 fn has_std_enabled() -> bool {
@@ -241,11 +315,11 @@ fn emit_guard_pages_cfg() {
     if !dominated {
         return;
     }
-    let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let pw = env::var("CARGO_CFG_TARGET_POINTER_WIDTH").unwrap_or_default();
-    let os_ok = matches!(os.as_str(), "macos" | "linux") || (os == "windows" && arch == "x86_64");
-    if pw == "64" && os_ok && matches!(arch.as_str(), "x86_64" | "aarch64") {
+    let backend = selected_backend();
+    let os_ok = matches!(os.as_str(), "macos" | "linux")
+        || (os == "windows" && matches!(backend, Some(SelectedBackend::X64)));
+    if os_ok && matches!(backend, Some(SelectedBackend::X64 | SelectedBackend::Arm64)) {
         println!("cargo:rustc-cfg=sf_has_guard_pages");
     }
 }

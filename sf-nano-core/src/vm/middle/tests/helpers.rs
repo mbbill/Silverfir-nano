@@ -43,9 +43,9 @@ pub(super) fn host_config(gp_dynamic_budget: u8, fp_dynamic_budget: u8) -> Backe
     // The middle-end tests only care about relative pressure behavior, so the
     // host-sized GP unit and normal 64-bit scratch layout are enough.
     BackendConfig::new(
+        8,
         total_gp_budget_for_allocatable(gp_dynamic_budget, 8),
         fp_dynamic_budget,
-        8,
         3,
     )
 }

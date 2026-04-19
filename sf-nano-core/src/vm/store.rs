@@ -18,6 +18,54 @@ pub(crate) struct FunctionRegistryEntry {
 
 pub(crate) type SharedFunctionRegistry = Rc<RefCell<collections::Vec<FunctionRegistryEntry>>>;
 pub(crate) type SharedRefRegistry = Rc<RefCell<collections::Vec<RefRegistryEntry>>>;
+#[cfg(sf_has_simd)]
+#[derive(Clone)]
+pub(crate) struct SharedSimdRegistry(Rc<RefCell<collections::Vec<[u8; 16]>>>);
+
+#[cfg(sf_has_simd)]
+impl SharedSimdRegistry {
+    #[inline]
+    pub(crate) fn new() -> Self {
+        Self(Rc::new(RefCell::new(collections::vec![[0; 16]])))
+    }
+
+    #[inline]
+    /// Interns a SIMD lane payload into the shared registry.
+    ///
+    /// This registry is append-only for the lifetime of its owners, and dedup
+    /// is currently a linear scan. That keeps bring-up simple, but it means
+    /// unique SIMD values grow memory monotonically and repeated inserts become
+    /// O(n). TODO: replace this with a reclaimed/deduplicated representation
+    /// once the native SIMD backend surface settles.
+    pub(crate) fn intern(&self, value: [u8; 16]) -> u64 {
+        if let Some((index, _)) = self
+            .0
+            .borrow()
+            .iter()
+            .enumerate()
+            .find(|(_, existing)| **existing == value)
+        {
+            return index as u64;
+        }
+        let mut registry = self.0.borrow_mut();
+        let index = registry.len();
+        registry.push(value);
+        index as u64
+    }
+
+    #[inline]
+    pub(crate) fn get(&self, raw: u64) -> Option<[u8; 16]> {
+        self.0.borrow().get(raw as usize).copied()
+    }
+}
+
+#[cfg(sf_has_simd)]
+impl Default for SharedSimdRegistry {
+    #[inline]
+    fn default() -> Self {
+        Self::new()
+    }
+}
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum RefRegistryEntry {
@@ -29,6 +77,8 @@ pub(crate) enum RefRegistryEntry {
 pub struct LinkRegistry {
     functions: SharedFunctionRegistry,
     refs: SharedRefRegistry,
+    #[cfg(sf_has_simd)]
+    simd: SharedSimdRegistry,
 }
 
 impl LinkRegistry {
@@ -37,6 +87,8 @@ impl LinkRegistry {
         Self {
             functions: Rc::new(RefCell::new(collections::Vec::new())),
             refs: Rc::new(RefCell::new(collections::Vec::new())),
+            #[cfg(sf_has_simd)]
+            simd: SharedSimdRegistry::new(),
         }
     }
 
@@ -51,6 +103,27 @@ impl LinkRegistry {
     }
 
     #[inline]
+    #[cfg(sf_has_simd)]
+    pub(crate) fn simd_registry_shared(&self) -> SharedSimdRegistry {
+        self.simd.clone()
+    }
+
+    #[inline]
+    #[cfg(sf_has_simd)]
+    pub(crate) fn from_shared(
+        functions: SharedFunctionRegistry,
+        refs: SharedRefRegistry,
+        simd: SharedSimdRegistry,
+    ) -> Self {
+        Self {
+            functions,
+            refs,
+            simd,
+        }
+    }
+
+    #[inline]
+    #[cfg(not(sf_has_simd))]
     pub(crate) fn from_shared(functions: SharedFunctionRegistry, refs: SharedRefRegistry) -> Self {
         Self { functions, refs }
     }
@@ -60,6 +133,8 @@ pub struct Store {
     module: ModuleInst,
     function_registry: SharedFunctionRegistry,
     ref_registry: SharedRefRegistry,
+    #[cfg(sf_has_simd)]
+    simd_registry: SharedSimdRegistry,
     gc_heap: Rc<RefCell<GcHeap>>,
 }
 
@@ -70,6 +145,8 @@ impl Store {
             module,
             Rc::new(RefCell::new(collections::Vec::new())),
             Rc::new(RefCell::new(collections::Vec::new())),
+            #[cfg(sf_has_simd)]
+            SharedSimdRegistry::new(),
         )
     }
 
@@ -78,11 +155,14 @@ impl Store {
         module: ModuleInst,
         function_registry: SharedFunctionRegistry,
         ref_registry: SharedRefRegistry,
+        #[cfg(sf_has_simd)] simd_registry: SharedSimdRegistry,
     ) -> Self {
         Self {
             module,
             function_registry,
             ref_registry,
+            #[cfg(sf_has_simd)]
+            simd_registry,
             gc_heap: Rc::new(RefCell::new(GcHeap::new())),
         }
     }
@@ -140,6 +220,12 @@ impl Store {
     #[inline]
     pub(crate) fn clone_ref_registry(&self) -> SharedRefRegistry {
         Rc::clone(&self.ref_registry)
+    }
+
+    #[inline]
+    #[cfg(sf_has_simd)]
+    pub(crate) fn clone_simd_registry(&self) -> SharedSimdRegistry {
+        self.simd_registry.clone()
     }
 
     #[inline]
@@ -208,5 +294,15 @@ impl Store {
     pub(crate) fn ref_entry_for_handle(&self, handle: RefHandle) -> Option<RefRegistryEntry> {
         let idx = handle.pooled_index()?;
         self.ref_registry.borrow().get(idx).copied()
+    }
+
+    pub(crate) fn intern_v128(&self, value: [u8; 16]) -> u64 {
+        self.simd_registry.intern(value)
+    }
+
+    #[inline]
+    #[cfg(sf_has_simd)]
+    pub(crate) fn get_v128(&self, raw: u64) -> Option<[u8; 16]> {
+        self.simd_registry.get(raw)
     }
 }

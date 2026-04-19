@@ -150,6 +150,48 @@ macro_rules! for_each_primitive_op {
             I64Const { value: u64 } => (0, 1),
             F32Const { value: u32 } => (0, 1),
             F64Const { value: u64 } => (0, 1),
+            V128Const { value: [u8; 16] } => (0, 1),
+            V128Not => (1, 1),
+            V128And => (2, 1),
+            V128AndNot => (2, 1),
+            V128Or => (2, 1),
+            V128Xor => (2, 1),
+            V128Bitselect => (3, 1),
+            V128AnyTrue => (1, 1),
+            I8x16AllTrue => (1, 1),
+            I16x8AllTrue => (1, 1),
+            I32x4AllTrue => (1, 1),
+            I64x2AllTrue => (1, 1),
+            I8x16Bitmask => (1, 1),
+            I16x8Bitmask => (1, 1),
+            I32x4Bitmask => (1, 1),
+            I64x2Bitmask => (1, 1),
+            I8x16Splat => (1, 1),
+            I16x8Splat => (1, 1),
+            I32x4Splat => (1, 1),
+            I64x2Splat => (1, 1),
+            F32x4Splat => (1, 1),
+            F64x2Splat => (1, 1),
+            I8x16ExtractLaneS { lane: u8 } => (1, 1),
+            I8x16ExtractLaneU { lane: u8 } => (1, 1),
+            I16x8ExtractLaneS { lane: u8 } => (1, 1),
+            I16x8ExtractLaneU { lane: u8 } => (1, 1),
+            I32x4ExtractLane { lane: u8 } => (1, 1),
+            I64x2ExtractLane { lane: u8 } => (1, 1),
+            F32x4ExtractLane { lane: u8 } => (1, 1),
+            F64x2ExtractLane { lane: u8 } => (1, 1),
+            SimdReplaceLane { opcode: u32, lane: u8 } => (2, 1),
+            I8x16Shuffle { lanes: [u8; 16] } => (2, 1),
+            I32x4Add => (2, 1),
+            I64x2Add => (2, 1),
+            SimdUnaryV128 { opcode: u32 } => (1, 1),
+            SimdBinaryV128 { opcode: u32 } => (2, 1),
+            SimdShiftV128 { opcode: u32 } => (2, 1),
+            SimdMemLoadV128 { opcode: u32, offset: u32, memidx: u32 } => (1, 1),
+            SimdMemLoadLaneV128 { opcode: u32, lane: u8, offset: u32, memidx: u32 } => (2, 1),
+            SimdMemStoreLaneV128 { opcode: u32, lane: u8, offset: u32, memidx: u32 } => (2, 0),
+            V128Load { offset: u32, memidx: u32 } => (1, 1),
+            V128Store { offset: u32, memidx: u32 } => (2, 0),
             I32Load { offset: u32, memidx: u32 } => (1, 1),
             I64Load { offset: u32, memidx: u32 } => (1, 1),
             F32Load { offset: u32, memidx: u32 } => (1, 1),
@@ -429,6 +471,46 @@ pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<ValueType> {
         PrimitiveOpKind::I64Const { .. } => ValueType::I64,
         PrimitiveOpKind::F32Const { .. } => ValueType::F32,
         PrimitiveOpKind::F64Const { .. } => ValueType::F64,
+        PrimitiveOpKind::V128Const { .. }
+        | PrimitiveOpKind::V128Not
+        | PrimitiveOpKind::V128And
+        | PrimitiveOpKind::V128AndNot
+        | PrimitiveOpKind::V128Or
+        | PrimitiveOpKind::V128Xor
+        | PrimitiveOpKind::V128Bitselect
+        | PrimitiveOpKind::I8x16Splat
+        | PrimitiveOpKind::I16x8Splat
+        | PrimitiveOpKind::I32x4Splat
+        | PrimitiveOpKind::I64x2Splat
+        | PrimitiveOpKind::F32x4Splat
+        | PrimitiveOpKind::F64x2Splat
+        | PrimitiveOpKind::SimdReplaceLane { .. }
+        | PrimitiveOpKind::I8x16Shuffle { .. }
+        | PrimitiveOpKind::I32x4Add
+        | PrimitiveOpKind::I64x2Add
+        | PrimitiveOpKind::SimdUnaryV128 { .. }
+        | PrimitiveOpKind::SimdBinaryV128 { .. }
+        | PrimitiveOpKind::SimdShiftV128 { .. }
+        | PrimitiveOpKind::SimdMemLoadV128 { .. }
+        | PrimitiveOpKind::SimdMemLoadLaneV128 { .. }
+        | PrimitiveOpKind::V128Load { .. } => ValueType::V128,
+        PrimitiveOpKind::I8x16ExtractLaneS { .. }
+        | PrimitiveOpKind::I8x16ExtractLaneU { .. }
+        | PrimitiveOpKind::I16x8ExtractLaneS { .. }
+        | PrimitiveOpKind::I16x8ExtractLaneU { .. }
+        | PrimitiveOpKind::I32x4ExtractLane { .. } => ValueType::I32,
+        PrimitiveOpKind::I64x2ExtractLane { .. } => ValueType::I64,
+        PrimitiveOpKind::F32x4ExtractLane { .. } => ValueType::F32,
+        PrimitiveOpKind::F64x2ExtractLane { .. } => ValueType::F64,
+        PrimitiveOpKind::V128AnyTrue
+        | PrimitiveOpKind::I8x16AllTrue
+        | PrimitiveOpKind::I16x8AllTrue
+        | PrimitiveOpKind::I32x4AllTrue
+        | PrimitiveOpKind::I64x2AllTrue
+        | PrimitiveOpKind::I8x16Bitmask
+        | PrimitiveOpKind::I16x8Bitmask
+        | PrimitiveOpKind::I32x4Bitmask
+        | PrimitiveOpKind::I64x2Bitmask => ValueType::I32,
 
         // Loads — result type matches the load type
         PrimitiveOpKind::I32Load { .. }
@@ -449,7 +531,9 @@ pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<ValueType> {
         PrimitiveOpKind::F64Load { .. } => ValueType::F64,
 
         // Stores — no result
-        PrimitiveOpKind::I32Store { .. }
+        PrimitiveOpKind::V128Store { .. }
+        | PrimitiveOpKind::SimdMemStoreLaneV128 { .. }
+        | PrimitiveOpKind::I32Store { .. }
         | PrimitiveOpKind::I64Store { .. }
         | PrimitiveOpKind::F32Store { .. }
         | PrimitiveOpKind::F64Store { .. }

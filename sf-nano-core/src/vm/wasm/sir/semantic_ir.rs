@@ -181,6 +181,32 @@ pub(crate) fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
 }
 
 impl SemanticProgram {
+    #[cfg(not(sf_has_simd))]
+    pub(crate) fn requires_simd(&self) -> bool {
+        self.local_types
+            .iter()
+            .chain(self.result_types.iter())
+            .chain(self.op_result_types.values().flat_map(|types| types.iter()))
+            .any(|value_type| matches!(value_type, ValueType::V128))
+            || self.ops.iter().any(|op| {
+                matches!(
+                    &op.kind,
+                    SemanticOpKind::Primitive(kind)
+                        if matches!(super::primitive_op::result_type(kind), Some(ValueType::V128))
+                )
+            })
+    }
+
+    pub(crate) fn ensure_prepare_supported(&self) -> Result<(), WasmError> {
+        #[cfg(not(sf_has_simd))]
+        if self.requires_simd() {
+            return Err(WasmError::invalid(
+                "SIMD is not supported by the selected backend",
+            ));
+        }
+        Ok(())
+    }
+
     #[cfg(any(debug_assertions, test))]
     pub(crate) fn validate(&self) -> Result<(), WasmError> {
         let len = self.ops.len();

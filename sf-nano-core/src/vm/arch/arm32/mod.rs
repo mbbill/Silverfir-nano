@@ -4,7 +4,7 @@ pub(crate) mod compile;
 mod control;
 // Encoder selection: `enc` resolves to either the A32 encoder (`enc_a32.rs`)
 // or the Thumb-2 encoder (`enc_t2.rs`) based on `sf_arm32_isa_thumb`. Set by
-// build.rs for sf_arch_thumbm, and also for sf_arch_armv7a when the
+// build.rs for sf_backend_thumbm, and also for sf_backend_armv7a when the
 // `thumb2-test` cargo feature is on (see that feature's comment).
 #[cfg(not(sf_arm32_isa_thumb))]
 #[path = "enc_a32.rs"]

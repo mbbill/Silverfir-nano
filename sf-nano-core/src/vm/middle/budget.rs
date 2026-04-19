@@ -10,7 +10,7 @@ pub(crate) fn count_live_bank_budget_units(
     let mut fp = 0usize;
     for ty in types {
         match ty {
-            ValueType::F32 | ValueType::F64 => fp += 1,
+            ValueType::F32 | ValueType::F64 | ValueType::V128 => fp += 1,
             _ => gp += gp_value_budget_units(*ty, gp_unit_bytes),
         }
     }

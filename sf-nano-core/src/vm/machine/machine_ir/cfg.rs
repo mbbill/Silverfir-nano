@@ -46,6 +46,15 @@ impl MachineBlockParam {
     }
 
     #[inline]
+    pub(crate) const fn v128(reg: MachineReg) -> Self {
+        Self {
+            reg,
+            ty: MachineStorageType::V128,
+            owner: MachineRegOwner::LinearValue,
+        }
+    }
+
+    #[inline]
     pub(crate) const fn with_owner(mut self, owner: MachineRegOwner) -> Self {
         self.owner = owner;
         self

@@ -397,6 +397,26 @@ pub(super) fn emit_patchable_addr_into(text: &mut TextEmitter, dst: Arm32Reg) ->
 impl<'a> Arm32Backend<'a> {
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
+            MachineInstKind::Move {
+                ty: MachineStorageType::V128,
+                ..
+            }
+            | MachineInstKind::V128Const { .. }
+            | MachineInstKind::V128FromRaw { .. }
+            | MachineInstKind::V128ToRaw { .. }
+            | MachineInstKind::SimdUnary { .. }
+            | MachineInstKind::SimdBinary { .. }
+            | MachineInstKind::SimdTernary { .. }
+            | MachineInstKind::SimdShift { .. }
+            | MachineInstKind::SimdExtractLane { .. }
+            | MachineInstKind::SimdReplaceLane { .. }
+            | MachineInstKind::SimdShuffle { .. }
+            | MachineInstKind::SimdLoad { .. }
+            | MachineInstKind::SimdStore { .. }
+            | MachineInstKind::SimdLoadLane { .. }
+            | MachineInstKind::SimdStoreLane { .. } => Err(WasmError::internal(
+                "SIMD native codegen is not implemented yet",
+            )),
             MachineInstKind::Move { ty, dst, src, .. } => {
                 let dst_is_fp = self.is_fp_machine_reg(*dst);
                 let src_is_fp = match src {

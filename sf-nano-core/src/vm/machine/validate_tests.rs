@@ -12,9 +12,9 @@ use crate::vm::machine::machine_ir::{
 fn minimal_config() -> BackendConfig {
     let gp_unit_bytes = core::mem::size_of::<usize>() as u8;
     BackendConfig::new(
+        gp_unit_bytes,
         if gp_unit_bytes == 4 { 5 } else { 3 },
         0,
-        gp_unit_bytes,
         if gp_unit_bytes == 4 { 8 } else { 3 },
     )
 }

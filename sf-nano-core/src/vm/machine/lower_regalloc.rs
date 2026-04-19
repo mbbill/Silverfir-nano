@@ -719,9 +719,10 @@ impl<'a> BlockLowerContext<'a> {
 
 pub(super) fn canonical_storage_mem_width(ty: MachineStorageType) -> MachineMemWidth {
     match ty {
-        MachineStorageType::GpWord | MachineStorageType::GpI64 | MachineStorageType::Fp64 => {
-            MachineMemWidth::U64
-        }
+        MachineStorageType::GpWord
+        | MachineStorageType::GpI64
+        | MachineStorageType::Fp64
+        | MachineStorageType::V128 => MachineMemWidth::U64,
         MachineStorageType::Fp32 => MachineMemWidth::U32,
     }
 }
@@ -808,6 +809,9 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
     match kind {
         MachineInstKind::Move { dst, .. }
         | MachineInstKind::FloatConst { dst, .. }
+        | MachineInstKind::V128Const { dst, .. }
+        | MachineInstKind::V128FromRaw { dst, .. }
+        | MachineInstKind::V128ToRaw { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
         | MachineInstKind::IntBinary { dst, .. }
@@ -815,6 +819,15 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatUnary { dst, .. }
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
+        | MachineInstKind::SimdUnary { dst, .. }
+        | MachineInstKind::SimdBinary { dst, .. }
+        | MachineInstKind::SimdTernary { dst, .. }
+        | MachineInstKind::SimdShift { dst, .. }
+        | MachineInstKind::SimdExtractLane { dst, .. }
+        | MachineInstKind::SimdReplaceLane { dst, .. }
+        | MachineInstKind::SimdShuffle { dst, .. }
+        | MachineInstKind::SimdLoad { dst, .. }
+        | MachineInstKind::SimdLoadLane { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. }
         | MachineInstKind::IndexedLoad { dst, .. }
@@ -869,6 +882,8 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         MachineInstKind::ReinterpretF64ToI64Pair { .. } => None,
         MachineInstKind::Store { .. }
         | MachineInstKind::IndexedStore { .. }
+        | MachineInstKind::SimdStore { .. }
+        | MachineInstKind::SimdStoreLane { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallRuntime(_) => None,
     }
@@ -878,6 +893,9 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
     match kind {
         MachineInstKind::Move { src, .. } => visit_value_reg(src, &mut visit),
         MachineInstKind::FloatConst { .. } => {}
+        MachineInstKind::V128Const { .. } => {}
+        MachineInstKind::V128FromRaw { raw, .. } => visit_value_reg(raw, &mut visit),
+        MachineInstKind::V128ToRaw { src, .. } => visit_value_reg(src, &mut visit),
         MachineInstKind::Load { addr, .. } => visit(addr.base),
         MachineInstKind::Store { addr, src, .. } => {
             visit(addr.base);
@@ -896,13 +914,46 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         }
         MachineInstKind::IntUnary { src, .. }
         | MachineInstKind::FloatUnary { src, .. }
+        | MachineInstKind::SimdUnary { src, .. }
+        | MachineInstKind::SimdExtractLane { src, .. }
         | MachineInstKind::Convert { src, .. } => visit_value_reg(src, &mut visit),
         MachineInstKind::IntBinary { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
+        | MachineInstKind::SimdBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
             visit_value_reg(lhs, &mut visit);
             visit_value_reg(rhs, &mut visit);
+        }
+        MachineInstKind::SimdTernary { a, b, c, .. } => {
+            visit_value_reg(a, &mut visit);
+            visit_value_reg(b, &mut visit);
+            visit_value_reg(c, &mut visit);
+        }
+        MachineInstKind::SimdShift { vector, shift, .. } => {
+            visit_value_reg(vector, &mut visit);
+            visit_value_reg(shift, &mut visit);
+        }
+        MachineInstKind::SimdReplaceLane { vector, scalar, .. } => {
+            visit_value_reg(vector, &mut visit);
+            visit_value_reg(scalar, &mut visit);
+        }
+        MachineInstKind::SimdShuffle { lhs, rhs, .. } => {
+            visit_value_reg(lhs, &mut visit);
+            visit_value_reg(rhs, &mut visit);
+        }
+        MachineInstKind::SimdLoad { addr, .. } => visit(addr.base),
+        MachineInstKind::SimdStore { addr, src, .. } => {
+            visit(addr.base);
+            visit_value_reg(src, &mut visit);
+        }
+        MachineInstKind::SimdLoadLane { addr, vector, .. } => {
+            visit(addr.base);
+            visit_value_reg(vector, &mut visit);
+        }
+        MachineInstKind::SimdStoreLane { addr, vector, .. } => {
+            visit(addr.base);
+            visit_value_reg(vector, &mut visit);
         }
         MachineInstKind::Int64PairBinary {
             lhs_lo,
@@ -1269,6 +1320,7 @@ fn machine_block_param_with_owner(
         MachineStorageType::Fp64 => {
             MachineBlockParam::fp(reg, MachineFloatWidth::F64).with_owner(owner)
         }
+        MachineStorageType::V128 => MachineBlockParam::v128(reg).with_owner(owner),
     }
 }
 
@@ -1277,6 +1329,7 @@ pub(super) fn value_type_storage_type(ty: ValueType) -> MachineStorageType {
         ValueType::F32 => MachineStorageType::Fp32,
         ValueType::F64 => MachineStorageType::Fp64,
         ValueType::I64 => MachineStorageType::GpI64,
+        ValueType::V128 => MachineStorageType::V128,
         _ => MachineStorageType::GpWord,
     }
 }
@@ -1340,7 +1393,7 @@ mod tests {
             call_ops: collections::Vec::new(),
         }));
         let regfile = Box::leak(Box::new(
-            MachineRegFile::new(BackendConfig::new(5, 0, 4, 8)).expect("regfile"),
+            MachineRegFile::new(BackendConfig::new(4, 5, 0, 8)).expect("regfile"),
         ));
         let runtime = MachineFunctionAbi::default();
         let all_runtime = Box::leak(Box::new(collections::vec![runtime]));

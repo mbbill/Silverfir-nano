@@ -4,7 +4,7 @@ use crate::collections;
 use crate::error::WasmError;
 use crate::module::entities::ConstExpr;
 use crate::module::type_defs::CompositeType;
-use crate::opcodes::{Opcode, OpcodeFB};
+use crate::opcodes::{Opcode, OpcodeFB, OpcodeFD};
 use crate::utils::payload::Payload;
 use crate::value_type::{AbstractHeapType, HeapType, RefType};
 use crate::vm::entities::FunctionInst;
@@ -51,7 +51,7 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, store: &mut Store) -> Result<Val
                 if global_idx >= module.globals.len() {
                     return Err(WasmError::invalid("global.get: index out of range"));
                 }
-                stack.push(module.globals[global_idx].value());
+                stack.push(module.globals[global_idx].value(store)?);
             }
             Opcode::I32_ADD => eval_i32_binary(&mut stack, i32::wrapping_add)?,
             Opcode::I32_SUB => eval_i32_binary(&mut stack, i32::wrapping_sub)?,
@@ -59,6 +59,28 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, store: &mut Store) -> Result<Val
             Opcode::I64_ADD => eval_i64_binary(&mut stack, i64::wrapping_add)?,
             Opcode::I64_SUB => eval_i64_binary(&mut stack, i64::wrapping_sub)?,
             Opcode::I64_MUL => eval_i64_binary(&mut stack, i64::wrapping_mul)?,
+            Opcode::PREFIX_FD => {
+                let fd_opcode: OpcodeFD = code.read_leb128_u32()?.try_into()?;
+                match fd_opcode {
+                    OpcodeFD::V128_CONST => {
+                        #[cfg(not(sf_has_simd))]
+                        {
+                            return Err(WasmError::invalid("SIMD is not supported on this CPU"));
+                        }
+                        #[cfg(sf_has_simd)]
+                        {
+                            let mut value = [0u8; 16];
+                            for byte in &mut value {
+                                *byte = code.read_u8()?;
+                            }
+                            stack.push(Value::V128(value));
+                        }
+                    }
+                    _ => {
+                        return Err(WasmError::invalid("unsupported opcode in const expression"));
+                    }
+                }
+            }
             Opcode::PREFIX_FB => {
                 let fb_opcode: OpcodeFB = code.read_leb128_u32()?.try_into()?;
                 match fb_opcode {

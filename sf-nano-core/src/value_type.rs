@@ -486,7 +486,6 @@ impl ValueType {
         Self::Ref(RefType::exnref())
     }
 
-    #[inline]
     pub fn is_num(&self) -> bool {
         matches!(
             self,
@@ -537,6 +536,15 @@ impl ValueType {
     #[inline]
     pub fn is_v128(&self) -> bool {
         matches!(self, ValueType::V128 | ValueType::Unknown)
+    }
+
+    #[inline]
+    pub fn ensure_enabled_in_build(&self) -> Result<(), WasmError> {
+        #[cfg(not(sf_has_simd))]
+        if matches!(self, ValueType::V128) {
+            return Err(WasmError::invalid("SIMD is not supported on this CPU"));
+        }
+        Ok(())
     }
 
     pub fn is_funcref(&self) -> bool {

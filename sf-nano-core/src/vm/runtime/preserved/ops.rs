@@ -15,7 +15,8 @@ use crate::{
         value::RefHandle,
         value::Value,
         value_encoding::{
-            machine_raw_to_ref, machine_raw_to_value, ref_to_machine_raw, value_to_machine_raw,
+            machine_raw_to_ref, ref_to_machine_raw, try_machine_raw_to_value_in_store,
+            value_to_machine_raw_in_store,
         },
     },
 };
@@ -52,13 +53,22 @@ fn ref_to_machine(handle: RefHandle) -> u64 {
 }
 
 #[inline]
-fn value_from_machine(raw: u64, ty: crate::value_type::ValueType) -> Value {
-    machine_raw_to_value(raw, ty, active_gp_unit_bytes())
+fn value_from_machine(
+    ctx: &NativeContext,
+    raw: u64,
+    ty: crate::value_type::ValueType,
+) -> Result<Value, WasmError> {
+    try_machine_raw_to_value_in_store(
+        raw,
+        ty,
+        active_gp_unit_bytes(),
+        current_store(ctx).expect("store"),
+    )
 }
 
 #[inline]
-fn value_to_machine(value: Value) -> u64 {
-    value_to_machine_raw(value, active_gp_unit_bytes())
+fn value_to_machine(store: &mut Store, value: Value) -> u64 {
+    value_to_machine_raw_in_store(value, active_gp_unit_bytes(), store)
 }
 
 #[inline]
@@ -261,8 +271,15 @@ pub(super) fn do_struct_new(
             .fields
             .iter()
             .zip(raw_fields)
-            .map(|(field, raw)| value_from_machine(*raw, field.storage.to_valtype()))
-            .collect()
+            .map(|(field, raw)| {
+                try_machine_raw_to_value_in_store(
+                    *raw,
+                    field.storage.to_valtype(),
+                    active_gp_unit_bytes(),
+                    store,
+                )
+            })
+            .collect::<Result<_, _>>()?
     };
     let gc_ref = store.gc_heap().borrow_mut().alloc_struct(type_idx, fields);
     let handle = store.register_gc_ref(gc_ref);
@@ -408,7 +425,7 @@ fn resolve_array_ref(
 }
 
 pub(super) fn do_struct_get(
-    ctx: &NativeContext,
+    ctx: &mut NativeContext,
     type_idx: u32,
     field_idx: u32,
     raw_ref: u64,
@@ -418,7 +435,7 @@ pub(super) fn do_struct_get(
     let storage = struct_field_storage(current, type_idx, field_idx)?;
     let handle = ref_from_machine(raw_ref);
     let (origin_store_ptr, gc_ref) = resolve_struct_ref(current, handle)?;
-    let origin_store = unsafe { origin_store_ptr.as_ref() }
+    let origin_store = unsafe { origin_store_ptr.as_mut() }
         .ok_or_else(|| internal_error("struct ref points to missing store"))?;
     let value = origin_store
         .gc_heap()
@@ -433,7 +450,7 @@ pub(super) fn do_struct_get(
         Some(is_signed) => extend_packed_field(value, storage, is_signed),
         None => value,
     };
-    Ok(value_to_machine(value))
+    Ok(value_to_machine(origin_store, value))
 }
 
 pub(super) fn do_struct_set(
@@ -452,7 +469,7 @@ pub(super) fn do_struct_set(
         )
     };
     let (origin_store_ptr, gc_ref) = origin_ref;
-    let value = value_from_machine(raw_value, storage.to_valtype());
+    let value = value_from_machine(ctx, raw_value, storage.to_valtype())?;
     let origin_store = unsafe { origin_store_ptr.as_mut() }
         .ok_or_else(|| internal_error("struct ref points to missing store"))?;
     let mut gc_heap = origin_store.gc_heap().borrow_mut();
@@ -511,7 +528,8 @@ pub(super) fn do_array_new(
         let storage = array_element_storage(store, type_idx)?;
         (storage.to_valtype(), length_raw as u32 as usize)
     };
-    let init = value_from_machine(init_raw, elem_type);
+    let init =
+        try_machine_raw_to_value_in_store(init_raw, elem_type, active_gp_unit_bytes(), store)?;
     let mut elements = crate::collections::Vec::new();
     elements
         .try_reserve(length)
@@ -523,7 +541,7 @@ pub(super) fn do_array_new(
 }
 
 pub(super) fn do_array_get(
-    ctx: &NativeContext,
+    ctx: &mut NativeContext,
     type_idx: u32,
     raw_ref: u64,
     raw_index: u64,
@@ -534,7 +552,7 @@ pub(super) fn do_array_get(
     let handle = ref_from_machine(raw_ref);
     let (origin_store_ptr, gc_ref) = resolve_array_ref(current, handle)?;
     let index = raw_index as u32 as usize;
-    let origin_store = unsafe { origin_store_ptr.as_ref() }
+    let origin_store = unsafe { origin_store_ptr.as_mut() }
         .ok_or_else(|| internal_error("array ref points to missing store"))?;
     let value = origin_store
         .gc_heap()
@@ -549,7 +567,7 @@ pub(super) fn do_array_get(
         Some(is_signed) => extend_packed_field(value, storage, is_signed),
         None => value,
     };
-    Ok(value_to_machine(value))
+    Ok(value_to_machine(origin_store, value))
 }
 
 pub(super) fn do_array_len(ctx: &NativeContext, raw_ref: u64) -> Result<u64, WasmError> {
@@ -585,7 +603,7 @@ pub(super) fn do_array_set(
         )
     };
     let (origin_store_ptr, gc_ref) = origin_ref;
-    let value = value_from_machine(raw_value, storage.to_valtype());
+    let value = value_from_machine(ctx, raw_value, storage.to_valtype())?;
     let origin_store = unsafe { origin_store_ptr.as_mut() }
         .ok_or_else(|| internal_error("array ref points to missing store"))?;
     let mut gc_heap = origin_store.gc_heap().borrow_mut();
@@ -622,7 +640,12 @@ pub(super) fn do_array_new_fixed(
         .try_reserve(count)
         .map_err(|_| trap_error("out of memory"))?;
     for raw in raw_values {
-        elements.push(value_from_machine(*raw, storage.to_valtype()));
+        elements.push(try_machine_raw_to_value_in_store(
+            *raw,
+            storage.to_valtype(),
+            active_gp_unit_bytes(),
+            store,
+        )?);
     }
     let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
     let handle = store.register_gc_ref(gc_ref);
@@ -648,7 +671,7 @@ pub(super) fn do_array_fill(
         )
     };
     let (origin_store_ptr, gc_ref) = origin_ref;
-    let value = value_from_machine(raw_value, storage.to_valtype());
+    let value = value_from_machine(ctx, raw_value, storage.to_valtype())?;
     let origin_store = unsafe { origin_store_ptr.as_mut() }
         .ok_or_else(|| internal_error("array ref points to missing store"))?;
     let mut gc_heap = origin_store.gc_heap().borrow_mut();

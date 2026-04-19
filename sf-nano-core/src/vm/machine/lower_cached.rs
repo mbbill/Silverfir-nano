@@ -33,6 +33,20 @@ impl<'a> BlockLowerContext<'a> {
                 let ops = self.i64_ops();
                 ops.emit_save_cached_i64(self, &cached)?;
             } else {
+                #[cfg(sf_has_simd)]
+                if matches!(cached.ty, MachineStorageType::V128) {
+                    self.emit_store_frame_v128(cached.slot, cached.reg)?;
+                } else {
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Store {
+                            ty: cached.ty,
+                            addr: self.frame_addr(cached.slot)?,
+                            width: canonical_cached_local_mem_width(cached.ty),
+                            src: MachineValue::Reg(cached.reg),
+                        },
+                    });
+                }
+                #[cfg(not(sf_has_simd))]
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Store {
                         ty: cached.ty,
@@ -64,6 +78,20 @@ impl<'a> BlockLowerContext<'a> {
                 let ops = self.i64_ops();
                 ops.emit_save_cached_i64(self, &cached)?;
             } else {
+                #[cfg(sf_has_simd)]
+                if matches!(cached.ty, MachineStorageType::V128) {
+                    self.emit_store_frame_v128(cached.slot, cached.reg)?;
+                } else {
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Store {
+                            ty: cached.ty,
+                            addr: self.frame_addr(cached.slot)?,
+                            width: canonical_cached_local_mem_width(cached.ty),
+                            src: MachineValue::Reg(cached.reg),
+                        },
+                    });
+                }
+                #[cfg(not(sf_has_simd))]
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Store {
                         ty: cached.ty,

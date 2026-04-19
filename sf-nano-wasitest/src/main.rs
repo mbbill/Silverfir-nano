@@ -62,14 +62,6 @@ struct Cli {
     /// Backend to use for execution (auto, native, jit).
     #[structopt(long = "backend")]
     backend: Option<String>,
-
-    /// Use the 64-bit reference emulator backend.
-    #[structopt(long = "emu64", conflicts_with = "emu32")]
-    emu64: bool,
-
-    /// Use the 32-bit reference emulator backend.
-    #[structopt(long = "emu32", conflicts_with = "emu64")]
-    emu32: bool,
 }
 
 fn main() {
@@ -390,11 +382,6 @@ fn run_wasm_test_with_subprocess(
     let mut cmd = Command::new(cli_path);
     if let Some(ref backend) = cli.backend {
         cmd.arg("--backend").arg(backend);
-    }
-    if cli.emu64 {
-        cmd.arg("--emu64");
-    } else if cli.emu32 {
-        cmd.arg("--emu32");
     }
 
     let fixture_root = fixture_dir

@@ -2,7 +2,6 @@ use crate::collections;
 
 use crate::{
     error::WasmError,
-    extract_imm,
     module::{
         entities::{Element, ElementInit, FunctionSpec, FunctionType},
         type_context::TypeContext,
@@ -10,12 +9,206 @@ use crate::{
         Module,
     },
     op_decoder::{BlockType, Immediate, OpStream, OpcodeHandler},
-    opcodes::{Opcode, OpcodeFB, OpcodeFC, WasmOpcode},
-    simd,
+    opcodes::{Opcode, OpcodeFB, OpcodeFC, OpcodeFD, WasmOpcode},
     utils::limits::Limitable,
     value_type::{HeapType, RefType, ValueType},
 };
 use tracked_alloc::rc::Rc;
+
+#[cfg(not(sf_has_simd))]
+use crate::op_decoder::simd_opcode_error;
+
+#[inline]
+fn validator_immediate_mismatch(message: &'static str) -> WasmError {
+    WasmError::internal(message)
+}
+
+#[inline]
+fn expect_block_immediate(imm: &Immediate) -> Result<BlockType, WasmError> {
+    match imm {
+        Immediate::Block(block_type) => Ok(block_type.clone()),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected block immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_label_index_immediate(imm: &Immediate) -> Result<u32, WasmError> {
+    match imm {
+        Immediate::LabelIndex(label_index) => Ok(*label_index),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected label index immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_br_labels_immediate(imm: Immediate) -> Result<(collections::Vec<u32>, u32), WasmError> {
+    match imm {
+        Immediate::BrLabels(labels, default) => Ok((labels, default)),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected br_table immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_function_index_immediate(imm: &Immediate) -> Result<u32, WasmError> {
+    match imm {
+        Immediate::FunctionIndex(function_index) => Ok(*function_index),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected function index immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_local_index_immediate(imm: &Immediate) -> Result<u32, WasmError> {
+    match imm {
+        Immediate::LocalIndex(local_index) => Ok(*local_index),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected local index immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_global_index_immediate(imm: &Immediate) -> Result<u32, WasmError> {
+    match imm {
+        Immediate::GlobalIndex(global_index) => Ok(*global_index),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected global index immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_table_index_immediate(imm: &Immediate) -> Result<u32, WasmError> {
+    match imm {
+        Immediate::TableIndex(table_index) => Ok(*table_index),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected table index immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_memory_index_immediate(imm: &Immediate) -> Result<u32, WasmError> {
+    match imm {
+        Immediate::MemoryIndex(memory_index) => Ok(*memory_index),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected memory index immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_type_index_immediate(imm: &Immediate) -> Result<u32, WasmError> {
+    match imm {
+        Immediate::TypeIndex(type_index) => Ok(*type_index),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected type index immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_ref_type_immediate(imm: &Immediate) -> Result<ValueType, WasmError> {
+    match imm {
+        Immediate::RefType(ref_type) => Ok(*ref_type),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected ref type immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_select_types_immediate(imm: Immediate) -> Result<collections::Vec<ValueType>, WasmError> {
+    match imm {
+        Immediate::SelectTypes(select_types) => Ok(select_types),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected select types immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_call_indirect_immediate(imm: Immediate) -> Result<(u32, u32), WasmError> {
+    match imm {
+        Immediate::CallIndirectArgs { typeidx, tableidx } => Ok((typeidx, tableidx)),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected call_indirect immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_br_on_cast_immediate(imm: Immediate) -> Result<(u32, ValueType, ValueType), WasmError> {
+    match imm {
+        Immediate::BrOnCast {
+            label_idx,
+            rt1,
+            rt2,
+            ..
+        } => Ok((label_idx, rt1, rt2)),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected br_on_cast immediate",
+        )),
+    }
+}
+
+#[cfg(sf_has_simd)]
+#[inline]
+fn expect_simd_lane_immediate(imm: Immediate) -> Result<u8, WasmError> {
+    match imm {
+        Immediate::LaneIndex(lane) => Ok(lane),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected SIMD lane immediate",
+        )),
+    }
+}
+
+#[cfg(sf_has_simd)]
+#[inline]
+fn expect_simd_shuffle_immediate(imm: Immediate) -> Result<[u8; 16], WasmError> {
+    match imm {
+        Immediate::ShuffleMask(lanes) => Ok(lanes),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected SIMD shuffle immediate",
+        )),
+    }
+}
+
+#[cfg(sf_has_simd)]
+#[inline]
+fn is_relaxed_simd_opcode(op: OpcodeFD) -> bool {
+    use OpcodeFD::*;
+
+    matches!(
+        op,
+        I8X16_RELAXED_SWIZZLE
+            | I32X4_RELAXED_TRUNC_F32X4_S
+            | I32X4_RELAXED_TRUNC_F32X4_U
+            | I32X4_RELAXED_TRUNC_F64X2_S_ZERO
+            | I32X4_RELAXED_TRUNC_F64X2_U_ZERO
+            | I16X8_RELAXED_Q15MULR_S
+            | I8X16_RELAXED_LANESELECT
+            | I16X8_RELAXED_LANESELECT
+            | I32X4_RELAXED_LANESELECT
+            | I64X2_RELAXED_LANESELECT
+            | F32X4_RELAXED_MIN
+            | F32X4_RELAXED_MAX
+            | F64X2_RELAXED_MIN
+            | F64X2_RELAXED_MAX
+            | I16X8_RELAXED_DOT_I8X16_I7X16_S
+            | F32X4_RELAXED_MADD
+            | F32X4_RELAXED_NMADD
+            | F64X2_RELAXED_MADD
+            | F64X2_RELAXED_NMADD
+            | I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S
+    )
+}
 
 pub(super) struct FunctionValidator<'a> {
     module: &'a Module,
@@ -48,9 +241,12 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
                     decoded.next_op_offset,
                     decoded.imm.clone(),
                 )?,
-                WasmOpcode::FD(_op) => {
-                    return Err(simd::simd_unsupported_error());
-                }
+                WasmOpcode::FD(op) => self.on_op_fd(
+                    op,
+                    decoded.op_offset,
+                    decoded.next_op_offset,
+                    decoded.imm.clone(),
+                )?,
             }
         }
         Ok(())
@@ -133,7 +329,7 @@ impl<'a> FunctionValidator<'a> {
     }
 
     fn get_local_type(&self, imm: &Immediate) -> Result<ValueType, WasmError> {
-        let local_index = *extract_imm!(imm, Immediate::LocalIndex) as u32;
+        let local_index = expect_local_index_immediate(imm)?;
         let local_type = self
             .context
             .all_locals
@@ -143,7 +339,7 @@ impl<'a> FunctionValidator<'a> {
     }
 
     fn get_global_type(&self, imm: &Immediate) -> Result<ValueType, WasmError> {
-        let global_index = *extract_imm!(imm, Immediate::GlobalIndex) as usize;
+        let global_index = expect_global_index_immediate(imm)? as usize;
         let global = self
             .module
             .globals()
@@ -153,7 +349,7 @@ impl<'a> FunctionValidator<'a> {
     }
 
     fn get_table_type(&self, imm: &Immediate) -> Result<ValueType, WasmError> {
-        let table_index = *extract_imm!(imm, Immediate::TableIndex) as usize;
+        let table_index = expect_table_index_immediate(imm)? as usize;
         let table = self
             .module
             .tables()
@@ -163,7 +359,7 @@ impl<'a> FunctionValidator<'a> {
     }
 
     fn get_table_index_type(&self, imm: &Immediate) -> Result<ValueType, WasmError> {
-        let table_index = *extract_imm!(imm, Immediate::TableIndex) as usize;
+        let table_index = expect_table_index_immediate(imm)? as usize;
         let table = self
             .module
             .tables()
@@ -222,13 +418,13 @@ impl<'a> FunctionValidator<'a> {
         val_type: ValueType,
     ) -> Result<(), WasmError> {
         use ValueType::*;
-        let Immediate::MemArg {
-            align,
-            memidx,
-            offset,
-        } = imm
-        else {
-            unreachable!()
+        let (align, memidx, offset) = match imm {
+            Immediate::MemArg {
+                align,
+                memidx,
+                offset,
+            } => (align, memidx, offset),
+            _ => return Err(WasmError::internal("validator expected memarg immediate")),
         };
         if align > 63 {
             return Err(WasmError::invalid("invalid mem load alignment"));
@@ -255,13 +451,13 @@ impl<'a> FunctionValidator<'a> {
         val_type: ValueType,
     ) -> Result<(), WasmError> {
         use ValueType::*;
-        let Immediate::MemArg {
-            align,
-            memidx,
-            offset,
-        } = imm
-        else {
-            unreachable!()
+        let (align, memidx, offset) = match imm {
+            Immediate::MemArg {
+                align,
+                memidx,
+                offset,
+            } => (align, memidx, offset),
+            _ => return Err(WasmError::internal("validator expected memarg immediate")),
         };
         if align > 63 {
             return Err(WasmError::invalid("invalid mem store alignment"));
@@ -283,6 +479,60 @@ impl<'a> FunctionValidator<'a> {
         Ok(())
     }
 
+    #[cfg(sf_has_simd)]
+    fn validate_simd_lane(&self, lane: u8, limit: u8) -> Result<(), WasmError> {
+        if lane >= limit {
+            return Err(WasmError::invalid("SIMD lane index out of range"));
+        }
+        Ok(())
+    }
+
+    #[cfg(sf_has_simd)]
+    fn handle_simd_mem_lane(
+        &mut self,
+        imm: Immediate,
+        elem_bytes: usize,
+        lane_limit: u8,
+        is_store: bool,
+    ) -> Result<(), WasmError> {
+        use ValueType::*;
+        let (align, memidx, offset, lane) = match imm {
+            Immediate::MemArgLane {
+                align,
+                memidx,
+                offset,
+                lane,
+            } => (align, memidx, offset, lane),
+            _ => {
+                return Err(WasmError::internal(
+                    "validator expected SIMD memarg-lane immediate",
+                ));
+            }
+        };
+        self.validate_simd_lane(lane, lane_limit)?;
+        if align > 63 {
+            return Err(WasmError::invalid("invalid mem load alignment"));
+        }
+        if 2usize.pow(align) > elem_bytes {
+            return Err(WasmError::invalid("invalid mem load alignment"));
+        }
+        if memidx as usize >= self.module.memories().len() {
+            return Err(WasmError::invalid("unknown memory"));
+        }
+        let mem = &self.module.memories()[memidx as usize];
+        let is_mem64 = mem.spec().limits().is64;
+        if !is_mem64 && offset > u32::MAX as u64 {
+            return Err(WasmError::invalid("offset out of range"));
+        }
+        let index_type = if is_mem64 { I64 } else { I32 };
+        self.context.pop_val(Some(V128))?;
+        self.context.pop_val(Some(index_type))?;
+        if !is_store {
+            self.context.push_val(V128)?;
+        }
+        Ok(())
+    }
+
     fn on_op(
         &mut self,
         op: Opcode,
@@ -296,21 +546,21 @@ impl<'a> FunctionValidator<'a> {
             NOP | PREFIX_FB | PREFIX_FC | PREFIX_FD => Ok(()),
             UNREACHABLE => self.context.mark_unreachable(),
             BLOCK => {
-                let block_type = extract_imm!(imm, Immediate::Block);
+                let block_type = expect_block_immediate(&imm)?;
                 let function_type = self.get_block_type(block_type)?;
                 self.context.pop_vals(function_type.params())?;
                 self.context.push_ctrl(FrameType::Block, function_type)?;
                 Ok(())
             }
             LOOP => {
-                let block_type = extract_imm!(imm, Immediate::Block);
+                let block_type = expect_block_immediate(&imm)?;
                 let function_type = self.get_block_type(block_type)?;
                 self.context.pop_vals(function_type.params())?;
                 self.context.push_ctrl(FrameType::Loop, function_type)?;
                 Ok(())
             }
             IF => {
-                let block_type = extract_imm!(imm, Immediate::Block);
+                let block_type = expect_block_immediate(&imm)?;
                 let function_type = self.get_block_type(block_type)?;
                 self.context.pop_val(Some(I32))?;
                 self.context.pop_vals(function_type.params())?;
@@ -340,7 +590,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             BR | BR_IF => {
-                let label_index = extract_imm!(imm, Immediate::LabelIndex);
+                let label_index = expect_label_index_immediate(&imm)?;
                 if op == BR_IF {
                     self.context.pop_val(Some(I32))?;
                 }
@@ -353,7 +603,7 @@ impl<'a> FunctionValidator<'a> {
                 }
             }
             BR_TABLE => {
-                let (mut labels, default) = extract_imm!(imm, Immediate::BrLabels, tuple);
+                let (mut labels, default) = expect_br_labels_immediate(imm)?;
                 self.context.pop_val(Some(I32))?;
                 let default_label_types = self.context.frame_at(default)?.label_types();
                 let default_arity = default_label_types.len();
@@ -378,7 +628,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             CALL => {
-                let function_index = extract_imm!(imm, Immediate::FunctionIndex);
+                let function_index = expect_function_index_immediate(&imm)?;
                 let function = self
                     .module
                     .functions()
@@ -389,9 +639,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_vals(function_type.results())
             }
             CALL_INDIRECT => {
-                let Immediate::CallIndirectArgs { typeidx, tableidx } = imm else {
-                    unreachable!()
-                };
+                let (typeidx, tableidx) = expect_call_indirect_immediate(imm)?;
                 let table = self
                     .module
                     .tables()
@@ -416,7 +664,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_vals(function_type.results())
             }
             CALL_REF => {
-                let type_idx = extract_imm!(imm, Immediate::TypeIndex);
+                let type_idx = expect_type_index_immediate(&imm)?;
                 let function_type = self
                     .module
                     .types()
@@ -429,7 +677,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_vals(function_type.results())
             }
             RETURN_CALL => {
-                let function_index = extract_imm!(imm, Immediate::FunctionIndex);
+                let function_index = expect_function_index_immediate(&imm)?;
                 let function = self
                     .module
                     .functions()
@@ -447,9 +695,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             RETURN_CALL_INDIRECT => {
-                let Immediate::CallIndirectArgs { typeidx, tableidx } = imm else {
-                    unreachable!()
-                };
+                let (typeidx, tableidx) = expect_call_indirect_immediate(imm)?;
                 let table = self
                     .module
                     .tables()
@@ -481,7 +727,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             RETURN_CALL_REF => {
-                let type_idx = extract_imm!(imm, Immediate::TypeIndex);
+                let type_idx = expect_type_index_immediate(&imm)?;
                 let function_type = self
                     .module
                     .types()
@@ -524,7 +770,7 @@ impl<'a> FunctionValidator<'a> {
                 }
             }
             SELECT_T => {
-                let select_types = extract_imm!(imm, Immediate::SelectTypes);
+                let select_types = expect_select_types_immediate(imm)?;
                 if select_types.len() != 1 {
                     return Err(WasmError::invalid("invalid select types size"));
                 }
@@ -535,7 +781,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_val(select_type)
             }
             LOCAL_GET => {
-                let local_index = extract_imm!(imm, Immediate::LocalIndex);
+                let local_index = expect_local_index_immediate(&imm)?;
                 let local_type = self.get_local_type(&imm)?;
                 if local_index as usize >= self.context.locals_init.len() {
                     return Err(WasmError::invalid("local index out of range"));
@@ -546,14 +792,14 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_val(local_type)
             }
             LOCAL_SET => {
-                let local_index = extract_imm!(imm, Immediate::LocalIndex);
+                let local_index = expect_local_index_immediate(&imm)?;
                 let local_type = self.get_local_type(&imm)?;
                 self.context.pop_val(Some(local_type))?;
                 self.context.set_local_initialized(local_index as usize);
                 Ok(())
             }
             LOCAL_TEE => {
-                let local_index = extract_imm!(imm, Immediate::LocalIndex);
+                let local_index = expect_local_index_immediate(&imm)?;
                 let local_type = self.get_local_type(&imm)?;
                 self.context.pop_val(Some(local_type))?;
                 self.context.set_local_initialized(local_index as usize);
@@ -564,7 +810,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_val(global_type)
             }
             GLOBAL_SET => {
-                let global_index = extract_imm!(imm, Immediate::GlobalIndex) as usize;
+                let global_index = expect_global_index_immediate(&imm)? as usize;
                 let global = self
                     .module
                     .globals()
@@ -609,7 +855,7 @@ impl<'a> FunctionValidator<'a> {
             F32_STORE => self.handle_store::<f32>(imm, F32),
             F64_STORE => self.handle_store::<f64>(imm, F64),
             MEMORY_SIZE => {
-                let memidx = extract_imm!(imm, Immediate::MemoryIndex) as usize;
+                let memidx = expect_memory_index_immediate(&imm)? as usize;
                 if memidx >= self.module.memories().len() {
                     return Err(WasmError::invalid("unknown memory"));
                 }
@@ -619,7 +865,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_val(size_type)
             }
             MEMORY_GROW => {
-                let memidx = extract_imm!(imm, Immediate::MemoryIndex) as usize;
+                let memidx = expect_memory_index_immediate(&imm)? as usize;
                 if memidx >= self.module.memories().len() {
                     return Err(WasmError::invalid("unknown memory"));
                 }
@@ -630,7 +876,7 @@ impl<'a> FunctionValidator<'a> {
                 self.context.push_val(size_type)
             }
             REF_NULL => {
-                let ref_type = extract_imm!(imm, Immediate::RefType);
+                let ref_type = expect_ref_type_immediate(&imm)?;
                 if !ref_type.is_ref() {
                     return Err(WasmError::invalid("invalid ref type"));
                 }
@@ -657,7 +903,7 @@ impl<'a> FunctionValidator<'a> {
             }
             BR_ON_NULL => {
                 let ref_type = self.context.pop_ref_type()?;
-                let label_index = extract_imm!(imm, Immediate::LabelIndex);
+                let label_index = expect_label_index_immediate(&imm)?;
                 let label_types = self.context.frame_at(label_index)?.label_types();
                 self.context.pop_vals(&label_types)?;
                 self.context.push_vals(&label_types)?;
@@ -666,7 +912,7 @@ impl<'a> FunctionValidator<'a> {
             }
             BR_ON_NON_NULL => {
                 let ref_type = self.context.pop_ref_type()?;
-                let label_index = extract_imm!(imm, Immediate::LabelIndex);
+                let label_index = expect_label_index_immediate(&imm)?;
                 let label_types = self.context.frame_at(label_index)?.label_types();
                 let (branch_ref, prefix) = label_types
                     .split_last()
@@ -685,7 +931,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             REF_FUNC => {
-                let function_index = extract_imm!(imm, Immediate::FunctionIndex);
+                let function_index = expect_function_index_immediate(&imm)?;
                 if function_index as usize >= self.module.functions().len() {
                     return Err(WasmError::invalid("function index out of range"));
                 }
@@ -1121,7 +1367,7 @@ impl<'a> FunctionValidator<'a> {
 
         match op {
             STRUCT_NEW => {
-                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let typeidx = expect_type_index_immediate(&imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1141,7 +1387,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             STRUCT_NEW_DEFAULT => {
-                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let typeidx = expect_type_index_immediate(&imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1221,7 +1467,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_NEW => {
-                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let typeidx = expect_type_index_immediate(&imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1240,7 +1486,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_NEW_DEFAULT => {
-                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let typeidx = expect_type_index_immediate(&imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1279,7 +1525,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_GET => {
-                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let typeidx = expect_type_index_immediate(&imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1305,7 +1551,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_GET_S | ARRAY_GET_U => {
-                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let typeidx = expect_type_index_immediate(&imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1331,7 +1577,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_SET => {
-                let typeidx = extract_imm!(imm, Immediate::TypeIndex) as usize;
+                let typeidx = expect_type_index_immediate(&imm)? as usize;
                 let def_type = self
                     .module
                     .types()
@@ -1387,7 +1633,7 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             ARRAY_FILL => {
-                let typeidx = extract_imm!(imm, Immediate::TypeIndex);
+                let typeidx = expect_type_index_immediate(&imm)?;
                 let array_type = self.get_array_type(typeidx)?;
                 if !array_type.element.mutable {
                     return Err(WasmError::invalid("Cannot fill immutable array"));
@@ -1522,28 +1768,20 @@ impl<'a> FunctionValidator<'a> {
                 Ok(())
             }
             REF_TEST | REF_TEST_NULL => {
-                let _ref_type = extract_imm!(imm, Immediate::RefType);
+                let _ref_type = expect_ref_type_immediate(&imm)?;
                 let _popped = self.context.pop_ref_type()?;
                 self.context.push_val(I32)?;
                 Ok(())
             }
             REF_CAST | REF_CAST_NULL => {
-                let ref_type = extract_imm!(imm, Immediate::RefType);
+                let ref_type = expect_ref_type_immediate(&imm)?;
                 let _popped = self.context.pop_ref_type()?;
                 self.context.push_val(ref_type)?;
                 Ok(())
             }
             BR_ON_CAST => {
                 let actual_ref = self.context.pop_ref_type()?;
-                let Immediate::BrOnCast {
-                    label_idx,
-                    rt1,
-                    rt2,
-                    ..
-                } = imm
-                else {
-                    unreachable!();
-                };
+                let (label_idx, rt1, rt2) = expect_br_on_cast_immediate(imm)?;
                 if !rt2.is_subtype_of(&rt1, self.module.types()) {
                     return Err(WasmError::invalid("type mismatch"));
                 }
@@ -1570,15 +1808,7 @@ impl<'a> FunctionValidator<'a> {
             }
             BR_ON_CAST_FAIL => {
                 let actual_ref = self.context.pop_ref_type()?;
-                let Immediate::BrOnCast {
-                    label_idx,
-                    rt1,
-                    rt2,
-                    ..
-                } = imm
-                else {
-                    unreachable!();
-                };
+                let (label_idx, rt1, rt2) = expect_br_on_cast_immediate(imm)?;
                 if !rt2.is_subtype_of(&rt1, self.module.types()) {
                     return Err(WasmError::invalid("type mismatch"));
                 }
@@ -1620,6 +1850,401 @@ impl<'a> FunctionValidator<'a> {
                 ));
                 self.context.push_val(externref)?;
                 Ok(())
+            }
+        }
+    }
+
+    fn on_op_fd(
+        &mut self,
+        op: OpcodeFD,
+        _op_offset: usize,
+        _next_op_offset: usize,
+        imm: Immediate,
+    ) -> Result<(), WasmError> {
+        #[cfg(not(sf_has_simd))]
+        {
+            drop(op);
+            drop(imm);
+            Err(simd_opcode_error())
+        }
+        #[cfg(sf_has_simd)]
+        {
+            use OpcodeFD::*;
+            use ValueType::*;
+
+            if is_relaxed_simd_opcode(op) {
+                return Err(WasmError::invalid("relaxed SIMD is not supported"));
+            }
+
+            match op {
+                V128_CONST => match imm {
+                    Immediate::V128(_) => self.context.push_val(V128),
+                    _ => Err(WasmError::internal("validator expected v128 immediate")),
+                },
+                V128_LOAD => self.handle_load::<[u8; 16]>(imm, V128),
+                op if matches!(
+                    op,
+                    V128_LOAD8X8_S
+                        | V128_LOAD8X8_U
+                        | V128_LOAD16X4_S
+                        | V128_LOAD16X4_U
+                        | V128_LOAD32X2_S
+                        | V128_LOAD32X2_U
+                ) =>
+                {
+                    self.handle_load::<u64>(imm, V128)
+                }
+                V128_LOAD8_SPLAT => self.handle_load::<u8>(imm, V128),
+                V128_LOAD16_SPLAT => self.handle_load::<u16>(imm, V128),
+                V128_LOAD32_SPLAT | V128_LOAD32_ZERO => self.handle_load::<u32>(imm, V128),
+                V128_LOAD64_SPLAT | V128_LOAD64_ZERO => self.handle_load::<u64>(imm, V128),
+                V128_STORE => self.handle_store::<[u8; 16]>(imm, V128),
+                V128_LOAD8_LANE => self.handle_simd_mem_lane(imm, 1, 16, false),
+                V128_LOAD16_LANE => self.handle_simd_mem_lane(imm, 2, 8, false),
+                V128_LOAD32_LANE => self.handle_simd_mem_lane(imm, 4, 4, false),
+                V128_LOAD64_LANE => self.handle_simd_mem_lane(imm, 8, 2, false),
+                V128_STORE8_LANE => self.handle_simd_mem_lane(imm, 1, 16, true),
+                V128_STORE16_LANE => self.handle_simd_mem_lane(imm, 2, 8, true),
+                V128_STORE32_LANE => self.handle_simd_mem_lane(imm, 4, 4, true),
+                V128_STORE64_LANE => self.handle_simd_mem_lane(imm, 8, 2, true),
+
+                V128_ANY_TRUE | I8X16_ALL_TRUE | I16X8_ALL_TRUE | I32X4_ALL_TRUE
+                | I64X2_ALL_TRUE | I8X16_BITMASK | I16X8_BITMASK | I32X4_BITMASK
+                | I64X2_BITMASK => {
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(I32)
+                }
+
+                I8X16_SPLAT => {
+                    self.context.pop_val(Some(I32))?;
+                    self.context.push_val(V128)
+                }
+                I16X8_SPLAT => {
+                    self.context.pop_val(Some(I32))?;
+                    self.context.push_val(V128)
+                }
+                I32X4_SPLAT => {
+                    self.context.pop_val(Some(I32))?;
+                    self.context.push_val(V128)
+                }
+                I64X2_SPLAT => {
+                    self.context.pop_val(Some(I64))?;
+                    self.context.push_val(V128)
+                }
+                F32X4_SPLAT => {
+                    self.context.pop_val(Some(F32))?;
+                    self.context.push_val(V128)
+                }
+                F64X2_SPLAT => {
+                    self.context.pop_val(Some(F64))?;
+                    self.context.push_val(V128)
+                }
+
+                I8X16_EXTRACT_LANE_S | I8X16_EXTRACT_LANE_U => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 16)?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(I32)
+                }
+                I16X8_EXTRACT_LANE_S | I16X8_EXTRACT_LANE_U => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 8)?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(I32)
+                }
+                I32X4_EXTRACT_LANE => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 4)?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(I32)
+                }
+                I64X2_EXTRACT_LANE => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 2)?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(I64)
+                }
+                F32X4_EXTRACT_LANE => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 4)?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(F32)
+                }
+                F64X2_EXTRACT_LANE => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 2)?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(F64)
+                }
+
+                I8X16_REPLACE_LANE => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 16)?;
+                    self.context.pop_val(Some(I32))?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(V128)
+                }
+                I16X8_REPLACE_LANE => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 8)?;
+                    self.context.pop_val(Some(I32))?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(V128)
+                }
+                I32X4_REPLACE_LANE => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 4)?;
+                    self.context.pop_val(Some(I32))?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(V128)
+                }
+                I64X2_REPLACE_LANE => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 2)?;
+                    self.context.pop_val(Some(I64))?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(V128)
+                }
+                F32X4_REPLACE_LANE => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 4)?;
+                    self.context.pop_val(Some(F32))?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(V128)
+                }
+                F64X2_REPLACE_LANE => {
+                    let lane = expect_simd_lane_immediate(imm)?;
+                    self.validate_simd_lane(lane, 2)?;
+                    self.context.pop_val(Some(F64))?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(V128)
+                }
+
+                I8X16_SHUFFLE => {
+                    let lanes = expect_simd_shuffle_immediate(imm)?;
+                    if lanes.iter().any(|lane| *lane >= 32) {
+                        return Err(WasmError::invalid("SIMD shuffle lane index out of range"));
+                    }
+                    self.context.pop_val(Some(V128))?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(V128)
+                }
+
+                op if matches!(
+                    op,
+                    V128_NOT
+                        | I8X16_ABS
+                        | I8X16_NEG
+                        | I8X16_POPCNT
+                        | I16X8_EXTADD_PAIRWISE_I8X16_S
+                        | I16X8_EXTADD_PAIRWISE_I8X16_U
+                        | I16X8_ABS
+                        | I16X8_NEG
+                        | I16X8_EXTEND_LOW_I8X16_S
+                        | I16X8_EXTEND_HIGH_I8X16_S
+                        | I16X8_EXTEND_LOW_I8X16_U
+                        | I16X8_EXTEND_HIGH_I8X16_U
+                        | I32X4_EXTADD_PAIRWISE_I16X8_S
+                        | I32X4_EXTADD_PAIRWISE_I16X8_U
+                        | I32X4_ABS
+                        | I32X4_NEG
+                        | I32X4_EXTEND_LOW_I16X8_S
+                        | I32X4_EXTEND_HIGH_I16X8_S
+                        | I32X4_EXTEND_LOW_I16X8_U
+                        | I32X4_EXTEND_HIGH_I16X8_U
+                        | I64X2_ABS
+                        | I64X2_NEG
+                        | I64X2_EXTEND_LOW_I32X4_S
+                        | I64X2_EXTEND_HIGH_I32X4_S
+                        | I64X2_EXTEND_LOW_I32X4_U
+                        | I64X2_EXTEND_HIGH_I32X4_U
+                        | F32X4_NEG
+                        | F32X4_DEMOTE_F64X2_ZERO
+                        | F32X4_SQRT
+                        | F32X4_CEIL
+                        | F32X4_FLOOR
+                        | F32X4_TRUNC
+                        | F32X4_NEAREST
+                        | F64X2_ABS
+                        | F64X2_NEG
+                        | F64X2_SQRT
+                        | F64X2_CEIL
+                        | F64X2_FLOOR
+                        | F64X2_TRUNC
+                        | F64X2_NEAREST
+                        | F32X4_ABS
+                        | F32X4_CONVERT_I32X4_S
+                        | F32X4_CONVERT_I32X4_U
+                        | F64X2_PROMOTE_LOW_F32X4
+                        | F64X2_CONVERT_LOW_I32X4_S
+                        | F64X2_CONVERT_LOW_I32X4_U
+                        | I32X4_TRUNC_SAT_F32X4_S
+                        | I32X4_TRUNC_SAT_F32X4_U
+                        | I32X4_TRUNC_SAT_F64X2_S_ZERO
+                        | I32X4_TRUNC_SAT_F64X2_U_ZERO
+                ) =>
+                {
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(V128)
+                }
+
+                op if matches!(
+                    op,
+                    V128_AND
+                        | V128_ANDNOT
+                        | V128_OR
+                        | V128_XOR
+                        | I8X16_SWIZZLE
+                        | I8X16_NARROW_I16X8_S
+                        | I8X16_NARROW_I16X8_U
+                        | I8X16_MIN_S
+                        | I8X16_MIN_U
+                        | I8X16_MAX_S
+                        | I8X16_MAX_U
+                        | I8X16_AVGR_U
+                        | I8X16_ADD
+                        | I8X16_SUB
+                        | I16X8_MIN_S
+                        | I16X8_MIN_U
+                        | I16X8_MAX_S
+                        | I16X8_MAX_U
+                        | I16X8_AVGR_U
+                        | I16X8_Q15MULR_SAT_S
+                        | I16X8_NARROW_I32X4_S
+                        | I16X8_NARROW_I32X4_U
+                        | I16X8_ADD
+                        | I16X8_SUB
+                        | I16X8_MUL
+                        | I16X8_EXTMUL_LOW_I8X16_S
+                        | I16X8_EXTMUL_HIGH_I8X16_S
+                        | I16X8_EXTMUL_LOW_I8X16_U
+                        | I16X8_EXTMUL_HIGH_I8X16_U
+                        | I32X4_MIN_S
+                        | I32X4_MIN_U
+                        | I32X4_MAX_S
+                        | I32X4_MAX_U
+                        | I32X4_ADD
+                        | I32X4_SUB
+                        | I32X4_MUL
+                        | I32X4_DOT_I16X8_S
+                        | I32X4_EXTMUL_LOW_I16X8_S
+                        | I32X4_EXTMUL_HIGH_I16X8_S
+                        | I32X4_EXTMUL_LOW_I16X8_U
+                        | I32X4_EXTMUL_HIGH_I16X8_U
+                        | I64X2_ADD
+                        | I64X2_SUB
+                        | I64X2_MUL
+                        | I64X2_EXTMUL_LOW_I32X4_S
+                        | I64X2_EXTMUL_HIGH_I32X4_S
+                        | I64X2_EXTMUL_LOW_I32X4_U
+                        | I64X2_EXTMUL_HIGH_I32X4_U
+                        | F64X2_ADD
+                        | F64X2_SUB
+                        | F64X2_MUL
+                        | I8X16_ADD_SAT_S
+                        | I8X16_ADD_SAT_U
+                        | I16X8_ADD_SAT_S
+                        | I16X8_ADD_SAT_U
+                        | I8X16_SUB_SAT_S
+                        | I8X16_SUB_SAT_U
+                        | I16X8_SUB_SAT_S
+                        | I16X8_SUB_SAT_U
+                        | I8X16_EQ
+                        | I8X16_NE
+                        | I8X16_LT_S
+                        | I8X16_LT_U
+                        | I8X16_GT_S
+                        | I8X16_GT_U
+                        | I8X16_LE_S
+                        | I8X16_LE_U
+                        | I8X16_GE_S
+                        | I8X16_GE_U
+                        | I16X8_EQ
+                        | I16X8_NE
+                        | I16X8_LT_S
+                        | I16X8_LT_U
+                        | I16X8_GT_S
+                        | I16X8_GT_U
+                        | I16X8_LE_S
+                        | I16X8_LE_U
+                        | I16X8_GE_S
+                        | I16X8_GE_U
+                        | I32X4_EQ
+                        | I32X4_NE
+                        | I32X4_LT_S
+                        | I32X4_LT_U
+                        | I32X4_GT_S
+                        | I32X4_GT_U
+                        | I32X4_LE_S
+                        | I32X4_LE_U
+                        | I32X4_GE_S
+                        | I32X4_GE_U
+                        | F32X4_EQ
+                        | F32X4_NE
+                        | F32X4_LT
+                        | F32X4_GT
+                        | F32X4_LE
+                        | F32X4_GE
+                        | F32X4_ADD
+                        | F32X4_SUB
+                        | F32X4_MUL
+                        | F32X4_MAX
+                        | F32X4_PMIN
+                        | F32X4_PMAX
+                        | I64X2_EQ
+                        | I64X2_NE
+                        | I64X2_LT_S
+                        | I64X2_GT_S
+                        | I64X2_LE_S
+                        | I64X2_GE_S
+                        | F64X2_EQ
+                        | F64X2_NE
+                        | F64X2_LT
+                        | F64X2_GT
+                        | F64X2_LE
+                        | F64X2_GE
+                        | F32X4_MIN
+                        | F64X2_PMIN
+                        | F64X2_PMAX
+                        | F64X2_MIN
+                        | F64X2_MAX
+                        | F32X4_DIV
+                        | F64X2_DIV
+                ) =>
+                {
+                    self.context.pop_val(Some(V128))?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(V128)
+                }
+
+                op if matches!(op, V128_BITSELECT) => {
+                    self.context.pop_val(Some(V128))?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(V128)
+                }
+
+                op if matches!(
+                    op,
+                    I8X16_SHL
+                        | I8X16_SHR_S
+                        | I8X16_SHR_U
+                        | I16X8_SHL
+                        | I16X8_SHR_S
+                        | I16X8_SHR_U
+                        | I32X4_SHL
+                        | I32X4_SHR_S
+                        | I32X4_SHR_U
+                        | I64X2_SHL
+                        | I64X2_SHR_S
+                        | I64X2_SHR_U
+                ) =>
+                {
+                    self.context.pop_val(Some(I32))?;
+                    self.context.pop_val(Some(V128))?;
+                    self.context.push_val(V128)
+                }
+                _ => Err(WasmError::invalid("SIMD support is not yet implemented")),
             }
         }
     }

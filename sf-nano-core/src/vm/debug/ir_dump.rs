@@ -538,6 +538,15 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         MachineInstKind::FloatConst { width, dst, bits } => {
             format!("{}.const r{} <- 0x{:x}", fw(width), dst.0, bits)
         }
+        MachineInstKind::V128Const { dst, bytes } => {
+            format!("v128.const r{} <- {:02x?}", dst.0, bytes)
+        }
+        MachineInstKind::V128FromRaw { dst, raw, .. } => {
+            format!("v128.from_raw r{} <- {}", dst.0, mval(raw))
+        }
+        MachineInstKind::V128ToRaw { dst, src } => {
+            format!("v128.to_raw r{} <- {}", dst.0, mval(src))
+        }
         MachineInstKind::Load {
             owner,
             ty,
@@ -841,6 +850,128 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 mval(rhs)
             )
         }
+        MachineInstKind::SimdUnary {
+            opcode,
+            dst_ty,
+            dst,
+            src,
+        } => format!(
+            "simd.unary[0x{opcode:x}].{} r{} <- {}",
+            sty(dst_ty),
+            dst.0,
+            mval(src)
+        ),
+        MachineInstKind::SimdBinary {
+            opcode,
+            dst_ty,
+            dst,
+            lhs,
+            rhs,
+        } => format!(
+            "simd.binary[0x{opcode:x}].{} r{} <- {} {}",
+            sty(dst_ty),
+            dst.0,
+            mval(lhs),
+            mval(rhs)
+        ),
+        MachineInstKind::SimdTernary {
+            opcode,
+            dst_ty,
+            dst,
+            a,
+            b,
+            c,
+        } => format!(
+            "simd.ternary[0x{opcode:x}].{} r{} <- {} {} {}",
+            sty(dst_ty),
+            dst.0,
+            mval(a),
+            mval(b),
+            mval(c)
+        ),
+        MachineInstKind::SimdShift {
+            opcode,
+            dst,
+            vector,
+            shift,
+        } => format!(
+            "simd.shift[0x{opcode:x}] r{} <- {} {}",
+            dst.0,
+            mval(vector),
+            mval(shift)
+        ),
+        MachineInstKind::SimdExtractLane {
+            opcode,
+            lane,
+            dst_ty,
+            dst,
+            src,
+        } => format!(
+            "simd.extract_lane[0x{opcode:x},{}].{} r{} <- {}",
+            lane,
+            sty(dst_ty),
+            dst.0,
+            mval(src)
+        ),
+        MachineInstKind::SimdReplaceLane {
+            opcode,
+            lane,
+            dst,
+            vector,
+            scalar,
+        } => format!(
+            "simd.replace_lane[0x{opcode:x},{}] r{} <- {} {}",
+            lane,
+            dst.0,
+            mval(vector),
+            mval(scalar)
+        ),
+        MachineInstKind::SimdShuffle {
+            dst,
+            lhs,
+            rhs,
+            lanes,
+        } => format!(
+            "simd.shuffle r{} <- {} {} {:02x?}",
+            dst.0,
+            mval(lhs),
+            mval(rhs),
+            lanes
+        ),
+        MachineInstKind::SimdLoad { opcode, dst, addr } => {
+            format!("simd.load[0x{opcode:x}] r{} <- [{}]", dst.0, maddr(addr))
+        }
+        MachineInstKind::SimdStore { opcode, addr, src } => {
+            format!(
+                "simd.store[0x{opcode:x}] [{}] <- {}",
+                maddr(addr),
+                mval(src)
+            )
+        }
+        MachineInstKind::SimdLoadLane {
+            opcode,
+            lane,
+            dst,
+            addr,
+            vector,
+        } => format!(
+            "simd.load_lane[0x{opcode:x},{}] r{} <- [{}] {}",
+            lane,
+            dst.0,
+            maddr(addr),
+            mval(vector)
+        ),
+        MachineInstKind::SimdStoreLane {
+            opcode,
+            lane,
+            addr,
+            vector,
+        } => format!(
+            "simd.store_lane[0x{opcode:x},{}] [{}] <- {}",
+            lane,
+            maddr(addr),
+            mval(vector)
+        ),
         MachineInstKind::Convert { op, dst, src } => {
             format!("cvt.{:?} r{} <- {}", op, dst.0, mval(src))
         }
@@ -1525,5 +1656,6 @@ fn sty(ty: &MachineStorageType) -> &'static str {
         MachineStorageType::GpI64 => "i64",
         MachineStorageType::Fp32 => "f32",
         MachineStorageType::Fp64 => "f64",
+        MachineStorageType::V128 => "v128",
     }
 }

@@ -10,7 +10,7 @@ use sf_nano_core::{
 };
 use std::{cell::RefCell, collections::HashMap, fmt, fs, path::Path};
 use wast::{
-    core::{WastArgCore, WastRetCore},
+    core::{NanPattern, V128Pattern, WastArgCore, WastRetCore},
     QuoteWat, Wast, WastArg, WastDirective, WastExecute, WastInvoke, WastRet,
 };
 
@@ -96,12 +96,15 @@ pub struct CompiledModule {
 // WastValue - simplified for WASM 2.0
 // ---------------------------------------------------------------------------
 
-#[derive(Debug, Clone, PartialEq)]
+#[derive(Debug, Clone)]
 pub enum WastValue {
     I32(i32),
     I64(i64),
     F32(f32),
     F64(f64),
+    V128([u8; 16]),
+    V128Pattern(V128Pattern),
+    Either(Vec<WastValue>),
     NullRef(RefType),
     FuncRef(Option<u32>),
     ExternRef(Option<u32>),
@@ -122,6 +125,13 @@ impl From<WastValue> for Value {
             WastValue::I64(v) => Value::I64(v),
             WastValue::F32(v) => Value::F32(v),
             WastValue::F64(v) => Value::F64(v),
+            WastValue::V128(v) => Value::from_v128_bytes(v),
+            WastValue::V128Pattern(_) => {
+                panic!("V128Pattern should not be converted to Value")
+            }
+            WastValue::Either(_) => {
+                panic!("Either should not be converted to Value")
+            }
             WastValue::NullRef(ref_type) => Value::Ref(RefHandle::null(), ref_type),
             WastValue::FuncRef(Some(idx)) => {
                 Value::Ref(RefHandle::new(idx as usize), RefType::funcref())
@@ -732,7 +742,8 @@ impl WastTestRunner {
     fn execute_wast_invoke(&mut self, invoke: &WastInvoke) -> Result<Vec<Value>, TestError> {
         // Refresh forwarding pointers (HashMap may have been modified since last registration)
         register_forwarding_instances(&mut self.instances, &self.registered_as);
-        self.sync_registered_imports_from_sources();
+        self.sync_registered_imports_from_sources()
+            .map_err(|error| TestError::infrastructure(error.to_string()))?;
 
         let internal_name = self
             .resolve_module_name(invoke.module.as_ref())
@@ -753,8 +764,10 @@ impl WastTestRunner {
                 .map(|v| v.into_iter().collect())
         };
 
-        self.sync_registered_imports_back_to_sources(&internal_name);
-        self.sync_registered_imports_from_sources();
+        self.sync_registered_imports_back_to_sources(&internal_name)
+            .map_err(|error| TestError::infrastructure(error.to_string()))?;
+        self.sync_registered_imports_from_sources()
+            .map_err(|error| TestError::infrastructure(error.to_string()))?;
 
         result.map_err(|e| {
             TestError::runtime(
@@ -881,7 +894,9 @@ impl WastTestRunner {
                 let bytes = compiled.wasm_bytes.clone();
                 match Module::new("test_malformed", &bytes) {
                     Ok(module) => {
-                        let imports = self.build_imports(&bytes);
+                        let imports = self
+                            .build_imports(&bytes)
+                            .map_err(|error| TestError::infrastructure(error.to_string()))?;
                         match Instance::from_module(module, &imports) {
                             Ok(_) => Err(TestError::infrastructure(format!(
                                 "Expected: malformed module with error '{}', Actual: WASM parsing succeeded ({} bytes)",
@@ -1030,19 +1045,25 @@ impl WastTestRunner {
         match exec {
             WastExecute::Invoke(invoke) => self.execute_wast_invoke(invoke),
             WastExecute::Get { module, global, .. } => {
-                self.sync_registered_imports_from_sources();
+                self.sync_registered_imports_from_sources()
+                    .map_err(|error| TestError::infrastructure(error.to_string()))?;
                 let internal_name = self
                     .resolve_module_name(module.as_ref())
                     .map_err(TestError::infrastructure)?;
                 let instance = self.instances.get(&internal_name).ok_or_else(|| {
                     TestError::infrastructure(format!("Instance '{}' not found", internal_name))
                 })?;
-                let value = instance.get_global(global).ok_or_else(|| {
-                    TestError::infrastructure(format!(
-                        "Global '{}' not found in instance '{}'",
-                        global, internal_name
-                    ))
-                })?;
+                let value = instance
+                    .get_global(global)
+                    .map_err(|error| {
+                        TestError::runtime(format!("reading global '{}'", global), error)
+                    })?
+                    .ok_or_else(|| {
+                        TestError::infrastructure(format!(
+                            "Global '{}' not found in instance '{}'",
+                            global, internal_name
+                        ))
+                    })?;
                 Ok(vec![value])
             }
             WastExecute::Wat(wat) => match wat {
@@ -1132,8 +1153,8 @@ impl WastTestRunner {
             self.named_modules.insert(name, internal_name.clone());
         }
 
-        self.sync_registered_imports_back_to_sources(&internal_name);
-        self.sync_registered_imports_from_sources();
+        self.sync_registered_imports_back_to_sources(&internal_name)?;
+        self.sync_registered_imports_from_sources()?;
 
         Ok(internal_name)
     }
@@ -1149,7 +1170,7 @@ impl WastTestRunner {
         wasm_bytes: &[u8],
         retain_partial: bool,
     ) -> Result<Instance, WasmError> {
-        let imports = self.build_imports(wasm_bytes);
+        let imports = self.build_imports(wasm_bytes)?;
         let module = Module::new("main", wasm_bytes)?;
         match Instance::from_module_with_registry(module, &imports, &self.function_registry) {
             Ok(instance) => Ok(instance),
@@ -1168,7 +1189,7 @@ impl WastTestRunner {
     /// Build imports for a module by providing spectest imports plus exports
     /// Build imports for instantiation, forwarding cross-module function calls
     /// via thread-local slot table.
-    fn build_imports(&self, wasm_bytes: &[u8]) -> Vec<Import> {
+    fn build_imports(&self, wasm_bytes: &[u8]) -> Result<Vec<Import>, WasmError> {
         let mut imports = spectest_imports();
 
         // For each registered module, provide its exports as imports.
@@ -1179,7 +1200,7 @@ impl WastTestRunner {
                         // Global exports — read current value from live instance
                         for global in module.globals() {
                             for export_name in global.export_names() {
-                                if let Some(value) = instance.get_global(export_name) {
+                                if let Some(value) = instance.get_global(export_name)? {
                                     imports.push(Import::global_with_linked_function(
                                         registered_name,
                                         export_name,
@@ -1327,7 +1348,7 @@ impl WastTestRunner {
                     }
                     if let Some(internal) = self.named_modules.get(mod_name) {
                         if let Some(inst) = self.instances.get(internal) {
-                            if let Some(value) = inst.get_global(import_name) {
+                            if let Some(value) = inst.get_global(import_name)? {
                                 imports.push(Import::global(mod_name, import_name, value, false));
                             } else {
                                 fn fallback_stub(
@@ -1349,10 +1370,10 @@ impl WastTestRunner {
             }
         }
 
-        imports
+        Ok(imports)
     }
 
-    fn sync_registered_imports_from_sources(&mut self) {
+    fn sync_registered_imports_from_sources(&mut self) -> Result<(), WasmError> {
         let mut global_ops = Vec::new();
 
         let module_entries: Vec<_> = self
@@ -1386,7 +1407,9 @@ impl WastTestRunner {
                 let Some(value) = self
                     .instances
                     .get(&src_internal)
-                    .and_then(|instance| instance.global_at(src_idx))
+                    .map(|instance| instance.global_at(src_idx))
+                    .transpose()?
+                    .flatten()
                 else {
                     continue;
                 };
@@ -1400,16 +1423,20 @@ impl WastTestRunner {
                 let _ = instance.replace_global_at(dst_idx, value);
             }
         }
+        Ok(())
     }
 
-    fn sync_registered_imports_back_to_sources(&mut self, src_internal: &str) {
+    fn sync_registered_imports_back_to_sources(
+        &mut self,
+        src_internal: &str,
+    ) -> Result<(), WasmError> {
         let mut global_ops = Vec::new();
 
         let Some(bytes) = self.module_bytes.get(src_internal) else {
-            return;
+            return Ok(());
         };
         let Ok(module) = Module::new("_sync_exports_src", bytes) else {
-            return;
+            return Ok(());
         };
 
         for (src_idx, global) in module.globals().iter().enumerate() {
@@ -1441,7 +1468,9 @@ impl WastTestRunner {
             let Some(value) = self
                 .instances
                 .get(src_internal)
-                .and_then(|instance| instance.global_at(src_idx))
+                .map(|instance| instance.global_at(src_idx))
+                .transpose()?
+                .flatten()
             else {
                 continue;
             };
@@ -1454,6 +1483,7 @@ impl WastTestRunner {
                 let _ = instance.replace_global_at(dst_idx, value);
             }
         }
+        Ok(())
     }
 
     fn remap_table_ref(
@@ -1557,13 +1587,13 @@ impl WastTestRunner {
             WastArgCore::I64(val) => Some(WastValue::I64(*val)),
             WastArgCore::F32(f32_val) => Some(WastValue::F32(f32::from_bits(f32_val.bits))),
             WastArgCore::F64(f64_val) => Some(WastValue::F64(f64::from_bits(f64_val.bits))),
+            WastArgCore::V128(v128) => Some(WastValue::V128(v128.to_le_bytes())),
             WastArgCore::RefNull(ref_type) => match ref_type {
                 wast::core::HeapType::Abstract { ty, .. } => Some(convert_abstract_null_ref(*ty)),
                 _ => Some(WastValue::FuncRef(None)),
             },
             WastArgCore::RefExtern(idx) => Some(WastValue::ExternRef(Some(*idx))),
             WastArgCore::RefHost(idx) => Some(WastValue::Ref(Some(*idx), RefType::anyref())),
-            _ => None,
         }
     }
 
@@ -1599,6 +1629,13 @@ impl WastTestRunner {
                 wast::core::NanPattern::CanonicalNan => Some(WastValue::F64(f64::NAN)),
                 wast::core::NanPattern::ArithmeticNan => Some(WastValue::F64(f64::NAN)),
             },
+            WastRetCore::V128(pattern) => Some(WastValue::V128Pattern(pattern.clone())),
+            WastRetCore::Either(cases) => Some(WastValue::Either(
+                cases
+                    .iter()
+                    .filter_map(|case| self.convert_core_ret(case))
+                    .collect(),
+            )),
             WastRetCore::RefNull(opt_ref_type) => match opt_ref_type {
                 Some(wast::core::HeapType::Abstract { ty, .. }) => {
                     Some(convert_abstract_null_ref(*ty))
@@ -1672,6 +1709,20 @@ impl WastTestRunner {
 // ---------------------------------------------------------------------------
 
 fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
+    if let WastValue::Either(cases) = expected {
+        return cases
+            .iter()
+            .any(|candidate| values_equal_with_nan(actual, candidate));
+    }
+
+    if let Some(actual_v128) = actual.as_v128_bytes() {
+        return match expected {
+            WastValue::V128(expected_v128) => actual_v128 == *expected_v128,
+            WastValue::V128Pattern(pattern) => v128_matches_pattern(&actual_v128, pattern),
+            _ => false,
+        };
+    }
+
     match (actual, expected) {
         (Value::I32(a), WastValue::I32(e)) => a == e,
         (Value::I64(a), WastValue::I64(e)) => a == e,
@@ -1805,11 +1856,132 @@ fn values_equal_with_nan(actual: &Value, expected: &WastValue) -> bool {
     }
 }
 
+fn v128_matches_pattern(actual: &[u8; 16], pattern: &V128Pattern) -> bool {
+    match pattern {
+        V128Pattern::I8x16(expected) => actual
+            .iter()
+            .copied()
+            .map(|lane| lane as i8)
+            .zip(expected.iter().copied())
+            .all(|(a, e)| a == e),
+        V128Pattern::I16x8(expected) => actual_i16x8(actual)
+            .into_iter()
+            .zip(expected.iter().copied())
+            .all(|(a, e)| a == e),
+        V128Pattern::I32x4(expected) => actual_i32x4(actual)
+            .into_iter()
+            .zip(expected.iter().copied())
+            .all(|(a, e)| a == e),
+        V128Pattern::I64x2(expected) => actual_i64x2(actual)
+            .into_iter()
+            .zip(expected.iter().copied())
+            .all(|(a, e)| a == e),
+        V128Pattern::F32x4(expected) => actual_f32x4(actual)
+            .into_iter()
+            .zip(expected.iter())
+            .all(|(a, e)| f32_matches_nan_pattern(a, e)),
+        V128Pattern::F64x2(expected) => actual_f64x2(actual)
+            .into_iter()
+            .zip(expected.iter())
+            .all(|(a, e)| f64_matches_nan_pattern(a, e)),
+    }
+}
+
+fn actual_i16x8(actual: &[u8; 16]) -> [i16; 8] {
+    core::array::from_fn(|i| {
+        let base = i * 2;
+        i16::from_le_bytes([actual[base], actual[base + 1]])
+    })
+}
+
+fn actual_i32x4(actual: &[u8; 16]) -> [i32; 4] {
+    core::array::from_fn(|i| {
+        let base = i * 4;
+        i32::from_le_bytes([
+            actual[base],
+            actual[base + 1],
+            actual[base + 2],
+            actual[base + 3],
+        ])
+    })
+}
+
+fn actual_i64x2(actual: &[u8; 16]) -> [i64; 2] {
+    core::array::from_fn(|i| {
+        let base = i * 8;
+        i64::from_le_bytes([
+            actual[base],
+            actual[base + 1],
+            actual[base + 2],
+            actual[base + 3],
+            actual[base + 4],
+            actual[base + 5],
+            actual[base + 6],
+            actual[base + 7],
+        ])
+    })
+}
+
+fn actual_f32x4(actual: &[u8; 16]) -> [f32; 4] {
+    core::array::from_fn(|i| {
+        let base = i * 4;
+        f32::from_bits(u32::from_le_bytes([
+            actual[base],
+            actual[base + 1],
+            actual[base + 2],
+            actual[base + 3],
+        ]))
+    })
+}
+
+fn actual_f64x2(actual: &[u8; 16]) -> [f64; 2] {
+    core::array::from_fn(|i| {
+        let base = i * 8;
+        f64::from_bits(u64::from_le_bytes([
+            actual[base],
+            actual[base + 1],
+            actual[base + 2],
+            actual[base + 3],
+            actual[base + 4],
+            actual[base + 5],
+            actual[base + 6],
+            actual[base + 7],
+        ]))
+    })
+}
+
+fn f32_matches_nan_pattern(actual: f32, expected: &NanPattern<wast::token::F32>) -> bool {
+    match expected {
+        NanPattern::Value(bits) => {
+            let expected = f32::from_bits(bits.bits);
+            if actual.is_nan() && expected.is_nan() {
+                true
+            } else {
+                actual == expected
+            }
+        }
+        NanPattern::CanonicalNan | NanPattern::ArithmeticNan => actual.is_nan(),
+    }
+}
+
+fn f64_matches_nan_pattern(actual: f64, expected: &NanPattern<wast::token::F64>) -> bool {
+    match expected {
+        NanPattern::Value(bits) => {
+            let expected = f64::from_bits(bits.bits);
+            if actual.is_nan() && expected.is_nan() {
+                true
+            } else {
+                actual == expected
+            }
+        }
+        NanPattern::CanonicalNan | NanPattern::ArithmeticNan => actual.is_nan(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use sf_nano_core::module::Module;
-    use sf_nano_core::set_reference_backend;
     use sf_nano_core::{set_backend_mode, BackendMode, FunctionInst, Value};
     use std::path::PathBuf;
 
@@ -1885,9 +2057,9 @@ mod tests {
         assert_eq!(ret, vec![Value::I32(43)]);
     }
 
+    #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_repeated_local_calls_and_aliasing() {
-        set_reference_backend(true).expect("enable emulator backend");
         set_backend_mode(BackendMode::Native);
 
         let wasm_bytes = wat::parse_str(
@@ -1954,9 +2126,9 @@ mod tests {
         assert_eq!(alias, vec![Value::I32(43)]);
     }
 
+    #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_br_on_cast_with_i31ref() {
-        set_reference_backend(true).expect("enable emulator backend");
         set_backend_mode(BackendMode::Native);
 
         let wasm_bytes = wat::parse_str(
@@ -2011,9 +2183,9 @@ mod tests {
         assert_eq!(cast_fail_hit, vec![Value::I32(-1)]);
     }
 
+    #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_struct_new_and_struct_get() {
-        set_reference_backend(true).expect("enable emulator backend");
         set_backend_mode(BackendMode::Native);
 
         let wasm_bytes = wat::parse_str(
@@ -2041,9 +2213,9 @@ mod tests {
         assert_eq!(field, vec![Value::I32(6)]);
     }
 
+    #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_set_and_get() {
-        set_reference_backend(true).expect("enable emulator backend");
         set_backend_mode(BackendMode::Native);
 
         let wasm_bytes = wat::parse_str(
@@ -2079,9 +2251,9 @@ mod tests {
         assert_eq!(value, vec![Value::I32(7)]);
     }
 
+    #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_fixed_fill_and_copy() {
-        set_reference_backend(true).expect("enable emulator backend");
         set_backend_mode(BackendMode::Native);
 
         let wasm_bytes = wat::parse_str(
@@ -2148,9 +2320,9 @@ mod tests {
         assert_eq!(copied, vec![Value::I32(9)]);
     }
 
+    #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_fixed_const_expr() {
-        set_reference_backend(true).expect("enable emulator backend");
         set_backend_mode(BackendMode::Native);
 
         let wasm_bytes = wat::parse_str(
@@ -2180,9 +2352,9 @@ mod tests {
         assert_eq!(value, vec![Value::I32(4)]);
     }
 
+    #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_data_and_init_data() {
-        set_reference_backend(true).expect("enable emulator backend");
         set_backend_mode(BackendMode::Native);
 
         let wasm_bytes = wat::parse_str(
@@ -2232,9 +2404,9 @@ mod tests {
         assert_eq!(init_data, vec![Value::I32(i32::from(b'C'))]);
     }
 
+    #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_elem_and_init_elem() {
-        set_reference_backend(true).expect("enable emulator backend");
         set_backend_mode(BackendMode::Native);
 
         let wasm_bytes = wat::parse_str(
@@ -2357,9 +2529,9 @@ mod tests {
         }
     }
 
+    #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_if_params_id_break_uses_emulator_join_payload() {
-        set_reference_backend(true).expect("enable emulator backend");
         let mut runner = instantiate_first_module_with_backend("if.wast", BackendMode::Native);
         let instance = runner.instances.values_mut().next().expect("instance");
 
@@ -2372,7 +2544,5 @@ mod tests {
             .invoke("params-id-break", &[Value::I32(1)])
             .expect("invoke export");
         assert_eq!(ret_true, vec![Value::I32(3)]);
-
-        set_reference_backend(false).expect("restore default backend");
     }
 }

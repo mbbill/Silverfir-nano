@@ -7,6 +7,7 @@ use crate::{
         result_buffer::ResultBuffer,
         store::Store,
         value::Value,
+        value_encoding::value_to_raw_in_store,
     },
 };
 
@@ -37,7 +38,7 @@ pub(super) fn eval(
 
             let mut out = ResultBuffer::with_exact_capacity(returns.len());
             for value in returns {
-                out.push(value.to_raw());
+                out.push(value_to_raw_in_store(value, store));
             }
             Ok(out)
         }

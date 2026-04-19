@@ -5,7 +5,6 @@
 //! Returns **malformed** errors for structural/format issues.
 
 use crate::collections;
-use crate::simd;
 
 use tracked_alloc::rc::Rc;
 use tracked_alloc::string::{String, ToString};
@@ -24,7 +23,7 @@ use crate::{
         },
         Module,
     },
-    opcodes::Opcode,
+    opcodes::{Opcode, OpcodeFB, OpcodeFD},
     utils::{
         limits::{Limits, LimitsError},
         payload::Payload,
@@ -332,7 +331,7 @@ fn parse_indices(payload: &mut Payload) -> Result<usize, WasmError> {
 
 fn parse_valtype(payload: &mut Payload) -> Result<ValueType, WasmError> {
     let value_type = ValueType::parse(payload)?;
-    simd::ensure_simd_value_type_supported(value_type)?;
+    value_type.ensure_enabled_in_build()?;
     Ok(value_type)
 }
 
@@ -459,8 +458,8 @@ fn parse_constexpr(payload: &mut Payload) -> Result<ConstExpr, WasmError> {
                 // Binary operations have no immediates
             }
             PREFIX_FB => {
-                let op_ext: crate::opcodes::OpcodeFB = code.read_leb128_u32()?.try_into()?;
-                use crate::opcodes::OpcodeFB::*;
+                let op_ext: OpcodeFB = code.read_leb128_u32()?.try_into()?;
+                use OpcodeFB::*;
                 match op_ext {
                     REF_I31 | ANY_CONVERT_EXTERN | EXTERN_CONVERT_ANY => {}
                     STRUCT_NEW | STRUCT_NEW_DEFAULT => {
@@ -472,6 +471,20 @@ fn parse_constexpr(payload: &mut Payload) -> Result<ConstExpr, WasmError> {
                     ARRAY_NEW_FIXED => {
                         code.read_leb128_u32()?;
                         code.read_leb128_u32()?;
+                    }
+                    _ => {
+                        break 'outer Err(WasmError::malformed("Invalid opcode in constexpr"));
+                    }
+                }
+            }
+            PREFIX_FD => {
+                let op_ext: OpcodeFD = code.read_leb128_u32()?.try_into()?;
+                use OpcodeFD::*;
+                match op_ext {
+                    V128_CONST => {
+                        for _ in 0..16 {
+                            code.read_u8()?;
+                        }
                     }
                     _ => {
                         break 'outer Err(WasmError::malformed("Invalid opcode in constexpr"));

@@ -243,10 +243,13 @@ fn compute_param_prefix_usage(
         .map(|block| {
             let mut usage = ParamPrefixUsage::default();
             for &param in &block.params {
-                match super::lower_regalloc::lir_value_storage_type(program, param) {
-                    MachineStorageType::Fp32 | MachineStorageType::Fp64 => usage.fp += 1,
-                    MachineStorageType::GpI64 if gp_reg_width == 4 => usage.gp += 2,
-                    _ => usage.gp += 1,
+                let ty = super::lower_regalloc::lir_value_storage_type(program, param);
+                if ty.is_fp() {
+                    usage.fp += 1;
+                } else if gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
+                    usage.gp += 2;
+                } else {
+                    usage.gp += 1;
                 }
             }
             usage

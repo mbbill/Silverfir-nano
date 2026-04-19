@@ -107,12 +107,13 @@ pub(crate) enum MachineStorageType {
     GpI64,
     Fp32,
     Fp64,
+    V128,
 }
 
 impl MachineStorageType {
     #[inline]
     pub(crate) const fn is_fp(self) -> bool {
-        matches!(self, Self::Fp32 | Self::Fp64)
+        matches!(self, Self::Fp32 | Self::Fp64 | Self::V128)
     }
 
     #[inline]
@@ -120,7 +121,7 @@ impl MachineStorageType {
         match self {
             Self::Fp32 => Some(MachineFloatWidth::F32),
             Self::Fp64 => Some(MachineFloatWidth::F64),
-            Self::GpWord | Self::GpI64 => None,
+            Self::GpWord | Self::GpI64 | Self::V128 => None,
         }
     }
 }

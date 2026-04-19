@@ -1,14 +1,13 @@
-use crate::vm::{arch::ReferenceBackendMode, backend::BackendConfig};
+use crate::vm::backend::BackendConfig;
 
+#[cfg(sf_backend_emu64)]
 #[inline]
-pub(crate) fn compile_backend_config(mode: ReferenceBackendMode) -> BackendConfig {
-    debug_assert!(
-        mode.is_enabled(),
-        "compile_backend_config called with Disabled mode"
-    );
-    match mode {
-        ReferenceBackendMode::Emu64 => BackendConfig::new(12, 13, 8, 3),
-        ReferenceBackendMode::Emu32 => BackendConfig::new(9, 13, 4, 8),
-        ReferenceBackendMode::Disabled => BackendConfig::new(12, 13, 8, 3),
-    }
+pub(crate) const fn compile_backend_config() -> BackendConfig {
+    BackendConfig::new(8, 12, 13, 3)
+}
+
+#[cfg(sf_backend_emu32)]
+#[inline]
+pub(crate) const fn compile_backend_config() -> BackendConfig {
+    BackendConfig::new(4, 9, 13, 8)
 }

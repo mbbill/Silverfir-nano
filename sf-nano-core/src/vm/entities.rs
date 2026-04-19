@@ -14,7 +14,9 @@ use crate::value_type::ValueType;
 use crate::vm::runtime::code_buf::CodeBuffer;
 #[cfg(sf_has_guard_pages)]
 use crate::vm::runtime::guard_pages::GuardPageMemory;
+use crate::vm::store::Store;
 use crate::vm::value::{RefHandle, Value};
+use crate::vm::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store};
 
 pub type HostFn = fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), WasmError>;
 
@@ -253,22 +255,22 @@ pub struct GlobalInst {
 }
 
 impl GlobalInst {
-    pub fn new(value: Value, mutable: bool, value_type: ValueType) -> Self {
+    pub fn new_raw(raw: u64, mutable: bool, value_type: ValueType) -> Self {
         GlobalInst {
-            raw: value.to_raw(),
+            raw,
             mutable,
             value_type,
         }
     }
 
     #[inline]
-    pub fn value(&self) -> Value {
-        Value::from_raw(self.raw, self.value_type)
+    pub fn value(&self, store: &Store) -> Result<Value, WasmError> {
+        try_raw_to_value_in_store(self.raw, self.value_type, store)
     }
 
     #[inline]
-    pub fn set_value(&mut self, value: Value) {
-        self.raw = value.to_raw();
+    pub fn set_value(&mut self, store: &mut Store, value: Value) {
+        self.raw = value_to_raw_in_store(value, store);
     }
 
     #[inline]

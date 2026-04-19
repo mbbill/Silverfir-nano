@@ -161,9 +161,9 @@ pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 3> {
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
     BackendConfig::new(
+        GP_UNIT_BYTES,
         REG_PLAN.gp_dynamic.len() as u8,
         REG_PLAN.fp_dynamic.len() as u8,
-        GP_UNIT_BYTES,
         8,
     )
 }

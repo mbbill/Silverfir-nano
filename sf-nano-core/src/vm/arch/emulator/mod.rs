@@ -38,7 +38,7 @@ use crate::{
         value::Value,
         value_encoding::{
             as_f32, as_f64, as_i32, as_i64, as_u32, as_u64, from_f32, from_f64, from_i32, from_i64,
-            value_to_machine_raw,
+            value_to_machine_raw_in_store,
         },
     },
 };
@@ -161,7 +161,8 @@ pub(crate) fn eval(
 
     unsafe {
         for (index, arg) in args.iter().enumerate() {
-            *stack_base.add(index) = value_to_machine_raw(*arg, compiled.backend().gp_unit_bytes);
+            *stack_base.add(index) =
+                value_to_machine_raw_in_store(*arg, compiled.backend().gp_unit_bytes, store);
         }
         if runtime.frame_prefix_slots as usize > args.len() {
             core::ptr::write_bytes(
@@ -194,8 +195,9 @@ pub(crate) fn eval(
             stack_base,
             func_type.results(),
             compiled.backend().gp_unit_bytes,
+            store,
         )
-    };
+    }?;
     #[cfg(sf_call_trace)]
     {
         let results_len = func_type.results().len();
@@ -2031,6 +2033,7 @@ impl<'a> Emulator<'a> {
     }
 }
 
+#[inline]
 fn init_entry_regs(
     _compiled: &CompiledNativeModule,
     reg_count: u16,
@@ -2928,10 +2931,7 @@ mod tests {
         utils::limits::Limits,
         value_type::ValueType,
         vm::{
-            arch::{
-                backend_mode_test_lock, set_reference_backend, set_reference_backend_mode,
-                NativeBackend, ReferenceBackendMode,
-            },
+            arch::{backend_mode_test_lock, NativeBackend},
             build::ensure_module_compiled,
             entities::{Caller, FunctionInst, MemInst, ModuleInst, TableInst},
             machine::machine_ir::{
@@ -2968,31 +2968,38 @@ mod tests {
         }
     }
 
-    struct ReferenceBackendGuard {
+    struct CompiledBackendGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
     }
 
-    impl Drop for ReferenceBackendGuard {
-        fn drop(&mut self) {
-            set_reference_backend(false).expect("reset reference backend");
-        }
-    }
-
-    fn enable_reference_backend() -> ReferenceBackendGuard {
-        enable_reference_backend_mode(ReferenceBackendMode::Emu64)
-    }
-
-    fn enable_reference_backend_mode(mode: ReferenceBackendMode) -> ReferenceBackendGuard {
+    fn enable_compiled_backend() -> CompiledBackendGuard {
         let lock = backend_mode_test_lock()
             .lock()
             .expect("backend mode test lock");
-        set_reference_backend_mode(mode).expect("reference backend");
-        ReferenceBackendGuard { _lock: lock }
+        CompiledBackendGuard { _lock: lock }
+    }
+
+    const fn compiled_native_backend() -> NativeBackend {
+        #[cfg(sf_backend_emu64)]
+        {
+            return NativeBackend::Emu64;
+        }
+
+        #[cfg(sf_backend_emu32)]
+        {
+            return NativeBackend::Emu32;
+        }
+
+        unreachable!("emulator tests require an emulator backend build")
+    }
+
+    const fn compiled_backend_config() -> crate::vm::backend::BackendConfig {
+        super::config::compile_backend_config()
     }
 
     #[test]
     fn evaluates_native_machine_module_with_helper_runtime_call() {
-        let _guard = enable_reference_backend();
+        let _guard = enable_compiled_backend();
 
         let ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32],
@@ -3026,7 +3033,7 @@ mod tests {
 
     #[test]
     fn runtime_eval_uses_emulator_backend() {
-        let _guard = enable_reference_backend();
+        let _guard = enable_compiled_backend();
 
         let ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32],
@@ -3048,9 +3055,10 @@ mod tests {
         assert_eq!(results.peek_at_index(0), Value::I32(5).to_raw());
     }
 
+    #[cfg(sf_backend_emu64)]
     #[test]
     fn runtime_eval_emu64_call_indirect_accepts_block_result_as_first_argument() {
-        let _guard = enable_reference_backend();
+        let _guard = enable_compiled_backend();
 
         let check_ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32, ValueType::I32],
@@ -3113,9 +3121,10 @@ mod tests {
         assert_eq!(results.peek_at_index(0), Value::I32(1).to_raw());
     }
 
+    #[cfg(sf_backend_emu64)]
     #[test]
     fn runtime_eval_emu64_simple_block_result_survives_with_memory_present() {
-        let _guard = enable_reference_backend();
+        let _guard = enable_compiled_backend();
 
         let ty = Rc::new(FunctionType::new(
             collections::vec![],
@@ -3156,9 +3165,10 @@ mod tests {
             runtime::eval(func_ref, &mut store, &[]).expect("block result should not trap");
         assert_eq!(results.peek_at_index(0), Value::I32(7).to_raw());
     }
+    #[cfg(sf_backend_emu64)]
     #[test]
     fn runtime_eval_emu64_call_indirect_accepts_simple_local_target() {
-        let _guard = enable_reference_backend();
+        let _guard = enable_compiled_backend();
 
         let check_ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32, ValueType::I32],
@@ -3212,7 +3222,7 @@ mod tests {
 
     #[test]
     fn runtime_eval_preserves_first_local_call_result_across_second_local_call() {
-        let _guard = enable_reference_backend();
+        let _guard = enable_compiled_backend();
 
         let malloc_ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32],
@@ -3266,9 +3276,10 @@ mod tests {
         assert_eq!(results.peek_at_index(0), Value::I32(0).to_raw());
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn runtime_eval_emu32_preserves_first_local_call_result_across_second_local_call() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+        let _guard = enable_compiled_backend();
 
         let malloc_ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32],
@@ -3322,9 +3333,10 @@ mod tests {
         assert_eq!(results.peek_at_index(0), Value::I32(0).to_raw());
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn runtime_eval_emu32_recursive_i32_fib_matches_expected_result() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+        let _guard = enable_compiled_backend();
 
         let fib_ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32],
@@ -3370,9 +3382,10 @@ mod tests {
         assert_eq!(results.peek_at_index(0), Value::I32(55).to_raw());
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn runtime_eval_emu32_preserves_positive_i64_across_identity_call() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+        let _guard = enable_compiled_backend();
 
         let id_ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I64],
@@ -3415,9 +3428,10 @@ mod tests {
         assert_eq!(results.peek_at_index(0), Value::I64(38).to_raw());
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn runtime_eval_emu32_preserves_mixed_i32_i64_i32_call_arguments() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+        let _guard = enable_compiled_backend();
 
         let callee_ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32, ValueType::I64, ValueType::I32],
@@ -3469,10 +3483,10 @@ mod tests {
     fn jump_to_edge_preserves_mem0_provenance_for_block_params() {
         let compiled = Rc::new(
             CompiledNativeModule::new(
-                NativeBackend::Reference,
-                super::config::compile_backend_config(ReferenceBackendMode::Emu64),
+                compiled_native_backend(),
+                compiled_backend_config(),
                 MachineModule {
-                    config: super::config::compile_backend_config(ReferenceBackendMode::Emu64),
+                    config: compiled_backend_config(),
                     functions: collections::vec![MachineFunction {
                         id: MachineFuncId(0),
                         program: MachineProgram {
@@ -3553,10 +3567,10 @@ mod tests {
     fn indexed_addr_zero_extends_i32_index_and_preserves_mem0_base() {
         let compiled = Rc::new(
             CompiledNativeModule::new(
-                NativeBackend::Reference,
-                super::config::compile_backend_config(ReferenceBackendMode::Emu64),
+                compiled_native_backend(),
+                compiled_backend_config(),
                 MachineModule {
-                    config: super::config::compile_backend_config(ReferenceBackendMode::Emu64),
+                    config: compiled_backend_config(),
                     functions: collections::vec![MachineFunction {
                         id: MachineFuncId(0),
                         program: MachineProgram {
@@ -3624,11 +3638,12 @@ mod tests {
         assert_eq!(kind, RegAddrKind::Mem0);
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn compiled_emu32_rejects_unfinalized_gpi64_machine_ir() {
-        let backend = super::config::compile_backend_config(ReferenceBackendMode::Emu32);
+        let backend = compiled_backend_config();
         let err = CompiledNativeModule::new(
-            NativeBackend::Reference,
+            compiled_native_backend(),
             backend,
             MachineModule {
                 config: backend,
@@ -3664,16 +3679,17 @@ mod tests {
         assert!(err.message().contains("GpI64"));
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn compiled_emu32_rejects_wrong_gp_fp_boundary() {
-        let backend = super::config::compile_backend_config(ReferenceBackendMode::Emu32);
+        let backend = compiled_backend_config();
         // Create a module config with a mismatched GP/FP boundary by reducing
         // the GP dynamic budget by 1, so module.config.first_fp_reg() differs
         // from backend.first_fp_reg().
         let mut wrong_config = backend;
         wrong_config.gp_dynamic_budget = wrong_config.gp_dynamic_budget.saturating_sub(1);
         let err = CompiledNativeModule::new(
-            NativeBackend::Reference,
+            compiled_native_backend(),
             backend,
             MachineModule {
                 config: wrong_config,
@@ -3709,9 +3725,10 @@ mod tests {
         assert!(err.message().contains("mismatched first_fp_reg boundary"));
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn runtime_eval_emu32_rejects_more_than_thirty_two_memories() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+        let _guard = enable_compiled_backend();
 
         let ty = Rc::new(FunctionType::new(
             collections::vec![],
@@ -3741,9 +3758,10 @@ mod tests {
             .contains("emu32 synthetic address space supports at most 32 memories"));
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn runtime_eval_emu32_rejects_more_than_sixteen_tables() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+        let _guard = enable_compiled_backend();
 
         let ty = Rc::new(FunctionType::new(
             collections::vec![],
@@ -3774,9 +3792,10 @@ mod tests {
             .contains("emu32 synthetic address space supports at most 16 tables"));
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn runtime_eval_emu32_traps_on_wrapping_memory_address() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+        let _guard = enable_compiled_backend();
 
         let ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32],
@@ -3805,9 +3824,10 @@ mod tests {
         assert_eq!(error.message(), "out of bounds memory access");
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn compiled_emu32_keeps_access_wrap_trap_for_max_offset_memory_load() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+        let _guard = enable_compiled_backend();
 
         let ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32],
@@ -3851,9 +3871,10 @@ mod tests {
         );
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn runtime_eval_emu32_traps_on_max_offset_memory_address() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+        let _guard = enable_compiled_backend();
 
         let ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32],
@@ -3879,9 +3900,10 @@ mod tests {
         assert_eq!(error.message(), "out of bounds memory access");
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn runtime_eval_emu32_loads_i64_without_clobbering_address_base() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+        let _guard = enable_compiled_backend();
 
         let ty = Rc::new(FunctionType::new(
             collections::vec![ValueType::I32],
@@ -3909,9 +3931,10 @@ mod tests {
         );
     }
 
+    #[cfg(sf_backend_emu64)]
     #[test]
     fn runtime_eval_emu64_refreshes_mem0_regs_after_zero_page_memory_grow() {
-        let _guard = enable_reference_backend();
+        let _guard = enable_compiled_backend();
 
         let ty = Rc::new(FunctionType::new(
             collections::vec![],
@@ -3954,9 +3977,10 @@ mod tests {
         assert_eq!(results.peek_at_index(0), Value::I32(42).to_raw());
     }
 
+    #[cfg(sf_backend_emu64)]
     #[test]
     fn runtime_eval_emu64_traps_on_zero_page_memory_access() {
-        let _guard = enable_reference_backend();
+        let _guard = enable_compiled_backend();
 
         let ty = Rc::new(FunctionType::new(
             collections::vec![],

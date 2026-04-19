@@ -5,6 +5,7 @@ use crate::collections;
 
 use crate::{
     error::WasmError,
+    opcodes::OpcodeFD,
     vm::{
         machine::machine_ir::{
             MachineBlockId, MachineBranchCond, MachineEdge, MachineFloatWidth, MachineInst,
@@ -199,6 +200,11 @@ impl<'a> BlockLowerContext<'a> {
                     return Ok(());
                 }
                 let dst_reg = self.alloc_slot_load_value(dst)?;
+                #[cfg(sf_has_simd)]
+                if matches!(ty, MachineStorageType::V128) {
+                    self.emit_load_frame_v128(slot, dst_reg, MachineRegOwner::LinearValue)?;
+                    return Ok(());
+                }
                 let width = canonical_value_mem_width_for_value(self.program(), dst);
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Load {
@@ -218,6 +224,13 @@ impl<'a> BlockLowerContext<'a> {
                 if matches!(ty, MachineStorageType::GpI64) {
                     let ops = self.i64_ops();
                     ops.emit_store_slot_i64(self, slot, src)?;
+                    return Ok(());
+                }
+                #[cfg(sf_has_simd)]
+                if matches!(ty, MachineStorageType::V128) {
+                    let src_reg = self.use_value(src)?;
+                    self.emit_store_frame_v128(slot, src_reg)?;
+                    self.release_dead_values()?;
                     return Ok(());
                 }
                 let src_reg = self.use_value(src)?;
@@ -287,6 +300,22 @@ impl<'a> BlockLowerContext<'a> {
             let ops = self.i64_ops();
             ops.emit_reload_cached_i64(self, &cached)?;
         } else {
+            #[cfg(sf_has_simd)]
+            if matches!(cached.ty, MachineStorageType::V128) {
+                self.emit_load_frame_v128(cached.slot, cached.reg, MachineRegOwner::CachedLocal)?;
+            } else {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::CachedLocal,
+                        ty: cached.ty,
+                        dst: cached.reg,
+                        addr: self.frame_addr(cached.slot)?,
+                        width: super::lower_regalloc::canonical_cached_local_mem_width(cached.ty),
+                        extension: MachineLoadExtension::None,
+                    },
+                });
+            }
+            #[cfg(not(sf_has_simd))]
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
                     owner: MachineRegOwner::CachedLocal,
@@ -312,6 +341,11 @@ impl<'a> BlockLowerContext<'a> {
             return Ok(());
         }
         let dst_reg = self.alloc_slot_load_value(dst)?;
+        #[cfg(sf_has_simd)]
+        if matches!(ty, MachineStorageType::V128) {
+            self.emit_load_frame_v128(slot, dst_reg, MachineRegOwner::LinearValue)?;
+            return Ok(());
+        }
         let width = canonical_value_mem_width_for_value(self.program(), dst);
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
@@ -400,6 +434,13 @@ impl<'a> BlockLowerContext<'a> {
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let ops = self.i64_ops();
             ops.emit_store_slot_i64(self, slot, src)?;
+            return Ok(());
+        }
+        #[cfg(sf_has_simd)]
+        if matches!(ty, MachineStorageType::V128) {
+            let src_reg = self.use_value(src)?;
+            self.emit_store_frame_v128(slot, src_reg)?;
+            self.release_dead_values()?;
             return Ok(());
         }
         let src_reg = self.use_value(src)?;
@@ -563,6 +604,32 @@ impl<'a> BlockLowerContext<'a> {
             P::TableSet { table_idx } => {
                 self.lower_table_set(*table_idx, args, continuation, trap)?
             }
+            #[cfg(sf_has_simd)]
+            P::V128Load { offset, memidx } => {
+                self.lower_v128_load(*offset, *memidx, args, results)?
+            }
+            #[cfg(sf_has_simd)]
+            P::SimdMemLoadV128 {
+                opcode,
+                offset,
+                memidx,
+            } => self.lower_simd_mem_load(*opcode, *offset, *memidx, args, results)?,
+            #[cfg(sf_has_simd)]
+            P::SimdMemLoadLaneV128 {
+                opcode,
+                lane,
+                offset,
+                memidx,
+            } => self.lower_simd_mem_load_lane(*opcode, *lane, *offset, *memidx, args, results)?,
+            #[cfg(sf_has_simd)]
+            P::V128Store { offset, memidx } => self.lower_v128_store(*offset, *memidx, args)?,
+            #[cfg(sf_has_simd)]
+            P::SimdMemStoreLaneV128 {
+                opcode,
+                lane,
+                offset,
+                memidx,
+            } => self.lower_simd_mem_store_lane(*opcode, *lane, *offset, *memidx, args)?,
             primitive => {
                 if let Some(spec) = super::lower_leaf_special::machine_load(primitive) {
                     return Ok(Some(self.lower_memory_load(
@@ -618,6 +685,189 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let dst = self.alloc_result_value(single_result(results)?)?;
         self.emit_machine_inst(MachineInst { kind: build(dst) });
+        Ok(())
+    }
+
+    #[cfg(sf_has_simd)]
+    fn lower_v128_const(&mut self, results: &[SsaValue], value: [u8; 16]) -> Result<(), WasmError> {
+        let dst = self.alloc_result_value(single_result(results)?)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::V128Const { dst, bytes: value },
+        });
+        Ok(())
+    }
+
+    #[cfg(sf_has_simd)]
+    fn lower_simd_unary(
+        &mut self,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+        opcode: u32,
+    ) -> Result<(), WasmError> {
+        let src = self.lower_operand(single_arg(args)?)?;
+        let dead = simd_dead_values(args);
+        let result = single_result(results)?;
+        let dst = self.alloc_result_value_reusing_dead_inputs(result, &dead)?;
+        let dst_ty = lir_value_storage_type(self.program(), result);
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::SimdUnary {
+                opcode,
+                dst_ty,
+                dst,
+                src,
+            },
+        });
+        Ok(())
+    }
+
+    #[cfg(sf_has_simd)]
+    fn lower_simd_binary(
+        &mut self,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+        opcode: u32,
+    ) -> Result<(), WasmError> {
+        let (lhs_arg, rhs_arg) = two_args(args)?;
+        let lhs = self.lower_operand(lhs_arg)?;
+        let rhs = self.lower_operand(rhs_arg)?;
+        let dead = simd_dead_values(args);
+        let result = single_result(results)?;
+        let dst = self.alloc_result_value_reusing_dead_inputs(result, &dead)?;
+        let dst_ty = lir_value_storage_type(self.program(), result);
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::SimdBinary {
+                opcode,
+                dst_ty,
+                dst,
+                lhs,
+                rhs,
+            },
+        });
+        Ok(())
+    }
+
+    #[cfg(sf_has_simd)]
+    fn lower_simd_ternary(
+        &mut self,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+        opcode: u32,
+    ) -> Result<(), WasmError> {
+        let (a_arg, b_arg, c_arg) = three_args(args)?;
+        let a = self.lower_operand(a_arg)?;
+        let b = self.lower_operand(b_arg)?;
+        let c = self.lower_operand(c_arg)?;
+        let dead = simd_dead_values(args);
+        let result = single_result(results)?;
+        let dst = self.alloc_result_value_reusing_dead_inputs(result, &dead)?;
+        let dst_ty = lir_value_storage_type(self.program(), result);
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::SimdTernary {
+                opcode,
+                dst_ty,
+                dst,
+                a,
+                b,
+                c,
+            },
+        });
+        Ok(())
+    }
+
+    #[cfg(sf_has_simd)]
+    fn lower_simd_shift(
+        &mut self,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+        opcode: u32,
+    ) -> Result<(), WasmError> {
+        let (vector_arg, shift_arg) = two_args(args)?;
+        let vector = self.lower_operand(vector_arg)?;
+        let shift = self.lower_operand(shift_arg)?;
+        let dead = simd_dead_values(args);
+        let result = single_result(results)?;
+        let dst = self.alloc_result_value_reusing_dead_inputs(result, &dead)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::SimdShift {
+                opcode,
+                dst,
+                vector,
+                shift,
+            },
+        });
+        Ok(())
+    }
+
+    #[cfg(sf_has_simd)]
+    fn lower_simd_extract_lane(
+        &mut self,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+        opcode: u32,
+        lane: u8,
+    ) -> Result<(), WasmError> {
+        let src = self.lower_operand(single_arg(args)?)?;
+        let dead = simd_dead_values(args);
+        let result = single_result(results)?;
+        let dst = self.alloc_result_value_reusing_dead_inputs(result, &dead)?;
+        let dst_ty = lir_value_storage_type(self.program(), result);
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::SimdExtractLane {
+                opcode,
+                lane,
+                dst_ty,
+                dst,
+                src,
+            },
+        });
+        Ok(())
+    }
+
+    #[cfg(sf_has_simd)]
+    fn lower_simd_replace_lane(
+        &mut self,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+        opcode: u32,
+        lane: u8,
+    ) -> Result<(), WasmError> {
+        let (vector_arg, scalar_arg) = two_args(args)?;
+        let vector = self.lower_operand(vector_arg)?;
+        let scalar = self.lower_operand(scalar_arg)?;
+        let dead = simd_dead_values(args);
+        let dst = self.alloc_result_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::SimdReplaceLane {
+                opcode,
+                lane,
+                dst,
+                vector,
+                scalar,
+            },
+        });
+        Ok(())
+    }
+
+    #[cfg(sf_has_simd)]
+    fn lower_simd_shuffle(
+        &mut self,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+        lanes: [u8; 16],
+    ) -> Result<(), WasmError> {
+        let (lhs_arg, rhs_arg) = two_args(args)?;
+        let lhs = self.lower_operand(lhs_arg)?;
+        let rhs = self.lower_operand(rhs_arg)?;
+        let dead = simd_dead_values(args);
+        let dst = self.alloc_result_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::SimdShuffle {
+                dst,
+                lhs,
+                rhs,
+                lanes,
+            },
+        });
         Ok(())
     }
 
@@ -947,6 +1197,96 @@ impl<'a> BlockLowerContext<'a> {
             P::F64Const { value } => {
                 self.lower_float_const(results, MachineFloatWidth::F64, *value)
             }
+            P::V128Const { value } => self.lower_v128_const(results, *value),
+            P::V128Not => self.lower_simd_unary(args, results, OpcodeFD::V128_NOT as u32),
+            P::V128And => self.lower_simd_binary(args, results, OpcodeFD::V128_AND as u32),
+            P::V128AndNot => self.lower_simd_binary(args, results, OpcodeFD::V128_ANDNOT as u32),
+            P::V128Or => self.lower_simd_binary(args, results, OpcodeFD::V128_OR as u32),
+            P::V128Xor => self.lower_simd_binary(args, results, OpcodeFD::V128_XOR as u32),
+            P::V128Bitselect => {
+                self.lower_simd_ternary(args, results, OpcodeFD::V128_BITSELECT as u32)
+            }
+            P::V128AnyTrue => self.lower_simd_unary(args, results, OpcodeFD::V128_ANY_TRUE as u32),
+            P::I8x16AllTrue => {
+                self.lower_simd_unary(args, results, OpcodeFD::I8X16_ALL_TRUE as u32)
+            }
+            P::I16x8AllTrue => {
+                self.lower_simd_unary(args, results, OpcodeFD::I16X8_ALL_TRUE as u32)
+            }
+            P::I32x4AllTrue => {
+                self.lower_simd_unary(args, results, OpcodeFD::I32X4_ALL_TRUE as u32)
+            }
+            P::I64x2AllTrue => {
+                self.lower_simd_unary(args, results, OpcodeFD::I64X2_ALL_TRUE as u32)
+            }
+            P::I8x16Bitmask => self.lower_simd_unary(args, results, OpcodeFD::I8X16_BITMASK as u32),
+            P::I16x8Bitmask => self.lower_simd_unary(args, results, OpcodeFD::I16X8_BITMASK as u32),
+            P::I32x4Bitmask => self.lower_simd_unary(args, results, OpcodeFD::I32X4_BITMASK as u32),
+            P::I64x2Bitmask => self.lower_simd_unary(args, results, OpcodeFD::I64X2_BITMASK as u32),
+            P::I8x16Splat => self.lower_simd_unary(args, results, OpcodeFD::I8X16_SPLAT as u32),
+            P::I16x8Splat => self.lower_simd_unary(args, results, OpcodeFD::I16X8_SPLAT as u32),
+            P::I32x4Splat => self.lower_simd_unary(args, results, OpcodeFD::I32X4_SPLAT as u32),
+            P::I64x2Splat => self.lower_simd_unary(args, results, OpcodeFD::I64X2_SPLAT as u32),
+            P::F32x4Splat => self.lower_simd_unary(args, results, OpcodeFD::F32X4_SPLAT as u32),
+            P::F64x2Splat => self.lower_simd_unary(args, results, OpcodeFD::F64X2_SPLAT as u32),
+            P::I8x16ExtractLaneS { lane } => self.lower_simd_extract_lane(
+                args,
+                results,
+                OpcodeFD::I8X16_EXTRACT_LANE_S as u32,
+                *lane,
+            ),
+            P::I8x16ExtractLaneU { lane } => self.lower_simd_extract_lane(
+                args,
+                results,
+                OpcodeFD::I8X16_EXTRACT_LANE_U as u32,
+                *lane,
+            ),
+            P::I16x8ExtractLaneS { lane } => self.lower_simd_extract_lane(
+                args,
+                results,
+                OpcodeFD::I16X8_EXTRACT_LANE_S as u32,
+                *lane,
+            ),
+            P::I16x8ExtractLaneU { lane } => self.lower_simd_extract_lane(
+                args,
+                results,
+                OpcodeFD::I16X8_EXTRACT_LANE_U as u32,
+                *lane,
+            ),
+            P::I32x4ExtractLane { lane } => self.lower_simd_extract_lane(
+                args,
+                results,
+                OpcodeFD::I32X4_EXTRACT_LANE as u32,
+                *lane,
+            ),
+            P::I64x2ExtractLane { lane } => self.lower_simd_extract_lane(
+                args,
+                results,
+                OpcodeFD::I64X2_EXTRACT_LANE as u32,
+                *lane,
+            ),
+            P::F32x4ExtractLane { lane } => self.lower_simd_extract_lane(
+                args,
+                results,
+                OpcodeFD::F32X4_EXTRACT_LANE as u32,
+                *lane,
+            ),
+            P::F64x2ExtractLane { lane } => self.lower_simd_extract_lane(
+                args,
+                results,
+                OpcodeFD::F64X2_EXTRACT_LANE as u32,
+                *lane,
+            ),
+            P::SimdReplaceLane { opcode, lane } => {
+                self.lower_simd_replace_lane(args, results, *opcode, *lane)
+            }
+            P::I8x16Shuffle { lanes } => self.lower_simd_shuffle(args, results, *lanes),
+            P::SimdUnaryV128 { opcode } => self.lower_simd_unary(args, results, *opcode),
+            P::SimdBinaryV128 { opcode } => self.lower_simd_binary(args, results, *opcode),
+            P::SimdShiftV128 { opcode } => self.lower_simd_shift(args, results, *opcode),
+            P::I32x4Add => self.lower_simd_binary(args, results, OpcodeFD::I32X4_ADD as u32),
+            P::I64x2Add => self.lower_simd_binary(args, results, OpcodeFD::I64X2_ADD as u32),
+
             P::RefNull => self.lower_const(results, self.gp_word_max_imm()),
             P::RefFunc { func_idx } => {
                 self.lower_single_result_gp_op(results, |dst| MachineInstKind::RefFunc {
@@ -999,12 +1339,26 @@ impl<'a> BlockLowerContext<'a> {
                 })
             }
             P::RefTest { ref_type } => {
-                let src = self.lower_operand(single_arg(args)?)?;
-                self.lower_single_result_gp_op(results, |dst| MachineInstKind::RefTest {
-                    ref_type: *ref_type,
-                    src,
-                    dst,
-                })
+                let src_arg = single_arg(args)?;
+                let mut reuse_candidates = collections::Vec::new();
+                if let DecodedOperand::Value(value) = src_arg.decode() {
+                    reuse_candidates.push(value);
+                }
+                let src = self.lower_operand(src_arg)?;
+                let result = single_result(results)?;
+                let dst = if reuse_candidates.is_empty() {
+                    self.alloc_result_value(result)?
+                } else {
+                    self.alloc_result_value_reusing_dead_inputs(result, &reuse_candidates)?
+                };
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::RefTest {
+                        ref_type: *ref_type,
+                        src,
+                        dst,
+                    },
+                });
+                Ok(())
             }
             P::RefCast { ref_type } => {
                 let src = self.lower_operand(single_arg(args)?)?;
@@ -1187,4 +1541,14 @@ impl<'a> BlockLowerContext<'a> {
             WasmError::internal("no machine register pair assigned for SSA-IR value")
         })
     }
+}
+
+#[cfg(sf_has_simd)]
+fn simd_dead_values(args: &[SsaOperand]) -> collections::Vec<SsaValue> {
+    args.iter()
+        .filter_map(|arg| match arg.decode() {
+            DecodedOperand::Value(value) => Some(value),
+            DecodedOperand::Const(_) | DecodedOperand::None => None,
+        })
+        .collect()
 }

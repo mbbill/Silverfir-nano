@@ -6,10 +6,21 @@ use core::fmt;
 use crate::{
     error::WasmError,
     opcodes::{self, *},
-    simd,
     utils::payload::Payload,
     value_type::{HeapType, RefType, ValueType},
 };
+
+#[cfg(not(sf_has_simd))]
+#[inline]
+fn simd_unsupported_target_error() -> WasmError {
+    WasmError::invalid("SIMD is not supported on this CPU")
+}
+
+#[cfg(not(sf_has_simd))]
+#[inline]
+pub(crate) fn simd_opcode_error() -> WasmError {
+    simd_unsupported_target_error()
+}
 
 pub trait OpcodeHandler {
     fn on_decode_begin(&mut self) -> Result<(), WasmError>;
@@ -47,6 +58,9 @@ pub enum Immediate {
     I64(i64),
     F32(f32),
     F64(f64),
+    V128([u8; 16]),
+    ShuffleMask([u8; 16]),
+    LaneIndex(u8),
     Block(BlockType),
     RefType(ValueType),
     BrLabels(collections::Vec<u32>, u32),
@@ -75,6 +89,12 @@ pub enum Immediate {
         align: u32,
         offset: u64,
         memidx: u32,
+    },
+    MemArgLane {
+        align: u32,
+        offset: u64,
+        memidx: u32,
+        lane: u8,
     },
     TableInitArgs {
         elemidx: u32,
@@ -136,6 +156,9 @@ impl fmt::Display for Immediate {
             I64(imm) => write!(f, "i64({})", imm),
             F32(imm) => write!(f, "f32({:e})", imm),
             F64(imm) => write!(f, "f64({:e})", imm),
+            V128(bytes) => write!(f, "v128({:02x?})", bytes),
+            ShuffleMask(mask) => write!(f, "shuffle({:02x?})", mask),
+            LaneIndex(lane) => write!(f, "lane({})", lane),
             Block(imm) => write!(f, "blocktype({})", imm),
             RefType(imm) => write!(f, "reftype({})", imm),
             BrLabels(v_idx, default_idx) => {
@@ -167,6 +190,16 @@ impl fmt::Display for Immediate {
                 f,
                 "align({}), offset({}), memidx({})",
                 align, offset, memidx
+            ),
+            MemArgLane {
+                align,
+                offset,
+                memidx,
+                lane,
+            } => write!(
+                f,
+                "align({}), offset({}), memidx({}), lane({})",
+                align, offset, memidx, lane
             ),
             TableInitArgs { elemidx, tableidx } => {
                 write!(f, "elemidx({}), tableidx({})", elemidx, tableidx)
@@ -305,13 +338,13 @@ impl<'a, 'b> Decoder<'a, 'b> {
                     0x64 | 0x63 => {
                         payload.rewind(1)?;
                         let value_type = ValueType::parse(&mut payload)?;
-                        simd::ensure_simd_value_type_supported(value_type)?;
+                        value_type.ensure_enabled_in_build()?;
                         BlockType::ValueType(value_type)
                     }
 
                     _ => match ValueType::try_from(byte1) {
                         Ok(value_type) => {
-                            simd::ensure_simd_value_type_supported(value_type)?;
+                            value_type.ensure_enabled_in_build()?;
                             BlockType::ValueType(value_type)
                         }
                         Err(_) => {
@@ -589,7 +622,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let mut vec = collections::Vec::new();
                 for _ in 0..len {
                     let valtype: ValueType = payload.read_u8()?.try_into()?;
-                    simd::ensure_simd_value_type_supported(valtype)?;
+                    valtype.ensure_enabled_in_build()?;
                     vec.push(valtype);
                 }
                 let wasm_op = OP(op);
@@ -606,23 +639,8 @@ impl<'a, 'b> Decoder<'a, 'b> {
             | I64_LOAD8_S | I64_LOAD8_U | I64_LOAD16_S | I64_LOAD16_U | I64_LOAD32_S
             | I64_LOAD32_U | F32_LOAD | F64_LOAD | I32_STORE | I32_STORE8 | I32_STORE16
             | I64_STORE | I64_STORE8 | I64_STORE16 | I64_STORE32 | F32_STORE | F64_STORE => {
-                let align_flag = payload.read_leb128_u32()?;
-                let (align, memidx) = if align_flag < 64 {
-                    (align_flag, 0)
-                } else {
-                    let memidx = payload.read_leb128_u32()?;
-                    (align_flag - 64, memidx)
-                };
-                if align >= 32 {
-                    return Err(WasmError::malformed("malformed memop flags"));
-                }
-                let offset = payload.read_leb128_u64()?;
                 let wasm_op = OP(op);
-                let imm = Immediate::MemArg {
-                    align,
-                    offset,
-                    memidx,
-                };
+                let imm = decode_mem_arg(&mut payload)?;
                 let next_off = payload.position();
                 self.decoded_ops.borrow_mut().push(DecodedOp {
                     wasm_op,
@@ -883,7 +901,24 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 }
             }
             PREFIX_FD => {
-                return Err(simd::simd_unsupported_error());
+                let op_ext: OpcodeFD = payload.read_leb128_u32()?.try_into()?;
+                #[cfg(not(sf_has_simd))]
+                {
+                    let _ = op_ext;
+                    return Err(simd_opcode_error());
+                }
+                #[cfg(sf_has_simd)]
+                {
+                    let wasm_op = FD(op_ext);
+                    let imm = decode_fd_immediate(&mut payload, op_ext)?;
+                    let next_off = payload.position();
+                    self.decoded_ops.borrow_mut().push(DecodedOp {
+                        wasm_op,
+                        op_offset,
+                        next_op_offset: next_off,
+                        imm,
+                    });
+                }
             }
             NOP | ELSE | RETURN | DROP | SELECT | I32_EQZ | I32_EQ | I32_NE | I32_LT_S
             | I32_LT_U | I32_GT_S | I32_GT_U | I32_LE_S | I32_LE_U | I32_GE_S | I32_GE_U
@@ -920,6 +955,128 @@ impl<'a, 'b> Decoder<'a, 'b> {
         }
         Ok(true)
     }
+}
+
+fn decode_mem_arg(payload: &mut Payload<'_>) -> Result<Immediate, WasmError> {
+    let align_flag = payload.read_leb128_u32()?;
+    let (align, memidx) = if align_flag < 64 {
+        (align_flag, 0)
+    } else {
+        let memidx = payload.read_leb128_u32()?;
+        (align_flag - 64, memidx)
+    };
+    if align >= 32 {
+        return Err(WasmError::malformed("malformed memop flags"));
+    }
+    let offset = payload.read_leb128_u64()?;
+    Ok(Immediate::MemArg {
+        align,
+        offset,
+        memidx,
+    })
+}
+
+#[cfg(sf_has_simd)]
+fn decode_mem_arg_lane(payload: &mut Payload<'_>) -> Result<Immediate, WasmError> {
+    let Immediate::MemArg {
+        align,
+        offset,
+        memidx,
+    } = decode_mem_arg(payload)?
+    else {
+        unreachable!();
+    };
+    let lane = payload.read_u8()?;
+    Ok(Immediate::MemArgLane {
+        align,
+        offset,
+        memidx,
+        lane,
+    })
+}
+
+#[cfg(sf_has_simd)]
+fn decode_fd_immediate(
+    payload: &mut Payload<'_>,
+    op_ext: OpcodeFD,
+) -> Result<Immediate, WasmError> {
+    if matches!(op_ext, OpcodeFD::V128_CONST) {
+        let mut bytes = [0u8; 16];
+        bytes.copy_from_slice(payload.read_bytes(16)?);
+        return Ok(Immediate::V128(bytes));
+    }
+    if matches!(op_ext, OpcodeFD::I8X16_SHUFFLE) {
+        let mut lanes = [0u8; 16];
+        lanes.copy_from_slice(payload.read_bytes(16)?);
+        return Ok(Immediate::ShuffleMask(lanes));
+    }
+    if fd_uses_mem_arg(op_ext) {
+        return decode_mem_arg(payload);
+    }
+    if fd_uses_mem_arg_lane(op_ext) {
+        return decode_mem_arg_lane(payload);
+    }
+    if fd_uses_lane_index(op_ext) {
+        return Ok(Immediate::LaneIndex(payload.read_u8()?));
+    }
+    Ok(Immediate::None)
+}
+
+#[cfg(sf_has_simd)]
+fn fd_uses_mem_arg(op_ext: OpcodeFD) -> bool {
+    matches!(
+        op_ext,
+        OpcodeFD::V128_LOAD
+            | OpcodeFD::V128_LOAD8X8_S
+            | OpcodeFD::V128_LOAD8X8_U
+            | OpcodeFD::V128_LOAD16X4_S
+            | OpcodeFD::V128_LOAD16X4_U
+            | OpcodeFD::V128_LOAD32X2_S
+            | OpcodeFD::V128_LOAD32X2_U
+            | OpcodeFD::V128_LOAD8_SPLAT
+            | OpcodeFD::V128_LOAD16_SPLAT
+            | OpcodeFD::V128_LOAD32_SPLAT
+            | OpcodeFD::V128_LOAD64_SPLAT
+            | OpcodeFD::V128_STORE
+            | OpcodeFD::V128_LOAD32_ZERO
+            | OpcodeFD::V128_LOAD64_ZERO
+    )
+}
+
+#[cfg(sf_has_simd)]
+fn fd_uses_mem_arg_lane(op_ext: OpcodeFD) -> bool {
+    matches!(
+        op_ext,
+        OpcodeFD::V128_LOAD8_LANE
+            | OpcodeFD::V128_LOAD16_LANE
+            | OpcodeFD::V128_LOAD32_LANE
+            | OpcodeFD::V128_LOAD64_LANE
+            | OpcodeFD::V128_STORE8_LANE
+            | OpcodeFD::V128_STORE16_LANE
+            | OpcodeFD::V128_STORE32_LANE
+            | OpcodeFD::V128_STORE64_LANE
+    )
+}
+
+#[cfg(sf_has_simd)]
+fn fd_uses_lane_index(op_ext: OpcodeFD) -> bool {
+    matches!(
+        op_ext,
+        OpcodeFD::I8X16_EXTRACT_LANE_S
+            | OpcodeFD::I8X16_EXTRACT_LANE_U
+            | OpcodeFD::I8X16_REPLACE_LANE
+            | OpcodeFD::I16X8_EXTRACT_LANE_S
+            | OpcodeFD::I16X8_EXTRACT_LANE_U
+            | OpcodeFD::I16X8_REPLACE_LANE
+            | OpcodeFD::I32X4_EXTRACT_LANE
+            | OpcodeFD::I32X4_REPLACE_LANE
+            | OpcodeFD::I64X2_EXTRACT_LANE
+            | OpcodeFD::I64X2_REPLACE_LANE
+            | OpcodeFD::F32X4_EXTRACT_LANE
+            | OpcodeFD::F32X4_REPLACE_LANE
+            | OpcodeFD::F64X2_EXTRACT_LANE
+            | OpcodeFD::F64X2_REPLACE_LANE
+    )
 }
 
 pub struct OpStream<'d, 'a, 'b> {
@@ -1037,7 +1194,6 @@ mod tests {
     use crate::{
         error::WasmError,
         opcodes::OPCODE_CONSTANTS::{BLOCK, END, PREFIX_FD},
-        simd,
     };
 
     struct DrainHandler;
@@ -1060,6 +1216,7 @@ mod tests {
         }
     }
 
+    #[cfg(not(sf_has_simd))]
     #[test]
     fn simd_prefix_reports_invalid_instead_of_panicking() {
         let code = [PREFIX_FD, 0x00, END];
@@ -1071,7 +1228,22 @@ mod tests {
             .decode_function()
             .expect_err("SIMD opcodes should be rejected cleanly");
 
-        assert_eq!(err, simd::simd_unsupported_error());
+        assert_eq!(err, super::simd_opcode_error());
+    }
+
+    #[cfg(sf_has_simd)]
+    #[test]
+    fn simd_prefix_v128_const_decodes() {
+        let mut code = [0u8; 19];
+        code[0] = PREFIX_FD;
+        code[1] = 0x0c;
+        code[18] = END;
+        let mut decoder = Decoder::new(&code);
+        let mut handler = DrainHandler;
+        decoder.add_handler(&mut handler);
+        decoder
+            .decode_function()
+            .expect("SIMD-enabled builds should decode v128.const");
     }
 
     #[test]
@@ -1081,10 +1253,17 @@ mod tests {
         let mut handler = DrainHandler;
         decoder.add_handler(&mut handler);
 
+        #[cfg(not(sf_has_simd))]
         let err = decoder
             .decode_function()
-            .expect_err("v128 block types should be rejected cleanly");
+            .expect_err("non-SIMD builds should reject v128 block types cleanly");
 
-        assert_eq!(err, simd::simd_unsupported_error());
+        #[cfg(not(sf_has_simd))]
+        assert_eq!(err, super::simd_unsupported_target_error());
+
+        #[cfg(sf_has_simd)]
+        decoder
+            .decode_function()
+            .expect("SIMD-enabled builds should decode v128 block types");
     }
 }

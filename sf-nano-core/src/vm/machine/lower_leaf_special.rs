@@ -4,6 +4,7 @@ use crate::collections;
 
 use crate::{
     error::WasmError,
+    opcodes::OpcodeFD,
     vm::{
         entities::{global_offset, GlobalInst},
         machine::machine_ir::{
@@ -13,7 +14,7 @@ use crate::{
             MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
             MACHINE_MEM0_BASE_REG,
         },
-        middle::ssa_ir::ir::{SsaOperand, SsaValue},
+        middle::ssa_ir::ir::{DecodedOperand, SsaOperand, SsaValue},
         runtime::layout::native_runtime_abi_layout,
         wasm::primitive_op::PrimitiveOpKind,
     },
@@ -456,6 +457,10 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let result = single_result(results)?;
         let ty = self.value_storage_type(result);
+        #[cfg(sf_has_simd)]
+        if matches!(ty, MachineStorageType::V128) {
+            return self.lower_global_get_v128(idx, result);
+        }
         if matches!(ty, MachineStorageType::GpI64) {
             let ops = self.i64_ops();
             return ops.emit_global_get_i64(self, idx, result);
@@ -500,6 +505,45 @@ impl<'a> BlockLowerContext<'a> {
                 extension: MachineLoadExtension::None,
             },
         });
+        Ok(())
+    }
+
+    #[cfg(sf_has_simd)]
+    pub(super) fn lower_global_get_v128(
+        &mut self,
+        idx: u32,
+        result: SsaValue,
+    ) -> Result<(), WasmError> {
+        self.ensure_v128_raw_abi()?;
+        let runtime_layout = self.runtime_abi_layout();
+        let dst = self.alloc_result_value(result)?;
+        let base = self.borrow_free_gp_dynamic_regs(1)?[0];
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: base,
+                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: base,
+                addr: self.indexed_addr(
+                    base,
+                    idx,
+                    core::mem::size_of::<GlobalInst>(),
+                    global_offset::RAW,
+                )?,
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_v128_from_raw_reg(dst, base, MachineRegOwner::LinearValue);
         Ok(())
     }
 
@@ -558,6 +602,10 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_value = single_arg(args)?.unwrap_value();
         let ty = self.value_storage_type(src_value);
+        #[cfg(sf_has_simd)]
+        if matches!(ty, MachineStorageType::V128) {
+            return self.lower_global_set_v128(idx, src_value);
+        }
         if matches!(ty, MachineStorageType::GpI64) {
             let ops = self.i64_ops();
             return ops.emit_global_set_i64(self, idx, src_value);
@@ -598,6 +646,45 @@ impl<'a> BlockLowerContext<'a> {
                 )?,
                 width,
                 src: MachineValue::Reg(src),
+            },
+        });
+        Ok(())
+    }
+
+    #[cfg(sf_has_simd)]
+    pub(super) fn lower_global_set_v128(
+        &mut self,
+        idx: u32,
+        src_value: SsaValue,
+    ) -> Result<(), WasmError> {
+        self.ensure_v128_raw_abi()?;
+        let runtime_layout = self.runtime_abi_layout();
+        let src = self.use_value(src_value)?;
+        let temps = self.borrow_free_gp_dynamic_regs(2)?;
+        let base = temps[0];
+        let raw = temps[1];
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: base,
+                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_v128_to_raw_reg(raw, src);
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                ty: MachineStorageType::GpWord,
+                addr: self.indexed_addr(
+                    base,
+                    idx,
+                    core::mem::size_of::<GlobalInst>(),
+                    global_offset::RAW,
+                )?,
+                width: self.gp_word_mem_width(),
+                src: MachineValue::Reg(raw),
             },
         });
         Ok(())
@@ -862,6 +949,454 @@ impl<'a> BlockLowerContext<'a> {
                 Some((dst, spec.ty, spec.width, spec.extension)),
                 None,
             )?);
+        }
+        Ok(LeafLowering::InPlace)
+    }
+
+    #[cfg(sf_has_simd)]
+    pub(super) fn lower_v128_load(
+        &mut self,
+        offset: u32,
+        memidx: u32,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<LeafLowering, WasmError> {
+        self.lower_simd_load_common(OpcodeFD::V128_LOAD as u32, offset, memidx, args, results)
+    }
+
+    #[cfg(sf_has_simd)]
+    pub(super) fn lower_simd_mem_load(
+        &mut self,
+        opcode: u32,
+        offset: u32,
+        memidx: u32,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<LeafLowering, WasmError> {
+        self.lower_simd_load_common(opcode, offset, memidx, args, results)
+    }
+
+    #[cfg(sf_has_simd)]
+    pub(super) fn lower_v128_store(
+        &mut self,
+        offset: u32,
+        memidx: u32,
+        args: &[SsaOperand],
+    ) -> Result<LeafLowering, WasmError> {
+        self.lower_simd_store_common(OpcodeFD::V128_STORE as u32, offset, memidx, args)
+    }
+
+    #[cfg(sf_has_simd)]
+    pub(super) fn lower_simd_mem_load_lane(
+        &mut self,
+        opcode: u32,
+        lane: u8,
+        offset: u32,
+        memidx: u32,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<LeafLowering, WasmError> {
+        let (addr_arg, vector_arg) = two_args(args)?;
+        let addr_value = addr_arg.unwrap_value();
+        let vector_value = vector_arg.unwrap_value();
+        let (addr, addr_hi) = self.use_memory_index_word(addr_value)?;
+        self.emit_memory_index_high_trap_if_nonzero(addr_hi);
+        let vector = self.use_value(vector_value)?;
+        let dead: collections::Vec<SsaValue> = args
+            .iter()
+            .filter_map(|arg| match arg.decode() {
+                DecodedOperand::Value(value) => Some(value),
+                DecodedOperand::Const(_) | DecodedOperand::None => None,
+            })
+            .collect();
+        let dst = self.alloc_result_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+        let access_bytes = simd_lane_access_bytes(opcode)?;
+        if memidx == 0 {
+            let addr32 = if let Some(reg) = self.dead_value_reg(addr_value) {
+                reg
+            } else {
+                self.borrow_free_gp_dynamic_regs(1)?[0]
+            };
+            let residual = self.emit_mem0_bounds_trap_if(offset, access_bytes, addr, addr32)?;
+            if residual != 0 {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: self.gp_word_int_width(),
+                        op: MachineIntBinaryOp::Sub,
+                        dst: addr32,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Imm64(residual as u64),
+                    },
+                });
+            }
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: MachineIntBinaryOp::Add,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(self.mem0_base_reg()),
+                    rhs: MachineValue::Reg(addr32),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::SimdLoadLane {
+                    opcode,
+                    lane,
+                    dst,
+                    addr: MachineAddr {
+                        base: addr32,
+                        offset: 0,
+                    },
+                    vector: MachineValue::Reg(vector),
+                },
+            });
+        } else {
+            let scratch = self.borrow_free_gp_dynamic_regs(2)?;
+            let addr32 = scratch[0];
+            let base = scratch[1];
+            let residual =
+                self.emit_memory_bounds_trap_if(memidx, offset, access_bytes, addr, addr32, base)?;
+            if residual != 0 {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: self.gp_word_int_width(),
+                        op: MachineIntBinaryOp::Sub,
+                        dst: addr32,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Imm64(residual as u64),
+                    },
+                });
+            }
+            let mut ops = collections::Vec::new();
+            emit_memory_base_load_ops(
+                &mut ops,
+                self.runtime_base_reg(),
+                memidx,
+                base,
+                self.gp_reg_width(),
+            )?;
+            self.emit_machine_ops(ops);
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: MachineIntBinaryOp::Add,
+                    dst: base,
+                    lhs: MachineValue::Reg(base),
+                    rhs: MachineValue::Reg(addr32),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::SimdLoadLane {
+                    opcode,
+                    lane,
+                    dst,
+                    addr: MachineAddr { base, offset: 0 },
+                    vector: MachineValue::Reg(vector),
+                },
+            });
+        }
+        Ok(LeafLowering::InPlace)
+    }
+
+    #[cfg(sf_has_simd)]
+    pub(super) fn lower_simd_mem_store_lane(
+        &mut self,
+        opcode: u32,
+        lane: u8,
+        offset: u32,
+        memidx: u32,
+        args: &[SsaOperand],
+    ) -> Result<LeafLowering, WasmError> {
+        let (addr_arg, vector_arg) = two_args(args)?;
+        let addr_value = addr_arg.unwrap_value();
+        let vector_value = vector_arg.unwrap_value();
+        let (addr, addr_hi) = self.use_memory_index_word(addr_value)?;
+        self.emit_memory_index_high_trap_if_nonzero(addr_hi);
+        let vector = self.use_value(vector_value)?;
+        let access_bytes = simd_lane_access_bytes(opcode)?;
+        if memidx == 0 {
+            let addr32 = if let Some(reg) = self.dead_value_reg(addr_value) {
+                reg
+            } else {
+                self.borrow_free_gp_dynamic_regs(1)?[0]
+            };
+            let residual = self.emit_mem0_bounds_trap_if(offset, access_bytes, addr, addr32)?;
+            if residual != 0 {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: self.gp_word_int_width(),
+                        op: MachineIntBinaryOp::Sub,
+                        dst: addr32,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Imm64(residual as u64),
+                    },
+                });
+            }
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: MachineIntBinaryOp::Add,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(self.mem0_base_reg()),
+                    rhs: MachineValue::Reg(addr32),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::SimdStoreLane {
+                    opcode,
+                    lane,
+                    addr: MachineAddr {
+                        base: addr32,
+                        offset: 0,
+                    },
+                    vector: MachineValue::Reg(vector),
+                },
+            });
+        } else {
+            let scratch = self.borrow_free_gp_dynamic_regs(2)?;
+            let addr32 = scratch[0];
+            let base = scratch[1];
+            let residual =
+                self.emit_memory_bounds_trap_if(memidx, offset, access_bytes, addr, addr32, base)?;
+            if residual != 0 {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: self.gp_word_int_width(),
+                        op: MachineIntBinaryOp::Sub,
+                        dst: addr32,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Imm64(residual as u64),
+                    },
+                });
+            }
+            let mut ops = collections::Vec::new();
+            emit_memory_base_load_ops(
+                &mut ops,
+                self.runtime_base_reg(),
+                memidx,
+                base,
+                self.gp_reg_width(),
+            )?;
+            self.emit_machine_ops(ops);
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: MachineIntBinaryOp::Add,
+                    dst: base,
+                    lhs: MachineValue::Reg(base),
+                    rhs: MachineValue::Reg(addr32),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::SimdStoreLane {
+                    opcode,
+                    lane,
+                    addr: MachineAddr { base, offset: 0 },
+                    vector: MachineValue::Reg(vector),
+                },
+            });
+        }
+        Ok(LeafLowering::InPlace)
+    }
+
+    #[cfg(sf_has_simd)]
+    fn lower_simd_load_common(
+        &mut self,
+        opcode: u32,
+        offset: u32,
+        memidx: u32,
+        args: &[SsaOperand],
+        results: &[SsaValue],
+    ) -> Result<LeafLowering, WasmError> {
+        let addr_value = single_arg(args)?.unwrap_value();
+        let (addr, addr_hi) = self.use_memory_index_word(addr_value)?;
+        self.emit_memory_index_high_trap_if_nonzero(addr_hi);
+        let dead: collections::Vec<SsaValue> = args
+            .iter()
+            .filter_map(|arg| match arg.decode() {
+                DecodedOperand::Value(value) => Some(value),
+                DecodedOperand::Const(_) | DecodedOperand::None => None,
+            })
+            .collect();
+        let dst = self.alloc_result_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+        let access_bytes = simd_load_access_bytes(opcode)?;
+        if memidx == 0 {
+            let addr32 = if let Some(reg) = self.dead_value_reg(addr_value) {
+                reg
+            } else {
+                self.borrow_free_gp_dynamic_regs(1)?[0]
+            };
+            let residual = self.emit_mem0_bounds_trap_if(offset, access_bytes, addr, addr32)?;
+            if residual != 0 {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: self.gp_word_int_width(),
+                        op: MachineIntBinaryOp::Sub,
+                        dst: addr32,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Imm64(residual as u64),
+                    },
+                });
+            }
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: MachineIntBinaryOp::Add,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(self.mem0_base_reg()),
+                    rhs: MachineValue::Reg(addr32),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::SimdLoad {
+                    opcode,
+                    dst,
+                    addr: MachineAddr {
+                        base: addr32,
+                        offset: 0,
+                    },
+                },
+            });
+        } else {
+            let scratch = self.borrow_free_gp_dynamic_regs(2)?;
+            let addr32 = scratch[0];
+            let base = scratch[1];
+            let residual =
+                self.emit_memory_bounds_trap_if(memidx, offset, access_bytes, addr, addr32, base)?;
+            if residual != 0 {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: self.gp_word_int_width(),
+                        op: MachineIntBinaryOp::Sub,
+                        dst: addr32,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Imm64(residual as u64),
+                    },
+                });
+            }
+            let mut ops = collections::Vec::new();
+            emit_memory_base_load_ops(
+                &mut ops,
+                self.runtime_base_reg(),
+                memidx,
+                base,
+                self.gp_reg_width(),
+            )?;
+            self.emit_machine_ops(ops);
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: MachineIntBinaryOp::Add,
+                    dst: base,
+                    lhs: MachineValue::Reg(base),
+                    rhs: MachineValue::Reg(addr32),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::SimdLoad {
+                    opcode,
+                    dst,
+                    addr: MachineAddr { base, offset: 0 },
+                },
+            });
+        }
+        Ok(LeafLowering::InPlace)
+    }
+
+    #[cfg(sf_has_simd)]
+    fn lower_simd_store_common(
+        &mut self,
+        opcode: u32,
+        offset: u32,
+        memidx: u32,
+        args: &[SsaOperand],
+    ) -> Result<LeafLowering, WasmError> {
+        let (addr_arg, src_arg) = two_args(args)?;
+        let addr_value = addr_arg.unwrap_value();
+        let src_value = src_arg.unwrap_value();
+        let (addr, addr_hi) = self.use_memory_index_word(addr_value)?;
+        self.emit_memory_index_high_trap_if_nonzero(addr_hi);
+        let src = self.use_value(src_value)?;
+        let access_bytes = simd_load_access_bytes(opcode)?;
+        if memidx == 0 {
+            let addr32 = if let Some(reg) = self.dead_value_reg(addr_value) {
+                reg
+            } else {
+                self.borrow_free_gp_dynamic_regs(1)?[0]
+            };
+            let residual = self.emit_mem0_bounds_trap_if(offset, access_bytes, addr, addr32)?;
+            if residual != 0 {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: self.gp_word_int_width(),
+                        op: MachineIntBinaryOp::Sub,
+                        dst: addr32,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Imm64(residual as u64),
+                    },
+                });
+            }
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: MachineIntBinaryOp::Add,
+                    dst: addr32,
+                    lhs: MachineValue::Reg(self.mem0_base_reg()),
+                    rhs: MachineValue::Reg(addr32),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::SimdStore {
+                    opcode,
+                    addr: MachineAddr {
+                        base: addr32,
+                        offset: 0,
+                    },
+                    src: MachineValue::Reg(src),
+                },
+            });
+        } else {
+            let scratch = self.borrow_free_gp_dynamic_regs(2)?;
+            let addr32 = scratch[0];
+            let base = scratch[1];
+            let residual =
+                self.emit_memory_bounds_trap_if(memidx, offset, access_bytes, addr, addr32, base)?;
+            if residual != 0 {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: self.gp_word_int_width(),
+                        op: MachineIntBinaryOp::Sub,
+                        dst: addr32,
+                        lhs: MachineValue::Reg(addr32),
+                        rhs: MachineValue::Imm64(residual as u64),
+                    },
+                });
+            }
+            let mut ops = collections::Vec::new();
+            emit_memory_base_load_ops(
+                &mut ops,
+                self.runtime_base_reg(),
+                memidx,
+                base,
+                self.gp_reg_width(),
+            )?;
+            self.emit_machine_ops(ops);
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: MachineIntBinaryOp::Add,
+                    dst: base,
+                    lhs: MachineValue::Reg(base),
+                    rhs: MachineValue::Reg(addr32),
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::SimdStore {
+                    opcode,
+                    addr: MachineAddr { base, offset: 0 },
+                    src: MachineValue::Reg(src),
+                },
+            });
         }
         Ok(LeafLowering::InPlace)
     }
@@ -2044,6 +2579,49 @@ pub(super) fn machine_store(primitive: &PrimitiveOpKind) -> Option<MemoryStoreSp
             width: MachineMemWidth::U32,
         },
         _ => return None,
+    })
+}
+
+#[cfg(sf_has_simd)]
+fn simd_load_access_bytes(opcode: u32) -> Result<u32, WasmError> {
+    let opcode: OpcodeFD = opcode
+        .try_into()
+        .map_err(|_| WasmError::internal("unknown SIMD memory opcode"))?;
+    Ok(match opcode {
+        OpcodeFD::V128_LOAD | OpcodeFD::V128_STORE => 16,
+        OpcodeFD::V128_LOAD8X8_S
+        | OpcodeFD::V128_LOAD8X8_U
+        | OpcodeFD::V128_LOAD16X4_S
+        | OpcodeFD::V128_LOAD16X4_U
+        | OpcodeFD::V128_LOAD32X2_S
+        | OpcodeFD::V128_LOAD32X2_U => 8,
+        OpcodeFD::V128_LOAD8_SPLAT => 1,
+        OpcodeFD::V128_LOAD16_SPLAT => 2,
+        OpcodeFD::V128_LOAD32_SPLAT | OpcodeFD::V128_LOAD32_ZERO => 4,
+        OpcodeFD::V128_LOAD64_SPLAT | OpcodeFD::V128_LOAD64_ZERO => 8,
+        _ => {
+            return Err(WasmError::internal(
+                "unexpected SIMD memory opcode in native lowering".into(),
+            ));
+        }
+    })
+}
+
+#[cfg(sf_has_simd)]
+fn simd_lane_access_bytes(opcode: u32) -> Result<u32, WasmError> {
+    let opcode: OpcodeFD = opcode
+        .try_into()
+        .map_err(|_| WasmError::internal("unknown SIMD lane memory opcode"))?;
+    Ok(match opcode {
+        OpcodeFD::V128_LOAD8_LANE | OpcodeFD::V128_STORE8_LANE => 1,
+        OpcodeFD::V128_LOAD16_LANE | OpcodeFD::V128_STORE16_LANE => 2,
+        OpcodeFD::V128_LOAD32_LANE | OpcodeFD::V128_STORE32_LANE => 4,
+        OpcodeFD::V128_LOAD64_LANE | OpcodeFD::V128_STORE64_LANE => 8,
+        _ => {
+            return Err(WasmError::internal(
+                "unexpected SIMD lane memory opcode in native lowering".into(),
+            ));
+        }
     })
 }
 

@@ -10,7 +10,6 @@ pub mod error;
 pub mod module;
 pub mod op_decoder;
 pub mod opcodes;
-pub(crate) mod simd;
 pub(crate) mod utils;
 pub mod value_type;
 pub mod vm;
@@ -35,12 +34,14 @@ pub use vm::instance::{
 };
 #[cfg(sf_has_guard_pages)]
 use vm::runtime::trap_signal;
-pub use vm::runtime::{
-    active_runtime_engine, set_reference_backend, set_reference_backend_mode, ReferenceBackendMode,
-    RuntimeEngine,
-};
+pub use vm::runtime::{active_runtime_engine, RuntimeEngine};
 pub use vm::store::LinkRegistry;
 pub use vm::value::{RefHandle, Value};
+
+#[inline]
+pub const fn target_has_simd() -> bool {
+    cfg!(sf_has_simd)
+}
 
 /// Reset process-global native runtime state that does not track module
 /// lifetimes on its own. Harnesses that repeatedly construct and drop native

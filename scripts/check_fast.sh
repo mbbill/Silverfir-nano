@@ -7,10 +7,10 @@
 # - sf-nano-core integration tests in:
 #     * the default release feature set
 #     * the curated "full-runtime" release feature bundle
-# - spectest in release mode on the host build, across:
+# - spectest in release mode across:
 #     * native JIT
-#     * emu64
-#     * emu32
+#     * emu64 build
+#     * emu32 build
 #
 # Intentionally omitted to stay fast:
 # - feature matrix
@@ -85,7 +85,7 @@ run_step() {
     return "$rc"
 }
 
-FULL_RUNTIME_FEATURES="jit,wasi,validator,guard-pages,emulator"
+FULL_RUNTIME_FEATURES="jit,wasi,validator,guard-pages"
 
 run_step \
     "cargo build (workspace, release)" \
@@ -121,43 +121,49 @@ run_core_integration_tests \
     --no-default-features \
     --features "$FULL_RUNTIME_FEATURES"
 
-run_step \
-    "cargo build (sf-nano-spectest, release)" \
-    "$LOG_DIR/spectest-build-release.log" \
-    cargo build --release -p sf-nano-spectest --no-default-features --features jit
-
-SPECTEST_BIN="$REPO_ROOT/target/release/sf-nano-spectest"
-if [[ ! -x "$SPECTEST_BIN" ]]; then
-    echo "ERROR: spectest binary not found at $SPECTEST_BIN" >&2
-    exit 1
-fi
+build_spectest_release() {
+    local label="$1"
+    local features="$2"
+    run_step \
+        "cargo build (sf-nano-spectest, release, $label)" \
+        "$LOG_DIR/spectest-build-$label-release.log" \
+        cargo build --release -p sf-nano-spectest --no-default-features --features "$features"
+}
 
 run_spectest() {
     local name="$1"
     local log="$2"
-    shift 2
+    local bin="$3"
+    shift 3
 
-    local -a cmd=("$SPECTEST_BIN" "$@")
+    local -a cmd=("$bin" "$@")
     if [[ ${#SPECTEST_ARGS[@]} -gt 0 ]]; then
         cmd+=("${SPECTEST_ARGS[@]}")
     fi
     TESTSUITE_DIR="$TESTSUITE_DIR" run_step "$name" "$log" "${cmd[@]}"
 }
 
+build_spectest_release native jit
+SPECTEST_BIN="$REPO_ROOT/target/release/sf-nano-spectest"
 run_spectest \
     "spectest native (release)" \
     "$LOG_DIR/spectest-native-release.log" \
+    "$SPECTEST_BIN" \
     --backend native
 
+build_spectest_release emu64 jit,backend-emu64
+SPECTEST_EMU64_BIN="$REPO_ROOT/target/release/sf-nano-spectest"
 run_spectest \
     "spectest emu64 (release)" \
     "$LOG_DIR/spectest-emu64-release.log" \
-    --emu64
+    "$SPECTEST_EMU64_BIN"
 
+build_spectest_release emu32 jit,backend-emu32
+SPECTEST_EMU32_BIN="$REPO_ROOT/target/release/sf-nano-spectest"
 run_spectest \
     "spectest emu32 (release)" \
     "$LOG_DIR/spectest-emu32-release.log" \
-    --emu32
+    "$SPECTEST_EMU32_BIN"
 
 echo "=== Summary ==="
 echo "Fast checks passed."

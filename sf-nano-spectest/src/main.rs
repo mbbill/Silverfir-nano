@@ -7,7 +7,7 @@ use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
 use sf_nano_core::{
     active_runtime_engine, constants::MAX_STACK_SIZE, reset_native_runtime_state, set_backend_mode,
-    set_reference_backend, set_reference_backend_mode, BackendMode, ReferenceBackendMode,
+    target_has_simd, BackendMode,
 };
 use std::{
     env,
@@ -41,18 +41,6 @@ struct Cli {
     /// Backend to use for execution (auto, native, fusion, base)
     #[structopt(long = "backend")]
     backend: Option<String>,
-
-    /// Use the debug-only native emulator backend
-    #[structopt(long = "emu")]
-    emu: bool,
-
-    /// Use the debug-only native emulator backend with a 64-bit target profile
-    #[structopt(long = "emu64", conflicts_with_all = &["emu", "emu32"])]
-    emu64: bool,
-
-    /// Use the debug-only native emulator backend with a 32-bit target profile
-    #[structopt(long = "emu32", conflicts_with_all = &["emu", "emu64"])]
-    emu32: bool,
 }
 
 fn main() {
@@ -67,21 +55,6 @@ fn main() {
             std::process::exit(1);
         });
         set_backend_mode(mode);
-    }
-    let reference_mode = if args.emu || args.emu64 {
-        ReferenceBackendMode::Emu64
-    } else if args.emu32 {
-        ReferenceBackendMode::Emu32
-    } else {
-        ReferenceBackendMode::Disabled
-    };
-    if let Err(err) = if args.emu {
-        set_reference_backend(true)
-    } else {
-        set_reference_backend_mode(reference_mode)
-    } {
-        eprintln!("Error: {}", err);
-        std::process::exit(1);
     }
     let runtime_engine = active_runtime_engine().unwrap_or_else(|err| {
         let requested = args
@@ -240,6 +213,8 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
         String::new()
     };
 
+    let simd_enabled = target_has_simd();
+
     info!("Running {} tests{}", filtered_files.len(), filter_desc);
 
     let mut stats = TestStats::new();
@@ -284,7 +259,7 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
             .unwrap_or(&wast_file)
             .to_string_lossy();
 
-        if should_skip_test(test_name) || should_skip_test(&full_path) {
+        if should_skip_test(test_name, simd_enabled) || should_skip_test(&full_path, simd_enabled) {
             stats.skipped += 1;
             info!("SKIP {}: Feature not supported in sf-nano", test_name);
             continue;

@@ -263,7 +263,7 @@ run_host_profile() {
     local profile="$1"
     local cli_bin wasitest_bin
 
-    echo "=== WASI profile: $profile (host + emulator) ==="
+    echo "=== WASI profile: $profile (host + emulator builds) ==="
     echo
 
     echo "=== Building WASI host binaries ($profile) ==="
@@ -277,12 +277,22 @@ run_host_profile() {
     run_with_extra_args "$wasitest_bin" --cli-path "$cli_bin" --backend native
     echo
 
+    echo "=== Building WASI emu64 CLI ($profile) ==="
+    build_cli "$profile" "" "jit,backend-emu64"
+    cli_bin="$(profile_bin "$profile" "" "sf-nano-cli")"
+    echo
+
     echo "=== wasitest: emu64 ($profile) ==="
-    run_with_extra_args "$wasitest_bin" --cli-path "$cli_bin" --emu64
+    run_with_extra_args "$wasitest_bin" --cli-path "$cli_bin"
+    echo
+
+    echo "=== Building WASI emu32 CLI ($profile) ==="
+    build_cli "$profile" "" "jit,backend-emu32"
+    cli_bin="$(profile_bin "$profile" "" "sf-nano-cli")"
     echo
 
     echo "=== wasitest: emu32 ($profile) ==="
-    run_with_extra_args "$wasitest_bin" --cli-path "$cli_bin" --emu32
+    run_with_extra_args "$wasitest_bin" --cli-path "$cli_bin"
     echo
 }
 

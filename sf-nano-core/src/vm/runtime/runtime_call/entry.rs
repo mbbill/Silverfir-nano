@@ -16,7 +16,10 @@ use crate::{
         store::Store,
         value::RefHandle,
         value::Value,
-        value_encoding::{machine_raw_to_ref, machine_raw_to_value, value_to_machine_raw},
+        value_encoding::{
+            machine_raw_to_ref, try_machine_raw_to_value_in_store, try_raw_to_value_in_store,
+            value_to_machine_raw_in_store,
+        },
     },
 };
 
@@ -263,7 +266,9 @@ fn invoke_runtime_target(
                 index as u16,
                 "runtime-call arg slot is out of bounds",
             )
-            .map(|raw| machine_raw_to_value(raw, *ty, active_gp_unit_bytes()))
+            .and_then(|raw| {
+                try_machine_raw_to_value_in_store(raw, *ty, active_gp_unit_bytes(), owner_store)
+            })
         })
         .collect::<Result<_, _>>()?;
     let mut ret_vals = collections::vec![Value::default(); func_type.results().len()];
@@ -299,7 +304,8 @@ fn invoke_runtime_target(
         FunctionInst::Local { .. } => {
             let result_stack = runtime::eval(callee, owner_store, &args)?;
             for (index, ty) in func_type.results().iter().enumerate() {
-                ret_vals[index] = Value::from_raw(result_stack.peek_at_index(index), *ty);
+                ret_vals[index] =
+                    try_raw_to_value_in_store(result_stack.peek_at_index(index), *ty, owner_store)?;
             }
         }
     }
@@ -318,7 +324,7 @@ fn invoke_runtime_target(
                 frame,
                 results_region,
                 index as u16,
-                value_to_machine_raw(value, active_gp_unit_bytes()),
+                value_to_machine_raw_in_store(value, active_gp_unit_bytes(), owner_store),
                 "runtime-call result slot is out of bounds",
             )?;
         }
@@ -440,7 +446,8 @@ mod tests {
         module
             .memories
             .push(MemInst::new(Limits::new(1, Some(1)).unwrap()));
-        let (_store, mut ctx) = test_context(module);
+        let (mut store, mut ctx) = test_context(module);
+        let _ = store.register_local_function(0);
         let meta = RuntimeCallMeta {
             func_idx_source: 2,
             func_idx_source_kind: RuntimeCallTargetKind::FrameSlot as u32,

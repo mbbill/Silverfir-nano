@@ -21,7 +21,7 @@ pub enum BackendKind {
 /// - `middle/` treats it as one unified dynamic bank per register class
 /// - native lowering maps that bank onto concrete machine registers
 /// - the frontend frame planner reserves `call_scratch_slots` in the native
-///   frame prefix for call-link and helper scratch state
+///   frame prefix for helper scratch state
 /// - backend-only temporaries must be modeled explicitly through scratch pools
 ///   or lowering helpers rather than by ad hoc reach-through into these
 ///   dynamic banks
@@ -48,9 +48,9 @@ pub(crate) struct BackendConfig {
 impl BackendConfig {
     #[inline]
     pub(crate) const fn new(
+        gp_unit_bytes: u8,
         gp_dynamic_budget: u8,
         fp_dynamic_budget: u8,
-        gp_unit_bytes: u8,
         call_scratch_slots: u16,
     ) -> Self {
         Self {
@@ -118,20 +118,20 @@ mod tests {
 
     #[test]
     fn backend_config_keeps_explicit_gp_unit_bytes() {
-        let config = BackendConfig::new(3, 7, 4, 8);
+        let config = BackendConfig::new(4, 3, 7, 8);
         assert_eq!(config.gp_unit_bytes, 4);
         assert_eq!(config.call_scratch_slots, 8);
     }
 
     #[test]
     fn backend_config_detects_32bit_gp_targets() {
-        assert!(BackendConfig::new(3, 7, 4, 8).is_32bit_gp_target());
-        assert!(!BackendConfig::new(3, 7, 8, 3).is_32bit_gp_target());
+        assert!(BackendConfig::new(4, 3, 7, 8).is_32bit_gp_target());
+        assert!(!BackendConfig::new(8, 3, 7, 3).is_32bit_gp_target());
     }
 
     #[test]
     fn backend_config_allows_explicit_call_scratch_slots() {
-        let config = BackendConfig::new(3, 7, 8, 9);
+        let config = BackendConfig::new(8, 3, 7, 9);
         assert_eq!(config.call_scratch_slots, 9);
     }
 }

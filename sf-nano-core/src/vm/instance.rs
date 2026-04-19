@@ -17,7 +17,6 @@ use crate::module::type_context::{
 };
 use crate::module::type_defs::FunctionType;
 use crate::module::Module;
-use crate::simd;
 use crate::utils::limits::{Limitable, Limits};
 use crate::vm::entities::{
     DataInst, ElementInst, FunctionInst, GlobalInst, HostFn, MemInst, ModuleInst, TableInst,
@@ -26,6 +25,7 @@ use crate::vm::expr_eval::eval_const_expr;
 use crate::vm::runtime;
 use crate::vm::store::{LinkRegistry, Store};
 use crate::vm::value::{RefHandle, Value};
+use crate::vm::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store};
 
 pub struct Import {
     pub module: String,
@@ -345,7 +345,9 @@ impl Instance {
         imports: &[Import],
         registry: &LinkRegistry,
     ) -> Result<Self, InstanceInstantiationError> {
-        simd::validate_simd_module(&module).map_err(InstanceInstantiationError::Complete)?;
+        module
+            .ensure_simd_supported()
+            .map_err(InstanceInstantiationError::Complete)?;
 
         #[cfg(sf_module_validator)]
         {
@@ -659,11 +661,21 @@ impl Instance {
 
         let mut globals: collections::Vec<GlobalInst> =
             collections::Vec::with_capacity(mod_globals.len());
+        #[cfg(sf_has_simd)]
+        let simd_registry = registry.simd_registry_shared();
         for global in &mod_globals {
             match global.def() {
                 GlobalDef::Local(_spec) => {
-                    globals.push(GlobalInst::new(
-                        Value::I32(0),
+                    let initial = Value::default_for_type(global.value_type());
+                    #[cfg(sf_has_simd)]
+                    let raw = match initial {
+                        Value::V128(value) => simd_registry.intern(value),
+                        _ => initial.to_raw(),
+                    };
+                    #[cfg(not(sf_has_simd))]
+                    let raw = initial.to_raw();
+                    globals.push(GlobalInst::new_raw(
+                        raw,
                         global.mutable(),
                         global.value_type(),
                     ));
@@ -711,7 +723,14 @@ impl Instance {
                                     WasmError::unlinkable("incompatible import type: .").into()
                                 );
                             }
-                            globals.push(GlobalInst::new(val, *mutable, *value_type));
+                            #[cfg(sf_has_simd)]
+                            let raw = match val {
+                                Value::V128(value) => simd_registry.intern(value),
+                                _ => val.to_raw(),
+                            };
+                            #[cfg(not(sf_has_simd))]
+                            let raw = val.to_raw();
+                            globals.push(GlobalInst::new_raw(raw, *mutable, *value_type));
                         }
                         _ => {
                             return Err(WasmError::unlinkable("missing global import: .").into());
@@ -780,6 +799,8 @@ impl Instance {
             module_inst,
             registry.function_registry_shared(),
             registry.ref_registry_shared(),
+            #[cfg(sf_has_simd)]
+            registry.simd_registry_shared(),
         ));
         for func_idx in 0..store.module().functions.len() {
             if let Some(handle) = store.module().functions[func_idx].linked_handle() {
@@ -793,7 +814,8 @@ impl Instance {
             for (i, global) in mod_globals.iter().enumerate() {
                 if let GlobalDef::Local(spec) = global.def() {
                     let value = eval_const_expr(spec.init_expr(), &mut store)?;
-                    store.global_mut(i).set_value(value);
+                    let raw = value_to_raw_in_store(value, &mut store);
+                    store.global_mut(i).set_raw(raw);
                 }
             }
 
@@ -921,7 +943,7 @@ impl Instance {
         let mut results = collections::Vec::with_capacity(result_types.len());
         for (i, ty) in result_types.iter().enumerate() {
             let raw = result_stack.peek_at_index(i);
-            results.push(Value::from_raw(raw, *ty));
+            results.push(try_raw_to_value_in_store(raw, *ty, &self.store)?);
         }
         Ok(results)
     }
@@ -947,7 +969,7 @@ impl Instance {
         let mut results = collections::Vec::with_capacity(result_types.len());
         for (i, ty) in result_types.iter().enumerate() {
             let raw = result_stack.peek_at_index(i);
-            results.push(Value::from_raw(raw, *ty));
+            results.push(try_raw_to_value_in_store(raw, *ty, &self.store)?);
         }
         Ok(results)
     }
@@ -966,25 +988,34 @@ impl Instance {
         &mut self.store
     }
 
-    pub fn get_global(&self, name: &str) -> Option<Value> {
-        self.exports
+    pub fn get_global(&self, name: &str) -> Result<Option<Value>, WasmError> {
+        Ok(self
+            .exports
             .iter()
             .find(|(n, k, _)| matches!(k, ExportKind::Global) && n == name)
-            .map(|(_, _, idx)| self.store.global(*idx).value())
+            .map(|(_, _, idx)| self.store.global(*idx).value(&self.store))
+            .transpose()?)
     }
 
-    pub fn global_at(&self, idx: usize) -> Option<Value> {
-        self.store.module().globals.get(idx).map(|g| g.value())
+    pub fn global_at(&self, idx: usize) -> Result<Option<Value>, WasmError> {
+        Ok(self
+            .store
+            .module()
+            .globals
+            .get(idx)
+            .map(|g| g.value(&self.store))
+            .transpose()?)
     }
 
     pub fn replace_global_at(&mut self, idx: usize, value: Value) -> Result<(), WasmError> {
+        let raw = value_to_raw_in_store(value, &mut self.store);
         let global = self
             .store
             .module_mut()
             .globals
             .get_mut(idx)
             .ok_or_else(|| WasmError::invalid("global index out of range"))?;
-        global.set_value(value);
+        global.set_raw(raw);
         Ok(())
     }
 
@@ -995,11 +1026,12 @@ impl Instance {
             .find(|(n, k, _)| matches!(k, ExportKind::Global) && n == name)
             .map(|(_, _, idx)| *idx)
             .ok_or_else(|| WasmError::invalid("global not found"))?;
+        let raw = value_to_raw_in_store(value, &mut self.store);
         let global = self.store.global_mut(idx);
         if !global.mutable {
             return Err(WasmError::invalid("cannot set immutable global"));
         }
-        global.set_value(value);
+        global.set_raw(raw);
         Ok(())
     }
 
@@ -1127,6 +1159,15 @@ impl Instance {
     }
 
     pub fn clone_function_registry(&self) -> LinkRegistry {
+        #[cfg(sf_has_simd)]
+        {
+            LinkRegistry::from_shared(
+                self.store.clone_function_registry(),
+                self.store.clone_ref_registry(),
+                self.store.clone_simd_registry(),
+            )
+        }
+        #[cfg(not(sf_has_simd))]
         LinkRegistry::from_shared(
             self.store.clone_function_registry(),
             self.store.clone_ref_registry(),
@@ -1158,12 +1199,11 @@ fn eval_offset(expr: &ConstExpr, module: &ModuleInst) -> Result<usize, WasmError
             Opcode::I64_CONST => stack.push(Value::I64(code.read_leb128_i64()?)),
             Opcode::GLOBAL_GET => {
                 let idx = code.read_leb128_u32()? as usize;
-                let value = module
+                let global = module
                     .globals
                     .get(idx)
-                    .ok_or_else(|| WasmError::invalid("global.get: index out of range"))?
-                    .value();
-                stack.push(value);
+                    .ok_or_else(|| WasmError::invalid("global.get: index out of range"))?;
+                stack.push(Value::from_raw(global.raw(), global.value_type));
             }
             Opcode::I32_ADD => {
                 let rhs = match stack.pop() {
@@ -1301,8 +1341,8 @@ mod tests {
         module::{
             builder::ModuleBuilder,
             entities::{Memory, Table},
+            Module,
         },
-        simd,
         utils::limits::Limits,
         value_type::ValueType,
     };
@@ -1403,11 +1443,69 @@ mod tests {
             ),
         )]);
 
-        let err = match Instance::from_module(builder.build(), &[]) {
-            Ok(_) => panic!("instantiation should reject unsupported SIMD-shaped modules"),
+        #[cfg(not(sf_has_simd))]
+        {
+            let err = match Instance::from_module(builder.build(), &[]) {
+                Ok(_) => panic!("instantiation should reject unsupported SIMD-shaped modules"),
+                Err(err) => err,
+            };
+            assert_eq!(
+                err,
+                crate::WasmError::invalid("SIMD is not supported on this CPU")
+            );
+        }
+
+        #[cfg(sf_has_simd)]
+        {
+            Instance::from_module(builder.build(), &[])
+                .expect("SIMD-enabled builds should allow unused v128 type definitions");
+        }
+    }
+
+    #[cfg(all(sf_has_simd, sf_jit))]
+    #[test]
+    fn invoke_rejects_unsupported_live_simd_ops_during_lowering() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (func (export "not") (param v128) (result v128)
+                local.get 0
+                v128.not))
+            "#,
+        )
+        .expect("wat should encode a SIMD module");
+
+        let mut instance = Instance::new(&wasm, &[]).expect("instantiation should succeed");
+        let err = match instance.invoke("not", &[crate::Value::V128([0; 16])]) {
+            Ok(_) => panic!("SIMD execution should fail before native codegen"),
             Err(err) => err,
         };
+        assert_eq!(
+            err,
+            crate::WasmError::internal("SIMD native codegen is not implemented yet")
+        );
+    }
 
-        assert_eq!(err, simd::simd_unsupported_error());
+    #[cfg(all(sf_has_simd, sf_jit))]
+    #[test]
+    fn invoke_returns_live_v128_const() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (func (export "const") (result v128)
+                (v128.const i32x4 1 2 3 4)))
+            "#,
+        )
+        .expect("wat should encode a SIMD const module");
+
+        let mut instance = Instance::new(&wasm, &[]).expect("instantiation should succeed");
+        let err = match instance.invoke("const", &[]) {
+            Ok(_) => panic!("SIMD execution should fail before native codegen"),
+            Err(err) => err,
+        };
+        assert_eq!(
+            err,
+            crate::WasmError::internal("SIMD native codegen is not implemented yet")
+        );
     }
 }

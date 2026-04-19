@@ -349,7 +349,6 @@ impl<'a> BlockLowerContext<'a> {
             results: runtime_call_region(results),
         })
     }
-
     pub(super) fn build_runtime_call_ops(
         &self,
         metadata: MachineConstId,
@@ -385,7 +384,7 @@ impl<'a> BlockLowerContext<'a> {
         ]
     }
 
-    fn emit_call_runtime(&mut self, metadata: MachineConstId) -> Result<(), WasmError> {
+    pub(super) fn emit_call_runtime(&mut self, metadata: MachineConstId) -> Result<(), WasmError> {
         // Runtime calls are frame-slot based and return inline in the same
         // MIR block. Because the runtime call may clobber every machine
         // register, cached locals must be published to their canonical frame

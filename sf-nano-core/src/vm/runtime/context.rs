@@ -484,6 +484,9 @@ mod tests {
             type_index: 1,
         });
         let mut store = Box::new(Store::new(module));
+        for func_idx in 0..store.module().functions.len() {
+            let _ = store.register_local_function(func_idx);
+        }
         let ctx = NativeContext::new((&mut *store) as *mut Store, core::ptr::null_mut());
 
         assert_eq!(ctx.type_canon_len, 2);
@@ -516,6 +519,9 @@ mod tests {
             callback: host_noop,
         });
         let mut store = Box::new(Store::new(module));
+        for func_idx in 0..store.module().functions.len() {
+            let _ = store.register_local_function(func_idx);
+        }
         let ctx = NativeContext::new((&mut *store) as *mut Store, core::ptr::null_mut());
 
         assert_eq!(ctx.type_canon_len, 2);

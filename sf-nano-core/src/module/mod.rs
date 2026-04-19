@@ -1,9 +1,14 @@
 use tracked_alloc::string::String;
 
 use crate::collections;
-use crate::simd;
 
+#[cfg(not(sf_has_simd))]
+use self::type_defs::{CompositeType, StorageType};
+#[cfg(not(sf_has_simd))]
+use crate::value_type::ValueType;
 use entities::{Data, Element, Function, Global, Memory, Table, Tag};
+#[cfg(not(sf_has_simd))]
+use entities::{ElementInit, FunctionType};
 
 pub mod builder;
 pub mod entities;
@@ -34,8 +39,46 @@ pub struct Module {
 impl Module {
     pub fn new(name: &str, bin: &[u8]) -> Result<Self, WasmError> {
         let module = parser::parse_module(name, bin)?;
-        simd::validate_simd_module(&module)?;
+        module.ensure_simd_supported()?;
         Ok(module)
+    }
+
+    pub(crate) fn ensure_simd_supported(&self) -> Result<(), WasmError> {
+        #[cfg(not(sf_has_simd))]
+        if self.requires_simd() {
+            return Err(WasmError::invalid("SIMD is not supported on this CPU"));
+        }
+        Ok(())
+    }
+
+    #[cfg(not(sf_has_simd))]
+    pub(crate) fn requires_simd(&self) -> bool {
+        self.types
+            .as_slice()
+            .iter()
+            .any(|def_type| match &def_type.composite {
+                CompositeType::Func(func_type) => function_type_requires_simd(func_type),
+                CompositeType::Struct(struct_type) => struct_type
+                    .fields
+                    .iter()
+                    .any(|field| storage_type_requires_simd(&field.storage)),
+                CompositeType::Array(array_type) => {
+                    storage_type_requires_simd(&array_type.element.storage)
+                }
+            })
+            || self
+                .functions
+                .iter()
+                .any(|func| function_requires_simd(func))
+            || self
+                .globals
+                .iter()
+                .any(|global| matches!(global.value_type(), ValueType::V128))
+            || self
+                .tags
+                .iter()
+                .any(|tag| function_type_requires_simd(tag.func_type()))
+            || self.elements.iter().any(element_requires_simd)
     }
 
     pub fn name(&self) -> &str {
@@ -114,19 +157,68 @@ impl Module {
     }
 }
 
+#[cfg(not(sf_has_simd))]
+#[inline]
+fn function_type_requires_simd(func_type: &FunctionType) -> bool {
+    func_type
+        .params()
+        .iter()
+        .chain(func_type.results().iter())
+        .any(|value_type| matches!(value_type, ValueType::V128))
+}
+
+#[cfg(not(sf_has_simd))]
+#[inline]
+fn storage_type_requires_simd(storage: &StorageType) -> bool {
+    matches!(storage, StorageType::Val(ValueType::V128))
+}
+
+#[cfg(not(sf_has_simd))]
+#[inline]
+fn function_requires_simd(func: &Function) -> bool {
+    function_type_requires_simd(func.func_type())
+        || func.spec().is_some_and(|spec| {
+            spec.locals()
+                .iter()
+                .any(|value_type| matches!(value_type, ValueType::V128))
+        })
+}
+
+#[cfg(not(sf_has_simd))]
+#[inline]
+fn element_requires_simd(element: &Element) -> bool {
+    matches!(
+        element.get_init(),
+        ElementInit::InitExprs {
+            value_type: ValueType::V128,
+            ..
+        }
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::Module;
-    use crate::simd;
 
     #[test]
     fn parser_rejects_simd_value_types() {
         let wasm = wat::parse_str("(module (type (func (param v128))))")
             .expect("wat should encode a module with a v128 parameter");
 
-        let err = Module::new("simd-types", &wasm)
-            .expect_err("non-SIMD builds should reject v128 value types");
+        #[cfg(not(sf_has_simd))]
+        {
+            let err = Module::new("simd-types", &wasm)
+                .expect_err("non-SIMD builds should reject v128 value types");
+            assert_eq!(
+                err,
+                crate::WasmError::invalid("SIMD is not supported on this CPU")
+            );
+        }
 
-        assert_eq!(err, simd::simd_unsupported_error());
+        #[cfg(sf_has_simd)]
+        {
+            Module::new("simd-types", &wasm)
+                .expect("SIMD-enabled builds should accept v128 type syntax");
+        }
     }
 }

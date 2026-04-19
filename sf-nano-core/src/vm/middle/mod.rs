@@ -53,6 +53,7 @@ pub(crate) fn prepare_function(
     semantic: SemanticProgram,
 ) -> Result<PreparedFunction, WasmError> {
     semantic.validate()?;
+    semantic.ensure_prepare_supported()?;
 
     let frame = plan_frame_layout(
         semantic.local_count,

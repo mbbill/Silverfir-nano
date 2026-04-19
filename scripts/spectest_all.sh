@@ -96,9 +96,13 @@ ensure_colima_ready() {
 
 build_spectest() {
     local profile="$1"
+    local features="${2:-jit}"
     shift
+    if [[ $# -gt 0 ]]; then
+        shift
+    fi
 
-    local -a cargo_args=("$@" -p sf-nano-spectest --no-default-features --features jit)
+    local -a cargo_args=("$@" -p sf-nano-spectest --no-default-features --features "$features")
     if [[ "$profile" == "release" ]]; then
         cargo_args=(--release "${cargo_args[@]}")
     fi
@@ -143,7 +147,7 @@ run_profile() {
     echo
 
     echo "=== Building spectest ($profile, host) ==="
-    build_spectest "$profile"
+    build_spectest "$profile" jit
     host_bin="$(profile_bin "$profile" "")"
     echo
 
@@ -152,7 +156,7 @@ run_profile() {
     echo
 
     echo "=== Building spectest ($profile, x64) ==="
-    build_spectest "$profile" --target "$X64_TARGET"
+    build_spectest "$profile" jit --target "$X64_TARGET"
     x64_bin="$(profile_bin "$profile" "$X64_TARGET")"
     if [[ ! -f "$x64_bin" ]]; then
         echo "ERROR: Build succeeded but binary not found at $x64_bin" >&2
@@ -164,16 +168,26 @@ run_profile() {
     run_with_extra_args arch -x86_64 "$x64_bin" --backend native
     echo
 
+    echo "=== Building spectest ($profile, emu64) ==="
+    build_spectest "$profile" jit,backend-emu64
+    host_bin="$(profile_bin "$profile" "")"
+    echo
+
     echo "=== spectest: emu64 ($profile) ==="
-    run_with_extra_args "$host_bin" --emu64
+    run_with_extra_args "$host_bin"
+    echo
+
+    echo "=== Building spectest ($profile, emu32) ==="
+    build_spectest "$profile" jit,backend-emu32
+    host_bin="$(profile_bin "$profile" "")"
     echo
 
     echo "=== spectest: emu32 ($profile) ==="
-    run_with_extra_args "$host_bin" --emu32
+    run_with_extra_args "$host_bin"
     echo
 
     echo "=== Building spectest ($profile, armv7a / A32 JIT) ==="
-    build_spectest "$profile" --target "$ARMV7_TARGET"
+    build_spectest "$profile" jit --target "$ARMV7_TARGET"
     armv7_bin="$(profile_bin "$profile" "$ARMV7_TARGET")"
     if [[ ! -f "$armv7_bin" ]]; then
         echo "ERROR: Build succeeded but binary not found at $armv7_bin" >&2

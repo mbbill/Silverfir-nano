@@ -3,7 +3,6 @@
 // ---------------------------------------------------------------------------
 
 use crate::collections::{self, phase_span_with_function};
-
 use tracked_alloc::collections::BTreeMap;
 
 use crate::{
@@ -252,7 +251,6 @@ fn lower_function(
     let entry_cache_params =
         compute_block_entry_cache_params(regfile, input.ssa, &explicit_cache, gp_reg_width)?;
     let block_entry_cache_dirty = compute_block_entry_cache_dirty(input.ssa, &explicit_cache);
-
     for block in &input.ssa.blocks {
         let target = block.id;
         let mut lower = BlockLowerContext::new(
@@ -1290,6 +1288,7 @@ fn program_value_storage_type(program: &SsaProgram, value: SsaValue) -> MachineS
         Some(ValueType::F32) => MachineStorageType::Fp32,
         Some(ValueType::F64) => MachineStorageType::Fp64,
         Some(ValueType::I64) => MachineStorageType::GpI64,
+        Some(ValueType::V128) => MachineStorageType::V128,
         Some(_) | None => MachineStorageType::GpWord,
     }
 }
@@ -2248,7 +2247,6 @@ fn simulate_block_cache_exit_state(
                 resident.fill(false);
                 dirty.fill(false);
             }
-            // Value / LocalGetSlot / LocalSetSlot / Fill / Spill: no effect.
             _ => {}
         }
     }

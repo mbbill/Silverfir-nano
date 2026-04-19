@@ -343,6 +343,26 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
         match &inst.kind {
+            MachineInstKind::Move {
+                ty: MachineStorageType::V128,
+                ..
+            }
+            | MachineInstKind::V128Const { .. }
+            | MachineInstKind::V128FromRaw { .. }
+            | MachineInstKind::V128ToRaw { .. }
+            | MachineInstKind::SimdUnary { .. }
+            | MachineInstKind::SimdBinary { .. }
+            | MachineInstKind::SimdTernary { .. }
+            | MachineInstKind::SimdShift { .. }
+            | MachineInstKind::SimdExtractLane { .. }
+            | MachineInstKind::SimdReplaceLane { .. }
+            | MachineInstKind::SimdShuffle { .. }
+            | MachineInstKind::SimdLoad { .. }
+            | MachineInstKind::SimdStore { .. }
+            | MachineInstKind::SimdLoadLane { .. }
+            | MachineInstKind::SimdStoreLane { .. } => Err(WasmError::internal(
+                "SIMD native codegen is not implemented yet",
+            )),
             MachineInstKind::Move { dst, src, ty, .. } => self.lower_move(*ty, *dst, *src),
             MachineInstKind::FloatConst { width, dst, bits } => {
                 self.lower_float_const(*width, *dst, *bits)
@@ -4262,8 +4282,8 @@ fn trunc_spec(op: MachineConvertOp) -> TruncSpec {
     }
 }
 
+#[inline]
 // ── Free helper (not a method — operates on TextEmitter directly) ────────────
-
 pub(super) fn materialize_u64_into(text: &mut TextEmitter, dst: Arm64Reg, value: u64) {
     if value == 0 {
         text.emit_u32(enc::mov_zero_64(dst));

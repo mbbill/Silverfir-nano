@@ -213,8 +213,12 @@ fn can_elide_reg_move(
 fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
     match kind {
         MachineInstKind::Move { src, .. }
+        | MachineInstKind::V128FromRaw { raw: src, .. }
+        | MachineInstKind::V128ToRaw { src, .. }
         | MachineInstKind::IntUnary { src, .. }
         | MachineInstKind::FloatUnary { src, .. }
+        | MachineInstKind::SimdUnary { src, .. }
+        | MachineInstKind::SimdExtractLane { src, .. }
         | MachineInstKind::Convert { src, .. }
         | MachineInstKind::ConvertFloatToI64Pair { src, .. }
         | MachineInstKind::ReinterpretF64ToI64Pair { src, .. } => rewrite_value(src, aliases),
@@ -223,11 +227,24 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(src_lo, aliases);
             rewrite_value(src_hi, aliases);
         }
-        MachineInstKind::FloatConst { .. } => {}
+        MachineInstKind::FloatConst { .. } | MachineInstKind::V128Const { .. } => {}
         MachineInstKind::Load { addr, .. } => rewrite_addr(addr, aliases),
         MachineInstKind::Store { addr, src, .. } => {
             rewrite_addr(addr, aliases);
             rewrite_value(src, aliases);
+        }
+        MachineInstKind::SimdLoad { addr, .. } => rewrite_addr(addr, aliases),
+        MachineInstKind::SimdStore { addr, src, .. } => {
+            rewrite_addr(addr, aliases);
+            rewrite_value(src, aliases);
+        }
+        MachineInstKind::SimdLoadLane { addr, vector, .. } => {
+            rewrite_addr(addr, aliases);
+            rewrite_value(vector, aliases);
+        }
+        MachineInstKind::SimdStoreLane { addr, vector, .. } => {
+            rewrite_addr(addr, aliases);
+            rewrite_value(vector, aliases);
         }
         MachineInstKind::IndexedLoad { base, index, .. } => {
             *base = resolve_alias(*base, aliases);
@@ -243,7 +260,25 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
         MachineInstKind::IntBinary { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
+        | MachineInstKind::SimdBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
+            rewrite_value(lhs, aliases);
+            rewrite_value(rhs, aliases);
+        }
+        MachineInstKind::SimdTernary { a, b, c, .. } => {
+            rewrite_value(a, aliases);
+            rewrite_value(b, aliases);
+            rewrite_value(c, aliases);
+        }
+        MachineInstKind::SimdShift { vector, shift, .. } => {
+            rewrite_value(vector, aliases);
+            rewrite_value(shift, aliases);
+        }
+        MachineInstKind::SimdReplaceLane { vector, scalar, .. } => {
+            rewrite_value(vector, aliases);
+            rewrite_value(scalar, aliases);
+        }
+        MachineInstKind::SimdShuffle { lhs, rhs, .. } => {
             rewrite_value(lhs, aliases);
             rewrite_value(rhs, aliases);
         }

@@ -15,7 +15,6 @@ path = "src/main.rs"
 [features]
 default = ["jit"]
 jit = ["sf-nano-core/jit"]
-simd = ["sf-nano-core/simd"]
 
 [dependencies]
 sf-nano-core = { path = "../sf-nano-core", default-features = false }

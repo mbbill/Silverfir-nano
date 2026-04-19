@@ -76,7 +76,8 @@ done
 #   <list>     — `--no-default-features --features <comma-list>`
 
 CORE_OPTIONAL_FEATURES=(
-    "emulator"
+    "backend-emu64"
+    "backend-emu32"
     "wasi"
     "validator"
     "call-trace"
@@ -110,21 +111,27 @@ done
 
 CORE_COMBOS+=(
     # Realistic bundled configurations
-    "cli|jit,wasi,guard-pages,emulator"
-    "cli+tracing|jit,wasi,guard-pages,emulator,call-trace"
-    "cli+ir-dump|jit,wasi,guard-pages,emulator,ir-dump"
-    "cli+jitdump|jit,wasi,guard-pages,emulator,jitdump"
-    "cli+memprof|jit,wasi,guard-pages,emulator,memprof"
-    "spectest|jit,validator,guard-pages,emulator"
-    "full-runtime|jit,wasi,validator,guard-pages,emulator"
-    "full-dev|jit,wasi,validator,call-trace,guard-pages,ir-dump,jitdump,emulator,memprof"
+    "cli|jit,wasi,guard-pages"
+    "cli+tracing|jit,wasi,guard-pages,call-trace"
+    "cli+ir-dump|jit,wasi,guard-pages,ir-dump"
+    "cli+jitdump|jit,wasi,guard-pages,jitdump"
+    "cli+memprof|jit,wasi,guard-pages,memprof"
+    "cli+emu64|jit,wasi,guard-pages,backend-emu64"
+    "cli+emu32|jit,wasi,guard-pages,backend-emu32"
+    "spectest|jit,validator,guard-pages"
+    "spectest+emu64|jit,validator,guard-pages,backend-emu64"
+    "spectest+emu32|jit,validator,guard-pages,backend-emu32"
+    "full-runtime|jit,wasi,validator,guard-pages"
+    "full-runtime+emu64|jit,wasi,validator,guard-pages,backend-emu64"
+    "full-runtime+emu32|jit,wasi,validator,guard-pages,backend-emu32"
+    "full-dev|jit,wasi,validator,call-trace,guard-pages,ir-dump,jitdump,memprof"
 
     # Thumb-2 ISA variant (arm32 backend emits Thumb-2 instead of A32). The
     # cfg gating (`sf_arm32_isa_thumb`) only has effect when the host arch
     # is arm, but the source must still typecheck on every host — so these
     # rows catch accidental cfg breakage during cross-crate edits.
-    "cli+thumb2|jit,wasi,guard-pages,emulator,thumb2-test"
-    "spectest+thumb2|jit,validator,guard-pages,emulator,thumb2-test"
+    "cli+thumb2|jit,wasi,guard-pages,thumb2-test"
+    "spectest+thumb2|jit,validator,guard-pages,thumb2-test"
 )
 
 CLI_OPTIONAL_FEATURES=(

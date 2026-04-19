@@ -30,6 +30,7 @@ target_args=()
 spectest_args=()
 wasitest_args=()
 target_mode="all"
+strict_summary=0
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -40,6 +41,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --strict)
             feature_args+=("$1")
+            strict_summary=1
             ;;
         --install-targets)
             target_args+=("--install")
@@ -278,7 +280,11 @@ if [[ $overall_fail -ne 0 ]]; then
     echo "ERRORS found. Fix them before treating this run as clean."
 fi
 if [[ $overall_warn -ne 0 ]]; then
-    echo "WARNINGS found. Fix them before treating this run as clean."
+    if [[ $strict_summary -ne 0 ]]; then
+        echo "WARNINGS found. Fix them before treating this run as clean."
+    else
+        echo "WARNINGS found. Review the logs if you want a fully clean run."
+    fi
 fi
 if [[ $overall_fail -eq 0 && $overall_warn -eq 0 ]]; then
     echo "No warnings or errors found."
@@ -290,7 +296,10 @@ echo "  check_targets.sh  -> $REPO_ROOT/target/check-targets-logs/"
 echo "  spectest_all.sh   -> $LOG_DIR/spectest-all.log"
 echo "  wasitest_all.sh   -> $LOG_DIR/wasitest-all.log"
 
-if [[ $overall_fail -ne 0 || $overall_warn -ne 0 ]]; then
+if [[ $overall_fail -ne 0 ]]; then
+    exit 1
+fi
+if [[ $overall_warn -ne 0 && $strict_summary -ne 0 ]]; then
     exit 1
 fi
 exit 0

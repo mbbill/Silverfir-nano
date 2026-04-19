@@ -27,9 +27,9 @@ fn test_config(
     let gp_dynamic = (first_fp_reg - BackendConfig::FIXED) as u8;
     let fp_dynamic = reg_count.saturating_sub(first_fp_reg) as u8;
     BackendConfig::new(
+        gp_reg_width,
         gp_dynamic,
         fp_dynamic,
-        gp_reg_width,
         if gp_reg_width == 4 { 8 } else { 3 },
     )
 }

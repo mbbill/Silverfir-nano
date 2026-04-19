@@ -1,4 +1,6 @@
 use crate::collections;
+#[cfg(sf_has_simd)]
+use crate::opcodes::OpcodeFD;
 use crate::value_type::ValueType;
 
 use crate::vm::{
@@ -55,9 +57,9 @@ fn host_backend_config(
     );
     let fp_dynamic_budget = fp_cache_budget.saturating_add(fp_linear_budget);
     BackendConfig::new(
+        HOST_GP_UNIT_BYTES,
         gp_dynamic_budget,
         fp_dynamic_budget,
-        HOST_GP_UNIT_BYTES,
         HOST_CALL_SCRATCH_SLOTS,
     )
 }
@@ -74,7 +76,7 @@ fn gp32_backend_config(
     let gp_dynamic_budget =
         total_gp_budget_for_allocatable(gp_cache_budget.saturating_add(gp_linear_budget), 4);
     let fp_dynamic_budget = fp_cache_budget.saturating_add(fp_linear_budget);
-    BackendConfig::new(gp_dynamic_budget, fp_dynamic_budget, 4, 8)
+    BackendConfig::new(4, gp_dynamic_budget, fp_dynamic_budget, 8)
 }
 
 fn assert_valid_32bit_gp_target(module: &MachineModule, backend: BackendConfig) {
@@ -304,6 +306,184 @@ fn lowers_select_with_wasm_operand_order() {
     };
     assert_eq!(select.0, MachineValue::Reg(first_reg));
     assert_eq!(select.1, MachineValue::Reg(second_reg));
+}
+
+#[cfg(sf_has_simd)]
+#[test]
+fn lowers_v128_binary_and_publishes_raw_slot_handle() {
+    let frame = plan_frame_layout(1, 0, HOST_CALL_SCRATCH_SLOTS);
+    let slot = frame.local_slot(0);
+    let mut ssa = SsaProgram::default();
+    ssa.entry = SsaTarget(0);
+    ssa.local_slot_types = collections::vec![ValueType::V128];
+    ssa.local_slot_info = collections::vec![LocalSlotInfo::default()];
+    ssa.block_entry_cached_slots = collections::vec![collections::Vec::new()];
+    ssa.block_cfg_origins = collections::vec![];
+    ssa.value_types = collections::vec![ValueType::V128, ValueType::V128, ValueType::V128];
+    ssa.value_sink_local = collections::vec![];
+
+    let lhs = ssa
+        .intern_primitive(PrimitiveOpKind::V128Const { value: [1; 16] })
+        .expect("lhs const");
+    let rhs = ssa
+        .intern_primitive(PrimitiveOpKind::V128Const { value: [2; 16] })
+        .expect("rhs const");
+    let add = ssa
+        .intern_primitive(PrimitiveOpKind::I32x4Add)
+        .expect("simd add");
+
+    ssa.blocks.push(SsaBlock {
+        id: SsaTarget(0),
+        params: collections::Vec::new(),
+        ops: collections::vec![
+            SsaInst::primitive(lhs, SsaValue(0), [SsaOperand::NONE, SsaOperand::NONE], 0),
+            SsaInst::primitive(rhs, SsaValue(1), [SsaOperand::NONE, SsaOperand::NONE], 0),
+            SsaInst::primitive(
+                add,
+                SsaValue(2),
+                [
+                    SsaOperand::value(SsaValue(0)),
+                    SsaOperand::value(SsaValue(1))
+                ],
+                0,
+            ),
+            SsaInst::local_set_slot(slot, SsaValue(2)),
+        ],
+        extra_args: collections::Vec::new(),
+        terminator: SsaTerminator::Return { results: None },
+    });
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(0, 4, 0, 6),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("SIMD MIR lowering should succeed before native codegen");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert!(ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::V128Const { bytes, .. } if bytes == [1; 16]
+        )
+    }));
+    assert!(ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::V128Const { bytes, .. } if bytes == [2; 16]
+        )
+    }));
+    assert!(ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::SimdBinary {
+                opcode,
+                dst_ty: MachineStorageType::V128,
+                ..
+            } if opcode == OpcodeFD::I32X4_ADD as u32
+        )
+    }));
+    assert!(ops
+        .iter()
+        .any(|inst| matches!(inst.kind, MachineInstKind::V128ToRaw { .. })));
+    assert!(ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::Store {
+                width: MachineMemWidth::U64,
+                ..
+            }
+        )
+    }));
+}
+
+#[cfg(sf_has_simd)]
+#[test]
+fn lowers_v128_local_get_slot_through_raw_handle_boundary() {
+    let frame = plan_frame_layout(1, 0, HOST_CALL_SCRATCH_SLOTS);
+    let slot = frame.local_slot(0);
+    let mut ssa = SsaProgram::default();
+    ssa.entry = SsaTarget(0);
+    ssa.local_slot_types = collections::vec![ValueType::V128];
+    ssa.local_slot_info = collections::vec![LocalSlotInfo::default()];
+    ssa.block_entry_cached_slots = collections::vec![collections::Vec::new()];
+    ssa.block_cfg_origins = collections::vec![];
+    ssa.value_types = collections::vec![ValueType::V128, ValueType::V128];
+    ssa.value_sink_local = collections::vec![];
+
+    let not = ssa
+        .intern_primitive(PrimitiveOpKind::V128Not)
+        .expect("simd unary");
+    ssa.blocks.push(SsaBlock {
+        id: SsaTarget(0),
+        params: collections::Vec::new(),
+        ops: collections::vec![
+            SsaInst::local_get_slot(slot, SsaValue(0)),
+            SsaInst::primitive(
+                not,
+                SsaValue(1),
+                [SsaOperand::value(SsaValue(0)), SsaOperand::NONE],
+                0,
+            ),
+            SsaInst::local_set_slot(slot, SsaValue(1)),
+        ],
+        extra_args: collections::Vec::new(),
+        terminator: SsaTerminator::Return { results: None },
+    });
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(0, 4, 0, 6),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("SIMD local boundary lowering should succeed before native codegen");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert!(ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                width: MachineMemWidth::U64,
+                ..
+            }
+        )
+    }));
+    assert!(ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::V128FromRaw {
+                owner: MachineRegOwner::LinearValue,
+                ..
+            }
+        )
+    }));
+    assert!(ops.iter().any(|inst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::SimdUnary {
+                opcode,
+                dst_ty: MachineStorageType::V128,
+                ..
+            } if opcode == OpcodeFD::V128_NOT as u32
+        )
+    }));
+    assert!(ops
+        .iter()
+        .any(|inst| matches!(inst.kind, MachineInstKind::V128ToRaw { .. })));
 }
 
 #[test]

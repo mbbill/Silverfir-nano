@@ -20,18 +20,18 @@ const MAP_ANONYMOUS: i32 = 0x20;
 
 // ── Instruction cache flush ─────────────────────────────────────────────────
 
-#[cfg(sf_arch_arm64)]
+#[cfg(sf_backend_arm64)]
 unsafe extern "C" {
     fn __clear_cache(start: *mut u8, end: *mut u8);
 }
 
-#[cfg(sf_arch_arm64)]
+#[cfg(sf_backend_arm64)]
 #[inline]
 unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     unsafe { __clear_cache(start, end) };
 }
 
-#[cfg(sf_arch_armv7a)]
+#[cfg(sf_backend_armv7a)]
 #[inline]
 unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     // ARM Linux cacheflush syscall (__ARM_NR_cacheflush = 0x0f0002).
@@ -55,12 +55,12 @@ unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     }
 }
 
-#[cfg(not(any(sf_arch_arm64, sf_arch_armv7a)))]
+#[cfg(not(any(sf_backend_arm64, sf_backend_armv7a)))]
 unsafe extern "C" {
     fn __clear_cache(start: *mut u8, end: *mut u8);
 }
 
-#[cfg(not(any(sf_arch_arm64, sf_arch_armv7a)))]
+#[cfg(not(any(sf_backend_arm64, sf_backend_armv7a)))]
 #[inline]
 unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     unsafe { __clear_cache(start, end) };

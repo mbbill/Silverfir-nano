@@ -12,4 +12,5 @@ mod const_fold;
 mod entry_state;
 mod helpers;
 mod loops;
+mod simd;
 mod typed_blocks;

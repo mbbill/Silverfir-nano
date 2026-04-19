@@ -4,7 +4,7 @@ use crate::{
     module::{entities::ConstExpr, Module},
     opcodes::{
         Opcode::{self, *},
-        OpcodeFB,
+        OpcodeFB, OpcodeFD,
     },
     utils::payload::Payload,
     value_type::{AbstractHeapType, HeapType, RefType, ValueType},
@@ -67,6 +67,7 @@ impl ConstExpr {
                     REF_NULL
                         | REF_FUNC
                         | PREFIX_FB
+                        | PREFIX_FD
                         | END
                         | I32_CONST
                         | I64_CONST
@@ -342,6 +343,24 @@ impl ConstExpr {
                         _ => {
                             return Err(WasmError::invalid(
                                 "Unsupported GC opcode in constant expression",
+                            ));
+                        }
+                    }
+                }
+                PREFIX_FD => {
+                    let fd_opcode_value = code.read_leb128_u32()?;
+                    let fd_opcode: OpcodeFD = fd_opcode_value.try_into()?;
+                    use OpcodeFD::*;
+                    match fd_opcode {
+                        V128_CONST => {
+                            for _ in 0..16 {
+                                code.read_u8()?;
+                            }
+                            stack.push(ValueType::V128);
+                        }
+                        _ => {
+                            return Err(WasmError::invalid(
+                                "Unsupported SIMD opcode in constant expression",
                             ));
                         }
                     }

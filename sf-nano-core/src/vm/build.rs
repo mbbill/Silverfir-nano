@@ -88,7 +88,6 @@ use crate::{
         wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
     },
 };
-
 fn decode_function_semantic(
     module: &ModuleInst,
     store: &Store,
@@ -150,7 +149,7 @@ struct FunctionEmitSummary {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PendingPatchEncoding {
     U64,
-    #[cfg(any(sf_arch_armv7a, sf_arch_thumbm))]
+    #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
     MovwMovt,
 }
 
@@ -230,9 +229,9 @@ fn patch_code_buffer_word(
 ) {
     match patch_encoding(active_backend) {
         PendingPatchEncoding::U64 => executable.patch_u64(code_offset, value as u64),
-        #[cfg(any(sf_arch_armv7a, sf_arch_thumbm))]
+        #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
         PendingPatchEncoding::MovwMovt => {
-            #[cfg(any(sf_arch_armv7a, sf_arch_thumbm))]
+            #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
             {
                 crate::vm::arch::arm32::compile::patch_movw_movt_code_buffer(
                     executable,
@@ -240,7 +239,7 @@ fn patch_code_buffer_word(
                     value as u32,
                 );
             }
-            #[cfg(not(any(sf_arch_armv7a, sf_arch_thumbm)))]
+            #[cfg(not(any(sf_backend_armv7a, sf_backend_thumbm)))]
             {
                 let _ = (executable, code_offset, value);
                 unreachable!("movw/movt patching is unavailable on this target");
@@ -252,17 +251,24 @@ fn patch_code_buffer_word(
 #[inline]
 fn patch_encoding(active_backend: arch::NativeBackend) -> PendingPatchEncoding {
     match active_backend {
-        #[cfg(sf_arch_arm64)]
+        #[cfg(sf_backend_arm64)]
         arch::NativeBackend::Arm64 => PendingPatchEncoding::U64,
-        #[cfg(sf_arch_armv7a)]
+        #[cfg(sf_backend_armv7a)]
         arch::NativeBackend::Armv7a => PendingPatchEncoding::MovwMovt,
-        #[cfg(sf_arch_thumbm)]
+        #[cfg(sf_backend_thumbm)]
         arch::NativeBackend::ThumbM => PendingPatchEncoding::MovwMovt,
-        #[cfg(sf_arch_x64)]
+        #[cfg(sf_backend_x64)]
         arch::NativeBackend::X86_64 => PendingPatchEncoding::U64,
-        #[cfg(sf_emulator)]
-        arch::NativeBackend::Reference => PendingPatchEncoding::U64,
+        #[cfg(sf_backend_emu64)]
+        arch::NativeBackend::Emu64 => PendingPatchEncoding::U64,
+        #[cfg(sf_backend_emu32)]
+        arch::NativeBackend::Emu32 => PendingPatchEncoding::U64,
     }
+}
+
+#[inline]
+const fn is_emulator_backend(_active_backend: arch::NativeBackend) -> bool {
+    cfg!(any(sf_backend_emu64, sf_backend_emu32))
 }
 
 fn build_static_summaries(
@@ -399,12 +405,7 @@ fn finish_native_compile_streaming(
                 function_index: Some(func_idx as u32),
             },
             semantic,
-        )
-        .map_err(|_err| {
-            WasmError::internal(
-                "native prepare failed for function type_idx= params= results= max_stack= ops=",
-            )
-        })?;
+        )?;
         drop(ssa_lower_function_phase);
 
         groups += 1;
@@ -721,10 +722,7 @@ fn finish_native_compile(
         );
     }
 
-    #[cfg(sf_emulator)]
-    let keep_machine_ir = matches!(active_backend, arch::NativeBackend::Reference);
-    #[cfg(not(sf_emulator))]
-    let keep_machine_ir = false;
+    let keep_machine_ir = is_emulator_backend(active_backend);
     if !keep_machine_ir {
         if let Some(compiled_mut) = Rc::get_mut(&mut compiled) {
             compiled_mut.strip_machine_ir_for_runtime();
@@ -770,11 +768,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     let ir_dump_enabled = ir_dump::dump_enabled();
     #[cfg(not(sf_ir_dump))]
     let ir_dump_enabled = false;
-    #[cfg(sf_emulator)]
-    let use_batch_pipeline =
-        matches!(active_backend, arch::NativeBackend::Reference) || ir_dump_enabled;
-    #[cfg(not(sf_emulator))]
-    let use_batch_pipeline = ir_dump_enabled;
+    let use_batch_pipeline = is_emulator_backend(active_backend) || ir_dump_enabled;
     if !use_batch_pipeline {
         return finish_native_compile_streaming(active_backend, backend, module, store);
     }
@@ -798,12 +792,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
                 function_index: Some(func_idx as u32),
             },
             semantic,
-        )
-        .map_err(|_err| {
-            WasmError::internal(
-                "native prepare failed for function type_idx= params= results= max_stack= ops=",
-            )
-        })?;
+        )?;
         drop(ssa_lower_function_phase);
         groups += 1;
         ssa_ops += prepared
@@ -887,30 +876,21 @@ mod tests {
         utils::limits::Limits,
         value_type::ValueType,
         vm::{
-            arch::{backend_mode_test_lock, set_reference_backend_mode},
+            arch::backend_mode_test_lock,
             entities::{FunctionInst, MemInst, ModuleInst},
             store::Store,
         },
-        ReferenceBackendMode,
     };
 
-    struct ReferenceBackendGuard {
+    struct CompiledBackendGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
     }
 
-    impl Drop for ReferenceBackendGuard {
-        fn drop(&mut self) {
-            set_reference_backend_mode(ReferenceBackendMode::Disabled)
-                .expect("reset reference backend mode");
-        }
-    }
-
-    fn enable_reference_backend_mode(mode: ReferenceBackendMode) -> ReferenceBackendGuard {
+    fn enable_compiled_backend() -> CompiledBackendGuard {
         let lock = backend_mode_test_lock()
             .lock()
             .expect("backend mode test lock");
-        set_reference_backend_mode(mode).expect("enable reference backend mode");
-        ReferenceBackendGuard { _lock: lock }
+        CompiledBackendGuard { _lock: lock }
     }
 
     fn encode_u32_leb(mut value: u32, out: &mut collections::Vec<u8>) {
@@ -1013,9 +993,10 @@ mod tests {
         assert_eq!(second.func_id().0, 1);
     }
 
+    #[cfg(sf_backend_emu64)]
     #[test]
     fn emu64_compiled_module_publishes_local_call_info_table() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu64);
+        let _guard = enable_compiled_backend();
 
         let types = TypeContext::new(collections::vec![
             func_def(collections::vec![], collections::vec![]),
@@ -1240,9 +1221,10 @@ mod tests {
         ensure_module_compiled(&store).expect("f32 kahan-style loop should compile");
     }
 
+    #[cfg(sf_backend_emu32)]
     #[test]
     fn emu32_compiles_long_argument_list_internal_call() {
-        let _guard = enable_reference_backend_mode(ReferenceBackendMode::Emu32);
+        let _guard = enable_compiled_backend();
 
         let helper_params = collections::vec![
             ValueType::F32,

@@ -2,10 +2,7 @@
 use sf_nano_core::native_stats_snapshot;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::Instance;
-use sf_nano_core::{
-    active_runtime_engine, set_backend_mode, set_reference_backend_mode, BackendMode,
-    ReferenceBackendMode,
-};
+use sf_nano_core::{active_runtime_engine, set_backend_mode, BackendMode};
 
 use std::path::PathBuf;
 use std::{env, fs, process};
@@ -38,7 +35,6 @@ fn run_cli(args: &[String]) -> i32 {
 
     let mut preopens: Vec<(String, PathBuf)> = Vec::new();
     let mut backend_mode = BackendMode::Native;
-    let mut reference_mode = ReferenceBackendMode::Disabled;
     let mut remaining_args: Vec<String> = Vec::new();
     #[cfg(feature = "memprof")]
     let mut memprof_enabled = false;
@@ -108,18 +104,6 @@ fn run_cli(args: &[String]) -> i32 {
                 return 1;
             };
             backend_mode = parsed;
-        } else if args[i] == "--emu64" {
-            if reference_mode == ReferenceBackendMode::Emu32 {
-                eprintln!("Error: --emu32 conflicts with --emu64");
-                return 1;
-            }
-            reference_mode = ReferenceBackendMode::Emu64;
-        } else if args[i] == "--emu32" {
-            if reference_mode == ReferenceBackendMode::Emu64 {
-                eprintln!("Error: --emu32 conflicts with --emu64");
-                return 1;
-            }
-            reference_mode = ReferenceBackendMode::Emu32;
         } else {
             remaining_args.push(args[i].clone());
         }
@@ -140,10 +124,6 @@ fn run_cli(args: &[String]) -> i32 {
         }
 
         set_backend_mode(backend_mode);
-        if let Err(err) = set_reference_backend_mode(reference_mode) {
-            eprintln!("Error: {}", err);
-            return 1;
-        }
         let runtime_engine = match active_runtime_engine() {
             Ok(engine) => engine,
             Err(err) => {
@@ -267,15 +247,13 @@ fn print_usage(program_name: &str) {
     eprintln!();
     eprintln!("USAGE:");
     eprintln!(
-        "  {program_name} [--backend <auto|native>] [--emu64|--emu32] [--dir <guest::host|path>] [--memprof] [--memprof-report <html>] <wasm-file> [args...]"
+        "  {program_name} [--backend <auto|native>] [--dir <guest::host|path>] [--memprof] [--memprof-report <html>] <wasm-file> [args...]"
     );
     eprintln!();
     eprintln!("Run a WebAssembly module with WASI support.");
     eprintln!();
     eprintln!("OPTIONS:");
     eprintln!("  --backend <auto|native>   Select the execution backend.");
-    eprintln!("  --emu64                   Use the 64-bit reference emulator.");
-    eprintln!("  --emu32                   Use the 32-bit reference emulator.");
     eprintln!("  --dir <guest::host|path>  Preopen a host directory (repeatable).");
     #[cfg(feature = "memprof")]
     {

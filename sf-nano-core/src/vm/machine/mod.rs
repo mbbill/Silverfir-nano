@@ -19,6 +19,7 @@ mod lower_leaf_arith;
 mod lower_leaf_special;
 mod lower_module;
 mod lower_regalloc;
+mod lower_simd;
 mod lower_util;
 pub(crate) mod machine_ir;
 mod optimize;

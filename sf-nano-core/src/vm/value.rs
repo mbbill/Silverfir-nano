@@ -147,6 +147,8 @@ pub enum Value {
     I64(i64),
     F32(f32),
     F64(f64),
+    #[cfg(sf_has_simd)]
+    V128([u8; 16]),
     Ref(RefHandle, RefType),
     #[default]
     Unknown,
@@ -173,6 +175,13 @@ impl From<f32> for Value {
 impl From<f64> for Value {
     fn from(val: f64) -> Self {
         Value::F64(val)
+    }
+}
+
+#[cfg(sf_has_simd)]
+impl From<[u8; 16]> for Value {
+    fn from(val: [u8; 16]) -> Self {
+        Value::V128(val)
     }
 }
 
@@ -284,13 +293,48 @@ impl From<Value> for RefHandle {
     }
 }
 
+#[cfg(sf_has_simd)]
+impl From<Value> for [u8; 16] {
+    fn from(val: Value) -> Self {
+        match val {
+            Value::V128(val) => val,
+            _ => panic!("Value is not a v128"),
+        }
+    }
+}
+
 impl Value {
+    #[inline]
+    pub fn from_v128_bytes(_bytes: [u8; 16]) -> Self {
+        #[cfg(sf_has_simd)]
+        {
+            Self::V128(_bytes)
+        }
+        #[cfg(not(sf_has_simd))]
+        {
+            Self::Unknown
+        }
+    }
+
+    #[inline]
+    pub fn as_v128_bytes(&self) -> Option<[u8; 16]> {
+        #[cfg(sf_has_simd)]
+        {
+            if let Self::V128(bytes) = self {
+                return Some(*bytes);
+            }
+        }
+        None
+    }
+
     pub fn value_type(&self) -> ValueType {
         match self {
             Value::I32(_) => ValueType::I32,
             Value::I64(_) => ValueType::I64,
             Value::F32(_) => ValueType::F32,
             Value::F64(_) => ValueType::F64,
+            #[cfg(sf_has_simd)]
+            Value::V128(_) => ValueType::V128,
             Value::Ref(_, ref_type) => ValueType::Ref(*ref_type),
             Value::Unknown => ValueType::Unknown,
         }
@@ -302,6 +346,9 @@ impl Value {
             ValueType::I64 => Value::I64(0),
             ValueType::F32 => Value::F32(0.0),
             ValueType::F64 => Value::F64(0.0),
+            #[cfg(sf_has_simd)]
+            ValueType::V128 => Value::V128([0; 16]),
+            #[cfg(not(sf_has_simd))]
             ValueType::V128 => Value::Unknown,
             ValueType::Ref(ref_type) => Value::Ref(RefHandle::null(), ref_type),
             ValueType::Unknown => Value::Unknown,
@@ -315,6 +362,8 @@ impl Value {
             Value::I64(v) => v as u64,
             Value::F32(v) => f32::to_bits(v) as u64,
             Value::F64(v) => f64::to_bits(v),
+            #[cfg(sf_has_simd)]
+            Value::V128(_) => panic!("v128 cannot be encoded as a scalar raw value"),
             Value::Ref(r, _) => r.encoded() as u64,
             Value::Unknown => 0,
         }
@@ -328,7 +377,37 @@ impl Value {
             ValueType::F32 => Value::F32(f32::from_bits(raw as u32)),
             ValueType::F64 => Value::F64(f64::from_bits(raw)),
             ValueType::Ref(ref_type) => Value::Ref(RefHandle::new(raw as usize), ref_type),
+            #[cfg(sf_has_simd)]
+            ValueType::V128 => panic!("v128 cannot be decoded from a scalar raw value"),
             _ => Value::Unknown,
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::Value;
+    use crate::value_type::ValueType;
+
+    #[test]
+    fn default_scalar_values_match_their_types() {
+        assert_eq!(Value::default_for_type(ValueType::I32), Value::I32(0));
+        assert_eq!(Value::default_for_type(ValueType::I64), Value::I64(0));
+        assert_eq!(Value::default_for_type(ValueType::F32), Value::F32(0.0));
+        assert_eq!(Value::default_for_type(ValueType::F64), Value::F64(0.0));
+    }
+
+    #[cfg(sf_has_simd)]
+    #[test]
+    fn v128_values_report_their_type_and_default() {
+        let bytes = [0xAB; 16];
+        let value = Value::from(bytes);
+
+        assert_eq!(value.value_type(), ValueType::V128);
+        assert_eq!(<[u8; 16]>::from(value), bytes);
+        assert_eq!(
+            Value::default_for_type(ValueType::V128),
+            Value::V128([0; 16])
+        );
     }
 }

@@ -19,10 +19,10 @@ wat = "1.246.2"
 [features]
 default = ["jit", "guard-pages"]
 jit = []
-emulator = ["jit"]
+backend-emu64 = ["jit"]
+backend-emu32 = ["jit"]
 wasi = ["dep:filetime"]
 validator = []
-simd = []
 call-trace = ["jit"]
 guard-pages = ["jit"]
 ir-dump = ["jit"]
@@ -32,6 +32,6 @@ memprof = ["tracked_alloc/memprof"]
 # (via enc_a32.rs). Intended for running the armv7-linux-musleabihf test
 # harness against cortex-a15 to validate Thumb-2 encodings end-to-end; the
 # resulting binary relies on ARM/Thumb interworking at the A32↔Thumb call
-# boundary. Real M-profile targets select enc_t2.rs via sf_arch_thumbm
+# boundary. Real M-profile targets select enc_t2.rs via sf_backend_thumbm
 # instead, and don't need this feature.
 thumb2-test = ["jit"]

@@ -4,25 +4,7 @@ use crate::vm::entities::FunctionInst;
 use crate::vm::result_buffer::ResultBuffer;
 use crate::vm::store::Store;
 use crate::vm::value::Value;
-use crate::vm::value_encoding::normalize_machine_raw;
-
-#[cfg(sf_jit)]
-pub use crate::vm::arch::ReferenceBackendMode;
-#[cfg(not(sf_jit))]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum ReferenceBackendMode {
-    Disabled,
-    Emu64,
-    Emu32,
-}
-
-#[cfg(not(sf_jit))]
-impl ReferenceBackendMode {
-    #[inline]
-    pub const fn is_enabled(self) -> bool {
-        !matches!(self, Self::Disabled)
-    }
-}
+use crate::vm::value_encoding::normalize_machine_raw_in_store;
 
 // --- Native runtime infrastructure (jit only) ---
 
@@ -95,38 +77,6 @@ pub fn active_runtime_engine() -> Result<RuntimeEngine, &'static str> {
     }
 }
 
-pub fn set_reference_backend(enabled: bool) -> Result<(), &'static str> {
-    #[cfg(sf_jit)]
-    {
-        crate::vm::arch::set_reference_backend(enabled)
-    }
-
-    #[cfg(not(sf_jit))]
-    {
-        if enabled {
-            Err("reference backend requires jit")
-        } else {
-            Ok(())
-        }
-    }
-}
-
-pub fn set_reference_backend_mode(mode: ReferenceBackendMode) -> Result<(), &'static str> {
-    #[cfg(sf_jit)]
-    {
-        crate::vm::arch::set_reference_backend_mode(mode)
-    }
-
-    #[cfg(not(sf_jit))]
-    {
-        if mode.is_enabled() {
-            Err("reference backend requires jit")
-        } else {
-            Ok(())
-        }
-    }
-}
-
 pub(crate) fn eval(
     func_inst: &FunctionInst,
     store: &mut Store,
@@ -157,11 +107,17 @@ pub(crate) unsafe fn collect_native_results_from_stack(
     stack_base: *const u64,
     result_types: &[ValueType],
     gp_unit_bytes: u8,
-) -> ResultBuffer {
+    store: &mut Store,
+) -> Result<ResultBuffer, WasmError> {
     let mut out = ResultBuffer::with_exact_capacity(result_types.len());
     for (index, ty) in result_types.iter().enumerate() {
-        let raw = normalize_machine_raw(unsafe { *stack_base.add(index) }, *ty, gp_unit_bytes);
+        let raw = normalize_machine_raw_in_store(
+            unsafe { *stack_base.add(index) },
+            *ty,
+            gp_unit_bytes,
+            store,
+        )?;
         out.push(raw);
     }
-    out
+    Ok(out)
 }

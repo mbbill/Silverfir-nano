@@ -142,6 +142,20 @@ impl MachineProgram {
                     ));
                 }
             }
+            MachineInstKind::V128Const { dst, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::V128, config)?;
+            }
+            MachineInstKind::V128FromRaw { dst, raw, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::V128, config)?;
+                self.validate_typed_value(*raw, MachineStorageType::GpWord, config)?;
+            }
+            MachineInstKind::V128ToRaw { dst, src } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
+                self.validate_typed_value(*src, MachineStorageType::V128, config)?;
+            }
             MachineInstKind::Load { ty, dst, addr, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_addr(*addr, config)?;
@@ -166,16 +180,98 @@ impl MachineProgram {
                     self.validate_reg_storage_type(*src_reg, *ty, config)?;
                 }
             }
+            MachineInstKind::SimdLoad { dst, addr, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::V128, config)?;
+                self.validate_addr(*addr, config)?;
+            }
+            MachineInstKind::SimdStore { addr, src, .. } => {
+                self.validate_addr(*addr, config)?;
+                self.validate_value(*src, config)?;
+            }
+            MachineInstKind::SimdLoadLane {
+                dst, addr, vector, ..
+            } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::V128, config)?;
+                self.validate_addr(*addr, config)?;
+                self.validate_value(*vector, config)?;
+            }
+            MachineInstKind::SimdStoreLane { addr, vector, .. } => {
+                self.validate_addr(*addr, config)?;
+                self.validate_value(*vector, config)?;
+            }
             MachineInstKind::IntUnary { dst, src, .. }
             | MachineInstKind::FloatUnary { dst, src, .. }
             | MachineInstKind::Convert { dst, src, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_value(*src, config)?;
             }
+            MachineInstKind::SimdUnary {
+                dst_ty, dst, src, ..
+            }
+            | MachineInstKind::SimdExtractLane {
+                dst_ty, dst, src, ..
+            } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, *dst_ty, config)?;
+                self.validate_value(*src, config)?;
+            }
             MachineInstKind::IntBinary { dst, lhs, rhs, .. }
             | MachineInstKind::IntCompare { dst, lhs, rhs, .. }
             | MachineInstKind::FloatBinary { dst, lhs, rhs, .. } => {
                 self.validate_reg(*dst, config)?;
+                self.validate_value(*lhs, config)?;
+                self.validate_value(*rhs, config)?;
+            }
+            MachineInstKind::SimdBinary {
+                dst_ty,
+                dst,
+                lhs,
+                rhs,
+                ..
+            } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, *dst_ty, config)?;
+                self.validate_value(*lhs, config)?;
+                self.validate_value(*rhs, config)?;
+            }
+            MachineInstKind::SimdTernary {
+                dst_ty,
+                dst,
+                a,
+                b,
+                c,
+                ..
+            } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, *dst_ty, config)?;
+                self.validate_value(*a, config)?;
+                self.validate_value(*b, config)?;
+                self.validate_value(*c, config)?;
+            }
+            MachineInstKind::SimdShift {
+                dst, vector, shift, ..
+            } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::V128, config)?;
+                self.validate_value(*vector, config)?;
+                self.validate_value(*shift, config)?;
+            }
+            MachineInstKind::SimdReplaceLane {
+                dst,
+                vector,
+                scalar,
+                ..
+            } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::V128, config)?;
+                self.validate_value(*vector, config)?;
+                self.validate_value(*scalar, config)?;
+            }
+            MachineInstKind::SimdShuffle { dst, lhs, rhs, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::V128, config)?;
                 self.validate_value(*lhs, config)?;
                 self.validate_value(*rhs, config)?;
             }
@@ -493,11 +589,13 @@ impl MachineProgram {
             | MachineInstKind::RefCast { src, dst, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_value(*src, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
             }
             MachineInstKind::RefEq { lhs, rhs, dst } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_value(*lhs, config)?;
                 self.validate_value(*rhs, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
             }
             MachineInstKind::StructGet {
                 src, dst, dst_hi, ..
@@ -820,6 +918,22 @@ impl MachineProgram {
         match value {
             MachineValue::Reg(reg) => self.validate_reg(reg, config),
             MachineValue::ReservedReg(reg) => self.validate_reg(reg, config),
+            MachineValue::Imm64(_) => Ok(()),
+        }
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_typed_value(
+        &self,
+        value: MachineValue,
+        ty: MachineStorageType,
+        config: BackendConfig,
+    ) -> ValidateResult {
+        match value {
+            MachineValue::Reg(reg) | MachineValue::ReservedReg(reg) => {
+                self.validate_reg(reg, config)?;
+                self.validate_reg_storage_type(reg, ty, config)
+            }
             MachineValue::Imm64(_) => Ok(()),
         }
     }

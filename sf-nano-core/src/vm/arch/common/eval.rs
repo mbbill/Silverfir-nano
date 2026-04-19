@@ -14,7 +14,7 @@ use crate::{
         runtime::{code::NativeCode, collect_native_results_from_stack, context::NativeContext},
         store::Store,
         value::Value,
-        value_encoding::value_to_machine_raw,
+        value_encoding::value_to_machine_raw_in_store,
     },
 };
 
@@ -53,7 +53,8 @@ pub(crate) fn eval(
 
     unsafe {
         for (index, arg) in args.iter().enumerate() {
-            *stack_base.add(index) = value_to_machine_raw(*arg, compiled.backend().gp_unit_bytes);
+            *stack_base.add(index) =
+                value_to_machine_raw_in_store(*arg, compiled.backend().gp_unit_bytes, store);
         }
         // Note: zero-init of non-param locals is performed by the callee
         // itself at function entry, only for slots flagged by the SsaProgram's
@@ -109,8 +110,9 @@ pub(crate) fn eval(
             stack_base,
             func_type.results(),
             compiled.backend().gp_unit_bytes,
+            store,
         )
-    };
+    }?;
     #[cfg(sf_call_trace)]
     {
         let results_len = func_type.results().len();

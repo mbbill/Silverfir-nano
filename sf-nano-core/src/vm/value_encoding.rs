@@ -1,6 +1,8 @@
 //! Shared value encoding utilities for VM execution stacks.
 
+use crate::error::WasmError;
 use crate::value_type::ValueType;
+use crate::vm::store::Store;
 use crate::vm::value::{RefHandle, Value};
 
 pub(crate) type RawValue = u64;
@@ -118,21 +120,23 @@ pub(crate) fn machine_raw_to_ref(raw: RawValue, gp_unit_bytes: u8) -> RefHandle 
     }
 }
 
-#[cfg(sf_emulator)]
+#[cfg(any(sf_backend_emu64, sf_backend_emu32))]
 #[inline(always)]
 pub(crate) const fn as_u32(val: RawValue) -> u32 {
     val as u32
 }
 
-#[cfg(sf_emulator)]
+#[cfg(any(sf_backend_emu64, sf_backend_emu32))]
 #[inline(always)]
 pub(crate) const fn as_u64(val: RawValue) -> u64 {
     val
 }
 
 #[inline]
-pub(crate) fn value_to_raw(val: Value) -> RawValue {
+pub(crate) fn value_to_raw_in_store(val: Value, _store: &mut Store) -> RawValue {
     match val {
+        #[cfg(sf_has_simd)]
+        Value::V128(value) => _store.intern_v128(value),
         Value::I32(v) => from_i32(v),
         Value::I64(v) => from_i64(v),
         Value::F32(v) => from_f32(v),
@@ -143,43 +147,77 @@ pub(crate) fn value_to_raw(val: Value) -> RawValue {
 }
 
 #[inline]
-pub(crate) fn raw_to_value(raw: RawValue, value_type: ValueType) -> Value {
-    match value_type {
+pub(crate) fn value_to_machine_raw_in_store(
+    val: Value,
+    gp_unit_bytes: u8,
+    _store: &mut Store,
+) -> RawValue {
+    match val {
+        Value::Ref(r, _) => ref_to_machine_raw(r, gp_unit_bytes),
+        #[cfg(sf_has_simd)]
+        Value::V128(value) => _store.intern_v128(value),
+        Value::I32(v) => from_i32(v),
+        Value::I64(v) => from_i64(v),
+        Value::F32(v) => from_f32(v),
+        Value::F64(v) => from_f64(v),
+        Value::Unknown => 0,
+    }
+}
+
+#[inline]
+fn invalid_v128_raw_error() -> WasmError {
+    WasmError::internal("invalid v128 raw value")
+}
+
+#[inline]
+pub(crate) fn try_machine_raw_to_value_in_store(
+    raw: RawValue,
+    value_type: ValueType,
+    gp_unit_bytes: u8,
+    _store: &Store,
+) -> Result<Value, WasmError> {
+    Ok(match value_type {
+        ValueType::Ref(ref_type) => Value::Ref(machine_raw_to_ref(raw, gp_unit_bytes), ref_type),
         ValueType::I32 => Value::I32(as_i32(raw)),
         ValueType::I64 => Value::I64(as_i64(raw)),
         ValueType::F32 => Value::F32(as_f32(raw)),
         ValueType::F64 => Value::F64(as_f64(raw)),
-        ValueType::V128 => Value::I64(as_i64(raw)),
+        #[cfg(sf_has_simd)]
+        ValueType::V128 => Value::V128(_store.get_v128(raw).ok_or_else(invalid_v128_raw_error)?),
+        #[cfg(not(sf_has_simd))]
+        ValueType::V128 => Value::Unknown,
+        _ => Value::Unknown,
+    })
+}
+
+pub(crate) fn try_raw_to_value_in_store(
+    raw: RawValue,
+    value_type: ValueType,
+    _store: &Store,
+) -> Result<Value, WasmError> {
+    Ok(match value_type {
+        ValueType::I32 => Value::I32(as_i32(raw)),
+        ValueType::I64 => Value::I64(as_i64(raw)),
+        ValueType::F32 => Value::F32(as_f32(raw)),
+        ValueType::F64 => Value::F64(as_f64(raw)),
+        #[cfg(sf_has_simd)]
+        ValueType::V128 => Value::V128(_store.get_v128(raw).ok_or_else(invalid_v128_raw_error)?),
+        #[cfg(not(sf_has_simd))]
+        ValueType::V128 => Value::Unknown,
         ValueType::Ref(ref_type) => Value::Ref(as_ref(raw), ref_type),
         _ => Value::Unknown,
-    }
+    })
 }
 
 #[inline]
-pub(crate) fn value_to_machine_raw(val: Value, gp_unit_bytes: u8) -> RawValue {
-    match val {
-        Value::Ref(r, _) => ref_to_machine_raw(r, gp_unit_bytes),
-        _ => value_to_raw(val),
-    }
-}
-
-#[inline]
-pub(crate) fn machine_raw_to_value(
+pub(crate) fn normalize_machine_raw_in_store(
     raw: RawValue,
     value_type: ValueType,
     gp_unit_bytes: u8,
-) -> Value {
-    match value_type {
-        ValueType::Ref(ref_type) => Value::Ref(machine_raw_to_ref(raw, gp_unit_bytes), ref_type),
-        _ => raw_to_value(raw, value_type),
-    }
-}
-
-#[inline]
-pub(crate) fn normalize_machine_raw(
-    raw: RawValue,
-    value_type: ValueType,
-    gp_unit_bytes: u8,
-) -> RawValue {
-    machine_raw_to_value(raw, value_type, gp_unit_bytes).to_raw()
+    store: &mut Store,
+) -> Result<RawValue, WasmError> {
+    Ok(value_to_raw_in_store(
+        try_machine_raw_to_value_in_store(raw, value_type, gp_unit_bytes, store)?,
+        store,
+    ))
 }

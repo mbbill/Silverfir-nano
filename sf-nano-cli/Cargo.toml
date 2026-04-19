@@ -13,15 +13,16 @@ path = "src/main.rs"
 [features]
 default = ["jit"]
 jit = ["sf-nano-core/jit"]
-simd = ["sf-nano-core/simd"]
 call-trace = ["sf-nano-core/call-trace"]
 memprof = ["sf-nano-core/memprof", "dep:tracked_alloc", "dep:memprof_report"]
+backend-emu64 = ["sf-nano-core/backend-emu64"]
+backend-emu32 = ["sf-nano-core/backend-emu32"]
 # Pass-through of sf-nano-core's thumb2-test. Enables emitting Thumb-2 JIT
-# code under sf_arch_armv7a for validation via the existing armv7-linux
+# code under sf_backend_armv7a for validation via the existing armv7-linux
 # qemu harness against cortex-a15. See sf-nano-core/Cargo.toml.
 thumb2-test = ["sf-nano-core/thumb2-test"]
 
 [dependencies]
-sf-nano-core = { path = "../sf-nano-core", features = ["wasi", "emulator"] }
+sf-nano-core = { path = "../sf-nano-core", features = ["wasi"] }
 tracked_alloc = { package = "sf-nano-tracked-alloc", path = "../tools/tracked-alloc", features = ["memprof"], optional = true }
 memprof_report = { package = "sf-nano-memprof-report", path = "../tools/memprof-report", optional = true }
