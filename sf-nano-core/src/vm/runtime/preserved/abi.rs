@@ -64,4 +64,6 @@ pub(crate) mod op {
     pub(crate) const ARRAY_INIT_ELEM: u32 = 37;
     pub(crate) const ARRAY_NEW_DATA: u32 = 38;
     pub(crate) const ARRAY_NEW_ELEM: u32 = 39;
+    pub(crate) const V128_TO_RAW: u32 = 40;
+    pub(crate) const V128_FROM_RAW: u32 = 41;
 }

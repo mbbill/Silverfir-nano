@@ -39,12 +39,21 @@ const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
 const CALLEE_SAVED_GP_FRAME_SIZE: u32 =
     abi::callee_saved_gp_pair_count() as u32 * (2 * STACK_SLOT_BYTES);
 const CALLEE_SAVED_FP_FRAME_OFFSET: u32 = CALLEE_SAVED_GP_FRAME_SIZE;
-const CALLEE_SAVED_FP_FRAME_SIZE: u32 = abi::callee_saved_fp_count() as u32 * STACK_SLOT_BYTES;
+// Match the preserved-helper ABI: scalar builds only need the low 64-bit D
+// payload of callee-saved FP regs, while SIMD builds must preserve the full
+// 128-bit Q contents because the FP bank also carries v128 values.
+#[cfg(sf_has_simd)]
+const CALLEE_SAVED_FP_SLOT_BYTES: u32 = 16;
+#[cfg(not(sf_has_simd))]
+const CALLEE_SAVED_FP_SLOT_BYTES: u32 = STACK_SLOT_BYTES;
+const CALLEE_SAVED_FP_FRAME_SIZE: u32 =
+    abi::callee_saved_fp_count() as u32 * CALLEE_SAVED_FP_SLOT_BYTES;
 const CALLEE_SAVED_FRAME_SIZE: u32 = {
     let total = CALLEE_SAVED_FP_FRAME_OFFSET + CALLEE_SAVED_FP_FRAME_SIZE;
     total.div_ceil(abi::stack_alignment_bytes()) * abi::stack_alignment_bytes()
 };
 
+#[cfg(not(sf_has_simd))]
 const fn stack_u64_slot(offset_bytes: u32) -> u32 {
     offset_bytes / STACK_SLOT_BYTES
 }
@@ -163,22 +172,17 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
                 stack_pair_imm((index as u32) * 2 * STACK_SLOT_BYTES),
             ));
         }
-        // Save callee-saved FP regs in pairs via stp_d.
+        // Save callee-saved FP regs.
         let fp_regs = abi::callee_saved_fp_regs();
         let mut fp_idx = 0usize;
-        while fp_idx + 1 < fp_regs.len() {
-            let byte_off = CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * STACK_SLOT_BYTES;
-            self.core.text.emit_u32(enc::stp_d(
-                fp_regs[fp_idx],
-                fp_regs[fp_idx + 1],
-                abi::stack_reg(),
-                stack_pair_imm(byte_off),
-            ));
-            fp_idx += 2;
-        }
-        // Tail FP register, if the count is odd.
         while fp_idx < fp_regs.len() {
-            let byte_off = CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * STACK_SLOT_BYTES;
+            let byte_off =
+                CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * CALLEE_SAVED_FP_SLOT_BYTES;
+            #[cfg(sf_has_simd)]
+            self.core
+                .text
+                .emit_u32(enc::str_q(fp_regs[fp_idx], abi::stack_reg(), byte_off / 16));
+            #[cfg(not(sf_has_simd))]
             self.core.text.emit_u32(enc::str_d(
                 fp_regs[fp_idx],
                 abi::stack_reg(),
@@ -205,21 +209,17 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     }
 
     fn lower_epilogue(&mut self) {
-        // Restore callee-saved FP registers in pairs via ldp_d.
+        // Restore callee-saved FP registers.
         let fp_regs = abi::callee_saved_fp_regs();
         let mut fp_idx = 0usize;
-        while fp_idx + 1 < fp_regs.len() {
-            let byte_off = CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * STACK_SLOT_BYTES;
-            self.core.text.emit_u32(enc::ldp_d(
-                fp_regs[fp_idx],
-                fp_regs[fp_idx + 1],
-                abi::stack_reg(),
-                stack_pair_imm(byte_off),
-            ));
-            fp_idx += 2;
-        }
         while fp_idx < fp_regs.len() {
-            let byte_off = CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * STACK_SLOT_BYTES;
+            let byte_off =
+                CALLEE_SAVED_FP_FRAME_OFFSET + (fp_idx as u32) * CALLEE_SAVED_FP_SLOT_BYTES;
+            #[cfg(sf_has_simd)]
+            self.core
+                .text
+                .emit_u32(enc::ldr_q(fp_regs[fp_idx], abi::stack_reg(), byte_off / 16));
+            #[cfg(not(sf_has_simd))]
             self.core.text.emit_u32(enc::ldr_d(
                 fp_regs[fp_idx],
                 abi::stack_reg(),

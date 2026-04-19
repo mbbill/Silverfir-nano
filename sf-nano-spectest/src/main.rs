@@ -258,10 +258,11 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
             .strip_prefix(testsuite_dir)
             .unwrap_or(&wast_file)
             .to_string_lossy();
+        let display_name = full_path.as_ref();
 
         if should_skip_test(test_name, simd_enabled) || should_skip_test(&full_path, simd_enabled) {
             stats.skipped += 1;
-            info!("SKIP {}: Feature not supported in sf-nano", test_name);
+            warn!("SKIP {}: Feature not supported in sf-nano", display_name);
             continue;
         }
 
@@ -291,11 +292,11 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
         match result {
             TestResult::Pass => {
                 stats.passed += 1;
-                info!("PASS {} ({:?})", test_name, duration);
+                info!("PASS {} ({:?})", display_name, duration);
             }
             TestResult::Fail(test_err) => {
                 stats.failed += 1;
-                error!("FAIL {} ({:?})", test_name, duration);
+                error!("FAIL {} ({:?})", display_name, duration);
                 error!("  File: {}", wast_file.display());
                 match test_err.wasm_error() {
                     Some(wasm_err) => {
@@ -309,11 +310,11 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
             }
             TestResult::Skip(msg) => {
                 stats.skipped += 1;
-                info!("SKIP {}: {}", test_name, msg);
+                warn!("SKIP {}: {}", display_name, msg);
             }
             TestResult::Error(msg) => {
                 stats.errored += 1;
-                error!("ERROR {} ({:?})", test_name, duration);
+                error!("ERROR {} ({:?})", display_name, duration);
                 error!("  File: {}", wast_file.display());
                 error!("  Error: {}", msg);
             }

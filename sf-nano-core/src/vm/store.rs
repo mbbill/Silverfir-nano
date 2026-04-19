@@ -19,6 +19,15 @@ pub(crate) struct FunctionRegistryEntry {
 pub(crate) type SharedFunctionRegistry = Rc<RefCell<collections::Vec<FunctionRegistryEntry>>>;
 pub(crate) type SharedRefRegistry = Rc<RefCell<collections::Vec<RefRegistryEntry>>>;
 #[cfg(sf_has_simd)]
+// Shared out-of-line storage for v128 payloads.
+//
+// Much of nano's storage ABI still assumes that one value fits in one 64-bit
+// raw slot (locals/frame slots/globals). SIMD values do not fit that model, so
+// the current bring-up stores each 16-byte v128 payload here and passes around
+// the registry index as the raw `u64` handle.
+//
+// The registry lives alongside the other cross-store registries so linked
+// stores can resolve the same raw handle back to the original bytes.
 #[derive(Clone)]
 pub(crate) struct SharedSimdRegistry(Rc<RefCell<collections::Vec<[u8; 16]>>>);
 
@@ -26,11 +35,13 @@ pub(crate) struct SharedSimdRegistry(Rc<RefCell<collections::Vec<[u8; 16]>>>);
 impl SharedSimdRegistry {
     #[inline]
     pub(crate) fn new() -> Self {
+        // Reserve index 0 for the all-zero vector so the common default value
+        // already has a stable raw handle without a first-use allocation.
         Self(Rc::new(RefCell::new(collections::vec![[0; 16]])))
     }
 
     #[inline]
-    /// Interns a SIMD lane payload into the shared registry.
+    /// Interns a full v128 payload and returns its raw-handle slot index.
     ///
     /// This registry is append-only for the lifetime of its owners, and dedup
     /// is currently a linear scan. That keeps bring-up simple, but it means
@@ -54,6 +65,7 @@ impl SharedSimdRegistry {
     }
 
     #[inline]
+    /// Resolves a raw-handle slot index back to the original v128 bytes.
     pub(crate) fn get(&self, raw: u64) -> Option<[u8; 16]> {
         self.0.borrow().get(raw as usize).copied()
     }
@@ -296,12 +308,15 @@ impl Store {
         self.ref_registry.borrow().get(idx).copied()
     }
 
+    // Store a v128 payload out-of-line and return the 64-bit raw handle used by
+    // the current frame/global storage ABI.
     pub(crate) fn intern_v128(&self, value: [u8; 16]) -> u64 {
         self.simd_registry.intern(value)
     }
 
     #[inline]
     #[cfg(sf_has_simd)]
+    // Resolve a stored raw handle back into the concrete v128 payload.
     pub(crate) fn get_v128(&self, raw: u64) -> Option<[u8; 16]> {
         self.simd_registry.get(raw)
     }

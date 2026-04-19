@@ -768,36 +768,20 @@ fn lower_indirect_dispatch_cluster(
     extra_block_ids: &mut ExtraBlockAllocator,
     const_pool: &mut ConstPoolBuilder,
 ) -> Result<Option<MachineBlockId>, WasmError> {
-    let (checked, trap_oob, trap_invalid_ref, type_check, dispatch, trap_type) = match source {
+    let (checked, trap_oob, trap_invalid_ref, type_check, dispatch) = match source {
         IndirectCallSource::Table { .. } => {
             let checked = Some(extra_block_ids.alloc());
             let trap_oob = Some(extra_block_ids.alloc());
             let type_check = extra_block_ids.alloc();
             let trap_invalid_ref = extra_block_ids.alloc();
             let dispatch = extra_block_ids.alloc();
-            let trap_type = extra_block_ids.alloc();
-            (
-                checked,
-                trap_oob,
-                trap_invalid_ref,
-                type_check,
-                dispatch,
-                trap_type,
-            )
+            (checked, trap_oob, trap_invalid_ref, type_check, dispatch)
         }
         IndirectCallSource::Ref { .. } => {
             let trap_invalid_ref = extra_block_ids.alloc();
             let type_check = extra_block_ids.alloc();
             let dispatch = extra_block_ids.alloc();
-            let trap_type = extra_block_ids.alloc();
-            (
-                None,
-                None,
-                trap_invalid_ref,
-                type_check,
-                dispatch,
-                trap_type,
-            )
+            (None, None, trap_invalid_ref, type_check, dispatch)
         }
     };
     let local_prepare = extra_block_ids.alloc();
@@ -896,7 +880,7 @@ fn lower_indirect_dispatch_cluster(
                         rhs: MachineValue::Reg(indirect_temps.lane2),
                     },
                     then_edge: MachineEdge {
-                        target: trap_type,
+                        target: runtime_call,
                         args: collections::Vec::new(),
                     },
                     else_edge: MachineEdge {
@@ -937,16 +921,6 @@ fn lower_indirect_dispatch_cluster(
                         target: runtime_call,
                         args: collections::Vec::new(),
                     },
-                },
-            )?;
-            push_lowered_block(
-                trap_type,
-                original_blocks,
-                extra_blocks,
-                collections::Vec::new(),
-                collections::Vec::new(),
-                MachineTerminator::Trap {
-                    kind: MachineTrapKind::IndirectCallTypeMismatch,
                 },
             )?;
         }
@@ -1001,7 +975,7 @@ fn lower_indirect_dispatch_cluster(
                         rhs: MachineValue::Reg(indirect_temps.lane2),
                     },
                     then_edge: MachineEdge {
-                        target: trap_type,
+                        target: runtime_call,
                         args: collections::Vec::new(),
                     },
                     else_edge: MachineEdge {
@@ -1032,16 +1006,6 @@ fn lower_indirect_dispatch_cluster(
                         target: runtime_call,
                         args: collections::Vec::new(),
                     },
-                },
-            )?;
-            push_lowered_block(
-                trap_type,
-                original_blocks,
-                extra_blocks,
-                collections::Vec::new(),
-                collections::Vec::new(),
-                MachineTerminator::Trap {
-                    kind: MachineTrapKind::IndirectCallTypeMismatch,
                 },
             )?;
         }

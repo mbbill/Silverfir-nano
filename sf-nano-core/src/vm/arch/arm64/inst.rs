@@ -360,9 +360,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             | MachineInstKind::SimdLoad { .. }
             | MachineInstKind::SimdStore { .. }
             | MachineInstKind::SimdLoadLane { .. }
-            | MachineInstKind::SimdStoreLane { .. } => Err(WasmError::internal(
-                "SIMD native codegen is not implemented yet",
-            )),
+            | MachineInstKind::SimdStoreLane { .. } => self.lower_simd_inst_dispatch(inst),
             MachineInstKind::Move { dst, src, ty, .. } => self.lower_move(*ty, *dst, *src),
             MachineInstKind::FloatConst { width, dst, bits } => {
                 self.lower_float_const(*width, *dst, *bits)
@@ -398,6 +396,14 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 lhs,
                 rhs,
             } => self.lower_int_compare(*width, *kind, *sign, *dst, *lhs, *rhs),
+            MachineInstKind::Select {
+                ty: MachineStorageType::V128,
+                dst,
+                on_true,
+                on_false,
+                cond,
+                ..
+            } => self.lower_select_v128(*dst, *on_true, *on_false, *cond),
             MachineInstKind::Select {
                 ty,
                 dst,

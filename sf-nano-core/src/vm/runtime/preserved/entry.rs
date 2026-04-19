@@ -18,6 +18,7 @@ use super::{
         do_i31_get_u, do_memory_copy, do_memory_grow, do_memory_init, do_ref_as_non_null,
         do_ref_cast, do_ref_eq, do_ref_func, do_ref_i31, do_ref_test, do_struct_get, do_struct_new,
         do_struct_new_default, do_struct_set, do_table_copy, do_table_grow, do_table_init,
+        do_v128_from_raw, do_v128_to_raw,
     },
 };
 
@@ -429,6 +430,41 @@ unsafe fn dispatch_preserved(
             let result = do_array_new_elem(ctx, type_idx, elem_idx, src_index, len)?;
             unsafe {
                 *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        // These two ops are storage-ABI bridges, not SIMD arithmetic helpers.
+        //
+        // Native SIMD code keeps a live v128 in an FP/Q register, but most of
+        // nano's runtime storage ABI still assumes one value fits in one
+        // 64-bit raw slot. Frame slots and globals therefore store a `u64`
+        // handle into the shared SIMD registry instead of the 16-byte payload
+        // itself.
+        //
+        // The preserved-helper I/O area only has 8-byte ARG/RET slots, so the
+        // arm64 backend uses the 16-byte prefix area as an out-of-band payload
+        // channel: `v128.to_raw` reads the bytes from that prefix, interns
+        // them, and writes the resulting raw handle to RET0; `v128.from_raw`
+        // does the inverse by resolving the handle and writing the 16-byte
+        // payload back to the prefix area for the caller to reload into a Q
+        // register.
+        #[cfg(sf_has_simd)]
+        op::V128_TO_RAW => {
+            let prefix_ptr = unsafe { (io_ptr as *const u8).sub(16) };
+            let mut bytes = [0u8; 16];
+            unsafe {
+                core::ptr::copy_nonoverlapping(prefix_ptr, bytes.as_mut_ptr(), 16);
+                *io_ptr.add(io::RET0) = do_v128_to_raw(ctx, bytes)?;
+            }
+            Ok(())
+        }
+        #[cfg(sf_has_simd)]
+        op::V128_FROM_RAW => {
+            let prefix_ptr = unsafe { (io_ptr as *mut u8).sub(16) };
+            let raw = unsafe { *io_ptr.add(io::ARG0) };
+            let bytes = do_v128_from_raw(ctx, raw)?;
+            unsafe {
+                core::ptr::copy_nonoverlapping(bytes.as_ptr(), prefix_ptr, 16);
             }
             Ok(())
         }

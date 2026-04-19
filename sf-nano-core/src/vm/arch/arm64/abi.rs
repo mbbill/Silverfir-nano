@@ -32,6 +32,71 @@ const fn fp(index: u8) -> Arm64FpReg {
 
 // ── Register plan ────────────────────────────────────────────────────────────
 
+// AAPCS64 only preserves the low 64 bits of V8-V15 across C calls. Scalar
+// builds therefore omit them from the preserved-helper caller-saved set and
+// rely on the ABI. SIMD builds let those regs carry full v128 values, so the
+// preserved-helper wrapper must save/restore V8-V15 explicitly to protect the
+// upper 64 bits across helper calls.
+#[cfg(sf_has_simd)]
+const FP_DYNAMIC_CALLER_SAVED: &[Arm64FpReg] = &[
+    fp(3),
+    fp(4),
+    fp(5),
+    fp(6),
+    fp(7),
+    fp(2),
+    fp(16),
+    fp(17),
+    fp(18),
+    fp(19),
+    fp(20),
+    fp(8),
+    fp(9),
+    fp(10),
+    fp(11),
+    fp(12),
+    fp(13),
+    fp(14),
+    fp(15),
+    fp(21),
+    fp(22),
+    fp(23),
+    fp(24),
+    fp(25),
+    fp(26),
+    fp(27),
+    fp(28),
+    fp(29),
+    fp(30),
+    fp(31),
+];
+
+#[cfg(not(sf_has_simd))]
+const FP_DYNAMIC_CALLER_SAVED: &[Arm64FpReg] = &[
+    fp(3),
+    fp(4),
+    fp(5),
+    fp(6),
+    fp(7),
+    fp(2),
+    fp(16),
+    fp(17),
+    fp(18),
+    fp(19),
+    fp(20),
+    fp(21),
+    fp(22),
+    fp(23),
+    fp(24),
+    fp(25),
+    fp(26),
+    fp(27),
+    fp(28),
+    fp(29),
+    fp(30),
+    fp(31),
+];
+
 struct RegPlan {
     // Fixed MachineIR roles
     ctx: Arm64Reg,
@@ -144,30 +209,7 @@ const REG_PLAN: RegPlan = RegPlan {
         fp(30),
         fp(31),
     ],
-    fp_dynamic_caller_saved: &[
-        fp(3),
-        fp(4),
-        fp(5),
-        fp(6),
-        fp(7),
-        fp(2),
-        fp(16),
-        fp(17),
-        fp(18),
-        fp(19),
-        fp(20),
-        fp(21),
-        fp(22),
-        fp(23),
-        fp(24),
-        fp(25),
-        fp(26),
-        fp(27),
-        fp(28),
-        fp(29),
-        fp(30),
-        fp(31),
-    ],
+    fp_dynamic_caller_saved: FP_DYNAMIC_CALLER_SAVED,
     fp_scratch: &[fp(0), fp(1)],
 
     callee_saved_gp_pairs: &[
@@ -354,6 +396,14 @@ const PRESERVED_GP_COUNT: usize = REG_PLAN.gp_dynamic_caller_saved.len();
 /// Total number of FP registers saved by the preserved-helper.
 const PRESERVED_FP_COUNT: usize = REG_PLAN.fp_dynamic_caller_saved.len();
 
+// Scalar-only builds keep FP values in the low 64-bit D view. SIMD builds use
+// the same bank for full v128 values, so preserved spills must save whole Q
+// regs instead of only the low half.
+#[cfg(sf_has_simd)]
+const PRESERVED_FP_REG_BYTES: u32 = 16;
+#[cfg(not(sf_has_simd))]
+const PRESERVED_FP_REG_BYTES: u32 = 8;
+
 const fn preserved_io_size() -> u32 {
     preserved_io::SLOT_COUNT as u32 * 8
 }
@@ -368,6 +418,6 @@ pub(super) const PRESERVED_HELPER_FP_OFFSET: u32 =
 /// Stack frame size for the preserved-helper save area + I/O region,
 /// rounded up to 16-byte alignment.
 pub(super) const PRESERVED_HELPER_FRAME_SIZE: u32 = {
-    let raw = PRESERVED_HELPER_FP_OFFSET + PRESERVED_FP_COUNT as u32 * 8;
+    let raw = PRESERVED_HELPER_FP_OFFSET + PRESERVED_FP_COUNT as u32 * PRESERVED_FP_REG_BYTES;
     raw.div_ceil(16) * 16
 };

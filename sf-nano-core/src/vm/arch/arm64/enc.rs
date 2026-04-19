@@ -749,6 +749,11 @@ pub(crate) fn ldr_d(rt: Arm64FpReg, rn: Arm64Reg, imm12: u32) -> u32 {
     0xfd40_0000 | (imm12 << 10) | (rn.index() << 5) | rt.index()
 }
 
+pub(crate) fn ldr_q(rt: Arm64FpReg, rn: Arm64Reg, imm12: u32) -> u32 {
+    debug_assert!(imm12 < 0x1000);
+    0x3dc0_0000 | (imm12 << 10) | (rn.index() << 5) | rt.index()
+}
+
 pub(crate) fn str_s(rt: Arm64FpReg, rn: Arm64Reg, imm12: u32) -> u32 {
     debug_assert!(imm12 < 0x1000);
     0xbd00_0000 | (imm12 << 10) | (rn.index() << 5) | rt.index()
@@ -757,6 +762,11 @@ pub(crate) fn str_s(rt: Arm64FpReg, rn: Arm64Reg, imm12: u32) -> u32 {
 pub(crate) fn str_d(rt: Arm64FpReg, rn: Arm64Reg, imm12: u32) -> u32 {
     debug_assert!(imm12 < 0x1000);
     0xfd00_0000 | (imm12 << 10) | (rn.index() << 5) | rt.index()
+}
+
+pub(crate) fn str_q(rt: Arm64FpReg, rn: Arm64Reg, imm12: u32) -> u32 {
+    debug_assert!(imm12 < 0x1000);
+    0x3d80_0000 | (imm12 << 10) | (rn.index() << 5) | rt.index()
 }
 
 pub(crate) fn ldr_s_reg(rt: Arm64FpReg, rn: Arm64Reg, rm: Arm64Reg, scaled: bool) -> u32 {
@@ -1454,4 +1464,700 @@ pub(crate) fn addv_8b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
 /// UMOV Wd, Vn.B[0]  (extract byte 0 to GP)
 pub(crate) fn umov_b0(rd: Arm64Reg, rn: Arm64FpReg) -> u32 {
     (0b0_0_001110000 << 21) | (0b00001 << 16) | (0b001_1_1_1 << 10) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn and_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_1c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn add_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_8400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn add_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_8400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn urhadd_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_1400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn urhadd_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_1400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn orr_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_1c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn eor_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_1c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn bic_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_1c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn mvn_16b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6e20_5800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn tbl_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e00_0000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn tbl_16b_2(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e00_2000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn add_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_8400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn add_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ee0_8400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn addp_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_bc00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sub_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_8400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sub_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_8400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sub_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ea0_8400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sub_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ee0_8400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn mul_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_9c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn mul_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_9c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn neg_16b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6e20_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn neg_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6e60_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn neg_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6ea0_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn neg_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6ee0_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fadd_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_d400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fadd_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_d400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fsub_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_d400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fsub_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ee0_d400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fmul_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_dc00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fmul_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_dc00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fdiv_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_fc00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fdiv_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_fc00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fneg_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6ea0_f800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fneg_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6ee0_f800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fsqrt_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6ea1_f800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fsqrt_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6ee1_f800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn dup_16b_from_gp(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    0x4e01_0c00 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn dup_8h_from_gp(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    0x4e02_0c00 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn dup_4s_from_gp(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    0x4e04_0c00 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn dup_2d_from_gp(rd: Arm64FpReg, rn: Arm64Reg) -> u32 {
+    0x4e08_0c00 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn dup_4s_from_lane0(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e04_0400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn dup_2d_from_lane0(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e08_0400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sshll_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x0f08_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ushll_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x2f08_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sshll_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x0f10_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ushll_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x2f10_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sshll_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x0f20_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ushll_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x2f20_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sshll2_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4f08_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ushll2_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6f08_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sshll2_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4f10_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ushll2_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6f10_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sshll2_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4f20_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ushll2_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6f20_a400 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn saddlp_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e20_2800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn uaddlp_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6e20_2800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn saddlp_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e60_2800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn uaddlp_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6e60_2800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smull_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x0e20_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smull2_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umull_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x2e20_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umull2_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smull_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x0e60_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smull2_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umull_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x2e60_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umull2_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smull_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x0ea0_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smull2_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umull_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x2ea0_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umull2_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ea0_c000 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqrdmulh_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_b400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sshl_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_4400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ushl_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_4400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sshl_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_4400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ushl_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_4400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sshl_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_4400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ushl_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ea0_4400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sshl_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ee0_4400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ushl_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ee0_4400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmeq_zero_16b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e20_9800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmeq_zero_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e60_9800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmeq_zero_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4ea0_9800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmeq_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_8c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmeq_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_8c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmeq_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ea0_8c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmeq_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ee0_8c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmgt_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_3400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmgt_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_3400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmgt_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_3400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmgt_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ee0_3400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmhi_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_3400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmhi_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_3400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmhi_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ea0_3400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmge_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_3c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmge_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_3c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmge_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_3c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmge_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ee0_3c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmhs_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_3c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmhs_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_3c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cmhs_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ea0_3c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smin_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_6c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smin_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_6c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smin_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_6c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umin_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_6c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umin_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_6c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umin_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ea0_6c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smax_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_6400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smax_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_6400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smax_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_6400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umax_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_6400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umax_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_6400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umax_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ea0_6400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqadd_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_0c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqadd_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_0c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn uqadd_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_0c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn uqadd_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_0c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqsub_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_2c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqsub_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_2c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn uqsub_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_2c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn uqsub_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_2c00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn abs_16b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e20_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn abs_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e60_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn abs_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4ea0_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn abs_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4ee0_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn cnt_16b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e20_5800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcmeq_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_e400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcmeq_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_e400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcmgt_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ea0_e400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcmgt_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6ee0_e400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcmge_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e20_e400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcmge_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x6e60_e400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fmin_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ea0_f400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fmin_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4ee0_f400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fmax_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e20_f400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fmax_2d(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_f400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fabs_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4ea0_f800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fabs_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4ee0_f800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn frintp_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4ea1_8800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn frintp_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4ee1_8800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn frintm_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e21_9800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn frintm_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e61_9800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn frintz_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4ea1_9800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn frintz_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4ee1_9800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn frintn_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e21_8800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn frintn_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e61_8800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcvtn_2s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x0e61_6800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcvtl_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x0e61_7800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn scvtf_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e21_d800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ucvtf_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6e21_d800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn scvtf_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e61_d800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn ucvtf_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6e61_d800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcvtzs_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4ea1_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcvtzu_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6ea1_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcvtzs_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4ee1_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn fcvtzu_2d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6ee1_b800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqxtn_2s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x0ea1_4800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn uqxtn_2s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x2ea1_4800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqxtn_4h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x0e61_4800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqxtn2_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e61_4800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqxtn_8b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x0e21_4800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqxtn2_16b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x4e21_4800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqxtun_8b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x2e21_2800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqxtun2_16b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6e21_2800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqxtun_4h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x2e61_2800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn sqxtun2_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6e61_2800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umaxv_16b(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6e30_a800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umaxv_8h(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6e70_a800 | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umaxv_4s(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
+    0x6eb0_a800 | (rn.index() << 5) | rd.index()
+}
+
+#[inline]
+const fn simd_lane_imm5(lane: u8, elem_bytes: u8) -> u32 {
+    let shift = elem_bytes.trailing_zeros();
+    (1u32 << shift) | ((lane as u32) << (shift + 1))
+}
+
+pub(crate) fn ins_lane_from_gp(rd: Arm64FpReg, lane: u8, rn: Arm64Reg, elem_bytes: u8) -> u32 {
+    0x4e00_1c00 | (simd_lane_imm5(lane, elem_bytes) << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn umov_lane_to_gp(rd: Arm64Reg, rn: Arm64FpReg, lane: u8, elem_bytes: u8) -> u32 {
+    let base = if elem_bytes == 8 {
+        0x4e08_3c00
+    } else {
+        0x0e00_3c00
+    };
+    base | (simd_lane_imm5(lane, elem_bytes) << 16) | (rn.index() << 5) | rd.index()
+}
+
+pub(crate) fn smov_lane_to_gp(rd: Arm64Reg, rn: Arm64FpReg, lane: u8, elem_bytes: u8) -> u32 {
+    debug_assert!(matches!(elem_bytes, 1 | 2));
+    0x0e00_2c00 | (simd_lane_imm5(lane, elem_bytes) << 16) | (rn.index() << 5) | rd.index()
 }

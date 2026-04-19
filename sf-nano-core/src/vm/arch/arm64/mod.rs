@@ -7,3 +7,4 @@ mod inst;
 mod operands;
 mod preserved;
 pub(crate) mod reg;
+mod simd;

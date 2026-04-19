@@ -12,7 +12,7 @@ use super::{abi, enc};
 impl<'a> Arm64Backend<'a> {
     // ── Frame open / close ──────────────────────────────────────────────────
 
-    fn emit_adjust_stack_down(&mut self, mut bytes: u32) {
+    pub(super) fn emit_adjust_stack_down(&mut self, mut bytes: u32) {
         while bytes > 4080 {
             self.core
                 .text
@@ -26,7 +26,7 @@ impl<'a> Arm64Backend<'a> {
         }
     }
 
-    fn emit_adjust_stack_up(&mut self, mut bytes: u32) {
+    pub(super) fn emit_adjust_stack_up(&mut self, mut bytes: u32) {
         while bytes > 4080 {
             self.core
                 .text
@@ -228,7 +228,7 @@ impl<'a> Arm64Backend<'a> {
         }
     }
 
-    fn emit_restore_preserved_gp(&mut self, prefix_bytes: u32) {
+    pub(super) fn emit_restore_preserved_gp(&mut self, prefix_bytes: u32) {
         let base_off = abi::PRESERVED_HELPER_GP_OFFSET + prefix_bytes;
         let mut slot = 0u32;
         let regs = abi::gp_dynamic_caller_saved_regs();
@@ -270,20 +270,51 @@ impl<'a> Arm64Backend<'a> {
         let base_off = abi::PRESERVED_HELPER_FP_OFFSET + prefix_bytes;
         let mut slot = 0u32;
         for reg in abi::fp_dynamic_caller_saved_regs().iter().copied() {
-            self.core
-                .text
-                .emit_u32(enc::str_d(reg, abi::stack_reg(), (base_off + slot * 8) / 8));
+            // SIMD builds let the FP bank carry v128 values, so preserved
+            // spills must save the whole Q reg. Scalar-only builds only need
+            // the low 64-bit D view.
+            #[cfg(sf_has_simd)]
+            {
+                self.core.text.emit_u32(enc::str_q(
+                    reg,
+                    abi::stack_reg(),
+                    (base_off + slot * 16) / 16,
+                ));
+            }
+            #[cfg(not(sf_has_simd))]
+            {
+                self.core.text.emit_u32(enc::str_d(
+                    reg,
+                    abi::stack_reg(),
+                    (base_off + slot * 8) / 8,
+                ));
+            }
             slot += 1;
         }
     }
 
-    fn emit_restore_preserved_fp(&mut self, prefix_bytes: u32) {
+    pub(super) fn emit_restore_preserved_fp(&mut self, prefix_bytes: u32) {
         let base_off = abi::PRESERVED_HELPER_FP_OFFSET + prefix_bytes;
         let mut slot = 0u32;
         for reg in abi::fp_dynamic_caller_saved_regs().iter().copied() {
-            self.core
-                .text
-                .emit_u32(enc::ldr_d(reg, abi::stack_reg(), (base_off + slot * 8) / 8));
+            // Match emit_save_preserved_fp: restore the full Q reg when SIMD is
+            // enabled, otherwise only the scalar D payload is live.
+            #[cfg(sf_has_simd)]
+            {
+                self.core.text.emit_u32(enc::ldr_q(
+                    reg,
+                    abi::stack_reg(),
+                    (base_off + slot * 16) / 16,
+                ));
+            }
+            #[cfg(not(sf_has_simd))]
+            {
+                self.core.text.emit_u32(enc::ldr_d(
+                    reg,
+                    abi::stack_reg(),
+                    (base_off + slot * 8) / 8,
+                ));
+            }
             slot += 1;
         }
     }

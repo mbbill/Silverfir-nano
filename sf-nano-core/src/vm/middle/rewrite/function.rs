@@ -2273,7 +2273,7 @@ fn edge_to_target(
 
     let bindings = match mapping {
         EdgeMapping::Identity => {
-            let live_values = state.top_values(target_entry.live_value_count() as usize)?;
+            let live_values = edge_binding_values(target_params, state, frame, values)?;
             bind_values(target_params, &live_values)?
         }
         EdgeMapping::TakenBranch { payload, .. } => {
@@ -2286,7 +2286,7 @@ fn edge_to_target(
                 collections::Vec::new()
             } else {
                 let live_needed = target_entry.live_value_count() as usize;
-                let live_values = state.top_values(live_needed)?;
+                let live_values = edge_binding_values(target_params, state, frame, values)?;
                 if payload.map(|span| span.count).unwrap_or(0) != live_needed as u16 {
                     return Err(WasmError::internal(
                         "taken branch payload width mismatch".into(),
@@ -2301,6 +2301,53 @@ fn edge_to_target(
         target: target_block,
         bindings,
     })
+}
+
+fn edge_binding_values(
+    target_params: &[SsaValue],
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
+) -> Result<collections::Vec<SsaValue>, WasmError> {
+    let live_needed = target_params.len();
+    if live_needed == 0 {
+        return Ok(collections::Vec::new());
+    }
+
+    let live_start = state
+        .live()
+        .len()
+        .checked_sub(live_needed)
+        .ok_or_else(|| WasmError::internal("edge binding underflow".into()))?;
+    let live_base = state.spill_depth().saturating_add(live_start as u16);
+    let live_values = state.live()[live_start..].to_vec();
+    let mut rebound = collections::Vec::with_capacity(live_needed);
+
+    for (offset, (param, value)) in target_params.iter().zip(live_values.iter()).enumerate() {
+        let param_ty = values.value_type(*param);
+        let value_ty = values.value_type(*value);
+        if param_ty == value_ty {
+            rebound.push(*value);
+            continue;
+        }
+
+        match (param_ty, value_ty) {
+            (ValueType::Ref(_), ValueType::Ref(_)) => {
+                let slot = frame.operand_slot(live_base.saturating_add(offset as u16));
+                state.ops.push(SsaInst::spill(slot, *value));
+                let rebound_value = values.fresh_typed(param_ty);
+                state.ops.push(SsaInst::fill(slot, rebound_value));
+                rebound.push(rebound_value);
+            }
+            _ => {
+                return Err(WasmError::internal(
+                    "edge binding type refinement requires ref-compatible value".into(),
+                ));
+            }
+        }
+    }
+
+    Ok(rebound)
 }
 
 fn br_table_edge(

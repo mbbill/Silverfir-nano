@@ -119,6 +119,18 @@ pub(super) fn do_ref_i31(ctx: &mut NativeContext, raw_value: u64) -> Result<u64,
     Ok(ref_to_machine(handle))
 }
 
+#[cfg(sf_has_simd)]
+pub(super) fn do_v128_to_raw(ctx: &mut NativeContext, bytes: [u8; 16]) -> Result<u64, WasmError> {
+    Ok(current_store_mut(ctx)?.intern_v128(bytes))
+}
+
+#[cfg(sf_has_simd)]
+pub(super) fn do_v128_from_raw(ctx: &NativeContext, raw: u64) -> Result<[u8; 16], WasmError> {
+    current_store(ctx)?
+        .get_v128(raw)
+        .ok_or_else(|| internal_error("invalid v128 raw value"))
+}
+
 fn decode_i31(store: &Store, handle: RefHandle) -> Result<i32, WasmError> {
     if handle.is_null() {
         return Err(trap_error("null i31 reference"));
