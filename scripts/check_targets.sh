@@ -176,6 +176,7 @@ run_package_check() {
     local log="$LOG_DIR/$label.$package_key.log"
     local target_dir="$BUILD_DIR/$label-$package_key"
     local cargo_args=()
+    local rustflags="${RUSTFLAGS:-}"
 
     case "$package_key" in
         core)
@@ -212,8 +213,20 @@ run_package_check() {
             ;;
     esac
 
+    case "$target" in
+        x86_64-*)
+            # The x64 backend now relies on SSSE3/SSE4.1 for SIMD lowering.
+            # Hosted Apple builds already expose those features, but the Linux
+            # and Windows cross triples used here do not by default.
+            if [[ -n "$rustflags" ]]; then
+                rustflags+=" "
+            fi
+            rustflags+="-C target-feature=+ssse3,+sse4.1"
+            ;;
+    esac
+
     mkdir -p "$target_dir"
-    if (cd "$ROOT_DIR" && CARGO_TARGET_DIR="$target_dir" cargo check --target "$target" "${cargo_args[@]}") >"$log" 2>&1; then
+    if (cd "$ROOT_DIR" && CARGO_TARGET_DIR="$target_dir" RUSTFLAGS="$rustflags" cargo check --target "$target" "${cargo_args[@]}") >"$log" 2>&1; then
         return 0
     fi
     return 1

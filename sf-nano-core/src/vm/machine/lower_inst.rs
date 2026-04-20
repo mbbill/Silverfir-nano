@@ -688,6 +688,12 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    #[cfg(not(sf_has_simd))]
+    #[inline]
+    fn simd_lowering_disabled(&self) -> WasmError {
+        WasmError::internal("SIMD lowering requested without sf_has_simd".into())
+    }
+
     #[cfg(sf_has_simd)]
     fn lower_v128_const(&mut self, results: &[SsaValue], value: [u8; 16]) -> Result<(), WasmError> {
         let dst = self.alloc_result_value(single_result(results)?)?;
@@ -695,6 +701,15 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::V128Const { dst, bytes: value },
         });
         Ok(())
+    }
+
+    #[cfg(not(sf_has_simd))]
+    fn lower_v128_const(
+        &mut self,
+        _results: &[SsaValue],
+        _value: [u8; 16],
+    ) -> Result<(), WasmError> {
+        Err(self.simd_lowering_disabled())
     }
 
     #[cfg(sf_has_simd)]
@@ -718,6 +733,16 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
         Ok(())
+    }
+
+    #[cfg(not(sf_has_simd))]
+    fn lower_simd_unary(
+        &mut self,
+        _args: &[SsaOperand],
+        _results: &[SsaValue],
+        _opcode: u32,
+    ) -> Result<(), WasmError> {
+        Err(self.simd_lowering_disabled())
     }
 
     #[cfg(sf_has_simd)]
@@ -744,6 +769,16 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
         Ok(())
+    }
+
+    #[cfg(not(sf_has_simd))]
+    fn lower_simd_binary(
+        &mut self,
+        _args: &[SsaOperand],
+        _results: &[SsaValue],
+        _opcode: u32,
+    ) -> Result<(), WasmError> {
+        Err(self.simd_lowering_disabled())
     }
 
     #[cfg(sf_has_simd)]
@@ -774,6 +809,16 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    #[cfg(not(sf_has_simd))]
+    fn lower_simd_ternary(
+        &mut self,
+        _args: &[SsaOperand],
+        _results: &[SsaValue],
+        _opcode: u32,
+    ) -> Result<(), WasmError> {
+        Err(self.simd_lowering_disabled())
+    }
+
     #[cfg(sf_has_simd)]
     fn lower_simd_shift(
         &mut self,
@@ -796,6 +841,16 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
         Ok(())
+    }
+
+    #[cfg(not(sf_has_simd))]
+    fn lower_simd_shift(
+        &mut self,
+        _args: &[SsaOperand],
+        _results: &[SsaValue],
+        _opcode: u32,
+    ) -> Result<(), WasmError> {
+        Err(self.simd_lowering_disabled())
     }
 
     #[cfg(sf_has_simd)]
@@ -823,6 +878,17 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    #[cfg(not(sf_has_simd))]
+    fn lower_simd_extract_lane(
+        &mut self,
+        _args: &[SsaOperand],
+        _results: &[SsaValue],
+        _opcode: u32,
+        _lane: u8,
+    ) -> Result<(), WasmError> {
+        Err(self.simd_lowering_disabled())
+    }
+
     #[cfg(sf_has_simd)]
     fn lower_simd_replace_lane(
         &mut self,
@@ -848,6 +914,17 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    #[cfg(not(sf_has_simd))]
+    fn lower_simd_replace_lane(
+        &mut self,
+        _args: &[SsaOperand],
+        _results: &[SsaValue],
+        _opcode: u32,
+        _lane: u8,
+    ) -> Result<(), WasmError> {
+        Err(self.simd_lowering_disabled())
+    }
+
     #[cfg(sf_has_simd)]
     fn lower_simd_shuffle(
         &mut self,
@@ -869,6 +946,16 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
         Ok(())
+    }
+
+    #[cfg(not(sf_has_simd))]
+    fn lower_simd_shuffle(
+        &mut self,
+        _args: &[SsaOperand],
+        _results: &[SsaValue],
+        _lanes: [u8; 16],
+    ) -> Result<(), WasmError> {
+        Err(self.simd_lowering_disabled())
     }
 
     fn lower_struct_get(

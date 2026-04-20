@@ -308,6 +308,7 @@ impl Store {
         self.ref_registry.borrow().get(idx).copied()
     }
 
+    #[cfg(sf_has_simd)]
     // Store a v128 payload out-of-line and return the 64-bit raw handle used by
     // the current frame/global storage ABI.
     pub(crate) fn intern_v128(&self, value: [u8; 16]) -> u64 {

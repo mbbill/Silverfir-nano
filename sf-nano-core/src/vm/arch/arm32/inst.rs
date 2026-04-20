@@ -414,9 +414,11 @@ impl<'a> Arm32Backend<'a> {
             | MachineInstKind::SimdLoad { .. }
             | MachineInstKind::SimdStore { .. }
             | MachineInstKind::SimdLoadLane { .. }
-            | MachineInstKind::SimdStoreLane { .. } => Err(WasmError::internal(
-                "SIMD native codegen is not implemented yet",
-            )),
+            | MachineInstKind::SimdStoreLane { .. } => {
+                return Err(WasmError::internal(
+                    "SIMD native codegen is not implemented yet",
+                ));
+            }
             MachineInstKind::Move { ty, dst, src, .. } => {
                 let dst_is_fp = self.is_fp_machine_reg(*dst);
                 let src_is_fp = match src {

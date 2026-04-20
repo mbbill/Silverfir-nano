@@ -9,6 +9,8 @@ use crate::{
     },
 };
 
+#[cfg(sf_has_simd)]
+use super::ops::{do_v128_from_raw, do_v128_to_raw};
 use super::{
     abi::{io, op},
     ops::{
@@ -18,7 +20,6 @@ use super::{
         do_i31_get_u, do_memory_copy, do_memory_grow, do_memory_init, do_ref_as_non_null,
         do_ref_cast, do_ref_eq, do_ref_func, do_ref_i31, do_ref_test, do_struct_get, do_struct_new,
         do_struct_new_default, do_struct_set, do_table_copy, do_table_grow, do_table_init,
-        do_v128_from_raw, do_v128_to_raw,
     },
 };
 

@@ -1,10 +1,13 @@
 //! Memory, global, and table lowering — loads, stores, bounds checks.
 
 use crate::collections;
+#[cfg(sf_has_simd)]
+use crate::opcodes::OpcodeFD;
 
+#[cfg(sf_has_simd)]
+use crate::vm::middle::ssa_ir::ir::DecodedOperand;
 use crate::{
     error::WasmError,
-    opcodes::OpcodeFD,
     vm::{
         entities::{global_offset, GlobalInst},
         machine::machine_ir::{
@@ -14,7 +17,7 @@ use crate::{
             MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
             MACHINE_MEM0_BASE_REG,
         },
-        middle::ssa_ir::ir::{DecodedOperand, SsaOperand, SsaValue},
+        middle::ssa_ir::ir::{SsaOperand, SsaValue},
         runtime::layout::native_runtime_abi_layout,
         wasm::primitive_op::PrimitiveOpKind,
     },
