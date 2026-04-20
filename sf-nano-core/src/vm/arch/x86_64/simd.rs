@@ -1734,6 +1734,9 @@ impl<'a> X86_64Backend<'a> {
             OpcodeFD::I16X8_Q15MULR_SAT_S => {
                 self.lower_i16x8_q15mulr_sat_s_scalar(dst_fp, lhs_fp, rhs_fp)
             }
+            OpcodeFD::I16X8_RELAXED_DOT_I8X16_I7X16_S => {
+                self.lower_i16x8_relaxed_dot_i8x16_i7x16_s_scalar(dst_fp, lhs_fp, rhs_fp)
+            }
             OpcodeFD::I16X8_EXTMUL_LOW_I8X16_S => self.lower_simd_extmul_scalar(
                 dst_fp,
                 lhs_fp,
@@ -2321,6 +2324,77 @@ impl<'a> X86_64Backend<'a> {
         let b_fp = expect_v128_reg(self, b, "x86_64 SIMD ternary arg b must be in an FP reg")?;
         let c_fp = expect_v128_reg(self, c, "x86_64 SIMD ternary arg c must be in an FP reg")?;
         match OpcodeFD::try_from(opcode)? {
+            OpcodeFD::I8X16_RELAXED_LANESELECT => self.lower_relaxed_laneselect_scalar(
+                dst_fp,
+                a_fp,
+                b_fp,
+                c_fp,
+                IntCompareLaneWidth::B8,
+            ),
+            OpcodeFD::I16X8_RELAXED_LANESELECT => self.lower_relaxed_laneselect_scalar(
+                dst_fp,
+                a_fp,
+                b_fp,
+                c_fp,
+                IntCompareLaneWidth::H16,
+            ),
+            OpcodeFD::I32X4_RELAXED_LANESELECT => self.lower_relaxed_laneselect_scalar(
+                dst_fp,
+                a_fp,
+                b_fp,
+                c_fp,
+                IntCompareLaneWidth::S32,
+            ),
+            OpcodeFD::I64X2_RELAXED_LANESELECT => self.lower_relaxed_laneselect_scalar(
+                dst_fp,
+                a_fp,
+                b_fp,
+                c_fp,
+                IntCompareLaneWidth::D64,
+            ),
+            OpcodeFD::F32X4_RELAXED_MADD => {
+                let tmp_fp = self.fp_scratch.scoped_alloc().detach();
+                movdqa_rr(&mut self.core.text, *tmp_fp as u8, a_fp);
+                mulps_rr(&mut self.core.text, *tmp_fp as u8, b_fp);
+                if dst_fp != c_fp {
+                    movdqa_rr(&mut self.core.text, dst_fp, c_fp);
+                }
+                addps_rr(&mut self.core.text, dst_fp, *tmp_fp as u8);
+                Ok(())
+            }
+            OpcodeFD::F32X4_RELAXED_NMADD => {
+                let tmp_fp = self.fp_scratch.scoped_alloc().detach();
+                movdqa_rr(&mut self.core.text, *tmp_fp as u8, a_fp);
+                mulps_rr(&mut self.core.text, *tmp_fp as u8, b_fp);
+                if dst_fp != c_fp {
+                    movdqa_rr(&mut self.core.text, dst_fp, c_fp);
+                }
+                subps_rr(&mut self.core.text, dst_fp, *tmp_fp as u8);
+                Ok(())
+            }
+            OpcodeFD::F64X2_RELAXED_MADD => {
+                let tmp_fp = self.fp_scratch.scoped_alloc().detach();
+                movdqa_rr(&mut self.core.text, *tmp_fp as u8, a_fp);
+                mulpd_rr(&mut self.core.text, *tmp_fp as u8, b_fp);
+                if dst_fp != c_fp {
+                    movdqa_rr(&mut self.core.text, dst_fp, c_fp);
+                }
+                addpd_rr(&mut self.core.text, dst_fp, *tmp_fp as u8);
+                Ok(())
+            }
+            OpcodeFD::F64X2_RELAXED_NMADD => {
+                let tmp_fp = self.fp_scratch.scoped_alloc().detach();
+                movdqa_rr(&mut self.core.text, *tmp_fp as u8, a_fp);
+                mulpd_rr(&mut self.core.text, *tmp_fp as u8, b_fp);
+                if dst_fp != c_fp {
+                    movdqa_rr(&mut self.core.text, dst_fp, c_fp);
+                }
+                subpd_rr(&mut self.core.text, dst_fp, *tmp_fp as u8);
+                Ok(())
+            }
+            OpcodeFD::I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S => {
+                self.lower_i32x4_relaxed_dot_i8x16_i7x16_add_s_scalar(dst_fp, a_fp, b_fp, c_fp)
+            }
             OpcodeFD::V128_BITSELECT => {
                 let masked_b = self.fp_scratch.scoped_alloc().detach();
                 let mask_tmp = self.fp_scratch.scoped_alloc().detach();
@@ -2336,6 +2410,38 @@ impl<'a> X86_64Backend<'a> {
             }
             other => Err(unsupported_simd_opcode("ternary", other as u32)),
         }
+    }
+
+    fn lower_relaxed_laneselect_scalar(
+        &mut self,
+        dst_fp: u8,
+        lhs_fp: u8,
+        rhs_fp: u8,
+        mask_fp: u8,
+        lane_width: IntCompareLaneWidth,
+    ) -> Result<(), WasmError> {
+        enc::sub_rsp_imm8(&mut self.core.text, 64);
+        movdqu_store(&mut self.core.text, X86Reg::RSP, 0, lhs_fp);
+        movdqu_store(&mut self.core.text, X86Reg::RSP, 16, rhs_fp);
+        movdqu_store(&mut self.core.text, X86Reg::RSP, 32, mask_fp);
+        for lane in 0..lane_width.lane_count() {
+            let lane_off = lane as i32 * lane_width.byte_width() as i32;
+            let choose_lhs = self.core.new_label();
+            let done = self.core.new_label();
+            self.emit_load_int_lane_to(X86Reg::RAX, X86Reg::RSP, 32 + lane_off, lane_width, true);
+            enc::cmp_ri_64(&mut self.core.text, X86Reg::RAX, 0);
+            self.emit_jcc(Cc::L, choose_lhs);
+            self.emit_load_int_lane_to(X86Reg::RDX, X86Reg::RSP, 16 + lane_off, lane_width, false);
+            self.emit_store_int_lane_from(X86Reg::RSP, 48 + lane_off, lane_width, X86Reg::RDX);
+            self.emit_jmp(done);
+            self.core.bind_label(choose_lhs);
+            self.emit_load_int_lane_to(X86Reg::RDX, X86Reg::RSP, lane_off, lane_width, false);
+            self.emit_store_int_lane_from(X86Reg::RSP, 48 + lane_off, lane_width, X86Reg::RDX);
+            self.core.bind_label(done);
+        }
+        movdqu_load(&mut self.core.text, dst_fp, X86Reg::RSP, 48);
+        enc::add_rsp_imm8(&mut self.core.text, 64);
+        Ok(())
     }
 
     fn lower_simd_shift_native(
@@ -2988,6 +3094,139 @@ impl<'a> X86_64Backend<'a> {
         }
         movdqu_load(&mut self.core.text, dst_fp, X86Reg::RSP, 32);
         enc::add_rsp_imm8(&mut self.core.text, 48);
+        Ok(())
+    }
+
+    fn lower_i16x8_relaxed_dot_i8x16_i7x16_s_scalar(
+        &mut self,
+        dst_fp: u8,
+        lhs_fp: u8,
+        rhs_fp: u8,
+    ) -> Result<(), WasmError> {
+        enc::sub_rsp_imm8(&mut self.core.text, 48);
+        movdqu_store(&mut self.core.text, X86Reg::RSP, 0, lhs_fp);
+        movdqu_store(&mut self.core.text, X86Reg::RSP, 16, rhs_fp);
+        for lane in 0..8 {
+            let lhs_off = (lane * 2) as i32;
+            let rhs_off = 16 + lhs_off;
+            let out_off = 32 + lhs_off;
+            self.emit_load_int_lane_to(
+                X86Reg::RAX,
+                X86Reg::RSP,
+                lhs_off,
+                IntCompareLaneWidth::B8,
+                true,
+            );
+            self.emit_load_int_lane_to(
+                X86Reg::RDX,
+                X86Reg::RSP,
+                rhs_off,
+                IntCompareLaneWidth::B8,
+                true,
+            );
+            enc::imul_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
+            self.emit_load_int_lane_to(
+                X86Reg::RCX,
+                X86Reg::RSP,
+                lhs_off + 1,
+                IntCompareLaneWidth::B8,
+                true,
+            );
+            self.emit_load_int_lane_to(
+                X86Reg::RDX,
+                X86Reg::RSP,
+                rhs_off + 1,
+                IntCompareLaneWidth::B8,
+                true,
+            );
+            enc::imul_rr_64(&mut self.core.text, X86Reg::RCX, X86Reg::RDX);
+            enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RCX);
+            enc::store_16(&mut self.core.text, X86Reg::RSP, out_off, X86Reg::RAX);
+        }
+        movdqu_load(&mut self.core.text, dst_fp, X86Reg::RSP, 32);
+        enc::add_rsp_imm8(&mut self.core.text, 48);
+        Ok(())
+    }
+
+    fn lower_i32x4_relaxed_dot_i8x16_i7x16_add_s_scalar(
+        &mut self,
+        dst_fp: u8,
+        lhs_fp: u8,
+        rhs_fp: u8,
+        add_fp: u8,
+    ) -> Result<(), WasmError> {
+        enc::sub_rsp_imm8(&mut self.core.text, 80);
+        movdqu_store(&mut self.core.text, X86Reg::RSP, 0, lhs_fp);
+        movdqu_store(&mut self.core.text, X86Reg::RSP, 16, rhs_fp);
+        movdqu_store(&mut self.core.text, X86Reg::RSP, 32, add_fp);
+        for lane in 0..8 {
+            let lhs_off = (lane * 2) as i32;
+            let rhs_off = 16 + lhs_off;
+            let out_off = 48 + lhs_off;
+            self.emit_load_int_lane_to(
+                X86Reg::RAX,
+                X86Reg::RSP,
+                lhs_off,
+                IntCompareLaneWidth::B8,
+                true,
+            );
+            self.emit_load_int_lane_to(
+                X86Reg::RDX,
+                X86Reg::RSP,
+                rhs_off,
+                IntCompareLaneWidth::B8,
+                true,
+            );
+            enc::imul_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
+            self.emit_load_int_lane_to(
+                X86Reg::RCX,
+                X86Reg::RSP,
+                lhs_off + 1,
+                IntCompareLaneWidth::B8,
+                true,
+            );
+            self.emit_load_int_lane_to(
+                X86Reg::RDX,
+                X86Reg::RSP,
+                rhs_off + 1,
+                IntCompareLaneWidth::B8,
+                true,
+            );
+            enc::imul_rr_64(&mut self.core.text, X86Reg::RCX, X86Reg::RDX);
+            enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RCX);
+            enc::store_16(&mut self.core.text, X86Reg::RSP, out_off, X86Reg::RAX);
+        }
+        for lane in 0..4 {
+            let dot_off = 48 + (lane * 4) as i32;
+            let add_off = 32 + (lane * 4) as i32;
+            let out_off = 64 + (lane * 4) as i32;
+            self.emit_load_int_lane_to(
+                X86Reg::RAX,
+                X86Reg::RSP,
+                dot_off,
+                IntCompareLaneWidth::H16,
+                true,
+            );
+            self.emit_load_int_lane_to(
+                X86Reg::RDX,
+                X86Reg::RSP,
+                dot_off + 2,
+                IntCompareLaneWidth::H16,
+                true,
+            );
+            enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
+            self.emit_load_int_lane_to(
+                X86Reg::RCX,
+                X86Reg::RSP,
+                add_off,
+                IntCompareLaneWidth::S32,
+                true,
+            );
+            enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RCX);
+            enc::store_32(&mut self.core.text, X86Reg::RSP, out_off, X86Reg::RAX);
+        }
+        movdqu_load(&mut self.core.text, dst_fp, X86Reg::RSP, 64);
+        enc::add_rsp_imm8(&mut self.core.text, 80);
         Ok(())
     }
 

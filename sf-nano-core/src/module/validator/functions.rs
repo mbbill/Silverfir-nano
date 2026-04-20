@@ -180,36 +180,6 @@ fn expect_simd_shuffle_immediate(imm: Immediate) -> Result<[u8; 16], WasmError> 
     }
 }
 
-#[cfg(sf_has_simd)]
-#[inline]
-fn is_relaxed_simd_opcode(op: OpcodeFD) -> bool {
-    use OpcodeFD::*;
-
-    matches!(
-        op,
-        I8X16_RELAXED_SWIZZLE
-            | I32X4_RELAXED_TRUNC_F32X4_S
-            | I32X4_RELAXED_TRUNC_F32X4_U
-            | I32X4_RELAXED_TRUNC_F64X2_S_ZERO
-            | I32X4_RELAXED_TRUNC_F64X2_U_ZERO
-            | I16X8_RELAXED_Q15MULR_S
-            | I8X16_RELAXED_LANESELECT
-            | I16X8_RELAXED_LANESELECT
-            | I32X4_RELAXED_LANESELECT
-            | I64X2_RELAXED_LANESELECT
-            | F32X4_RELAXED_MIN
-            | F32X4_RELAXED_MAX
-            | F64X2_RELAXED_MIN
-            | F64X2_RELAXED_MAX
-            | I16X8_RELAXED_DOT_I8X16_I7X16_S
-            | F32X4_RELAXED_MADD
-            | F32X4_RELAXED_NMADD
-            | F64X2_RELAXED_MADD
-            | F64X2_RELAXED_NMADD
-            | I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S
-    )
-}
-
 pub(super) struct FunctionValidator<'a> {
     module: &'a Module,
     function: &'a FunctionSpec,
@@ -1872,10 +1842,6 @@ impl<'a> FunctionValidator<'a> {
             use OpcodeFD::*;
             use ValueType::*;
 
-            if is_relaxed_simd_opcode(op) {
-                return Err(WasmError::invalid("relaxed SIMD is not supported"));
-            }
-
             match op {
                 V128_CONST => match imm {
                     Immediate::V128(_) => self.context.push_val(V128),
@@ -2082,6 +2048,10 @@ impl<'a> FunctionValidator<'a> {
                         | I32X4_TRUNC_SAT_F32X4_U
                         | I32X4_TRUNC_SAT_F64X2_S_ZERO
                         | I32X4_TRUNC_SAT_F64X2_U_ZERO
+                        | I32X4_RELAXED_TRUNC_F32X4_S
+                        | I32X4_RELAXED_TRUNC_F32X4_U
+                        | I32X4_RELAXED_TRUNC_F64X2_S_ZERO
+                        | I32X4_RELAXED_TRUNC_F64X2_U_ZERO
                 ) =>
                 {
                     self.context.pop_val(Some(V128))?;
@@ -2095,6 +2065,7 @@ impl<'a> FunctionValidator<'a> {
                         | V128_OR
                         | V128_XOR
                         | I8X16_SWIZZLE
+                        | I8X16_RELAXED_SWIZZLE
                         | I8X16_NARROW_I16X8_S
                         | I8X16_NARROW_I16X8_U
                         | I8X16_MIN_S
@@ -2110,11 +2081,13 @@ impl<'a> FunctionValidator<'a> {
                         | I16X8_MAX_U
                         | I16X8_AVGR_U
                         | I16X8_Q15MULR_SAT_S
+                        | I16X8_RELAXED_Q15MULR_S
                         | I16X8_NARROW_I32X4_S
                         | I16X8_NARROW_I32X4_U
                         | I16X8_ADD
                         | I16X8_SUB
                         | I16X8_MUL
+                        | I16X8_RELAXED_DOT_I8X16_I7X16_S
                         | I16X8_EXTMUL_LOW_I8X16_S
                         | I16X8_EXTMUL_HIGH_I8X16_S
                         | I16X8_EXTMUL_LOW_I8X16_U
@@ -2188,6 +2161,8 @@ impl<'a> FunctionValidator<'a> {
                         | F32X4_ADD
                         | F32X4_SUB
                         | F32X4_MUL
+                        | F32X4_RELAXED_MIN
+                        | F32X4_RELAXED_MAX
                         | F32X4_MAX
                         | F32X4_PMIN
                         | F32X4_PMAX
@@ -2206,6 +2181,8 @@ impl<'a> FunctionValidator<'a> {
                         | F32X4_MIN
                         | F64X2_PMIN
                         | F64X2_PMAX
+                        | F64X2_RELAXED_MIN
+                        | F64X2_RELAXED_MAX
                         | F64X2_MIN
                         | F64X2_MAX
                         | F32X4_DIV
@@ -2217,7 +2194,20 @@ impl<'a> FunctionValidator<'a> {
                     self.context.push_val(V128)
                 }
 
-                op if matches!(op, V128_BITSELECT) => {
+                op if matches!(
+                    op,
+                    V128_BITSELECT
+                        | I8X16_RELAXED_LANESELECT
+                        | I16X8_RELAXED_LANESELECT
+                        | I32X4_RELAXED_LANESELECT
+                        | I64X2_RELAXED_LANESELECT
+                        | F32X4_RELAXED_MADD
+                        | F32X4_RELAXED_NMADD
+                        | F64X2_RELAXED_MADD
+                        | F64X2_RELAXED_NMADD
+                        | I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S
+                ) =>
+                {
                     self.context.pop_val(Some(V128))?;
                     self.context.pop_val(Some(V128))?;
                     self.context.pop_val(Some(V128))?;

@@ -1370,6 +1370,7 @@ impl<'a> BlockLowerContext<'a> {
             P::I8x16Shuffle { lanes } => self.lower_simd_shuffle(args, results, *lanes),
             P::SimdUnaryV128 { opcode } => self.lower_simd_unary(args, results, *opcode),
             P::SimdBinaryV128 { opcode } => self.lower_simd_binary(args, results, *opcode),
+            P::SimdTernaryV128 { opcode } => self.lower_simd_ternary(args, results, *opcode),
             P::SimdShiftV128 { opcode } => self.lower_simd_shift(args, results, *opcode),
             P::I32x4Add => self.lower_simd_binary(args, results, OpcodeFD::I32X4_ADD as u32),
             P::I64x2Add => self.lower_simd_binary(args, results, OpcodeFD::I64X2_ADD as u32),

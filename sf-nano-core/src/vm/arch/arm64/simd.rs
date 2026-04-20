@@ -1488,6 +1488,9 @@ impl<'a> Arm64Backend<'a> {
                     .emit_u32(enc::sqrdmulh_8h(dst_fp, lhs_fp, rhs_fp));
                 Ok(())
             }
+            OpcodeFD::I16X8_RELAXED_DOT_I8X16_I7X16_S => {
+                self.lower_i16x8_relaxed_dot_i8x16_i7x16_s(dst_fp, lhs_fp, rhs_fp)
+            }
             OpcodeFD::I16X8_EXTMUL_LOW_I8X16_S => {
                 self.core
                     .text
@@ -2053,7 +2056,143 @@ impl<'a> Arm64Backend<'a> {
                 self.core.text.emit_u32(enc::orr_16b(dst_fp, dst_fp, *tmp));
                 Ok(())
             }
+            OpcodeFD::I8X16_RELAXED_LANESELECT
+            | OpcodeFD::I16X8_RELAXED_LANESELECT
+            | OpcodeFD::I32X4_RELAXED_LANESELECT
+            | OpcodeFD::I64X2_RELAXED_LANESELECT => {
+                self.lower_relaxed_laneselect(OpcodeFD::try_from(opcode)?, dst_fp, a_fp, b_fp, c_fp)
+            }
+            OpcodeFD::F32X4_RELAXED_MADD
+            | OpcodeFD::F32X4_RELAXED_NMADD
+            | OpcodeFD::F64X2_RELAXED_MADD
+            | OpcodeFD::F64X2_RELAXED_NMADD => {
+                self.lower_relaxed_madd_nmadd(OpcodeFD::try_from(opcode)?, dst_fp, a_fp, b_fp, c_fp)
+            }
+            OpcodeFD::I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S => {
+                self.lower_i32x4_relaxed_dot_i8x16_i7x16_add_s(dst_fp, a_fp, b_fp, c_fp)
+            }
             _ => Err(unsupported_simd_opcode("ternary", opcode)),
+        }
+    }
+
+    fn lower_i16x8_relaxed_dot_i8x16_i7x16_s(
+        &mut self,
+        dst_fp: Arm64FpReg,
+        lhs_fp: Arm64FpReg,
+        rhs_fp: Arm64FpReg,
+    ) -> Result<(), WasmError> {
+        let low = self.fp_scratch.scoped_alloc().detach();
+        let high = self.fp_scratch.scoped_alloc().detach();
+        self.core.text.emit_u32(enc::smull_8h(*low, lhs_fp, rhs_fp));
+        self.core
+            .text
+            .emit_u32(enc::smull2_8h(*high, lhs_fp, rhs_fp));
+        self.core.text.emit_u32(enc::addp_8h(dst_fp, *low, *high));
+        Ok(())
+    }
+
+    fn lower_i32x4_relaxed_dot_i8x16_i7x16_add_s(
+        &mut self,
+        dst_fp: Arm64FpReg,
+        lhs_fp: Arm64FpReg,
+        rhs_fp: Arm64FpReg,
+        add_fp: Arm64FpReg,
+    ) -> Result<(), WasmError> {
+        let dot = self.fp_scratch.scoped_alloc().detach();
+        let high = self.fp_scratch.scoped_alloc().detach();
+        self.core.text.emit_u32(enc::smull_8h(*dot, lhs_fp, rhs_fp));
+        self.core
+            .text
+            .emit_u32(enc::smull2_8h(*high, lhs_fp, rhs_fp));
+        self.core.text.emit_u32(enc::addp_8h(*dot, *dot, *high));
+        self.core.text.emit_u32(enc::saddlp_4s(*high, *dot));
+        self.core.text.emit_u32(enc::add_4s(dst_fp, *high, add_fp));
+        Ok(())
+    }
+
+    fn lower_relaxed_laneselect(
+        &mut self,
+        opcode: OpcodeFD,
+        dst_fp: Arm64FpReg,
+        a_fp: Arm64FpReg,
+        b_fp: Arm64FpReg,
+        mask_fp: Arm64FpReg,
+    ) -> Result<(), WasmError> {
+        let tmp = self.fp_scratch.scoped_alloc().detach();
+        let lane_mask = self.fp_scratch.scoped_alloc().detach();
+        self.core.text.emit_u32(enc::eor_16b(*tmp, *tmp, *tmp));
+        match opcode {
+            OpcodeFD::I8X16_RELAXED_LANESELECT => {
+                self.core
+                    .text
+                    .emit_u32(enc::cmgt_16b(*lane_mask, *tmp, mask_fp));
+            }
+            OpcodeFD::I16X8_RELAXED_LANESELECT => {
+                self.core
+                    .text
+                    .emit_u32(enc::cmgt_8h(*lane_mask, *tmp, mask_fp));
+            }
+            OpcodeFD::I32X4_RELAXED_LANESELECT => {
+                self.core
+                    .text
+                    .emit_u32(enc::cmgt_4s(*lane_mask, *tmp, mask_fp));
+            }
+            OpcodeFD::I64X2_RELAXED_LANESELECT => {
+                self.core
+                    .text
+                    .emit_u32(enc::cmgt_2d(*lane_mask, *tmp, mask_fp));
+            }
+            other => return Err(unsupported_simd_opcode("relaxed_laneselect", other as u32)),
+        }
+        self.core
+            .text
+            .emit_u32(enc::bic_16b(*tmp, b_fp, *lane_mask));
+        self.core
+            .text
+            .emit_u32(enc::and_16b(dst_fp, a_fp, *lane_mask));
+        self.core.text.emit_u32(enc::orr_16b(dst_fp, dst_fp, *tmp));
+        Ok(())
+    }
+
+    fn lower_relaxed_madd_nmadd(
+        &mut self,
+        opcode: OpcodeFD,
+        dst_fp: Arm64FpReg,
+        a_fp: Arm64FpReg,
+        b_fp: Arm64FpReg,
+        c_fp: Arm64FpReg,
+    ) -> Result<(), WasmError> {
+        let product = self.fp_scratch.scoped_alloc().detach();
+        match opcode {
+            OpcodeFD::F32X4_RELAXED_MADD => {
+                self.core.text.emit_u32(enc::fmul_4s(*product, a_fp, b_fp));
+                self.core
+                    .text
+                    .emit_u32(enc::fadd_4s(dst_fp, *product, c_fp));
+                Ok(())
+            }
+            OpcodeFD::F32X4_RELAXED_NMADD => {
+                self.core.text.emit_u32(enc::fmul_4s(*product, a_fp, b_fp));
+                self.core
+                    .text
+                    .emit_u32(enc::fsub_4s(dst_fp, c_fp, *product));
+                Ok(())
+            }
+            OpcodeFD::F64X2_RELAXED_MADD => {
+                self.core.text.emit_u32(enc::fmul_2d(*product, a_fp, b_fp));
+                self.core
+                    .text
+                    .emit_u32(enc::fadd_2d(dst_fp, *product, c_fp));
+                Ok(())
+            }
+            OpcodeFD::F64X2_RELAXED_NMADD => {
+                self.core.text.emit_u32(enc::fmul_2d(*product, a_fp, b_fp));
+                self.core
+                    .text
+                    .emit_u32(enc::fsub_2d(dst_fp, c_fp, *product));
+                Ok(())
+            }
+            other => Err(unsupported_simd_opcode("relaxed_madd_nmadd", other as u32)),
         }
     }
 

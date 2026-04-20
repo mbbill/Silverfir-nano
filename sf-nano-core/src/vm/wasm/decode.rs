@@ -1609,8 +1609,75 @@ impl<'a> DecodeContext<'a> {
                 let lanes = expect_shuffle_mask_immediate(imm)?;
                 self.handle_primitive(PrimitiveOpKind::I8x16Shuffle { lanes });
             }
+            FD(OpcodeFD::I8X16_RELAXED_SWIZZLE) => {
+                self.handle_primitive(PrimitiveOpKind::SimdBinaryV128 {
+                    opcode: OpcodeFD::I8X16_SWIZZLE as u32,
+                });
+            }
+            FD(OpcodeFD::I32X4_RELAXED_TRUNC_F32X4_S) => {
+                self.handle_primitive(PrimitiveOpKind::SimdUnaryV128 {
+                    opcode: OpcodeFD::I32X4_TRUNC_SAT_F32X4_S as u32,
+                });
+            }
+            FD(OpcodeFD::I32X4_RELAXED_TRUNC_F32X4_U) => {
+                self.handle_primitive(PrimitiveOpKind::SimdUnaryV128 {
+                    opcode: OpcodeFD::I32X4_TRUNC_SAT_F32X4_U as u32,
+                });
+            }
+            FD(OpcodeFD::I32X4_RELAXED_TRUNC_F64X2_S_ZERO) => {
+                self.handle_primitive(PrimitiveOpKind::SimdUnaryV128 {
+                    opcode: OpcodeFD::I32X4_TRUNC_SAT_F64X2_S_ZERO as u32,
+                });
+            }
+            FD(OpcodeFD::I32X4_RELAXED_TRUNC_F64X2_U_ZERO) => {
+                self.handle_primitive(PrimitiveOpKind::SimdUnaryV128 {
+                    opcode: OpcodeFD::I32X4_TRUNC_SAT_F64X2_U_ZERO as u32,
+                });
+            }
+            FD(OpcodeFD::I16X8_RELAXED_Q15MULR_S) => {
+                self.handle_primitive(PrimitiveOpKind::SimdBinaryV128 {
+                    opcode: OpcodeFD::I16X8_Q15MULR_SAT_S as u32,
+                });
+            }
+            FD(op_ext)
+                if matches!(
+                    op_ext,
+                    OpcodeFD::I8X16_RELAXED_LANESELECT
+                        | OpcodeFD::I16X8_RELAXED_LANESELECT
+                        | OpcodeFD::I32X4_RELAXED_LANESELECT
+                        | OpcodeFD::I64X2_RELAXED_LANESELECT
+                        | OpcodeFD::F32X4_RELAXED_MADD
+                        | OpcodeFD::F32X4_RELAXED_NMADD
+                        | OpcodeFD::F64X2_RELAXED_MADD
+                        | OpcodeFD::F64X2_RELAXED_NMADD
+                        | OpcodeFD::I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S
+                ) =>
+            {
+                self.handle_primitive(PrimitiveOpKind::SimdTernaryV128 {
+                    opcode: op_ext as u32,
+                });
+            }
+            FD(op_ext)
+                if matches!(
+                    op_ext,
+                    OpcodeFD::F32X4_RELAXED_MIN
+                        | OpcodeFD::F32X4_RELAXED_MAX
+                        | OpcodeFD::F64X2_RELAXED_MIN
+                        | OpcodeFD::F64X2_RELAXED_MAX
+                        | OpcodeFD::I16X8_RELAXED_DOT_I8X16_I7X16_S
+                ) =>
+            {
+                let opcode = match op_ext {
+                    OpcodeFD::F32X4_RELAXED_MIN => OpcodeFD::F32X4_MIN as u32,
+                    OpcodeFD::F32X4_RELAXED_MAX => OpcodeFD::F32X4_MAX as u32,
+                    OpcodeFD::F64X2_RELAXED_MIN => OpcodeFD::F64X2_MIN as u32,
+                    OpcodeFD::F64X2_RELAXED_MAX => OpcodeFD::F64X2_MAX as u32,
+                    _ => op_ext as u32,
+                };
+                self.handle_primitive(PrimitiveOpKind::SimdBinaryV128 { opcode });
+            }
             FD(op_ext) if is_relaxed_simd_opcode(op_ext) => {
-                return Err(WasmError::invalid("relaxed SIMD is not supported"));
+                return Err(WasmError::invalid("unhandled relaxed SIMD opcode"));
             }
             FD(op_ext)
                 if matches!(

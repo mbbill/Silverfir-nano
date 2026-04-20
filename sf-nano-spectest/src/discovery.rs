@@ -90,6 +90,13 @@ fn is_enabled_simd_test(test_name: &str) -> bool {
             | "simd_store32_lane"
             | "simd_store64_lane"
             | "simd_memory-multi"
+            | "relaxed_dot_product"
+            | "relaxed_laneselect"
+            | "relaxed_madd_nmadd"
+            | "relaxed_min_max"
+            | "i8x16_relaxed_swizzle"
+            | "i32x4_relaxed_trunc"
+            | "i16x8_relaxed_q15mulr_s"
     )
 }
 
@@ -125,20 +132,12 @@ pub fn should_skip_test(test_name: &str, simd_enabled: bool) -> bool {
         return true;
     }
 
-    if test_name.starts_with("relaxed_") || test_name.contains("_relaxed_") {
-        return true;
-    }
-
-    // Skip SIMD/vector tests (various naming patterns)
-    if test_name.starts_with("simd_") {
-        if simd_enabled && is_enabled_simd_test(test_name) {
-            return false;
-        }
-        return true;
-    }
-
-    // Skip SIMD lane-based tests (e.g., i32x4_*, f64x2_*, i16x8_*, etc.).
-    if is_lane_named_simd_test(test_name) {
+    // Skip/enable SIMD tests across the testsuite naming patterns:
+    // `simd_*`, `relaxed_*`, and lane-named files like `i32x4_*`.
+    if test_name.starts_with("relaxed_")
+        || test_name.starts_with("simd_")
+        || is_lane_named_simd_test(test_name)
+    {
         if simd_enabled && is_enabled_simd_test(test_name) {
             return false;
         }
@@ -259,14 +258,15 @@ mod tests {
     }
 
     #[test]
-    fn relaxed_simd_files_stay_skipped() {
-        assert!(should_skip_test("relaxed_dot_product", true));
-        assert!(should_skip_test("relaxed_laneselect", true));
-        assert!(should_skip_test("relaxed_madd_nmadd", true));
-        assert!(should_skip_test("relaxed_min_max", true));
-        assert!(should_skip_test("i8x16_relaxed_swizzle", true));
-        assert!(should_skip_test("i32x4_relaxed_trunc", true));
-        assert!(should_skip_test("i16x8_relaxed_q15mulr_s", true));
+    fn relaxed_simd_files_are_enabled_when_simd_is_available() {
+        assert!(!should_skip_test("relaxed_dot_product", true));
+        assert!(!should_skip_test("relaxed_laneselect", true));
+        assert!(!should_skip_test("relaxed_madd_nmadd", true));
+        assert!(!should_skip_test("relaxed_min_max", true));
+        assert!(!should_skip_test("i8x16_relaxed_swizzle", true));
+        assert!(!should_skip_test("i32x4_relaxed_trunc", true));
+        assert!(!should_skip_test("i16x8_relaxed_q15mulr_s", true));
+        assert!(should_skip_test("relaxed_dot_product", false));
     }
 
     #[test]

@@ -1476,14 +1476,10 @@ mod tests {
         .expect("wat should encode a SIMD module");
 
         let mut instance = Instance::new(&wasm, &[]).expect("instantiation should succeed");
-        let err = match instance.invoke("not", &[crate::Value::V128([0; 16])]) {
-            Ok(_) => panic!("SIMD execution should fail before native codegen"),
-            Err(err) => err,
-        };
-        assert_eq!(
-            err,
-            crate::WasmError::internal("SIMD native codegen is not implemented yet")
-        );
+        let results = instance
+            .invoke("not", &[crate::Value::V128([0; 16])])
+            .expect("live SIMD unary ops should lower and execute");
+        assert_eq!(results.as_slice(), &[crate::Value::V128([u8::MAX; 16])]);
     }
 
     #[cfg(all(sf_has_simd, sf_jit))]
@@ -1499,13 +1495,10 @@ mod tests {
         .expect("wat should encode a SIMD const module");
 
         let mut instance = Instance::new(&wasm, &[]).expect("instantiation should succeed");
-        let err = match instance.invoke("const", &[]) {
-            Ok(_) => panic!("SIMD execution should fail before native codegen"),
-            Err(err) => err,
-        };
-        assert_eq!(
-            err,
-            crate::WasmError::internal("SIMD native codegen is not implemented yet")
-        );
+        let expected = crate::Value::V128([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0]);
+        let results = instance
+            .invoke("const", &[])
+            .expect("v128.const should lower and execute");
+        assert_eq!(results.as_slice(), &[expected]);
     }
 }

@@ -186,6 +186,7 @@ macro_rules! for_each_primitive_op {
             I64x2Add => (2, 1),
             SimdUnaryV128 { opcode: u32 } => (1, 1),
             SimdBinaryV128 { opcode: u32 } => (2, 1),
+            SimdTernaryV128 { opcode: u32 } => (3, 1),
             SimdShiftV128 { opcode: u32 } => (2, 1),
             SimdMemLoadV128 { opcode: u32, offset: u32, memidx: u32 } => (1, 1),
             SimdMemLoadLaneV128 { opcode: u32, lane: u8, offset: u32, memidx: u32 } => (2, 1),
@@ -490,6 +491,7 @@ pub(crate) fn result_type(kind: &PrimitiveOpKind) -> Option<ValueType> {
         | PrimitiveOpKind::I64x2Add
         | PrimitiveOpKind::SimdUnaryV128 { .. }
         | PrimitiveOpKind::SimdBinaryV128 { .. }
+        | PrimitiveOpKind::SimdTernaryV128 { .. }
         | PrimitiveOpKind::SimdShiftV128 { .. }
         | PrimitiveOpKind::SimdMemLoadV128 { .. }
         | PrimitiveOpKind::SimdMemLoadLaneV128 { .. }

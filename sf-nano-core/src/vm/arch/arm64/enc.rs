@@ -1522,6 +1522,10 @@ pub(crate) fn addp_4s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     0x4ea0_bc00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
 }
 
+pub(crate) fn addp_8h(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
+    0x4e60_bc00 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
+}
+
 pub(crate) fn sub_16b(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     0x6e20_8400 | (rm.index() << 16) | (rn.index() << 5) | rd.index()
 }
