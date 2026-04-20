@@ -9,3 +9,4 @@ pub(crate) mod helpers;
 mod inst;
 mod preserved;
 mod reg;
+mod simd;

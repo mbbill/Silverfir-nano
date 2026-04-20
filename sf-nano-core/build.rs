@@ -49,7 +49,7 @@
 //   (derived)      → sf_has_guard_pages  (guard-pages + jit + native 64-bit backend + supported OS)
 //   (derived)      → sf_has_debug_regions (set when any consumer of DebugRegion is compiled
 //                                          in: sf_ir_dump or sf_jitdump)
-//   (derived)      → sf_has_simd         (arm64 with NEON)
+//   (derived)      → sf_has_simd         (arm64 with NEON, x64 with SSE4.1+SSSE3)
 //   jit            → sf_jit
 //   backend-emu64  → sf_backend_emu64
 //   backend-emu32  → sf_backend_emu32
@@ -237,6 +237,12 @@ fn emit_simd_cfg() {
     match selected_backend() {
         Some(SelectedBackend::Arm64) => {
             require_target_feature("neon", "arm64 SIMD support requires NEON");
+            println!("cargo:rustc-cfg=sf_has_simd");
+        }
+        Some(SelectedBackend::X64) => {
+            require_target_feature("sse2", "x64 SIMD support requires SSE2");
+            require_target_feature("ssse3", "x64 SIMD support requires SSSE3");
+            require_target_feature("sse4.1", "x64 SIMD support requires SSE4.1");
             println!("cargo:rustc-cfg=sf_has_simd");
         }
         _ => {}

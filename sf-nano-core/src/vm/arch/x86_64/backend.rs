@@ -319,10 +319,17 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         };
         let src_fp = self.map_fp_reg(src)? as u8;
         match width {
-            MachineFloatWidth::F32 => enc::movss_rr(&mut self.core.text, dst_fp, src_fp),
-            MachineFloatWidth::F64 => enc::movsd_rr(&mut self.core.text, dst_fp, src_fp),
-        };
-        self.core.set_fp_reg_width(dst.reg, width)?;
+            MachineFloatWidth::F32 => {
+                enc::movss_rr(&mut self.core.text, dst_fp, src_fp);
+                self.core
+                    .set_fp_reg_width(dst.reg, MachineFloatWidth::F32)?;
+            }
+            MachineFloatWidth::F64 => {
+                enc::movsd_rr(&mut self.core.text, dst_fp, src_fp);
+                self.core
+                    .set_fp_reg_width(dst.reg, MachineFloatWidth::F64)?;
+            }
+        }
         Ok(())
     }
 
@@ -375,7 +382,7 @@ impl<'a> X86_64Backend<'a> {
             // 64-bit carrier here so ref null sentinels survive plain moves.
             MachineStorageType::GpWord => enc::mov_rr_64(&mut self.core.text, dst, src),
             MachineStorageType::GpI64 => enc::mov_rr_64(&mut self.core.text, dst, src),
-            MachineStorageType::Fp32 | MachineStorageType::Fp64 => {
+            MachineStorageType::Fp32 | MachineStorageType::Fp64 | MachineStorageType::V128 => {
                 return Err(WasmError::internal(
                     "x86_64 GP move requested for FP storage type".into(),
                 ))
@@ -397,7 +404,7 @@ impl<'a> X86_64Backend<'a> {
             // 64-bit payload when selecting between them.
             MachineStorageType::GpWord => enc::cmovcc_rr_64(&mut self.core.text, cc, dst, src),
             MachineStorageType::GpI64 => enc::cmovcc_rr_64(&mut self.core.text, cc, dst, src),
-            MachineStorageType::Fp32 | MachineStorageType::Fp64 => {
+            MachineStorageType::Fp32 | MachineStorageType::Fp64 | MachineStorageType::V128 => {
                 return Err(WasmError::internal(
                     "x86_64 GP cmov requested for FP storage type".into(),
                 ))
@@ -528,31 +535,38 @@ impl<'a> X86_64Backend<'a> {
                         let src_fp = self.map_fp_reg(src_reg)? as u8;
                         match width {
                             MachineFloatWidth::F32 => {
-                                enc::movss_rr(&mut self.core.text, dst_fp, src_fp)
+                                enc::movss_rr(&mut self.core.text, dst_fp, src_fp);
+                                self.core
+                                    .set_fp_reg_width(dst.reg, MachineFloatWidth::F32)?;
                             }
                             MachineFloatWidth::F64 => {
-                                enc::movsd_rr(&mut self.core.text, dst_fp, src_fp)
+                                enc::movsd_rr(&mut self.core.text, dst_fp, src_fp);
+                                self.core
+                                    .set_fp_reg_width(dst.reg, MachineFloatWidth::F64)?;
                             }
-                        };
+                        }
                     } else {
                         let src_gp = self.map_gp_reg(src_reg)?;
                         match width {
                             MachineFloatWidth::F32 => {
-                                enc::movd_xmm_r32(&mut self.core.text, dst_fp, src_gp)
+                                enc::movd_xmm_r32(&mut self.core.text, dst_fp, src_gp);
+                                self.core
+                                    .set_fp_reg_width(dst.reg, MachineFloatWidth::F32)?;
                             }
                             MachineFloatWidth::F64 => {
-                                enc::movq_xmm_r64(&mut self.core.text, dst_fp, src_gp)
+                                enc::movq_xmm_r64(&mut self.core.text, dst_fp, src_gp);
+                                self.core
+                                    .set_fp_reg_width(dst.reg, MachineFloatWidth::F64)?;
                             }
-                        };
+                        }
                     }
-                    self.core.set_fp_reg_width(dst.reg, width)?;
                 } else {
                     let dst_gp = self.map_gp_reg(dst.reg)?;
                     if self.core.is_fp_reg(src_reg) {
                         let src_fp = self.map_fp_reg(src_reg)? as u8;
                         match src_float_width.ok_or_else(|| {
-                            WasmError::invalid(
-                                "x86_64 edge move is missing float-width metadata for machine reg",
+                            WasmError::internal(
+                                "x86_64 edge move is missing float-width metadata for an FP source reg",
                             )
                         })? {
                             MachineFloatWidth::F32 => {
@@ -561,7 +575,7 @@ impl<'a> X86_64Backend<'a> {
                             MachineFloatWidth::F64 => {
                                 enc::movq_r64_xmm(&mut self.core.text, dst_gp, src_fp)
                             }
-                        };
+                        }
                     } else {
                         let src_gp = self.map_gp_reg(src_reg)?;
                         enc::mov_rr_64(&mut self.core.text, dst_gp, src_gp);
@@ -574,19 +588,30 @@ impl<'a> X86_64Backend<'a> {
                 ));
             }
             ParallelSource::Imm(value) => {
-                if let Some(width) = dst.ty.float_width() {
+                if dst.ty.is_fp() {
                     let dst_fp = self.map_fp_reg(dst.reg)? as u8;
-                    let scratch = self.gp_scratch.scoped_alloc().detach();
-                    self.materialize_u64(*scratch, value);
-                    match width {
-                        MachineFloatWidth::F32 => {
-                            enc::movd_xmm_r32(&mut self.core.text, dst_fp, *scratch)
+                    match dst.ty {
+                        MachineStorageType::Fp32 => {
+                            let scratch = self.gp_scratch.scoped_alloc().detach();
+                            self.materialize_u64(*scratch, value);
+                            enc::movd_xmm_r32(&mut self.core.text, dst_fp, *scratch);
+                            self.core
+                                .set_fp_reg_width(dst.reg, MachineFloatWidth::F32)?;
                         }
-                        MachineFloatWidth::F64 => {
-                            enc::movq_xmm_r64(&mut self.core.text, dst_fp, *scratch)
+                        MachineStorageType::Fp64 => {
+                            let scratch = self.gp_scratch.scoped_alloc().detach();
+                            self.materialize_u64(*scratch, value);
+                            enc::movq_xmm_r64(&mut self.core.text, dst_fp, *scratch);
+                            self.core
+                                .set_fp_reg_width(dst.reg, MachineFloatWidth::F64)?;
                         }
-                    };
-                    self.core.set_fp_reg_width(dst.reg, width)?;
+                        MachineStorageType::V128 => {
+                            return Err(WasmError::internal(
+                                "x86_64 edge move cannot materialize a v128 immediate",
+                            ))
+                        }
+                        MachineStorageType::GpWord | MachineStorageType::GpI64 => unreachable!(),
+                    }
                 } else {
                     let dst_gp = self.map_gp_reg(dst.reg)?;
                     self.materialize_u64(dst_gp, value);
