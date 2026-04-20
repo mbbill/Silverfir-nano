@@ -99,32 +99,6 @@ Silverfir vs Wasmtime Cranelift (optimizing JIT) and V8 TurboFan (Node.js 25.4).
 
 See [full benchmark results](benchmarks/wasi/RESULTS.md)
 
-## Building
-
-```bash
-# Default build (micro-JIT)
-cargo build --release
-
-# Run a WASI program
-./target/release/sf-nano-cli program.wasm [args...]
-
-# Run benchmarks
-python3 benchmarks/wasi/run_tests.py
-
-# Run the full validation gate (feature matrix, target matrix, spectest, WASI)
-./scripts/check_all.sh
-
-# Run only the WASI testsuite matrix
-./scripts/wasitest_all.sh
-
-# Run benchmarks under V8 (Node.js) for comparison
-node benchmarks/wasi/run_v8.mjs
-
-# Minimal no_std build (~400 KB stripped, no WASI, JIT only).
-# Built standalone — excluded from the workspace due to no_std.
-cd sf-nano-cli-minimal && cargo run --release
-```
-
 ## WebAssembly Compatibility
 
 Silverfir-nano supports all Core WebAssembly 3.0 features except exception
@@ -157,6 +131,25 @@ Supported Core WebAssembly 3.0 feature groups include:
 The remaining missing Core WebAssembly 3.0 feature family is
 **exception handling**, including `throw`, `throw_ref`, `try_table`, and
 `rethrow`.
+
+## Building
+
+```bash
+# Default build
+cargo build --release
+
+# Run a WASI program
+cargo run --release --bin sf-nano-cli -- program.wasm [args...]
+
+# Run benchmarks
+python3 benchmarks/wasi/run_tests.py
+
+# Run benchmarks under V8 (Node.js) for comparison
+node benchmarks/wasi/run_v8.mjs
+
+# Minimal no_std build
+cd sf-nano-cli-minimal && cargo run --release
+```
 
 ## License
 
