@@ -359,6 +359,18 @@ fn pcmpeqq_rr(e: &mut TextEmitter, dst: u8, src: u8) {
     emit_simd_rr(e, 0x66, OpMap::Map0F38, 0x29, dst, src);
 }
 
+fn pcmpgtb_rr(e: &mut TextEmitter, dst: u8, src: u8) {
+    emit_simd_rr(e, 0x66, OpMap::Map0F, 0x64, dst, src);
+}
+
+fn pcmpgtw_rr(e: &mut TextEmitter, dst: u8, src: u8) {
+    emit_simd_rr(e, 0x66, OpMap::Map0F, 0x65, dst, src);
+}
+
+fn pcmpgtd_rr(e: &mut TextEmitter, dst: u8, src: u8) {
+    emit_simd_rr(e, 0x66, OpMap::Map0F, 0x66, dst, src);
+}
+
 fn pand_rr(e: &mut TextEmitter, dst: u8, src: u8) {
     emit_simd_rr(e, 0x66, OpMap::Map0F, 0xDB, dst, src);
 }
@@ -425,6 +437,10 @@ fn psubw_rr(e: &mut TextEmitter, dst: u8, src: u8) {
 
 fn pmullw_rr(e: &mut TextEmitter, dst: u8, src: u8) {
     emit_simd_rr(e, 0x66, OpMap::Map0F, 0xD5, dst, src);
+}
+
+fn pmaddwd_rr(e: &mut TextEmitter, dst: u8, src: u8) {
+    emit_simd_rr(e, 0x66, OpMap::Map0F, 0xF5, dst, src);
 }
 
 fn paddsw_rr(e: &mut TextEmitter, dst: u8, src: u8) {
@@ -1335,16 +1351,87 @@ impl<'a> X86_64Backend<'a> {
         let dst_fp = self.map_fp_reg(dst)? as u8;
         let lhs_fp = expect_v128_reg(self, lhs, "x86_64 SIMD binary lhs must be in an FP reg")?;
         let rhs_fp = expect_v128_reg(self, rhs, "x86_64 SIMD binary rhs must be in an FP reg")?;
-
-        let rhs_src = if dst_fp == rhs_fp as u8 && dst_fp != lhs_fp as u8 {
-            let tmp = self.fp_scratch.scoped_alloc().detach();
-            movdqa_rr(&mut self.core.text, *tmp as u8, rhs_fp as u8);
-            *tmp as u8
-        } else {
-            rhs_fp as u8
+        let opcode = OpcodeFD::try_from(opcode)?;
+        // Only preserve rhs for destructive native-vector paths. The scalar/helper lowerings
+        // either round-trip through the stack or use literal XMM0/XMM1 temporaries.
+        let rhs_src = match opcode {
+            OpcodeFD::V128_AND
+            | OpcodeFD::V128_ANDNOT
+            | OpcodeFD::V128_OR
+            | OpcodeFD::V128_XOR
+            | OpcodeFD::I8X16_ADD
+            | OpcodeFD::I8X16_SUB
+            | OpcodeFD::I8X16_ADD_SAT_S
+            | OpcodeFD::I8X16_ADD_SAT_U
+            | OpcodeFD::I8X16_SUB_SAT_S
+            | OpcodeFD::I8X16_SUB_SAT_U
+            | OpcodeFD::I8X16_MIN_S
+            | OpcodeFD::I8X16_MIN_U
+            | OpcodeFD::I8X16_MAX_S
+            | OpcodeFD::I8X16_MAX_U
+            | OpcodeFD::I8X16_AVGR_U
+            | OpcodeFD::I8X16_EQ
+            | OpcodeFD::I8X16_NE
+            | OpcodeFD::I8X16_LT_S
+            | OpcodeFD::I8X16_GT_S
+            | OpcodeFD::I8X16_LE_S
+            | OpcodeFD::I8X16_GE_S
+            | OpcodeFD::I16X8_ADD
+            | OpcodeFD::I16X8_SUB
+            | OpcodeFD::I16X8_MUL
+            | OpcodeFD::I16X8_ADD_SAT_S
+            | OpcodeFD::I16X8_ADD_SAT_U
+            | OpcodeFD::I16X8_SUB_SAT_S
+            | OpcodeFD::I16X8_SUB_SAT_U
+            | OpcodeFD::I16X8_MIN_S
+            | OpcodeFD::I16X8_MIN_U
+            | OpcodeFD::I16X8_MAX_S
+            | OpcodeFD::I16X8_MAX_U
+            | OpcodeFD::I16X8_AVGR_U
+            | OpcodeFD::I16X8_EQ
+            | OpcodeFD::I16X8_NE
+            | OpcodeFD::I16X8_LT_S
+            | OpcodeFD::I16X8_GT_S
+            | OpcodeFD::I16X8_LE_S
+            | OpcodeFD::I16X8_GE_S
+            | OpcodeFD::I32X4_ADD
+            | OpcodeFD::I32X4_SUB
+            | OpcodeFD::I32X4_MUL
+            | OpcodeFD::I32X4_MIN_S
+            | OpcodeFD::I32X4_MIN_U
+            | OpcodeFD::I32X4_MAX_S
+            | OpcodeFD::I32X4_MAX_U
+            | OpcodeFD::I32X4_DOT_I16X8_S
+            | OpcodeFD::I32X4_EQ
+            | OpcodeFD::I32X4_NE
+            | OpcodeFD::I32X4_LT_S
+            | OpcodeFD::I32X4_GT_S
+            | OpcodeFD::I32X4_LE_S
+            | OpcodeFD::I32X4_GE_S
+            | OpcodeFD::I64X2_ADD
+            | OpcodeFD::I64X2_SUB
+            | OpcodeFD::I64X2_EQ
+            | OpcodeFD::I64X2_NE
+            | OpcodeFD::F32X4_ADD
+            | OpcodeFD::F32X4_SUB
+            | OpcodeFD::F32X4_MUL
+            | OpcodeFD::F32X4_DIV
+            | OpcodeFD::F64X2_ADD
+            | OpcodeFD::F64X2_SUB
+            | OpcodeFD::F64X2_MUL
+            | OpcodeFD::F64X2_DIV => {
+                if dst_fp == rhs_fp as u8 && dst_fp != lhs_fp as u8 {
+                    let tmp = self.fp_scratch.scoped_alloc().detach();
+                    movdqa_rr(&mut self.core.text, *tmp as u8, rhs_fp as u8);
+                    *tmp as u8
+                } else {
+                    rhs_fp as u8
+                }
+            }
+            _ => rhs_fp as u8,
         };
 
-        match OpcodeFD::try_from(opcode)? {
+        match opcode {
             OpcodeFD::I8X16_NARROW_I16X8_S => self.lower_simd_narrow_scalar(
                 dst_fp,
                 lhs_fp,
@@ -1486,29 +1573,26 @@ impl<'a> X86_64Backend<'a> {
                 pavgb_rr(&mut self.core.text, dst_fp, rhs_src);
                 Ok(())
             }
-            OpcodeFD::I8X16_EQ => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I8X16_EQ => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::B8,
                 SimdCompareOp::Eq,
-                false,
             ),
-            OpcodeFD::I8X16_NE => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I8X16_NE => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::B8,
                 SimdCompareOp::Ne,
-                false,
             ),
-            OpcodeFD::I8X16_LT_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I8X16_LT_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::B8,
                 SimdCompareOp::Lt,
-                false,
             ),
             OpcodeFD::I8X16_LT_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1518,13 +1602,12 @@ impl<'a> X86_64Backend<'a> {
                 SimdCompareOp::Lt,
                 true,
             ),
-            OpcodeFD::I8X16_GT_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I8X16_GT_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::B8,
                 SimdCompareOp::Gt,
-                false,
             ),
             OpcodeFD::I8X16_GT_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1534,13 +1617,12 @@ impl<'a> X86_64Backend<'a> {
                 SimdCompareOp::Gt,
                 true,
             ),
-            OpcodeFD::I8X16_LE_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I8X16_LE_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::B8,
                 SimdCompareOp::Le,
-                false,
             ),
             OpcodeFD::I8X16_LE_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1550,13 +1632,12 @@ impl<'a> X86_64Backend<'a> {
                 SimdCompareOp::Le,
                 true,
             ),
-            OpcodeFD::I8X16_GE_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I8X16_GE_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::B8,
                 SimdCompareOp::Ge,
-                false,
             ),
             OpcodeFD::I8X16_GE_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1685,29 +1766,26 @@ impl<'a> X86_64Backend<'a> {
                 false,
                 true,
             ),
-            OpcodeFD::I16X8_EQ => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I16X8_EQ => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::H16,
                 SimdCompareOp::Eq,
-                false,
             ),
-            OpcodeFD::I16X8_NE => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I16X8_NE => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::H16,
                 SimdCompareOp::Ne,
-                false,
             ),
-            OpcodeFD::I16X8_LT_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I16X8_LT_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::H16,
                 SimdCompareOp::Lt,
-                false,
             ),
             OpcodeFD::I16X8_LT_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1717,13 +1795,12 @@ impl<'a> X86_64Backend<'a> {
                 SimdCompareOp::Lt,
                 true,
             ),
-            OpcodeFD::I16X8_GT_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I16X8_GT_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::H16,
                 SimdCompareOp::Gt,
-                false,
             ),
             OpcodeFD::I16X8_GT_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1733,13 +1810,12 @@ impl<'a> X86_64Backend<'a> {
                 SimdCompareOp::Gt,
                 true,
             ),
-            OpcodeFD::I16X8_LE_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I16X8_LE_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::H16,
                 SimdCompareOp::Le,
-                false,
             ),
             OpcodeFD::I16X8_LE_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1749,13 +1825,12 @@ impl<'a> X86_64Backend<'a> {
                 SimdCompareOp::Le,
                 true,
             ),
-            OpcodeFD::I16X8_GE_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I16X8_GE_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::H16,
                 SimdCompareOp::Ge,
-                false,
             ),
             OpcodeFD::I16X8_GE_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1822,7 +1897,7 @@ impl<'a> X86_64Backend<'a> {
                 Ok(())
             }
             OpcodeFD::I32X4_DOT_I16X8_S => {
-                self.lower_i32x4_dot_i16x8_s_scalar(dst_fp, lhs_fp, rhs_fp)
+                self.lower_i32x4_dot_i16x8_s_vector(dst_fp, lhs_fp, rhs_src)
             }
             OpcodeFD::I32X4_EXTMUL_LOW_I16X8_S => self.lower_simd_extmul_scalar(
                 dst_fp,
@@ -1856,29 +1931,26 @@ impl<'a> X86_64Backend<'a> {
                 false,
                 true,
             ),
-            OpcodeFD::I32X4_EQ => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I32X4_EQ => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::S32,
                 SimdCompareOp::Eq,
-                false,
             ),
-            OpcodeFD::I32X4_NE => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I32X4_NE => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::S32,
                 SimdCompareOp::Ne,
-                false,
             ),
-            OpcodeFD::I32X4_LT_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I32X4_LT_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::S32,
                 SimdCompareOp::Lt,
-                false,
             ),
             OpcodeFD::I32X4_LT_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1888,13 +1960,12 @@ impl<'a> X86_64Backend<'a> {
                 SimdCompareOp::Lt,
                 true,
             ),
-            OpcodeFD::I32X4_GT_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I32X4_GT_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::S32,
                 SimdCompareOp::Gt,
-                false,
             ),
             OpcodeFD::I32X4_GT_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1904,13 +1975,12 @@ impl<'a> X86_64Backend<'a> {
                 SimdCompareOp::Gt,
                 true,
             ),
-            OpcodeFD::I32X4_LE_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I32X4_LE_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::S32,
                 SimdCompareOp::Le,
-                false,
             ),
             OpcodeFD::I32X4_LE_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1920,13 +1990,12 @@ impl<'a> X86_64Backend<'a> {
                 SimdCompareOp::Le,
                 true,
             ),
-            OpcodeFD::I32X4_GE_S => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I32X4_GE_S => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::S32,
                 SimdCompareOp::Ge,
-                false,
             ),
             OpcodeFD::I32X4_GE_U => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -1990,21 +2059,19 @@ impl<'a> X86_64Backend<'a> {
                 false,
                 true,
             ),
-            OpcodeFD::I64X2_EQ => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I64X2_EQ => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::D64,
                 SimdCompareOp::Eq,
-                false,
             ),
-            OpcodeFD::I64X2_NE => self.lower_simd_int_compare_scalar(
+            OpcodeFD::I64X2_NE => self.lower_simd_int_compare_vector(
                 dst_fp,
                 lhs_fp,
-                rhs_fp,
+                rhs_src,
                 IntCompareLaneWidth::D64,
                 SimdCompareOp::Ne,
-                false,
             ),
             OpcodeFD::I64X2_LT_S => self.lower_simd_int_compare_scalar(
                 dst_fp,
@@ -2390,6 +2457,13 @@ impl<'a> X86_64Backend<'a> {
     fn materialize_v128_constant_into_fp(&mut self, dst_fp: u8, bytes: [u8; 16]) {
         let low = u64::from_le_bytes(bytes[..8].try_into().expect("slice length"));
         let high = u64::from_le_bytes(bytes[8..].try_into().expect("slice length"));
+        if low == high {
+            let gp = self.gp_scratch.scoped_alloc().detach();
+            self.materialize_u64(*gp, low);
+            enc::movq_xmm_r64(&mut self.core.text, dst_fp, *gp);
+            punpcklqdq_rr(&mut self.core.text, dst_fp, dst_fp);
+            return;
+        }
         enc::sub_rsp_imm8(&mut self.core.text, 16);
         {
             let gp0 = self.gp_scratch.scoped_alloc().detach();
@@ -2909,7 +2983,7 @@ impl<'a> X86_64Backend<'a> {
             enc::imul_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
             enc::add_ri_64(&mut self.core.text, X86Reg::RAX, 0x4000);
             enc::sar_imm_64(&mut self.core.text, X86Reg::RAX, 15);
-            self.emit_saturate_to_width(X86Reg::RAX, IntCompareLaneWidth::H16, true);
+            self.emit_saturate_i16_s(X86Reg::RAX);
             enc::store_16(&mut self.core.text, X86Reg::RSP, out_off, X86Reg::RAX);
         }
         movdqu_load(&mut self.core.text, dst_fp, X86Reg::RSP, 32);
@@ -2917,29 +2991,16 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
-    fn lower_i32x4_dot_i16x8_s_scalar(
+    fn lower_i32x4_dot_i16x8_s_vector(
         &mut self,
         dst_fp: u8,
         lhs_fp: u8,
-        rhs_fp: u8,
+        rhs_src: u8,
     ) -> Result<(), WasmError> {
-        enc::sub_rsp_imm8(&mut self.core.text, 48);
-        movdqu_store(&mut self.core.text, X86Reg::RSP, 0, lhs_fp);
-        movdqu_store(&mut self.core.text, X86Reg::RSP, 16, rhs_fp);
-        for lane in 0..4 {
-            let base = lane * 4;
-            let out_off = 32 + lane * 4;
-            enc::load_s16_64(&mut self.core.text, X86Reg::RAX, X86Reg::RSP, base);
-            enc::load_s16_64(&mut self.core.text, X86Reg::RDX, X86Reg::RSP, 16 + base);
-            enc::imul_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RDX);
-            enc::load_s16_64(&mut self.core.text, X86Reg::RCX, X86Reg::RSP, base + 2);
-            enc::load_s16_64(&mut self.core.text, X86Reg::RDX, X86Reg::RSP, 16 + base + 2);
-            enc::imul_rr_64(&mut self.core.text, X86Reg::RCX, X86Reg::RDX);
-            enc::add_rr_64(&mut self.core.text, X86Reg::RAX, X86Reg::RCX);
-            enc::store_32(&mut self.core.text, X86Reg::RSP, out_off, X86Reg::RAX);
+        if dst_fp != lhs_fp {
+            movdqa_rr(&mut self.core.text, dst_fp, lhs_fp);
         }
-        movdqu_load(&mut self.core.text, dst_fp, X86Reg::RSP, 32);
-        enc::add_rsp_imm8(&mut self.core.text, 48);
+        pmaddwd_rr(&mut self.core.text, dst_fp, rhs_src);
         Ok(())
     }
 
@@ -3398,37 +3459,19 @@ impl<'a> X86_64Backend<'a> {
         }
     }
 
-    fn emit_saturate_to_width(&mut self, reg: X86Reg, width: IntCompareLaneWidth, signed: bool) {
-        let (min, max) = match (width, signed) {
-            (IntCompareLaneWidth::B8, true) => (-128i64, 127i64),
-            (IntCompareLaneWidth::B8, false) => (0, 255),
-            (IntCompareLaneWidth::H16, true) => (-32768, 32767),
-            (IntCompareLaneWidth::H16, false) => (0, 65535),
-            (IntCompareLaneWidth::S32, true) => (i32::MIN as i64, i32::MAX as i64),
-            (IntCompareLaneWidth::S32, false) => (0, u32::MAX as i64),
-            (IntCompareLaneWidth::D64, _) => return,
-        };
+    fn emit_saturate_i16_s(&mut self, reg: X86Reg) {
         let above_min = self.core.new_label();
         let done = self.core.new_label();
-        enc::cmp_ri_64(&mut self.core.text, reg, min as i32);
+        enc::cmp_ri_64(&mut self.core.text, reg, -32768);
         self.emit_jcc(Cc::GE, above_min);
-        enc::mov_ri_64(&mut self.core.text, reg, min as u64);
+        enc::mov_ri_64(&mut self.core.text, reg, (-32768i64) as u64);
         self.emit_jmp(done);
         self.core.bind_label(above_min);
-        if max <= i32::MAX as i64 {
-            let within = self.core.new_label();
-            enc::cmp_ri_64(&mut self.core.text, reg, max as i32);
-            self.emit_jcc(Cc::LE, within);
-            enc::mov_ri_64(&mut self.core.text, reg, max as u64);
-            self.core.bind_label(within);
-        } else {
-            let within = self.core.new_label();
-            enc::mov_ri_64(&mut self.core.text, X86Reg::RDX, max as u64);
-            enc::cmp_rr_64(&mut self.core.text, reg, X86Reg::RDX);
-            self.emit_jcc(Cc::BE, within);
-            enc::mov_ri_64(&mut self.core.text, reg, max as u64);
-            self.core.bind_label(within);
-        }
+        let within = self.core.new_label();
+        enc::cmp_ri_64(&mut self.core.text, reg, 32767);
+        self.emit_jcc(Cc::LE, within);
+        enc::mov_ri_64(&mut self.core.text, reg, 32767);
+        self.core.bind_label(within);
         self.core.bind_label(done);
     }
 
@@ -3852,6 +3895,100 @@ impl<'a> X86_64Backend<'a> {
         Ok(())
     }
 
+    fn invert_simd_mask(&mut self, dst_fp: u8) {
+        let all_ones = self.fp_scratch.scoped_alloc().detach();
+        pxor_rr(&mut self.core.text, *all_ones as u8, *all_ones as u8);
+        pcmpeqd_rr(&mut self.core.text, *all_ones as u8, *all_ones as u8);
+        pxor_rr(&mut self.core.text, dst_fp, *all_ones as u8);
+    }
+
+    fn lower_simd_int_compare_vector(
+        &mut self,
+        dst_fp: u8,
+        lhs_fp: u8,
+        rhs_src: u8,
+        lane_width: IntCompareLaneWidth,
+        op: SimdCompareOp,
+    ) -> Result<(), WasmError> {
+        let emit_eq = |backend: &mut Self, dst_fp: u8, src_fp: u8| match lane_width {
+            IntCompareLaneWidth::B8 => pcmpeqb_rr(&mut backend.core.text, dst_fp, src_fp),
+            IntCompareLaneWidth::H16 => pcmpeqw_rr(&mut backend.core.text, dst_fp, src_fp),
+            IntCompareLaneWidth::S32 => pcmpeqd_rr(&mut backend.core.text, dst_fp, src_fp),
+            IntCompareLaneWidth::D64 => pcmpeqq_rr(&mut backend.core.text, dst_fp, src_fp),
+        };
+        let emit_gt = |backend: &mut Self, dst_fp: u8, src_fp: u8| -> Result<(), WasmError> {
+            match lane_width {
+                IntCompareLaneWidth::B8 => pcmpgtb_rr(&mut backend.core.text, dst_fp, src_fp),
+                IntCompareLaneWidth::H16 => pcmpgtw_rr(&mut backend.core.text, dst_fp, src_fp),
+                IntCompareLaneWidth::S32 => pcmpgtd_rr(&mut backend.core.text, dst_fp, src_fp),
+                IntCompareLaneWidth::D64 => {
+                    return Err(WasmError::internal(
+                        "x86_64 SIMD i64x2 signed compare still needs scalar lowering",
+                    ))
+                }
+            }
+            Ok(())
+        };
+
+        match op {
+            SimdCompareOp::Eq => {
+                if dst_fp != lhs_fp {
+                    movdqa_rr(&mut self.core.text, dst_fp, lhs_fp);
+                }
+                emit_eq(self, dst_fp, rhs_src);
+            }
+            SimdCompareOp::Ne => {
+                if dst_fp != lhs_fp {
+                    movdqa_rr(&mut self.core.text, dst_fp, lhs_fp);
+                }
+                emit_eq(self, dst_fp, rhs_src);
+                self.invert_simd_mask(dst_fp);
+            }
+            SimdCompareOp::Gt => {
+                if dst_fp != lhs_fp {
+                    movdqa_rr(&mut self.core.text, dst_fp, lhs_fp);
+                }
+                emit_gt(self, dst_fp, rhs_src)?;
+            }
+            SimdCompareOp::Lt => {
+                let lhs_src = if dst_fp == lhs_fp && lhs_fp != rhs_src {
+                    let tmp = self.fp_scratch.scoped_alloc().detach();
+                    movdqa_rr(&mut self.core.text, *tmp as u8, lhs_fp);
+                    *tmp as u8
+                } else {
+                    lhs_fp
+                };
+                if dst_fp != rhs_src {
+                    movdqa_rr(&mut self.core.text, dst_fp, rhs_src);
+                }
+                emit_gt(self, dst_fp, lhs_src)?;
+            }
+            SimdCompareOp::Ge => {
+                let lhs_src = if dst_fp == lhs_fp && lhs_fp != rhs_src {
+                    let tmp = self.fp_scratch.scoped_alloc().detach();
+                    movdqa_rr(&mut self.core.text, *tmp as u8, lhs_fp);
+                    *tmp as u8
+                } else {
+                    lhs_fp
+                };
+                if dst_fp != rhs_src {
+                    movdqa_rr(&mut self.core.text, dst_fp, rhs_src);
+                }
+                emit_gt(self, dst_fp, lhs_src)?;
+                self.invert_simd_mask(dst_fp);
+            }
+            SimdCompareOp::Le => {
+                if dst_fp != lhs_fp {
+                    movdqa_rr(&mut self.core.text, dst_fp, lhs_fp);
+                }
+                emit_gt(self, dst_fp, rhs_src)?;
+                self.invert_simd_mask(dst_fp);
+            }
+        }
+
+        Ok(())
+    }
+
     fn lower_simd_int_compare_scalar(
         &mut self,
         dst_fp: u8,
@@ -4074,7 +4211,6 @@ impl<'a> X86_64Backend<'a> {
                 let scratch0 = self.gp_scratch.scoped_alloc().detach();
                 let scratch1 = self.gp_scratch.scoped_alloc().detach();
                 enc::load_u8(&mut self.core.text, *scratch0, base, addr.offset);
-                enc::and_ri_32(&mut self.core.text, *scratch0, 0xFF);
                 enc::mov_ri_32(&mut self.core.text, *scratch1, 0x0101_0101);
                 enc::imul_rr_32(&mut self.core.text, *scratch0, *scratch1);
                 enc::movd_xmm_r32(&mut self.core.text, dst_fp, *scratch0);
@@ -4087,7 +4223,6 @@ impl<'a> X86_64Backend<'a> {
                 let scratch0 = self.gp_scratch.scoped_alloc().detach();
                 let scratch1 = self.gp_scratch.scoped_alloc().detach();
                 enc::load_u16(&mut self.core.text, *scratch0, base, addr.offset);
-                enc::and_ri_32(&mut self.core.text, *scratch0, 0xFFFF);
                 enc::mov_ri_32(&mut self.core.text, *scratch1, 0x0001_0001);
                 enc::imul_rr_32(&mut self.core.text, *scratch0, *scratch1);
                 enc::movd_xmm_r32(&mut self.core.text, dst_fp, *scratch0);
