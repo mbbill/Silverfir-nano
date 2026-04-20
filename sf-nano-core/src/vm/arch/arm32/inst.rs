@@ -993,8 +993,24 @@ impl<'a> Arm32Backend<'a> {
                 MachineMemWidth::U64 => {
                     let s0 = self.gp_scratch.scoped_alloc();
                     let s1 = self.gp_scratch.scoped_alloc();
-                    emit_load_word_into(&mut self.core.text, *s0, base_hw, offset);
-                    emit_load_word_into(&mut self.core.text, *s1, base_hw, offset + 4);
+                    // For large offsets, hoist the base+offset computation once
+                    // into `s1` and drive both ldr_imm calls off that address
+                    // (with offsets 0 and 4). This avoids materialize + ADD
+                    // duplication across the two word loads, bringing large-
+                    // offset F64 loads to 5 instructions total (materialize +
+                    // add + 2×ldr + vmov), matching the old IndexedLoad cost.
+                    // The scratch pool only has 2 slots, so we reuse s1 as the
+                    // address temp and immediately overwrite it with the high-
+                    // word load.
+                    if !(-4091..=4091).contains(&offset) {
+                        emit_load_u32_into(&mut self.core.text, *s1, offset as u32);
+                        self.core.text.emit_u32(enc::add_reg(*s1, base_hw, *s1));
+                        self.core.text.emit_u32(enc::ldr_imm(*s0, *s1, 0));
+                        self.core.text.emit_u32(enc::ldr_imm(*s1, *s1, 4));
+                    } else {
+                        emit_load_word_into(&mut self.core.text, *s0, base_hw, offset);
+                        emit_load_word_into(&mut self.core.text, *s1, base_hw, offset + 4);
+                    }
                     self.core.text.emit_u32(enc::vmov_d_rr(dd, *s0, *s1));
                 }
                 MachineMemWidth::U32 => {

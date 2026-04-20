@@ -2030,3 +2030,231 @@ fn fuses_shru_and_into_bitfield_extract() {
         block.ops[0].kind
     );
 }
+
+// ── fuse_const_indexed tests ────────────────────────────────────────────────
+
+/// MachineReg(4) = first GP dynamic with FIXED(4)+dyn0, MachineReg(12) = first
+/// FP dynamic (after 8 GP dynamics). Matches `test_config(4, 8, 12, 20, 8)`.
+fn const_indexed_config() -> BackendConfig {
+    test_config(4, 8, 12, 20, 8)
+}
+
+#[test]
+fn fuse_const_indexed_collapses_move_imm_plus_indexed_load() {
+    // move.linear.gp r5 <- 40016
+    // indexed_load.f64 xmm12 <- [r4(base=mem0_base) + r5(ZX32) + 8]
+    // → load.f64 xmm12 <- [r4 + 40024]   (40016 + 8 = 40024)
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(5),
+                        src: MachineValue::Imm64(40016),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IndexedLoad {
+                        dst: MachineReg(12),
+                        base: MachineReg(4),
+                        index: MachineReg(5),
+                        index_extend:
+                            crate::vm::machine::machine_ir::MachineIndexExtend::ZeroExtend32,
+                        offset: 8,
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, const_indexed_config());
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 1, "expected one fused op: {:?}", block.ops);
+    assert!(
+        matches!(
+            block.ops[0].kind,
+            MachineInstKind::Load {
+                dst: MachineReg(12),
+                addr: MachineAddr {
+                    base: MachineReg(4),
+                    offset: 40024,
+                },
+                ty: MachineStorageType::Fp64,
+                width: MachineMemWidth::U64,
+                extension: MachineLoadExtension::None,
+                ..
+            }
+        ),
+        "expected fused Load, got: {:?}",
+        block.ops[0].kind
+    );
+}
+
+#[test]
+fn fuse_const_indexed_collapses_move_imm_plus_indexed_store() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(5),
+                        src: MachineValue::Imm64(0x9c50),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IndexedStore {
+                        base: MachineReg(4),
+                        index: MachineReg(5),
+                        index_extend:
+                            crate::vm::machine::machine_ir::MachineIndexExtend::ZeroExtend32,
+                        offset: 0,
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(6)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, const_indexed_config());
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 1, "expected one fused op: {:?}", block.ops);
+    assert!(
+        matches!(
+            block.ops[0].kind,
+            MachineInstKind::Store {
+                addr: MachineAddr {
+                    base: MachineReg(4),
+                    offset: 0x9c50,
+                },
+                width: MachineMemWidth::U32,
+                src: MachineValue::Reg(MachineReg(6)),
+                ..
+            }
+        ),
+        "expected fused Store, got: {:?}",
+        block.ops[0].kind
+    );
+}
+
+#[test]
+fn fuse_const_indexed_skips_when_index_is_live_after() {
+    // Index used again after the load → must not fuse (would kill the Move).
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(5),
+                        src: MachineValue::Imm64(100),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IndexedLoad {
+                        dst: MachineReg(6),
+                        base: MachineReg(4),
+                        index: MachineReg(5),
+                        index_extend:
+                            crate::vm::machine::machine_ir::MachineIndexExtend::ZeroExtend32,
+                        offset: 0,
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntUnary {
+                        width: MachineIntWidth::I32,
+                        op: MachineIntUnaryOp::Clz,
+                        dst: MachineReg(7),
+                        src: MachineValue::Reg(MachineReg(5)), // index reused
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, const_indexed_config());
+
+    let block = &program.blocks[0];
+    assert!(
+        matches!(block.ops[0].kind, MachineInstKind::Move { .. }),
+        "Move should be preserved when index is live after: {:?}",
+        block.ops
+    );
+    assert!(
+        matches!(block.ops[1].kind, MachineInstKind::IndexedLoad { .. }),
+        "IndexedLoad should be preserved: {:?}",
+        block.ops
+    );
+}
+
+#[test]
+fn fuse_const_indexed_skips_when_combined_offset_overflows_i32() {
+    // imm + offset > i32::MAX → cannot be represented in MachineAddr.offset.
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(5),
+                        src: MachineValue::Imm64(0x7fff_ff00),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IndexedLoad {
+                        dst: MachineReg(6),
+                        base: MachineReg(4),
+                        index: MachineReg(5),
+                        index_extend:
+                            crate::vm::machine::machine_ir::MachineIndexExtend::ZeroExtend32,
+                        offset: 0x200, // 0x7fff_ff00 + 0x200 = 0x8000_0100 (> i32::MAX)
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, const_indexed_config());
+
+    let block = &program.blocks[0];
+    assert_eq!(
+        block.ops.len(),
+        2,
+        "should not fuse when combined offset overflows i32: {:?}",
+        block.ops
+    );
+}

@@ -24,6 +24,7 @@ mod copy_propagate;
 mod deduplicate_constants;
 mod forward_stored_values;
 mod fuse_compare_branch;
+mod fuse_const_indexed;
 mod fuse_indexed_memory;
 mod fuse_isel;
 mod helpers;
@@ -65,6 +66,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
         forward_stored_values::forward_stored_values(block, config);
         reuse_loaded_values::reuse_loaded_values(block, config);
         fuse_indexed_memory::fuse_indexed_memory(block);
+        fuse_const_indexed::fuse_const_indexed(block, config);
         copy_propagate::copy_propagate(block, config, &mut cp_scratch);
         fuse_isel::fuse_isel(block, config);
     }
