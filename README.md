@@ -127,9 +127,36 @@ cd sf-nano-cli-minimal && cargo run --release
 
 ## WebAssembly Compatibility
 
-Silverfir-nano covers a substantial parts
-of WebAssembly 3.0, validated against the official
+Silverfir-nano supports all Core WebAssembly 3.0 features except exception
+handling, and is validated against the official
 [WebAssembly spec testsuite](https://github.com/WebAssembly/spec/tree/main/test).
+
+Supported Core WebAssembly 3.0 feature groups include:
+
+- **Extended constant expressions** — arithmetic in const expressions and
+  `global.get` of previously declared immutable globals.
+- **Tail calls** — `return_call`, `return_call_indirect`, and
+  `return_call_ref`.
+- **Multiple memories** — multi-memory definitions, imports, exports, and
+  indexed memory operations.
+- **64-bit address space** — `memory64`, `table64`, and the corresponding
+  `i64`-typed memory/table instruction paths.
+- **Typeful references** — typed `ref null`, `ref.func`, `call_ref`,
+  `br_on_null`, `br_on_non_null`, refined local initialization rules, and
+  typed table initializers.
+- **Garbage collection** — recursive types, subtyping, `struct.*`,
+  `array.*`, `ref.test`, `ref.cast`, `br_on_cast`, `br_on_cast_fail`,
+  `ref.i31`, `any.convert_extern`, and `extern.convert_any`.
+- **Baseline SIMD** — `v128` values, loads/stores, lane ops, bitwise ops,
+  arithmetic, comparisons, conversions, and the standard SIMD testsuite
+  surface currently enabled in-tree.
+- **Relaxed SIMD** — relaxed swizzle, relaxed truncation, relaxed min/max,
+  relaxed lane-select, relaxed q15mulr, relaxed dot-product, and relaxed
+  madd/nmadd.
+
+The remaining missing Core WebAssembly 3.0 feature family is
+**exception handling**, including `throw`, `throw_ref`, `try_table`, and
+`rethrow`.
 
 ## License
 
