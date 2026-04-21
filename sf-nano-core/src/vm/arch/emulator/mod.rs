@@ -11,7 +11,6 @@ use crate::collections;
 
 use self::address_space::EmulatorAddressSpace;
 use crate::{
-    constants::MAX_STACK_SIZE,
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
@@ -45,8 +44,6 @@ use crate::{
 
 #[cfg(sf_call_trace)]
 use crate::vm::debug::function_trace;
-
-const MAX_STACK_SLOTS: usize = MAX_STACK_SIZE / core::mem::size_of::<u64>();
 
 unsafe extern "C" {
     fn ceilf(x: f32) -> f32;
@@ -155,9 +152,13 @@ pub(crate) fn eval(
         .get(func_id.0 as usize)
         .ok_or_else(|| WasmError::internal("native entry function is missing runtime metadata"))?;
 
-    let mut stack = collections::vec![0u64; MAX_STACK_SLOTS];
+    let stack_slots = crate::runtime_config().wasm_stack_bytes / core::mem::size_of::<u64>();
+    if stack_slots == 0 {
+        return Err(WasmError::runtime_not_configured());
+    }
+    let mut stack = collections::vec![0u64; stack_slots];
     let stack_base = stack.as_mut_ptr();
-    let stack_end = unsafe { stack_base.add(MAX_STACK_SLOTS) };
+    let stack_end = unsafe { stack_base.add(stack_slots) };
 
     unsafe {
         for (index, arg) in args.iter().enumerate() {

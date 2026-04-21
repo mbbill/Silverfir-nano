@@ -632,11 +632,14 @@ fn finish_native_compile_streaming(
         .sum();
     set_native_stats(groups, ssa_ops, mir_ops, bytes);
 
-    let mut published = module
-        .native_code_buffer()
-        .map_err(|err| WasmError::internal(err))?;
-    core::mem::swap(&mut *published, &mut executable);
-    drop(published);
+    // Install the freshly-emitted buffer as the module's persistent
+    // native buffer. Avoids the old swap pattern (which would allocate
+    // a second CodeBuffer inside `native_code_buffer()` just to throw
+    // it away after the swap) — significant on MCU targets where the
+    // OS layer serves a fixed executable arena.
+    module
+        .install_native_code_buffer(executable)
+        .map_err(WasmError::internal)?;
 
     let compiled = Rc::new(compiled_view.finish(active_backend));
     compiled.publish_local_call_infos(function_info_base);

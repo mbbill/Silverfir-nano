@@ -6,7 +6,7 @@ mod wast_test_runner;
 use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
 use sf_nano_core::{
-    active_runtime_engine, constants::MAX_STACK_SIZE, reset_native_runtime_state, set_backend_mode,
+    active_runtime_engine, reset_native_runtime_state, runtime_config, set_backend_mode,
     target_has_simd, BackendMode,
 };
 use std::{
@@ -147,7 +147,11 @@ fn run_wast_tests_with_large_stack(testsuite_dir: PathBuf, filters: Vec<String>)
 }
 
 fn recommended_worker_stack_size() -> usize {
-    std::cmp::max(MAX_STACK_SIZE * 4, 8 * 1024 * 1024)
+    // Sized by sf-nano-core's configured Wasm operand/call stack —
+    // the worker OS thread must be large enough to hold everything the
+    // JIT might push. 4× headroom over the Wasm stack, with an 8 MiB
+    // floor for deep-recursion spec tests.
+    std::cmp::max(runtime_config().wasm_stack_bytes * 4, 8 * 1024 * 1024)
 }
 
 fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {

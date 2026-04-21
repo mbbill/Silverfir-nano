@@ -430,6 +430,27 @@ impl ModuleInst {
             },
         ))
     }
+
+    /// Take ownership of an already-built `CodeBuffer` and publish it
+    /// as this module's persistent native buffer. Any previous buffer
+    /// is dropped (its executable region is released back to the OS
+    /// layer). Used by the streaming compile pipeline to install the
+    /// just-emitted code without a second allocation + swap.
+    ///
+    /// Returns `Err` only if a caller is currently holding a borrow of
+    /// the buffer via `native_code_buffer()` — a programmer error.
+    #[cfg(sf_jit)]
+    pub(crate) fn install_native_code_buffer(
+        &self,
+        buf: CodeBuffer,
+    ) -> Result<(), &'static str> {
+        let mut native_buf = self
+            .native_buf
+            .try_borrow_mut()
+            .map_err(|_| "module native code buffer is already borrowed")?;
+        *native_buf = Some(buf);
+        Ok(())
+    }
 }
 
 impl Default for ModuleInst {

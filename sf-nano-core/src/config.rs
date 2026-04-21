@@ -37,6 +37,13 @@ pub struct RuntimeConfig {
     /// are allowed but cannot exceed `u32::MAX` pages through this
     /// config; practical MCU targets set this to 1–16 anyway.
     pub wasm_memory_max_pages: u32,
+
+    /// Bytes reserved for the Wasm operand/call stack that backs every
+    /// JIT invoke. The eval path allocates one of these at the start
+    /// of each `invoke` call. Must be a multiple of 8 (the stack is
+    /// indexed in u64 slots). Hosted default is 2 MiB; MCU targets
+    /// should set this to single-digit KiB for simple modules.
+    pub wasm_stack_bytes: usize,
 }
 
 impl RuntimeConfig {
@@ -53,6 +60,8 @@ impl RuntimeConfig {
         Self {
             code_arena_bytes: CODE_DEFAULT,
             wasm_memory_max_pages: 65536,
+            // 2 MiB matches the former `constants::MAX_STACK_SIZE`.
+            wasm_stack_bytes: 2 * 1024 * 1024,
         }
     };
 
@@ -63,6 +72,7 @@ impl RuntimeConfig {
     pub const DEFAULT: Self = Self {
         code_arena_bytes: 0,
         wasm_memory_max_pages: 0,
+        wasm_stack_bytes: 0,
     };
 }
 
