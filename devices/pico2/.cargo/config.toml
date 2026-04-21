@@ -1,0 +1,38 @@
+# Cargo configuration for the Pico 2 / Pico 2 W firmware.
+#
+# Pinned target: Cortex-M33 in Thumb mode, hard-float ABI. The M33 on
+# RP2350 ships with FPv5-SP-D16 (single-precision FPU), so the host
+# firmware uses it. This is independent of the JIT codegen ABI: the JIT
+# emits no FP code at all on this target, because Wasm requires f64 and
+# no M-profile FPU implements double precision. Integer-only Wasm modules
+# only for the foreseeable future. See docs/RP2350_PICO2_BRINGUP_PLAN.md.
+#
+# Runner: probe-rs flashes the ELF over SWD via the debugprobe-firmware
+# Pico-1 attached to the target, then attaches to RTT and streams defmt.
+
+[build]
+target = "thumbv8m.main-none-eabihf"
+
+[env]
+# defmt filters log levels at compile time via this env var. Without it
+# set, all `defmt::info!` / `error!` / etc. macros compile to no-ops and
+# the RTT buffer stays empty, so `probe-rs run` sees nothing. `trace`
+# enables every level; tighten later if build noise becomes an issue.
+DEFMT_LOG = "trace"
+
+[target.thumbv8m.main-none-eabihf]
+# --nmagic:      turn off page alignment; saves flash.
+# -Tlink.x:      cortex-m-rt's master linker script (pulls in memory.x).
+# -Tdefmt.x:     defmt section layout, required by defmt-rtt.
+# -target-cpu:   tell LLVM to emit M33 instructions (DSP, optional CRC,
+#                MVE not used here but available).
+rustflags = [
+    "-C", "link-arg=--nmagic",
+    "-C", "link-arg=-Tlink.x",
+    "-C", "link-arg=-Tdefmt.x",
+    "-C", "target-cpu=cortex-m33",
+]
+
+# probe-rs chip name comes from `probe-rs chip list | grep -i rp235`.
+# `--protocol swd` is explicit so probe-rs doesn't waste a retry trying JTAG.
+runner = "probe-rs run --chip RP235x --protocol swd"

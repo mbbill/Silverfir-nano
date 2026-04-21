@@ -1,0 +1,63 @@
+[package]
+name = "sf-nano-pico2"
+version = "0.1.0"
+edition = "2021"
+authors = ["Bill Ming <mbbill@gmail.com>"]
+description = "Silverfir-nano bring-up firmware for Raspberry Pi Pico 2 / Pico 2 W (RP2350)"
+license = "MIT OR Apache-2.0"
+publish = false
+rust-version = "1.82"
+
+# Standalone crate: keeps its own Cargo.lock, dep graph, and target config.
+# Not a member of the main Silverfir-nano workspace — embedded deps stay out
+# of hosted builds.
+[workspace]
+
+[[bin]]
+name = "sf-nano-pico2"
+path = "src/main.rs"
+
+# One-off demo binary that exercises the Waveshare Pico-LCD-1.8 over
+# SPI1. Independent of the milestone sequence — run with
+# `cargo run --bin lcd_demo`. Kept alongside main.rs so the heartbeat
+# firmware stays unchanged.
+[[bin]]
+name = "lcd_demo"
+path = "src/bin/lcd_demo.rs"
+
+[dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+defmt = "0.3"
+defmt-rtt = "0.4"
+embedded-graphics = "0.8"
+embedded-hal = "1.0"
+embedded-hal-bus = "0.3"
+mipidsi = "0.10"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+rp235x-hal = { version = "0.4", features = [
+    "binary-info",
+    "critical-section-impl",
+    "rt",
+    "defmt",
+] }
+
+# Debug builds stay compact enough to flash quickly while still carrying
+# symbols for probe-rs / defmt. opt-level = 1 keeps RTT timing sane without
+# full release-level inlining.
+[profile.dev]
+codegen-units = 1
+debug = 2
+debug-assertions = true
+incremental = false
+opt-level = 1
+overflow-checks = true
+
+[profile.release]
+codegen-units = 1
+debug = 2
+debug-assertions = false
+incremental = false
+lto = "fat"
+opt-level = "s"
+overflow-checks = false
