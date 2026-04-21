@@ -1,0 +1,141 @@
+//! Runtime configuration for sf-nano-core.
+//!
+//! A one-shot global installed by the embedder via [`set_runtime_config`].
+//! Hosted targets get a default that preserves today's behavior
+//! (12 MiB / 16 MiB code arena, wasm32 page ceiling). The bare-metal
+//! target (`sf_os_none`) has an explicit zero default — the embedder
+//! **must** call [`set_runtime_config`] before any `CodeBuffer::new()` /
+//! `MemInst::new()` call, otherwise those fail with a clear error.
+//!
+//! Design: see `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md`.
+//!
+//! # Threading
+//!
+//! The configuration is designed for single-threaded startup: the
+//! embedder calls `set_runtime_config` once, before any other
+//! sf-nano-core API is used. No concurrent configure-and-use scenario
+//! is supported. Readers acquire-load a state byte to get a memory
+//! fence against a concurrent writer, but we do not branch on the
+//! state — the underlying storage holds a valid `RuntimeConfig` at
+//! every point (default → user value after init).
+
+use core::cell::UnsafeCell;
+use core::sync::atomic::{AtomicU8, Ordering};
+
+/// Runtime-wide tunable sizes and limits.
+#[derive(Debug, Clone, Copy)]
+pub struct RuntimeConfig {
+    /// Bytes requested from the executable-memory allocator when a
+    /// `CodeBuffer` is created without an explicit capacity. Replaces
+    /// the previously-hardcoded `CodeBuffer::DEFAULT_CAPACITY`.
+    pub code_arena_bytes: usize,
+
+    /// Maximum 64-KiB Wasm pages a single linear memory is allowed to
+    /// reach. Enforced at instantiation (module's declared max vs.
+    /// this) and at `memory.grow` (requested new size vs. this).
+    /// `u32` is enough for wasm32 (ceiling 65536). Memory64 modules
+    /// are allowed but cannot exceed `u32::MAX` pages through this
+    /// config; practical MCU targets set this to 1–16 anyway.
+    pub wasm_memory_max_pages: u32,
+}
+
+impl RuntimeConfig {
+    /// Compile-time default. Hosted targets get the pre-config numbers
+    /// that today's behavior relies on; `sf_os_none` gets zeros that
+    /// force the embedder to override (see `ConfigError::NotInitialized`
+    /// on the consumer side).
+    #[cfg(not(sf_os_none))]
+    pub const DEFAULT: Self = {
+        #[cfg(target_pointer_width = "32")]
+        const CODE_DEFAULT: usize = 12 * 1024 * 1024;
+        #[cfg(not(target_pointer_width = "32"))]
+        const CODE_DEFAULT: usize = 16 * 1024 * 1024;
+        Self {
+            code_arena_bytes: CODE_DEFAULT,
+            wasm_memory_max_pages: 65536,
+        }
+    };
+
+    /// Bare-metal default: zeros. The embedder MUST override via
+    /// [`set_runtime_config`]. Any `CodeBuffer::new()` or
+    /// `MemInst::new()` call before that override fails cleanly.
+    #[cfg(sf_os_none)]
+    pub const DEFAULT: Self = Self {
+        code_arena_bytes: 0,
+        wasm_memory_max_pages: 0,
+    };
+}
+
+/// Error returned by [`set_runtime_config`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigError {
+    /// [`set_runtime_config`] has already been called successfully.
+    /// sf-nano-core's configuration is write-once.
+    AlreadyInitialized,
+}
+
+// --- Internal state ---------------------------------------------------
+
+const STATE_UNINIT: u8 = 0;
+const STATE_WRITING: u8 = 1;
+const STATE_READY: u8 = 2;
+
+static STATE: AtomicU8 = AtomicU8::new(STATE_UNINIT);
+
+struct ConfigStorage(UnsafeCell<RuntimeConfig>);
+// SAFETY: all mutation is serialized through the STATE CAS. Readers
+// only observe either the compile-time default (STATE_UNINIT) or a
+// fully-written embedder value (STATE_READY). Cross-thread access is
+// not supported — see the module-level threading note.
+unsafe impl Sync for ConfigStorage {}
+
+static STORAGE: ConfigStorage = ConfigStorage(UnsafeCell::new(RuntimeConfig::DEFAULT));
+
+/// Install the runtime configuration. Must be called at most once,
+/// before any Store / CodeBuffer / MemInst is created. Returns
+/// `Err(AlreadyInitialized)` on a second call.
+pub fn set_runtime_config(cfg: RuntimeConfig) -> Result<(), ConfigError> {
+    STATE
+        .compare_exchange(
+            STATE_UNINIT,
+            STATE_WRITING,
+            Ordering::AcqRel,
+            Ordering::Acquire,
+        )
+        .map_err(|_| ConfigError::AlreadyInitialized)?;
+
+    // SAFETY: CAS above serialized us. No other writer can reach this
+    // point until STATE transitions back to something != WRITING,
+    // which only happens via our store below. Readers of STORAGE
+    // either saw STATE_UNINIT (and read the compile-time default from
+    // the same slot, which is valid) or will see STATE_READY after
+    // our release-store and the fully-written value.
+    unsafe {
+        *STORAGE.0.get() = cfg;
+    }
+
+    STATE.store(STATE_READY, Ordering::Release);
+    Ok(())
+}
+
+/// Read the active runtime configuration. Returns the compile-time
+/// default if [`set_runtime_config`] has not yet been called.
+#[inline]
+pub fn runtime_config() -> &'static RuntimeConfig {
+    // Acquire fence pairs with the Release store in set_runtime_config.
+    // We don't branch on the value — the storage slot is always a
+    // valid RuntimeConfig (either DEFAULT or the embedder's override).
+    let _ = STATE.load(Ordering::Acquire);
+    // SAFETY: see the Sync impl and module docs. Under the single-
+    // threaded-init contract, no torn reads are possible.
+    unsafe { &*STORAGE.0.get() }
+}
+
+/// True once an embedder has successfully installed a config via
+/// [`set_runtime_config`]. Useful for bare-metal call sites that
+/// want to give a specific "embedder did not configure" error
+/// instead of proceeding with the zero default.
+#[inline]
+pub fn runtime_config_is_initialized() -> bool {
+    STATE.load(Ordering::Acquire) == STATE_READY
+}

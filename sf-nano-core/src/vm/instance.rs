@@ -586,7 +586,7 @@ impl Instance {
                     }
                     #[cfg(not(sf_has_guard_pages))]
                     {
-                        memories.push(MemInst::new(mem.limits().clone()));
+                        memories.push(MemInst::new(mem.limits().clone())?);
                     }
                 }
                 MemoryDef::Import {
@@ -646,7 +646,7 @@ impl Instance {
                                 }
                                 #[cfg(not(sf_has_guard_pages))]
                                 {
-                                    MemInst::new(*import_limits)
+                                    MemInst::new(*import_limits)?
                                 }
                             };
                             memories.push(mem_inst);
@@ -1394,7 +1394,8 @@ mod tests {
 
     #[test]
     fn shared_memory_import_uses_live_size_and_shared_cap() {
-        let shared_memory = MemInst::new(Limits::new(1, Some(2)).unwrap());
+        let shared_memory = MemInst::new(Limits::new(1, Some(2)).unwrap())
+            .expect("test memory within runtime limits");
         grow_shared_memory_for_test(&shared_memory, 2);
         let module = importer_with_memory(Limits::new(2, Some(2)).unwrap());
         let import = Import::memory_with_state(

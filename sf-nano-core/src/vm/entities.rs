@@ -164,22 +164,37 @@ pub struct MemInst {
     pub limits: Limits,
 }
 
+/// Enforce `runtime_config().wasm_memory_max_pages` against the
+/// module's declared max (or min if no max was declared). Called from
+/// both `MemInst::new` and `MemInst::new_guarded` so every construction
+/// path sees the same ceiling.
+fn check_memory_quota(limits: &Limits) -> Result<(), WasmError> {
+    let declared_max = limits.max().unwrap_or_else(|| limits.min());
+    let configured = crate::runtime_config().wasm_memory_max_pages as usize;
+    if declared_max > configured {
+        return Err(WasmError::memory_exceeds_runtime_limit());
+    }
+    Ok(())
+}
+
 impl MemInst {
-    pub fn new(limits: Limits) -> Self {
+    pub fn new(limits: Limits) -> Result<Self, WasmError> {
+        check_memory_quota(&limits)?;
         let initial_bytes = limits.min() * crate::constants::WASM_PAGE_SIZE;
-        MemInst {
+        Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
                 data: collections::vec![0u8; initial_bytes],
                 #[cfg(sf_has_guard_pages)]
                 guard: None,
             })),
             limits,
-        }
+        })
     }
 
     /// Allocate with guard-page backing (mmap + PROT_NONE guard region).
     #[cfg(sf_has_guard_pages)]
     pub fn new_guarded(limits: Limits) -> Result<Self, WasmError> {
+        check_memory_quota(&limits)?;
         let guard = GuardPageMemory::new(limits.min())?;
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {

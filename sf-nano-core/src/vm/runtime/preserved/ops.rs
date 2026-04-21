@@ -1017,9 +1017,11 @@ pub(super) fn do_memory_grow(
     let delta_pages = decode_memory_grow_delta(delta_raw, is_64);
 
     let old_pages = mem.current_pages();
+    let runtime_cap = crate::runtime_config().wasm_memory_max_pages as usize;
+    let effective_max = mem.limits.get_max().min(runtime_cap);
     let result = match old_pages.checked_add(delta_pages) {
         None => error_value,
-        Some(new_pages) if new_pages > mem.limits.get_max() => error_value,
+        Some(new_pages) if new_pages > effective_max => error_value,
         Some(new_pages) => {
             #[cfg(sf_has_guard_pages)]
             {

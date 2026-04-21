@@ -1213,9 +1213,10 @@ mod tests {
             spec,
             type_index: 0,
         });
-        module
-            .memories
-            .push(MemInst::new(Limits::new(1, Some(1)).unwrap()));
+        module.memories.push(
+            MemInst::new(Limits::new(1, Some(1)).unwrap())
+                .expect("test memory within runtime limits"),
+        );
         let store = Box::new(Store::new(module));
 
         ensure_module_compiled(&store).expect("f32 kahan-style loop should compile");

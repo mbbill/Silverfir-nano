@@ -2983,7 +2983,7 @@ mod tests {
         }
         #[cfg(not(sf_has_guard_pages))]
         {
-            MemInst::new(limits)
+            MemInst::new(limits).expect("test memory within runtime limits")
         }
     }
 
@@ -3828,7 +3828,8 @@ mod tests {
             spec,
             type_index: 0,
         });
-        let mut mem = MemInst::new(Limits::new(1, Some(1)).unwrap());
+        let mut mem = MemInst::new(Limits::new(1, Some(1)).unwrap())
+            .expect("test memory within runtime limits");
         mem.data[..26].copy_from_slice(b"abcdefghijklmnopqrstuvwxyz");
         module.memories.push(mem);
         let mut store = Store::new(module);
@@ -3860,9 +3861,10 @@ mod tests {
             spec,
             type_index: 0,
         });
-        module
-            .memories
-            .push(MemInst::new(Limits::new(1, Some(1)).unwrap()));
+        module.memories.push(
+            MemInst::new(Limits::new(1, Some(1)).unwrap())
+                .expect("test memory within runtime limits"),
+        );
         let store = Store::new(module);
 
         ensure_module_compiled(&store).expect("native compile");
@@ -3907,7 +3909,8 @@ mod tests {
             spec,
             type_index: 0,
         });
-        let mut mem = MemInst::new(Limits::new(1, Some(1)).unwrap());
+        let mut mem = MemInst::new(Limits::new(1, Some(1)).unwrap())
+            .expect("test memory within runtime limits");
         mem.data[..26].copy_from_slice(b"abcdefghijklmnopqrstuvwxyz");
         module.memories.push(mem);
         let mut store = Store::new(module);
@@ -3936,7 +3939,8 @@ mod tests {
             spec,
             type_index: 0,
         });
-        let mut mem = MemInst::new(Limits::new(1, Some(1)).unwrap());
+        let mut mem = MemInst::new(Limits::new(1, Some(1)).unwrap())
+            .expect("test memory within runtime limits");
         mem.data[..8].copy_from_slice(b"abcdefgh");
         module.memories.push(mem);
         let mut store = Store::new(module);

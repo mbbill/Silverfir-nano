@@ -388,9 +388,10 @@ mod tests {
             func_type,
             callback: host_add as HostFn,
         });
-        module
-            .memories
-            .push(MemInst::new(Limits::new(1, Some(1)).unwrap()));
+        module.memories.push(
+            MemInst::new(Limits::new(1, Some(1)).unwrap())
+                .expect("test memory within runtime limits"),
+        );
         let (_store, mut ctx) = test_context(module);
         let meta = RuntimeCallMeta {
             func_idx_source: 0,
@@ -443,9 +444,10 @@ mod tests {
             func_type,
             callback: host_add as HostFn,
         });
-        module
-            .memories
-            .push(MemInst::new(Limits::new(1, Some(1)).unwrap()));
+        module.memories.push(
+            MemInst::new(Limits::new(1, Some(1)).unwrap())
+                .expect("test memory within runtime limits"),
+        );
         let (mut store, mut ctx) = test_context(module);
         let _ = store.register_local_function(0);
         let meta = RuntimeCallMeta {
