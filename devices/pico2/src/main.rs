@@ -12,6 +12,12 @@ use defmt_rtt as _;
 use panic_probe as _;
 use rp235x_hal as hal;
 
+// Pull sf-nano-core into the dep graph. The shared library crate
+// `sf_nano_pico2` carries the `#[global_allocator]` and the null
+// `sf_os_*` shims needed to link this in.
+use sf_nano_core as _;
+use sf_nano_pico2 as lib;
+
 /// Boot ROM image header. Placed in `.start_block` (first 4 KiB of flash
 /// by the linker script) so the RP2350 Boot ROM recognizes this as a
 /// valid secure-mode executable.
@@ -24,6 +30,8 @@ const XTAL_FREQ_HZ: u32 = 12_000_000;
 
 #[hal::entry]
 fn main() -> ! {
+    lib::heap::init();
+
     let mut pac = hal::pac::Peripherals::take().unwrap();
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
 

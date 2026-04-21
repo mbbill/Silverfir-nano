@@ -24,6 +24,13 @@ use defmt_rtt as _;
 use panic_probe as _;
 use rp235x_hal as hal;
 
+// Both binaries in this crate share the same dep graph, so sf-nano-core
+// is linked here too even though the LCD demo never calls into it. The
+// shared library crate provides the `#[global_allocator]` + null
+// `sf_os_*` shims needed to satisfy the link.
+use sf_nano_core as _;
+use sf_nano_pico2 as lib;
+
 use embedded_graphics::{
     mono_font::{ascii::FONT_10X20, MonoTextStyle},
     pixelcolor::Rgb565,
@@ -49,6 +56,8 @@ const XTAL_FREQ_HZ: u32 = 12_000_000;
 
 #[hal::entry]
 fn main() -> ! {
+    lib::heap::init();
+
     let mut pac = hal::pac::Peripherals::take().unwrap();
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
 
