@@ -30,11 +30,10 @@ use crate::{
 use super::{
     abi::{map_fixed_reg, map_reg, C_ARG0, C_ARG1, C_ARG2, C_RET0},
     arm32_f32_ceil, arm32_f32_floor, arm32_f32_nearest_bits, arm32_f32_trunc, arm32_f64_ceil,
-    arm32_f64_floor, arm32_f64_nearest_bits, arm32_f64_trunc, arm32_i64_clz, arm32_i64_ctz,
-    arm32_i64_div_s, arm32_i64_div_u, arm32_i64_mul, arm32_i64_popcnt, arm32_i64_rem_s,
-    arm32_i64_rem_u, arm32_i64_rotl, arm32_i64_rotr, arm32_i64_shl, arm32_i64_shr_s,
-    arm32_i64_shr_u, arm32_i64s_to_f32, arm32_i64s_to_f64, arm32_i64u_to_f32, arm32_i64u_to_f64,
-    arm32_saturating_trunc, arm32_trapping_trunc,
+    arm32_f64_floor, arm32_f64_nearest_bits, arm32_f64_trunc, arm32_i64_div_s, arm32_i64_div_u,
+    arm32_i64_rem_s, arm32_i64_rem_u, arm32_i64_rotl, arm32_i64_rotr, arm32_i64s_to_f32,
+    arm32_i64s_to_f64, arm32_i64u_to_f32, arm32_i64u_to_f64, arm32_saturating_trunc,
+    arm32_trapping_trunc,
     backend::{Arm32Backend, BranchFixupKind},
     enc::{self, Cond},
     operands::{OwnedPreparedGp, PreparedFp, PreparedGp},
@@ -2050,11 +2049,38 @@ impl<'a> Arm32Backend<'a> {
                 Ok(())
             }
             MachineIntBinaryOp::Mul => {
+                // 64 x 64 -> 64 (truncating) in three native multiplies. With
+                // inputs staged as R0=lhs_lo, R1=lhs_hi, R2=rhs_lo, R3=rhs_hi:
+                //
+                //   (R1_out : R0_out) = (R1 : R0) * (R3 : R2) mod 2^64
+                //                     =  R0*R2 + ((R0*R3 + R1*R2) << 32)
+                //
+                // We compute the double-width low product into the two GP
+                // scratches (R12, R14), accumulate the two cross products
+                // into the high scratch via MLA, then route the result back
+                // through R0/R1 so the standard pair-result emitter moves it
+                // into dst_lo/dst_hi. Keeping scratches as the UMULL destination
+                // leaves R0..R3 intact for the MLAs that still need the
+                // original halves.
                 let dst_lo_hw = map_reg(dst_lo)?;
                 let dst_hi_hw = map_reg(dst_hi)?;
                 self.spill_caller_saved_gp_regs();
                 self.emit_quad_args_to_r0_r3(lhs_lo, lhs_hi, rhs_lo, rhs_hi)?;
-                self.emit_host_call(arm32_i64_mul as usize);
+                {
+                    let s_lo = self.gp_scratch.scoped_alloc();
+                    let s_hi = self.gp_scratch.scoped_alloc();
+                    self.core
+                        .text
+                        .emit_u32(enc::umull(*s_lo, *s_hi, Arm32Reg::R0, Arm32Reg::R2));
+                    self.core
+                        .text
+                        .emit_u32(enc::mla(*s_hi, Arm32Reg::R0, Arm32Reg::R3, *s_hi));
+                    self.core
+                        .text
+                        .emit_u32(enc::mla(*s_hi, Arm32Reg::R1, Arm32Reg::R2, *s_hi));
+                    self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, *s_lo));
+                    self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R1, *s_hi));
+                }
                 self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
                 self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
                 Ok(())
@@ -2115,13 +2141,16 @@ impl<'a> Arm32Backend<'a> {
         self.spill_caller_saved_gp_regs();
         match op {
             MachineIntUnaryOp::Clz | MachineIntUnaryOp::Ctz | MachineIntUnaryOp::Popcnt => {
+                // Stage src pair into R0:R1 using the same shell as the old
+                // helper-call path, then emit the op inline. R3 and the
+                // gp_scratch pool (R12, R14) are free across the sequence.
                 self.emit_pair_args_to_r0_r1(src_lo, src_hi)?;
-                self.emit_host_call(match op {
-                    MachineIntUnaryOp::Clz => arm32_i64_clz as usize,
-                    MachineIntUnaryOp::Ctz => arm32_i64_ctz as usize,
-                    MachineIntUnaryOp::Popcnt => arm32_i64_popcnt as usize,
+                match op {
+                    MachineIntUnaryOp::Clz => self.emit_inline_i64_clz_r0_r1(),
+                    MachineIntUnaryOp::Ctz => self.emit_inline_i64_ctz_r0_r1(),
+                    MachineIntUnaryOp::Popcnt => self.emit_inline_i64_popcnt_r0_r1(),
                     _ => unreachable!(),
-                });
+                }
                 self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
                 self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
                 Ok(())
@@ -2159,6 +2188,99 @@ impl<'a> Arm32Backend<'a> {
                 Ok(())
             }
         }
+    }
+
+    /// Inline 64-bit CLZ. Inputs in R0 (lo) and R1 (hi); output in R0:R1
+    /// (count in R0, R1 zeroed).
+    fn emit_inline_i64_clz_r0_r1(&mut self) {
+        const R0: Arm32Reg = Arm32Reg::R0;
+        const R1: Arm32Reg = Arm32Reg::R1;
+        let hi_is_zero = self.core.new_label();
+        let done = self.core.new_label();
+        self.core.text.emit_u32(enc::cmp_imm(R1, 0, 0));
+        self.emit_branch(BranchFixupKind::BCond(Cond::Eq), hi_is_zero);
+        // hi != 0: result = clz(hi)
+        self.core.text.emit_u32(enc::clz(R0, R1));
+        self.emit_branch(BranchFixupKind::B, done);
+        self.core.bind_label(hi_is_zero);
+        // hi == 0: result = 32 + clz(lo)
+        self.core.text.emit_u32(enc::clz(R0, R0));
+        self.core.text.emit_u32(enc::add_imm(R0, R0, 32, 0));
+        self.core.bind_label(done);
+        self.core.text.emit_u32(enc::mov_imm(R1, 0, 0));
+    }
+
+    /// Inline 64-bit CTZ via `ctz(x) == clz(rbit(x))`. Inputs in R0 (lo),
+    /// R1 (hi); output in R0:R1.
+    fn emit_inline_i64_ctz_r0_r1(&mut self) {
+        const R0: Arm32Reg = Arm32Reg::R0;
+        const R1: Arm32Reg = Arm32Reg::R1;
+        let lo_is_zero = self.core.new_label();
+        let done = self.core.new_label();
+        self.core.text.emit_u32(enc::cmp_imm(R0, 0, 0));
+        self.emit_branch(BranchFixupKind::BCond(Cond::Eq), lo_is_zero);
+        // lo != 0: result = ctz(lo) = clz(rbit(lo))
+        self.core.text.emit_u32(enc::rbit(R0, R0));
+        self.core.text.emit_u32(enc::clz(R0, R0));
+        self.emit_branch(BranchFixupKind::B, done);
+        self.core.bind_label(lo_is_zero);
+        // lo == 0: result = 32 + ctz(hi)
+        self.core.text.emit_u32(enc::rbit(R1, R1));
+        self.core.text.emit_u32(enc::clz(R0, R1));
+        self.core.text.emit_u32(enc::add_imm(R0, R0, 32, 0));
+        self.core.bind_label(done);
+        self.core.text.emit_u32(enc::mov_imm(R1, 0, 0));
+    }
+
+    /// Inline 64-bit POPCNT using the classic SWAR sequence on each 32-bit
+    /// half, then summing. Inputs in R0 (lo), R1 (hi); output in R0:R1.
+    ///
+    /// Masks are shared across the two halves to amortize the 32-bit constant
+    /// loads (movw + movt each). `R12` holds `0x55555555`, `R14` holds
+    /// `0x33333333` then is rewritten to `0x0F0F0F0F`. `R3` is the per-step
+    /// scratch. The final byte-sum uses add-shifted-register forms, avoiding
+    /// a `0x01010101` constant.
+    fn emit_inline_i64_popcnt_r0_r1(&mut self) {
+        const R0: Arm32Reg = Arm32Reg::R0;
+        const R1: Arm32Reg = Arm32Reg::R1;
+        const R3: Arm32Reg = Arm32Reg::R3;
+        const SH_LSR: u32 = 0b01;
+        let m_55 = self.gp_scratch.scoped_alloc().detach();
+        let m_33 = self.gp_scratch.scoped_alloc().detach();
+        let text = &mut self.core.text;
+        emit_load_u32_into(text, *m_55, 0x5555_5555);
+        emit_load_u32_into(text, *m_33, 0x3333_3333);
+
+        // Per-half, in place: lo in R0, hi in R1.
+        for w in [R0, R1] {
+            // w = w - ((w >> 1) & 0x55555555)
+            text.emit_u32(enc::lsr_imm(R3, w, 1));
+            text.emit_u32(enc::and_reg(R3, R3, *m_55));
+            text.emit_u32(enc::sub_reg(w, w, R3));
+            // w = (w & 0x33333333) + ((w >> 2) & 0x33333333)
+            text.emit_u32(enc::and_reg(R3, w, *m_33));
+            text.emit_u32(enc::lsr_imm(w, w, 2));
+            text.emit_u32(enc::and_reg(w, w, *m_33));
+            text.emit_u32(enc::add_reg(w, w, R3));
+        }
+
+        // Reload m_33 as the 0x0F0F0F0F mask for step 3.
+        emit_load_u32_into(text, *m_33, 0x0F0F_0F0F);
+
+        for w in [R0, R1] {
+            // w = (w + (w >> 4)) & 0x0F0F0F0F
+            text.emit_u32(enc::lsr_imm(R3, w, 4));
+            text.emit_u32(enc::add_reg(w, w, R3));
+            text.emit_u32(enc::and_reg(w, w, *m_33));
+            // w = low 8 of (w + (w >> 8) + (w >> 16) + (w >> 24))
+            text.emit_u32(enc::add_reg_shifted(w, w, w, SH_LSR, 8));
+            text.emit_u32(enc::add_reg_shifted(w, w, w, SH_LSR, 16));
+            text.emit_u32(enc::and_imm(w, w, 0xFF, 0));
+        }
+
+        // Sum the two per-half counts into R0, zero out R1.
+        text.emit_u32(enc::add_reg(R0, R0, R1));
+        text.emit_u32(enc::mov_imm(R1, 0, 0));
     }
 
     // ─── I64 pair div/rem ───────────────────────────────────────────────────────
@@ -2243,6 +2365,91 @@ impl<'a> Arm32Backend<'a> {
 
         self.core.bind_label(after_traps);
 
+        // Fast path: when both operands fit in 32 bits in the relevant sign
+        // interpretation, we can do the whole div/rem natively with
+        // UDIV/SDIV + MLS (for rem). Eligibility:
+        //   Unsigned: lhs_hi == 0 && rhs_hi == 0       → both < 2^32
+        //   Signed:   lhs_hi == (lhs_lo >>s 31) AND
+        //             rhs_hi == (rhs_lo >>s 31)         → both fit in i32
+        //
+        // This covers the common case where a 64-bit local holds an i32-sized
+        // value (most arithmetic over 64-bit locals with small counters or
+        // pointers). The slow helper path still handles the genuinely-wide
+        // case.
+        let fast_done = self.core.new_label();
+        let slow_path = self.core.new_label();
+        match sign {
+            MachineSign::Unsigned => {
+                // (lhs_hi | rhs_hi) != 0  →  slow
+                let s = self.gp_scratch.scoped_alloc();
+                self.core
+                    .text
+                    .emit_u32(enc::orr_reg(*s, Arm32Reg::R1, Arm32Reg::R3));
+                self.core.text.emit_u32(enc::cmp_imm(*s, 0, 0));
+            }
+            MachineSign::Signed => {
+                // (lhs_hi ^ (lhs_lo >>s 31)) | (rhs_hi ^ (rhs_lo >>s 31)) != 0 → slow
+                let t1 = self.gp_scratch.scoped_alloc();
+                let t2 = self.gp_scratch.scoped_alloc();
+                self.core.text.emit_u32(enc::asr_imm(*t1, Arm32Reg::R0, 31));
+                self.core
+                    .text
+                    .emit_u32(enc::eor_reg(*t1, *t1, Arm32Reg::R1));
+                self.core.text.emit_u32(enc::asr_imm(*t2, Arm32Reg::R2, 31));
+                self.core
+                    .text
+                    .emit_u32(enc::eor_reg(*t2, *t2, Arm32Reg::R3));
+                self.core.text.emit_u32(enc::orr_reg(*t1, *t1, *t2));
+                self.core.text.emit_u32(enc::cmp_imm(*t1, 0, 0));
+            }
+        }
+        self.emit_branch(BranchFixupKind::BCond(Cond::Ne), slow_path);
+
+        // Native fast path: compute quot/rem in R0, fill R1 with sign/zero,
+        // then fall through to the result-copy phase.
+        {
+            let saved_dividend = self.gp_scratch.scoped_alloc().detach();
+            self.core
+                .text
+                .emit_u32(enc::mov_reg(*saved_dividend, Arm32Reg::R0));
+            match sign {
+                MachineSign::Unsigned => {
+                    self.core
+                        .text
+                        .emit_u32(enc::udiv(Arm32Reg::R0, Arm32Reg::R0, Arm32Reg::R2));
+                }
+                MachineSign::Signed => {
+                    self.core
+                        .text
+                        .emit_u32(enc::sdiv(Arm32Reg::R0, Arm32Reg::R0, Arm32Reg::R2));
+                }
+            }
+            if rem {
+                // R0 = saved - quotient * rhs_lo
+                self.core.text.emit_u32(enc::mls(
+                    Arm32Reg::R0,
+                    Arm32Reg::R0,
+                    Arm32Reg::R2,
+                    *saved_dividend,
+                ));
+            }
+            match sign {
+                MachineSign::Unsigned => {
+                    self.core.text.emit_u32(enc::mov_imm(Arm32Reg::R1, 0, 0));
+                }
+                MachineSign::Signed => {
+                    // Sign-extend the 32-bit result into the high word.
+                    self.core
+                        .text
+                        .emit_u32(enc::asr_imm(Arm32Reg::R1, Arm32Reg::R0, 31));
+                }
+            }
+        }
+        self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
+        self.emit_branch(BranchFixupKind::B, fast_done);
+
+        // Slow helper path.
+        self.core.bind_label(slow_path);
         self.emit_host_call(match (sign, rem) {
             (MachineSign::Signed, false) => arm32_i64_div_s as usize,
             (MachineSign::Unsigned, false) => arm32_i64_div_u as usize,
@@ -2250,6 +2457,8 @@ impl<'a> Arm32Backend<'a> {
             (MachineSign::Unsigned, true) => arm32_i64_rem_u as usize,
         });
         self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
+
+        self.core.bind_label(fast_done);
         self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
         Ok(())
     }
@@ -2267,23 +2476,37 @@ impl<'a> Arm32Backend<'a> {
     ) -> Result<(), WasmError> {
         let dst_lo_hw = map_reg(dst_lo)?;
         let dst_hi_hw = map_reg(dst_hi)?;
+
+        // Fast path: constant shift count folds to a 2–4 instruction template
+        // with no helper call, no spill, no stack staging. Wasm only observes
+        // the low 6 bits for i64 shift counts, and rotl/rotr have the same
+        // modular behavior, so mask early.
+        if let MachineValue::Imm64(count) = *rhs {
+            let n = (count as u32) & 63;
+            return self.emit_i64_pair_shift_const(op, dst_lo_hw, dst_hi_hw, lhs_lo, lhs_hi, n);
+        }
+
+        // Variable-count native path for Shl / ShrS / ShrU. Leans on ARM's
+        // "shift by register saturates at count ≥ 32" semantics for LSL/LSR
+        // to cover the wide-shift case without a branch. ShrS is branched
+        // because ASR replicates the sign instead of saturating to zero.
+        if matches!(
+            op,
+            MachineIntBinaryOp::Shl | MachineIntBinaryOp::ShrS | MachineIntBinaryOp::ShrU
+        ) {
+            return self.emit_i64_pair_shift_variable(op, dst_lo, dst_hi, lhs_lo, lhs_hi, rhs);
+        }
+
+        // Remaining: Rotl / Rotr with a register-valued count fall back to
+        // the existing helper call path. Register-count rotates are rare in
+        // practice, and the inline sequence would not be a clear win over
+        // the helper once icache pressure is accounted for.
         self.spill_caller_saved_gp_regs();
-        // Stack-stage all three helper args together so an input register
-        // mapping that overlaps a target slot (e.g. `lhs_hi` mapped to R2)
-        // survives the initial materialization into the destination reg.
-        // Moving rhs into R2 first and then `lhs_lo/lhs_hi` into R0/R1 is
-        // incorrect: if `lhs_hi` lives in R2, the rhs write loses it before
-        // the pair-args step can read it. Soft-float quad-precision shifts
-        // are the hot trigger (mandelbrot / c-ray) because their operands
-        // sit in high-numbered dynamic regs.
         self.emit_values_to_regs_via_stack(
             &[Arm32Reg::R0, Arm32Reg::R1, Arm32Reg::R2],
             &[lhs_lo, lhs_hi, rhs],
         )?;
         self.emit_host_call(match op {
-            MachineIntBinaryOp::Shl => arm32_i64_shl as usize,
-            MachineIntBinaryOp::ShrS => arm32_i64_shr_s as usize,
-            MachineIntBinaryOp::ShrU => arm32_i64_shr_u as usize,
             MachineIntBinaryOp::Rotl => arm32_i64_rotl as usize,
             MachineIntBinaryOp::Rotr => arm32_i64_rotr as usize,
             _other => {
@@ -2293,6 +2516,378 @@ impl<'a> Arm32Backend<'a> {
         self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
         self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
         Ok(())
+    }
+
+    /// Emit the register-count i64 pair shift for Shl / ShrS / ShrU directly
+    /// as ARM instructions. Uses the existing spill + stack-stage shell to
+    /// land `lhs_lo`, `lhs_hi`, `cnt` in R0, R1, R2, then emits the inline
+    /// sequence into R0:R1 (result pair) and routes it back to the
+    /// allocated destinations via `emit_pair_results_from_r0_r1`.
+    ///
+    /// The inline sequences exploit ARM shift-by-register semantics:
+    /// LSL/LSR produce 0 when the count is ≥ 32, ASR replicates the sign bit.
+    /// That lets Shl and ShrU be fully branch-free; ShrS needs a single
+    /// compare-and-branch because ASR's saturating behavior disagrees with
+    /// what the "wide shift" arm needs.
+    fn emit_i64_pair_shift_variable(
+        &mut self,
+        op: MachineIntBinaryOp,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs_lo: &MachineValue,
+        lhs_hi: &MachineValue,
+        rhs: &MachineValue,
+    ) -> Result<(), WasmError> {
+        let dst_lo_hw = map_reg(dst_lo)?;
+        let dst_hi_hw = map_reg(dst_hi)?;
+        self.spill_caller_saved_gp_regs();
+        self.emit_values_to_regs_via_stack(
+            &[Arm32Reg::R0, Arm32Reg::R1, Arm32Reg::R2],
+            &[lhs_lo, lhs_hi, rhs],
+        )?;
+        // Post-stage register roles:
+        //   R0 = lhs_lo, R1 = lhs_hi, R2 = count.
+        //   R3 is caller-saved (now spilled) → available as a free temp.
+        //   R12 / R14 are the gp_scratch pool — also free across this path.
+        const R0: Arm32Reg = Arm32Reg::R0;
+        const R1: Arm32Reg = Arm32Reg::R1;
+        const R2: Arm32Reg = Arm32Reg::R2;
+        const R3: Arm32Reg = Arm32Reg::R3;
+        let s_nr = self.gp_scratch.scoped_alloc().detach(); // 32 - cnt
+        let s_m = self.gp_scratch.scoped_alloc().detach(); // cnt - 32
+
+        match op {
+            MachineIntBinaryOp::Shl => {
+                let text = &mut self.core.text;
+                text.emit_u32(enc::and_imm(R2, R2, 63, 0));
+                text.emit_u32(enc::rsb_imm(*s_nr, R2, 32, 0));
+                text.emit_u32(enc::sub_imm(*s_m, R2, 32, 0));
+                // R3 = hi << cnt (saturates to 0 when cnt ≥ 32)
+                text.emit_u32(enc::lsl_reg(R3, R1, R2));
+                // *s_nr = lo >> (32 - cnt) — contribution to hi for 0 < cnt < 32.
+                // At cnt == 0: shift by 32 → 0. At cnt ≥ 32: shift by (negative
+                // wrapped to 32+) → 0. So *s_nr is 0 outside [1..31].
+                text.emit_u32(enc::lsr_reg(*s_nr, R0, *s_nr));
+                // *s_m = lo << (cnt - 32) — contribution to hi for cnt ≥ 32.
+                // At cnt < 32: shift by a negative-wrapped count ≥ 224 → 0.
+                text.emit_u32(enc::lsl_reg(*s_m, R0, *s_m));
+                text.emit_u32(enc::orr_reg(R3, R3, *s_nr));
+                text.emit_u32(enc::orr_reg(R1, R3, *s_m));
+                // result_lo = lo << cnt (saturates to 0 when cnt ≥ 32).
+                text.emit_u32(enc::lsl_reg(R0, R0, R2));
+            }
+            MachineIntBinaryOp::ShrU => {
+                let text = &mut self.core.text;
+                text.emit_u32(enc::and_imm(R2, R2, 63, 0));
+                text.emit_u32(enc::rsb_imm(*s_nr, R2, 32, 0));
+                text.emit_u32(enc::sub_imm(*s_m, R2, 32, 0));
+                // R3 = lo >> cnt (saturates to 0 when cnt ≥ 32).
+                text.emit_u32(enc::lsr_reg(R3, R0, R2));
+                // *s_nr = hi << (32 - cnt) — contribution to lo for 0 < cnt < 32.
+                text.emit_u32(enc::lsl_reg(*s_nr, R1, *s_nr));
+                // *s_m = hi >> (cnt - 32) — contribution to lo for cnt ≥ 32.
+                text.emit_u32(enc::lsr_reg(*s_m, R1, *s_m));
+                text.emit_u32(enc::orr_reg(R3, R3, *s_nr));
+                text.emit_u32(enc::orr_reg(R0, R3, *s_m));
+                // result_hi = hi >> cnt (saturates to 0 when cnt ≥ 32).
+                text.emit_u32(enc::lsr_reg(R1, R1, R2));
+            }
+            MachineIntBinaryOp::ShrS => {
+                let small = self.core.new_label();
+                let done = self.core.new_label();
+                {
+                    let text = &mut self.core.text;
+                    text.emit_u32(enc::and_imm(R2, R2, 63, 0));
+                    text.emit_u32(enc::rsb_imm(*s_nr, R2, 32, 0));
+                    text.emit_u32(enc::cmp_imm(R2, 32, 0));
+                }
+                // cnt < 32 → small path. CC (unsigned lower) matches cnt < 32
+                // after CMP of an unsigned-masked count.
+                self.emit_branch(BranchFixupKind::BCond(Cond::Cc), small);
+                // Wide-shift path: cnt in 32..64.
+                // result_lo = hi >>s (cnt - 32)
+                // result_hi = hi >>s 31 (sign fill)
+                {
+                    let text = &mut self.core.text;
+                    text.emit_u32(enc::sub_imm(*s_m, R2, 32, 0));
+                    text.emit_u32(enc::asr_reg(R0, R1, *s_m));
+                    text.emit_u32(enc::asr_imm(R1, R1, 31));
+                }
+                self.emit_branch(BranchFixupKind::B, done);
+                // Narrow-shift path: cnt in 0..32.
+                // result_lo = (lo >> cnt) | (hi << (32 - cnt))
+                // result_hi = hi >>s cnt
+                self.core.bind_label(small);
+                {
+                    let text = &mut self.core.text;
+                    text.emit_u32(enc::lsr_reg(R3, R0, R2));
+                    text.emit_u32(enc::lsl_reg(*s_nr, R1, *s_nr));
+                    text.emit_u32(enc::orr_reg(R3, R3, *s_nr));
+                    text.emit_u32(enc::asr_reg(R1, R1, R2));
+                    text.emit_u32(enc::mov_reg(R0, R3));
+                }
+                self.core.bind_label(done);
+            }
+            _ => unreachable!("variable-count shift dispatch covered only Shl/ShrS/ShrU"),
+        }
+
+        self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
+        self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
+        Ok(())
+    }
+
+    /// Inline shift/rotate of a 64-bit pair by a compile-time constant count
+    /// `n` in `0..64`. Emits straight-line code with no call, no spill, and
+    /// at most one scratch reg per aliasing input. See header comments on each
+    /// arm for the exact sequence.
+    fn emit_i64_pair_shift_const(
+        &mut self,
+        op: MachineIntBinaryOp,
+        dst_lo: Arm32Reg,
+        dst_hi: Arm32Reg,
+        lhs_lo: &MachineValue,
+        lhs_hi: &MachineValue,
+        n: u32,
+    ) -> Result<(), WasmError> {
+        debug_assert!(n < 64, "shift count must be pre-masked to 0..64");
+        // Snapshot each lhs half if it aliases either destination reg. The
+        // shift sequences below read lhs_lo and lhs_hi after writing dst, so
+        // an unsnapshotted alias would see the post-write value. Non-aliased
+        // inputs stay in their current physical register with no move.
+        let lhs_lo_gp = prepare_pair_bitop_rhs(
+            &mut self.core.text,
+            &self.gp_scratch,
+            *lhs_lo,
+            dst_lo,
+            dst_hi,
+        )?;
+        let lhs_hi_gp = prepare_pair_bitop_rhs(
+            &mut self.core.text,
+            &self.gp_scratch,
+            *lhs_hi,
+            dst_lo,
+            dst_hi,
+        )?;
+        let src_lo = *lhs_lo_gp;
+        let src_hi = *lhs_hi_gp;
+
+        const SH_LSL: u32 = 0b00;
+        const SH_LSR: u32 = 0b01;
+        const SH_ASR: u32 = 0b10;
+
+        match op {
+            MachineIntBinaryOp::Shl => {
+                self.emit_i64_shl_const(dst_lo, dst_hi, src_lo, src_hi, n);
+            }
+            MachineIntBinaryOp::ShrS => {
+                self.emit_i64_shr_const(dst_lo, dst_hi, src_lo, src_hi, n, SH_ASR);
+            }
+            MachineIntBinaryOp::ShrU => {
+                self.emit_i64_shr_const(dst_lo, dst_hi, src_lo, src_hi, n, SH_LSR);
+            }
+            MachineIntBinaryOp::Rotl => {
+                self.emit_i64_rot_const(dst_lo, dst_hi, src_lo, src_hi, n);
+            }
+            MachineIntBinaryOp::Rotr => {
+                // rotr(n) == rotl(64 - n). The normalization is cheap and lets
+                // us share one code path.
+                let rotl_equiv = if n == 0 { 0 } else { 64 - n };
+                self.emit_i64_rot_const(dst_lo, dst_hi, src_lo, src_hi, rotl_equiv);
+            }
+            _ => {
+                return Err(WasmError::invalid(
+                    "arm32: unsupported i64 pair shift op in const path",
+                ));
+            }
+        }
+        let _ = SH_LSL;
+        Ok(())
+    }
+
+    /// Emit `dst_hi:dst_lo = (src_hi:src_lo) << n` for `n in 0..64`.
+    fn emit_i64_shl_const(
+        &mut self,
+        dst_lo: Arm32Reg,
+        dst_hi: Arm32Reg,
+        src_lo: Arm32Reg,
+        src_hi: Arm32Reg,
+        n: u32,
+    ) {
+        const SH_LSL: u32 = 0b00;
+        const SH_LSR: u32 = 0b01;
+        let text = &mut self.core.text;
+        if n == 0 {
+            if dst_lo != src_lo {
+                text.emit_u32(enc::mov_reg(dst_lo, src_lo));
+            }
+            if dst_hi != src_hi {
+                text.emit_u32(enc::mov_reg(dst_hi, src_hi));
+            }
+            return;
+        }
+        if n == 32 {
+            text.emit_u32(enc::mov_reg(dst_hi, src_lo));
+            text.emit_u32(enc::mov_imm(dst_lo, 0, 0));
+            return;
+        }
+        if n < 32 {
+            // dst_hi = (src_hi << n) | (src_lo >> (32 - n))
+            // dst_lo = src_lo << n
+            // Compute dst_hi first so we can safely overwrite dst_lo = src_lo case.
+            text.emit_u32(enc::lsl_imm(dst_hi, src_hi, n));
+            text.emit_u32(enc::orr_reg_shifted(dst_hi, dst_hi, src_lo, SH_LSR, 32 - n));
+            text.emit_u32(enc::lsl_imm(dst_lo, src_lo, n));
+        } else {
+            // n in 33..64
+            text.emit_u32(enc::lsl_imm(dst_hi, src_lo, n - 32));
+            text.emit_u32(enc::mov_imm(dst_lo, 0, 0));
+        }
+        let _ = SH_LSL;
+    }
+
+    /// Emit `dst_hi:dst_lo = (src_hi:src_lo) >> n` for `n in 0..64`, where
+    /// `hi_shift` is the shift kind used on the high half (`SH_LSR` for shr_u,
+    /// `SH_ASR` for shr_s).
+    fn emit_i64_shr_const(
+        &mut self,
+        dst_lo: Arm32Reg,
+        dst_hi: Arm32Reg,
+        src_lo: Arm32Reg,
+        src_hi: Arm32Reg,
+        n: u32,
+        hi_shift: u32,
+    ) {
+        const SH_LSL: u32 = 0b00;
+        const SH_LSR: u32 = 0b01;
+        const SH_ASR: u32 = 0b10;
+        debug_assert!(hi_shift == SH_LSR || hi_shift == SH_ASR);
+        let text = &mut self.core.text;
+        if n == 0 {
+            if dst_lo != src_lo {
+                text.emit_u32(enc::mov_reg(dst_lo, src_lo));
+            }
+            if dst_hi != src_hi {
+                text.emit_u32(enc::mov_reg(dst_hi, src_hi));
+            }
+            return;
+        }
+        if n == 32 {
+            // dst_lo = src_hi; dst_hi = src_hi sign/zero fill.
+            //
+            // Write dst_hi first since dst_lo may alias src_hi — otherwise the
+            // second instruction would read the just-clobbered src_hi.
+            if hi_shift == SH_ASR {
+                text.emit_u32(enc::asr_imm(dst_hi, src_hi, 31));
+            } else {
+                text.emit_u32(enc::mov_imm(dst_hi, 0, 0));
+            }
+            if dst_lo != src_hi {
+                text.emit_u32(enc::mov_reg(dst_lo, src_hi));
+            }
+            return;
+        }
+        if n < 32 {
+            // dst_lo = (src_lo >> n) | (src_hi << (32 - n))
+            // dst_hi = src_hi >>{s|u} n
+            // Compute dst_lo first since its sources are src_lo and src_hi, and
+            // the dst_hi write only consumes src_hi which we've already read.
+            text.emit_u32(enc::lsr_imm(dst_lo, src_lo, n));
+            text.emit_u32(enc::orr_reg_shifted(dst_lo, dst_lo, src_hi, SH_LSL, 32 - n));
+            if hi_shift == SH_ASR {
+                text.emit_u32(enc::asr_imm(dst_hi, src_hi, n));
+            } else {
+                text.emit_u32(enc::lsr_imm(dst_hi, src_hi, n));
+            }
+        } else {
+            // n in 33..64
+            // dst_lo = src_hi >>{s|u} (n - 32)
+            // dst_hi = src_hi sign/zero fill
+            //
+            // Write dst_hi first; it may alias src_hi and we still need src_hi
+            // for dst_lo.
+            let m = n - 32;
+            if hi_shift == SH_ASR {
+                // dst_hi = src_hi >>s 31 (sign fill)
+                // For signed, dst_lo also needs ASR with (n-32), using src_hi.
+                // Sequence: dst_lo = src_hi ASR m ; dst_hi = src_hi ASR 31.
+                // But if dst_lo aliases src_hi, reading src_hi for dst_hi after
+                // writing dst_lo would be wrong. prepare_pair_bitop_rhs already
+                // snapshotted src_hi to an owned scratch if it aliased dst_lo,
+                // so src_hi is safe after dst_lo is written.
+                text.emit_u32(enc::asr_imm(dst_lo, src_hi, m));
+                text.emit_u32(enc::asr_imm(dst_hi, src_hi, 31));
+            } else {
+                text.emit_u32(enc::lsr_imm(dst_lo, src_hi, m));
+                text.emit_u32(enc::mov_imm(dst_hi, 0, 0));
+            }
+        }
+    }
+
+    /// Emit `dst_hi:dst_lo = rotate_left((src_hi:src_lo), n)` for `n in 0..64`.
+    fn emit_i64_rot_const(
+        &mut self,
+        dst_lo: Arm32Reg,
+        dst_hi: Arm32Reg,
+        src_lo: Arm32Reg,
+        src_hi: Arm32Reg,
+        n: u32,
+    ) {
+        const SH_LSL: u32 = 0b00;
+        const SH_LSR: u32 = 0b01;
+        let text = &mut self.core.text;
+        if n == 0 {
+            if dst_lo != src_lo {
+                text.emit_u32(enc::mov_reg(dst_lo, src_lo));
+            }
+            if dst_hi != src_hi {
+                text.emit_u32(enc::mov_reg(dst_hi, src_hi));
+            }
+            return;
+        }
+        if n == 32 {
+            // Swap halves. Handle all aliasing cases via the gp_scratch pool.
+            if dst_lo == src_lo && dst_hi == src_hi {
+                // dst_lo = src_hi, dst_hi = src_lo, but both dsts alias sources.
+                let s = self.gp_scratch.scoped_alloc();
+                text.emit_u32(enc::mov_reg(*s, src_lo));
+                text.emit_u32(enc::mov_reg(dst_lo, src_hi));
+                text.emit_u32(enc::mov_reg(dst_hi, *s));
+                return;
+            }
+            if dst_lo == src_hi {
+                // Must write dst_hi first (dst_hi = src_lo), then dst_lo = src_hi (stale);
+                // so stage src_hi first.
+                let s = self.gp_scratch.scoped_alloc();
+                text.emit_u32(enc::mov_reg(*s, src_hi));
+                text.emit_u32(enc::mov_reg(dst_hi, src_lo));
+                text.emit_u32(enc::mov_reg(dst_lo, *s));
+                return;
+            }
+            // dst_hi may alias src_lo; safe ordering: dst_lo = src_hi, then dst_hi = src_lo.
+            text.emit_u32(enc::mov_reg(dst_lo, src_hi));
+            if dst_hi != src_lo {
+                text.emit_u32(enc::mov_reg(dst_hi, src_lo));
+            }
+            return;
+        }
+        // Normalize: if n >= 32, swap the source pair and reduce n by 32.
+        let (src_lo, src_hi, m) = if n >= 32 {
+            (src_hi, src_lo, n - 32)
+        } else {
+            (src_lo, src_hi, n)
+        };
+        // 1 <= m < 32
+        // dst_lo = (src_lo << m) | (src_hi >> (32 - m))
+        // dst_hi = (src_hi << m) | (src_lo >> (32 - m))
+        // Both writes read src_lo and src_hi. If either dst aliases src, we
+        // need to sequence carefully. prepare_pair_bitop_rhs already snapshotted
+        // any src half that aliases a dst half, so src_lo and src_hi here refer
+        // to values that are safe to read after either dst write.
+        text.emit_u32(enc::lsl_imm(dst_lo, src_lo, m));
+        text.emit_u32(enc::orr_reg_shifted(dst_lo, dst_lo, src_hi, SH_LSR, 32 - m));
+        text.emit_u32(enc::lsl_imm(dst_hi, src_hi, m));
+        text.emit_u32(enc::orr_reg_shifted(dst_hi, dst_hi, src_lo, SH_LSR, 32 - m));
+        let _ = SH_LSL;
     }
 
     // ─── I64 pair compare ───────────────────────────────────────────────────────

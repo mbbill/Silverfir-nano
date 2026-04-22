@@ -78,49 +78,19 @@ fn join_u64(lo: u32, hi: u32) -> u64 {
     u64::from(lo) | (u64::from(hi) << 32)
 }
 
-/// Count leading zeros in a 64-bit value passed as lo/hi halves.
-pub(crate) extern "C" fn arm32_i64_clz(lo: u32, hi: u32) -> u64 {
-    u64::from(join_u64(lo, hi).leading_zeros())
-}
-
-/// Count trailing zeros in a 64-bit value passed as lo/hi halves.
-pub(crate) extern "C" fn arm32_i64_ctz(lo: u32, hi: u32) -> u64 {
-    u64::from(join_u64(lo, hi).trailing_zeros())
-}
-
-/// Count set bits in a 64-bit value passed as lo/hi halves.
-pub(crate) extern "C" fn arm32_i64_popcnt(lo: u32, hi: u32) -> u64 {
-    u64::from(join_u64(lo, hi).count_ones())
-}
-
-/// Shift a 64-bit value left by the low 6 bits of `count`.
-pub(crate) extern "C" fn arm32_i64_shl(lo: u32, hi: u32, count: u32) -> u64 {
-    join_u64(lo, hi) << (count & 63)
-}
-
-/// Arithmetic right shift of a 64-bit value by the low 6 bits of `count`.
-pub(crate) extern "C" fn arm32_i64_shr_s(lo: u32, hi: u32, count: u32) -> i64 {
-    ((join_u64(lo, hi)) as i64) >> (count & 63)
-}
-
-/// Logical right shift of a 64-bit value by the low 6 bits of `count`.
-pub(crate) extern "C" fn arm32_i64_shr_u(lo: u32, hi: u32, count: u32) -> u64 {
-    join_u64(lo, hi) >> (count & 63)
-}
-
 /// Rotate a 64-bit value left by the low 6 bits of `count`.
+///
+/// Retained for the register-count Rotl/Rotr fallback in the arm32 backend.
+/// The constant-count path and the Shl/ShrS/ShrU register-count paths are
+/// fully inlined; only these two rotations keep the helper fallback.
 pub(crate) extern "C" fn arm32_i64_rotl(lo: u32, hi: u32, count: u32) -> u64 {
     join_u64(lo, hi).rotate_left(count & 63)
 }
 
-/// Rotate a 64-bit value right by the low 6 bits of `count`.
+/// Rotate a 64-bit value right by the low 6 bits of `count`. See
+/// [`arm32_i64_rotl`] for why this helper is retained.
 pub(crate) extern "C" fn arm32_i64_rotr(lo: u32, hi: u32, count: u32) -> u64 {
     join_u64(lo, hi).rotate_right(count & 63)
-}
-
-/// Add two 64-bit values passed as lo/hi halves.
-pub(crate) extern "C" fn arm32_i64_mul(lhs_lo: u32, lhs_hi: u32, rhs_lo: u32, rhs_hi: u32) -> u64 {
-    join_u64(lhs_lo, lhs_hi).wrapping_mul(join_u64(rhs_lo, rhs_hi))
 }
 
 /// Signed 64-bit division over split lo/hi halves.

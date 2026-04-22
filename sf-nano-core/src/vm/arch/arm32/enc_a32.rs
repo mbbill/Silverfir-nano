@@ -536,6 +536,32 @@ pub(super) fn mls(dst: Arm32Reg, mul_lhs: Arm32Reg, mul_rhs: Arm32Reg, acc: Arm3
         | rm(mul_lhs)
 }
 
+/// MLA Rd, Rn, Rm, Ra (Rd = Ra + Rn * Rm, low 32 bits)
+#[inline]
+pub(super) fn mla(dst: Arm32Reg, mul_lhs: Arm32Reg, mul_rhs: Arm32Reg, acc: Arm32Reg) -> u32 {
+    // MLA: cond 0000 0010 Rd Ra Rm 1001 Rn
+    cond_bits(Cond::Al)
+        | (0b0000_0010 << 20)
+        | rn(dst)
+        | rd(acc)
+        | rs(mul_rhs)
+        | (0b1001 << 4)
+        | rm(mul_lhs)
+}
+
+/// UMULL RdLo, RdHi, Rn, Rm (unsigned 32 x 32 → 64, RdHi:RdLo = Rn * Rm)
+#[inline]
+pub(super) fn umull(rd_lo: Arm32Reg, rd_hi: Arm32Reg, mul_lhs: Arm32Reg, mul_rhs: Arm32Reg) -> u32 {
+    // UMULL: cond 0000 1000 RdHi RdLo Rm 1001 Rn
+    cond_bits(Cond::Al)
+        | (0b0000_1000 << 20)
+        | rn(rd_hi)
+        | rd(rd_lo)
+        | rs(mul_rhs)
+        | (0b1001 << 4)
+        | rm(mul_lhs)
+}
+
 // ─── Divide ────────────────────────────────────────────────────────────────
 
 /// SDIV Rd, Rn, Rm (Rd = Rn / Rm, signed)
@@ -813,6 +839,24 @@ mod tests {
     fn encodes_clz_with_the_fixed_low_nibbles() {
         assert_eq!(clz(Arm32Reg::R3, Arm32Reg::R3), 0xe16f3f13);
         assert_eq!(clz(Arm32Reg::R0, Arm32Reg::R1), 0xe16f0f11);
+    }
+
+    #[test]
+    fn encodes_umull_with_rdhi_in_rn_and_rdlo_in_rd_slot() {
+        // UMULL R0, R1, R2, R3  (RdLo=R0, RdHi=R1, Rn=R2, Rm=R3)
+        assert_eq!(
+            umull(Arm32Reg::R0, Arm32Reg::R1, Arm32Reg::R2, Arm32Reg::R3),
+            0xe0810392
+        );
+    }
+
+    #[test]
+    fn encodes_mla_with_accumulator_in_ra_slot() {
+        // MLA R0, R1, R2, R3  (R0 = R3 + R1 * R2)
+        assert_eq!(
+            mla(Arm32Reg::R0, Arm32Reg::R1, Arm32Reg::R2, Arm32Reg::R3),
+            0xe0203291
+        );
     }
 }
 

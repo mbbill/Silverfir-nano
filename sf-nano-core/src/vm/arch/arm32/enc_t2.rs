@@ -716,6 +716,33 @@ pub(super) fn mls(dst: Arm32Reg, mul_lhs: Arm32Reg, mul_rhs: Arm32Reg, acc: Arm3
     thumb32(h0, h1)
 }
 
+/// `MLA Rd, Rn, Rm, Ra` — T1. Rd = Ra + (Rn * Rm), low 32 bits. Ra must not
+/// be PC (Ra=15 decodes as MUL).
+pub(super) fn mla(dst: Arm32Reg, mul_lhs: Arm32Reg, mul_rhs: Arm32Reg, acc: Arm32Reg) -> u32 {
+    let rd = dst.idx() as u16;
+    let rn = mul_lhs.idx() as u16;
+    let rm = mul_rhs.idx() as u16;
+    let ra = acc.idx() as u16;
+    let h0 = 0xFB00u16 | rn;
+    // h1: Ra | Rd | 0000 | Rm  (op2=0000 distinguishes MLA from MLS)
+    let h1 = (ra << 12) | (rd << 8) | rm;
+    thumb32(h0, h1)
+}
+
+/// `UMULL RdLo, RdHi, Rn, Rm` — T1. Unsigned 32 x 32 → 64.
+/// (RdHi:RdLo) = Rn * Rm, where both operands are treated as unsigned.
+/// RdLo and RdHi must be distinct.
+pub(super) fn umull(rd_lo: Arm32Reg, rd_hi: Arm32Reg, mul_lhs: Arm32Reg, mul_rhs: Arm32Reg) -> u32 {
+    let rdlo = rd_lo.idx() as u16;
+    let rdhi = rd_hi.idx() as u16;
+    let rn = mul_lhs.idx() as u16;
+    let rm = mul_rhs.idx() as u16;
+    let h0 = 0xFBA0u16 | rn;
+    // h1: RdLo | RdHi | 0000 | Rm
+    let h1 = (rdlo << 12) | (rdhi << 8) | rm;
+    thumb32(h0, h1)
+}
+
 // ─── Divide ─────────────────────────────────────────────────────────────────
 
 /// `SDIV Rd, Rn, Rm` — T1.
