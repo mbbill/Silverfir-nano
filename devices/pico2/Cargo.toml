@@ -7,24 +7,18 @@ description = "Silverfir-nano bring-up firmware for Raspberry Pi Pico 2 / Pico 2
 license = "MIT OR Apache-2.0"
 publish = false
 rust-version = "1.82"
-default-run = "sf-nano-pico2"
+default-run = "mandelbrot_wasm"
 
 # Standalone crate: keeps its own Cargo.lock, dep graph, and target config.
 # Not a member of the main Silverfir-nano workspace — embedded deps stay out
 # of hosted builds.
 [workspace]
 
-[[bin]]
-name = "sf-nano-pico2"
-path = "src/main.rs"
-
-# One-off demo binary that exercises the Waveshare Pico-LCD-1.8 over
-# SPI1. Independent of the milestone sequence — run with
-# `cargo run --bin lcd_demo`. Kept alongside main.rs so the heartbeat
-# firmware stays unchanged.
-[[bin]]
-name = "lcd_demo"
-path = "src/bin/lcd_demo.rs"
+# Auto-discovered binaries live in `src/bin/`:
+#   - heartbeat          : minimal bring-up, 1 Hz tick log over RTT
+#   - lcd_demo           : SPI + DMA framebuffer pipeline, gradient + fps
+#   - mandelbrot_native  : CPU-only Mandelbrot (performance ceiling)
+#   - mandelbrot_wasm    : same kernel, JIT-executed — the headline demo
 
 [dependencies]
 cortex-m = "0.7"
@@ -49,6 +43,7 @@ rp235x-hal = { version = "0.4", features = [
 # in sf-nano-bare-smoke/, which is this crate's no-std link reference.
 sf-nano-core = { path = "../../sf-nano-core", default-features = false, features = ["jit"] }
 
+
 # Debug builds stay compact enough to flash quickly while still carrying
 # symbols for probe-rs / defmt. opt-level = 1 keeps RTT timing sane without
 # full release-level inlining.
@@ -66,5 +61,9 @@ debug = 2
 debug-assertions = false
 incremental = false
 lto = "fat"
-opt-level = "s"
+# `opt-level = 3` prioritizes speed over code size. Flash headroom on
+# Pico 2 W is plentiful (~3 MiB of 4 MiB free even with opt=3), so we
+# take the larger-but-faster code. If a future size constraint bites,
+# flip to "s" — expect the Mandelbrot compute path to slow by ~20-30%.
+opt-level = 3
 overflow-checks = false

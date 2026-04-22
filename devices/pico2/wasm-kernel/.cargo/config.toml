@@ -1,0 +1,12 @@
+# wasm-ld defaults the Wasm call stack to 1 MiB (16 pages), which
+# combined with our 40-KiB framebuffer forces the module's initial
+# linear memory up to 17 pages. The firmware's runtime config caps
+# per-memory size at 3 pages (192 KiB), so that instantiation fails.
+#
+# The Mandelbrot kernel doesn't recurse and has only a handful of
+# locals per frame — 16 KiB of Wasm call stack is overkill but cheap
+# insurance. Result: 1 page (64 KiB) covers stack + data + framebuffer
+# easily. See devices/pico2/src/config.rs for the host-side quota.
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=16384"]

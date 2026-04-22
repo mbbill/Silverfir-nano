@@ -1,0 +1,28 @@
+[package]
+name = "sf-nano-pico2-wasm-kernel"
+version = "0.1.0"
+edition = "2021"
+authors = ["Bill Ming <mbbill@gmail.com>"]
+description = "Mandelbrot kernel compiled to wasm32-unknown-unknown, to be JIT-executed by sf-nano-core on Pico 2"
+license = "MIT OR Apache-2.0"
+publish = false
+
+# Standalone crate: own Cargo.lock, not part of any workspace so the
+# parent firmware's deps don't get pulled into the wasm build graph.
+[workspace]
+
+[lib]
+crate-type = ["cdylib"]
+path = "src/lib.rs"
+
+# Build-profile mirrors a typical Wasm release: small, fast, no unwind.
+# `opt-level = 3` is the speed profile — we want the native compiler
+# to produce a tight inner loop that sf-nano-core's JIT can lower to
+# efficient thumb-2, so the benchmark reflects the JIT's quality of
+# lowering, not bad source-level Wasm.
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+overflow-checks = false

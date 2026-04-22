@@ -1,9 +1,8 @@
-//! LCD demo — benchmarks the display pipeline the Mandelbrot demo
-//! will use. Fills a heap-allocated 160×128 RGB565 framebuffer with a
-//! moving gradient, overlays the current FPS, and DMAs the whole buffer
-//! to the Waveshare Pico-LCD-1.8 over SPI1 at 40 MHz each frame.
+//! Native-CPU Mandelbrot demo — same kernel source as
+//! `mandelbrot_wasm`, compiled straight to Thumb-2 by rustc. Serves
+//! as the performance ceiling the Wasm JIT is measured against.
 //!
-//! Not part of the milestone sequence — `cargo run --bin lcd_demo`.
+//! `cargo run --bin mandelbrot_native --release`.
 
 #![no_std]
 #![no_main]
@@ -27,33 +26,11 @@ use sf_nano_pico2 as lib;
 
 use lib::board::XTAL_FREQ_HZ;
 use lib::display::{self, st7735};
+use lib::mandelbrot_kernel::FB_BYTES;
 
 #[unsafe(link_section = ".start_block")]
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
-
-const FB_BYTES: usize = st7735::PANEL_WIDTH * st7735::PANEL_HEIGHT * 2;
-
-/// Rotating-gradient test pattern: every pixel's RGB channels pick up
-/// a phase offset from `frame`, so the image animates at the pipeline's
-/// full frame rate. Serves as a stand-in "renderer" for the Mandelbrot
-/// demo this crate targets.
-fn fill_pattern(bytes: &mut [u8], frame: u32) {
-    debug_assert_eq!(bytes.len(), FB_BYTES);
-    let w = st7735::PANEL_WIDTH as u32;
-    let h = st7735::PANEL_HEIGHT as u32;
-    for y in 0..h {
-        for x in 0..w {
-            let r = ((x + frame) & 0x1f) as u16;
-            let g = ((y * 2 + frame * 2) & 0x3f) as u16;
-            let b = ((x + y + frame) & 0x1f) as u16;
-            let rgb = (r << 11) | (g << 5) | b;
-            let idx = ((y * w + x) * 2) as usize;
-            bytes[idx] = (rgb >> 8) as u8;
-            bytes[idx + 1] = rgb as u8;
-        }
-    }
-}
 
 #[hal::entry]
 fn main() -> ! {
@@ -88,13 +65,8 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    defmt::info!(
-        "lcd_demo: clocks up, sys={} Hz peri={} Hz",
-        sys_hz,
-        clocks.peripheral_clock.freq().to_Hz()
-    );
+    defmt::info!("mandelbrot_native: clocks up, sys={} Hz", sys_hz);
 
-    // SPI1 pins. GP28 is a dummy MISO (unconnected on the shield).
     let mosi = pins.gpio11.into_function::<hal::gpio::FunctionSpi>();
     let miso = pins.gpio28.into_function::<hal::gpio::FunctionSpi>();
     let sclk = pins.gpio10.into_function::<hal::gpio::FunctionSpi>();
@@ -112,14 +84,13 @@ fn main() -> ! {
         40u32.MHz(),
         MODE_0,
     );
-    defmt::info!("lcd_demo: SPI1 @ 40 MHz");
+    defmt::info!("mandelbrot_native: SPI1 @ 40 MHz");
 
     st7735::init(&mut spi_bus, &mut cs, &mut dc, &mut rst, &mut timer);
-    defmt::info!("lcd_demo: ST7735s init complete");
+    defmt::info!("mandelbrot_native: ST7735s init complete");
 
     let dma = pac.DMA.split(&mut pac.RESETS);
 
-    // Heap-backed framebuffer. Box::leak satisfies DMA's 'static bound.
     let boxed: Box<[u8; FB_BYTES]> = Box::new([0u8; FB_BYTES]);
     let fb_bytes: &'static mut [u8; FB_BYTES] = Box::leak(boxed);
 
@@ -127,86 +98,94 @@ fn main() -> ! {
     let mut ch_opt = Some(dma.ch0);
     let mut fb_opt: Option<&'static mut [u8; FB_BYTES]> = Some(fb_bytes);
 
-    defmt::info!("lcd_demo: entering render loop");
+    defmt::info!("mandelbrot_native: entering render loop");
 
     let mut frame: u32 = 0;
+    let mut compute_accumulator_us: u64 = 0;
+    let mut push_accumulator_us: u64 = 0;
     let mut fps_accumulator_us: u64 = 0;
     let mut fps_samples: u32 = 0;
     let mut last_log = timer.get_counter();
     let mut displayed_fps: u32 = 0;
 
-    // Bottom-right overlay position matches the original demo.
-    const FPS_ORIGIN: (i32, i32) = (103, 114);
+    // Top-left overlay origin — same convention as mandelbrot_wasm.
+    const FPS_ORIGIN: (i32, i32) = (2, 2);
 
     loop {
         let t_frame_start = cortex_m::peripheral::DWT::cycle_count();
 
+        // --- Compute + overlay ---
+        let t_compute_start = cortex_m::peripheral::DWT::cycle_count();
         {
             let bytes: &mut [u8] = fb_opt.as_mut().unwrap().as_mut_slice();
-            fill_pattern(bytes, frame);
+            lib::mandelbrot_kernel::render(bytes, frame);
             display::stamp_fps_overlay(bytes, FPS_ORIGIN, displayed_fps);
         }
+        let t_compute_end = cortex_m::peripheral::DWT::cycle_count();
 
-        // --- Push ---
+        // --- Push: address window + DMA ---
+        let t_push_start = cortex_m::peripheral::DWT::cycle_count();
         let mut spi = spi_opt.take().unwrap();
         let ch = ch_opt.take().unwrap();
         let bytes = fb_opt.take().unwrap();
 
-        // Address window + RAMWR via blocking SPI (13 bytes total).
         st7735::write_cmd(&mut spi, &mut cs, &mut dc, st7735::CMD_CASET);
         st7735::write_data(&mut spi, &mut cs, &mut dc, &st7735::CASET_DATA);
         st7735::write_cmd(&mut spi, &mut cs, &mut dc, st7735::CMD_RASET);
         st7735::write_data(&mut spi, &mut cs, &mut dc, &st7735::RASET_DATA);
         st7735::write_cmd(&mut spi, &mut cs, &mut dc, st7735::CMD_RAMWR);
 
-        // DMA the pixels. Hold CS low across the whole DMA so we don't
-        // drop back into command mode between bytes.
         cs.set_high().ok();
         dc.set_high().ok();
         cs.set_low().ok();
         let transfer = single_buffer::Config::new(ch, bytes, spi).start();
         let (ch_back, bytes_back, mut spi_back) = transfer.wait();
         SpiBus::<u8>::flush(&mut spi_back).ok();
-        // Empirical: flush() returning BSY=0 does not guarantee a safe
-        // CS deassert in all cases — intermittent shifts of a few
-        // pixels every few seconds suggest the last byte(s) aren't
-        // fully clocked out when CS toggles. A short CPU spin buys us
-        // several byte-times of cushion (100 cycles ≈ 667 ns at 150
-        // MHz, or ~3 SPI bytes at 40 MHz).
         cortex_m::asm::delay(100);
         cs.set_high().ok();
 
         spi_opt = Some(spi_back);
         ch_opt = Some(ch_back);
         fb_opt = Some(bytes_back);
+        let t_push_end = cortex_m::peripheral::DWT::cycle_count();
 
-        // --- Timing / logging ---
+        // --- Timing bookkeeping ---
         let t_frame_end = cortex_m::peripheral::DWT::cycle_count();
-        let cycles = t_frame_end.wrapping_sub(t_frame_start);
-        let frame_us = cycles as u64 / (sys_hz as u64 / 1_000_000);
+        let cycles_frame = t_frame_end.wrapping_sub(t_frame_start);
+        let cycles_compute = t_compute_end.wrapping_sub(t_compute_start);
+        let cycles_push = t_push_end.wrapping_sub(t_push_start);
+        let us_per_cycle_div = sys_hz as u64 / 1_000_000;
+        let frame_us = cycles_frame as u64 / us_per_cycle_div;
+        let compute_us = cycles_compute as u64 / us_per_cycle_div;
+        let push_us = cycles_push as u64 / us_per_cycle_div;
         fps_accumulator_us = fps_accumulator_us.saturating_add(frame_us);
+        compute_accumulator_us = compute_accumulator_us.saturating_add(compute_us);
+        push_accumulator_us = push_accumulator_us.saturating_add(push_us);
         fps_samples += 1;
 
         let now = timer.get_counter();
         if (now - last_log).to_micros() >= 1_000_000 {
-            let avg_us = if fps_samples > 0 {
-                fps_accumulator_us / fps_samples as u64
-            } else {
-                0
-            };
+            let n = fps_samples.max(1) as u64;
+            let avg_us = fps_accumulator_us / n;
+            let avg_compute = compute_accumulator_us / n;
+            let avg_push = push_accumulator_us / n;
             displayed_fps = if avg_us > 0 {
                 (1_000_000 / avg_us) as u32
             } else {
                 0
             };
             defmt::info!(
-                "frame {}: avg {} us/frame -> {} fps ({} samples)",
+                "frame {}: {} fps  |  compute={} us  push={} us  total={} us  (n={})",
                 frame,
-                avg_us,
                 displayed_fps,
+                avg_compute,
+                avg_push,
+                avg_us,
                 fps_samples
             );
             fps_accumulator_us = 0;
+            compute_accumulator_us = 0;
+            push_accumulator_us = 0;
             fps_samples = 0;
             last_log = now;
         }
@@ -220,6 +199,6 @@ fn main() -> ! {
 pub static PICOTOOL_ENTRIES: [hal::binary_info::EntryAddr; 4] = [
     hal::binary_info::rp_cargo_bin_name!(),
     hal::binary_info::rp_cargo_version!(),
-    hal::binary_info::rp_program_description!(c"sf-nano-pico2 LCD demo (DMA, FPS overlay)"),
+    hal::binary_info::rp_program_description!(c"sf-nano-pico2 native Mandelbrot"),
     hal::binary_info::rp_program_build_attribute!(),
 ];

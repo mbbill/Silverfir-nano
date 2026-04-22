@@ -26,7 +26,13 @@ DEFMT_LOG = "trace"
 # -Tdefmt.x:     defmt section layout, required by defmt-rtt.
 # -target-cpu:   tell LLVM to emit M33 instructions (DSP, optional CRC,
 #                MVE not used here but available).
+# -linker=flip-link: swap stack placement so overflow faults instead of
+#                silently corrupting BSS. Critical on MCU where our
+#                .bss holds a 320-KiB heap + 128-KiB code arena just
+#                below the default stack-top; without flip-link a
+#                stack overflow would scribble onto those.
 rustflags = [
+    "-C", "linker=flip-link",
     "-C", "link-arg=--nmagic",
     "-C", "link-arg=-Tlink.x",
     "-C", "link-arg=-Tdefmt.x",

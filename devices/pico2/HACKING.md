@@ -104,19 +104,30 @@ forever).
 Other useful commands:
 
 ```
-cargo size --bin sf-nano-pico2 -- -A   # section sizes (flash + RAM footprint)
-cargo nm   --bin sf-nano-pico2         # symbol table (grep _SEGGER_RTT to verify RTT)
-cargo objdump --bin sf-nano-pico2 -- -d --no-show-raw-insn   # disassemble
+cargo size --bin heartbeat -- -A    # section sizes (flash + RAM footprint)
+cargo nm   --bin heartbeat          # symbol table (grep _SEGGER_RTT to verify RTT)
+cargo objdump --bin heartbeat -- -d --no-show-raw-insn   # disassemble
 ```
 
 ### Binaries
 
-- **`sf-nano-pico2`** (`src/main.rs`) — minimal heartbeat firmware.
-  The milestone-sequence baseline.
-- **`lcd_demo`** (`src/bin/lcd_demo.rs`) — one-off validation that
-  drives the Waveshare Pico-LCD-1.8 shield over SPI1. Not part of the
-  milestone sequence; kept so we can re-verify the SPI/display stack
-  without perturbing `main.rs`.
+- **`heartbeat`** (`src/bin/heartbeat.rs`) — minimal bring-up (M1).
+  Prints a 1 Hz tick counter over RTT. Proves the toolchain, boot
+  block, probe-rs flash and RTT paths all work end-to-end.
+- **`lcd_demo`** (`src/bin/lcd_demo.rs`) — benchmarks the display
+  pipeline. Animated gradient with an FPS overlay, DMA-driven push to
+  the Waveshare Pico-LCD-1.8 at 40 MHz SPI. Baseline ≈ **74 fps /
+  13.3 ms per frame** for CPU fill + DMA, SPI wire time alone being
+  8.2 ms of that.
+- **`mandelbrot_native`** (`src/bin/mandelbrot_native.rs`) — same
+  Mandelbrot kernel as the Wasm demo, compiled natively. The ceiling
+  the JIT is measured against — currently **18 fps / 55 ms per
+  frame** on Q17.14 integer math.
+- **`mandelbrot_wasm`** (`src/bin/mandelbrot_wasm.rs`) — **the
+  headline demo.** Same kernel compiled to `wasm32-unknown-unknown`,
+  JIT-executed by sf-nano-core. Currently **9 fps / 110 ms per
+  frame**, ~55 % of native (or ~50 % compute-only, subtracting the
+  shared 10 ms DMA push). `cargo run` default.
 
 ## 5. Key configuration decisions and why
 
@@ -177,7 +188,7 @@ re-check if a future probe-rs version complains.
 ### 5.6 Waveshare Pico-LCD-1.8 shield (if installed)
 
 The Waveshare 1.8" 160×128 ST7735s shield plugs onto the 40-pin
-header and is validated by `lcd_demo`. Pinout (fixed by the shield
+header and is exercised by `lcd_demo`. Pinout (fixed by the shield
 PCB):
 
 | LCD signal | Pico GPIO | Role in firmware            |
@@ -195,34 +206,98 @@ The rp235x-hal SPI builder requires all three of `(tx, rx, sck)`
 even when only transmitting. GP28 is physically unconnected on the
 shield and just holds the "miso" slot in the tuple.
 
-This panel is a green-tab style ST7735s. The mipidsi 0.10 builder
-settings that produce correct output:
+#### Architecture: hand-rolled init + raw DMA
 
-```rust
-Builder::new(ST7735s, di)
-    .reset_pin(rst)
-    .display_size(128, 160)            // native (portrait) resolution
-    .display_offset(2, 1)              // green-tab column/row offset
-    .orientation(Orientation::new().rotate(Rotation::Deg90))
-    .color_order(ColorOrder::Rgb)
-    .invert_colors(ColorInversion::Normal)
-    .init(&mut timer)
-    .unwrap();
-```
+`lcd_demo` **does not use `mipidsi`**. The embedded-hal-bus
+`ExclusiveDevice` that `mipidsi`'s `SpiInterface` wants owns its
+inner `Spi` bus with no disassembly method — once you've handed the
+bus over you can't get it back for DMA. It's less work to inline the
+~60-byte ST7735s init sequence (`st7735s_init` in `lcd_demo.rs`,
+values copied from Waveshare's MicroPython driver) and own the raw
+`Spi<Enabled, SPI1, ..., 8>` bus throughout.
 
-How we landed on those: we iterated once each on `color_order`
-(`Bgr` produced a red background where we asked for blue →
-`Rgb`), `invert_colors` (`Inverted` produced black where we asked
-for white → `Normal`), and `display_offset` (the default `(0, 0)`
-left a 1-px strip of garbage on the top row and right column of the
-landscape view → `(2, 1)` fills the panel cleanly). These are all
-panel-specific; if you swap in a different 1.8" ST7735 board, start
-from these and flip one flag at a time.
+Per-frame pipeline:
 
-SPI at 20 MHz MODE_0 with `ExclusiveDevice::new_no_delay` works fine
-— ST7735 has no CS-to-SCK hold requirement that needs an explicit
-delay provider. Avoid wiring `timer` into `ExclusiveDevice` because
-mipidsi also needs a `DelayNs` for `init()` and the borrows conflict.
+1. CPU fills a 40-KiB `Box::leak`-ed framebuffer (RGB565 **big-endian**,
+   which is ST7735's wire format — no per-pixel byteswap in the push
+   path).
+2. CPU draws the FPS overlay into the same framebuffer via an
+   `embedded_graphics::DrawTarget` wrapper around the byte slice.
+3. CPU sends CASET + RASET + RAMWR as blocking SPI writes
+   (13 bytes total, ~2.6 µs at 40 MHz).
+4. `rp235x_hal::dma::single_buffer::Config::new(ch, bytes, spi).start()`
+   fires the DMA. DMA is gated by the SPI TX-empty DREQ, so it
+   auto-throttles to the SPI wire rate.
+5. `transfer.wait()` blocks until DMA is done, then `spi.flush()`
+   waits for BSY=0, then a short CPU spin (see §5.6.1 below), then
+   `cs.set_high()`.
+
+Address-window values are verbatim from Waveshare's driver:
+`CASET = 0x01..0xA0` (cols 1..=160) and `RASET = 0x02..0x82` (rows
+2..=130). Tightening RASET's end to `0x81` to match the 128-row
+framebuffer leaves the panel blank — this particular panel's RAM
+mapping expects the full `0x82` bound.
+
+MADCTL = `0x70` produces the landscape orientation this demo uses.
+The physical (0, 0) corner ends up at the panel's top-right after
+all the MV/MX/ML bits; a bottom-right FPS overlay in logical coords
+lands in a physical corner that's not where you'd expect from
+reading the code. It works; measure twice, draw once.
+
+#### 5.6.1 SPI flush + CS deassert is racy without guards
+
+**Every tiny command byte has to be explicitly flushed, and the DMA
+teardown needs a short CPU-spin cushion after `flush()` before
+`cs.set_high()`.** Without both, the display shows intermittent
+"content slides a few pixels then snaps back" glitches every few
+seconds.
+
+What's going on:
+
+- rp235x-hal's `SpiBus::write` completes one byte before returning
+  (it pushes to TX FIFO, then waits for the corresponding RX byte).
+  In theory this guarantees the byte is fully clocked out.
+- rp235x-hal's `SpiBus::flush` polls the PL022's `BSY` bit until it
+  clears. In theory BSY=0 means TX FIFO empty **and** shift register
+  idle.
+- **In practice**, CS deassert races ambient with BSY-clear for one
+  frame in every few hundred. Occasionally a frame's last byte (or a
+  CASET/RASET payload byte) gets chopped mid-bit, shifting pixel
+  addressing for the affected row. The very next frame's CASET/RASET
+  resets the window and things snap back.
+
+Mitigation in `lcd_demo.rs`:
+
+- `write_cmd` and `write_data` **call `spi.flush()` explicitly after
+  every `spi.write()`**, before toggling CS. Without this, CASET /
+  RASET byte payloads occasionally get chopped, producing the
+  horizontal shift symptom.
+- After the framebuffer DMA, do `spi.flush()` **and then
+  `cortex_m::asm::delay(100)`** (≈ 667 ns at 150 MHz, ~3 bytes at 40
+  MHz SPI) before `cs.set_high()`. Empirical — `flush()` alone is
+  not quite enough on this HAL version.
+
+If the jiggle comes back on a future hal/rp-hal bump, try doubling
+the delay first before chasing a real bug.
+
+#### 5.6.2 Orientation / window quirks (panel-specific)
+
+These values are for this exact Waveshare 1.8" shield:
+
+- **MADCTL `0x70`** — landscape with MV + MX + ML set, RGB order.
+- **CASET end = `0xA0`, RASET end = `0x82`** (Waveshare's magic;
+  tightening to the framebuffer's 128-row dimension makes the panel
+  blank).
+- **No color inversion** (no `INVON` / `INVOFF` in init).
+- **Red squares drawn at logical (0,0) land at the physical upper
+  right** under this MADCTL. Don't fight it — if it matters for a
+  later demo, adjust your drawing coordinates instead of tweaking
+  MADCTL.
+
+If you swap in a different 1.8" ST7735 variant, start from these and
+iterate one value at a time — `fill_pattern` in `lcd_demo.rs` makes
+a good diagnostic harness because it animates, so any drift /
+tearing shows immediately.
 
 ## 6. Diagnosing when things go wrong
 
@@ -241,7 +316,7 @@ mipidsi also needs a `DelayNs` for `init()` and the borrows conflict.
    then `probe-rs read --chip RP235x --protocol swd b32 0x20000100 1`
    after flashing and resetting. If the value is not `deadbeef`, the
    firmware crashed or is stuck before reaching `main`.
-4. **Is the RTT symbol linked?** `cargo nm --bin sf-nano-pico2 |
+4. **Is the RTT symbol linked?** `cargo nm --bin heartbeat |
    grep _SEGGER_RTT`. Should show `_SEGGER_RTT` in the `.data`
    section (typically around `0x20000008`).
 5. **Is the RTT control block populated?** `probe-rs read --chip
@@ -319,42 +394,87 @@ for sf-nano-core + a code arena.
   mode (no user firmware running, so the SWD link is quiet), then
   `cargo run --bin <name>` again. Power-cycling alone is usually
   enough.
+- **SPI `flush()` + CS deassert is racy on RP2350's PL022.** Even
+  though `SpiBus::flush` waits for BUSY=0, occasional frames end up
+  with the last byte chopped and the addressing shifts by a pixel or
+  two until the next frame resets the window. Add `spi.flush()`
+  explicitly after every `spi.write()` AND insert
+  `cortex_m::asm::delay(100)` between DMA `flush()` and
+  `cs.set_high()`. Symptom is distinctive: "content jiggles a few
+  pixels right every few seconds, snaps back." See §5.6.1.
+- **`probe-rs run` can still hold the USB handle after you Ctrl-C.**
+  If the next `cargo run` fails with "Could not determine a suitable
+  packet size for this probe" or "Failed to open probe", check for a
+  stray `probe-rs.exe` process (`tasklist | grep probe-rs`) and kill
+  it. Occasionally requires unplug/replug of the probe USB if the
+  Windows USB stack is wedged.
 
 ## 8. What is *not* wired up yet
 
-- sf-nano-core link (milestone 2+).
-- `sf_os_alloc_executable` and friends — bare-metal shim stubs
-  (milestone 2 uses nulls from `sf-nano-bare-smoke`; milestone 3
-  implements a real static arena).
-- CYW43 Wi-Fi (future `devices/pico2w/` crate).
-- LCD drawing from sf-nano-core — the display stack is validated
-  end-to-end via `lcd_demo`, but nothing links the JIT to it yet.
-  Natural fit for a later milestone that computes a Wasm result
-  and paints it on screen.
+- CYW43 Wi-Fi (future `devices/pico2w/` crate with `embassy-rp` +
+  `cyw43` + `embassy-net`).
+- LCD drawing from JIT-compiled Wasm. The display pipeline is
+  validated by `lcd_demo` and the JIT is validated by the M4 sum
+  demo in `main.rs`, but nothing ties the two together yet. The
+  planned next demo is a fixed-point Mandelbrot in Wasm, rendered
+  via the same DMA pipeline `lcd_demo` uses, plus a parallel native
+  Rust Mandelbrot binary for a JIT-vs-native speed comparison.
 - `picotool` integration. Not installed by default here; the ELF
   does carry `.bi_entries` metadata, so any future `picotool info`
   invocation will Just Work without firmware changes.
 - A release profile that has been exercised on hardware. Only
   `cargo run` (dev) has been verified end-to-end; release should
   work but confirm before relying on it.
+- DMA double-buffering. `lcd_demo` uses single-buffered DMA —
+  CPU blocks on `transfer.wait()` during each 8.2 ms SPI push. A
+  JIT-driven frame producer that takes longer than SPI will
+  benefit from Level-3 pipelining (two 40-KiB framebuffers, swap on
+  frame boundary). Adds 40 KiB of BSS. See
+  `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md` / the pipeline notes in
+  the design discussion — not yet implemented.
 
 ## 9. Milestone log
 
 - **M1 (completed).** Boot + clocks + defmt-RTT heartbeat. Produces
-  `sf-nano-pico2 alive @ 150 MHz SYSCLK` followed by `tick N` at
-  ~1 Hz.
-- **Side-quest (completed).** `lcd_demo` validates SPI1 + Waveshare
-  Pico-LCD-1.8 (ST7735s) end-to-end with mipidsi + embedded-graphics.
-  Surfaced the green-tab offset / color-order tuning and the SWD
-  wedging gotcha; not on the milestone sequence but the
-  configuration values live in §5.6 for reuse.
-- **M2 (next).** Link sf-nano-core with null `sf_os_*` stubs. Expect
-  no behavior change — firmware still prints heartbeat, but links
-  against the JIT crate.
-- **M3.** Replace null stubs with a real static RWX arena; first
-  `CodeBuffer::with_capacity(N)` should succeed. Will surface the
-  12 MiB `CodeBuffer::DEFAULT_CAPACITY` blocker in
-  `sf-nano-core/src/vm/runtime/code_buf.rs` — plumb a configurable
-  capacity through `CodeBuffer::new()` callers before this works.
-- **M4.** Hardcoded integer Wasm (sum 1..=10 = 55) JITs and runs on
-  the board; result prints over RTT.
+  `heartbeat: alive @ 150 MHz SYSCLK` followed by `tick N` at ~1 Hz.
+- **LCD validation side-quest (completed).** Initial `lcd_demo`
+  validated SPI1 + Waveshare Pico-LCD-1.8 via `mipidsi` +
+  `embedded-graphics`. Surfaced the green-tab offset / color-order
+  tuning and the LCD-backlight-vs-SWD wedging gotcha.
+- **M2 (completed).** sf-nano-core linked. Shared lib crate
+  `sf-nano-pico2` (`src/lib.rs`) carries the `#[global_allocator]`
+  (embedded-alloc) and null `sf_os_*` stubs. Behavior unchanged —
+  heartbeat still prints, JIT crate is just in the link graph.
+- **RuntimeConfig + linear-memory quota (completed, sf-nano-core
+  slice 1).** Added `sf_nano_core::RuntimeConfig` (code arena bytes,
+  wasm memory max pages, wasm operand-stack bytes) with a one-shot
+  `set_runtime_config`. Fixed the double-`CodeBuffer` allocation in
+  `finish_native_compile_streaming` via `install_native_code_buffer`
+  — one real alloc per compile instead of alloc-swap-drop. See
+  `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md`.
+- **M3 (completed).** Real `sf_os_alloc_executable` arena (64 KiB
+  static, 16-byte aligned) in `os_shim.rs`. Clean alloc/free cycle
+  logged over RTT via a self-test before the heartbeat.
+- **M4 (completed).** Hardcoded integer Wasm module (`sum_1_to_10.wat`,
+  since removed) baked into flash via the `wat` build-dependency,
+  JIT-compiled and invoked at startup. Printed `sum 1..=10 = 55` over
+  RTT on real hardware — first end-to-end JIT-on-MCU proof. Superseded
+  by `mandelbrot_wasm`, which exercises the same path at real workload
+  scale.
+- **Aggressive memory budget (completed).** Heap 320 KiB, code arena
+  128 KiB, wasm memory max 3 pages (192 KiB), wasm stack 32 KiB,
+  native stack ~62 KiB via `flip-link` (stack-overflow trap instead
+  of silent BSS corruption). ~520 KiB of SRAM fully accounted for.
+- **DMA LCD pipeline side-quest (completed).** `lcd_demo` rewritten
+  to bypass `mipidsi` for pixel pushes, hand-rolled ST7735s init,
+  single-buffer DMA via `rp235x_hal::dma::single_buffer` at 40 MHz
+  SPI. FPS overlay via `embedded-graphics` into the framebuffer
+  before each push. Surfaced the PL022 `flush()` + CS-deassert race
+  (§5.6.1) — fixed with explicit per-write flushes and a short CPU
+  cushion after DMA. Baseline ~74 fps with CPU fill; SPI wire time
+  alone is 8.2 ms of that, so JIT-rendered frames have ~5 ms of CPU
+  budget to match this number.
+- **Next: JIT Mandelbrot demo.** Fixed-point integer Mandelbrot in
+  Wasm, rendered via the DMA pipeline. Plus a parallel native Rust
+  Mandelbrot binary for a direct JIT-vs-native speed comparison on
+  the same hardware path.
