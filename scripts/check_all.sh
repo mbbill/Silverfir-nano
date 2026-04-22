@@ -80,6 +80,32 @@ step_logs=()
 step_warning_counts=()
 step_error_counts=()
 
+count_build_warnings_excluding_emulators() {
+    local log="$1"
+
+    awk '
+        /^=== / {
+            in_build = ($0 ~ /^=== Building /)
+            in_emulator_build = (in_build && $0 ~ /(emu64|emu32)/)
+        }
+        match($0, /generated [0-9]+ warnings?/) {
+            if (in_build && !in_emulator_build) {
+                text = substr($0, RSTART, RLENGTH)
+                gsub(/[^0-9]/, "", text)
+                total += text + 0
+                found = 1
+            }
+        }
+        END {
+            if (found) {
+                print total
+            } else {
+                print 0
+            }
+        }
+    ' "$log"
+}
+
 count_step_warnings() {
     local name="$1"
     local log="$2"
@@ -105,12 +131,10 @@ count_step_warnings() {
                 | awk '{ total += $1 } END { print total + 0 }'
             ;;
         spectest_all.sh)
-            grep -Eo 'generated [0-9]+ warnings?' "$log" 2>/dev/null \
-                | awk '{ total += $2 } END { print total + 0 }'
+            count_build_warnings_excluding_emulators "$log"
             ;;
         wasitest_all.sh)
-            grep -Eo 'generated [0-9]+ warnings?' "$log" 2>/dev/null \
-                | awk '{ total += $2 } END { print total + 0 }'
+            count_build_warnings_excluding_emulators "$log"
             ;;
         *)
             echo 0

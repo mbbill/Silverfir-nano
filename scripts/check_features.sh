@@ -7,7 +7,10 @@
 # ------------
 # 1. `cargo check -p sf-nano-core` with a JIT-on matrix in both dev and
 #    release profiles. The matrix covers every single optional feature, every
-#    pair of optional features, and a few real-world bundled configs.
+#    pair of optional features, and a few real-world bundled configs. Rows
+#    that explicitly select one emulator backend are compile-smoke checks:
+#    they still fail on errors, but emulator-only warnings are ignored because
+#    those backends are debugging tools, not warning-clean production targets.
 # 2. `cargo check -p sf-nano-cli` with its optional feature surface in both
 #    dev and release profiles.
 # 3. `cargo check --workspace` with default features (sanity check that the
@@ -171,12 +174,26 @@ feature_flags() {
     esac
 }
 
+emulator_warning_smoke_spec() {
+    local spec="$1"
+    local has_emu64=0
+    local has_emu32=0
+
+    case ",$spec," in
+        *,backend-emu64,*) has_emu64=1 ;;
+    esac
+    case ",$spec," in
+        *,backend-emu32,*) has_emu32=1 ;;
+    esac
+
+    [[ $has_emu64 -ne $has_emu32 ]]
+}
+
 # Run one check. Args: label, profile ("dev"|"release"), features spec.
 # Writes stderr to the log, prints one-line status. Returns 0/1/2:
 #   0 — clean pass
 #   1 — failed
-#   2 — warnings (only reachable with --no-warnings, since -D warnings
-#       otherwise turns them into build errors)
+#   2 — warnings (non-emulator rows only; --strict turns these into errors)
 package_name() {
     case "$1" in
         core) echo "sf-nano-core" ;;
@@ -194,6 +211,10 @@ run_one() {
     package="$(package_name "$package_key")"
     local fflags
     fflags="$(feature_flags "$spec")"
+    local ignore_warnings=0
+    if [[ "$package_key" == "core" ]] && emulator_warning_smoke_spec "$spec"; then
+        ignore_warnings=1
+    fi
 
     local profile_flag=""
     if [[ "$profile" == "release" ]]; then
@@ -201,7 +222,7 @@ run_one() {
     fi
 
     local rustflags=""
-    if [[ $deny_warnings -eq 1 ]]; then
+    if [[ $deny_warnings -eq 1 && $ignore_warnings -eq 0 ]]; then
         rustflags="-D warnings"
     fi
 
@@ -216,6 +237,10 @@ run_one() {
         local wc_local
         wc_local=$(grep -c '^warning:' "$log" 2>/dev/null)
         [[ -z "$wc_local" ]] && wc_local=0
+        if [[ $wc_local -gt 0 && $ignore_warnings -eq 1 ]]; then
+            printf "  %-8s %-22s %-8s  ok    (%d emulator warnings ignored)  %s\n" "$package_key" "$label" "$profile" "$wc_local" "$log"
+            return 0
+        fi
         if [[ $wc_local -gt 0 ]]; then
             printf "  %-8s %-22s %-8s  WARN  (%d)  %s\n" "$package_key" "$label" "$profile" "$wc_local" "$log"
             return 2
