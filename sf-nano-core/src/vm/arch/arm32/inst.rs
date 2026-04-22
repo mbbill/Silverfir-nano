@@ -2007,6 +2007,114 @@ impl<'a> Arm32Backend<'a> {
 
     // ─── I64 pair binary ────────────────────────────────────────────────────────
 
+    /// Inline `i64.add` / `i64.sub` directly as `adds/adc` (or `subs/sbc`) on
+    /// the host pair of registers. Fast path: all four halves are `Reg` and
+    /// `dst_lo` doesn't clobber an input hi-half needed by the carry step.
+    /// Aliased fallback: stage `dst_lo` through a scratch. `Imm64` fallback:
+    /// spill shell + R0..R3 staging like before.
+    ///
+    /// Aliasing rule derived from operand order:
+    ///   `adds dst_lo, a_lo, b_lo`   reads a_lo, b_lo, writes dst_lo + flags
+    ///   `adc  dst_hi, a_hi, b_hi`   reads a_hi, b_hi, consumes flags
+    /// The only harmful alias is `dst_lo == a_hi_hw` or `dst_lo == b_hi_hw`
+    /// (overwrites a hi-half before ADC can read it). All other
+    /// dst↔input aliases are read-before-write within a single instruction.
+    fn compile_i64_pair_addsub(
+        &mut self,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs_lo: &MachineValue,
+        lhs_hi: &MachineValue,
+        rhs_lo: &MachineValue,
+        rhs_hi: &MachineValue,
+        is_add: bool,
+    ) -> Result<(), WasmError> {
+        let dst_lo_hw = map_reg(dst_lo)?;
+        let dst_hi_hw = map_reg(dst_hi)?;
+        let emit_lo = if is_add { enc::adds_reg } else { enc::subs_reg };
+        let emit_hi = if is_add { enc::adc_reg } else { enc::sbc_reg };
+        if let (
+            MachineValue::Reg(a_lo),
+            MachineValue::Reg(a_hi),
+            MachineValue::Reg(b_lo),
+            MachineValue::Reg(b_hi),
+        ) = (*lhs_lo, *lhs_hi, *rhs_lo, *rhs_hi)
+        {
+            let a_lo_hw = map_reg(a_lo)?;
+            let a_hi_hw = map_reg(a_hi)?;
+            let b_lo_hw = map_reg(b_lo)?;
+            let b_hi_hw = map_reg(b_hi)?;
+            let clobbers_hi_input = dst_lo_hw == a_hi_hw || dst_lo_hw == b_hi_hw;
+            if !clobbers_hi_input {
+                let text = &mut self.core.text;
+                text.emit_u32(emit_lo(dst_lo_hw, a_lo_hw, b_lo_hw));
+                text.emit_u32(emit_hi(dst_hi_hw, a_hi_hw, b_hi_hw));
+                return Ok(());
+            }
+            // dst_lo aliases a hi-half that ADC/SBC still needs. Route
+            // the low-half result through a scratch so the hi-half input
+            // stays live until the carry step. One extra MOV.
+            let s = self.gp_scratch.scoped_alloc();
+            let text = &mut self.core.text;
+            text.emit_u32(emit_lo(*s, a_lo_hw, b_lo_hw));
+            text.emit_u32(emit_hi(dst_hi_hw, a_hi_hw, b_hi_hw));
+            text.emit_u32(enc::mov_reg(dst_lo_hw, *s));
+            return Ok(());
+        }
+        // Imm64 fallback. Materialize each half on demand via `prepare_gp`,
+        // which keeps at most two scratches (one lo pair, then one hi pair)
+        // live at a time. That fits the two-slot arm32 gp_scratch pool even
+        // when every half is `Imm64`. Imm materialization uses movw/movt
+        // (no flag side-effects), so it is safe between `adds` and `adc`.
+        //
+        // Aliasing: the `adc dst_hi, lhs_hi, rhs_hi` step still needs the
+        // original `lhs_hi` / `rhs_hi` phys regs live. If either lands in
+        // `dst_lo_hw`, route the low result through a scratch first. Only
+        // `Reg(_)` halves can alias — `Imm64` halves land in fresh scratches.
+        let hi_alias = matches!(*lhs_hi, MachineValue::Reg(r) if map_reg(r)? == dst_lo_hw)
+            || matches!(*rhs_hi, MachineValue::Reg(r) if map_reg(r)? == dst_lo_hw);
+        // ── Low-half step ────────────────────────────────────────────────
+        if hi_alias {
+            let s_lo = self.gp_scratch.scoped_alloc().detach();
+            {
+                let lhs_lo_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *lhs_lo)?;
+                let rhs_lo_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs_lo)?;
+                self.core
+                    .text
+                    .emit_u32(emit_lo(*s_lo, *lhs_lo_gp, *rhs_lo_gp));
+            }
+            // ── High-half step ──────────────────────────────────────────
+            {
+                let lhs_hi_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *lhs_hi)?;
+                let rhs_hi_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs_hi)?;
+                self.core
+                    .text
+                    .emit_u32(emit_hi(dst_hi_hw, *lhs_hi_gp, *rhs_hi_gp));
+            }
+            // Copy the staged low result into dst_lo now that the hi-half
+            // read is done. `mov_reg` preserves flags (irrelevant here).
+            self.core.text.emit_u32(enc::mov_reg(dst_lo_hw, *s_lo));
+        } else {
+            {
+                let lhs_lo_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *lhs_lo)?;
+                let rhs_lo_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs_lo)?;
+                self.core
+                    .text
+                    .emit_u32(emit_lo(dst_lo_hw, *lhs_lo_gp, *rhs_lo_gp));
+            }
+            // Imm materialization here uses movw/movt — no flag effects —
+            // so the carry from `adds/subs` survives into `adc/sbc`.
+            {
+                let lhs_hi_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *lhs_hi)?;
+                let rhs_hi_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *rhs_hi)?;
+                self.core
+                    .text
+                    .emit_u32(emit_hi(dst_hi_hw, *lhs_hi_gp, *rhs_hi_gp));
+            }
+        }
+        Ok(())
+    }
+
     fn compile_int64_pair_binary(
         &mut self,
         op: MachineIntBinaryOp,
@@ -2019,51 +2127,59 @@ impl<'a> Arm32Backend<'a> {
     ) -> Result<(), WasmError> {
         match op {
             MachineIntBinaryOp::Add => {
-                let dst_lo_hw = map_reg(dst_lo)?;
-                let dst_hi_hw = map_reg(dst_hi)?;
-                self.spill_caller_saved_gp_regs();
-                self.emit_quad_args_to_r0_r3(lhs_lo, lhs_hi, rhs_lo, rhs_hi)?;
-                self.core
-                    .text
-                    .emit_u32(enc::adds_reg(Arm32Reg::R0, Arm32Reg::R0, Arm32Reg::R2));
-                self.core
-                    .text
-                    .emit_u32(enc::adc_reg(Arm32Reg::R1, Arm32Reg::R1, Arm32Reg::R3));
-                self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
-                self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
-                Ok(())
+                self.compile_i64_pair_addsub(dst_lo, dst_hi, lhs_lo, lhs_hi, rhs_lo, rhs_hi, true)
             }
             MachineIntBinaryOp::Sub => {
-                let dst_lo_hw = map_reg(dst_lo)?;
-                let dst_hi_hw = map_reg(dst_hi)?;
-                self.spill_caller_saved_gp_regs();
-                self.emit_quad_args_to_r0_r3(lhs_lo, lhs_hi, rhs_lo, rhs_hi)?;
-                self.core
-                    .text
-                    .emit_u32(enc::subs_reg(Arm32Reg::R0, Arm32Reg::R0, Arm32Reg::R2));
-                self.core
-                    .text
-                    .emit_u32(enc::sbc_reg(Arm32Reg::R1, Arm32Reg::R1, Arm32Reg::R3));
-                self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
-                self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
-                Ok(())
+                self.compile_i64_pair_addsub(dst_lo, dst_hi, lhs_lo, lhs_hi, rhs_lo, rhs_hi, false)
             }
             MachineIntBinaryOp::Mul => {
-                // 64 x 64 -> 64 (truncating) in three native multiplies. With
-                // inputs staged as R0=lhs_lo, R1=lhs_hi, R2=rhs_lo, R3=rhs_hi:
+                // Native 64 x 64 → 64 (truncating). Three instructions:
                 //
-                //   (R1_out : R0_out) = (R1 : R0) * (R3 : R2) mod 2^64
-                //                     =  R0*R2 + ((R0*R3 + R1*R2) << 32)
+                //   UMULL s_lo, s_hi, a_lo, b_lo
+                //   MLA   s_hi, a_lo, b_hi, s_hi
+                //   MLA   s_hi, a_hi, b_lo, s_hi
                 //
-                // We compute the double-width low product into the two GP
-                // scratches (R12, R14), accumulate the two cross products
-                // into the high scratch via MLA, then route the result back
-                // through R0/R1 so the standard pair-result emitter moves it
-                // into dst_lo/dst_hi. Keeping scratches as the UMULL destination
-                // leaves R0..R3 intact for the MLAs that still need the
-                // original halves.
+                // plus up to two `mov_reg` to copy the scratch pair into the
+                // allocator-assigned destination regs.
+                //
+                // Fast path (all four inputs are `Reg`): compute in the two
+                // GP scratches (R12, R14). They are disjoint from the dynamic
+                // reg set, so no input can alias the UMULL destination, and
+                // no shell spill is needed. This is the hot path; the body
+                // matches what LLVM emits for `i64::wrapping_mul` on armv7.
+                //
+                // Fallback (any input is `Imm64`): the immediate materialize
+                // needs a scratch that would conflict with the UMULL dst
+                // scratches. Stage through the shell so R0..R3 hold the args
+                // and the two scratches stay free for the 64-bit product.
                 let dst_lo_hw = map_reg(dst_lo)?;
                 let dst_hi_hw = map_reg(dst_hi)?;
+                if let (
+                    MachineValue::Reg(a_lo),
+                    MachineValue::Reg(a_hi),
+                    MachineValue::Reg(b_lo),
+                    MachineValue::Reg(b_hi),
+                ) = (*lhs_lo, *lhs_hi, *rhs_lo, *rhs_hi)
+                {
+                    let a_lo_hw = map_reg(a_lo)?;
+                    let a_hi_hw = map_reg(a_hi)?;
+                    let b_lo_hw = map_reg(b_lo)?;
+                    let b_hi_hw = map_reg(b_hi)?;
+                    let s_lo = self.gp_scratch.scoped_alloc();
+                    let s_hi = self.gp_scratch.scoped_alloc();
+                    let text = &mut self.core.text;
+                    text.emit_u32(enc::umull(*s_lo, *s_hi, a_lo_hw, b_lo_hw));
+                    text.emit_u32(enc::mla(*s_hi, a_lo_hw, b_hi_hw, *s_hi));
+                    text.emit_u32(enc::mla(*s_hi, a_hi_hw, b_lo_hw, *s_hi));
+                    if dst_lo_hw != *s_lo {
+                        text.emit_u32(enc::mov_reg(dst_lo_hw, *s_lo));
+                    }
+                    if dst_hi_hw != *s_hi {
+                        text.emit_u32(enc::mov_reg(dst_hi_hw, *s_hi));
+                    }
+                    return Ok(());
+                }
+                // Imm64 fallback.
                 self.spill_caller_saved_gp_regs();
                 self.emit_quad_args_to_r0_r3(lhs_lo, lhs_hi, rhs_lo, rhs_hi)?;
                 {
@@ -2138,19 +2254,62 @@ impl<'a> Arm32Backend<'a> {
     ) -> Result<(), WasmError> {
         let dst_lo_hw = map_reg(dst_lo)?;
         let dst_hi_hw = map_reg(dst_hi)?;
-        self.spill_caller_saved_gp_regs();
         match op {
-            MachineIntUnaryOp::Clz | MachineIntUnaryOp::Ctz | MachineIntUnaryOp::Popcnt => {
-                // Stage src pair into R0:R1 using the same shell as the old
-                // helper-call path, then emit the op inline. R3 and the
-                // gp_scratch pool (R12, R14) are free across the sequence.
+            MachineIntUnaryOp::Clz => {
+                // CMP + CLZ + CLZ + ADD #32 + MOV #0. No call, no shell —
+                // inputs stay in their current physical regs, result lands
+                // directly in the allocator-assigned destination.
+                let src_lo_hw =
+                    prepare_gp(&mut self.core.text, &self.gp_scratch, *src_lo)?.detach();
+                let src_hi_hw =
+                    prepare_gp(&mut self.core.text, &self.gp_scratch, *src_hi)?.detach();
+                let hi_is_zero = self.core.new_label();
+                let done = self.core.new_label();
+                self.core.text.emit_u32(enc::cmp_imm(*src_hi_hw, 0, 0));
+                self.emit_branch(BranchFixupKind::BCond(Cond::Eq), hi_is_zero);
+                self.core.text.emit_u32(enc::clz(dst_lo_hw, *src_hi_hw));
+                self.emit_branch(BranchFixupKind::B, done);
+                self.core.bind_label(hi_is_zero);
+                self.core.text.emit_u32(enc::clz(dst_lo_hw, *src_lo_hw));
+                self.core
+                    .text
+                    .emit_u32(enc::add_imm(dst_lo_hw, dst_lo_hw, 32, 0));
+                self.core.bind_label(done);
+                self.core.text.emit_u32(enc::mov_imm(dst_hi_hw, 0, 0));
+                Ok(())
+            }
+            MachineIntUnaryOp::Ctz => {
+                // ctz(x) = clz(rbit(x)) per half.
+                let src_lo_hw =
+                    prepare_gp(&mut self.core.text, &self.gp_scratch, *src_lo)?.detach();
+                let src_hi_hw =
+                    prepare_gp(&mut self.core.text, &self.gp_scratch, *src_hi)?.detach();
+                let lo_is_zero = self.core.new_label();
+                let done = self.core.new_label();
+                self.core.text.emit_u32(enc::cmp_imm(*src_lo_hw, 0, 0));
+                self.emit_branch(BranchFixupKind::BCond(Cond::Eq), lo_is_zero);
+                self.core.text.emit_u32(enc::rbit(dst_lo_hw, *src_lo_hw));
+                self.core.text.emit_u32(enc::clz(dst_lo_hw, dst_lo_hw));
+                self.emit_branch(BranchFixupKind::B, done);
+                self.core.bind_label(lo_is_zero);
+                self.core.text.emit_u32(enc::rbit(dst_lo_hw, *src_hi_hw));
+                self.core.text.emit_u32(enc::clz(dst_lo_hw, dst_lo_hw));
+                self.core
+                    .text
+                    .emit_u32(enc::add_imm(dst_lo_hw, dst_lo_hw, 32, 0));
+                self.core.bind_label(done);
+                self.core.text.emit_u32(enc::mov_imm(dst_hi_hw, 0, 0));
+                Ok(())
+            }
+            MachineIntUnaryOp::Popcnt => {
+                // Popcnt keeps the spill shell: its SWAR body needs a temp
+                // reg (R3) in addition to the two scratches (R12, R14) used
+                // for masks. Without the shell R3 may hold a live dynamic
+                // value. Popcnt is not on any current hot path, so carrying
+                // the shell overhead is an intentional trade-off.
+                self.spill_caller_saved_gp_regs();
                 self.emit_pair_args_to_r0_r1(src_lo, src_hi)?;
-                match op {
-                    MachineIntUnaryOp::Clz => self.emit_inline_i64_clz_r0_r1(),
-                    MachineIntUnaryOp::Ctz => self.emit_inline_i64_ctz_r0_r1(),
-                    MachineIntUnaryOp::Popcnt => self.emit_inline_i64_popcnt_r0_r1(),
-                    _ => unreachable!(),
-                }
+                self.emit_inline_i64_popcnt_r0_r1();
                 self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
                 self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
                 Ok(())
@@ -2162,7 +2321,6 @@ impl<'a> Arm32Backend<'a> {
                 self.core
                     .text
                     .emit_u32(enc::asr_imm(dst_hi_hw, dst_lo_hw, 31));
-                self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
                 Ok(())
             }
             MachineIntUnaryOp::Extend16S => {
@@ -2172,7 +2330,6 @@ impl<'a> Arm32Backend<'a> {
                 self.core
                     .text
                     .emit_u32(enc::asr_imm(dst_hi_hw, dst_lo_hw, 31));
-                self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
                 Ok(())
             }
             MachineIntUnaryOp::Extend32S => {
@@ -2184,52 +2341,9 @@ impl<'a> Arm32Backend<'a> {
                 self.core
                     .text
                     .emit_u32(enc::asr_imm(dst_hi_hw, dst_lo_hw, 31));
-                self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
                 Ok(())
             }
         }
-    }
-
-    /// Inline 64-bit CLZ. Inputs in R0 (lo) and R1 (hi); output in R0:R1
-    /// (count in R0, R1 zeroed).
-    fn emit_inline_i64_clz_r0_r1(&mut self) {
-        const R0: Arm32Reg = Arm32Reg::R0;
-        const R1: Arm32Reg = Arm32Reg::R1;
-        let hi_is_zero = self.core.new_label();
-        let done = self.core.new_label();
-        self.core.text.emit_u32(enc::cmp_imm(R1, 0, 0));
-        self.emit_branch(BranchFixupKind::BCond(Cond::Eq), hi_is_zero);
-        // hi != 0: result = clz(hi)
-        self.core.text.emit_u32(enc::clz(R0, R1));
-        self.emit_branch(BranchFixupKind::B, done);
-        self.core.bind_label(hi_is_zero);
-        // hi == 0: result = 32 + clz(lo)
-        self.core.text.emit_u32(enc::clz(R0, R0));
-        self.core.text.emit_u32(enc::add_imm(R0, R0, 32, 0));
-        self.core.bind_label(done);
-        self.core.text.emit_u32(enc::mov_imm(R1, 0, 0));
-    }
-
-    /// Inline 64-bit CTZ via `ctz(x) == clz(rbit(x))`. Inputs in R0 (lo),
-    /// R1 (hi); output in R0:R1.
-    fn emit_inline_i64_ctz_r0_r1(&mut self) {
-        const R0: Arm32Reg = Arm32Reg::R0;
-        const R1: Arm32Reg = Arm32Reg::R1;
-        let lo_is_zero = self.core.new_label();
-        let done = self.core.new_label();
-        self.core.text.emit_u32(enc::cmp_imm(R0, 0, 0));
-        self.emit_branch(BranchFixupKind::BCond(Cond::Eq), lo_is_zero);
-        // lo != 0: result = ctz(lo) = clz(rbit(lo))
-        self.core.text.emit_u32(enc::rbit(R0, R0));
-        self.core.text.emit_u32(enc::clz(R0, R0));
-        self.emit_branch(BranchFixupKind::B, done);
-        self.core.bind_label(lo_is_zero);
-        // lo == 0: result = 32 + ctz(hi)
-        self.core.text.emit_u32(enc::rbit(R1, R1));
-        self.core.text.emit_u32(enc::clz(R0, R1));
-        self.core.text.emit_u32(enc::add_imm(R0, R0, 32, 0));
-        self.core.bind_label(done);
-        self.core.text.emit_u32(enc::mov_imm(R1, 0, 0));
     }
 
     /// Inline 64-bit POPCNT using the classic SWAR sequence on each 32-bit
@@ -3251,13 +3365,16 @@ impl<'a> Arm32Backend<'a> {
         src_lo: &MachineValue,
         src_hi: &MachineValue,
     ) -> Result<(), WasmError> {
+        // `vmov_d_rr` accepts any two GP regs for the two source halves,
+        // so we can feed it straight from `prepare_gp` output. Worst case
+        // is both halves `Imm64`, which needs two scratches and matches the
+        // two-slot gp_scratch pool exactly — no caller-saved shell needed.
         let dd = self.map_fp_dreg(dst)?;
-        self.spill_caller_saved_gp_regs();
-        self.emit_pair_args_to_r0_r1(src_lo, src_hi)?;
+        let src_lo_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *src_lo)?;
+        let src_hi_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *src_hi)?;
         self.core
             .text
-            .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
-        self.restore_caller_saved_gp_regs(&[]);
+            .emit_u32(enc::vmov_d_rr(dd, *src_lo_gp, *src_hi_gp));
         Ok(())
     }
 
@@ -3379,32 +3496,23 @@ impl<'a> Arm32Backend<'a> {
                 self.restore_caller_saved_gp_regs(&[]);
             }
             (MachineFloatWidth::F32, MachineFloatBinaryOp::Copysign) => {
-                // F32 Copysign uses R0/R1 as scratch GP regs. Spill the
-                // live JIT values first and restore after.
+                // F32 Copysign extracts two 32-bit FP bit patterns into GP,
+                // masks sign bits, ORs them, and writes back to the FP dst.
+                // That only needs two GP temporaries — a perfect fit for the
+                // two-slot gp_scratch pool, no caller-saved shell.
                 let (sign_imm8, sign_rot) = enc::encode_arm_imm(0x8000_0000).unwrap();
                 let sdn = *dn * 2;
                 let sdm = *dm * 2;
                 let sdd = dd * 2;
-                self.spill_caller_saved_gp_regs();
-                self.core.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, sdn)); // lhs bits
-                self.core.text.emit_u32(enc::vmov_r_s(Arm32Reg::R1, sdm)); // rhs bits
-                self.core.text.emit_u32(enc::bic_imm(
-                    Arm32Reg::R0,
-                    Arm32Reg::R0,
-                    sign_imm8,
-                    sign_rot,
-                ));
-                self.core.text.emit_u32(enc::and_imm(
-                    Arm32Reg::R1,
-                    Arm32Reg::R1,
-                    sign_imm8,
-                    sign_rot,
-                ));
-                self.core
-                    .text
-                    .emit_u32(enc::orr_reg(Arm32Reg::R0, Arm32Reg::R0, Arm32Reg::R1));
-                self.core.text.emit_u32(enc::vmov_s_r(sdd, Arm32Reg::R0));
-                self.restore_caller_saved_gp_regs(&[]);
+                let gp_lhs = self.gp_scratch.scoped_alloc();
+                let gp_rhs = self.gp_scratch.scoped_alloc();
+                let text = &mut self.core.text;
+                text.emit_u32(enc::vmov_r_s(*gp_lhs, sdn)); // lhs bits
+                text.emit_u32(enc::vmov_r_s(*gp_rhs, sdm)); // rhs bits
+                text.emit_u32(enc::bic_imm(*gp_lhs, *gp_lhs, sign_imm8, sign_rot));
+                text.emit_u32(enc::and_imm(*gp_rhs, *gp_rhs, sign_imm8, sign_rot));
+                text.emit_u32(enc::orr_reg(*gp_lhs, *gp_lhs, *gp_rhs));
+                text.emit_u32(enc::vmov_s_r(sdd, *gp_lhs));
             }
         }
         Ok(())
