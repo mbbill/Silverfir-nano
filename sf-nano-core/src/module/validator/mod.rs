@@ -61,6 +61,13 @@ impl<'a> Validator<'a> {
             }
         }
 
+        // Phase 1c: Tag types must have an empty result list (Core 3.0 EH).
+        for tag in self.module.tags() {
+            if !tag.func_type().results().is_empty() {
+                return Err(WasmError::invalid("non-empty tag result type"));
+            }
+        }
+
         // Phase 2: Validate function bodies
         self.module
             .functions()

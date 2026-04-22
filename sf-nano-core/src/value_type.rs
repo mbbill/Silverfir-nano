@@ -486,6 +486,13 @@ impl ValueType {
         Self::Ref(RefType::exnref())
     }
 
+    /// Non-null `(ref exn)` — distinct from the nullable `exnref`. The caught
+    /// exception on `catch_ref` / `catch_all_ref` label targets is always a
+    /// live exception reference, never null.
+    pub fn ref_exn() -> Self {
+        Self::Ref(RefType::non_nullable_abstract(AbstractHeapType::Exn))
+    }
+
     pub fn is_num(&self) -> bool {
         matches!(
             self,

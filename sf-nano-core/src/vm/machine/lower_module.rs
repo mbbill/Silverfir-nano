@@ -573,6 +573,49 @@ fn lower_function(
                 )?;
                 continue;
             }
+            SsaTerminator::EhThrow { tag_idx, args } => {
+                let tag_idx = *tag_idx;
+                let args = *args;
+                lower.ensure_no_live_values(
+                    "prepared SSA-IR throw reached native lowering with live linear SSA values; payload must be published before the throw",
+                )?;
+                lower.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::EhThrow { tag_idx, args },
+                });
+                let terminator = MachineTerminator::Trap {
+                    kind: MachineTrapKind::Unreachable,
+                };
+                push_lowered_block(
+                    current_block,
+                    &mut original_blocks,
+                    &mut extra_blocks,
+                    current_params,
+                    lower.take_ops(),
+                    terminator,
+                )?;
+                continue;
+            }
+            SsaTerminator::EhThrowRef { exnref_slot } => {
+                let exnref_slot = *exnref_slot;
+                lower.ensure_no_live_values(
+                    "prepared SSA-IR throw_ref reached native lowering with live linear SSA values; exnref must be published before the throw",
+                )?;
+                lower.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::EhThrowRef { exnref_slot },
+                });
+                let terminator = MachineTerminator::Trap {
+                    kind: MachineTrapKind::Unreachable,
+                };
+                push_lowered_block(
+                    current_block,
+                    &mut original_blocks,
+                    &mut extra_blocks,
+                    current_params,
+                    lower.take_ops(),
+                    terminator,
+                )?;
+                continue;
+            }
             _ => {}
         }
 
@@ -2153,7 +2196,9 @@ fn compute_ssa_predecessors(program: &SsaProgram) -> collections::Vec<collection
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }
-            | SsaTerminator::TrapUnreachable => {}
+            | SsaTerminator::TrapUnreachable
+            | SsaTerminator::EhThrow { .. }
+            | SsaTerminator::EhThrowRef { .. } => {}
         }
     }
 

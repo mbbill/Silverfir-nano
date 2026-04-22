@@ -235,7 +235,9 @@ fn build_terminator(
     };
 
     match &op.kind {
-        SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => (
+        SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
+        | SemanticOpKind::Throw { .. }
+        | SemanticOpKind::ThrowRef => (
             CfgTerminator::TrapUnreachable { op_index },
             collections::Vec::new(),
         ),
@@ -427,6 +429,9 @@ fn for_each_semantic_successor(
         SemanticOpKind::Else { end_target } => {
             f(*end_target);
         }
+        SemanticOpKind::Throw { .. } | SemanticOpKind::ThrowRef => {
+            // No fallthrough successor — throw terminates the block.
+        }
         _ => {
             if let Some(ft) = fallthrough() {
                 f(ft);
@@ -452,7 +457,9 @@ fn is_plain_fallthrough(index: usize, len: usize, op: &SemanticOp) -> bool {
         | SemanticOpKind::BrOnCastFail { .. }
         | SemanticOpKind::BrTable { .. }
         | SemanticOpKind::If { .. }
-        | SemanticOpKind::Else { .. } => false,
+        | SemanticOpKind::Else { .. }
+        | SemanticOpKind::Throw { .. }
+        | SemanticOpKind::ThrowRef => false,
         _ => index + 1 < len,
     }
 }
@@ -476,6 +483,8 @@ fn splits_after(kind: &SemanticOpKind) -> bool {
             | SemanticOpKind::ReturnCallIndirect { .. }
             | SemanticOpKind::ReturnCallRef { .. }
             | SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
+            | SemanticOpKind::Throw { .. }
+            | SemanticOpKind::ThrowRef
     )
 }
 

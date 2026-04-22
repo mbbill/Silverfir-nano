@@ -101,6 +101,7 @@ pub(super) fn copy_propagate(
                 | MachineInstKind::ArrayInitData { .. }
                 | MachineInstKind::ArrayInitElem { .. }
                 | MachineInstKind::ArrayLen { .. }
+                | MachineInstKind::EhAllocExnRef { .. }
         ) {
             clear_aliases(aliases);
             clear_aliases(float_aliases);
@@ -194,6 +195,7 @@ fn can_elide_reg_move(
                 | MachineInstKind::ArrayInitData { .. }
                 | MachineInstKind::ArrayInitElem { .. }
                 | MachineInstKind::ArrayLen { .. }
+                | MachineInstKind::EhAllocExnRef { .. }
         ) {
             // copy_propagate clears aliases at helper calls, so a move can only
             // disappear here if its destination is dead after the barrier.
@@ -354,7 +356,10 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(mask, aliases);
         }
         MachineInstKind::TrapIf { cond, .. } => rewrite_branch_cond(cond, aliases),
-        MachineInstKind::CallRuntime(_) => {}
+        MachineInstKind::CallRuntime(_)
+        | MachineInstKind::EhThrow { .. }
+        | MachineInstKind::EhThrowRef { .. }
+        | MachineInstKind::EhAllocExnRef { .. } => {}
         MachineInstKind::RefFunc { .. } => {}
         MachineInstKind::StructNew { fields, .. } => {
             for (value_lo, value_hi) in fields.iter_mut() {

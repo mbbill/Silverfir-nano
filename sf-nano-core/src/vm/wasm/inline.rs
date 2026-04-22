@@ -221,6 +221,22 @@ fn find_return_sites(callee: &SemanticProgram) -> collections::Vec<ReturnSite> {
             SemanticOpKind::LocalGet { .. } => depth += 1,
             SemanticOpKind::LocalSet { .. } => depth -= 1,
             SemanticOpKind::LocalTee { .. } => {}
+            SemanticOpKind::TryTable {
+                params, results, ..
+            } => {
+                control.push((depth - *params as i32, *params, *results));
+            }
+            SemanticOpKind::AllocExnRef { .. } => {
+                depth += 1;
+            }
+            SemanticOpKind::Throw { arity, .. } => {
+                depth -= *arity as i32;
+                unreachable = true;
+            }
+            SemanticOpKind::ThrowRef => {
+                depth -= 1;
+                unreachable = true;
+            }
         }
     }
 
@@ -581,6 +597,22 @@ fn recompute_max_stack_height(program: &SemanticProgram) -> u16 {
             SemanticOpKind::LocalGet { .. } => depth += 1,
             SemanticOpKind::LocalSet { .. } => depth -= 1,
             SemanticOpKind::LocalTee { .. } => {}
+            SemanticOpKind::TryTable {
+                params, results, ..
+            } => {
+                control.push((depth - *params as i32, *params, *results));
+            }
+            SemanticOpKind::AllocExnRef { .. } => {
+                depth += 1;
+            }
+            SemanticOpKind::Throw { arity, .. } => {
+                depth -= *arity as i32;
+                unreachable = true;
+            }
+            SemanticOpKind::ThrowRef => {
+                depth -= 1;
+                unreachable = true;
+            }
         }
         if depth > max_depth {
             max_depth = depth;
@@ -746,6 +778,11 @@ fn shift_targets_after(ops: &mut [SemanticOp], after: usize, shift: i64) {
             }
             SemanticOpKind::Else { end_target } => {
                 *end_target = shift_target(*end_target, after, shift);
+            }
+            SemanticOpKind::TryTable { catches, .. } => {
+                for catch in catches.iter_mut() {
+                    catch.target = shift_target(catch.target, after, shift);
+                }
             }
             _ => {}
         }

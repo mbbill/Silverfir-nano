@@ -48,6 +48,18 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
                         rewrite_move_storage_type(*dst, MachineValue::Reg(src_reg), *ty, config)
                     {
                         rewrite_load = Some((*owner, *dst, src_reg, move_ty));
+                        if addr.base != *dst {
+                            produced_load = Some(TrackedLoad {
+                                addr: *addr,
+                                ty: *ty,
+                                width: *width,
+                                extension: *extension,
+                                reg: *dst,
+                            });
+                        }
+                    }
+                } else {
+                    if addr.base != *dst {
                         produced_load = Some(TrackedLoad {
                             addr: *addr,
                             ty: *ty,
@@ -56,14 +68,6 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
                             reg: *dst,
                         });
                     }
-                } else {
-                    produced_load = Some(TrackedLoad {
-                        addr: *addr,
-                        ty: *ty,
-                        width: *width,
-                        extension: *extension,
-                        reg: *dst,
-                    });
                 }
             }
             MachineInstKind::Store { addr, width, .. } => {
@@ -88,7 +92,8 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
             | MachineInstKind::ArrayNewDefault { .. }
             | MachineInstKind::ArrayGet { .. }
             | MachineInstKind::ArraySet { .. }
-            | MachineInstKind::ArrayLen { .. } => {
+            | MachineInstKind::ArrayLen { .. }
+            | MachineInstKind::EhAllocExnRef { .. } => {
                 tracked.clear();
             }
             _ => {}

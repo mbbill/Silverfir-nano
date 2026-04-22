@@ -8,7 +8,7 @@ use crate::{
             MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind,
             MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
             MachineMemWidth, MachineReg, MachineShiftOp, MachineSign, MachineStorageType,
-            MachineTrapKind, MachineValue,
+            MachineTrapKind, MachineValue, MACHINE_FP_REG,
         },
         runtime::preserved,
     },
@@ -146,6 +146,32 @@ impl<'a> X86_64Backend<'a> {
             MachineInstKind::CallRuntime(call) => {
                 self.lower_call_runtime(call.metadata.0 as usize)
             }
+            MachineInstKind::EhThrow { tag_idx, args } => self.lower_preserved_no_result(
+                preserved::op::EH_THROW,
+                *tag_idx,
+                0,
+                MachineValue::Reg(MACHINE_FP_REG),
+                MachineValue::Imm64(args.start.0 as u64),
+                MachineValue::Imm64(args.count as u64),
+            ),
+            MachineInstKind::EhThrowRef { exnref_slot } => self.lower_preserved_no_result(
+                preserved::op::EH_THROW_REF,
+                0,
+                0,
+                MachineValue::Reg(MACHINE_FP_REG),
+                MachineValue::Imm64(exnref_slot.0 as u64),
+                MachineValue::Imm64(0),
+            ),
+            MachineInstKind::EhAllocExnRef { tag_idx, dst } => self.lower_preserved_result(
+                preserved::op::EH_ALLOC_EXN_REF,
+                *tag_idx,
+                0,
+                MachineValue::Reg(MACHINE_FP_REG),
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
             MachineInstKind::FloatUnary {
                 width,
                 op,

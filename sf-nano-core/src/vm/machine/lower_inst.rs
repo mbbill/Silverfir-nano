@@ -87,6 +87,11 @@ impl<'a> BlockLowerContext<'a> {
             SsaTerminator::TrapUnreachable => Ok(MachineTerminator::Trap {
                 kind: MachineTrapKind::Unreachable,
             }),
+            SsaTerminator::EhThrow { .. } | SsaTerminator::EhThrowRef { .. } => {
+                Err(WasmError::internal(
+                    "EhThrow/EhThrowRef must be lowered by lower_module before generic terminator lowering",
+                ))
+            }
         }
     }
 
@@ -584,6 +589,10 @@ impl<'a> BlockLowerContext<'a> {
             }
             P::ElemDrop { elem_idx } => {
                 self.lower_elem_drop(*elem_idx)?;
+                LeafLowering::InPlace
+            }
+            P::EhAllocExnRef { tag_idx } => {
+                self.lower_eh_alloc_exn_ref(*tag_idx, results)?;
                 LeafLowering::InPlace
             }
             P::GlobalGet { idx } => {

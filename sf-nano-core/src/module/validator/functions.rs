@@ -8,7 +8,7 @@ use crate::{
         type_defs::{ArrayType, CompositeType, StorageType},
         Module,
     },
-    op_decoder::{BlockType, Immediate, OpStream, OpcodeHandler},
+    op_decoder::{BlockType, CatchClause, CatchClauseKind, Immediate, OpStream, OpcodeHandler},
     opcodes::{Opcode, OpcodeFB, OpcodeFC, OpcodeFD, WasmOpcode},
     utils::limits::Limitable,
     value_type::{HeapType, RefType, ValueType},
@@ -59,6 +59,46 @@ fn expect_function_index_immediate(imm: &Immediate) -> Result<u32, WasmError> {
         Immediate::FunctionIndex(function_index) => Ok(*function_index),
         _ => Err(validator_immediate_mismatch(
             "validator expected function index immediate",
+        )),
+    }
+}
+
+/// Accept any label slot type that a non-null `(ref exn)` can flow into.
+/// That covers both the non-null `(ref exn)` and the nullable `exnref`
+/// forms — the caught exception is always live, so flowing into a
+/// nullable slot is a subtype relationship, not a coercion.
+#[inline]
+fn is_exn_ref_sink(ty: ValueType) -> bool {
+    let ValueType::Ref(ref_ty) = ty else {
+        return false;
+    };
+    matches!(
+        ref_ty.heap_type,
+        HeapType::Abstract(crate::value_type::AbstractHeapType::Exn)
+    )
+}
+
+#[inline]
+fn expect_tag_index_immediate(imm: &Immediate) -> Result<u32, WasmError> {
+    match imm {
+        Immediate::TagIndex(tag_index) => Ok(*tag_index),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected tag index immediate",
+        )),
+    }
+}
+
+#[inline]
+fn expect_try_table_immediate(
+    imm: Immediate,
+) -> Result<(BlockType, collections::Vec<CatchClause>), WasmError> {
+    match imm {
+        Immediate::TryTable {
+            block_type,
+            catches,
+        } => Ok((block_type, catches)),
+        _ => Err(validator_immediate_mismatch(
+            "validator expected try_table immediate",
         )),
     }
 }
@@ -211,12 +251,10 @@ impl<'a> OpcodeHandler for FunctionValidator<'a> {
                     decoded.next_op_offset,
                     decoded.imm.clone(),
                 )?,
-                WasmOpcode::FD(op) => self.on_op_fd(
-                    op,
-                    decoded.op_offset,
-                    decoded.next_op_offset,
-                    decoded.imm.clone(),
-                )?,
+                #[cfg(sf_has_simd)]
+                WasmOpcode::FD(op) => self.on_op_fd(op, decoded.imm.clone())?,
+                #[cfg(not(sf_has_simd))]
+                WasmOpcode::FD(_) => self.on_op_fd()?,
             }
         }
         Ok(())
@@ -536,6 +574,89 @@ impl<'a> FunctionValidator<'a> {
                 self.context.pop_vals(function_type.params())?;
                 self.context.push_ctrl(FrameType::If, function_type)?;
                 Ok(())
+            }
+            TRY_TABLE => {
+                let (block_type, catches) = expect_try_table_immediate(imm)?;
+                let function_type = self.get_block_type(block_type)?;
+
+                // Clause label indices refer to the *outer* control stack, so
+                // validate catches before pushing the try_table frame.
+                for catch in &catches {
+                    let label_types = self.context.frame_at(catch.label_idx)?.label_types();
+                    match catch.kind {
+                        CatchClauseKind::Catch | CatchClauseKind::CatchRef => {
+                            let tag_idx = catch.tag_idx.ok_or_else(|| {
+                                WasmError::invalid("catch/catch_ref requires a tag index")
+                            })?;
+                            let tag = self
+                                .module
+                                .tags()
+                                .get(tag_idx as usize)
+                                .ok_or_else(|| WasmError::invalid("unknown tag"))?;
+                            let tag_ft = tag.func_type();
+                            let expected_arity = tag_ft.params().len()
+                                + if catch.kind == CatchClauseKind::CatchRef {
+                                    1
+                                } else {
+                                    0
+                                };
+                            if label_types.len() != expected_arity {
+                                return Err(WasmError::invalid(
+                                    "catch clause label arity mismatch",
+                                ));
+                            }
+                            if !tag_ft.params().iter().zip(label_types.iter()).all(
+                                |(actual, expected)| {
+                                    actual.is_subtype_of(expected, self.module.types())
+                                },
+                            ) {
+                                return Err(WasmError::invalid(
+                                    "catch clause label types mismatch",
+                                ));
+                            }
+                            if catch.kind == CatchClauseKind::CatchRef
+                                && !is_exn_ref_sink(label_types[tag_ft.params().len()])
+                            {
+                                return Err(WasmError::invalid(
+                                    "catch_ref label must end with an exn ref",
+                                ));
+                            }
+                        }
+                        CatchClauseKind::CatchAll => {
+                            if !label_types.is_empty() {
+                                return Err(WasmError::invalid(
+                                    "catch_all label must take no values",
+                                ));
+                            }
+                        }
+                        CatchClauseKind::CatchAllRef => {
+                            if label_types.len() != 1 || !is_exn_ref_sink(label_types[0]) {
+                                return Err(WasmError::invalid(
+                                    "catch_all_ref label must take a single exn ref",
+                                ));
+                            }
+                        }
+                    }
+                }
+
+                self.context.pop_vals(function_type.params())?;
+                self.context.push_ctrl(FrameType::TryTable, function_type)?;
+                Ok(())
+            }
+            THROW => {
+                let tag_idx = expect_tag_index_immediate(&imm)?;
+                let tag = self
+                    .module
+                    .tags()
+                    .get(tag_idx as usize)
+                    .ok_or_else(|| WasmError::invalid("unknown tag"))?;
+                let tag_ft = tag.func_type();
+                self.context.pop_vals(tag_ft.params())?;
+                self.context.mark_unreachable()
+            }
+            THROW_REF => {
+                self.context.pop_val(Some(ValueType::exnref()))?;
+                self.context.mark_unreachable()
             }
             ELSE => {
                 if self.context.frame_at(0)?.frame_type() != FrameType::If {
@@ -1824,418 +1945,408 @@ impl<'a> FunctionValidator<'a> {
         }
     }
 
-    fn on_op_fd(
-        &mut self,
-        op: OpcodeFD,
-        _op_offset: usize,
-        _next_op_offset: usize,
-        imm: Immediate,
-    ) -> Result<(), WasmError> {
-        #[cfg(not(sf_has_simd))]
-        {
-            drop(op);
-            drop(imm);
-            Err(simd_opcode_error())
-        }
-        #[cfg(sf_has_simd)]
-        {
-            use OpcodeFD::*;
-            use ValueType::*;
+    #[cfg(not(sf_has_simd))]
+    fn on_op_fd(&mut self) -> Result<(), WasmError> {
+        Err(simd_opcode_error())
+    }
 
-            match op {
-                V128_CONST => match imm {
-                    Immediate::V128(_) => self.context.push_val(V128),
-                    _ => Err(WasmError::internal("validator expected v128 immediate")),
-                },
-                V128_LOAD => self.handle_load::<[u8; 16]>(imm, V128),
-                op if matches!(
-                    op,
-                    V128_LOAD8X8_S
-                        | V128_LOAD8X8_U
-                        | V128_LOAD16X4_S
-                        | V128_LOAD16X4_U
-                        | V128_LOAD32X2_S
-                        | V128_LOAD32X2_U
-                ) =>
-                {
-                    self.handle_load::<u64>(imm, V128)
-                }
-                V128_LOAD8_SPLAT => self.handle_load::<u8>(imm, V128),
-                V128_LOAD16_SPLAT => self.handle_load::<u16>(imm, V128),
-                V128_LOAD32_SPLAT | V128_LOAD32_ZERO => self.handle_load::<u32>(imm, V128),
-                V128_LOAD64_SPLAT | V128_LOAD64_ZERO => self.handle_load::<u64>(imm, V128),
-                V128_STORE => self.handle_store::<[u8; 16]>(imm, V128),
-                V128_LOAD8_LANE => self.handle_simd_mem_lane(imm, 1, 16, false),
-                V128_LOAD16_LANE => self.handle_simd_mem_lane(imm, 2, 8, false),
-                V128_LOAD32_LANE => self.handle_simd_mem_lane(imm, 4, 4, false),
-                V128_LOAD64_LANE => self.handle_simd_mem_lane(imm, 8, 2, false),
-                V128_STORE8_LANE => self.handle_simd_mem_lane(imm, 1, 16, true),
-                V128_STORE16_LANE => self.handle_simd_mem_lane(imm, 2, 8, true),
-                V128_STORE32_LANE => self.handle_simd_mem_lane(imm, 4, 4, true),
-                V128_STORE64_LANE => self.handle_simd_mem_lane(imm, 8, 2, true),
+    #[cfg(sf_has_simd)]
+    fn on_op_fd(&mut self, op: OpcodeFD, imm: Immediate) -> Result<(), WasmError> {
+        use OpcodeFD::*;
+        use ValueType::*;
 
-                V128_ANY_TRUE | I8X16_ALL_TRUE | I16X8_ALL_TRUE | I32X4_ALL_TRUE
-                | I64X2_ALL_TRUE | I8X16_BITMASK | I16X8_BITMASK | I32X4_BITMASK
-                | I64X2_BITMASK => {
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(I32)
-                }
-
-                I8X16_SPLAT => {
-                    self.context.pop_val(Some(I32))?;
-                    self.context.push_val(V128)
-                }
-                I16X8_SPLAT => {
-                    self.context.pop_val(Some(I32))?;
-                    self.context.push_val(V128)
-                }
-                I32X4_SPLAT => {
-                    self.context.pop_val(Some(I32))?;
-                    self.context.push_val(V128)
-                }
-                I64X2_SPLAT => {
-                    self.context.pop_val(Some(I64))?;
-                    self.context.push_val(V128)
-                }
-                F32X4_SPLAT => {
-                    self.context.pop_val(Some(F32))?;
-                    self.context.push_val(V128)
-                }
-                F64X2_SPLAT => {
-                    self.context.pop_val(Some(F64))?;
-                    self.context.push_val(V128)
-                }
-
-                I8X16_EXTRACT_LANE_S | I8X16_EXTRACT_LANE_U => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 16)?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(I32)
-                }
-                I16X8_EXTRACT_LANE_S | I16X8_EXTRACT_LANE_U => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 8)?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(I32)
-                }
-                I32X4_EXTRACT_LANE => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 4)?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(I32)
-                }
-                I64X2_EXTRACT_LANE => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 2)?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(I64)
-                }
-                F32X4_EXTRACT_LANE => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 4)?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(F32)
-                }
-                F64X2_EXTRACT_LANE => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 2)?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(F64)
-                }
-
-                I8X16_REPLACE_LANE => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 16)?;
-                    self.context.pop_val(Some(I32))?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(V128)
-                }
-                I16X8_REPLACE_LANE => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 8)?;
-                    self.context.pop_val(Some(I32))?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(V128)
-                }
-                I32X4_REPLACE_LANE => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 4)?;
-                    self.context.pop_val(Some(I32))?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(V128)
-                }
-                I64X2_REPLACE_LANE => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 2)?;
-                    self.context.pop_val(Some(I64))?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(V128)
-                }
-                F32X4_REPLACE_LANE => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 4)?;
-                    self.context.pop_val(Some(F32))?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(V128)
-                }
-                F64X2_REPLACE_LANE => {
-                    let lane = expect_simd_lane_immediate(imm)?;
-                    self.validate_simd_lane(lane, 2)?;
-                    self.context.pop_val(Some(F64))?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(V128)
-                }
-
-                I8X16_SHUFFLE => {
-                    let lanes = expect_simd_shuffle_immediate(imm)?;
-                    if lanes.iter().any(|lane| *lane >= 32) {
-                        return Err(WasmError::invalid("SIMD shuffle lane index out of range"));
-                    }
-                    self.context.pop_val(Some(V128))?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(V128)
-                }
-
-                op if matches!(
-                    op,
-                    V128_NOT
-                        | I8X16_ABS
-                        | I8X16_NEG
-                        | I8X16_POPCNT
-                        | I16X8_EXTADD_PAIRWISE_I8X16_S
-                        | I16X8_EXTADD_PAIRWISE_I8X16_U
-                        | I16X8_ABS
-                        | I16X8_NEG
-                        | I16X8_EXTEND_LOW_I8X16_S
-                        | I16X8_EXTEND_HIGH_I8X16_S
-                        | I16X8_EXTEND_LOW_I8X16_U
-                        | I16X8_EXTEND_HIGH_I8X16_U
-                        | I32X4_EXTADD_PAIRWISE_I16X8_S
-                        | I32X4_EXTADD_PAIRWISE_I16X8_U
-                        | I32X4_ABS
-                        | I32X4_NEG
-                        | I32X4_EXTEND_LOW_I16X8_S
-                        | I32X4_EXTEND_HIGH_I16X8_S
-                        | I32X4_EXTEND_LOW_I16X8_U
-                        | I32X4_EXTEND_HIGH_I16X8_U
-                        | I64X2_ABS
-                        | I64X2_NEG
-                        | I64X2_EXTEND_LOW_I32X4_S
-                        | I64X2_EXTEND_HIGH_I32X4_S
-                        | I64X2_EXTEND_LOW_I32X4_U
-                        | I64X2_EXTEND_HIGH_I32X4_U
-                        | F32X4_NEG
-                        | F32X4_DEMOTE_F64X2_ZERO
-                        | F32X4_SQRT
-                        | F32X4_CEIL
-                        | F32X4_FLOOR
-                        | F32X4_TRUNC
-                        | F32X4_NEAREST
-                        | F64X2_ABS
-                        | F64X2_NEG
-                        | F64X2_SQRT
-                        | F64X2_CEIL
-                        | F64X2_FLOOR
-                        | F64X2_TRUNC
-                        | F64X2_NEAREST
-                        | F32X4_ABS
-                        | F32X4_CONVERT_I32X4_S
-                        | F32X4_CONVERT_I32X4_U
-                        | F64X2_PROMOTE_LOW_F32X4
-                        | F64X2_CONVERT_LOW_I32X4_S
-                        | F64X2_CONVERT_LOW_I32X4_U
-                        | I32X4_TRUNC_SAT_F32X4_S
-                        | I32X4_TRUNC_SAT_F32X4_U
-                        | I32X4_TRUNC_SAT_F64X2_S_ZERO
-                        | I32X4_TRUNC_SAT_F64X2_U_ZERO
-                        | I32X4_RELAXED_TRUNC_F32X4_S
-                        | I32X4_RELAXED_TRUNC_F32X4_U
-                        | I32X4_RELAXED_TRUNC_F64X2_S_ZERO
-                        | I32X4_RELAXED_TRUNC_F64X2_U_ZERO
-                ) =>
-                {
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(V128)
-                }
-
-                op if matches!(
-                    op,
-                    V128_AND
-                        | V128_ANDNOT
-                        | V128_OR
-                        | V128_XOR
-                        | I8X16_SWIZZLE
-                        | I8X16_RELAXED_SWIZZLE
-                        | I8X16_NARROW_I16X8_S
-                        | I8X16_NARROW_I16X8_U
-                        | I8X16_MIN_S
-                        | I8X16_MIN_U
-                        | I8X16_MAX_S
-                        | I8X16_MAX_U
-                        | I8X16_AVGR_U
-                        | I8X16_ADD
-                        | I8X16_SUB
-                        | I16X8_MIN_S
-                        | I16X8_MIN_U
-                        | I16X8_MAX_S
-                        | I16X8_MAX_U
-                        | I16X8_AVGR_U
-                        | I16X8_Q15MULR_SAT_S
-                        | I16X8_RELAXED_Q15MULR_S
-                        | I16X8_NARROW_I32X4_S
-                        | I16X8_NARROW_I32X4_U
-                        | I16X8_ADD
-                        | I16X8_SUB
-                        | I16X8_MUL
-                        | I16X8_RELAXED_DOT_I8X16_I7X16_S
-                        | I16X8_EXTMUL_LOW_I8X16_S
-                        | I16X8_EXTMUL_HIGH_I8X16_S
-                        | I16X8_EXTMUL_LOW_I8X16_U
-                        | I16X8_EXTMUL_HIGH_I8X16_U
-                        | I32X4_MIN_S
-                        | I32X4_MIN_U
-                        | I32X4_MAX_S
-                        | I32X4_MAX_U
-                        | I32X4_ADD
-                        | I32X4_SUB
-                        | I32X4_MUL
-                        | I32X4_DOT_I16X8_S
-                        | I32X4_EXTMUL_LOW_I16X8_S
-                        | I32X4_EXTMUL_HIGH_I16X8_S
-                        | I32X4_EXTMUL_LOW_I16X8_U
-                        | I32X4_EXTMUL_HIGH_I16X8_U
-                        | I64X2_ADD
-                        | I64X2_SUB
-                        | I64X2_MUL
-                        | I64X2_EXTMUL_LOW_I32X4_S
-                        | I64X2_EXTMUL_HIGH_I32X4_S
-                        | I64X2_EXTMUL_LOW_I32X4_U
-                        | I64X2_EXTMUL_HIGH_I32X4_U
-                        | F64X2_ADD
-                        | F64X2_SUB
-                        | F64X2_MUL
-                        | I8X16_ADD_SAT_S
-                        | I8X16_ADD_SAT_U
-                        | I16X8_ADD_SAT_S
-                        | I16X8_ADD_SAT_U
-                        | I8X16_SUB_SAT_S
-                        | I8X16_SUB_SAT_U
-                        | I16X8_SUB_SAT_S
-                        | I16X8_SUB_SAT_U
-                        | I8X16_EQ
-                        | I8X16_NE
-                        | I8X16_LT_S
-                        | I8X16_LT_U
-                        | I8X16_GT_S
-                        | I8X16_GT_U
-                        | I8X16_LE_S
-                        | I8X16_LE_U
-                        | I8X16_GE_S
-                        | I8X16_GE_U
-                        | I16X8_EQ
-                        | I16X8_NE
-                        | I16X8_LT_S
-                        | I16X8_LT_U
-                        | I16X8_GT_S
-                        | I16X8_GT_U
-                        | I16X8_LE_S
-                        | I16X8_LE_U
-                        | I16X8_GE_S
-                        | I16X8_GE_U
-                        | I32X4_EQ
-                        | I32X4_NE
-                        | I32X4_LT_S
-                        | I32X4_LT_U
-                        | I32X4_GT_S
-                        | I32X4_GT_U
-                        | I32X4_LE_S
-                        | I32X4_LE_U
-                        | I32X4_GE_S
-                        | I32X4_GE_U
-                        | F32X4_EQ
-                        | F32X4_NE
-                        | F32X4_LT
-                        | F32X4_GT
-                        | F32X4_LE
-                        | F32X4_GE
-                        | F32X4_ADD
-                        | F32X4_SUB
-                        | F32X4_MUL
-                        | F32X4_RELAXED_MIN
-                        | F32X4_RELAXED_MAX
-                        | F32X4_MAX
-                        | F32X4_PMIN
-                        | F32X4_PMAX
-                        | I64X2_EQ
-                        | I64X2_NE
-                        | I64X2_LT_S
-                        | I64X2_GT_S
-                        | I64X2_LE_S
-                        | I64X2_GE_S
-                        | F64X2_EQ
-                        | F64X2_NE
-                        | F64X2_LT
-                        | F64X2_GT
-                        | F64X2_LE
-                        | F64X2_GE
-                        | F32X4_MIN
-                        | F64X2_PMIN
-                        | F64X2_PMAX
-                        | F64X2_RELAXED_MIN
-                        | F64X2_RELAXED_MAX
-                        | F64X2_MIN
-                        | F64X2_MAX
-                        | F32X4_DIV
-                        | F64X2_DIV
-                ) =>
-                {
-                    self.context.pop_val(Some(V128))?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(V128)
-                }
-
-                op if matches!(
-                    op,
-                    V128_BITSELECT
-                        | I8X16_RELAXED_LANESELECT
-                        | I16X8_RELAXED_LANESELECT
-                        | I32X4_RELAXED_LANESELECT
-                        | I64X2_RELAXED_LANESELECT
-                        | F32X4_RELAXED_MADD
-                        | F32X4_RELAXED_NMADD
-                        | F64X2_RELAXED_MADD
-                        | F64X2_RELAXED_NMADD
-                        | I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S
-                ) =>
-                {
-                    self.context.pop_val(Some(V128))?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(V128)
-                }
-
-                op if matches!(
-                    op,
-                    I8X16_SHL
-                        | I8X16_SHR_S
-                        | I8X16_SHR_U
-                        | I16X8_SHL
-                        | I16X8_SHR_S
-                        | I16X8_SHR_U
-                        | I32X4_SHL
-                        | I32X4_SHR_S
-                        | I32X4_SHR_U
-                        | I64X2_SHL
-                        | I64X2_SHR_S
-                        | I64X2_SHR_U
-                ) =>
-                {
-                    self.context.pop_val(Some(I32))?;
-                    self.context.pop_val(Some(V128))?;
-                    self.context.push_val(V128)
-                }
-                _ => Err(WasmError::invalid("SIMD support is not yet implemented")),
+        match op {
+            V128_CONST => match imm {
+                Immediate::V128(_) => self.context.push_val(V128),
+                _ => Err(WasmError::internal("validator expected v128 immediate")),
+            },
+            V128_LOAD => self.handle_load::<[u8; 16]>(imm, V128),
+            op if matches!(
+                op,
+                V128_LOAD8X8_S
+                    | V128_LOAD8X8_U
+                    | V128_LOAD16X4_S
+                    | V128_LOAD16X4_U
+                    | V128_LOAD32X2_S
+                    | V128_LOAD32X2_U
+            ) =>
+            {
+                self.handle_load::<u64>(imm, V128)
             }
+            V128_LOAD8_SPLAT => self.handle_load::<u8>(imm, V128),
+            V128_LOAD16_SPLAT => self.handle_load::<u16>(imm, V128),
+            V128_LOAD32_SPLAT | V128_LOAD32_ZERO => self.handle_load::<u32>(imm, V128),
+            V128_LOAD64_SPLAT | V128_LOAD64_ZERO => self.handle_load::<u64>(imm, V128),
+            V128_STORE => self.handle_store::<[u8; 16]>(imm, V128),
+            V128_LOAD8_LANE => self.handle_simd_mem_lane(imm, 1, 16, false),
+            V128_LOAD16_LANE => self.handle_simd_mem_lane(imm, 2, 8, false),
+            V128_LOAD32_LANE => self.handle_simd_mem_lane(imm, 4, 4, false),
+            V128_LOAD64_LANE => self.handle_simd_mem_lane(imm, 8, 2, false),
+            V128_STORE8_LANE => self.handle_simd_mem_lane(imm, 1, 16, true),
+            V128_STORE16_LANE => self.handle_simd_mem_lane(imm, 2, 8, true),
+            V128_STORE32_LANE => self.handle_simd_mem_lane(imm, 4, 4, true),
+            V128_STORE64_LANE => self.handle_simd_mem_lane(imm, 8, 2, true),
+
+            V128_ANY_TRUE | I8X16_ALL_TRUE | I16X8_ALL_TRUE | I32X4_ALL_TRUE | I64X2_ALL_TRUE
+            | I8X16_BITMASK | I16X8_BITMASK | I32X4_BITMASK | I64X2_BITMASK => {
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(I32)
+            }
+
+            I8X16_SPLAT => {
+                self.context.pop_val(Some(I32))?;
+                self.context.push_val(V128)
+            }
+            I16X8_SPLAT => {
+                self.context.pop_val(Some(I32))?;
+                self.context.push_val(V128)
+            }
+            I32X4_SPLAT => {
+                self.context.pop_val(Some(I32))?;
+                self.context.push_val(V128)
+            }
+            I64X2_SPLAT => {
+                self.context.pop_val(Some(I64))?;
+                self.context.push_val(V128)
+            }
+            F32X4_SPLAT => {
+                self.context.pop_val(Some(F32))?;
+                self.context.push_val(V128)
+            }
+            F64X2_SPLAT => {
+                self.context.pop_val(Some(F64))?;
+                self.context.push_val(V128)
+            }
+
+            I8X16_EXTRACT_LANE_S | I8X16_EXTRACT_LANE_U => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 16)?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(I32)
+            }
+            I16X8_EXTRACT_LANE_S | I16X8_EXTRACT_LANE_U => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 8)?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(I32)
+            }
+            I32X4_EXTRACT_LANE => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 4)?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(I32)
+            }
+            I64X2_EXTRACT_LANE => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 2)?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(I64)
+            }
+            F32X4_EXTRACT_LANE => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 4)?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(F32)
+            }
+            F64X2_EXTRACT_LANE => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 2)?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(F64)
+            }
+
+            I8X16_REPLACE_LANE => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 16)?;
+                self.context.pop_val(Some(I32))?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(V128)
+            }
+            I16X8_REPLACE_LANE => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 8)?;
+                self.context.pop_val(Some(I32))?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(V128)
+            }
+            I32X4_REPLACE_LANE => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 4)?;
+                self.context.pop_val(Some(I32))?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(V128)
+            }
+            I64X2_REPLACE_LANE => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 2)?;
+                self.context.pop_val(Some(I64))?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(V128)
+            }
+            F32X4_REPLACE_LANE => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 4)?;
+                self.context.pop_val(Some(F32))?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(V128)
+            }
+            F64X2_REPLACE_LANE => {
+                let lane = expect_simd_lane_immediate(imm)?;
+                self.validate_simd_lane(lane, 2)?;
+                self.context.pop_val(Some(F64))?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(V128)
+            }
+
+            I8X16_SHUFFLE => {
+                let lanes = expect_simd_shuffle_immediate(imm)?;
+                if lanes.iter().any(|lane| *lane >= 32) {
+                    return Err(WasmError::invalid("SIMD shuffle lane index out of range"));
+                }
+                self.context.pop_val(Some(V128))?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(V128)
+            }
+
+            op if matches!(
+                op,
+                V128_NOT
+                    | I8X16_ABS
+                    | I8X16_NEG
+                    | I8X16_POPCNT
+                    | I16X8_EXTADD_PAIRWISE_I8X16_S
+                    | I16X8_EXTADD_PAIRWISE_I8X16_U
+                    | I16X8_ABS
+                    | I16X8_NEG
+                    | I16X8_EXTEND_LOW_I8X16_S
+                    | I16X8_EXTEND_HIGH_I8X16_S
+                    | I16X8_EXTEND_LOW_I8X16_U
+                    | I16X8_EXTEND_HIGH_I8X16_U
+                    | I32X4_EXTADD_PAIRWISE_I16X8_S
+                    | I32X4_EXTADD_PAIRWISE_I16X8_U
+                    | I32X4_ABS
+                    | I32X4_NEG
+                    | I32X4_EXTEND_LOW_I16X8_S
+                    | I32X4_EXTEND_HIGH_I16X8_S
+                    | I32X4_EXTEND_LOW_I16X8_U
+                    | I32X4_EXTEND_HIGH_I16X8_U
+                    | I64X2_ABS
+                    | I64X2_NEG
+                    | I64X2_EXTEND_LOW_I32X4_S
+                    | I64X2_EXTEND_HIGH_I32X4_S
+                    | I64X2_EXTEND_LOW_I32X4_U
+                    | I64X2_EXTEND_HIGH_I32X4_U
+                    | F32X4_NEG
+                    | F32X4_DEMOTE_F64X2_ZERO
+                    | F32X4_SQRT
+                    | F32X4_CEIL
+                    | F32X4_FLOOR
+                    | F32X4_TRUNC
+                    | F32X4_NEAREST
+                    | F64X2_ABS
+                    | F64X2_NEG
+                    | F64X2_SQRT
+                    | F64X2_CEIL
+                    | F64X2_FLOOR
+                    | F64X2_TRUNC
+                    | F64X2_NEAREST
+                    | F32X4_ABS
+                    | F32X4_CONVERT_I32X4_S
+                    | F32X4_CONVERT_I32X4_U
+                    | F64X2_PROMOTE_LOW_F32X4
+                    | F64X2_CONVERT_LOW_I32X4_S
+                    | F64X2_CONVERT_LOW_I32X4_U
+                    | I32X4_TRUNC_SAT_F32X4_S
+                    | I32X4_TRUNC_SAT_F32X4_U
+                    | I32X4_TRUNC_SAT_F64X2_S_ZERO
+                    | I32X4_TRUNC_SAT_F64X2_U_ZERO
+                    | I32X4_RELAXED_TRUNC_F32X4_S
+                    | I32X4_RELAXED_TRUNC_F32X4_U
+                    | I32X4_RELAXED_TRUNC_F64X2_S_ZERO
+                    | I32X4_RELAXED_TRUNC_F64X2_U_ZERO
+            ) =>
+            {
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(V128)
+            }
+
+            op if matches!(
+                op,
+                V128_AND
+                    | V128_ANDNOT
+                    | V128_OR
+                    | V128_XOR
+                    | I8X16_SWIZZLE
+                    | I8X16_RELAXED_SWIZZLE
+                    | I8X16_NARROW_I16X8_S
+                    | I8X16_NARROW_I16X8_U
+                    | I8X16_MIN_S
+                    | I8X16_MIN_U
+                    | I8X16_MAX_S
+                    | I8X16_MAX_U
+                    | I8X16_AVGR_U
+                    | I8X16_ADD
+                    | I8X16_SUB
+                    | I16X8_MIN_S
+                    | I16X8_MIN_U
+                    | I16X8_MAX_S
+                    | I16X8_MAX_U
+                    | I16X8_AVGR_U
+                    | I16X8_Q15MULR_SAT_S
+                    | I16X8_RELAXED_Q15MULR_S
+                    | I16X8_NARROW_I32X4_S
+                    | I16X8_NARROW_I32X4_U
+                    | I16X8_ADD
+                    | I16X8_SUB
+                    | I16X8_MUL
+                    | I16X8_RELAXED_DOT_I8X16_I7X16_S
+                    | I16X8_EXTMUL_LOW_I8X16_S
+                    | I16X8_EXTMUL_HIGH_I8X16_S
+                    | I16X8_EXTMUL_LOW_I8X16_U
+                    | I16X8_EXTMUL_HIGH_I8X16_U
+                    | I32X4_MIN_S
+                    | I32X4_MIN_U
+                    | I32X4_MAX_S
+                    | I32X4_MAX_U
+                    | I32X4_ADD
+                    | I32X4_SUB
+                    | I32X4_MUL
+                    | I32X4_DOT_I16X8_S
+                    | I32X4_EXTMUL_LOW_I16X8_S
+                    | I32X4_EXTMUL_HIGH_I16X8_S
+                    | I32X4_EXTMUL_LOW_I16X8_U
+                    | I32X4_EXTMUL_HIGH_I16X8_U
+                    | I64X2_ADD
+                    | I64X2_SUB
+                    | I64X2_MUL
+                    | I64X2_EXTMUL_LOW_I32X4_S
+                    | I64X2_EXTMUL_HIGH_I32X4_S
+                    | I64X2_EXTMUL_LOW_I32X4_U
+                    | I64X2_EXTMUL_HIGH_I32X4_U
+                    | F64X2_ADD
+                    | F64X2_SUB
+                    | F64X2_MUL
+                    | I8X16_ADD_SAT_S
+                    | I8X16_ADD_SAT_U
+                    | I16X8_ADD_SAT_S
+                    | I16X8_ADD_SAT_U
+                    | I8X16_SUB_SAT_S
+                    | I8X16_SUB_SAT_U
+                    | I16X8_SUB_SAT_S
+                    | I16X8_SUB_SAT_U
+                    | I8X16_EQ
+                    | I8X16_NE
+                    | I8X16_LT_S
+                    | I8X16_LT_U
+                    | I8X16_GT_S
+                    | I8X16_GT_U
+                    | I8X16_LE_S
+                    | I8X16_LE_U
+                    | I8X16_GE_S
+                    | I8X16_GE_U
+                    | I16X8_EQ
+                    | I16X8_NE
+                    | I16X8_LT_S
+                    | I16X8_LT_U
+                    | I16X8_GT_S
+                    | I16X8_GT_U
+                    | I16X8_LE_S
+                    | I16X8_LE_U
+                    | I16X8_GE_S
+                    | I16X8_GE_U
+                    | I32X4_EQ
+                    | I32X4_NE
+                    | I32X4_LT_S
+                    | I32X4_LT_U
+                    | I32X4_GT_S
+                    | I32X4_GT_U
+                    | I32X4_LE_S
+                    | I32X4_LE_U
+                    | I32X4_GE_S
+                    | I32X4_GE_U
+                    | F32X4_EQ
+                    | F32X4_NE
+                    | F32X4_LT
+                    | F32X4_GT
+                    | F32X4_LE
+                    | F32X4_GE
+                    | F32X4_ADD
+                    | F32X4_SUB
+                    | F32X4_MUL
+                    | F32X4_RELAXED_MIN
+                    | F32X4_RELAXED_MAX
+                    | F32X4_MAX
+                    | F32X4_PMIN
+                    | F32X4_PMAX
+                    | I64X2_EQ
+                    | I64X2_NE
+                    | I64X2_LT_S
+                    | I64X2_GT_S
+                    | I64X2_LE_S
+                    | I64X2_GE_S
+                    | F64X2_EQ
+                    | F64X2_NE
+                    | F64X2_LT
+                    | F64X2_GT
+                    | F64X2_LE
+                    | F64X2_GE
+                    | F32X4_MIN
+                    | F64X2_PMIN
+                    | F64X2_PMAX
+                    | F64X2_RELAXED_MIN
+                    | F64X2_RELAXED_MAX
+                    | F64X2_MIN
+                    | F64X2_MAX
+                    | F32X4_DIV
+                    | F64X2_DIV
+            ) =>
+            {
+                self.context.pop_val(Some(V128))?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(V128)
+            }
+
+            op if matches!(
+                op,
+                V128_BITSELECT
+                    | I8X16_RELAXED_LANESELECT
+                    | I16X8_RELAXED_LANESELECT
+                    | I32X4_RELAXED_LANESELECT
+                    | I64X2_RELAXED_LANESELECT
+                    | F32X4_RELAXED_MADD
+                    | F32X4_RELAXED_NMADD
+                    | F64X2_RELAXED_MADD
+                    | F64X2_RELAXED_NMADD
+                    | I32X4_RELAXED_DOT_I8X16_I7X16_ADD_S
+            ) =>
+            {
+                self.context.pop_val(Some(V128))?;
+                self.context.pop_val(Some(V128))?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(V128)
+            }
+
+            op if matches!(
+                op,
+                I8X16_SHL
+                    | I8X16_SHR_S
+                    | I8X16_SHR_U
+                    | I16X8_SHL
+                    | I16X8_SHR_S
+                    | I16X8_SHR_U
+                    | I32X4_SHL
+                    | I32X4_SHR_S
+                    | I32X4_SHR_U
+                    | I64X2_SHL
+                    | I64X2_SHR_S
+                    | I64X2_SHR_U
+            ) =>
+            {
+                self.context.pop_val(Some(I32))?;
+                self.context.pop_val(Some(V128))?;
+                self.context.push_val(V128)
+            }
+            _ => Err(WasmError::invalid("SIMD support is not yet implemented")),
         }
     }
 }
@@ -2251,6 +2362,7 @@ enum FrameType {
     Loop,
     If,
     Else,
+    TryTable,
 }
 
 struct ControlFrame {

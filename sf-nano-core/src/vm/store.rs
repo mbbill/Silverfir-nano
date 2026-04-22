@@ -6,6 +6,7 @@ use crate::collections;
 use tracked_alloc::rc::Rc;
 
 use crate::vm::entities::{FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst};
+use crate::vm::exn_heap::{ExnHeap, ExnRef};
 use crate::vm::gc_heap::{GcHeap, GcRef};
 use crate::vm::value::RefHandle;
 use core::cell::RefCell;
@@ -83,6 +84,7 @@ impl Default for SharedSimdRegistry {
 pub(crate) enum RefRegistryEntry {
     I31(i32),
     Gc { store: *mut Store, gc_ref: GcRef },
+    Exn { store: *mut Store, exn_ref: ExnRef },
 }
 
 #[derive(Clone)]
@@ -148,6 +150,7 @@ pub struct Store {
     #[cfg(sf_has_simd)]
     simd_registry: SharedSimdRegistry,
     gc_heap: Rc<RefCell<GcHeap>>,
+    exn_heap: Rc<RefCell<ExnHeap>>,
 }
 
 impl Store {
@@ -176,6 +179,7 @@ impl Store {
             #[cfg(sf_has_simd)]
             simd_registry,
             gc_heap: Rc::new(RefCell::new(GcHeap::new())),
+            exn_heap: Rc::new(RefCell::new(ExnHeap::new())),
         }
     }
 
@@ -245,6 +249,21 @@ impl Store {
         &self.gc_heap
     }
 
+    #[inline]
+    pub(crate) fn exn_heap(&self) -> &Rc<RefCell<ExnHeap>> {
+        &self.exn_heap
+    }
+
+    /// Allocate a fresh `ExnInstance` carrying the given tag identity and
+    /// payload; returns an opaque `ExnRef` index into the store's heap.
+    pub(crate) fn alloc_exn(
+        &mut self,
+        tag: crate::vm::tag::TagHandle,
+        fields: crate::collections::Vec<crate::vm::value::Value>,
+    ) -> ExnRef {
+        self.exn_heap.borrow_mut().alloc(tag, fields)
+    }
+
     pub(crate) fn register_local_function(&mut self, local_index: usize) -> RefHandle {
         let self_ptr = self as *mut Store;
         let handle = {
@@ -297,6 +316,20 @@ impl Store {
             registry.push(RefRegistryEntry::Gc {
                 store: self_ptr,
                 gc_ref,
+            });
+            idx
+        };
+        RefHandle::from_pool_index(idx)
+    }
+
+    pub(crate) fn register_exn_ref(&mut self, exn_ref: ExnRef) -> RefHandle {
+        let self_ptr = self as *mut Store;
+        let idx = {
+            let mut registry = self.ref_registry.borrow_mut();
+            let idx = registry.len();
+            registry.push(RefRegistryEntry::Exn {
+                store: self_ptr,
+                exn_ref,
             });
             idx
         };

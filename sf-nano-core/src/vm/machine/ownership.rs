@@ -127,6 +127,7 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
         | MachineInstKind::TestBits { dst, .. }
+        | MachineInstKind::EhAllocExnRef { dst, .. }
         | MachineInstKind::RefFunc { dst, .. }
         | MachineInstKind::RefAsNonNull { dst, .. }
         | MachineInstKind::RefEq { dst, .. }
@@ -178,6 +179,8 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::SimdStore { .. }
         | MachineInstKind::SimdStoreLane { .. }
         | MachineInstKind::TrapIf { .. }
-        | MachineInstKind::CallRuntime(_) => None,
+        | MachineInstKind::CallRuntime(_)
+        | MachineInstKind::EhThrow { .. }
+        | MachineInstKind::EhThrowRef { .. } => None,
     }
 }

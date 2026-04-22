@@ -797,4 +797,13 @@ pub(crate) enum SsaTerminator {
         return_results: Option<FrameSpan>,
     },
     TrapUnreachable,
+    /// `throw tag_idx` — payload values are already published to the
+    /// `args` frame slots before this terminator fires.
+    EhThrow {
+        tag_idx: u32,
+        args: FrameSpan,
+    },
+    EhThrowRef {
+        exnref_slot: FrameSlot,
+    },
 }

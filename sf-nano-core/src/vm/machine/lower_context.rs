@@ -26,8 +26,8 @@ use super::{
     lower_i64::I64Lowering,
     lower_module::{slot_offset_bytes, target_param_regs},
     lower_regalloc::{
-        canonical_cached_local_mem_width, canonical_value_mem_width_for_value, gp_reg_int_width,
-        gp_reg_mem_width, lir_value_storage_type, value_type_storage_type, MachineRegFile,
+        canonical_cached_local_mem_width, gp_reg_int_width, gp_reg_mem_width,
+        lir_value_storage_type, value_type_storage_type, MachineRegFile,
     },
     lower_util::compute_remaining_uses,
 };
@@ -321,10 +321,6 @@ impl<'a> BlockLowerContext<'a> {
     // -----------------------------------------------------------------------
     // Canonical width / storage helpers
     // -----------------------------------------------------------------------
-
-    pub(super) fn canonical_value_mem_width_for_value(&self, value: SsaValue) -> MachineMemWidth {
-        canonical_value_mem_width_for_value(self.program, value)
-    }
 
     pub(super) fn value_storage_type(&self, value: SsaValue) -> MachineStorageType {
         lir_value_storage_type(self.program, value)
@@ -755,7 +751,9 @@ impl<'a> BlockLowerContext<'a> {
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }
-            | SsaTerminator::TrapUnreachable => None,
+            | SsaTerminator::TrapUnreachable
+            | SsaTerminator::EhThrow { .. }
+            | SsaTerminator::EhThrowRef { .. } => None,
         }
     }
 

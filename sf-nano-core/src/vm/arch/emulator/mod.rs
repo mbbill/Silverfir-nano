@@ -718,6 +718,27 @@ impl<'a> Emulator<'a> {
                 self.write_reg_with_kind(*dst, result, fixed_reg_addr_kind(*dst))?;
             }
             MachineInstKind::CallRuntime(call) => self.execute_call_runtime(call)?,
+            MachineInstKind::EhThrow { tag_idx, args } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*tag_idx);
+                io[preserved_io::ARG0] = self.fp as usize as u64;
+                io[preserved_io::ARG1] = u64::from(args.start.0);
+                io[preserved_io::ARG2] = u64::from(args.count);
+                self.execute_preserved_helper(preserved_op::EH_THROW, &mut io)?;
+            }
+            MachineInstKind::EhThrowRef { exnref_slot } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::ARG0] = self.fp as usize as u64;
+                io[preserved_io::ARG1] = u64::from(exnref_slot.0);
+                self.execute_preserved_helper(preserved_op::EH_THROW_REF, &mut io)?;
+            }
+            MachineInstKind::EhAllocExnRef { tag_idx, dst } => {
+                let mut io = [0u64; preserved_io::SLOT_COUNT];
+                io[preserved_io::IMM0] = u64::from(*tag_idx);
+                io[preserved_io::ARG0] = self.fp as usize as u64;
+                self.execute_preserved_helper(preserved_op::EH_ALLOC_EXN_REF, &mut io)?;
+                self.write_reg_with_kind(*dst, io[preserved_io::RET0], fixed_reg_addr_kind(*dst))?;
+            }
             MachineInstKind::MemoryGrow {
                 mem_idx,
                 dst,
@@ -1196,6 +1217,7 @@ impl<'a> Emulator<'a> {
             .ctx
             .error
             .take()
+            .or_else(|| core::mem::take(&mut self.ctx.pending_escape).into_error())
             .unwrap_or_else(|| trap_from_kind(MachineTrapKind::HelperFailure)))
     }
 
@@ -1476,6 +1498,7 @@ impl<'a> Emulator<'a> {
             .ctx
             .error
             .take()
+            .or_else(|| core::mem::take(&mut self.ctx.pending_escape).into_error())
             .unwrap_or_else(|| trap_from_kind(MachineTrapKind::HelperFailure)))
     }
 

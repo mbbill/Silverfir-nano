@@ -978,6 +978,44 @@ impl<'a> Arm32Backend<'a> {
                     None,
                 )?;
             }
+            MachineInstKind::EhThrow { tag_idx, args } => {
+                self.emit_preserved_helper_call(
+                    preserved_op::EH_THROW,
+                    &[(preserved_io::IMM0, *tag_idx)],
+                    &[
+                        (preserved_io::ARG0, MachineValue::Reg(MACHINE_FP_REG)),
+                        (preserved_io::ARG1, MachineValue::Imm64(args.start.0 as u64)),
+                        (preserved_io::ARG2, MachineValue::Imm64(args.count as u64)),
+                    ],
+                    None,
+                )?;
+            }
+            MachineInstKind::EhThrowRef { exnref_slot } => {
+                self.emit_preserved_helper_call(
+                    preserved_op::EH_THROW_REF,
+                    &[],
+                    &[
+                        (preserved_io::ARG0, MachineValue::Reg(MACHINE_FP_REG)),
+                        (
+                            preserved_io::ARG1,
+                            MachineValue::Imm64(exnref_slot.0 as u64),
+                        ),
+                    ],
+                    None,
+                )?;
+            }
+            MachineInstKind::EhAllocExnRef { tag_idx, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::EH_ALLOC_EXN_REF,
+                    *tag_idx,
+                    0,
+                    MachineValue::Reg(MACHINE_FP_REG),
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
             MachineInstKind::RefFunc { func_idx, dst } => {
                 self.compile_preserved_result(
                     preserved_op::REF_FUNC,

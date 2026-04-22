@@ -697,6 +697,14 @@ impl WastTestRunner {
             WastDirective::AssertExhaustion { call, message, .. } => {
                 self.execute_wast_assert_exhaustion(call, message)
             }
+            WastDirective::AssertException { exec, .. } => {
+                debug!(
+                    "Directive {} action: {} (expect uncaught exception)",
+                    index,
+                    self.describe_wast_action(exec)
+                );
+                self.execute_wast_assert_exception(exec)
+            }
             WastDirective::Register { name, module, .. } => {
                 self.execute_wast_register(name, module.as_ref())
             }
@@ -828,7 +836,45 @@ impl WastTestRunner {
                 "Expected: trap with error '{}' for {}, Actual: execution succeeded with results {:?}",
                 expected_message, action_description, results
             ))),
+            // An uncaught wasm exception is *not* a trap. Reject the
+            // assertion so mixed-directive EH tests cannot accidentally
+            // mask a real bug behind `assert_trap`.
+            Err(err)
+                if err
+                    .wasm_error()
+                    .is_some_and(|w| w.is_exception()) =>
+            {
+                Err(TestError::infrastructure(format!(
+                    "Expected: trap with error '{}' for {}, Actual: uncaught wasm exception ({})",
+                    expected_message, action_description, err
+                )))
+            }
             Err(_) => Ok(()),
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // assert_exception
+    // -----------------------------------------------------------------------
+
+    fn execute_wast_assert_exception(&mut self, exec: &mut WastExecute) -> Result<(), TestError> {
+        let action_description = self.describe_wast_action(exec);
+        match self.execute_wast_action(exec) {
+            Ok(results) => Err(TestError::infrastructure(format!(
+                "Expected: uncaught exception for {}, Actual: execution succeeded with results {:?}",
+                action_description, results
+            ))),
+            Err(err)
+                if err
+                    .wasm_error()
+                    .is_some_and(|w| w.is_exception()) =>
+            {
+                Ok(())
+            }
+            Err(other) => Err(TestError::infrastructure(format!(
+                "Expected: uncaught exception for {}, Actual: {}",
+                action_description, other
+            ))),
         }
     }
 
@@ -1239,13 +1285,20 @@ impl WastTestRunner {
                             }
                         }
 
-                        // Tag exports — link-time only, no runtime handle yet
+                        // Tag exports — carry the live runtime identity *and*
+                        // the source-context type_index so cross-module
+                        // rec-group identity checks link correctly.
                         for tag in module.tags() {
                             for export_name in tag.export_names() {
-                                imports.push(Import::tag_typed_with_context(
+                                let Some(handle) = instance.tag_handle(export_name) else {
+                                    continue;
+                                };
+                                imports.push(Import::linked_tag_typed_with_context_and_index(
                                     registered_name,
                                     export_name,
+                                    handle,
                                     tag.func_type().clone(),
+                                    tag.type_index(),
                                     module.types().clone(),
                                 ));
                             }

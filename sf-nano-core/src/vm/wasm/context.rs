@@ -110,4 +110,38 @@ impl<'a> CompileContext<'a> {
         let ty = func.func_type();
         (ty.params().len() as u16, ty.results().len() as u16)
     }
+
+    /// Resolve an EH tag index to `(params, results)`. Results are always 0
+    /// for valid wasm tags (validator rejects non-zero), but we read it out so
+    /// the SIR layer stays honest.
+    #[inline]
+    pub(crate) fn resolve_tag_type(&self, tag_idx: u32) -> (u16, u16) {
+        let Some(tag_inst) = self.store.module().tags.get(tag_idx as usize) else {
+            return (0, 0);
+        };
+        self.types
+            .get_function_type(tag_inst.type_index)
+            .map(|ty| (ty.params().len() as u16, ty.results().len() as u16))
+            .unwrap_or((0, 0))
+    }
+
+    /// Resolve the block type embedded inside a `TryTable` immediate.
+    #[inline]
+    pub(crate) fn resolve_try_table_block_type(&self, imm: &Immediate) -> (u16, u16) {
+        match imm {
+            Immediate::TryTable { block_type, .. } => self.resolve_block_type(block_type),
+            _ => (0, 0),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn resolve_try_table_result_types(
+        &self,
+        imm: &Immediate,
+    ) -> collections::Vec<ValueType> {
+        match imm {
+            Immediate::TryTable { block_type, .. } => self.resolve_block_result_types(block_type),
+            _ => collections::Vec::new(),
+        }
+    }
 }

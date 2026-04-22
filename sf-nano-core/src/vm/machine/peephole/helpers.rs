@@ -41,6 +41,7 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
         | MachineInstKind::TestBits { dst, .. }
+        | MachineInstKind::EhAllocExnRef { dst, .. }
         | MachineInstKind::RefFunc { dst, .. }
         | MachineInstKind::RefAsNonNull { dst, .. }
         | MachineInstKind::RefEq { dst, .. }
@@ -92,7 +93,9 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::SimdStore { .. }
         | MachineInstKind::SimdStoreLane { .. }
         | MachineInstKind::TrapIf { .. }
-        | MachineInstKind::CallRuntime(_) => None,
+        | MachineInstKind::CallRuntime(_)
+        | MachineInstKind::EhThrow { .. }
+        | MachineInstKind::EhThrowRef { .. } => None,
     }
 }
 
@@ -156,9 +159,9 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
         | MachineInstKind::TestBits { dst, .. } => *dst == reg,
-        MachineInstKind::MemoryGrow { dst, .. } | MachineInstKind::TableGrow { dst, .. } => {
-            *dst == reg
-        }
+        MachineInstKind::MemoryGrow { dst, .. }
+        | MachineInstKind::TableGrow { dst, .. }
+        | MachineInstKind::EhAllocExnRef { dst, .. } => *dst == reg,
         MachineInstKind::MemoryFill { .. }
         | MachineInstKind::MemoryCopy { .. }
         | MachineInstKind::MemoryInit { .. }
@@ -208,6 +211,8 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::SimdStoreLane { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallRuntime(_)
+        | MachineInstKind::EhThrow { .. }
+        | MachineInstKind::EhThrowRef { .. }
         | MachineInstKind::StructSet { .. }
         | MachineInstKind::ArraySet { .. }
         | MachineInstKind::ArrayFill { .. }
@@ -391,7 +396,10 @@ pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
             f(mask);
         }
         MachineInstKind::TrapIf { cond, .. } => visit_branch_cond_values(cond, &mut f),
-        MachineInstKind::CallRuntime(_) => {}
+        MachineInstKind::CallRuntime(_)
+        | MachineInstKind::EhThrow { .. }
+        | MachineInstKind::EhThrowRef { .. }
+        | MachineInstKind::EhAllocExnRef { .. } => {}
         MachineInstKind::RefFunc { .. } => {}
         MachineInstKind::StructNew { fields, .. } => {
             for (value_lo, value_hi) in fields {

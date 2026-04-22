@@ -50,6 +50,32 @@ impl fmt::Display for BlockType {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CatchClauseKind {
+    Catch,
+    CatchRef,
+    CatchAll,
+    CatchAllRef,
+}
+
+impl fmt::Display for CatchClauseKind {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Catch => write!(f, "catch"),
+            Self::CatchRef => write!(f, "catch_ref"),
+            Self::CatchAll => write!(f, "catch_all"),
+            Self::CatchAllRef => write!(f, "catch_all_ref"),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct CatchClause {
+    pub kind: CatchClauseKind,
+    pub tag_idx: Option<u32>,
+    pub label_idx: u32,
+}
+
 #[allow(non_camel_case_types)]
 #[derive(Debug, Clone)]
 pub enum Immediate {
@@ -126,6 +152,11 @@ pub enum Immediate {
         label_idx: u32,
         rt1: ValueType,
         rt2: ValueType,
+    },
+    TagIndex(u32),
+    TryTable {
+        block_type: BlockType,
+        catches: collections::Vec<CatchClause>,
     },
 }
 
@@ -222,6 +253,24 @@ impl fmt::Display for Immediate {
                 "flags({}), labelidx({}), rt1({}), rt2({})",
                 flags, label_idx, rt1, rt2
             ),
+            TagIndex(idx) => write!(f, "tagidx({})", idx),
+            TryTable {
+                block_type,
+                catches,
+            } => {
+                write!(f, "blocktype({}), catches(", block_type)?;
+                for (i, c) in catches.iter().enumerate() {
+                    if i > 0 {
+                        write!(f, ", ")?;
+                    }
+                    if let Some(tag) = c.tag_idx {
+                        write!(f, "{}(tag={},label={})", c.kind, tag, c.label_idx)?;
+                    } else {
+                        write!(f, "{}(label={})", c.kind, c.label_idx)?;
+                    }
+                }
+                write!(f, ")")
+            }
         }
     }
 }
@@ -330,36 +379,7 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 });
             }
             BLOCK | LOOP | IF => {
-                let byte1 = payload.read_u8()?;
-                let block_type = match byte1 {
-                    0x40 => BlockType::Empty,
-
-                    // Structured reference types (0x64 = ref ht, 0x63 = ref null ht)
-                    0x64 | 0x63 => {
-                        payload.rewind(1)?;
-                        let value_type = ValueType::parse(&mut payload)?;
-                        value_type.ensure_enabled_in_build()?;
-                        BlockType::ValueType(value_type)
-                    }
-
-                    _ => match ValueType::try_from(byte1) {
-                        Ok(value_type) => {
-                            value_type.ensure_enabled_in_build()?;
-                            BlockType::ValueType(value_type)
-                        }
-                        Err(_) => {
-                            payload.rewind(1)?;
-                            let value = payload.read_leb128_i32()?;
-                            if value >= 0 {
-                                BlockType::TypeIndex(value as usize)
-                            } else {
-                                return Err(WasmError::malformed(
-                                    "Invalid block type index".into(),
-                                ));
-                            }
-                        }
-                    },
-                };
+                let block_type = decode_block_type(&mut payload)?;
                 let wasm_op = OP(op);
                 let imm = Immediate::Block(block_type.clone());
                 let next_off = payload.position();
@@ -374,6 +394,67 @@ impl<'a, 'b> Decoder<'a, 'b> {
                 let imm1 = payload.read_leb128_u32()?;
                 let wasm_op = OP(op);
                 let imm = Immediate::LabelIndex(imm1);
+                let next_off = payload.position();
+                self.decoded_ops.borrow_mut().push(DecodedOp {
+                    wasm_op,
+                    op_offset,
+                    next_op_offset: next_off,
+                    imm,
+                });
+            }
+            THROW => {
+                let tag_idx = payload.read_leb128_u32()?;
+                let wasm_op = OP(op);
+                let imm = Immediate::TagIndex(tag_idx);
+                let next_off = payload.position();
+                self.decoded_ops.borrow_mut().push(DecodedOp {
+                    wasm_op,
+                    op_offset,
+                    next_op_offset: next_off,
+                    imm,
+                });
+            }
+            THROW_REF => {
+                let wasm_op = OP(op);
+                let imm = Immediate::None;
+                let next_off = payload.position();
+                self.decoded_ops.borrow_mut().push(DecodedOp {
+                    wasm_op,
+                    op_offset,
+                    next_op_offset: next_off,
+                    imm,
+                });
+            }
+            TRY_TABLE => {
+                let block_type = decode_block_type(&mut payload)?;
+                let n = payload.read_leb128_u32()?;
+                let mut catches: collections::Vec<CatchClause> =
+                    collections::Vec::with_capacity(n as usize);
+                for _ in 0..n {
+                    let tag = payload.read_u8()?;
+                    let (kind, tag_idx) = match tag {
+                        0x00 => (CatchClauseKind::Catch, Some(payload.read_leb128_u32()?)),
+                        0x01 => (CatchClauseKind::CatchRef, Some(payload.read_leb128_u32()?)),
+                        0x02 => (CatchClauseKind::CatchAll, None),
+                        0x03 => (CatchClauseKind::CatchAllRef, None),
+                        _ => {
+                            return Err(WasmError::malformed(
+                                "invalid catch clause tag in try_table",
+                            ))
+                        }
+                    };
+                    let label_idx = payload.read_leb128_u32()?;
+                    catches.push(CatchClause {
+                        kind,
+                        tag_idx,
+                        label_idx,
+                    });
+                }
+                let wasm_op = OP(op);
+                let imm = Immediate::TryTable {
+                    block_type,
+                    catches,
+                };
                 let next_off = payload.position();
                 self.decoded_ops.borrow_mut().push(DecodedOp {
                     wasm_op,
@@ -1077,6 +1158,38 @@ fn fd_uses_lane_index(op_ext: OpcodeFD) -> bool {
             | OpcodeFD::F64X2_EXTRACT_LANE
             | OpcodeFD::F64X2_REPLACE_LANE
     )
+}
+
+fn decode_block_type(payload: &mut Payload<'_>) -> Result<BlockType, WasmError> {
+    let byte1 = payload.read_u8()?;
+    let block_type = match byte1 {
+        0x40 => BlockType::Empty,
+
+        // Structured reference types (0x64 = ref ht, 0x63 = ref null ht)
+        0x64 | 0x63 => {
+            payload.rewind(1)?;
+            let value_type = ValueType::parse(payload)?;
+            value_type.ensure_enabled_in_build()?;
+            BlockType::ValueType(value_type)
+        }
+
+        _ => match ValueType::try_from(byte1) {
+            Ok(value_type) => {
+                value_type.ensure_enabled_in_build()?;
+                BlockType::ValueType(value_type)
+            }
+            Err(_) => {
+                payload.rewind(1)?;
+                let value = payload.read_leb128_i32()?;
+                if value >= 0 {
+                    BlockType::TypeIndex(value as usize)
+                } else {
+                    return Err(WasmError::malformed("Invalid block type index"));
+                }
+            }
+        },
+    };
+    Ok(block_type)
 }
 
 pub struct OpStream<'d, 'a, 'b> {

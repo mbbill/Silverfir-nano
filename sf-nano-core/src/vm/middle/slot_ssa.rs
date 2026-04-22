@@ -189,7 +189,11 @@ fn lower_body_inst_kind(kind: &SemanticOpKind) -> Option<SlotInstKind> {
         | SemanticOpKind::Return { .. }
         | SemanticOpKind::ReturnCallDirect { .. }
         | SemanticOpKind::ReturnCallIndirect { .. }
-        | SemanticOpKind::ReturnCallRef { .. } => None,
+        | SemanticOpKind::ReturnCallRef { .. }
+        | SemanticOpKind::TryTable { .. }
+        | SemanticOpKind::AllocExnRef { .. }
+        | SemanticOpKind::Throw { .. }
+        | SemanticOpKind::ThrowRef => None,
     }
 }
 
@@ -241,6 +245,9 @@ fn lower_terminator_kind(
         },
         SemanticOpKind::Else { end_target } => {
             SlotTerminatorKind::Goto(target_block(cfg, *end_target)?)
+        }
+        SemanticOpKind::Throw { .. } | SemanticOpKind::ThrowRef => {
+            SlotTerminatorKind::TrapUnreachable
         }
         _ => SlotTerminatorKind::Goto(fallthrough()?),
     })

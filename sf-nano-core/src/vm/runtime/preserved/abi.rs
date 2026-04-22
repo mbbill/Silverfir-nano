@@ -64,6 +64,11 @@ pub(crate) mod op {
     pub(crate) const ARRAY_INIT_ELEM: u32 = 37;
     pub(crate) const ARRAY_NEW_DATA: u32 = 38;
     pub(crate) const ARRAY_NEW_ELEM: u32 = 39;
+    #[cfg(sf_has_simd)]
     pub(crate) const V128_TO_RAW: u32 = 40;
+    #[cfg(sf_has_simd)]
     pub(crate) const V128_FROM_RAW: u32 = 41;
+    pub(crate) const EH_THROW: u32 = 42;
+    pub(crate) const EH_THROW_REF: u32 = 43;
+    pub(crate) const EH_ALLOC_EXN_REF: u32 = 44;
 }

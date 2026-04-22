@@ -416,7 +416,9 @@ fn incoming_edge_locations(
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }
-            | SsaTerminator::TrapUnreachable => {}
+            | SsaTerminator::TrapUnreachable
+            | SsaTerminator::EhThrow { .. }
+            | SsaTerminator::EhThrowRef { .. } => {}
         }
     }
     incoming
@@ -561,6 +563,8 @@ fn substitute_terminator(terminator: SsaTerminator, subst: &[ValueSubstitution])
             return_results,
         },
         SsaTerminator::TrapUnreachable => SsaTerminator::TrapUnreachable,
+        SsaTerminator::EhThrow { tag_idx, args } => SsaTerminator::EhThrow { tag_idx, args },
+        SsaTerminator::EhThrowRef { exnref_slot } => SsaTerminator::EhThrowRef { exnref_slot },
     }
 }
 
@@ -776,7 +780,9 @@ fn remap_terminator_targets(term: &mut SsaTerminator, mapping: &[SsaTarget]) {
         | SsaTerminator::TailCallDirect { .. }
         | SsaTerminator::TailCallIndirect { .. }
         | SsaTerminator::TailCallRef { .. }
-        | SsaTerminator::TrapUnreachable => {}
+        | SsaTerminator::TrapUnreachable
+        | SsaTerminator::EhThrow { .. }
+        | SsaTerminator::EhThrowRef { .. } => {}
     }
 }
 
@@ -802,7 +808,9 @@ fn remap_terminator_target_after_single_removal(term: &mut SsaTerminator, remove
         | SsaTerminator::TailCallDirect { .. }
         | SsaTerminator::TailCallIndirect { .. }
         | SsaTerminator::TailCallRef { .. }
-        | SsaTerminator::TrapUnreachable => {}
+        | SsaTerminator::TrapUnreachable
+        | SsaTerminator::EhThrow { .. }
+        | SsaTerminator::EhThrowRef { .. } => {}
     }
 }
 
@@ -835,7 +843,9 @@ fn visit_outgoing_edges(term: &SsaTerminator, mut visit: impl FnMut(&SsaEdge)) {
         | SsaTerminator::TailCallDirect { .. }
         | SsaTerminator::TailCallIndirect { .. }
         | SsaTerminator::TailCallRef { .. }
-        | SsaTerminator::TrapUnreachable => {}
+        | SsaTerminator::TrapUnreachable
+        | SsaTerminator::EhThrow { .. }
+        | SsaTerminator::EhThrowRef { .. } => {}
     }
 }
 

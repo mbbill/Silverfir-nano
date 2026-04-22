@@ -36,6 +36,10 @@ pub(crate) fn check_ref_type_match(
                     .ok_or_else(|| WasmError::internal("GC ref points to missing store".into()))?;
                 check_gc_ref_type(origin_store, gc_ref, heap_type, current_store)
             }
+            Some(RefRegistryEntry::Exn { .. }) => Ok(matches!(
+                heap_type,
+                HeapType::Abstract(AbstractHeapType::Exn)
+            )),
             None => Err(WasmError::invalid("invalid pooled reference")),
         };
     }

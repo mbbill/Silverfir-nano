@@ -16,9 +16,36 @@ use crate::{
         entities::{FunctionInst, GlobalInst, ModuleInst},
         runtime::{code::CompiledNativeModule, dispatch_view::NativeDispatchMetadata},
         store::Store,
+        tag::TagHandle,
         value::RefHandle,
     },
 };
+
+/// Runtime escape state for a single wasm invocation. Thrown wasm exceptions
+/// are carried separately from host-level `WasmError` traps so future
+/// catch-dispatcher blocks can discriminate at the call boundary.
+#[derive(Debug, Default)]
+pub(crate) enum PendingEscape {
+    #[default]
+    None,
+    /// Uncaught wasm exception — carries an `exnref` pool handle that
+    /// dereferences through `Store::exn_heap()` to the payload.
+    Throw { exn: RefHandle, tag: TagHandle },
+}
+
+impl PendingEscape {
+    #[inline]
+    pub(crate) fn into_error(self) -> Option<WasmError> {
+        match self {
+            Self::None => None,
+            Self::Throw { exn, tag } => Some(WasmError::Exception {
+                exn,
+                tag,
+                module_tag_name: None,
+            }),
+        }
+    }
+}
 
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -64,6 +91,9 @@ pub(crate) struct NativeContext {
     pub(crate) store: *mut Store,
     pub(crate) current_module: *const ModuleInst,
     pub(crate) error: Option<WasmError>,
+    /// Pending wasm exception / trap in transit between runtime-call entry
+    /// and the catch-dispatcher block (or the function escape path).
+    pub(crate) pending_escape: PendingEscape,
     /// Trap kind set by the guard-page signal handler (no allocation needed).
     /// 0 = no trap, 1 = memory out of bounds.
     #[cfg(sf_has_guard_pages)]
@@ -97,6 +127,7 @@ impl NativeContext {
             store,
             current_module: core::ptr::null(),
             error: None,
+            pending_escape: PendingEscape::None,
             #[cfg(sf_has_guard_pages)]
             trap_kind: 0,
             memory_views: collections::Vec::new(),

@@ -889,6 +889,8 @@ fn block_successors(terminator: &SsaTerminator) -> collections::Vec<SsaTarget> {
         | SsaTerminator::TailCallDirect { .. }
         | SsaTerminator::TailCallIndirect { .. }
         | SsaTerminator::TailCallRef { .. }
-        | SsaTerminator::TrapUnreachable => collections::Vec::new(),
+        | SsaTerminator::TrapUnreachable
+        | SsaTerminator::EhThrow { .. }
+        | SsaTerminator::EhThrowRef { .. } => collections::Vec::new(),
     }
 }

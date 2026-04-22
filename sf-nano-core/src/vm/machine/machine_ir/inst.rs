@@ -8,6 +8,7 @@ use super::types::{
 };
 use crate::collections;
 use crate::value_type::RefType;
+use crate::vm::middle::frame::{FrameSlot, FrameSpan};
 
 /// Inline runtime-dispatch call that falls through in the same function.
 ///
@@ -422,6 +423,17 @@ pub(crate) enum MachineInstKind {
     /// continuation edge; they simply invoke the runtime entry and continue in
     /// the same function.
     CallRuntime(MachineCallRuntime),
+    EhThrow {
+        tag_idx: u32,
+        args: FrameSpan,
+    },
+    EhThrowRef {
+        exnref_slot: FrameSlot,
+    },
+    EhAllocExnRef {
+        tag_idx: u32,
+        dst: MachineReg,
+    },
     MemoryGrow {
         mem_idx: u32,
         dst: MachineReg,
@@ -677,6 +689,7 @@ impl MachineInstKind {
             | Self::SimdLoadLane { .. }
             | Self::Convert { .. }
             | Self::Select { .. }
+            | Self::EhAllocExnRef { .. }
             | Self::MemoryGrow { .. }
             | Self::TableGrow { .. }
             | Self::RefFunc { .. }
@@ -705,6 +718,8 @@ impl MachineInstKind {
             | Self::SimdStoreLane { .. }
             | Self::TrapIf { .. }
             | Self::CallRuntime(_)
+            | Self::EhThrow { .. }
+            | Self::EhThrowRef { .. }
             | Self::MemoryFill { .. }
             | Self::MemoryCopy { .. }
             | Self::MemoryInit { .. }

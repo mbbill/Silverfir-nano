@@ -63,7 +63,9 @@ pub(super) fn compute_remaining_uses(
         | SsaTerminator::TailCallDirect { .. }
         | SsaTerminator::TailCallIndirect { .. }
         | SsaTerminator::TailCallRef { .. }
-        | SsaTerminator::TrapUnreachable => {}
+        | SsaTerminator::TrapUnreachable
+        | SsaTerminator::EhThrow { .. }
+        | SsaTerminator::EhThrowRef { .. } => {}
     }
 
     // Linear-SSA invariant: within the op stream, every SsaValue operand is

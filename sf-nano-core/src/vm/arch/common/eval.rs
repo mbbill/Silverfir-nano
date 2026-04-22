@@ -101,9 +101,13 @@ pub(crate) fn eval(
     }
 
     if status != 0 {
-        let error = ctx.error.take().unwrap_or_else(|| {
-            WasmError::internal("native root entry failed without setting an error")
-        });
+        let error = ctx
+            .error
+            .take()
+            .or_else(|| core::mem::take(&mut ctx.pending_escape).into_error())
+            .unwrap_or_else(|| {
+                WasmError::internal("native root entry failed without setting an error")
+            });
         #[cfg(sf_call_trace)]
         function_trace::native_trap_current(&mut ctx, &error);
         return Err(error);

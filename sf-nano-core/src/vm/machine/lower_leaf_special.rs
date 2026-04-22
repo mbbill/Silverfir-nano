@@ -26,7 +26,7 @@ use crate::{
 use super::{
     lower_context::BlockLowerContext,
     lower_inst::LeafLowering,
-    lower_regalloc::lir_value_storage_type,
+    lower_regalloc::{canonical_value_mem_width_for_value, lir_value_storage_type},
     lower_util::{single_arg, single_result, three_args, two_args},
 };
 
@@ -453,6 +453,19 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    pub(super) fn lower_eh_alloc_exn_ref(
+        &mut self,
+        tag_idx: u32,
+        results: &[SsaValue],
+    ) -> Result<(), WasmError> {
+        let result = single_result(results)?;
+        let dst = self.alloc_result_value(result)?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::EhAllocExnRef { tag_idx, dst },
+        });
+        Ok(())
+    }
+
     pub(super) fn lower_global_get(
         &mut self,
         idx: u32,
@@ -481,7 +494,7 @@ impl<'a> BlockLowerContext<'a> {
         let ty = self.value_storage_type(result);
         let runtime_layout = self.runtime_abi_layout();
         let dst = self.alloc_result_value(result)?;
-        let width = self.canonical_value_mem_width_for_value(result);
+        let width = canonical_value_mem_width_for_value(self.program(), result);
         let base = self.borrow_free_gp_dynamic_regs(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
@@ -626,7 +639,7 @@ impl<'a> BlockLowerContext<'a> {
         let ty = self.value_storage_type(src_value);
         let runtime_layout = self.runtime_abi_layout();
         let src = self.use_value(src_value)?;
-        let width = self.canonical_value_mem_width_for_value(src_value);
+        let width = canonical_value_mem_width_for_value(self.program(), src_value);
         let base = self.borrow_free_gp_dynamic_regs(1)?[0];
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
@@ -2628,17 +2641,6 @@ fn simd_lane_access_bytes(opcode: u32) -> Result<u32, WasmError> {
     })
 }
 
-pub(super) fn addr_with_byte_offset(
-    mut addr: MachineAddr,
-    byte_offset: i32,
-) -> Result<MachineAddr, WasmError> {
-    addr.offset = addr
-        .offset
-        .checked_add(byte_offset)
-        .ok_or_else(|| WasmError::internal("machine address byte offset overflow"))?;
-    Ok(addr)
-}
-
 pub(super) fn append_i64_load_ops(
     ops: &mut collections::Vec<MachineInst>,
     gp_word_int_width: MachineIntWidth,
@@ -2834,4 +2836,15 @@ fn indexed_field_offset(index: u32, stride: usize, field_offset: u32) -> Result<
         .and_then(|value| value.checked_add(field_offset as u64))
         .ok_or_else(|| WasmError::internal("runtime view byte offset overflow"))?;
     i32::try_from(scaled).map_err(|_| WasmError::internal("runtime view byte offset exceeds i32"))
+}
+
+pub(super) fn addr_with_byte_offset(
+    mut addr: MachineAddr,
+    byte_offset: i32,
+) -> Result<MachineAddr, WasmError> {
+    addr.offset = addr
+        .offset
+        .checked_add(byte_offset)
+        .ok_or_else(|| WasmError::internal("machine address offset overflow"))?;
+    Ok(addr)
 }

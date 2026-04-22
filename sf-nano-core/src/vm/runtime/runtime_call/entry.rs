@@ -10,10 +10,14 @@ use crate::{
         entities::{Caller, FunctionInst},
         runtime,
         runtime::{
-            common::{internal_error, run_frame_call, trap_error},
-            context::NativeContext,
+            common::{
+                internal_error, run_frame_call_with_status, trap_error, value_matches_value_type,
+                NativeCallStatus,
+            },
+            context::{NativeContext, PendingEscape},
         },
         store::Store,
+        tag::TagHandle,
         value::RefHandle,
         value::Value,
         value_encoding::{
@@ -48,7 +52,7 @@ unsafe extern "C" fn runtime_call_entry(
     frame: *mut u64,
     metadata: *const u8,
 ) -> u32 {
-    run_frame_call(ctx, frame, metadata, invoke_runtime_call)
+    run_frame_call_with_status(ctx, frame, metadata, invoke_runtime_call)
 }
 
 #[inline]
@@ -118,7 +122,7 @@ fn invoke_runtime_call(
     ctx: &mut NativeContext,
     frame: *mut u64,
     meta: &RuntimeCallMeta,
-) -> Result<(), WasmError> {
+) -> Result<NativeCallStatus, WasmError> {
     match meta.target_kind()? {
         RuntimeCallTargetKind::Immediate => {
             call_runtime_by_local_index(ctx, frame, meta.func_idx_source, meta.args, meta.results)
@@ -148,7 +152,7 @@ fn call_runtime_by_local_index(
     func_idx: u32,
     args_region: RuntimeCallFrameRegion,
     results_region: RuntimeCallFrameRegion,
-) -> Result<(), WasmError> {
+) -> Result<NativeCallStatus, WasmError> {
     let store_ptr = {
         let store = ctx
             .store()
@@ -175,7 +179,7 @@ fn call_runtime_by_handle(
     type_check_kind: RuntimeCallTypeCheckKind,
     args_region: RuntimeCallFrameRegion,
     results_region: RuntimeCallFrameRegion,
-) -> Result<(), WasmError> {
+) -> Result<NativeCallStatus, WasmError> {
     if handle.is_null() {
         return Err(trap_error("null function reference"));
     }
@@ -241,7 +245,7 @@ fn invoke_runtime_target(
     callee: &FunctionInst,
     args_region: RuntimeCallFrameRegion,
     results_region: RuntimeCallFrameRegion,
-) -> Result<(), WasmError> {
+) -> Result<NativeCallStatus, WasmError> {
     let func_type = Rc::new(callee.func_type().clone());
 
     require_region_slots(
@@ -288,7 +292,22 @@ fn invoke_runtime_target(
                 }
             };
             let mut caller = Caller::new(mem_slice);
-            callback(&mut caller, &args, &mut ret_vals)?;
+            match callback(&mut caller, &args, &mut ret_vals) {
+                Ok(()) => {}
+                Err(WasmError::HostThrow {
+                    tag,
+                    args: exn_args,
+                }) => {
+                    if !validate_host_throw_payload(tag, &exn_args, ctx) {
+                        return Err(trap_error("host threw mistyped exception"));
+                    }
+                    let exn_ref = owner_store.alloc_exn(tag, exn_args);
+                    let handle = owner_store.register_exn_ref(exn_ref);
+                    ctx.pending_escape = PendingEscape::Throw { exn: handle, tag };
+                    return Ok(NativeCallStatus::Thrown);
+                }
+                Err(other) => return Err(other),
+            }
         }
         FunctionInst::Linked { handle, .. } => {
             return call_runtime_by_handle(
@@ -330,7 +349,31 @@ fn invoke_runtime_target(
         }
     }
 
-    Ok(())
+    Ok(NativeCallStatus::Ok)
+}
+
+/// Validate a host-throw payload against the tag signature. A mismatch means
+/// the embedder built a malformed throw and should trap rather than propagate.
+fn validate_host_throw_payload(tag: TagHandle, payload: &[Value], ctx: &NativeContext) -> bool {
+    let Some(store) = ctx.store() else {
+        return false;
+    };
+    let Some(tag_inst) = store.module().tags.iter().find(|t| t.handle == tag) else {
+        return false;
+    };
+    let Some(ty) = store.module().types.get_function_type(tag_inst.type_index) else {
+        return false;
+    };
+    let params = ty.params();
+    if payload.len() != params.len() {
+        return false;
+    }
+    for (value, expected) in payload.iter().zip(params.iter()) {
+        if !value_matches_value_type(value, *expected) {
+            return false;
+        }
+    }
+    true
 }
 
 #[cfg(test)]

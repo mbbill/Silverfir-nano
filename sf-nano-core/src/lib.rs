@@ -32,12 +32,13 @@ pub use vm::build::{
 };
 pub use vm::entities::{Caller, FunctionInst, HostFn};
 pub use vm::instance::{
-    Import, ImportValue, ImportedTableState, Instance, InstanceInstantiationError,
+    Import, ImportValue, ImportedTableState, ImportedTagState, Instance, InstanceInstantiationError,
 };
 #[cfg(sf_has_guard_pages)]
 use vm::runtime::trap_signal;
 pub use vm::runtime::{active_runtime_engine, RuntimeEngine};
 pub use vm::store::LinkRegistry;
+pub use vm::tag::TagHandle;
 pub use vm::value::{RefHandle, Value};
 
 #[inline]

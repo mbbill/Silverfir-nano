@@ -15,7 +15,20 @@ use crate::vm::runtime::code_buf::CodeBuffer;
 #[cfg(sf_has_guard_pages)]
 use crate::vm::runtime::guard_pages::GuardPageMemory;
 use crate::vm::store::Store;
+use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
+
+#[derive(Debug, Clone, Copy)]
+pub struct TagInst {
+    pub handle: TagHandle,
+    pub type_index: u32,
+    /// `true` when the tag is imported — its `handle` may alias a handle
+    /// imported into a different tag index. Enables the static-catch
+    /// matcher in the semantic decoder to fall back to the runtime
+    /// throw path when it can't prove two tag indices refer to distinct
+    /// runtime identities.
+    pub is_import: bool,
+}
 use crate::vm::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store};
 
 pub type HostFn = fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), WasmError>;
@@ -38,6 +51,25 @@ impl<'a> Caller<'a> {
     #[inline]
     pub fn memory_mut(&mut self) -> Option<&mut [u8]> {
         self.memory.as_deref_mut()
+    }
+
+    /// Construct a wasm-catchable throw from host code. Use as:
+    ///
+    /// ```ignore
+    /// return Err(Caller::throw(my_tag, vec![Value::I32(42)]));
+    /// ```
+    ///
+    /// `tag` must be a live `TagHandle` (obtained via
+    /// `Instance::tag_handle(...)` or `Import::tag_typed_with_handle(...)`).
+    /// Payload arity and value types must match the tag's function-type
+    /// params; a mistyped throw surfaces to wasm as
+    /// `WasmError::Trap("host threw mistyped exception")`.
+    #[inline]
+    pub fn throw(tag: TagHandle, args: impl Into<collections::Vec<Value>>) -> WasmError {
+        WasmError::HostThrow {
+            tag,
+            args: args.into(),
+        }
     }
 }
 
@@ -368,6 +400,7 @@ pub struct ModuleInst {
     pub tables: collections::Vec<TableInst>,
     pub memories: collections::Vec<MemInst>,
     pub globals: collections::Vec<GlobalInst>,
+    pub tags: collections::Vec<TagInst>,
     pub elements: collections::Vec<ElementInst>,
     pub data: collections::Vec<DataInst>,
     #[cfg(sf_jit)]
@@ -384,6 +417,7 @@ impl ModuleInst {
             tables: collections::Vec::new(),
             memories: collections::Vec::new(),
             globals: collections::Vec::new(),
+            tags: collections::Vec::new(),
             elements: collections::Vec::new(),
             data: collections::Vec::new(),
             #[cfg(sf_jit)]
@@ -463,6 +497,7 @@ impl Default for ModuleInst {
             tables: collections::Vec::new(),
             memories: collections::Vec::new(),
             globals: collections::Vec::new(),
+            tags: collections::Vec::new(),
             elements: collections::Vec::new(),
             data: collections::Vec::new(),
             #[cfg(sf_jit)]

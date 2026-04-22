@@ -982,7 +982,9 @@ fn mark_terminator_uses(term: &SsaTerminator, used: &mut [bool]) {
         | SsaTerminator::TailCallDirect { .. }
         | SsaTerminator::TailCallIndirect { .. }
         | SsaTerminator::TailCallRef { .. }
-        | SsaTerminator::TrapUnreachable => {}
+        | SsaTerminator::TrapUnreachable
+        | SsaTerminator::EhThrow { .. }
+        | SsaTerminator::EhThrowRef { .. } => {}
     }
 }
 
@@ -1058,7 +1060,9 @@ fn max_value_index_parts(
         | SsaTerminator::TailCallDirect { .. }
         | SsaTerminator::TailCallIndirect { .. }
         | SsaTerminator::TailCallRef { .. }
-        | SsaTerminator::TrapUnreachable => {}
+        | SsaTerminator::TrapUnreachable
+        | SsaTerminator::EhThrow { .. }
+        | SsaTerminator::EhThrowRef { .. } => {}
     }
 
     max_value

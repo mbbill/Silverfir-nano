@@ -1,4 +1,5 @@
 use crate::{
+    collections,
     constants::WASM_PAGE_SIZE,
     error::WasmError,
     module::type_defs::{CompositeType, FieldType, PackedType, StorageType},
@@ -8,10 +9,11 @@ use crate::{
         entities::{MemInst, TableInst},
         gc_type_check::check_ref_type_match,
         runtime::{
-            common::{internal_error, trap_error},
-            context::NativeContext,
+            common::{internal_error, trap_error, value_matches_value_type},
+            context::{NativeContext, PendingEscape},
         },
         store::{RefRegistryEntry, Store},
+        tag::TagHandle,
         value::RefHandle,
         value::Value,
         value_encoding::{
@@ -69,6 +71,193 @@ fn value_from_machine(
 #[inline]
 fn value_to_machine(store: &mut Store, value: Value) -> u64 {
     value_to_machine_raw_in_store(value, active_gp_unit_bytes(), store)
+}
+
+#[inline]
+unsafe fn frame_read(frame: *mut u64, slot: u16) -> u64 {
+    unsafe { *frame.add(slot as usize) }
+}
+
+#[inline]
+fn require_arg_slots(actual: u16, expected: u16, label: &'static str) -> Result<(), WasmError> {
+    if actual != expected {
+        return Err(internal_error(label));
+    }
+    Ok(())
+}
+
+#[inline]
+fn frame_slot(start_slot: u16, index: u16) -> Result<u16, WasmError> {
+    start_slot
+        .checked_add(index)
+        .ok_or_else(|| internal_error("EH helper frame slot overflow"))
+}
+
+fn read_exn_payload_fields(
+    frame: *mut u64,
+    start_slot: u16,
+    slot_count: u16,
+    params: &[ValueType],
+    store: &Store,
+    label: &'static str,
+) -> Result<collections::Vec<Value>, WasmError> {
+    require_arg_slots(slot_count, params.len() as u16, label)?;
+    params
+        .iter()
+        .enumerate()
+        .map(|(index, ty)| {
+            let slot = frame_slot(start_slot, index as u16)?;
+            let raw = unsafe { frame_read(frame, slot) };
+            try_machine_raw_to_value_in_store(raw, *ty, active_gp_unit_bytes(), store)
+        })
+        .collect::<Result<_, _>>()
+}
+
+fn exn_payload_matches_tag(store: &Store, tag: TagHandle, fields: &[Value]) -> bool {
+    let Some(tag_inst) = store.module().tags.iter().find(|t| t.handle == tag) else {
+        return false;
+    };
+    let Some(tag_ty) = store.module().types.get_function_type(tag_inst.type_index) else {
+        return false;
+    };
+    let params = tag_ty.params();
+    fields.len() == params.len()
+        && fields
+            .iter()
+            .zip(params.iter())
+            .all(|(value, expected)| value_matches_value_type(value, *expected))
+}
+
+pub(super) fn do_eh_alloc_exn_ref(
+    ctx: &mut NativeContext,
+    frame: *mut u64,
+    tag_idx: u32,
+    start_slot: u16,
+    slot_count: u16,
+) -> Result<u64, WasmError> {
+    let store = current_store_mut(ctx)?;
+    let tag_inst = store
+        .module()
+        .tags
+        .get(tag_idx as usize)
+        .copied()
+        .ok_or_else(|| internal_error("eh_alloc_exn_ref: tag index out of range"))?;
+    let tag_ty = store
+        .module()
+        .types
+        .get_function_type(tag_inst.type_index)
+        .cloned()
+        .ok_or_else(|| internal_error("eh_alloc_exn_ref: tag has no function type"))?;
+    let fields = read_exn_payload_fields(
+        frame,
+        start_slot,
+        slot_count,
+        tag_ty.params(),
+        store,
+        "eh_alloc_exn_ref args span does not match tag arity",
+    )?;
+
+    let exn_ref = store.alloc_exn(tag_inst.handle, fields);
+    let handle = store.register_exn_ref(exn_ref);
+    Ok(ref_to_machine(handle))
+}
+
+pub(super) fn do_eh_throw(
+    ctx: &mut NativeContext,
+    frame: *mut u64,
+    tag_idx: u32,
+    start_slot: u16,
+    slot_count: u16,
+) -> Result<(), WasmError> {
+    let (tag_handle, exn_handle) = {
+        let store = current_store_mut(ctx)?;
+        let tag_inst = store
+            .module()
+            .tags
+            .get(tag_idx as usize)
+            .copied()
+            .ok_or_else(|| internal_error("eh_throw: tag index out of range"))?;
+        let tag_ty = store
+            .module()
+            .types
+            .get_function_type(tag_inst.type_index)
+            .cloned()
+            .ok_or_else(|| internal_error("eh_throw: tag has no function type"))?;
+        let fields = read_exn_payload_fields(
+            frame,
+            start_slot,
+            slot_count,
+            tag_ty.params(),
+            store,
+            "eh_throw args span does not match tag arity",
+        )?;
+        let exn_ref = store.alloc_exn(tag_inst.handle, fields);
+        let exn_handle = store.register_exn_ref(exn_ref);
+        (tag_inst.handle, exn_handle)
+    };
+
+    raise_exception(ctx, tag_handle, exn_handle)
+}
+
+pub(super) fn do_eh_throw_ref(
+    ctx: &mut NativeContext,
+    frame: *mut u64,
+    exnref_slot: u16,
+) -> Result<(), WasmError> {
+    let raw = unsafe { frame_read(frame, exnref_slot) };
+    let exn_handle = ref_from_machine(raw);
+    if exn_handle.is_null() {
+        return Err(trap_error("null reference"));
+    }
+
+    let tag_handle = {
+        let store = current_store(ctx)?;
+        let exn_idx = exn_handle
+            .pooled_index()
+            .ok_or_else(|| trap_error("invalid exception reference"))?;
+        let ref_registry = store.clone_ref_registry();
+        let registry = ref_registry.borrow();
+        let entry = registry
+            .get(exn_idx)
+            .copied()
+            .ok_or_else(|| trap_error("invalid exception reference"))?;
+        match entry {
+            RefRegistryEntry::Exn { store, exn_ref } => {
+                let exn_store = unsafe { store.as_ref() }
+                    .ok_or_else(|| internal_error("throw_ref exn owner store is dead"))?;
+                let heap = exn_store.exn_heap().borrow();
+                let exn = heap
+                    .get(exn_ref)
+                    .ok_or_else(|| internal_error("throw_ref dangling ExnRef"))?;
+                if !exn_payload_matches_tag(exn_store, exn.tag, &exn.fields) {
+                    return Err(internal_error(
+                        "throw_ref ExnRef payload does not match tag",
+                    ));
+                }
+                exn.tag
+            }
+            _ => return Err(trap_error("throw_ref operand is not an exception")),
+        }
+    };
+
+    raise_exception(ctx, tag_handle, exn_handle)
+}
+
+fn raise_exception(
+    ctx: &mut NativeContext,
+    tag_handle: TagHandle,
+    exn_handle: RefHandle,
+) -> Result<(), WasmError> {
+    ctx.pending_escape = PendingEscape::Throw {
+        exn: exn_handle,
+        tag: tag_handle,
+    };
+
+    Err(WasmError::Exception {
+        exn: exn_handle,
+        tag: tag_handle,
+        module_tag_name: None,
+    })
 }
 
 #[inline]

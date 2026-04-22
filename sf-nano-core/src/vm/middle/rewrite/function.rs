@@ -554,6 +554,18 @@ fn apply_inline_prefix(
         | SemanticOpKind::Return { .. } => {
             inline_spill_all(state, frame)?;
         }
+        SemanticOpKind::AllocExnRef { .. } => {
+            inline_spill_all(state, frame)?;
+        }
+        SemanticOpKind::TryTable { .. } => {}
+        SemanticOpKind::Throw { arity, .. } => {
+            inline_fill_for_operands(state, frame, values, *arity)?;
+            inline_spill_all_except_top(state, frame, *arity)?;
+        }
+        SemanticOpKind::ThrowRef => {
+            inline_fill_for_operands(state, frame, values, 1)?;
+            inline_spill_all_except_top(state, frame, 1)?;
+        }
     }
     // Ensure capacity: if live transients + cached locals exceed the budget,
     // spill the bottom transient until it fits. This replaces the old planner's
@@ -844,7 +856,21 @@ fn lower_block_body_op(
                 builder,
             )
         }
-        SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } | SemanticOpKind::End => Ok(()),
+        SemanticOpKind::AllocExnRef { tag_idx } => lower_alloc_exn_ref(
+            *tag_idx,
+            semantic,
+            semantic_index,
+            state,
+            planner,
+            resident_cache,
+            materialized_cache,
+            values,
+            builder,
+        ),
+        SemanticOpKind::Block { .. }
+        | SemanticOpKind::Loop { .. }
+        | SemanticOpKind::End
+        | SemanticOpKind::TryTable { .. } => Ok(()),
         SemanticOpKind::Else { .. } => Err(WasmError::internal("else must end a block")),
         SemanticOpKind::If { .. }
         | SemanticOpKind::Br { .. }
@@ -859,7 +885,9 @@ fn lower_block_body_op(
         | SemanticOpKind::ReturnCallRef { .. }
         | SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
-        | SemanticOpKind::Return { .. } => Err(WasmError::internal(
+        | SemanticOpKind::Return { .. }
+        | SemanticOpKind::Throw { .. }
+        | SemanticOpKind::ThrowRef => Err(WasmError::internal(
             "control/return op must be block terminator".into(),
         )),
     }
@@ -1150,6 +1178,30 @@ fn lower_call_ref(
     resident_cache.clear();
     materialized_cache.clear();
     Ok(())
+}
+
+fn lower_alloc_exn_ref(
+    tag_idx: u32,
+    semantic: &SemanticProgram,
+    semantic_index: usize,
+    state: &mut BlockState,
+    planner: &JointPlanner,
+    resident_cache: &mut BTreeSet<FrameSlot>,
+    materialized_cache: &mut BTreeSet<FrameSlot>,
+    values: &mut ValueAlloc,
+    builder: &mut ProgramBuilder,
+) -> Result<(), WasmError> {
+    lower_primitive(
+        semantic,
+        &PrimitiveOpKind::EhAllocExnRef { tag_idx },
+        semantic_index,
+        state,
+        planner,
+        resident_cache,
+        materialized_cache,
+        values,
+        builder,
+    )
 }
 
 fn lower_tail_call_direct(
@@ -1467,7 +1519,18 @@ fn lower_block_terminator(
                 planner,
             )?))
         }
-        SemanticOpKind::Block { .. } | SemanticOpKind::Loop { .. } => {
+        SemanticOpKind::AllocExnRef { tag_idx } => {
+            lower_alloc_exn_ref(
+                *tag_idx,
+                semantic,
+                semantic_index,
+                state,
+                planner,
+                resident_cache,
+                materialized_cache,
+                values,
+                builder,
+            )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
                 state,
@@ -1484,6 +1547,41 @@ fn lower_block_terminator(
                 block_params,
                 planner,
             )?))
+        }
+        SemanticOpKind::Block { .. }
+        | SemanticOpKind::Loop { .. }
+        | SemanticOpKind::TryTable { .. } => {
+            maybe_publish_live_window_for_targets(
+                &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                state,
+                frame,
+                planner,
+            );
+            Ok(LoweredTerminator::new(goto_next(
+                semantic_index,
+                semantic.ops.len(),
+                state,
+                frame,
+                values,
+                semantic_to_block,
+                block_params,
+                planner,
+            )?))
+        }
+        SemanticOpKind::Throw { tag_idx, arity } => {
+            publish_taken_branch_payload_at(0, *arity, state, frame)?;
+            let args = FrameSpan::new(call_base_slot(frame, state.height(), *arity), *arity);
+            Ok(LoweredTerminator::new(SsaTerminator::EhThrow {
+                tag_idx: *tag_idx,
+                args,
+            }))
+        }
+        SemanticOpKind::ThrowRef => {
+            publish_taken_branch_payload_at(0, 1, state, frame)?;
+            let exnref_slot = call_base_slot(frame, state.height(), 1);
+            Ok(LoweredTerminator::new(SsaTerminator::EhThrowRef {
+                exnref_slot,
+            }))
         }
         SemanticOpKind::If { else_target, .. } => {
             let cond = state.pop_one()?;

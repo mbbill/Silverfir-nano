@@ -17,16 +17,18 @@ use tracked_alloc::collections::BTreeMap;
 
 use crate::{
     error::WasmError,
-    op_decoder::{Decoder, Immediate, OpStream, OpcodeHandler},
+    op_decoder::{CatchClauseKind, Decoder, Immediate, OpStream, OpcodeHandler},
     opcodes::{Opcode, OpcodeFB, OpcodeFC, OpcodeFD, WasmOpcode},
+    utils::payload::Payload,
     value_type::{HeapType, RefType, ValueType},
+    vm::{entities::FunctionInst, tag::TagHandle},
 };
 
 use super::{
     common::{BrTableEntry, SemanticIndex, SemanticTarget},
     context::CompileContext,
     primitive_op::{self, PrimitiveOpKind},
-    semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
+    semantic_ir::{SemanticCatchClause, SemanticOp, SemanticOpKind, SemanticProgram},
 };
 
 /// Semantic IR builder used by Wasm decode.
@@ -78,6 +80,21 @@ impl SemanticBuilder {
         }
     }
 
+    pub(crate) fn patch_try_table_catch_target(
+        &mut self,
+        idx: SemanticIndex,
+        catch_idx: usize,
+        target: SemanticTarget,
+    ) {
+        if let Some(op) = self.ops.get_mut(idx.as_usize()) {
+            if let SemanticOpKind::TryTable { catches, .. } = &mut op.kind {
+                if let Some(catch) = catches.get_mut(catch_idx) {
+                    catch.target = target;
+                }
+            }
+        }
+    }
+
     pub(crate) fn finish(
         self,
         params: u16,
@@ -107,12 +124,86 @@ enum DecodeBlockKind {
     Block,
     Loop,
     If,
+    TryTable,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum PendingFixupSite {
+    Target,
+    BrTableEntry(usize),
+    TryTableCatch(usize),
 }
 
 #[derive(Clone, Debug)]
 struct PendingBranchFixup {
     inst_idx: SemanticIndex,
-    br_table_entry: Option<usize>,
+    site: PendingFixupSite,
+}
+
+/// Catch clause info cached on a `TryTable` frame so that `throw` can match
+/// statically against enclosing handlers at decode time, short-circuiting
+/// the throw into a direct `Br` to the handler label.
+#[derive(Clone, Debug)]
+struct DecodeTryCatch {
+    tag_idx: Option<u32>,
+    kind: CatchClauseKind,
+    /// Number of payload values the handler label expects for non-ref forms
+    /// (tag's param arity for `catch`; 0 for `catch_all`). Ref forms add a
+    /// trailing `(ref exn)` so their branch arity is payload_arity + 1.
+    payload_arity: u16,
+    /// Resolved semantic-target for the handler label. May be pending if
+    /// the target block hasn't been decoded yet at try_table decode time.
+    target: SemanticTarget,
+    /// Start height of the handler's target frame at try_table decode time.
+    /// Used to compute `stack_drop` when a throw short-circuits into a
+    /// direct `Br` — drops everything above `target_start_height +
+    /// payload_arity` at the throw site.
+    target_start_height: u32,
+    /// Original `label_idx` from the immediate — used to register a
+    /// forward-branch fixup on the throw-as-Br when `target` is pending.
+    /// The fixup needs to patch the emitted Br's target, which lives at a
+    /// semantic-op index that isn't known until the throw is emitted.
+    /// So at throw time we recompute the enclosing frame's depth and
+    /// re-register rather than carry state here.
+    label_idx: u32,
+}
+
+/// Result of statically matching a `throw $tag` against an enclosing
+/// `try_table`. Populated by `match_throw_to_catch` when lowering a direct
+/// throw to a `Br` is viable.
+#[derive(Clone, Copy, Debug)]
+struct StaticCatchMatch {
+    stack_drop: u32,
+    arity: u16,
+    target: SemanticTarget,
+    forwards_exn: bool,
+    /// If `Some`, the target is still pending and a forward-branch fixup
+    /// must be registered at the given frame depth (from the throw's
+    /// control stack position).
+    pending_fixup_depth: Option<u32>,
+}
+
+#[derive(Clone, Debug)]
+enum InlineThrowPayloadOp {
+    I32Const(u32),
+    I64Const(u64),
+    F32Const(u32),
+    F64Const(u64),
+    RefFunc(u32),
+}
+
+#[derive(Clone, Debug)]
+struct InlineThrowWrapper {
+    tag_idx: Option<u32>,
+    tag_handle: TagHandle,
+    payload_ops: collections::Vec<InlineThrowPayloadOp>,
+}
+
+#[derive(Clone, Debug)]
+struct InlineConditionalThrowWrapper {
+    tag_idx: u32,
+    compare_const: u32,
+    result_const: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -126,6 +217,8 @@ struct DecodeControlFrame {
     start_inst_idx: SemanticTarget,
     if_inst_idx: Option<SemanticIndex>,
     pending_fixups: collections::Vec<PendingBranchFixup>,
+    /// Populated only for `DecodeBlockKind::TryTable` frames.
+    try_catches: collections::Vec<DecodeTryCatch>,
 }
 
 #[inline]
@@ -235,6 +328,187 @@ fn is_relaxed_simd_opcode(op: OpcodeFD) -> bool {
     )
 }
 
+#[inline]
+fn is_exn_ref_type(ty: ValueType) -> bool {
+    let ValueType::Ref(ref_ty) = ty else {
+        return false;
+    };
+    matches!(
+        ref_ty.heap_type,
+        HeapType::Abstract(crate::value_type::AbstractHeapType::Exn)
+    )
+}
+
+fn inline_throw_tag(
+    compile: CompileContext<'_>,
+    owner_store: &crate::vm::store::Store,
+    tag_idx: u32,
+) -> Option<(Option<u32>, TagHandle, usize)> {
+    let tag_inst = owner_store.module().tags.get(tag_idx as usize).copied()?;
+    let tag_arity = owner_store
+        .module()
+        .types
+        .get_function_type(tag_inst.type_index)?
+        .params()
+        .len();
+    let caller_tag_idx = compile
+        .store
+        .module()
+        .tags
+        .iter()
+        .position(|tag| tag.handle == tag_inst.handle)
+        .map(|idx| idx as u32);
+    Some((caller_tag_idx, tag_inst.handle, tag_arity))
+}
+
+fn inline_local_spec_for_func_idx<'a>(
+    compile: CompileContext<'a>,
+    func_idx: u32,
+) -> Option<(
+    &'a crate::module::entities::FunctionSpec,
+    &'a crate::vm::store::Store,
+)> {
+    match compile.store.function(func_idx as usize) {
+        FunctionInst::Local { spec, .. } => Some((spec, compile.store)),
+        FunctionInst::Linked { handle, .. } => {
+            let entry = compile.store.function_entry_for_handle(*handle)?;
+            let owner_store = unsafe { entry.store.as_ref()? };
+            let FunctionInst::Local { spec, .. } = owner_store.function(entry.local_index) else {
+                return None;
+            };
+            Some((spec, owner_store))
+        }
+        FunctionInst::Host { .. } => None,
+    }
+}
+
+fn simple_inline_throw_wrapper(
+    compile: CompileContext<'_>,
+    func_idx: u32,
+) -> Option<InlineThrowWrapper> {
+    let (spec, owner_store) = inline_local_spec_for_func_idx(compile, func_idx)?;
+    let params = spec.func_type().params().len() as u32;
+    let bytes: &[u8] = spec.code();
+    let mut code: Payload = bytes.into();
+    let mut next_param = 0u32;
+    let mut payload_ops = collections::Vec::new();
+    let mut tag_idx = None;
+
+    while !code.is_empty() {
+        let op: Opcode = code.read_u8().ok()?.try_into().ok()?;
+        match op {
+            Opcode::LOCAL_GET => {
+                let idx = code.read_leb128_u32().ok()?;
+                if idx != next_param || idx >= params {
+                    return None;
+                }
+                next_param = next_param.saturating_add(1);
+            }
+            Opcode::I32_CONST => {
+                payload_ops.push(InlineThrowPayloadOp::I32Const(
+                    code.read_leb128_i32().ok()? as u32
+                ));
+            }
+            Opcode::I64_CONST => {
+                payload_ops.push(InlineThrowPayloadOp::I64Const(
+                    code.read_leb128_i64().ok()? as u64
+                ));
+            }
+            Opcode::F32_CONST => {
+                payload_ops.push(InlineThrowPayloadOp::F32Const(
+                    code.read_f32().ok()?.to_bits(),
+                ));
+            }
+            Opcode::F64_CONST => {
+                payload_ops.push(InlineThrowPayloadOp::F64Const(
+                    code.read_f64().ok()?.to_bits(),
+                ));
+            }
+            Opcode::REF_FUNC => {
+                payload_ops.push(InlineThrowPayloadOp::RefFunc(code.read_leb128_u32().ok()?));
+            }
+            Opcode::THROW => {
+                tag_idx = Some(code.read_leb128_u32().ok()?);
+                break;
+            }
+            _ => return None,
+        }
+    }
+
+    let tag_idx = tag_idx?;
+    while !code.is_empty() {
+        let op: Opcode = code.read_u8().ok()?.try_into().ok()?;
+        if op != Opcode::END {
+            return None;
+        }
+    }
+
+    let (caller_tag_idx, tag_handle, tag_arity) = inline_throw_tag(compile, owner_store, tag_idx)?;
+    let payload_arity = next_param as usize + payload_ops.len();
+    if payload_arity != tag_arity {
+        return None;
+    }
+
+    Some(InlineThrowWrapper {
+        tag_idx: caller_tag_idx,
+        tag_handle,
+        payload_ops,
+    })
+}
+
+fn simple_inline_conditional_throw_wrapper(
+    compile: CompileContext<'_>,
+    func_idx: u32,
+) -> Option<InlineConditionalThrowWrapper> {
+    let (spec, owner_store) = inline_local_spec_for_func_idx(compile, func_idx)?;
+    if spec.func_type().params() != [ValueType::I32]
+        || spec.func_type().results() != [ValueType::I32]
+    {
+        return None;
+    }
+
+    let bytes: &[u8] = spec.code();
+    let mut code: Payload = bytes.into();
+
+    if Opcode::try_from(code.read_u8().ok()?).ok()? != Opcode::LOCAL_GET
+        || code.read_leb128_u32().ok()? != 0
+        || Opcode::try_from(code.read_u8().ok()?).ok()? != Opcode::I32_CONST
+    {
+        return None;
+    }
+    let compare_const = code.read_leb128_i32().ok()? as u32;
+    if Opcode::try_from(code.read_u8().ok()?).ok()? != Opcode::I32_NE
+        || Opcode::try_from(code.read_u8().ok()?).ok()? != Opcode::IF
+        || code.read_u8().ok()? != 0x40
+        || Opcode::try_from(code.read_u8().ok()?).ok()? != Opcode::THROW
+    {
+        return None;
+    }
+    let raw_tag_idx = code.read_leb128_u32().ok()?;
+    if Opcode::try_from(code.read_u8().ok()?).ok()? != Opcode::END
+        || Opcode::try_from(code.read_u8().ok()?).ok()? != Opcode::I32_CONST
+    {
+        return None;
+    }
+    let result_const = code.read_leb128_i32().ok()? as u32;
+    while !code.is_empty() {
+        if Opcode::try_from(code.read_u8().ok()?).ok()? != Opcode::END {
+            return None;
+        }
+    }
+
+    let (caller_tag_idx, _tag_handle, tag_arity) =
+        inline_throw_tag(compile, owner_store, raw_tag_idx)?;
+    if tag_arity != 0 {
+        return None;
+    }
+    Some(InlineConditionalThrowWrapper {
+        tag_idx: caller_tag_idx?,
+        compare_const,
+        result_const,
+    })
+}
+
 /// Decode-time semantic context.
 pub(crate) struct DecodeContext<'a> {
     compile: CompileContext<'a>,
@@ -244,6 +518,9 @@ pub(crate) struct DecodeContext<'a> {
     max_height: usize,
     unreachable: bool,
     type_stack: collections::Vec<ValueType>,
+    exn_tag_stack: collections::Vec<Option<u32>>,
+    local_exn_tags: collections::Vec<Option<u32>>,
+    last_static_exn_tag: Option<u32>,
     /// Per-op result types for calls and typed blocks.
     op_result_types: BTreeMap<usize, collections::Vec<ValueType>>,
 }
@@ -263,11 +540,15 @@ impl<'a> DecodeContext<'a> {
                 start_inst_idx: SemanticTarget::new(0),
                 if_inst_idx: None,
                 pending_fixups: collections::Vec::new(),
+                try_catches: collections::Vec::new(),
             }],
             height: 0,
             max_height: 0,
             unreachable: false,
             type_stack: collections::Vec::new(),
+            exn_tag_stack: collections::Vec::new(),
+            local_exn_tags: collections::vec![None; compile.local_count as usize],
+            last_static_exn_tag: None,
             op_result_types: BTreeMap::new(),
         }
     }
@@ -302,6 +583,7 @@ impl<'a> DecodeContext<'a> {
         if !self.unreachable {
             self.height += 1;
             self.max_height = self.max_height.max(self.height);
+            self.exn_tag_stack.push(None);
         }
     }
 
@@ -310,6 +592,7 @@ impl<'a> DecodeContext<'a> {
         if !self.unreachable {
             self.height += count;
             self.max_height = self.max_height.max(self.height);
+            self.exn_tag_stack.extend((0..count).map(|_| None));
         }
     }
 
@@ -317,15 +600,27 @@ impl<'a> DecodeContext<'a> {
     fn pop_values(&mut self, count: usize) {
         if !self.unreachable {
             self.height = self.height.saturating_sub(count);
+            let new_len = self.exn_tag_stack.len().saturating_sub(count);
+            self.exn_tag_stack.truncate(new_len);
         }
     }
 
     #[inline]
     fn push_typed_value(&mut self, ty: ValueType) {
+        self.push_typed_value_with_exn_tag(ty, None);
+    }
+
+    #[inline]
+    fn push_typed_value_with_exn_tag(&mut self, ty: ValueType, exn_tag: Option<u32>) {
         if !self.unreachable {
             self.type_stack.push(ty);
         }
         self.push_value();
+        if !self.unreachable {
+            if let Some(top) = self.exn_tag_stack.last_mut() {
+                *top = exn_tag.filter(|_| is_exn_ref_type(ty));
+            }
+        }
     }
 
     #[inline]
@@ -371,6 +666,7 @@ impl<'a> DecodeContext<'a> {
     fn set_unreachable(&mut self) {
         if let Some(frame) = self.control.last() {
             self.type_stack.truncate(frame.start_height);
+            self.exn_tag_stack.truncate(frame.start_height);
         }
         self.unreachable = true;
     }
@@ -415,6 +711,7 @@ impl<'a> DecodeContext<'a> {
             start_inst_idx,
             if_inst_idx: None,
             pending_fixups: collections::Vec::new(),
+            try_catches: collections::Vec::new(),
         });
     }
 
@@ -429,17 +726,67 @@ impl<'a> DecodeContext<'a> {
             self.height = frame.start_height + frame.param_count as usize;
             self.type_stack.truncate(frame.start_height);
             self.type_stack.extend_from_slice(&frame.param_types);
+            self.exn_tag_stack.truncate(frame.start_height);
+            self.exn_tag_stack
+                .extend((0..frame.param_count as usize).map(|_| None));
             self.unreachable = false;
         }
     }
 
     fn exit_block(&mut self) -> Option<DecodeControlFrame> {
         let frame = self.control.pop()?;
+        let block_has_exn_result = frame.result_types.iter().any(|ty| is_exn_ref_type(*ty));
+        let static_exn_tag = if block_has_exn_result {
+            self.last_static_exn_tag.take()
+        } else {
+            None
+        };
         self.height = frame.start_height + frame.result_count as usize;
         self.type_stack.truncate(frame.start_height);
         self.type_stack.extend_from_slice(&frame.result_types);
+        self.exn_tag_stack.truncate(frame.start_height);
+        for ty in &frame.result_types {
+            self.exn_tag_stack
+                .push(static_exn_tag.filter(|_| is_exn_ref_type(*ty)));
+        }
         self.unreachable = false;
         Some(frame)
+    }
+
+    fn handle_end(&mut self) {
+        let end_idx = self.push_op(SemanticOpKind::End);
+        let end_target = SemanticTarget::new(end_idx.as_usize());
+        if let Some(frame) = self.exit_block() {
+            if frame.kind == DecodeBlockKind::If && frame.if_inst_idx.is_some() {
+                if let Some(if_idx) = frame.if_inst_idx {
+                    if self.builder.ops.get(if_idx.as_usize()).is_some_and(|op| {
+                        matches!(
+                            op.kind,
+                            SemanticOpKind::If { else_target, .. } if else_target.is_pending()
+                        )
+                    }) {
+                        self.patch_target(if_idx, end_target);
+                    }
+                }
+            }
+            for fixup in frame.pending_fixups {
+                match fixup.site {
+                    PendingFixupSite::Target => {
+                        self.patch_target(fixup.inst_idx, end_target);
+                    }
+                    PendingFixupSite::BrTableEntry(entry_idx) => {
+                        self.patch_br_table_target(fixup.inst_idx, entry_idx, end_target);
+                    }
+                    PendingFixupSite::TryTableCatch(catch_idx) => {
+                        self.builder.patch_try_table_catch_target(
+                            fixup.inst_idx,
+                            catch_idx,
+                            end_target,
+                        );
+                    }
+                }
+            }
+        }
     }
 
     fn frame_at_depth(&self, depth: u32) -> Option<&DecodeControlFrame> {
@@ -456,9 +803,10 @@ impl<'a> DecodeContext<'a> {
         self.frame_at_depth(depth)
             .map(|frame| match frame.kind {
                 DecodeBlockKind::Loop => frame.param_count,
-                DecodeBlockKind::Function | DecodeBlockKind::Block | DecodeBlockKind::If => {
-                    frame.result_count
-                }
+                DecodeBlockKind::Function
+                | DecodeBlockKind::Block
+                | DecodeBlockKind::If
+                | DecodeBlockKind::TryTable => frame.result_count,
             })
             .unwrap_or(0)
     }
@@ -467,9 +815,10 @@ impl<'a> DecodeContext<'a> {
         self.frame_at_depth(depth)
             .map(|frame| match frame.kind {
                 DecodeBlockKind::Loop => frame.param_types.clone(),
-                DecodeBlockKind::Function | DecodeBlockKind::Block | DecodeBlockKind::If => {
-                    frame.result_types.clone()
-                }
+                DecodeBlockKind::Function
+                | DecodeBlockKind::Block
+                | DecodeBlockKind::If
+                | DecodeBlockKind::TryTable => frame.result_types.clone(),
             })
             .unwrap_or_else(collections::Vec::new)
     }
@@ -485,7 +834,10 @@ impl<'a> DecodeContext<'a> {
                 .saturating_sub(frame.start_height.saturating_add(arity)) as u32;
         let target = match frame.kind {
             DecodeBlockKind::Loop => Some(frame.start_inst_idx),
-            DecodeBlockKind::Function | DecodeBlockKind::Block | DecodeBlockKind::If => None,
+            DecodeBlockKind::Function
+            | DecodeBlockKind::Block
+            | DecodeBlockKind::If
+            | DecodeBlockKind::TryTable => None,
         };
         (stack_drop, target)
     }
@@ -494,14 +846,102 @@ impl<'a> DecodeContext<'a> {
         &mut self,
         depth: u32,
         inst_idx: SemanticIndex,
-        br_table_entry: Option<usize>,
+        site: PendingFixupSite,
     ) {
         if let Some(frame) = self.frame_at_depth_mut(depth) {
-            frame.pending_fixups.push(PendingBranchFixup {
-                inst_idx,
-                br_table_entry,
-            });
+            frame
+                .pending_fixups
+                .push(PendingBranchFixup { inst_idx, site });
         }
+    }
+
+    /// Walk enclosing control frames from inner-most outward looking for a
+    /// `try_table` whose catch list accepts `tag_idx`. Return
+    /// the `Br` lowering parameters for the first matching catch.
+    /// Returns `None` if no match (throw escapes via runtime-call).
+    ///
+    /// The decoder runs after instantiation, so `TagInst.handle` values
+    /// already reflect runtime identities — we compare by `TagHandle`
+    /// rather than `tag_idx` to correctly resolve aliasing imports (e.g.
+    /// two module-local imports of the same source tag produce distinct
+    /// indices but equal handles).
+    fn match_throw_handle_to_catch(&self, throw_tag_handle: TagHandle) -> Option<StaticCatchMatch> {
+        for depth in 0..self.control.len() as u32 {
+            let frame = self.frame_at_depth(depth)?;
+            if frame.kind != DecodeBlockKind::TryTable {
+                continue;
+            }
+            for catch in &frame.try_catches {
+                match catch.kind {
+                    CatchClauseKind::Catch | CatchClauseKind::CatchRef => {
+                        let Some(catch_tag_idx) = catch.tag_idx else {
+                            continue;
+                        };
+                        let Some(catch_tag_inst) =
+                            self.compile.store.module().tags.get(catch_tag_idx as usize)
+                        else {
+                            continue;
+                        };
+                        if catch_tag_inst.handle != throw_tag_handle {
+                            continue;
+                        }
+                    }
+                    CatchClauseKind::CatchAll | CatchClauseKind::CatchAllRef => {}
+                }
+
+                // Everything above `handler_baseline + payload_arity` must
+                // be dropped. The semantic `Br` still sees the tag payload on
+                // the stack, so payload values are counted as the branch
+                // arity rather than being removed by `throw`.
+                let handler_baseline = catch.target_start_height as usize;
+                let payload_arity = catch.payload_arity;
+                let stack_drop = self
+                    .height
+                    .saturating_sub(handler_baseline.saturating_add(payload_arity as usize))
+                    as u32;
+
+                // If the catch's label target is still pending (forward
+                // branch to a block whose End hasn't been seen yet), we
+                // need to register a fixup. The depth for the fixup is
+                // the handler's frame depth from the throw's position,
+                // which is `depth + catch.label_idx + 1` (try_table's
+                // frame is at `depth` from top; the catch's label was
+                // resolved relative to outside the try_table, so +1 to
+                // cross the try_table frame itself).
+                let pending_fixup_depth = if catch.target.is_pending() {
+                    Some(depth.saturating_add(catch.label_idx).saturating_add(1))
+                } else {
+                    None
+                };
+
+                return Some(StaticCatchMatch {
+                    stack_drop,
+                    arity: payload_arity
+                        + u16::from(matches!(
+                            catch.kind,
+                            CatchClauseKind::CatchRef | CatchClauseKind::CatchAllRef
+                        )),
+                    target: catch.target,
+                    forwards_exn: matches!(
+                        catch.kind,
+                        CatchClauseKind::CatchRef | CatchClauseKind::CatchAllRef
+                    ),
+                    pending_fixup_depth,
+                });
+            }
+        }
+        None
+    }
+
+    fn match_throw_to_catch(&self, tag_idx: u32) -> Option<StaticCatchMatch> {
+        let throw_tag_handle = self
+            .compile
+            .store
+            .module()
+            .tags
+            .get(tag_idx as usize)?
+            .handle;
+        self.match_throw_handle_to_catch(throw_tag_handle)
     }
 
     fn record_result_types(&mut self, idx: SemanticIndex, tys: &[ValueType]) {
@@ -551,6 +991,16 @@ impl<'a> DecodeContext<'a> {
     }
 
     fn handle_call(&mut self, func_idx: u32) {
+        if let Some(wrapper) = simple_inline_throw_wrapper(self.compile, func_idx) {
+            if self.handle_inline_throw_wrapper(wrapper) {
+                return;
+            }
+        }
+        if let Some(wrapper) = simple_inline_conditional_throw_wrapper(self.compile, func_idx) {
+            self.handle_inline_conditional_throw_wrapper(wrapper);
+            return;
+        }
+
         let (params, results) = self.compile.resolve_func_type(func_idx);
         let kind = SemanticOpKind::CallDirect {
             callee: func_idx,
@@ -565,6 +1015,128 @@ impl<'a> DecodeContext<'a> {
         self.pop_typed_values(params as usize);
         let func = self.compile.store.function(func_idx as usize);
         self.push_typed_values(func.func_type().results());
+    }
+
+    fn handle_inline_throw_wrapper(&mut self, wrapper: InlineThrowWrapper) -> bool {
+        if let Some(tag_idx) = wrapper.tag_idx {
+            for payload_op in wrapper.payload_ops {
+                self.handle_inline_throw_payload_op(payload_op);
+            }
+            self.handle_throw(tag_idx);
+            return true;
+        }
+
+        if !wrapper.payload_ops.is_empty() {
+            return false;
+        }
+
+        let Some(resolved) = self.match_throw_handle_to_catch(wrapper.tag_handle) else {
+            return false;
+        };
+        if resolved.forwards_exn {
+            return false;
+        }
+
+        self.pop_typed_values(resolved.arity as usize);
+        let br_idx = self.push_op(SemanticOpKind::Br {
+            stack_drop: resolved.stack_drop,
+            arity: resolved.arity,
+            target: resolved.target,
+        });
+        if let Some(depth) = resolved.pending_fixup_depth {
+            self.register_forward_branch(depth, br_idx, PendingFixupSite::Target);
+        }
+        self.set_unreachable();
+        true
+    }
+
+    fn handle_inline_conditional_throw_wrapper(&mut self, wrapper: InlineConditionalThrowWrapper) {
+        self.handle_primitive(PrimitiveOpKind::I32Const {
+            value: wrapper.compare_const,
+        });
+        self.handle_primitive(PrimitiveOpKind::I32Ne);
+        let idx = self.push_op(SemanticOpKind::If {
+            params: 0,
+            results: 0,
+            else_target: SemanticTarget::pending(),
+        });
+        self.record_result_types(idx, &[]);
+        let target = SemanticTarget::new(self.current_index().as_usize());
+        self.enter_block(DecodeBlockKind::If, 0, 0, collections::Vec::new(), target);
+        self.set_if_inst(idx);
+        self.handle_throw(wrapper.tag_idx);
+        self.handle_end();
+        self.handle_primitive(PrimitiveOpKind::I32Const {
+            value: wrapper.result_const,
+        });
+    }
+
+    fn handle_inline_throw_payload_op(&mut self, payload_op: InlineThrowPayloadOp) {
+        match payload_op {
+            InlineThrowPayloadOp::I32Const(value) => {
+                self.handle_primitive(PrimitiveOpKind::I32Const { value });
+            }
+            InlineThrowPayloadOp::I64Const(value) => {
+                self.handle_primitive(PrimitiveOpKind::I64Const { value });
+            }
+            InlineThrowPayloadOp::F32Const(value) => {
+                self.handle_primitive(PrimitiveOpKind::F32Const { value });
+            }
+            InlineThrowPayloadOp::F64Const(value) => {
+                self.handle_primitive(PrimitiveOpKind::F64Const { value });
+            }
+            InlineThrowPayloadOp::RefFunc(func_idx) => {
+                let op_idx = self.current_index();
+                self.handle_primitive(PrimitiveOpKind::RefFunc { func_idx });
+                let func_type_idx = self.compile.store.function(func_idx as usize).type_index();
+                let ty = ValueType::Ref(RefType::new(false, HeapType::Concrete(func_type_idx)));
+                self.record_result_types(op_idx, &[ty]);
+                if !self.unreachable {
+                    if let Some(last) = self.type_stack.last_mut() {
+                        *last = ty;
+                    }
+                }
+            }
+        }
+    }
+
+    fn handle_throw(&mut self, tag_idx: u32) {
+        let (arity, _results) = self.compile.resolve_tag_type(tag_idx);
+        if let Some(resolved) = self.match_throw_to_catch(tag_idx) {
+            if resolved.forwards_exn {
+                if arity == 0 {
+                    let op_idx = self.push_op(SemanticOpKind::AllocExnRef { tag_idx });
+                    self.record_result_types(op_idx, &[ValueType::ref_exn()]);
+                    if !self.unreachable {
+                        self.push_typed_value_with_exn_tag(ValueType::ref_exn(), Some(tag_idx));
+                    }
+                } else {
+                    let op_idx = self.current_index();
+                    self.push_op(PrimitiveOpKind::RefNull);
+                    self.record_result_types(op_idx, &[ValueType::ref_exn()]);
+                    if !self.unreachable {
+                        self.push_typed_value_with_exn_tag(ValueType::ref_exn(), Some(tag_idx));
+                    }
+                }
+            }
+            self.pop_typed_values(resolved.arity as usize);
+            let br_idx = self.push_op(SemanticOpKind::Br {
+                stack_drop: resolved.stack_drop,
+                arity: resolved.arity,
+                target: resolved.target,
+            });
+            if let Some(fixup_depth) = resolved.pending_fixup_depth {
+                self.register_forward_branch(fixup_depth, br_idx, PendingFixupSite::Target);
+            }
+            if resolved.forwards_exn {
+                self.last_static_exn_tag = Some(tag_idx);
+            }
+            self.set_unreachable();
+        } else {
+            self.pop_typed_values(arity as usize);
+            self.push_op(SemanticOpKind::Throw { tag_idx, arity });
+            self.set_unreachable();
+        }
     }
 
     fn handle_call_indirect(&mut self, type_idx: u32, table_idx: u32) {
@@ -670,17 +1242,26 @@ impl<'a> DecodeContext<'a> {
                         .get(*idx as usize)
                         .copied()
                         .unwrap_or(ValueType::I64);
-                    self.push_typed_value(local_ty);
+                    let exn_tag = self.local_exn_tags.get(*idx as usize).copied().flatten();
+                    self.push_typed_value_with_exn_tag(local_ty, exn_tag);
                 }
             }
             OP(LOCAL_SET) => {
                 if let Immediate::LocalIndex(idx) = imm {
+                    let exn_tag = self.exn_tag_stack.last().copied().flatten();
+                    if let Some(slot) = self.local_exn_tags.get_mut(*idx as usize) {
+                        *slot = exn_tag;
+                    }
                     self.pop_typed_values(1);
                     self.push_op(SemanticOpKind::LocalSet { idx: *idx as u16 });
                 }
             }
             OP(LOCAL_TEE) => {
                 if let Immediate::LocalIndex(idx) = imm {
+                    let exn_tag = self.exn_tag_stack.last().copied().flatten();
+                    if let Some(slot) = self.local_exn_tags.get_mut(*idx as usize) {
+                        *slot = exn_tag;
+                    }
                     self.push_op(SemanticOpKind::LocalTee { idx: *idx as u16 });
                 }
             }
@@ -1192,39 +1773,133 @@ impl<'a> DecodeContext<'a> {
                 if let Some(frame) = self.control.last_mut() {
                     frame.pending_fixups.push(PendingBranchFixup {
                         inst_idx: else_idx,
-                        br_table_entry: None,
+                        site: PendingFixupSite::Target,
                     });
                 }
                 self.enter_else();
             }
             OP(END) => {
-                let end_idx = self.push_op(SemanticOpKind::End);
-                let end_target = SemanticTarget::new(end_idx.as_usize());
-                if let Some(frame) = self.exit_block() {
-                    if frame.kind == DecodeBlockKind::If && frame.if_inst_idx.is_some() {
-                        if let Some(if_idx) = frame.if_inst_idx {
-                            if self
-                                .builder
-                                .ops
-                                .get(if_idx.as_usize())
-                                .is_some_and(|op| {
-                                    matches!(
-                                        op.kind,
-                                        SemanticOpKind::If { else_target, .. } if else_target.is_pending()
-                                    )
-                                })
-                            {
-                                self.patch_target(if_idx, end_target);
-                            }
-                        }
+                self.handle_end();
+            }
+            OP(TRY_TABLE) => {
+                let Immediate::TryTable { catches, .. } = imm else {
+                    return Err(WasmError::internal("decoder expected try_table immediate"));
+                };
+                let (params, results) = self.compile.resolve_try_table_block_type(imm);
+                let result_types = self.compile.resolve_try_table_result_types(imm);
+
+                // Clause label indices resolve against the outer control
+                // stack; the try_table frame is not yet in scope.
+                let mut sem_catches: collections::Vec<SemanticCatchClause> =
+                    collections::Vec::with_capacity(catches.len());
+                for clause in catches {
+                    let payload_arity = match clause.kind {
+                        CatchClauseKind::Catch | CatchClauseKind::CatchRef => clause
+                            .tag_idx
+                            .map(|tag| self.compile.resolve_tag_type(tag).0)
+                            .unwrap_or(0),
+                        CatchClauseKind::CatchAll | CatchClauseKind::CatchAllRef => 0,
+                    };
+                    let forwards_exn = matches!(
+                        clause.kind,
+                        CatchClauseKind::CatchRef | CatchClauseKind::CatchAllRef
+                    );
+                    let (stack_drop, target) = self.branch_info(clause.label_idx);
+                    sem_catches.push(SemanticCatchClause {
+                        tag_idx: clause.tag_idx,
+                        payload_arity,
+                        forwards_exn,
+                        stack_drop,
+                        target: target.unwrap_or_else(SemanticTarget::pending),
+                    });
+                }
+
+                let mut decode_catches: collections::Vec<DecodeTryCatch> =
+                    collections::Vec::with_capacity(catches.len());
+                for (clause, sem) in catches.iter().zip(sem_catches.iter()) {
+                    let target_start_height = self
+                        .frame_at_depth(clause.label_idx)
+                        .map(|f| f.start_height as u32)
+                        .unwrap_or(0);
+                    decode_catches.push(DecodeTryCatch {
+                        tag_idx: clause.tag_idx,
+                        kind: clause.kind,
+                        payload_arity: sem.payload_arity,
+                        target: sem.target,
+                        target_start_height,
+                        label_idx: clause.label_idx,
+                    });
+                }
+
+                self.pop_typed_values(params as usize);
+                let idx = self.push_op(SemanticOpKind::TryTable {
+                    params,
+                    results,
+                    catches: sem_catches,
+                });
+                self.record_result_types(idx, &result_types);
+                for (catch_idx, clause) in catches.iter().enumerate() {
+                    let (_stack_drop, target) = self.branch_info(clause.label_idx);
+                    if target.is_none() {
+                        self.register_forward_branch(
+                            clause.label_idx,
+                            idx,
+                            PendingFixupSite::TryTableCatch(catch_idx),
+                        );
                     }
-                    for fixup in frame.pending_fixups {
-                        if let Some(entry_idx) = fixup.br_table_entry {
-                            self.patch_br_table_target(fixup.inst_idx, entry_idx, end_target);
-                        } else {
-                            self.patch_target(fixup.inst_idx, end_target);
+                }
+
+                let try_target = SemanticTarget::new(self.current_index().as_usize());
+                self.enter_block(
+                    DecodeBlockKind::TryTable,
+                    params,
+                    results,
+                    result_types,
+                    try_target,
+                );
+                if let Some(frame) = self.control.last_mut() {
+                    frame.try_catches = decode_catches;
+                }
+            }
+            OP(THROW) => {
+                let Immediate::TagIndex(tag_idx) = imm else {
+                    return Err(WasmError::internal("decoder expected tag index immediate"));
+                };
+                self.handle_throw(*tag_idx);
+            }
+            OP(THROW_REF) => {
+                let exn_tag = self.exn_tag_stack.last().copied().flatten();
+                if let Some(tag_idx) = exn_tag {
+                    if let Some(mut resolved) = self.match_throw_to_catch(tag_idx) {
+                        if resolved.forwards_exn {
+                            resolved.stack_drop = resolved.stack_drop.saturating_sub(1);
                         }
+                        self.pop_typed_values(1);
+                        let br_idx = self.push_op(SemanticOpKind::Br {
+                            stack_drop: resolved.stack_drop,
+                            arity: resolved.arity,
+                            target: resolved.target,
+                        });
+                        if let Some(fixup_depth) = resolved.pending_fixup_depth {
+                            self.register_forward_branch(
+                                fixup_depth,
+                                br_idx,
+                                PendingFixupSite::Target,
+                            );
+                        }
+                        if resolved.forwards_exn {
+                            self.last_static_exn_tag = Some(tag_idx);
+                        }
+                        self.set_unreachable();
+                    } else {
+                        self.pop_typed_values(1);
+                        self.push_op(SemanticOpKind::ThrowRef);
+                        self.set_unreachable();
                     }
+                } else {
+                    self.pop_typed_values(1);
+                    self.push_op(SemanticOpKind::ThrowRef);
+                    self.set_unreachable();
                 }
             }
             OP(BR) => {
@@ -1239,7 +1914,7 @@ impl<'a> DecodeContext<'a> {
                     if let Some(target) = target {
                         self.patch_target(idx, target);
                     } else {
-                        self.register_forward_branch(*label, idx, None);
+                        self.register_forward_branch(*label, idx, PendingFixupSite::Target);
                     }
                     self.set_unreachable();
                 }
@@ -1257,7 +1932,7 @@ impl<'a> DecodeContext<'a> {
                     if let Some(target) = target {
                         self.patch_target(idx, target);
                     } else {
-                        self.register_forward_branch(*label, idx, None);
+                        self.register_forward_branch(*label, idx, PendingFixupSite::Target);
                     }
                 }
             }
@@ -1279,7 +1954,7 @@ impl<'a> DecodeContext<'a> {
                         if let Some(target) = target {
                             self.patch_target(idx, target);
                         } else {
-                            self.register_forward_branch(*label, idx, None);
+                            self.register_forward_branch(*label, idx, PendingFixupSite::Target);
                         }
                         self.push_typed_value(refined_ty);
                     }
@@ -1309,7 +1984,8 @@ impl<'a> DecodeContext<'a> {
                             DecodeBlockKind::Loop => Some(frame.start_inst_idx),
                             DecodeBlockKind::Function
                             | DecodeBlockKind::Block
-                            | DecodeBlockKind::If => None,
+                            | DecodeBlockKind::If
+                            | DecodeBlockKind::TryTable => None,
                         };
                         let idx = self.push_op(SemanticOpKind::BrOnNonNull {
                             stack_drop,
@@ -1320,7 +1996,7 @@ impl<'a> DecodeContext<'a> {
                         if let Some(target) = target {
                             self.patch_target(idx, target);
                         } else {
-                            self.register_forward_branch(*label, idx, None);
+                            self.register_forward_branch(*label, idx, PendingFixupSite::Target);
                         }
                     }
                 }
@@ -1357,7 +2033,8 @@ impl<'a> DecodeContext<'a> {
                             DecodeBlockKind::Loop => Some(frame.start_inst_idx),
                             DecodeBlockKind::Function
                             | DecodeBlockKind::Block
-                            | DecodeBlockKind::If => None,
+                            | DecodeBlockKind::If
+                            | DecodeBlockKind::TryTable => None,
                         };
                         let idx = self.push_op(SemanticOpKind::BrOnCast {
                             stack_drop,
@@ -1369,7 +2046,7 @@ impl<'a> DecodeContext<'a> {
                         if let Some(target) = target {
                             self.patch_target(idx, target);
                         } else {
-                            self.register_forward_branch(*label_idx, idx, None);
+                            self.register_forward_branch(*label_idx, idx, PendingFixupSite::Target);
                         }
                         self.push_typed_value(fail_type);
                     }
@@ -1407,7 +2084,8 @@ impl<'a> DecodeContext<'a> {
                             DecodeBlockKind::Loop => Some(frame.start_inst_idx),
                             DecodeBlockKind::Function
                             | DecodeBlockKind::Block
-                            | DecodeBlockKind::If => None,
+                            | DecodeBlockKind::If
+                            | DecodeBlockKind::TryTable => None,
                         };
                         let idx = self.push_op(SemanticOpKind::BrOnCastFail {
                             stack_drop,
@@ -1419,7 +2097,7 @@ impl<'a> DecodeContext<'a> {
                         if let Some(target) = target {
                             self.patch_target(idx, target);
                         } else {
-                            self.register_forward_branch(*label_idx, idx, None);
+                            self.register_forward_branch(*label_idx, idx, PendingFixupSite::Target);
                         }
                         self.push_typed_value(*rt2);
                     }
@@ -1447,7 +2125,11 @@ impl<'a> DecodeContext<'a> {
                     for (entry_idx, label) in all_labels.iter().copied().enumerate() {
                         let (_, target) = self.branch_info(label);
                         if target.is_none() {
-                            self.register_forward_branch(label, inst_idx, Some(entry_idx));
+                            self.register_forward_branch(
+                                label,
+                                inst_idx,
+                                PendingFixupSite::BrTableEntry(entry_idx),
+                            );
                         }
                     }
                     self.set_unreachable();

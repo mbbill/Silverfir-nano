@@ -78,7 +78,9 @@ pub(super) fn insert_boundary_repair_blocks(
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }
-            | SsaTerminator::TrapUnreachable => {}
+            | SsaTerminator::TrapUnreachable
+            | SsaTerminator::EhThrow { .. }
+            | SsaTerminator::EhThrowRef { .. } => {}
         }
 
         for i in 0..edge_slots.len() {

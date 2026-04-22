@@ -746,6 +746,11 @@ impl MachineProgram {
                 self.validate_reg(*dst, config)?;
                 self.validate_value(*delta, config)?;
             }
+            MachineInstKind::EhAllocExnRef { dst, .. } => {
+                self.validate_reg(*dst, config)?;
+                self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
+            }
+            MachineInstKind::EhThrow { .. } | MachineInstKind::EhThrowRef { .. } => {}
             MachineInstKind::MemoryFill { dest, val, len, .. }
             | MachineInstKind::TableFill {
                 start: dest,

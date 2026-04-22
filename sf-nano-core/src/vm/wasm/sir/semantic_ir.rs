@@ -20,6 +20,18 @@ use crate::value_type::ValueType;
 use super::common::{BrTableEntry, SemanticTarget};
 use super::primitive_op::PrimitiveOpKind;
 
+/// Catch clause of a `try_table`, already resolved against the enclosing
+/// control stack. `tag_idx = None` marks a `catch_all[_ref]` wildcard;
+/// `forwards_exn = true` marks the `_ref` forms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SemanticCatchClause {
+    pub tag_idx: Option<u32>,
+    pub payload_arity: u16,
+    pub forwards_exn: bool,
+    pub stack_drop: u32,
+    pub target: SemanticTarget,
+}
+
 /// One semantic Wasm operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SemanticOp {
@@ -136,6 +148,19 @@ pub(crate) enum SemanticOpKind {
     Return {
         arity: u16,
     },
+    TryTable {
+        params: u16,
+        results: u16,
+        catches: collections::Vec<SemanticCatchClause>,
+    },
+    Throw {
+        tag_idx: u32,
+        arity: u16,
+    },
+    AllocExnRef {
+        tag_idx: u32,
+    },
+    ThrowRef,
 }
 
 /// Semantic program for one function body.
@@ -174,7 +199,9 @@ pub(crate) fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
         | SemanticOpKind::ReturnCallRef { results, .. } => Some(*results as usize),
         SemanticOpKind::Block { results, .. }
         | SemanticOpKind::Loop { results, .. }
-        | SemanticOpKind::If { results, .. } => Some(*results as usize),
+        | SemanticOpKind::If { results, .. }
+        | SemanticOpKind::TryTable { results, .. } => Some(*results as usize),
+        SemanticOpKind::AllocExnRef { .. } => Some(1),
         SemanticOpKind::Primitive(kind) => Some(super::primitive_op::stack_effect(kind).1 as usize),
         _ => None,
     }
@@ -239,6 +266,11 @@ impl SemanticProgram {
                 SemanticOpKind::BrTable { entries } => {
                     for entry in entries {
                         validate_target(entry.target, len)?;
+                    }
+                }
+                SemanticOpKind::TryTable { catches, .. } => {
+                    for catch in catches {
+                        validate_target(catch.target, len)?;
                     }
                 }
                 SemanticOpKind::ReturnVoid if self.results != 0 => {

@@ -834,6 +834,7 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::BitfieldExtractU { dst, .. }
         | MachineInstKind::IntBinaryShifted { dst, .. }
         | MachineInstKind::TestBits { dst, .. }
+        | MachineInstKind::EhAllocExnRef { dst, .. }
         | MachineInstKind::RefFunc { dst, .. }
         | MachineInstKind::RefAsNonNull { dst, .. }
         | MachineInstKind::RefEq { dst, .. }
@@ -885,7 +886,9 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::SimdStore { .. }
         | MachineInstKind::SimdStoreLane { .. }
         | MachineInstKind::TrapIf { .. }
-        | MachineInstKind::CallRuntime(_) => None,
+        | MachineInstKind::CallRuntime(_)
+        | MachineInstKind::EhThrow { .. }
+        | MachineInstKind::EhThrowRef { .. } => None,
     }
 }
 
@@ -1199,7 +1202,11 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
             visit_value_reg(init_val, &mut visit);
             visit_value_reg(delta, &mut visit);
         }
-        MachineInstKind::DataDrop { .. } | MachineInstKind::ElemDrop { .. } => {}
+        MachineInstKind::DataDrop { .. }
+        | MachineInstKind::ElemDrop { .. }
+        | MachineInstKind::EhThrow { .. }
+        | MachineInstKind::EhThrowRef { .. }
+        | MachineInstKind::EhAllocExnRef { .. } => {}
     }
 }
 

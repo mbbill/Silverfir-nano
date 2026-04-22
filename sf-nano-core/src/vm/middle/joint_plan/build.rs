@@ -480,7 +480,11 @@ fn apply_semantic_effect(
             }
         }
         SemanticOpKind::LocalTee { .. } => {}
-        SemanticOpKind::Block { params, results } | SemanticOpKind::Loop { params, results } => {
+        SemanticOpKind::Block { params, results }
+        | SemanticOpKind::Loop { params, results }
+        | SemanticOpKind::TryTable {
+            params, results, ..
+        } => {
             let sh = if state.unreachable {
                 state.height
             } else {
@@ -667,12 +671,35 @@ fn apply_semantic_effect(
                 push_result_types(&mut state.type_stack, *results, op_index, op_result_types);
             }
         }
+        SemanticOpKind::AllocExnRef { .. } => {
+            if !state.unreachable {
+                state.height = state.height.saturating_add(1);
+                state.spill_depth = state.height;
+                push_result_types(&mut state.type_stack, 1, op_index, op_result_types);
+            }
+        }
         SemanticOpKind::ReturnVoid
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. }
         | SemanticOpKind::ReturnCallDirect { .. }
         | SemanticOpKind::ReturnCallIndirect { .. }
         | SemanticOpKind::ReturnCallRef { .. } => {
+            state.mark_unreachable();
+        }
+        SemanticOpKind::Throw { arity, .. } => {
+            if !state.unreachable {
+                state.height = state.height.saturating_sub(*arity);
+                state.spill_depth = state.height;
+                state.type_stack.truncate(state.height as usize);
+            }
+            state.mark_unreachable();
+        }
+        SemanticOpKind::ThrowRef => {
+            if !state.unreachable {
+                state.height = state.height.saturating_sub(1);
+                state.spill_depth = state.height;
+                state.type_stack.truncate(state.height as usize);
+            }
             state.mark_unreachable();
         }
     }
@@ -913,6 +940,20 @@ fn apply_structural_prefix(op: &SemanticOp, state: &mut PrepareState) {
         | SemanticOpKind::ReturnOne
         | SemanticOpKind::Return { .. } => {
             lightweight_spill_all(state);
+        }
+        SemanticOpKind::AllocExnRef { .. } => {
+            lightweight_spill_all(state);
+        }
+        SemanticOpKind::TryTable { .. } => {
+            // Same as Block — no pre-op fill/spill needed.
+        }
+        SemanticOpKind::Throw { arity, .. } => {
+            lightweight_fill_for_operands(state, *arity, true);
+            lightweight_spill_all_except_top(state, *arity);
+        }
+        SemanticOpKind::ThrowRef => {
+            lightweight_fill_for_operands(state, 1, true);
+            lightweight_spill_all_except_top(state, 1);
         }
     }
 }

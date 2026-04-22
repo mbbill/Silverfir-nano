@@ -165,6 +165,7 @@ pub(crate) fn value_to_machine_raw_in_store(
 }
 
 #[inline]
+#[cfg(sf_has_simd)]
 fn invalid_v128_raw_error() -> WasmError {
     WasmError::internal("invalid v128 raw value")
 }

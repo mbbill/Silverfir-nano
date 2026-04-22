@@ -146,12 +146,16 @@ pub fn should_skip_test(test_name: &str, simd_enabled: bool) -> bool {
 
     // Skip WebAssembly 3.0 features not yet implemented
 
-    // Exception Handling proposal
-    if test_name.starts_with("tag")
-        || test_name.starts_with("throw")
-        || test_name == "rethrow"
-        || test_name.starts_with("try_")
+    // Exception Handling proposal — `rethrow` + the `legacy/` directory
+    // are legacy-proposal-shaped (pre-merge `try`/`catch`/`rethrow` /
+    // `delegate` form) and stay skipped. `instance` also stays skipped
+    // until module-instance aliasing semantics are fixed separately. The
+    // other EH tests (tag/throw/throw_ref/try_table) are enabled; the runner
+    // surfaces wasm exceptions via `WasmError::Exception` and `assert_exception`.
+    if test_name == "rethrow"
         || test_name.starts_with("instance")
+        || test_name.starts_with("legacy/")
+        || test_name.starts_with("legacy\\")
     {
         return true;
     }
@@ -182,6 +186,12 @@ mod tests {
     #[test]
     fn tail_call_tests_are_not_skipped() {
         assert!(!should_skip_test("return_call_ref", false));
+    }
+
+    #[test]
+    fn instance_stays_skipped_until_aliasing_semantics_are_fixed() {
+        assert!(should_skip_test("instance", false));
+        assert!(should_skip_test("instance.wast", false));
     }
 
     #[test]

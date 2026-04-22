@@ -77,7 +77,9 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }
-            | SsaTerminator::TrapUnreachable => {}
+            | SsaTerminator::TrapUnreachable
+            | SsaTerminator::EhThrow { .. }
+            | SsaTerminator::EhThrowRef { .. } => {}
         }
     }
 
@@ -154,7 +156,9 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }
-            | SsaTerminator::TrapUnreachable => {}
+            | SsaTerminator::TrapUnreachable
+            | SsaTerminator::EhThrow { .. }
+            | SsaTerminator::EhThrowRef { .. } => {}
         }
     }
     Ok(())

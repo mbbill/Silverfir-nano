@@ -16,10 +16,11 @@ use super::{
     ops::{
         do_any_convert_extern, do_array_copy, do_array_fill, do_array_get, do_array_init_data,
         do_array_init_elem, do_array_len, do_array_new, do_array_new_data, do_array_new_default,
-        do_array_new_elem, do_array_new_fixed, do_array_set, do_extern_convert_any, do_i31_get_s,
-        do_i31_get_u, do_memory_copy, do_memory_grow, do_memory_init, do_ref_as_non_null,
-        do_ref_cast, do_ref_eq, do_ref_func, do_ref_i31, do_ref_test, do_struct_get, do_struct_new,
-        do_struct_new_default, do_struct_set, do_table_copy, do_table_grow, do_table_init,
+        do_array_new_elem, do_array_new_fixed, do_array_set, do_eh_alloc_exn_ref, do_eh_throw,
+        do_eh_throw_ref, do_extern_convert_any, do_i31_get_s, do_i31_get_u, do_memory_copy,
+        do_memory_grow, do_memory_init, do_ref_as_non_null, do_ref_cast, do_ref_eq, do_ref_func,
+        do_ref_i31, do_ref_test, do_struct_get, do_struct_new, do_struct_new_default,
+        do_struct_set, do_table_copy, do_table_grow, do_table_init,
     },
 };
 
@@ -40,6 +41,7 @@ pub(crate) unsafe extern "C" fn preserved_entry(
     let result = unsafe { dispatch_preserved(ctx, op_code, io) };
     match result {
         Ok(()) => NativeCallStatus::Ok as u32,
+        Err(WasmError::Exception { .. }) => NativeCallStatus::Thrown as u32,
         Err(err) => {
             set_ctx_error(ctx, err);
             NativeCallStatus::Error as u32
@@ -151,6 +153,29 @@ unsafe fn dispatch_preserved(
                 .ok_or_else(|| internal_error("preserved helper context is missing store"))?;
             if let Some(elem) = store.module_mut().elements.get_mut(elem_idx as usize) {
                 elem.drop_segment();
+            }
+            Ok(())
+        }
+        op::EH_THROW => {
+            let tag_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let start_slot = unsafe { *io_ptr.add(io::ARG1) } as u16;
+            let slot_count = unsafe { *io_ptr.add(io::ARG2) } as u16;
+            let frame = unsafe { *io_ptr.add(io::ARG0) } as usize as *mut u64;
+            do_eh_throw(ctx, frame, tag_idx, start_slot, slot_count)
+        }
+        op::EH_THROW_REF => {
+            let exnref_slot = unsafe { *io_ptr.add(io::ARG1) } as u16;
+            let frame = unsafe { *io_ptr.add(io::ARG0) } as usize as *mut u64;
+            do_eh_throw_ref(ctx, frame, exnref_slot)
+        }
+        op::EH_ALLOC_EXN_REF => {
+            let tag_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
+            let start_slot = unsafe { *io_ptr.add(io::ARG1) } as u16;
+            let slot_count = unsafe { *io_ptr.add(io::ARG2) } as u16;
+            let frame = unsafe { *io_ptr.add(io::ARG0) } as usize as *mut u64;
+            let result = do_eh_alloc_exn_ref(ctx, frame, tag_idx, start_slot, slot_count)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
             }
             Ok(())
         }

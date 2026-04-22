@@ -1,10 +1,15 @@
 use core::fmt;
 
+use tracked_alloc::string::String;
+
+use crate::collections;
 use crate::utils::{
     leb128::ReadError as Leb128ReadError, limits::LimitsError, payload::PayloadError,
 };
+use crate::vm::tag::TagHandle;
+use crate::vm::value::{RefHandle, Value};
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum WasmError {
     Malformed(&'static str),
     Invalid(&'static str),
@@ -13,6 +18,23 @@ pub enum WasmError {
     Trap(&'static str),
     Exit(i32),
     Internal(&'static str),
+    /// Uncaught wasm exception surfaced to the embedder. Produced by EH
+    /// helpers when a throw propagates past every active `try_table` handler
+    /// in the current invocation.
+    Exception {
+        exn: RefHandle,
+        tag: TagHandle,
+        module_tag_name: Option<String>,
+    },
+    /// Host-side throw inbound channel. A host callback returns
+    /// `Err(WasmError::HostThrow { .. })` to signal a wasm-catchable
+    /// exception. This variant is VM-internal — the runtime-call entry
+    /// consumes it and converts it into `NativeCallStatus::Thrown`. It
+    /// should never reach the embedder.
+    HostThrow {
+        tag: TagHandle,
+        args: collections::Vec<Value>,
+    },
 }
 
 impl fmt::Display for WasmError {
@@ -25,6 +47,13 @@ impl fmt::Display for WasmError {
             WasmError::Trap(message) => write!(f, "Trap: {}", message),
             WasmError::Exit(code) => write!(f, "Exit: Process exited with code {}", code),
             WasmError::Internal(message) => write!(f, "Internal error: {}", message),
+            WasmError::Exception {
+                module_tag_name, ..
+            } => match module_tag_name {
+                Some(name) => write!(f, "Uncaught exception: {}", name),
+                None => write!(f, "Uncaught exception"),
+            },
+            WasmError::HostThrow { .. } => write!(f, "Host throw (internal)"),
         }
     }
 }
@@ -122,6 +151,8 @@ impl WasmError {
             | WasmError::Trap(message)
             | WasmError::Internal(message) => message,
             WasmError::Exit(_) => "Process exited with code",
+            WasmError::Exception { .. } => "uncaught wasm exception",
+            WasmError::HostThrow { .. } => "host throw (internal)",
         }
     }
 
@@ -134,7 +165,14 @@ impl WasmError {
             WasmError::Trap(_) => "trap",
             WasmError::Exit(_) => "exit",
             WasmError::Internal(_) => "internal",
+            WasmError::Exception { .. } => "exception",
+            WasmError::HostThrow { .. } => "host_throw",
         }
+    }
+
+    #[inline]
+    pub const fn is_exception(&self) -> bool {
+        matches!(self, WasmError::Exception { .. })
     }
 
     pub const fn exit_code(&self) -> Option<i32> {

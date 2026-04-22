@@ -455,6 +455,15 @@ fn render_lir_terminator(term: &SsaTerminator) -> String {
             render_frame_span_or_void(*return_results),
         ),
         SsaTerminator::TrapUnreachable => "trap_unreachable".into(),
+        SsaTerminator::EhThrow { tag_idx, args } => format!(
+            "eh_throw tag={} args=[{}..{})",
+            tag_idx,
+            args.start.0,
+            args.start.0 + args.count,
+        ),
+        SsaTerminator::EhThrowRef { exnref_slot } => {
+            format!("eh_throw_ref exnref=s{}", exnref_slot.0)
+        }
     }
 }
 
@@ -1044,6 +1053,18 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         }
         MachineInstKind::CallRuntime(call) => {
             format!("call_runtime const={}", call.metadata.0)
+        }
+        MachineInstKind::EhThrow { tag_idx, args } => {
+            format!(
+                "eh.throw tag={} frame[{}..+{}]",
+                tag_idx, args.start.0, args.count
+            )
+        }
+        MachineInstKind::EhThrowRef { exnref_slot } => {
+            format!("eh.throw_ref frame[{}]", exnref_slot.0)
+        }
+        MachineInstKind::EhAllocExnRef { tag_idx, dst } => {
+            format!("eh.alloc_exn_ref tag={} -> r{}", tag_idx, dst.0)
         }
         MachineInstKind::MemoryGrow {
             mem_idx,

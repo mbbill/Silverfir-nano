@@ -194,6 +194,7 @@ fn clears_cache_region(kind: &SemanticOpKind) -> bool {
             | SemanticOpKind::CallDirect { .. }
             | SemanticOpKind::CallIndirect { .. }
             | SemanticOpKind::CallRef { .. }
+            | SemanticOpKind::AllocExnRef { .. }
             | SemanticOpKind::ReturnVoid
             | SemanticOpKind::ReturnOne
             | SemanticOpKind::Return { .. }
@@ -331,7 +332,11 @@ fn analyze_entry_stack_region(
             | SemanticOpKind::ReturnCallRef { .. }
             | SemanticOpKind::ReturnVoid
             | SemanticOpKind::ReturnOne
-            | SemanticOpKind::Return { .. } => break,
+            | SemanticOpKind::Return { .. }
+            | SemanticOpKind::TryTable { .. }
+            | SemanticOpKind::AllocExnRef { .. }
+            | SemanticOpKind::Throw { .. }
+            | SemanticOpKind::ThrowRef => break,
         }
     }
 
@@ -509,6 +514,9 @@ fn apply_transient_analysis_effect(
             );
             push_fresh_transient_symbols(stack, infos, next_symbol, *results as usize);
         }
+        SemanticOpKind::AllocExnRef { .. } => {
+            push_fresh_transient_symbols(stack, infos, next_symbol, 1);
+        }
         SemanticOpKind::ReturnCallDirect { params, .. } => {
             touch_transient_top(stack, *params as usize, block_offset, infos);
         }
@@ -533,7 +541,14 @@ fn apply_transient_analysis_effect(
         SemanticOpKind::Block { .. }
         | SemanticOpKind::Loop { .. }
         | SemanticOpKind::Else { .. }
-        | SemanticOpKind::End => {}
+        | SemanticOpKind::End
+        | SemanticOpKind::TryTable { .. } => {}
+        SemanticOpKind::Throw { arity, .. } => {
+            touch_transient_top(stack, *arity as usize, block_offset, infos);
+        }
+        SemanticOpKind::ThrowRef => {
+            touch_transient_top(stack, 1, block_offset, infos);
+        }
     }
 }
 

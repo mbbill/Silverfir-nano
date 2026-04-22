@@ -20,10 +20,12 @@ use crate::module::Module;
 use crate::utils::limits::{Limitable, Limits};
 use crate::vm::entities::{
     DataInst, ElementInst, FunctionInst, GlobalInst, HostFn, MemInst, ModuleInst, TableInst,
+    TagInst,
 };
 use crate::vm::expr_eval::eval_const_expr;
 use crate::vm::runtime;
 use crate::vm::store::{LinkRegistry, Store};
+use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 use crate::vm::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store};
 
@@ -59,12 +61,23 @@ pub enum ImportedFunction {
     },
 }
 
+#[derive(Clone)]
+pub struct ImportedTagState {
+    pub handle: TagHandle,
+    pub func_type: FunctionType,
+    /// Source-context type index for the tag's function type, or
+    /// `u32::MAX` for host-minted tags that have no wasm type index.
+    /// Enables cross-module rec-group identity checks at link time.
+    pub type_index: u32,
+    pub type_ctx: Option<TypeContext>,
+}
+
 pub enum ImportValue {
     Func(ImportedFunction),
     Global(ImportedGlobalValue, bool),
     Memory(Limits, Option<MemInst>),
     Table(Limits, Option<ImportedTableState>),
-    Tag(FunctionType, Option<TypeContext>),
+    Tag(ImportedTagState),
 }
 
 impl Import {
@@ -267,7 +280,12 @@ impl Import {
         Import {
             module: module.to_string(),
             name: name.to_string(),
-            value: ImportValue::Tag(func_type, None),
+            value: ImportValue::Tag(ImportedTagState {
+                handle: TagHandle::mint_fresh(),
+                func_type,
+                type_index: u32::MAX,
+                type_ctx: None,
+            }),
         }
     }
 
@@ -280,7 +298,99 @@ impl Import {
         Import {
             module: module.to_string(),
             name: name.to_string(),
-            value: ImportValue::Tag(func_type, Some(type_ctx)),
+            value: ImportValue::Tag(ImportedTagState {
+                handle: TagHandle::mint_fresh(),
+                func_type,
+                type_index: u32::MAX,
+                type_ctx: Some(type_ctx),
+            }),
+        }
+    }
+
+    /// Host-allocates-a-fresh-identity channel that also returns the minted
+    /// handle, so host code can later recover the identity for
+    /// `Err(WasmError::HostThrow { tag, .. })` or cross-import reuse.
+    pub fn tag_typed_with_handle(
+        module: &str,
+        name: &str,
+        func_type: FunctionType,
+    ) -> (Self, TagHandle) {
+        let handle = TagHandle::mint_fresh();
+        let import = Import {
+            module: module.to_string(),
+            name: name.to_string(),
+            value: ImportValue::Tag(ImportedTagState {
+                handle,
+                func_type,
+                type_index: u32::MAX,
+                type_ctx: None,
+            }),
+        };
+        (import, handle)
+    }
+
+    /// Cross-module tag linking: import the tag using an explicit `TagHandle`
+    /// obtained via `Instance::tag_handle(...)` or a previous
+    /// `tag_typed_with_handle`/`linked_tag_typed*` call. Preserves tag
+    /// identity across module boundaries.
+    pub fn linked_tag_typed(
+        module: &str,
+        name: &str,
+        handle: TagHandle,
+        func_type: FunctionType,
+    ) -> Self {
+        Import {
+            module: module.to_string(),
+            name: name.to_string(),
+            value: ImportValue::Tag(ImportedTagState {
+                handle,
+                func_type,
+                type_index: u32::MAX,
+                type_ctx: None,
+            }),
+        }
+    }
+
+    pub fn linked_tag_typed_with_context(
+        module: &str,
+        name: &str,
+        handle: TagHandle,
+        func_type: FunctionType,
+        type_ctx: TypeContext,
+    ) -> Self {
+        Import {
+            module: module.to_string(),
+            name: name.to_string(),
+            value: ImportValue::Tag(ImportedTagState {
+                handle,
+                func_type,
+                type_index: u32::MAX,
+                type_ctx: Some(type_ctx),
+            }),
+        }
+    }
+
+    /// Full cross-module tag linking with explicit type_index, for proper
+    /// rec-group identity checks. Host callers without a wasm type_index
+    /// should use `linked_tag_typed_with_context` (which passes
+    /// `u32::MAX`).
+    pub fn linked_tag_typed_with_context_and_index(
+        module: &str,
+        name: &str,
+        handle: TagHandle,
+        func_type: FunctionType,
+        type_index: u32,
+        type_ctx: TypeContext,
+    ) -> Self {
+        Import {
+            module: module.to_string(),
+            name: name.to_string(),
+            value: ImportValue::Tag(ImportedTagState {
+                handle,
+                func_type,
+                type_index,
+                type_ctx: Some(type_ctx),
+            }),
         }
     }
 }
@@ -326,6 +436,7 @@ enum ExportKind {
     Table,
     Memory,
     Global,
+    Tag,
 }
 
 impl Instance {
@@ -377,6 +488,11 @@ impl Instance {
         for (i, g) in module.globals().iter().enumerate() {
             for name in g.export_names() {
                 exports.push((name.clone(), ExportKind::Global, i));
+            }
+        }
+        for (i, t) in module.tags().iter().enumerate() {
+            for name in t.export_names() {
+                exports.push((name.clone(), ExportKind::Tag, i));
             }
         }
 
@@ -740,39 +856,72 @@ impl Instance {
             }
         }
 
+        let mut tag_insts: collections::Vec<TagInst> =
+            collections::Vec::with_capacity(mod_tags.len());
         for tag in &mod_tags {
-            if let TagDef::Import {
-                module: mod_name,
-                name,
-                func_type,
-                ..
-            } = tag.def()
-            {
-                let import = imports
-                    .iter()
-                    .find(|i| i.module == *mod_name && i.name == *name);
-                match import {
-                    Some(Import {
-                        value: ImportValue::Tag(actual_type, ref actual_type_ctx),
-                        ..
-                    }) => {
-                        let compatible = if actual_type == tag.func_type() {
-                            true
-                        } else if let Some(type_ctx) = actual_type_ctx {
-                            check_function_types_equivalent(actual_type, tag.func_type(), type_ctx)
-                        } else {
-                            actual_type.params() == func_type.params()
-                                && actual_type.results() == func_type.results()
-                        };
-                        if !compatible {
+            match tag.def() {
+                TagDef::Local(spec) => {
+                    tag_insts.push(TagInst {
+                        handle: TagHandle::mint_fresh(),
+                        type_index: spec.type_index(),
+                        is_import: false,
+                    });
+                }
+                TagDef::Import {
+                    module: mod_name,
+                    name,
+                    func_type,
+                    type_index,
+                } => {
+                    let import = imports
+                        .iter()
+                        .find(|i| i.module == *mod_name && i.name == *name);
+                    match import {
+                        Some(Import {
+                            value: ImportValue::Tag(state),
+                            ..
+                        }) => {
+                            let actual_type = &state.func_type;
+                            let actual_type_ctx = state.type_ctx.as_ref();
+                            let actual_type_idx = state.type_index;
+                            let compatible = if actual_type_idx != u32::MAX {
+                                actual_type_ctx.is_some_and(|type_ctx| {
+                                    concrete_type_matches_cross_context(
+                                        type_ctx,
+                                        actual_type_idx,
+                                        &types,
+                                        *type_index,
+                                    )
+                                })
+                            } else if actual_type == tag.func_type() {
+                                true
+                            } else if let Some(type_ctx) = actual_type_ctx {
+                                check_function_types_equivalent(
+                                    actual_type,
+                                    tag.func_type(),
+                                    type_ctx,
+                                )
+                            } else {
+                                actual_type.params() == func_type.params()
+                                    && actual_type.results() == func_type.results()
+                            };
+                            if !compatible {
+                                return Err(
+                                    WasmError::unlinkable("incompatible import type: .").into()
+                                );
+                            }
+                            tag_insts.push(TagInst {
+                                handle: state.handle,
+                                type_index: *type_index,
+                                is_import: true,
+                            });
+                        }
+                        Some(_) => {
                             return Err(WasmError::unlinkable("incompatible import type: .").into());
                         }
-                    }
-                    Some(_) => {
-                        return Err(WasmError::unlinkable("incompatible import type: .").into());
-                    }
-                    None => {
-                        return Err(WasmError::unlinkable("missing tag import: .").into());
+                        None => {
+                            return Err(WasmError::unlinkable("missing tag import: .").into());
+                        }
                     }
                 }
             }
@@ -793,6 +942,7 @@ impl Instance {
         module_inst.tables = tables;
         module_inst.memories = memories;
         module_inst.globals = globals;
+        module_inst.tags = tag_insts;
         module_inst.elements = elements;
         module_inst.data = data;
         let mut store = Box::new(Store::new_with_registries(
@@ -1140,6 +1290,16 @@ impl Instance {
 
     pub fn function_handle_at(&self, idx: usize) -> Option<RefHandle> {
         self.store.module().function_handle(idx)
+    }
+
+    /// Resolve an exported tag to its runtime identity. Required for
+    /// cross-module tag linking via `Import::linked_tag_typed(...)`.
+    pub fn tag_handle(&self, name: &str) -> Option<TagHandle> {
+        let (_, _, idx) = self
+            .exports
+            .iter()
+            .find(|(n, k, _)| matches!(k, ExportKind::Tag) && n == name)?;
+        self.store.module().tags.get(*idx).map(|t| t.handle)
     }
 
     pub fn shared_table_state_at(&self, idx: usize) -> Option<ImportedTableState> {

@@ -148,6 +148,7 @@ struct FunctionEmitSummary {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PendingPatchEncoding {
+    #[cfg(any(sf_backend_arm64, sf_backend_x64, sf_backend_emu64, sf_backend_emu32))]
     U64,
     #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
     MovwMovt,
@@ -228,6 +229,7 @@ fn patch_code_buffer_word(
     value: usize,
 ) {
     match patch_encoding(active_backend) {
+        #[cfg(any(sf_backend_arm64, sf_backend_x64, sf_backend_emu64, sf_backend_emu32))]
         PendingPatchEncoding::U64 => executable.patch_u64(code_offset, value as u64),
         #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
         PendingPatchEncoding::MovwMovt => {
