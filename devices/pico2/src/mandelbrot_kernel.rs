@@ -1,17 +1,18 @@
-//! Shared integer Mandelbrot kernel.
+//! Shared integer Mandelbrot kernel — Q16.16 i64 variant.
 //!
 //! Same source compiled twice: once natively as part of this crate
 //! (used by `mandelbrot_native`), and once to `wasm32-unknown-unknown`
 //! via a sub-crate (used by `mandelbrot_wasm` through sf-nano-core's
 //! JIT). Whichever renders faster wins.
 //!
-//! Q17.14 fixed-point arithmetic — no floats anywhere, so the same
-//! code runs unchanged on the MCU-target JIT which emits no FP code.
-//! Products stay in i32: with |val| < 2·2^14 = 32768 the full
-//! product is below 2^30, well within i32. Trading Q16.16's 1/65536
-//! precision for 1/16384 is invisible at pixel scale (pixel step is
-//! ~0.019, precision is ~6e-5) and avoids every i64 op in the hot
-//! loop — so the JIT benchmark measures the i32 path end-to-end.
+//! Q16.16 fixed-point: `qmul` routes through `i64` so the 32×32 product
+//! doesn't overflow. This is the "harder" kernel — the `(a as i64)
+//! .wrapping_mul(b as i64) >> 16` pattern exercises sf-nano-core's
+//! i64 lowering on the hot path, which is exactly the performance
+//! surface we want to measure and optimize. The Q17.14 i32 variant
+//! used previously sidestepped i64 entirely by keeping everything in
+//! i32; the JIT looked good on that kernel but we were avoiding the
+//! problem, not solving it.
 
 /// Physical panel dimensions. The 40-KiB framebuffer is 2 bytes per
 /// pixel (RGB565 big-endian, matching ST7735's wire format).
@@ -19,21 +20,26 @@ pub const WIDTH: usize = 160;
 pub const HEIGHT: usize = 128;
 pub const FB_BYTES: usize = WIDTH * HEIGHT * 2;
 
-/// Escape iterations. Interior pixels hit this cap; colorful edge
-/// pixels bail much earlier (single digits). Averages out to maybe
-/// 20–30 iterations/pixel across the whole view.
-const MAX_ITER: u32 = 64;
+/// Escape iterations. Most interior pixels are caught by the
+/// cardioid/period-2 bulb shortcut before ever entering the loop, so
+/// MAX_ITER only bounds the work for the remaining thin-filament
+/// interior and the very-slow-escaping boundary. 32 is enough to keep
+/// boundary banding visually clean at this viewport; halving from 64
+/// trims the worst-case cost on both native and JIT.
+const MAX_ITER: u32 = 32;
 
-/// Fractional bits. K=14 keeps `a*b` in i32 as long as |val| < 2^15.
-/// For the Mandelbrot viewport (|z| bailout at 2) that's always true.
-const Q_BITS: u32 = 14;
+/// Fractional bits. K=16 gives Q16.16 precision. The i32×i32 product
+/// needs i64 intermediate — this is the point of this kernel.
+const Q_BITS: u32 = 16;
 
-/// Q17.14 fixed-point multiply. i32-only: the full product fits in i32,
-/// so no i64 extend/mul/shr pair expansion. The shift is i32.shr_s —
-/// one native ASR on every backend.
+/// Q16.16 fixed-point multiply. Routes through i64 for the product.
+/// On armv7 this lowers to SMULL + LSR/ORR (~5 instructions) in LLVM;
+/// sf-nano-core's JIT currently emits a wider UMULL + MLA + MLA sequence
+/// for the same wasm `i64.mul` — that's the gap Phase 4 optimizations
+/// are trying to close.
 #[inline(always)]
 fn qmul(a: i32, b: i32) -> i32 {
-    a.wrapping_mul(b) >> Q_BITS
+    ((a as i64).wrapping_mul(b as i64) >> Q_BITS) as i32
 }
 
 /// 1.0 in Q17.14.
@@ -64,9 +70,18 @@ pub fn render(bytes: &mut [u8], frame: u32) {
     let start_x = VIEW_CENTER_X - VIEW_WIDTH / 2;
     let start_y = VIEW_CENTER_Y - VIEW_HEIGHT / 2;
 
+    // Render the bottom half + the center row (cy = 0 lands on row
+    // HEIGHT/2). That's HEIGHT/2+1 rows. The rows above center are
+    // byte-for-byte mirrors by vertical symmetry: escape(cx, +cy) ==
+    // escape(cx, -cy) for z₀ = 0, so pixel color depends only on |cy|.
+    // Halves the compute cost of the kernel at the price of a ~40 KiB
+    // memcpy (fast on M33).
+    const HALF: usize = HEIGHT / 2;
+    const ROW_BYTES: usize = WIDTH * 2;
+
     let mut cy = start_y;
     let mut idx = 0;
-    for _ in 0..HEIGHT {
+    for _ in 0..=HALF {
         let mut cx = start_x;
         for _ in 0..WIDTH {
             let iter = mandelbrot_iter(cx, cy);
@@ -78,20 +93,68 @@ pub fn render(bytes: &mut [u8], frame: u32) {
         }
         cy = cy.wrapping_add(dy);
     }
+
+    // Mirror rows HALF+1..HEIGHT. Row 0 (cy = -VIEW_HEIGHT/2) is the
+    // unpaired bottom edge — cy = +VIEW_HEIGHT/2 is out of range — so
+    // it was handled above. For r in HALF+1..HEIGHT, source row is
+    // HEIGHT - r (e.g., row 65 ← row 63, row 127 ← row 1).
+    for row in (HALF + 1)..HEIGHT {
+        let src_off = (HEIGHT - row) * ROW_BYTES;
+        let dst_off = row * ROW_BYTES;
+        let (head, tail) = bytes.split_at_mut(dst_off);
+        tail[..ROW_BYTES].copy_from_slice(&head[src_off..src_off + ROW_BYTES]);
+    }
 }
 
 /// Mandelbrot escape count for one complex point `(cx, cy)` in Q16.16.
 /// Returns `MAX_ITER` if the point stays bounded.
+/// Cardioid + period-2 bulb interior shortcut.
+///
+/// The main cardioid and period-2 bulb together cover most of the
+/// filled interior of the set. Any pixel in those regions is
+/// guaranteed to stay bounded, so we can skip the whole iteration loop
+/// and return `MAX_ITER` directly. Cost is ~4 qmuls vs the ~3×64 qmuls
+/// of a full interior-pixel iteration — a lopsided trade that's worth
+/// it as long as interior pixels are common (they are, for the classic
+/// viewport).
+///
+/// Formulas (standard):
+/// - Period-2 bulb: `(cx + 1)² + cy² < 1/16`
+/// - Main cardioid: let `q = (cx - 1/4)² + cy²`; interior iff
+///   `q * (q + cx - 1/4) < cy² / 4`
+#[inline(always)]
+fn in_mandelbrot_interior(cx: i32, cy: i32) -> bool {
+    let cy_sq = qmul(cy, cy);
+
+    // Period-2 bulb first — it's a single qmul + two adds + one compare.
+    let xp1 = cx.wrapping_add(Q_ONE);
+    let xp1_sq = qmul(xp1, xp1);
+    if xp1_sq.wrapping_add(cy_sq) < (Q_ONE >> 4) {
+        return true;
+    }
+
+    // Main cardioid. `xm_quarter` is cx − 1/4 (the non-squared form
+    // used in the second factor of the implicit test).
+    let xm_quarter = cx.wrapping_sub(Q_ONE >> 2);
+    let xm_sq = qmul(xm_quarter, xm_quarter);
+    let q = xm_sq.wrapping_add(cy_sq);
+    qmul(q, q.wrapping_add(xm_quarter)) < (cy_sq >> 2)
+}
+
 #[inline(always)]
 fn mandelbrot_iter(cx: i32, cy: i32) -> u32 {
+    if in_mandelbrot_interior(cx, cy) {
+        return MAX_ITER;
+    }
+
     let mut zx: i32 = 0;
     let mut zy: i32 = 0;
     let mut iter: u32 = 0;
     while iter < MAX_ITER {
         let zx2 = qmul(zx, zx);
         let zy2 = qmul(zy, zy);
-        // wrapping_add is safe here: at Q17.14 with |z| < 2, zx² and zy²
-        // each fit in ~17 bits, so their sum is at most ~2^18 — wraparound
+        // wrapping_add is safe here: at Q16.16 with |z| < 2, zx² and zy²
+        // each fit in ~18 bits, so their sum is at most ~2^19 — wraparound
         // is unreachable. Keeping this as wrapping_add spares the JIT an
         // overflow-check sequence per iteration.
         if zx2.wrapping_add(zy2) > Q_FOUR {
