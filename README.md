@@ -101,8 +101,8 @@ See [full benchmark results](benchmarks/wasi/RESULTS.md)
 
 ## WebAssembly Compatibility
 
-Silverfir-nano supports all Core WebAssembly 3.0 features except exception
-handling, and is validated against the official
+Silverfir-nano supports all Core WebAssembly 3.0 features and is validated
+against the official
 [WebAssembly spec testsuite](https://github.com/WebAssembly/spec/tree/main/test).
 
 Supported Core WebAssembly 3.0 feature groups include:
@@ -127,10 +127,7 @@ Supported Core WebAssembly 3.0 feature groups include:
 - **Relaxed SIMD** — relaxed swizzle, relaxed truncation, relaxed min/max,
   relaxed lane-select, relaxed q15mulr, relaxed dot-product, and relaxed
   madd/nmadd.
-
-The remaining missing Core WebAssembly 3.0 feature family is
-**exception handling**, including `throw`, `throw_ref`, `try_table`, and
-`rethrow`.
+- **Exception handling** — tags, `throw`, `throw_ref`, and `try_table`.
 
 ## Building
 
