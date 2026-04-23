@@ -509,14 +509,24 @@ impl<'a> BlockLowerContext<'a> {
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
                 owner: MachineRegOwner::LinearValue,
-                ty,
-                dst,
+                ty: MachineStorageType::GpWord,
+                dst: base,
                 addr: self.indexed_addr(
                     base,
                     idx,
                     core::mem::size_of::<GlobalInst>(),
-                    global_offset::RAW,
+                    global_offset::RAW_PTR,
                 )?,
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty,
+                dst,
+                addr: MachineAddr { base, offset: 0 },
                 width,
                 extension: MachineLoadExtension::None,
             },
@@ -553,8 +563,18 @@ impl<'a> BlockLowerContext<'a> {
                     base,
                     idx,
                     core::mem::size_of::<GlobalInst>(),
-                    global_offset::RAW,
+                    global_offset::RAW_PTR,
                 )?,
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: base,
+                addr: MachineAddr { base, offset: 0 },
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
@@ -581,12 +601,25 @@ impl<'a> BlockLowerContext<'a> {
                 extension: MachineLoadExtension::None,
             },
         });
-        let lo_addr = self.indexed_addr(
-            dst_hi,
-            idx,
-            core::mem::size_of::<GlobalInst>(),
-            global_offset::RAW,
-        )?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: dst_hi,
+                addr: self.indexed_addr(
+                    dst_hi,
+                    idx,
+                    core::mem::size_of::<GlobalInst>(),
+                    global_offset::RAW_PTR,
+                )?,
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        let lo_addr = MachineAddr {
+            base: dst_hi,
+            offset: 0,
+        };
         let hi_addr = addr_with_byte_offset(lo_addr, 4)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
@@ -652,14 +685,24 @@ impl<'a> BlockLowerContext<'a> {
             },
         });
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Store {
-                ty,
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: base,
                 addr: self.indexed_addr(
                     base,
                     idx,
                     core::mem::size_of::<GlobalInst>(),
-                    global_offset::RAW,
+                    global_offset::RAW_PTR,
                 )?,
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                ty,
+                addr: MachineAddr { base, offset: 0 },
                 width,
                 src: MachineValue::Reg(src),
             },
@@ -689,16 +732,26 @@ impl<'a> BlockLowerContext<'a> {
                 extension: MachineLoadExtension::None,
             },
         });
-        self.emit_v128_to_raw_reg(raw, src);
         self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Store {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
+                dst: base,
                 addr: self.indexed_addr(
                     base,
                     idx,
                     core::mem::size_of::<GlobalInst>(),
-                    global_offset::RAW,
+                    global_offset::RAW_PTR,
                 )?,
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        self.emit_v128_to_raw_reg(raw, src);
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Store {
+                ty: MachineStorageType::GpWord,
+                addr: MachineAddr { base, offset: 0 },
                 width: self.gp_word_mem_width(),
                 src: MachineValue::Reg(raw),
             },
@@ -725,12 +778,22 @@ impl<'a> BlockLowerContext<'a> {
                 extension: MachineLoadExtension::None,
             },
         });
-        let lo_addr = self.indexed_addr(
-            base,
-            idx,
-            core::mem::size_of::<GlobalInst>(),
-            global_offset::RAW,
-        )?;
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: base,
+                addr: self.indexed_addr(
+                    base,
+                    idx,
+                    core::mem::size_of::<GlobalInst>(),
+                    global_offset::RAW_PTR,
+                )?,
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        let lo_addr = MachineAddr { base, offset: 0 };
         let hi_addr = addr_with_byte_offset(lo_addr, 4)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {

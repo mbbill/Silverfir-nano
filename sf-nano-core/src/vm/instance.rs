@@ -18,6 +18,7 @@ use crate::module::type_context::{
 use crate::module::type_defs::FunctionType;
 use crate::module::Module;
 use crate::utils::limits::{Limitable, Limits};
+use crate::value_type::{HeapType, ValueType};
 use crate::vm::entities::{
     DataInst, ElementInst, FunctionInst, GlobalInst, HostFn, MemInst, ModuleInst, TableInst,
     TagInst,
@@ -42,9 +43,20 @@ pub struct ImportedTableState {
 }
 
 #[derive(Clone)]
+pub struct ImportedGlobalState {
+    pub global: GlobalInst,
+    pub type_ctx: Option<TypeContext>,
+}
+
+#[derive(Clone)]
 pub struct ImportedGlobalValue {
     pub value: Value,
     pub linked_function: Option<(HostFn, FunctionType)>,
+}
+
+pub enum ImportedGlobal {
+    Value(ImportedGlobalValue),
+    State(ImportedGlobalState),
 }
 
 pub enum ImportedFunction {
@@ -74,7 +86,7 @@ pub struct ImportedTagState {
 
 pub enum ImportValue {
     Func(ImportedFunction),
-    Global(ImportedGlobalValue, bool),
+    Global(ImportedGlobal, bool),
     Memory(Limits, Option<MemInst>),
     Table(Limits, Option<ImportedTableState>),
     Tag(ImportedTagState),
@@ -191,12 +203,21 @@ impl Import {
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Global(
-                ImportedGlobalValue {
+                ImportedGlobal::Value(ImportedGlobalValue {
                     value,
                     linked_function,
-                },
+                }),
                 mutable,
             ),
+        }
+    }
+
+    pub fn global_with_state(module: &str, name: &str, state: ImportedGlobalState) -> Self {
+        let mutable = state.global.mutable;
+        Import {
+            module: module.to_string(),
+            name: name.to_string(),
+            value: ImportValue::Global(ImportedGlobal::State(state), mutable),
         }
     }
 
@@ -437,6 +458,89 @@ enum ExportKind {
     Memory,
     Global,
     Tag,
+}
+
+fn global_value_types_equivalent_cross_context(
+    actual_type: &ValueType,
+    expected_type: &ValueType,
+    actual_ctx: Option<&TypeContext>,
+    expected_ctx: &TypeContext,
+) -> bool {
+    match (actual_type, expected_type) {
+        (ValueType::I32, ValueType::I32)
+        | (ValueType::I64, ValueType::I64)
+        | (ValueType::F32, ValueType::F32)
+        | (ValueType::F64, ValueType::F64)
+        | (ValueType::V128, ValueType::V128)
+        | (ValueType::Unknown, ValueType::Unknown) => true,
+        (ValueType::Ref(actual_ref), ValueType::Ref(expected_ref))
+            if actual_ref.nullable == expected_ref.nullable =>
+        {
+            match (&actual_ref.heap_type, &expected_ref.heap_type) {
+                (HeapType::Abstract(actual), HeapType::Abstract(expected)) => actual == expected,
+                (HeapType::Concrete(actual_idx), HeapType::Concrete(expected_idx)) => actual_ctx
+                    .is_some_and(|actual_ctx| {
+                        concrete_type_matches_cross_context(
+                            actual_ctx,
+                            *actual_idx,
+                            expected_ctx,
+                            *expected_idx,
+                        ) && concrete_type_matches_cross_context(
+                            expected_ctx,
+                            *expected_idx,
+                            actual_ctx,
+                            *actual_idx,
+                        )
+                    }),
+                _ => false,
+            }
+        }
+        _ => false,
+    }
+}
+
+fn global_value_type_can_initialize_cross_context(
+    actual_type: &ValueType,
+    expected_type: &ValueType,
+    actual_ctx: Option<&TypeContext>,
+    expected_ctx: &TypeContext,
+) -> bool {
+    match (actual_type, expected_type) {
+        (ValueType::I32, ValueType::I32)
+        | (ValueType::I64, ValueType::I64)
+        | (ValueType::F32, ValueType::F32)
+        | (ValueType::F64, ValueType::F64)
+        | (ValueType::V128, ValueType::V128)
+        | (ValueType::Unknown, ValueType::Unknown) => true,
+        (ValueType::Ref(actual_ref), ValueType::Ref(expected_ref))
+            if !actual_ref.nullable || expected_ref.nullable =>
+        {
+            match (&actual_ref.heap_type, &expected_ref.heap_type) {
+                (HeapType::Abstract(actual), HeapType::Abstract(expected)) => {
+                    actual.is_subtype_of(expected)
+                }
+                (HeapType::Concrete(actual_idx), HeapType::Concrete(expected_idx)) => actual_ctx
+                    .is_some_and(|actual_ctx| {
+                        concrete_type_matches_cross_context(
+                            actual_ctx,
+                            *actual_idx,
+                            expected_ctx,
+                            *expected_idx,
+                        )
+                    }),
+                (HeapType::Concrete(actual_idx), HeapType::Abstract(expected)) => actual_ctx
+                    .is_some_and(|actual_ctx| {
+                        HeapType::Concrete(*actual_idx)
+                            .is_subtype_of(&HeapType::Abstract(*expected), actual_ctx)
+                    }),
+                (HeapType::Abstract(actual), HeapType::Concrete(expected_idx)) => {
+                    HeapType::Abstract(*actual)
+                        .is_subtype_of(&HeapType::Concrete(*expected_idx), expected_ctx)
+                }
+            }
+        }
+        _ => false,
+    }
 }
 
 impl Instance {
@@ -810,43 +914,81 @@ impl Instance {
                             value: ImportValue::Global(imported, imp_mutable),
                             ..
                         }) => {
-                            let mut val = imported.value;
-                            if let Some((callback, func_type)) = &imported.linked_function {
-                                if let Value::Ref(_, ref_type) = val {
-                                    let func_idx = functions.len();
-                                    functions.push(FunctionInst::Host {
-                                        func_type: tracked_alloc::rc::Rc::new(func_type.clone()),
-                                        callback: *callback,
-                                    });
-                                    val = Value::Ref(RefHandle::new(func_idx), ref_type);
-                                }
-                            }
-                            let val_type = val.value_type();
                             if *imp_mutable != *mutable {
                                 return Err(
                                     WasmError::unlinkable("incompatible import type: .").into()
                                 );
                             }
-                            if *mutable {
-                                if val_type != *value_type {
-                                    return Err(WasmError::unlinkable(
-                                        "incompatible import type: .",
-                                    )
-                                    .into());
+
+                            match imported {
+                                ImportedGlobal::Value(imported) => {
+                                    let mut val = imported.value;
+                                    if let Some((callback, func_type)) = &imported.linked_function {
+                                        if let Value::Ref(_, ref_type) = val {
+                                            let func_idx = functions.len();
+                                            functions.push(FunctionInst::Host {
+                                                func_type: tracked_alloc::rc::Rc::new(
+                                                    func_type.clone(),
+                                                ),
+                                                callback: *callback,
+                                            });
+                                            val = Value::Ref(RefHandle::new(func_idx), ref_type);
+                                        }
+                                    }
+                                    let val_type = val.value_type();
+                                    if *mutable {
+                                        if val_type != *value_type {
+                                            return Err(WasmError::unlinkable(
+                                                "incompatible import type: .",
+                                            )
+                                            .into());
+                                        }
+                                    } else if !val_type.can_initialize(value_type, &types) {
+                                        return Err(WasmError::unlinkable(
+                                            "incompatible import type: .",
+                                        )
+                                        .into());
+                                    }
+                                    #[cfg(sf_has_simd)]
+                                    let raw = match val {
+                                        Value::V128(value) => simd_registry.intern(value),
+                                        _ => val.to_raw(),
+                                    };
+                                    #[cfg(not(sf_has_simd))]
+                                    let raw = val.to_raw();
+                                    globals.push(GlobalInst::new_raw(raw, *mutable, *value_type));
                                 }
-                            } else if !val_type.can_initialize(value_type, &types) {
-                                return Err(
-                                    WasmError::unlinkable("incompatible import type: .").into()
-                                );
+                                ImportedGlobal::State(state) => {
+                                    let actual_type = state.global.value_type;
+                                    let actual_ctx = state.type_ctx.as_ref();
+                                    let compatible = if *mutable {
+                                        global_value_types_equivalent_cross_context(
+                                            &actual_type,
+                                            value_type,
+                                            actual_ctx,
+                                            &types,
+                                        )
+                                    } else {
+                                        global_value_type_can_initialize_cross_context(
+                                            &actual_type,
+                                            value_type,
+                                            actual_ctx,
+                                            &types,
+                                        )
+                                    };
+                                    if !compatible {
+                                        return Err(WasmError::unlinkable(
+                                            "incompatible import type: .",
+                                        )
+                                        .into());
+                                    }
+                                    globals.push(GlobalInst::from_shared(
+                                        state.global.clone_shared_cell(),
+                                        *mutable,
+                                        *value_type,
+                                    ));
+                                }
                             }
-                            #[cfg(sf_has_simd)]
-                            let raw = match val {
-                                Value::V128(value) => simd_registry.intern(value),
-                                _ => val.to_raw(),
-                            };
-                            #[cfg(not(sf_has_simd))]
-                            let raw = val.to_raw();
-                            globals.push(GlobalInst::new_raw(raw, *mutable, *value_type));
                         }
                         _ => {
                             return Err(WasmError::unlinkable("missing global import: .").into());
@@ -1314,6 +1456,18 @@ impl Instance {
             })
     }
 
+    pub fn shared_global_state_at(&self, idx: usize) -> Option<ImportedGlobalState> {
+        self.store
+            .module()
+            .globals
+            .get(idx)
+            .cloned()
+            .map(|global| ImportedGlobalState {
+                global,
+                type_ctx: Some(self.store.module().types.clone()),
+            })
+    }
+
     pub fn shared_memory_at(&self, idx: usize) -> Option<MemInst> {
         self.store.module().memories.get(idx).cloned()
     }
@@ -1590,6 +1744,114 @@ mod tests {
 
         assert_eq!(instance.store.table(0).size(), 2);
         assert_eq!(instance.store.table(0).limits.max(), Some(2));
+    }
+
+    #[test]
+    fn shared_global_import_aliases_mutations() {
+        let source_wasm = wat::parse_str(
+            r#"
+            (module
+              (global $g (mut i32) (i32.const 0))
+              (export "g1" (global $g))
+              (export "g2" (global $g)))
+            "#,
+        )
+        .expect("source module should encode");
+        let source = Instance::new(&source_wasm, &[]).expect("source module should instantiate");
+        let shared = source
+            .shared_global_state_at(0)
+            .expect("source global should be shareable");
+
+        let importer_wasm = wat::parse_str(
+            r#"
+            (module
+              (import "env" "g1" (global $g1 (mut i32)))
+              (import "env" "g2" (global $g2 (mut i32)))
+              (func (export "set_then_get") (result i32)
+                i32.const 7
+                global.set $g1
+                global.get $g2))
+            "#,
+        )
+        .expect("importer module should encode");
+        let mut importer = Instance::new(
+            &importer_wasm,
+            &[
+                Import::global_with_state("env", "g1", shared.clone()),
+                Import::global_with_state("env", "g2", shared),
+            ],
+        )
+        .expect("importer module should instantiate");
+
+        let result = importer
+            .invoke("set_then_get", &[])
+            .expect("global aliasing invocation should succeed");
+        assert_eq!(result.as_slice(), &[Value::I32(7)]);
+        assert_eq!(
+            source.get_global("g1").expect("global read should succeed"),
+            Some(Value::I32(7))
+        );
+    }
+
+    #[test]
+    fn shared_global_import_rejects_same_index_different_concrete_types() {
+        let mutable_source_wasm = wat::parse_str(
+            r#"
+            (module
+              (type $a (struct (field i32)))
+              (global $g (mut (ref null $a)) (ref.null $a))
+              (export "g" (global $g)))
+            "#,
+        )
+        .expect("mutable source module should encode");
+        let mutable_source =
+            Instance::new(&mutable_source_wasm, &[]).expect("source module should instantiate");
+        let mutable_shared = mutable_source
+            .shared_global_state_at(0)
+            .expect("source global should be shareable");
+        let mutable_importer_wasm = wat::parse_str(
+            r#"
+            (module
+              (type $b (array (mut i32)))
+              (import "env" "g" (global $g (mut (ref null $b)))))
+            "#,
+        )
+        .expect("mutable importer module should encode");
+
+        assert!(Instance::new(
+            &mutable_importer_wasm,
+            &[Import::global_with_state("env", "g", mutable_shared)]
+        )
+        .is_err());
+
+        let immutable_source_wasm = wat::parse_str(
+            r#"
+            (module
+              (type $a (struct (field i32)))
+              (global $g (ref null $a) (ref.null $a))
+              (export "g" (global $g)))
+            "#,
+        )
+        .expect("immutable source module should encode");
+        let immutable_source =
+            Instance::new(&immutable_source_wasm, &[]).expect("source module should instantiate");
+        let immutable_shared = immutable_source
+            .shared_global_state_at(0)
+            .expect("source global should be shareable");
+        let immutable_importer_wasm = wat::parse_str(
+            r#"
+            (module
+              (type $b (array (mut i32)))
+              (import "env" "g" (global $g (ref null $b))))
+            "#,
+        )
+        .expect("immutable importer module should encode");
+
+        assert!(Instance::new(
+            &immutable_importer_wasm,
+            &[Import::global_with_state("env", "g", immutable_shared)]
+        )
+        .is_err());
     }
 
     #[test]

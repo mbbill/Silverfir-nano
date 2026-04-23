@@ -2,7 +2,7 @@
 
 use crate::collections;
 
-use core::cell::{Ref, RefCell, RefMut};
+use core::cell::{Ref, RefCell, RefMut, UnsafeCell};
 use tracked_alloc::{rc::Rc, string::String};
 
 use crate::error::WasmError;
@@ -196,14 +196,13 @@ pub struct MemInst {
     pub limits: Limits,
 }
 
-/// Enforce `runtime_config().wasm_memory_max_pages` against the
-/// module's declared max (or min if no max was declared). Called from
-/// both `MemInst::new` and `MemInst::new_guarded` so every construction
-/// path sees the same ceiling.
+/// Enforce `runtime_config().wasm_memory_max_pages` against the memory's
+/// initial page count. Declared maximums are type-level growth ceilings;
+/// `memory.grow` applies the runtime cap when growth is requested.
 fn check_memory_quota(limits: &Limits) -> Result<(), WasmError> {
-    let declared_max = limits.max().unwrap_or_else(|| limits.min());
+    let initial_pages = limits.min();
     let configured = crate::runtime_config().wasm_memory_max_pages as usize;
-    if declared_max > configured {
+    if initial_pages > configured {
         return Err(WasmError::memory_exceeds_runtime_limit());
     }
     Ok(())
@@ -293,18 +292,51 @@ impl MemInst {
     }
 }
 
+#[derive(Debug)]
+pub struct GlobalCell {
+    raw: UnsafeCell<u64>,
+}
+
+impl GlobalCell {
+    #[inline]
+    fn new(raw: u64) -> Self {
+        Self {
+            raw: UnsafeCell::new(raw),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn raw_ptr(&self) -> *mut u64 {
+        self.raw.get()
+    }
+}
+
 #[repr(C)]
 #[derive(Debug, Clone)]
 pub struct GlobalInst {
-    raw: u64,
+    raw_ptr: *mut u64,
+    cell: Rc<GlobalCell>,
     pub mutable: bool,
     pub value_type: ValueType,
 }
 
 impl GlobalInst {
     pub fn new_raw(raw: u64, mutable: bool, value_type: ValueType) -> Self {
+        let cell = Rc::new(GlobalCell::new(raw));
+        let raw_ptr = cell.raw_ptr();
         GlobalInst {
-            raw,
+            raw_ptr,
+            cell,
+            mutable,
+            value_type,
+        }
+    }
+
+    pub fn from_shared(cell: Rc<GlobalCell>, mutable: bool, value_type: ValueType) -> Self {
+        let raw_ptr = cell.raw_ptr();
+        GlobalInst {
+            raw_ptr,
+            cell,
             mutable,
             value_type,
         }
@@ -312,29 +344,44 @@ impl GlobalInst {
 
     #[inline]
     pub fn value(&self, store: &Store) -> Result<Value, WasmError> {
-        try_raw_to_value_in_store(self.raw, self.value_type, store)
+        try_raw_to_value_in_store(self.raw(), self.value_type, store)
     }
 
     #[inline]
     pub fn set_value(&mut self, store: &mut Store, value: Value) {
-        self.raw = value_to_raw_in_store(value, store);
+        self.set_raw(value_to_raw_in_store(value, store));
     }
 
     #[inline]
     pub fn raw(&self) -> u64 {
-        self.raw
+        // Safety: sf-nano stores are single-threaded; generated code and host
+        // API access use the same raw cell identity for imported globals.
+        unsafe { *self.raw_ptr }
     }
 
     #[inline]
     pub fn set_raw(&mut self, raw: u64) {
-        self.raw = raw;
+        // Safety: see `raw`.
+        unsafe {
+            *self.raw_ptr = raw;
+        }
+    }
+
+    #[inline]
+    pub fn raw_ptr(&self) -> *mut u64 {
+        self.raw_ptr
+    }
+
+    #[inline]
+    pub fn clone_shared_cell(&self) -> Rc<GlobalCell> {
+        Rc::clone(&self.cell)
     }
 }
 
 pub(crate) mod global_offset {
     use super::GlobalInst;
 
-    pub(crate) const RAW: u32 = core::mem::offset_of!(GlobalInst, raw) as u32;
+    pub(crate) const RAW_PTR: u32 = core::mem::offset_of!(GlobalInst, raw_ptr) as u32;
 }
 
 #[derive(Debug, Clone)]
@@ -474,10 +521,7 @@ impl ModuleInst {
     /// Returns `Err` only if a caller is currently holding a borrow of
     /// the buffer via `native_code_buffer()` — a programmer error.
     #[cfg(sf_jit)]
-    pub(crate) fn install_native_code_buffer(
-        &self,
-        buf: CodeBuffer,
-    ) -> Result<(), &'static str> {
+    pub(crate) fn install_native_code_buffer(&self, buf: CodeBuffer) -> Result<(), &'static str> {
         let mut native_buf = self
             .native_buf
             .try_borrow_mut()

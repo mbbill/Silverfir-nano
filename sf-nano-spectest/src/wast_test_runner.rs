@@ -1243,16 +1243,18 @@ impl WastTestRunner {
             if let Some(instance) = self.instances.get(internal_name) {
                 if let Some(bytes) = self.module_bytes.get(internal_name) {
                     if let Ok(module) = Module::new("_export_scan", bytes) {
-                        // Global exports — read current value from live instance
+                        // Global exports — preserve live global identity
                         for global in module.globals() {
                             for export_name in global.export_names() {
-                                if let Some(value) = instance.get_global(export_name)? {
-                                    imports.push(Import::global_with_linked_function(
+                                if let Some(state) =
+                                    find_exported_global_index(&module, export_name).and_then(
+                                        |global_idx| instance.shared_global_state_at(global_idx),
+                                    )
+                                {
+                                    imports.push(Import::global_with_state(
                                         registered_name,
                                         export_name,
-                                        value,
-                                        global.mutable(),
-                                        None,
+                                        state,
                                     ));
                                 }
                             }

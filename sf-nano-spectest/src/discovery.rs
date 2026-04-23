@@ -148,12 +148,10 @@ pub fn should_skip_test(test_name: &str, simd_enabled: bool) -> bool {
 
     // Exception Handling proposal — `rethrow` + the `legacy/` directory
     // are legacy-proposal-shaped (pre-merge `try`/`catch`/`rethrow` /
-    // `delegate` form) and stay skipped. `instance` also stays skipped
-    // until module-instance aliasing semantics are fixed separately. The
-    // other EH tests (tag/throw/throw_ref/try_table) are enabled; the runner
-    // surfaces wasm exceptions via `WasmError::Exception` and `assert_exception`.
+    // `delegate` form) and stay skipped. The other EH tests
+    // (tag/throw/throw_ref/try_table) are enabled; the runner surfaces wasm
+    // exceptions via `WasmError::Exception` and `assert_exception`.
     if test_name == "rethrow"
-        || test_name.starts_with("instance")
         || test_name.starts_with("legacy/")
         || test_name.starts_with("legacy\\")
     {
@@ -189,9 +187,17 @@ mod tests {
     }
 
     #[test]
-    fn instance_stays_skipped_until_aliasing_semantics_are_fixed() {
-        assert!(should_skip_test("instance", false));
-        assert!(should_skip_test("instance.wast", false));
+    fn instance_is_enabled() {
+        assert!(!should_skip_test("instance", false));
+        assert!(!should_skip_test("instance.wast", false));
+    }
+
+    #[test]
+    fn memory64_tests_are_not_skipped() {
+        assert!(!should_skip_test("memory64", false));
+        assert!(!should_skip_test("memory64.wast", false));
+        assert!(!should_skip_test("memory64-imports", false));
+        assert!(!should_skip_test("memory_grow64", false));
     }
 
     #[test]

@@ -1,14 +1,14 @@
 use crate::{
     error::WasmError,
     vm::{
-        entities::GlobalInst,
+        entities::{global_offset, GlobalInst},
         machine::machine_ir::MachineMemWidth,
         runtime::{
             code::CompiledNativeModule,
             context::NativeContext,
             layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
         },
-        value_encoding::{machine_raw_to_ref, ref_to_machine_raw},
+        value_encoding::{as_ref, machine_raw_to_ref, ref_to_machine_raw},
     },
 };
 
@@ -20,6 +20,7 @@ const FUNCTION_VIEWS_BASE_32: u64 = 0x1300_0000;
 const LOCAL_CALL_INFOS_BASE_32: u64 = 0x1400_0000;
 const GLOBALS_BASE_32: u64 = 0x1500_0000;
 const TYPE_CANON_BASE_32: u64 = 0x1600_0000;
+const GLOBAL_RAW_BASE_32: u64 = GLOBALS_BASE_32 + GLOBALS_WINDOW_32 / 2;
 const MEMORY_BASE_32: u64 = 0x4000_0000;
 const MEMORY_WINDOW_32: u64 = 0x0400_0000;
 const TABLE_ELEMENTS_BASE_32: u64 = 0xC000_0000;
@@ -29,6 +30,8 @@ const TABLE_VIEWS_WINDOW_32: u64 = FUNCTION_VIEWS_BASE_32 - TABLE_VIEWS_BASE_32;
 const FUNCTION_VIEWS_WINDOW_32: u64 = LOCAL_CALL_INFOS_BASE_32 - FUNCTION_VIEWS_BASE_32;
 const LOCAL_CALL_INFOS_WINDOW_32: u64 = GLOBALS_BASE_32 - LOCAL_CALL_INFOS_BASE_32;
 const GLOBALS_WINDOW_32: u64 = TYPE_CANON_BASE_32 - GLOBALS_BASE_32;
+const GLOBALS_META_WINDOW_32: u64 = GLOBAL_RAW_BASE_32 - GLOBALS_BASE_32;
+const GLOBAL_RAW_WINDOW_32: u64 = TYPE_CANON_BASE_32 - GLOBAL_RAW_BASE_32;
 const TYPE_CANON_WINDOW_32: u64 = MEMORY_BASE_32 - TYPE_CANON_BASE_32;
 const MAX_MEMORY_COUNT_32: usize =
     ((TABLE_ELEMENTS_BASE_32 - MEMORY_BASE_32) / MEMORY_WINDOW_32) as usize;
@@ -200,7 +203,11 @@ impl Target32AddressSpace {
         )?;
         ensure_window_fits(
             checked_region_bytes(ctx.globals_view.len, core::mem::size_of::<GlobalInst>())?,
-            GLOBALS_WINDOW_32,
+            GLOBALS_META_WINDOW_32,
+        )?;
+        ensure_window_fits(
+            checked_region_bytes(ctx.globals_view.len, core::mem::size_of::<u64>())?,
+            GLOBAL_RAW_WINDOW_32,
         )?;
         ensure_window_fits(
             checked_region_bytes(ctx.type_canon_len, core::mem::size_of::<u32>())?,
@@ -293,6 +300,27 @@ impl Target32AddressSpace {
                 ));
             }
         }
+        if ctx.globals_view.len != 0 {
+            let size = u32::try_from(
+                ctx.globals_view
+                    .len
+                    .saturating_mul(core::mem::size_of::<GlobalInst>()),
+            )
+            .unwrap_or(u32::MAX);
+            if self.contains(addr, self.globals_base, size) {
+                return Some(self.load_global_view(ctx, addr - self.globals_base, width));
+            }
+
+            let raw_size = u32::try_from(
+                ctx.globals_view
+                    .len
+                    .saturating_mul(core::mem::size_of::<u64>()),
+            )
+            .unwrap_or(u32::MAX);
+            if self.contains(addr, GLOBAL_RAW_BASE_32, raw_size) {
+                return Some(self.load_global_raw(ctx, addr - GLOBAL_RAW_BASE_32, width));
+            }
+        }
         if ctx.type_canon_len != 0 {
             let size = u32::try_from(
                 ctx.type_canon_len
@@ -354,6 +382,17 @@ impl Target32AddressSpace {
                 return Some(self.store_table_element(ctx, table_index, addr - base, value));
             }
         }
+        if ctx.globals_view.len != 0 {
+            let raw_size = u32::try_from(
+                ctx.globals_view
+                    .len
+                    .saturating_mul(core::mem::size_of::<u64>()),
+            )
+            .unwrap_or(u32::MAX);
+            if self.contains(addr, GLOBAL_RAW_BASE_32, raw_size) {
+                return Some(self.store_global_raw(ctx, addr - GLOBAL_RAW_BASE_32, width, value));
+            }
+        }
         if self.is_synthetic_container(addr) {
             return Some(Err(WasmError::internal(
                 "machine store into synthetic runtime metadata is unsupported".into(),
@@ -395,6 +434,16 @@ impl Target32AddressSpace {
                 self.function_views_base,
                 u32::MAX - self.function_views_base as u32,
             )
+            || self.contains(
+                addr,
+                self.local_call_infos_base,
+                u32::MAX - self.local_call_infos_base as u32,
+            )
+            || self.contains(
+                addr,
+                self.globals_base,
+                u32::try_from(GLOBALS_META_WINDOW_32).unwrap_or(u32::MAX),
+            )
     }
 
     #[inline]
@@ -405,6 +454,11 @@ impl Target32AddressSpace {
     #[inline]
     fn table_elements_base(self, table_index: usize) -> u64 {
         TABLE_ELEMENTS_BASE_32 + table_index as u64 * TABLE_ELEMENTS_WINDOW_32
+    }
+
+    #[inline]
+    fn global_raw_base(self, global_index: usize) -> u64 {
+        GLOBAL_RAW_BASE_32 + global_index as u64 * core::mem::size_of::<u64>() as u64
     }
 
     fn load_stack(self, addr: u64, width: MachineMemWidth) -> Result<u64, WasmError> {
@@ -625,6 +679,102 @@ impl Target32AddressSpace {
                 MachineMemWidth::U64 => core::ptr::read_unaligned(ptr.cast::<u64>()),
             }
         })
+    }
+
+    fn load_global_view(
+        self,
+        ctx: &NativeContext,
+        offset: u64,
+        width: MachineMemWidth,
+    ) -> Result<u64, WasmError> {
+        let stride = core::mem::size_of::<GlobalInst>() as u64;
+        let index = (offset / stride) as usize;
+        if index >= ctx.globals_view.len {
+            return Err(WasmError::internal(
+                "synthetic 32-bit global view load is out of range: entry >=",
+            ));
+        }
+        let field_offset = (offset % stride) as u32;
+        if field_offset == global_offset::RAW_PTR {
+            self.read_scalar(width, self.global_raw_base(index))
+        } else {
+            Err(WasmError::internal(
+                "synthetic 32-bit global view load uses unsupported field offset",
+            ))
+        }
+    }
+
+    fn load_global_raw(
+        self,
+        ctx: &NativeContext,
+        offset: u64,
+        width: MachineMemWidth,
+    ) -> Result<u64, WasmError> {
+        let stride = core::mem::size_of::<u64>() as u64;
+        let index = (offset / stride) as usize;
+        let field_offset = (offset % stride) as usize;
+        if index >= ctx.globals_view.len || field_offset + width.bytes() as usize > stride as usize
+        {
+            return Err(WasmError::internal(
+                "synthetic 32-bit global raw load is out of range",
+            ));
+        }
+
+        let global = unsafe { &*ctx.globals_view.base.add(index) };
+        if global.value_type.is_ref() {
+            if field_offset != 0 || !matches!(width, MachineMemWidth::U32 | MachineMemWidth::U64) {
+                return Err(WasmError::internal(
+                    "synthetic 32-bit ref global raw load uses unsupported access shape",
+                ));
+            }
+            return self.read_scalar(
+                width,
+                ref_to_machine_raw(as_ref(global.raw()), self.layout.gp_unit_bytes),
+            );
+        }
+
+        let raw = global.raw() >> (field_offset * 8);
+        self.read_scalar(width, raw)
+    }
+
+    fn store_global_raw(
+        self,
+        ctx: &NativeContext,
+        offset: u64,
+        width: MachineMemWidth,
+        value: u64,
+    ) -> Result<(), WasmError> {
+        let stride = core::mem::size_of::<u64>() as u64;
+        let index = (offset / stride) as usize;
+        let field_offset = (offset % stride) as usize;
+        let width_bytes = width.bytes() as usize;
+        if index >= ctx.globals_view.len || field_offset + width_bytes > stride as usize {
+            return Err(WasmError::internal(
+                "synthetic 32-bit global raw store is out of range",
+            ));
+        }
+
+        let global = unsafe { &mut *ctx.globals_view.base.add(index) };
+        if global.value_type.is_ref() {
+            if field_offset != 0 || !matches!(width, MachineMemWidth::U32 | MachineMemWidth::U64) {
+                return Err(WasmError::internal(
+                    "synthetic 32-bit ref global raw store uses unsupported access shape",
+                ));
+            }
+            global.set_raw(machine_raw_to_ref(value, self.layout.gp_unit_bytes).encoded() as u64);
+            return Ok(());
+        }
+
+        let shift = field_offset * 8;
+        let bits = width_bytes * 8;
+        let mask = if bits == 64 {
+            u64::MAX
+        } else {
+            ((1u64 << bits) - 1) << shift
+        };
+        let raw = (global.raw() & !mask) | ((value << shift) & mask);
+        global.set_raw(raw);
+        Ok(())
     }
 
     fn load_type_canon(

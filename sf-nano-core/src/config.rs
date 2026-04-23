@@ -31,8 +31,8 @@ pub struct RuntimeConfig {
     pub code_arena_bytes: usize,
 
     /// Maximum 64-KiB Wasm pages a single linear memory is allowed to
-    /// reach. Enforced at instantiation (module's declared max vs.
-    /// this) and at `memory.grow` (requested new size vs. this).
+    /// reach. Enforced at instantiation for the initial page count and
+    /// at `memory.grow` for the requested new size.
     /// `u32` is enough for wasm32 (ceiling 65536). Memory64 modules
     /// are allowed but cannot exceed `u32::MAX` pages through this
     /// config; practical MCU targets set this to 1–16 anyway.
