@@ -517,25 +517,6 @@ impl<'a> Emulator<'a> {
                     fixed_reg_addr_kind(*dst),
                 )?;
             }
-            #[cfg(not(sf_has_simd))]
-            MachineInstKind::V128Const { .. }
-            | MachineInstKind::V128FromRaw { .. }
-            | MachineInstKind::V128ToRaw { .. }
-            | MachineInstKind::SimdUnary { .. }
-            | MachineInstKind::SimdBinary { .. }
-            | MachineInstKind::SimdTernary { .. }
-            | MachineInstKind::SimdShift { .. }
-            | MachineInstKind::SimdExtractLane { .. }
-            | MachineInstKind::SimdReplaceLane { .. }
-            | MachineInstKind::SimdShuffle { .. }
-            | MachineInstKind::SimdLoad { .. }
-            | MachineInstKind::SimdStore { .. }
-            | MachineInstKind::SimdLoadLane { .. }
-            | MachineInstKind::SimdStoreLane { .. } => {
-                return Err(WasmError::internal(
-                    "emulator received SIMD instruction without sf_has_simd".into(),
-                ));
-            }
             MachineInstKind::Convert { op, dst, src } => {
                 self.write_reg_with_kind(
                     *dst,

@@ -809,9 +809,6 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
     match kind {
         MachineInstKind::Move { dst, .. }
         | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::V128Const { dst, .. }
-        | MachineInstKind::V128FromRaw { dst, .. }
-        | MachineInstKind::V128ToRaw { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
         | MachineInstKind::IntBinary { dst, .. }
@@ -819,15 +816,6 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatUnary { dst, .. }
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
-        | MachineInstKind::SimdUnary { dst, .. }
-        | MachineInstKind::SimdBinary { dst, .. }
-        | MachineInstKind::SimdTernary { dst, .. }
-        | MachineInstKind::SimdShift { dst, .. }
-        | MachineInstKind::SimdExtractLane { dst, .. }
-        | MachineInstKind::SimdReplaceLane { dst, .. }
-        | MachineInstKind::SimdShuffle { dst, .. }
-        | MachineInstKind::SimdLoad { dst, .. }
-        | MachineInstKind::SimdLoadLane { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. }
         | MachineInstKind::IndexedLoad { dst, .. }
@@ -853,6 +841,19 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::ArrayNewData { dst, .. }
         | MachineInstKind::ArrayNewElem { dst, .. }
         | MachineInstKind::ArrayLen { dst, .. } => Some(*dst),
+        #[cfg(sf_has_simd)]
+        MachineInstKind::V128Const { dst, .. }
+        | MachineInstKind::V128FromRaw { dst, .. }
+        | MachineInstKind::V128ToRaw { dst, .. }
+        | MachineInstKind::SimdUnary { dst, .. }
+        | MachineInstKind::SimdBinary { dst, .. }
+        | MachineInstKind::SimdTernary { dst, .. }
+        | MachineInstKind::SimdShift { dst, .. }
+        | MachineInstKind::SimdExtractLane { dst, .. }
+        | MachineInstKind::SimdReplaceLane { dst, .. }
+        | MachineInstKind::SimdShuffle { dst, .. }
+        | MachineInstKind::SimdLoad { dst, .. }
+        | MachineInstKind::SimdLoadLane { dst, .. } => Some(*dst),
         MachineInstKind::StructGet { dst, dst_hi, .. }
         | MachineInstKind::ArrayGet { dst, dst_hi, .. } => dst_hi.is_none().then_some(*dst),
         MachineInstKind::MemoryGrow { dst, .. } | MachineInstKind::TableGrow { dst, .. } => {
@@ -883,12 +884,12 @@ pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         MachineInstKind::ReinterpretF64ToI64Pair { .. } => None,
         MachineInstKind::Store { .. }
         | MachineInstKind::IndexedStore { .. }
-        | MachineInstKind::SimdStore { .. }
-        | MachineInstKind::SimdStoreLane { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallRuntime(_)
         | MachineInstKind::EhThrow { .. }
         | MachineInstKind::EhThrowRef { .. } => None,
+        #[cfg(sf_has_simd)]
+        MachineInstKind::SimdStore { .. } | MachineInstKind::SimdStoreLane { .. } => None,
     }
 }
 
@@ -896,8 +897,11 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
     match kind {
         MachineInstKind::Move { src, .. } => visit_value_reg(src, &mut visit),
         MachineInstKind::FloatConst { .. } => {}
+        #[cfg(sf_has_simd)]
         MachineInstKind::V128Const { .. } => {}
+        #[cfg(sf_has_simd)]
         MachineInstKind::V128FromRaw { raw, .. } => visit_value_reg(raw, &mut visit),
+        #[cfg(sf_has_simd)]
         MachineInstKind::V128ToRaw { src, .. } => visit_value_reg(src, &mut visit),
         MachineInstKind::Load { addr, .. } => visit(addr.base),
         MachineInstKind::Store { addr, src, .. } => {
@@ -917,43 +921,57 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         }
         MachineInstKind::IntUnary { src, .. }
         | MachineInstKind::FloatUnary { src, .. }
-        | MachineInstKind::SimdUnary { src, .. }
-        | MachineInstKind::SimdExtractLane { src, .. }
         | MachineInstKind::Convert { src, .. } => visit_value_reg(src, &mut visit),
+        #[cfg(sf_has_simd)]
+        MachineInstKind::SimdUnary { src, .. } | MachineInstKind::SimdExtractLane { src, .. } => {
+            visit_value_reg(src, &mut visit)
+        }
         MachineInstKind::IntBinary { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
-        | MachineInstKind::SimdBinary { lhs, rhs, .. }
         | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
             visit_value_reg(lhs, &mut visit);
             visit_value_reg(rhs, &mut visit);
         }
+        #[cfg(sf_has_simd)]
+        MachineInstKind::SimdBinary { lhs, rhs, .. } => {
+            visit_value_reg(lhs, &mut visit);
+            visit_value_reg(rhs, &mut visit);
+        }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdTernary { a, b, c, .. } => {
             visit_value_reg(a, &mut visit);
             visit_value_reg(b, &mut visit);
             visit_value_reg(c, &mut visit);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdShift { vector, shift, .. } => {
             visit_value_reg(vector, &mut visit);
             visit_value_reg(shift, &mut visit);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdReplaceLane { vector, scalar, .. } => {
             visit_value_reg(vector, &mut visit);
             visit_value_reg(scalar, &mut visit);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdShuffle { lhs, rhs, .. } => {
             visit_value_reg(lhs, &mut visit);
             visit_value_reg(rhs, &mut visit);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdLoad { addr, .. } => visit(addr.base),
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdStore { addr, src, .. } => {
             visit(addr.base);
             visit_value_reg(src, &mut visit);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdLoadLane { addr, vector, .. } => {
             visit(addr.base);
             visit_value_reg(vector, &mut visit);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdStoreLane { addr, vector, .. } => {
             visit(addr.base);
             visit_value_reg(vector, &mut visit);

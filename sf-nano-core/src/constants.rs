@@ -33,4 +33,3 @@ pub const MAX_TABLE_SIZE_64: usize = usize::MAX;
 
 // Maximum number of locals allowed.
 pub const MAX_LOCALS: u32 = 4096;
-

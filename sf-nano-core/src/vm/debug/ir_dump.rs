@@ -547,12 +547,15 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         MachineInstKind::FloatConst { width, dst, bits } => {
             format!("{}.const r{} <- 0x{:x}", fw(width), dst.0, bits)
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::V128Const { dst, bytes } => {
             format!("v128.const r{} <- {:02x?}", dst.0, bytes)
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::V128FromRaw { dst, raw, .. } => {
             format!("v128.from_raw r{} <- {}", dst.0, mval(raw))
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::V128ToRaw { dst, src } => {
             format!("v128.to_raw r{} <- {}", dst.0, mval(src))
         }
@@ -859,6 +862,7 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 mval(rhs)
             )
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdUnary {
             opcode,
             dst_ty,
@@ -870,6 +874,7 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             dst.0,
             mval(src)
         ),
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdBinary {
             opcode,
             dst_ty,
@@ -883,6 +888,7 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             mval(lhs),
             mval(rhs)
         ),
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdTernary {
             opcode,
             dst_ty,
@@ -898,6 +904,7 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             mval(b),
             mval(c)
         ),
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdShift {
             opcode,
             dst,
@@ -909,6 +916,7 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             mval(vector),
             mval(shift)
         ),
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdExtractLane {
             opcode,
             lane,
@@ -922,6 +930,7 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             dst.0,
             mval(src)
         ),
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdReplaceLane {
             opcode,
             lane,
@@ -935,6 +944,7 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             mval(vector),
             mval(scalar)
         ),
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdShuffle {
             dst,
             lhs,
@@ -947,9 +957,11 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             mval(rhs),
             lanes
         ),
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdLoad { opcode, dst, addr } => {
             format!("simd.load[0x{opcode:x}] r{} <- [{}]", dst.0, maddr(addr))
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdStore { opcode, addr, src } => {
             format!(
                 "simd.store[0x{opcode:x}] [{}] <- {}",
@@ -957,6 +969,7 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 mval(src)
             )
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdLoadLane {
             opcode,
             lane,
@@ -970,6 +983,7 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
             maddr(addr),
             mval(vector)
         ),
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdStoreLane {
             opcode,
             lane,

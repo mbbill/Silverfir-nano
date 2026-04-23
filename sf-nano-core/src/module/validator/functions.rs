@@ -9,7 +9,7 @@ use crate::{
         Module,
     },
     op_decoder::{BlockType, CatchClause, CatchClauseKind, Immediate, OpStream, OpcodeHandler},
-    opcodes::{Opcode, OpcodeFB, OpcodeFC, OpcodeFD, WasmOpcode},
+    opcodes::{Opcode, OpcodeFB, OpcodeFC, WasmOpcode},
     utils::limits::Limitable,
     value_type::{HeapType, RefType, ValueType},
 };
@@ -17,6 +17,8 @@ use tracked_alloc::rc::Rc;
 
 #[cfg(not(sf_has_simd))]
 use crate::op_decoder::simd_opcode_error;
+#[cfg(sf_has_simd)]
+use crate::opcodes::OpcodeFD;
 
 #[inline]
 fn validator_immediate_mismatch(message: &'static str) -> WasmError {

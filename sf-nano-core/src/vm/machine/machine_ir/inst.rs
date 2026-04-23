@@ -72,6 +72,7 @@ pub(crate) enum MachineInstKind {
         bits: u64,
     },
     /// Materialize one SIMD literal into a native vector register.
+    #[cfg(sf_has_simd)]
     V128Const {
         dst: MachineReg,
         bytes: [u8; 16],
@@ -79,6 +80,7 @@ pub(crate) enum MachineInstKind {
     /// Convert one canonical raw v128 handle into a native vector register.
     ///
     /// The raw handle is the engine's canonical 8-byte frame/global/ABI form.
+    #[cfg(sf_has_simd)]
     V128FromRaw {
         owner: MachineRegOwner,
         dst: MachineReg,
@@ -87,6 +89,7 @@ pub(crate) enum MachineInstKind {
     /// Convert one native vector register into the canonical raw v128 handle.
     ///
     /// The result is a GP-word handle suitable for frame/global/ABI storage.
+    #[cfg(sf_has_simd)]
     V128ToRaw {
         dst: MachineReg,
         src: MachineValue,
@@ -314,6 +317,7 @@ pub(crate) enum MachineInstKind {
         rhs: MachineValue,
     },
     /// Generic SIMD unary op.
+    #[cfg(sf_has_simd)]
     SimdUnary {
         opcode: u32,
         dst_ty: MachineStorageType,
@@ -321,6 +325,7 @@ pub(crate) enum MachineInstKind {
         src: MachineValue,
     },
     /// Generic SIMD binary op.
+    #[cfg(sf_has_simd)]
     SimdBinary {
         opcode: u32,
         dst_ty: MachineStorageType,
@@ -329,6 +334,7 @@ pub(crate) enum MachineInstKind {
         rhs: MachineValue,
     },
     /// Generic SIMD ternary op.
+    #[cfg(sf_has_simd)]
     SimdTernary {
         opcode: u32,
         dst_ty: MachineStorageType,
@@ -338,6 +344,7 @@ pub(crate) enum MachineInstKind {
         c: MachineValue,
     },
     /// Generic SIMD shift op (`vector op scalar-count`).
+    #[cfg(sf_has_simd)]
     SimdShift {
         opcode: u32,
         dst: MachineReg,
@@ -345,6 +352,7 @@ pub(crate) enum MachineInstKind {
         shift: MachineValue,
     },
     /// SIMD lane extract with one immediate lane index.
+    #[cfg(sf_has_simd)]
     SimdExtractLane {
         opcode: u32,
         lane: u8,
@@ -353,6 +361,7 @@ pub(crate) enum MachineInstKind {
         src: MachineValue,
     },
     /// SIMD lane replace with one immediate lane index.
+    #[cfg(sf_has_simd)]
     SimdReplaceLane {
         opcode: u32,
         lane: u8,
@@ -361,6 +370,7 @@ pub(crate) enum MachineInstKind {
         scalar: MachineValue,
     },
     /// i8x16.shuffle with its fixed lane mask.
+    #[cfg(sf_has_simd)]
     SimdShuffle {
         dst: MachineReg,
         lhs: MachineValue,
@@ -368,18 +378,21 @@ pub(crate) enum MachineInstKind {
         lanes: [u8; 16],
     },
     /// SIMD memory load into a native vector register.
+    #[cfg(sf_has_simd)]
     SimdLoad {
         opcode: u32,
         dst: MachineReg,
         addr: MachineAddr,
     },
     /// SIMD memory store from a native vector register.
+    #[cfg(sf_has_simd)]
     SimdStore {
         opcode: u32,
         addr: MachineAddr,
         src: MachineValue,
     },
     /// SIMD lane load: merge one loaded scalar lane into an input vector.
+    #[cfg(sf_has_simd)]
     SimdLoadLane {
         opcode: u32,
         lane: u8,
@@ -388,6 +401,7 @@ pub(crate) enum MachineInstKind {
         vector: MachineValue,
     },
     /// SIMD lane store: write one scalar lane from the input vector.
+    #[cfg(sf_has_simd)]
     SimdStoreLane {
         opcode: u32,
         lane: u8,
@@ -653,12 +667,10 @@ impl MachineInstKind {
     /// metadata in the IR itself.
     pub(crate) const fn def_owner(&self) -> Option<MachineRegOwner> {
         match self {
-            Self::Move { owner, .. }
-            | Self::Load { owner, .. }
-            | Self::V128FromRaw { owner, .. } => Some(*owner),
+            Self::Move { owner, .. } | Self::Load { owner, .. } => Some(*owner),
+            #[cfg(sf_has_simd)]
+            Self::V128FromRaw { owner, .. } => Some(*owner),
             Self::FloatConst { .. }
-            | Self::V128Const { .. }
-            | Self::V128ToRaw { .. }
             | Self::IndexedLoad { .. }
             | Self::IntUnary { .. }
             | Self::IntBinary { .. }
@@ -678,15 +690,6 @@ impl MachineInstKind {
             | Self::FloatUnary { .. }
             | Self::FloatBinary { .. }
             | Self::FloatCompare { .. }
-            | Self::SimdUnary { .. }
-            | Self::SimdBinary { .. }
-            | Self::SimdTernary { .. }
-            | Self::SimdShift { .. }
-            | Self::SimdExtractLane { .. }
-            | Self::SimdReplaceLane { .. }
-            | Self::SimdShuffle { .. }
-            | Self::SimdLoad { .. }
-            | Self::SimdLoadLane { .. }
             | Self::Convert { .. }
             | Self::Select { .. }
             | Self::EhAllocExnRef { .. }
@@ -711,11 +714,21 @@ impl MachineInstKind {
             | Self::ArrayNewElem { .. }
             | Self::StructGet { .. }
             | Self::ArrayGet { .. } => Some(MachineRegOwner::LinearValue),
+            #[cfg(sf_has_simd)]
+            Self::V128Const { .. }
+            | Self::V128ToRaw { .. }
+            | Self::SimdUnary { .. }
+            | Self::SimdBinary { .. }
+            | Self::SimdTernary { .. }
+            | Self::SimdShift { .. }
+            | Self::SimdExtractLane { .. }
+            | Self::SimdReplaceLane { .. }
+            | Self::SimdShuffle { .. }
+            | Self::SimdLoad { .. }
+            | Self::SimdLoadLane { .. } => Some(MachineRegOwner::LinearValue),
             Self::ArrayLen { .. } => Some(MachineRegOwner::LinearValue),
             Self::Store { .. }
             | Self::IndexedStore { .. }
-            | Self::SimdStore { .. }
-            | Self::SimdStoreLane { .. }
             | Self::TrapIf { .. }
             | Self::CallRuntime(_)
             | Self::EhThrow { .. }
@@ -734,6 +747,8 @@ impl MachineInstKind {
             | Self::ArrayCopy { .. }
             | Self::ArrayInitData { .. }
             | Self::ArrayInitElem { .. } => None,
+            #[cfg(sf_has_simd)]
+            Self::SimdStore { .. } | Self::SimdStoreLane { .. } => None,
         }
     }
 }

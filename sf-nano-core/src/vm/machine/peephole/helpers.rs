@@ -16,9 +16,6 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
     match kind {
         MachineInstKind::Move { dst, .. }
         | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::V128Const { dst, .. }
-        | MachineInstKind::V128FromRaw { dst, .. }
-        | MachineInstKind::V128ToRaw { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
         | MachineInstKind::IntBinary { dst, .. }
@@ -26,15 +23,6 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::FloatUnary { dst, .. }
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
-        | MachineInstKind::SimdUnary { dst, .. }
-        | MachineInstKind::SimdBinary { dst, .. }
-        | MachineInstKind::SimdTernary { dst, .. }
-        | MachineInstKind::SimdShift { dst, .. }
-        | MachineInstKind::SimdExtractLane { dst, .. }
-        | MachineInstKind::SimdReplaceLane { dst, .. }
-        | MachineInstKind::SimdShuffle { dst, .. }
-        | MachineInstKind::SimdLoad { dst, .. }
-        | MachineInstKind::SimdLoadLane { dst, .. }
         | MachineInstKind::Convert { dst, .. }
         | MachineInstKind::Select { dst, .. }
         | MachineInstKind::IndexedLoad { dst, .. }
@@ -60,6 +48,19 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         | MachineInstKind::ArrayNewData { dst, .. }
         | MachineInstKind::ArrayNewElem { dst, .. }
         | MachineInstKind::ArrayLen { dst, .. } => Some(*dst),
+        #[cfg(sf_has_simd)]
+        MachineInstKind::V128Const { dst, .. }
+        | MachineInstKind::V128FromRaw { dst, .. }
+        | MachineInstKind::V128ToRaw { dst, .. }
+        | MachineInstKind::SimdUnary { dst, .. }
+        | MachineInstKind::SimdBinary { dst, .. }
+        | MachineInstKind::SimdTernary { dst, .. }
+        | MachineInstKind::SimdShift { dst, .. }
+        | MachineInstKind::SimdExtractLane { dst, .. }
+        | MachineInstKind::SimdReplaceLane { dst, .. }
+        | MachineInstKind::SimdShuffle { dst, .. }
+        | MachineInstKind::SimdLoad { dst, .. }
+        | MachineInstKind::SimdLoadLane { dst, .. } => Some(*dst),
         MachineInstKind::StructGet { dst, dst_hi, .. }
         | MachineInstKind::ArrayGet { dst, dst_hi, .. } => dst_hi.is_none().then_some(*dst),
         MachineInstKind::MemoryGrow { dst, .. } | MachineInstKind::TableGrow { dst, .. } => {
@@ -90,12 +91,12 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         MachineInstKind::ReinterpretF64ToI64Pair { .. } => None,
         MachineInstKind::Store { .. }
         | MachineInstKind::IndexedStore { .. }
-        | MachineInstKind::SimdStore { .. }
-        | MachineInstKind::SimdStoreLane { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallRuntime(_)
         | MachineInstKind::EhThrow { .. }
         | MachineInstKind::EhThrowRef { .. } => None,
+        #[cfg(sf_has_simd)]
+        MachineInstKind::SimdStore { .. } | MachineInstKind::SimdStoreLane { .. } => None,
     }
 }
 
@@ -134,9 +135,6 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
     match kind {
         MachineInstKind::Move { dst, .. }
         | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::V128Const { dst, .. }
-        | MachineInstKind::V128FromRaw { dst, .. }
-        | MachineInstKind::V128ToRaw { dst, .. }
         | MachineInstKind::Load { dst, .. }
         | MachineInstKind::IntUnary { dst, .. }
         | MachineInstKind::IntBinary { dst, .. }
@@ -144,6 +142,16 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::FloatUnary { dst, .. }
         | MachineInstKind::FloatBinary { dst, .. }
         | MachineInstKind::FloatCompare { dst, .. }
+        | MachineInstKind::Convert { dst, .. }
+        | MachineInstKind::Select { dst, .. }
+        | MachineInstKind::IndexedLoad { dst, .. }
+        | MachineInstKind::BitfieldExtractU { dst, .. }
+        | MachineInstKind::IntBinaryShifted { dst, .. }
+        | MachineInstKind::TestBits { dst, .. } => *dst == reg,
+        #[cfg(sf_has_simd)]
+        MachineInstKind::V128Const { dst, .. }
+        | MachineInstKind::V128FromRaw { dst, .. }
+        | MachineInstKind::V128ToRaw { dst, .. }
         | MachineInstKind::SimdUnary { dst, .. }
         | MachineInstKind::SimdBinary { dst, .. }
         | MachineInstKind::SimdTernary { dst, .. }
@@ -152,13 +160,7 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::SimdReplaceLane { dst, .. }
         | MachineInstKind::SimdShuffle { dst, .. }
         | MachineInstKind::SimdLoad { dst, .. }
-        | MachineInstKind::SimdLoadLane { dst, .. }
-        | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. }
-        | MachineInstKind::IndexedLoad { dst, .. }
-        | MachineInstKind::BitfieldExtractU { dst, .. }
-        | MachineInstKind::IntBinaryShifted { dst, .. }
-        | MachineInstKind::TestBits { dst, .. } => *dst == reg,
+        | MachineInstKind::SimdLoadLane { dst, .. } => *dst == reg,
         MachineInstKind::MemoryGrow { dst, .. }
         | MachineInstKind::TableGrow { dst, .. }
         | MachineInstKind::EhAllocExnRef { dst, .. } => *dst == reg,
@@ -207,8 +209,6 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         }
         MachineInstKind::Store { .. }
         | MachineInstKind::IndexedStore { .. }
-        | MachineInstKind::SimdStore { .. }
-        | MachineInstKind::SimdStoreLane { .. }
         | MachineInstKind::TrapIf { .. }
         | MachineInstKind::CallRuntime(_)
         | MachineInstKind::EhThrow { .. }
@@ -219,6 +219,8 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         | MachineInstKind::ArrayCopy { .. }
         | MachineInstKind::ArrayInitData { .. }
         | MachineInstKind::ArrayInitElem { .. } => false,
+        #[cfg(sf_has_simd)]
+        MachineInstKind::SimdStore { .. } | MachineInstKind::SimdStoreLane { .. } => false,
     }
 }
 
@@ -248,8 +250,12 @@ pub(super) fn count_value_uses(kind: &MachineInstKind, reg: MachineReg) -> usize
 pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue)) {
     match kind {
         MachineInstKind::Move { src, .. } => f(src),
-        MachineInstKind::FloatConst { .. } | MachineInstKind::V128Const { .. } => {}
+        MachineInstKind::FloatConst { .. } => {}
+        #[cfg(sf_has_simd)]
+        MachineInstKind::V128Const { .. } => {}
+        #[cfg(sf_has_simd)]
         MachineInstKind::V128FromRaw { raw, .. } => f(raw),
+        #[cfg(sf_has_simd)]
         MachineInstKind::V128ToRaw { src, .. } => f(src),
         MachineInstKind::Load { addr, .. } => {
             f(&MachineValue::Reg(addr.base));
@@ -258,17 +264,21 @@ pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
             f(&MachineValue::Reg(addr.base));
             f(src);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdLoad { addr, .. } => {
             f(&MachineValue::Reg(addr.base));
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdStore { addr, src, .. } => {
             f(&MachineValue::Reg(addr.base));
             f(src);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdLoadLane { addr, vector, .. } => {
             f(&MachineValue::Reg(addr.base));
             f(vector);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdStoreLane { addr, vector, .. } => {
             f(&MachineValue::Reg(addr.base));
             f(vector);
@@ -286,30 +296,40 @@ pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
         }
         MachineInstKind::IntUnary { src, .. }
         | MachineInstKind::FloatUnary { src, .. }
-        | MachineInstKind::SimdUnary { src, .. }
-        | MachineInstKind::SimdExtractLane { src, .. }
         | MachineInstKind::Convert { src, .. } => f(src),
+        #[cfg(sf_has_simd)]
+        MachineInstKind::SimdUnary { src, .. } | MachineInstKind::SimdExtractLane { src, .. } => {
+            f(src)
+        }
         MachineInstKind::IntBinary { lhs, rhs, .. }
         | MachineInstKind::IntCompare { lhs, rhs, .. }
         | MachineInstKind::FloatBinary { lhs, rhs, .. }
-        | MachineInstKind::FloatCompare { lhs, rhs, .. }
-        | MachineInstKind::SimdBinary { lhs, rhs, .. } => {
+        | MachineInstKind::FloatCompare { lhs, rhs, .. } => {
             f(lhs);
             f(rhs);
         }
+        #[cfg(sf_has_simd)]
+        MachineInstKind::SimdBinary { lhs, rhs, .. } => {
+            f(lhs);
+            f(rhs);
+        }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdTernary { a, b, c, .. } => {
             f(a);
             f(b);
             f(c);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdShift { vector, shift, .. } => {
             f(vector);
             f(shift);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdReplaceLane { vector, scalar, .. } => {
             f(vector);
             f(scalar);
         }
+        #[cfg(sf_has_simd)]
         MachineInstKind::SimdShuffle { lhs, rhs, .. } => {
             f(lhs);
             f(rhs);

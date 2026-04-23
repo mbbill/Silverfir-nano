@@ -399,8 +399,13 @@ impl<'a> Arm32Backend<'a> {
             MachineInstKind::Move {
                 ty: MachineStorageType::V128,
                 ..
+            } => {
+                return Err(WasmError::internal(
+                    "SIMD native codegen is not implemented yet",
+                ));
             }
-            | MachineInstKind::V128Const { .. }
+            #[cfg(sf_has_simd)]
+            MachineInstKind::V128Const { .. }
             | MachineInstKind::V128FromRaw { .. }
             | MachineInstKind::V128ToRaw { .. }
             | MachineInstKind::SimdUnary { .. }

@@ -142,15 +142,18 @@ impl MachineProgram {
                     ));
                 }
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::V128Const { dst, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_reg_storage_type(*dst, MachineStorageType::V128, config)?;
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::V128FromRaw { dst, raw, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_reg_storage_type(*dst, MachineStorageType::V128, config)?;
                 self.validate_typed_value(*raw, MachineStorageType::GpWord, config)?;
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::V128ToRaw { dst, src } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
@@ -180,15 +183,18 @@ impl MachineProgram {
                     self.validate_reg_storage_type(*src_reg, *ty, config)?;
                 }
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::SimdLoad { dst, addr, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_reg_storage_type(*dst, MachineStorageType::V128, config)?;
                 self.validate_addr(*addr, config)?;
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::SimdStore { addr, src, .. } => {
                 self.validate_addr(*addr, config)?;
                 self.validate_value(*src, config)?;
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::SimdLoadLane {
                 dst, addr, vector, ..
             } => {
@@ -197,6 +203,7 @@ impl MachineProgram {
                 self.validate_addr(*addr, config)?;
                 self.validate_value(*vector, config)?;
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::SimdStoreLane { addr, vector, .. } => {
                 self.validate_addr(*addr, config)?;
                 self.validate_value(*vector, config)?;
@@ -207,6 +214,7 @@ impl MachineProgram {
                 self.validate_reg(*dst, config)?;
                 self.validate_value(*src, config)?;
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::SimdUnary {
                 dst_ty, dst, src, ..
             }
@@ -224,6 +232,7 @@ impl MachineProgram {
                 self.validate_value(*lhs, config)?;
                 self.validate_value(*rhs, config)?;
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::SimdBinary {
                 dst_ty,
                 dst,
@@ -236,6 +245,7 @@ impl MachineProgram {
                 self.validate_value(*lhs, config)?;
                 self.validate_value(*rhs, config)?;
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::SimdTernary {
                 dst_ty,
                 dst,
@@ -250,6 +260,7 @@ impl MachineProgram {
                 self.validate_value(*b, config)?;
                 self.validate_value(*c, config)?;
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::SimdShift {
                 dst, vector, shift, ..
             } => {
@@ -258,6 +269,7 @@ impl MachineProgram {
                 self.validate_value(*vector, config)?;
                 self.validate_value(*shift, config)?;
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::SimdReplaceLane {
                 dst,
                 vector,
@@ -269,6 +281,7 @@ impl MachineProgram {
                 self.validate_value(*vector, config)?;
                 self.validate_value(*scalar, config)?;
             }
+            #[cfg(sf_has_simd)]
             MachineInstKind::SimdShuffle { dst, lhs, rhs, .. } => {
                 self.validate_reg(*dst, config)?;
                 self.validate_reg_storage_type(*dst, MachineStorageType::V128, config)?;
@@ -927,7 +940,7 @@ impl MachineProgram {
         }
     }
 
-    #[cfg(any(debug_assertions, test))]
+    #[cfg(all(any(debug_assertions, test), sf_has_simd))]
     fn validate_typed_value(
         &self,
         value: MachineValue,
