@@ -229,7 +229,10 @@ pub(crate) fn compile_module(
         let module_name = &module.name;
         for (func_idx, entry) in entries.iter().enumerate() {
             if let Some(entry) = entry {
-                let func_base = entry.entry as *const u8;
+                // `entry.entry` carries the Thumb interworking bit on
+                // thumbm builds — strip it so region slices start at the
+                // real first code byte.
+                let func_base = (entry.entry as usize & !1usize) as *const u8;
                 for region in &entry.debug_regions {
                     if region.len > 0 {
                         let region_start = unsafe { func_base.add(region.offset) };

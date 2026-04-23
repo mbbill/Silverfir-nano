@@ -700,7 +700,11 @@ fn finish_native_compile(
             .enumerate()
             .filter_map(|(idx, entry)| {
                 entry.as_ref().map(|e| {
-                    let ptr = e.entry as *const u8;
+                    // On Thumb-2 builds `e.entry` carries the interworking
+                    // bit (LSB=1) so callers BLX correctly. The raw text
+                    // starts at the masked address; reading from the tagged
+                    // pointer would shift every function by one byte.
+                    let ptr = (e.entry as usize & !1usize) as *const u8;
                     let len = e.text_len;
                     (idx as u32, unsafe { core::slice::from_raw_parts(ptr, len) })
                 })
