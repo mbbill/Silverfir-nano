@@ -110,6 +110,8 @@ fn main() -> ! {
 
     // Top-left overlay origin — same convention as mandelbrot_wasm.
     const FPS_ORIGIN: (i32, i32) = (2, 2);
+    // Top-right "sf-nano" label. Panel is 160 wide; 46×12 rect with a 2px margin.
+    const LABEL_ORIGIN: (i32, i32) = (112, 2);
 
     loop {
         let t_frame_start = cortex_m::peripheral::DWT::cycle_count();
@@ -120,6 +122,7 @@ fn main() -> ! {
             let bytes: &mut [u8] = fb_opt.as_mut().unwrap().as_mut_slice();
             lib::mandelbrot_kernel::render(bytes, frame);
             display::stamp_fps_overlay(bytes, FPS_ORIGIN, displayed_fps);
+            display::stamp_sf_nano_overlay(bytes, LABEL_ORIGIN);
         }
         let t_compute_end = cortex_m::peripheral::DWT::cycle_count();
 

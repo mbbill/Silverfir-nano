@@ -139,6 +139,7 @@ fn push_frame(
     // Rectangle path is avoided here.
     let fps = unsafe { *core::ptr::addr_of!(DISPLAYED_FPS) };
     display::stamp_fps_overlay(&mut mem[offset..end], (2, 2), fps);
+    display::stamp_sf_nano_overlay(&mut mem[offset..end], (112, 2));
     let src_ptr = unsafe { mem.as_ptr().add(offset) };
 
     // SAFETY: single-threaded firmware, main is the only setter and

@@ -1,14 +1,13 @@
-//! `FPS: NN` on-screen overlay, shared by all three demo binaries.
+//! On-screen text overlays, shared by all three demo binaries.
 //!
-//! Matches `mandelbrot_native` / `mandelbrot_wasm` / `lcd_demo`'s
-//! readout format. The background rectangle is drawn via a raw byte
-//! loop rather than `embedded_graphics::primitives::Rectangle`: in
-//! `mandelbrot_wasm`'s `push_frame` host callback the e-g Rectangle
-//! path froze the JIT's animation (the panel showed a single frame
-//! and stopped updating) while equivalent raw writes did not. The
-//! root cause is unexplained and filed for later; the workaround
-//! costs ~4 instructions per pixel and keeps the three demos on one
-//! code path.
+//! Used for the FPS readout and the "sf-nano" label. The background
+//! rectangle is drawn via a raw byte loop rather than
+//! `embedded_graphics::primitives::Rectangle`: in `mandelbrot_wasm`'s
+//! `push_frame` host callback the e-g Rectangle path froze the JIT's
+//! animation (the panel showed a single frame and stopped updating)
+//! while equivalent raw writes did not. The root cause is unexplained
+//! and filed for later; the workaround costs ~4 instructions per pixel
+//! and keeps the demos on one code path.
 
 use embedded_graphics::{
     mono_font::{ascii::FONT_6X10, MonoTextStyle},
@@ -56,27 +55,24 @@ pub fn format_fps<'a>(buf: &'a mut [u8], fps: u32) -> &'a str {
     unsafe { core::str::from_utf8_unchecked(&buf[..i]) }
 }
 
-/// Stamp `FPS: NN` into the given framebuffer slice. `origin` is the
-/// top-left corner of a 55×12 overlay rectangle; the two most common
-/// positions in-repo are `(2, 2)` (top-left) and `(103, 114)` (bottom-
-/// right).
+/// Stamp a black rectangle with centered white text into `fb`. `origin`
+/// is the top-left corner; `size` is `(width, height)` in pixels.
 ///
 /// Call right before the DMA that ships the frame to the panel so the
 /// overlay lands on the current frame, not the next one.
-pub fn stamp_fps_overlay(fb: &mut [u8], origin: (i32, i32), fps: u32) {
-    const RECT_W: i32 = 55;
-    const RECT_H: i32 = 12;
+pub fn stamp_text_overlay(fb: &mut [u8], origin: (i32, i32), size: (i32, i32), text: &str) {
     let (ox, oy) = origin;
+    let (rect_w, rect_h) = size;
 
     // Raw black background. See the module doc for why we can't use
     // `embedded_graphics::primitives::Rectangle` here.
     let stride = PANEL_WIDTH;
-    for y in oy..(oy + RECT_H) {
+    for y in oy..(oy + rect_h) {
         if y < 0 {
             continue;
         }
         let y = y as usize;
-        for x in ox..(ox + RECT_W) {
+        for x in ox..(ox + rect_w) {
             if x < 0 {
                 continue;
             }
@@ -93,10 +89,21 @@ pub fn stamp_fps_overlay(fb: &mut [u8], origin: (i32, i32), fps: u32) {
     // tripped the JIT freeze. Centered text inside the rect.
     let mut eg_fb = Framebuffer { bytes: fb };
     let text_style = MonoTextStyle::new(&FONT_6X10, Rgb565::WHITE);
-    let mut msg_buf = [0u8; 16];
-    let msg = format_fps(&mut msg_buf, fps);
-    let text_center = Point::new(ox + RECT_W / 2, oy + 9);
-    Text::with_alignment(msg, text_center, text_style, Alignment::Center)
+    let text_center = Point::new(ox + rect_w / 2, oy + 9);
+    Text::with_alignment(text, text_center, text_style, Alignment::Center)
         .draw(&mut eg_fb)
         .unwrap();
+}
+
+/// Stamp `FPS: NN` at `origin` using a 55×12 rectangle.
+pub fn stamp_fps_overlay(fb: &mut [u8], origin: (i32, i32), fps: u32) {
+    let mut msg_buf = [0u8; 16];
+    let msg = format_fps(&mut msg_buf, fps);
+    stamp_text_overlay(fb, origin, (55, 12), msg);
+}
+
+/// Stamp the static "sf-nano" label at `origin` using a 46×12 rectangle.
+/// 7 glyphs × 6 px = 42 px of text plus 2 px padding on each side.
+pub fn stamp_sf_nano_overlay(fb: &mut [u8], origin: (i32, i32)) {
+    stamp_text_overlay(fb, origin, (46, 12), "sf-nano");
 }
