@@ -1,0 +1,7 @@
+# Shrink the default 1 MiB wasm call stack to 16 KiB. Mandelbrot is
+# non-recursive with a handful of locals; 16 KiB is already overkill.
+# Keeps the resulting module small so JIT-compile time under qemu
+# stays measurable.
+
+[target.wasm32-unknown-unknown]
+rustflags = ["-C", "link-arg=-zstack-size=16384"]
