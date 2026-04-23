@@ -257,9 +257,27 @@ def native_code_slice(
     return offset, size, code_blob[offset : offset + size]
 
 
-def available_native_disassembler() -> Optional[List[str]]:
+# Per-architecture settings for the objcopy/objdump pipeline. Add a new
+# entry here to support another JIT target; the rest of the script is
+# arch-agnostic.
+ARCH_CONFIGS: Dict[str, Dict[str, str]] = {
+    "aarch64": {
+        "objdump_machine": "aarch64",
+        "elf_format": "elf64-littleaarch64",
+        "llvm_triple": "aarch64",
+    },
+    "thumbv7": {
+        "objdump_machine": "arm",
+        "elf_format": "elf32-littlearm",
+        "llvm_triple": "thumbv7",
+    },
+}
+
+
+def available_native_disassembler(arch: str) -> Optional[List[str]]:
+    machine = ARCH_CONFIGS[arch]["objdump_machine"]
     if shutil.which("gobjdump"):
-        return ["gobjdump", "-D", "-b", "binary", "-m", "aarch64"]
+        return ["gobjdump", "-D", "-b", "binary", "-m", machine]
     if shutil.which("objdump"):
         probe = subprocess.run(
             ["objdump", "--help"],
@@ -269,7 +287,7 @@ def available_native_disassembler() -> Optional[List[str]]:
         )
         text = (probe.stdout or "") + (probe.stderr or "")
         if "-b" in text and "--architecture" in text:
-            return ["objdump", "-D", "-b", "binary", "-m", "aarch64"]
+            return ["objdump", "-D", "-b", "binary", "-m", machine]
     return None
 
 
@@ -287,6 +305,7 @@ def find_llvm_tool(tool: str) -> Optional[str]:
 def create_native_code_elf(
     native_code_path: Path,
     workdir: Path,
+    arch: str,
 ) -> Optional[Path]:
     llvm_objcopy = find_llvm_tool("llvm-objcopy")
     if llvm_objcopy is None:
@@ -298,7 +317,7 @@ def create_native_code_elf(
             "-I",
             "binary",
             "-O",
-            "elf64-littleaarch64",
+            ARCH_CONFIGS[arch]["elf_format"],
             "--rename-section",
             ".data=.text,alloc,load,readonly,code",
             str(native_code_path),
@@ -317,6 +336,7 @@ def disassemble_native_range_from_elf(
     elf_path: Path,
     start: int,
     size: int,
+    arch: str,
 ) -> Optional[str]:
     llvm_objdump = find_llvm_tool("llvm-objdump")
     if llvm_objdump is None:
@@ -326,7 +346,7 @@ def disassemble_native_range_from_elf(
         [
             llvm_objdump,
             "-d",
-            "--triple=aarch64",
+            f"--triple={ARCH_CONFIGS[arch]['llvm_triple']}",
             f"--start-address=0x{start:x}",
             f"--stop-address=0x{stop:x}",
             str(elf_path),
@@ -340,12 +360,12 @@ def disassemble_native_range_from_elf(
     return proc.stdout
 
 
-def disassemble_native_bytes(code_bytes: bytes) -> str:
+def disassemble_native_bytes(code_bytes: bytes, arch: str) -> str:
     if not code_bytes:
         return "unavailable: missing code bytes for function\n"
-    base_cmd = available_native_disassembler()
+    base_cmd = available_native_disassembler(arch)
     if base_cmd is None:
-        return "unavailable: install gobjdump or a compatible objdump for raw AArch64 disassembly\n"
+        return f"unavailable: install gobjdump or a compatible objdump for raw {arch} disassembly\n"
 
     with tempfile.NamedTemporaryFile(prefix="sf-native-", suffix=".bin") as tmp:
         tmp.write(code_bytes)
@@ -369,12 +389,13 @@ def disassemble_native_function(
     code_size: Optional[int],
     code_bytes: bytes,
     module_elf: Optional[Path],
+    arch: str,
 ) -> str:
     if code_off is not None and code_size is not None and module_elf is not None:
-        disasm = disassemble_native_range_from_elf(module_elf, code_off, code_size)
+        disasm = disassemble_native_range_from_elf(module_elf, code_off, code_size, arch)
         if disasm:
             return disasm
-    return disassemble_native_bytes(code_bytes)
+    return disassemble_native_bytes(code_bytes, arch)
 
 
 def build_overview(
@@ -962,6 +983,12 @@ def main() -> None:
         dest="functions",
         help="Restrict output to specific function index; repeatable",
     )
+    parser.add_argument(
+        "--arch",
+        choices=sorted(ARCH_CONFIGS.keys()),
+        default="aarch64",
+        help="JIT target architecture for the native dump (default: aarch64)",
+    )
     args = parser.parse_args()
 
     wasm_path = Path(args.wasm).resolve()
@@ -1002,7 +1029,7 @@ def main() -> None:
     indices = selected_indices(native_functions.keys(), args.functions)
     function_map = []
     with tempfile.TemporaryDirectory(prefix="sf-native-post-") as tempdir:
-        module_elf = create_native_code_elf(native_code_path, Path(tempdir))
+        module_elf = create_native_code_elf(native_code_path, Path(tempdir), args.arch)
 
         for index in indices:
             native = native_functions[index]
@@ -1013,6 +1040,7 @@ def main() -> None:
                 code_size,
                 code_bytes,
                 module_elf,
+                args.arch,
             )
             summary = {
                 "function_index": index,
