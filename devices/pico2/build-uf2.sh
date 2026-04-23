@@ -25,6 +25,69 @@
 
 set -euo pipefail
 
+RP2350_ARM_S_FAMILY_HEX="0xE48BFF59"
+
+find_python() {
+    if command -v python3 &>/dev/null; then
+        echo python3
+    elif command -v python &>/dev/null; then
+        echo python
+    else
+        return 1
+    fi
+}
+
+patch_uf2_family_to_rp2350() {
+    local path="$1"
+    local py
+    py="$(find_python)" || {
+        echo "ERROR: python is required to correct elf2uf2-rs output for RP2350." >&2
+        exit 1
+    }
+
+    "$py" - "$path" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+data = bytearray(path.read_bytes())
+if len(data) % 512 != 0:
+    raise SystemExit(f"ERROR: {path} is not a valid UF2 size")
+
+rp2350_arm_s = 0xE48BFF59
+for offset in range(0, len(data), 512):
+    data[offset + 28:offset + 32] = rp2350_arm_s.to_bytes(4, "little")
+
+path.write_bytes(data)
+PY
+}
+
+verify_uf2_family() {
+    local path="$1"
+    local py
+    py="$(find_python)" || {
+        echo "ERROR: python is required to verify UF2 family IDs." >&2
+        exit 1
+    }
+
+    "$py" - "$path" "$RP2350_ARM_S_FAMILY_HEX" <<'PY'
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+expected = int(sys.argv[2], 16)
+data = path.read_bytes()
+if len(data) % 512 != 0:
+    raise SystemExit(f"ERROR: {path} is not a valid UF2 size")
+
+families = {int.from_bytes(data[offset + 28:offset + 32], "little")
+            for offset in range(0, len(data), 512)}
+if families != {expected}:
+    found = ", ".join(f"0x{family:08X}" for family in sorted(families))
+    raise SystemExit(f"ERROR: expected UF2 family 0x{expected:08X}, found {found}")
+PY
+}
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_NAME="${1:-mandelbrot_wasm}"
 TARGET="thumbv8m.main-none-eabihf"
@@ -47,6 +110,8 @@ if command -v picotool &>/dev/null; then
 elif command -v elf2uf2-rs &>/dev/null; then
     echo "[pico2-uf2] Converting via elf2uf2-rs -> $UF2_PATH"
     elf2uf2-rs "$ELF_PATH" "$UF2_PATH"
+    echo "[pico2-uf2] Correcting UF2 family -> $RP2350_ARM_S_FAMILY_HEX"
+    patch_uf2_family_to_rp2350 "$UF2_PATH"
 else
     echo "ERROR: no UF2 converter found." >&2
     echo "  Install picotool: https://github.com/raspberrypi/picotool" >&2
@@ -54,6 +119,7 @@ else
     exit 1
 fi
 
+verify_uf2_family "$UF2_PATH"
 SIZE_BYTES=$(wc -c < "$UF2_PATH")
 printf "[pico2-uf2] Done: %s (%s bytes)\n" "$UF2_PATH" "$SIZE_BYTES"
 echo "[pico2-uf2] Flash by dropping the file onto the RP2350 BOOTSEL drive,"
