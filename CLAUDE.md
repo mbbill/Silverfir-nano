@@ -42,3 +42,48 @@ discussion before adding.
 Rule of thumb: if removing a function, struct, or field from production code
 means some tests break, that is a signal to **rewrite or delete those tests**,
 not to keep the dead code alive with `#[cfg(test)]`.
+
+## Root-cause investigation: evidence first, theory second
+
+When asked why a specific pattern appears in emitted output (IR, assembly,
+logs, traces, etc.), do **not** open source files and build a narrative from
+code reading. That produces plausible-sounding stories that are usually
+wrong, and it wastes everyone's time defending them.
+
+Work in this order:
+
+1. **Find the existing dump / trace / observability mechanism.** Check
+   `DEBUG.md`, `README.md`, `scripts/`, tool READMEs, and env vars before
+   synthesizing anything. Mature codebases usually already have a way to
+   capture the real IR / MIR / assembly for a given input.
+2. **Feed the real input through the real pipeline.** Capture the output
+   at every stage the dump supports.
+3. **Read the captured output.** The answer is usually obvious from one
+   or two stages once you see the actual data.
+4. **Only then** look at the source that produced it, to understand the
+   mechanism — not to guess at it.
+
+If a dump mechanism doesn't exist, say so and discuss before building a
+synthetic reproduction. Synthetic tests are for **pinning** understood
+behavior, not for **discovering** it.
+
+### Tests exist to falsify hypotheses, not to confirm them
+
+When a diagnostic test is meant to prove a theory and the test comes back
+showing the expected pattern is **absent**, that is the theory failing.
+Stop and reconsider. Do not label the test "diagnostic-only" and keep
+the theory. Do not add more setup to force the pattern to appear.
+
+### Pass / module documentation describes inputs, not origins
+
+A pass's doc comment describes the pattern the pass **sees** in its input.
+It does **not** explain where that pattern **came from** in earlier stages.
+Those are different questions. Do not conflate them.
+
+### Do not present speculation as findings
+
+If a claim about "why X happens" is not backed by captured evidence from
+the real pipeline, do not present it as a finding. Either get the evidence
+first, or label it explicitly as a hypothesis that needs verification.
+Users can tell the difference, and presenting speculation as fact destroys
+trust in everything else in the writeup.
