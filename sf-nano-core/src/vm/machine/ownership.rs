@@ -79,6 +79,7 @@ fn for_each_defined_reg(kind: &MachineInstKind, mut f: impl FnMut(MachineReg)) {
         | MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. }
         | MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. }
         | MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64MulFromSignExt32 { dst_lo, dst_hi, .. }
         | MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
         | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. }
         | MachineInstKind::StructGet {
@@ -170,6 +171,7 @@ fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
         MachineInstKind::Int64PairShift { .. } => None,
+        MachineInstKind::Int64MulFromSignExt32 { .. } => None,
         MachineInstKind::Int64PairCompare { dst, .. } => Some(*dst),
         MachineInstKind::ConvertFloatToI64Pair { .. } => None,
         MachineInstKind::ConvertI64PairToFloat { dst, .. }

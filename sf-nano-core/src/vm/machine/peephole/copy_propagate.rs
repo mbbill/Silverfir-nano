@@ -327,6 +327,10 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
             rewrite_value(src_lo, aliases);
             rewrite_value(src_hi, aliases);
         }
+        MachineInstKind::Int64MulFromSignExt32 { lhs, rhs, .. } => {
+            rewrite_value(lhs, aliases);
+            rewrite_value(rhs, aliases);
+        }
         MachineInstKind::Int64PairShift {
             lhs_lo,
             lhs_hi,

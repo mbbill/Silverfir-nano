@@ -594,6 +594,15 @@ impl<'a> Arm32Backend<'a> {
                 self.compile_int64_pair_unary(*op, *dst_lo, *dst_hi, src_lo, src_hi)?;
             }
 
+            MachineInstKind::Int64MulFromSignExt32 {
+                dst_lo,
+                dst_hi,
+                lhs,
+                rhs,
+            } => {
+                self.compile_int64_mul_from_sign_ext32(*dst_lo, *dst_hi, lhs, rhs)?;
+            }
+
             MachineInstKind::Int64PairDivRem {
                 sign,
                 rem,
@@ -2245,6 +2254,68 @@ impl<'a> Arm32Backend<'a> {
             }
             _other => Err(WasmError::invalid("arm32: unsupported i64 pair binary op")),
         }
+    }
+
+    /// Single-instruction signed 32×32 → 64 multiply, used when the peephole
+    /// has proven both operands are i32 sign-extended into i64 (so the full
+    /// `i64 * i64` truncated to 64 bits collapses to a plain SMULL).
+    ///
+    /// Saves the 2× MLA correction terms and the spill ping-pong that the
+    /// generic `Int64PairBinary{Mul}` path emits.
+    fn compile_int64_mul_from_sign_ext32(
+        &mut self,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs: &MachineValue,
+        rhs: &MachineValue,
+    ) -> Result<(), WasmError> {
+        let dst_lo_hw = map_reg(dst_lo)?;
+        let dst_hi_hw = map_reg(dst_hi)?;
+        debug_assert_ne!(dst_lo_hw, dst_hi_hw, "SMULL forbids RdLo == RdHi");
+
+        // Materialize each operand into a hardware register. Reg operands
+        // route directly; Imm64 stages through a detached scratch (rare —
+        // constant folding usually catches `(c1 as i64) * (c2 as i64)`
+        // upstream). `detach()` decouples the scratch reservation from the
+        // immutable borrow of `self.gp_scratch` so we can subsequently call
+        // `&mut self` methods like `materialize_gp_into`.
+        let lhs_scratch_guard;
+        let lhs_hw = match *lhs {
+            MachineValue::Reg(r) => {
+                lhs_scratch_guard = None;
+                map_reg(r)?
+            }
+            _ => {
+                let s = self.gp_scratch.scoped_alloc().detach();
+                let hw = *s;
+                self.materialize_gp_into(hw, lhs)?;
+                lhs_scratch_guard = Some(s);
+                hw
+            }
+        };
+        let rhs_scratch_guard;
+        let rhs_hw = match *rhs {
+            MachineValue::Reg(r) => {
+                rhs_scratch_guard = None;
+                map_reg(r)?
+            }
+            _ => {
+                let s = self.gp_scratch.scoped_alloc().detach();
+                let hw = *s;
+                self.materialize_gp_into(hw, rhs)?;
+                rhs_scratch_guard = Some(s);
+                hw
+            }
+        };
+
+        self.core
+            .text
+            .emit_u32(enc::smull(dst_lo_hw, dst_hi_hw, lhs_hw, rhs_hw));
+        // Hold the scratch guards across the emit so the underlying slot is
+        // not reused before SMULL reads its operands.
+        drop(lhs_scratch_guard);
+        drop(rhs_scratch_guard);
+        Ok(())
     }
 
     // ─── I64 pair unary ─────────────────────────────────────────────────────────

@@ -338,6 +338,24 @@ impl MachineProgram {
                     ));
                 }
             }
+            MachineInstKind::Int64MulFromSignExt32 {
+                dst_lo,
+                dst_hi,
+                lhs,
+                rhs,
+            } => {
+                self.validate_reg(*dst_lo, config)?;
+                self.validate_reg(*dst_hi, config)?;
+                self.validate_value(*lhs, config)?;
+                self.validate_value(*rhs, config)?;
+                self.validate_reg_storage_type(*dst_lo, MachineStorageType::GpWord, config)?;
+                self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord, config)?;
+                if dst_lo == dst_hi {
+                    return Err(WasmError::internal(
+                        "machine Int64MulFromSignExt32 requires distinct low/high destinations".into(),
+                    ));
+                }
+            }
             MachineInstKind::Int64PairDivRem {
                 dst_lo,
                 dst_hi,

@@ -562,6 +562,20 @@ pub(super) fn umull(rd_lo: Arm32Reg, rd_hi: Arm32Reg, mul_lhs: Arm32Reg, mul_rhs
         | rm(mul_lhs)
 }
 
+/// SMULL RdLo, RdHi, Rn, Rm (signed 32 x 32 → 64, RdHi:RdLo = Rn * Rm)
+#[inline]
+pub(super) fn smull(rd_lo: Arm32Reg, rd_hi: Arm32Reg, mul_lhs: Arm32Reg, mul_rhs: Arm32Reg) -> u32 {
+    // SMULL: cond 0000 1100 RdHi RdLo Rm 1001 Rn — differs from UMULL only in
+    // op1[24:21] (1100 vs 1000).
+    cond_bits(Cond::Al)
+        | (0b0000_1100 << 20)
+        | rn(rd_hi)
+        | rd(rd_lo)
+        | rs(mul_rhs)
+        | (0b1001 << 4)
+        | rm(mul_lhs)
+}
+
 // ─── Divide ────────────────────────────────────────────────────────────────
 
 /// SDIV Rd, Rn, Rm (Rd = Rn / Rm, signed)

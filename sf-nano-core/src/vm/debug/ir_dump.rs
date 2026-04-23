@@ -725,6 +725,20 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
                 mval(rhs_hi)
             )
         }
+        MachineInstKind::Int64MulFromSignExt32 {
+            dst_lo,
+            dst_hi,
+            lhs,
+            rhs,
+        } => {
+            format!(
+                "i32x32_to_i64.smul r{},r{} <- {} {}",
+                dst_lo.0,
+                dst_hi.0,
+                mval(lhs),
+                mval(rhs)
+            )
+        }
         MachineInstKind::Int64PairDivRem {
             sign,
             rem,

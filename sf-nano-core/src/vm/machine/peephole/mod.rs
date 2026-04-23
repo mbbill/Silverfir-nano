@@ -19,6 +19,11 @@
 //!
 //! 6. **Compare-and-branch fusion** (`fuse_compare_branch`): Fuses
 //!    `IntCompare + Branch` into `Branch { IntCompare { ... } }`.
+//!
+//! 7. **SMULL sign-extension fusion** (`fuse_smull_sign_ext`): Replaces
+//!    `Int64PairBinary{Mul}` whose operands are both `i64.extend_i32_s`
+//!    with `Int64MulFromSignExt32` — a single signed 32×32→64 multiply.
+//!    Only fires on 32-bit GP backends (where the pair form exists).
 
 mod copy_propagate;
 mod deduplicate_constants;
@@ -26,6 +31,7 @@ mod forward_stored_values;
 mod fuse_compare_branch;
 mod fuse_indexed_memory;
 mod fuse_isel;
+mod fuse_smull_sign_ext;
 mod helpers;
 mod reuse_loaded_values;
 
@@ -39,6 +45,7 @@ use crate::vm::machine::machine_ir::{
 struct TrackedStore {
     addr: MachineAddr,
     src: MachineValue,
+    width: MachineMemWidth,
 }
 
 #[derive(Clone, Copy)]
@@ -58,8 +65,8 @@ struct TrackedLoad {
 pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     let first_fp_reg = config.first_fp_reg();
     let gp_reg_width = config.gp_unit_bytes;
-    let mut cp_scratch =
-        copy_propagate::CopyPropagateScratch::new(config.total_reg_count() as usize);
+    let total_reg_count = config.total_reg_count() as usize;
+    let mut cp_scratch = copy_propagate::CopyPropagateScratch::new(total_reg_count);
     for block in &mut program.blocks {
         deduplicate_constants::deduplicate_constants(block, first_fp_reg);
         forward_stored_values::forward_stored_values(block, config);
@@ -67,6 +74,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
         fuse_indexed_memory::fuse_indexed_memory(block);
         copy_propagate::copy_propagate(block, config, &mut cp_scratch);
         fuse_isel::fuse_isel(block, config);
+        fuse_smull_sign_ext::fuse_smull_sign_ext(block, total_reg_count);
     }
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, gp_reg_width, config);
 }

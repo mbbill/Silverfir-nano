@@ -743,6 +743,20 @@ pub(super) fn umull(rd_lo: Arm32Reg, rd_hi: Arm32Reg, mul_lhs: Arm32Reg, mul_rhs
     thumb32(h0, h1)
 }
 
+/// `SMULL RdLo, RdHi, Rn, Rm` — T1. Signed 32 x 32 → 64.
+/// (RdHi:RdLo) = Rn * Rm with both operands treated as signed.
+/// RdLo and RdHi must be distinct. Differs from `UMULL` only in op2 bits
+/// (`0xFB80` vs `0xFBA0`).
+pub(super) fn smull(rd_lo: Arm32Reg, rd_hi: Arm32Reg, mul_lhs: Arm32Reg, mul_rhs: Arm32Reg) -> u32 {
+    let rdlo = rd_lo.idx() as u16;
+    let rdhi = rd_hi.idx() as u16;
+    let rn = mul_lhs.idx() as u16;
+    let rm = mul_rhs.idx() as u16;
+    let h0 = 0xFB80u16 | rn;
+    let h1 = (rdlo << 12) | (rdhi << 8) | rm;
+    thumb32(h0, h1)
+}
+
 // ─── Divide ─────────────────────────────────────────────────────────────────
 
 /// `SDIV Rd, Rn, Rm` — T1.

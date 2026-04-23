@@ -388,6 +388,20 @@ impl<'a> Emulator<'a> {
                 self.write_reg_with_kind(*dst_lo, lo, fixed_reg_addr_kind(*dst_lo))?;
                 self.write_reg_with_kind(*dst_hi, hi, fixed_reg_addr_kind(*dst_hi))?;
             }
+            MachineInstKind::Int64MulFromSignExt32 {
+                dst_lo,
+                dst_hi,
+                lhs,
+                rhs,
+            } => {
+                let lhs_lo = self.read_value(*lhs)? as i32;
+                let rhs_lo = self.read_value(*rhs)? as i32;
+                let product = (lhs_lo as i64).wrapping_mul(rhs_lo as i64) as u64;
+                let lo = (product & 0xFFFF_FFFF) as u64;
+                let hi = (product >> 32) & 0xFFFF_FFFF;
+                self.write_reg_with_kind(*dst_lo, lo, fixed_reg_addr_kind(*dst_lo))?;
+                self.write_reg_with_kind(*dst_hi, hi, fixed_reg_addr_kind(*dst_hi))?;
+            }
             MachineInstKind::Int64PairDivRem {
                 sign,
                 rem,

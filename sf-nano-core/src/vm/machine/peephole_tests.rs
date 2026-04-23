@@ -2027,3 +2027,241 @@ fn fuses_shru_and_into_bitfield_extract() {
         block.ops[0].kind
     );
 }
+
+/// Reproduces the MIR shape for `(a as i64) * (b as i64)` where the
+/// `gp32` lowering inserts a `Move` to alias one operand to another reg
+/// before the sign-extend (e.g., `Move r6 <- Reg(r4); ShrS r7 <- Reg(r4)`).
+/// Without value-alias tracking through the `Move`, the lhs_lo (r6) and
+/// the sign-ext source (r4) appear as different registers and the fusion
+/// would miss this case. This is the second `i64.mul` in the actual
+/// Mandelbrot kernel (`zx*zy`).
+#[test]
+fn fuses_i64_mul_with_move_alias_then_sign_ext() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                // r6 := r4   (the alias-creating Move)
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(6),
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                // r7 := sign(r4)   (sign-extend on the original reg)
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: MachineIntWidth::I32,
+                        op: MachineIntBinaryOp::ShrS,
+                        dst: MachineReg(7),
+                        lhs: MachineValue::Reg(MachineReg(4)),
+                        rhs: MachineValue::Imm64(31),
+                    },
+                },
+                // spill r6 (= r4)
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 96,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(6)),
+                    },
+                },
+                // spill r7
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 100,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+                // reload r6
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(6),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 96,
+                        },
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+                // reload r7
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(7),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 100,
+                        },
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+                // i64.mul (r6:r7) * (r6:r7)  — should fuse since r6 aliases r4 and r7 = sign(r4)
+                MachineInst {
+                    kind: MachineInstKind::Int64PairBinary {
+                        op: MachineIntBinaryOp::Mul,
+                        dst_lo: MachineReg(8),
+                        dst_hi: MachineReg(9),
+                        lhs_lo: MachineValue::Reg(MachineReg(6)),
+                        lhs_hi: MachineValue::Reg(MachineReg(7)),
+                        rhs_lo: MachineValue::Reg(MachineReg(6)),
+                        rhs_hi: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(7, 4, 10, 16, 0));
+
+    let block = &program.blocks[0];
+    let mul_inst = block.ops.last().expect("block must have a final inst");
+    assert!(
+        matches!(
+            mul_inst.kind,
+            MachineInstKind::Int64MulFromSignExt32 {
+                dst_lo: MachineReg(8),
+                dst_hi: MachineReg(9),
+                // operand should be the canonical alias (r4), not the moved-into r6
+                lhs: MachineValue::Reg(MachineReg(4)),
+                rhs: MachineValue::Reg(MachineReg(4)),
+            }
+        ),
+        "expected Int64MulFromSignExt32 with operand=Reg(r4) (canonical alias), got: {:?}",
+        mul_inst.kind
+    );
+}
+
+/// Reproduces the MIR shape produced by gp32 lowering for
+/// `(a as i64) * (b as i64)` after copy_propagate. Both operands of the
+/// `i64.mul` are sign-extended-from-i32, with the typical
+/// spill-to-frame + reload-into-the-same-register interlude that the
+/// `gp32` pipeline inserts before pair operations. The fuse_smull_sign_ext
+/// pass should rewrite the `Int64PairBinary{Mul}` into
+/// `Int64MulFromSignExt32` despite the spill/reload roundtrip.
+#[test]
+fn fuses_i64_mul_with_self_spill_reload_sign_ext() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                // r6 = sign(r4)  (i32.shr_s r4, 31)
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: MachineIntWidth::I32,
+                        op: MachineIntBinaryOp::ShrS,
+                        dst: MachineReg(6),
+                        lhs: MachineValue::Reg(MachineReg(4)),
+                        rhs: MachineValue::Imm64(31),
+                    },
+                },
+                // spill r4 (lo) to slot
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 72,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                // spill r6 (hi) to slot
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 76,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(6)),
+                    },
+                },
+                // reload r4 (lo) — same register, no-op spill
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(4),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 72,
+                        },
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+                // reload r6 (hi) — same register, no-op spill
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(6),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 76,
+                        },
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+                // i64.mul (r4:r6) * (r4:r6)  →  the squaring case
+                MachineInst {
+                    kind: MachineInstKind::Int64PairBinary {
+                        op: MachineIntBinaryOp::Mul,
+                        dst_lo: MachineReg(7),
+                        dst_hi: MachineReg(8),
+                        lhs_lo: MachineValue::Reg(MachineReg(4)),
+                        lhs_hi: MachineValue::Reg(MachineReg(6)),
+                        rhs_lo: MachineValue::Reg(MachineReg(4)),
+                        rhs_hi: MachineValue::Reg(MachineReg(6)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(7, 4, 8, 16, 0));
+
+    let block = &program.blocks[0];
+    let mul_inst = block.ops.last().expect("block must have a final inst");
+    assert!(
+        matches!(
+            mul_inst.kind,
+            MachineInstKind::Int64MulFromSignExt32 {
+                dst_lo: MachineReg(7),
+                dst_hi: MachineReg(8),
+                lhs: MachineValue::Reg(MachineReg(4)),
+                rhs: MachineValue::Reg(MachineReg(4)),
+            }
+        ),
+        "expected Int64MulFromSignExt32 after spill/reload + sign-ext + i64.mul, got: {:?}",
+        mul_inst.kind
+    );
+}

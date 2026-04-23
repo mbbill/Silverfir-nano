@@ -84,6 +84,7 @@ pub(super) fn defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
         MachineInstKind::Int64PairUnary { .. } => None,
         MachineInstKind::Int64PairDivRem { .. } => None,
         MachineInstKind::Int64PairShift { .. } => None,
+        MachineInstKind::Int64MulFromSignExt32 { .. } => None,
         MachineInstKind::Int64PairCompare { dst, .. } => Some(*dst),
         MachineInstKind::ConvertFloatToI64Pair { .. } => None,
         MachineInstKind::ConvertI64PairToFloat { dst, .. }
@@ -111,6 +112,7 @@ pub(super) fn for_each_defined_reg(kind: &MachineInstKind, mut f: impl FnMut(Mac
         | MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. }
         | MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. }
         | MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. }
+        | MachineInstKind::Int64MulFromSignExt32 { dst_lo, dst_hi, .. }
         | MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
         | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. }
         | MachineInstKind::StructGet {
@@ -176,6 +178,9 @@ pub(super) fn inst_defines(kind: &MachineInstKind, reg: MachineReg) -> bool {
         MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
         MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. } => *dst_lo == reg || *dst_hi == reg,
+        MachineInstKind::Int64MulFromSignExt32 { dst_lo, dst_hi, .. } => {
+            *dst_lo == reg || *dst_hi == reg
+        }
         MachineInstKind::Int64PairCompare { dst, .. } => *dst == reg,
         MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. } => {
             *dst_lo == reg || *dst_hi == reg
@@ -370,6 +375,10 @@ pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
         } => {
             f(lhs_lo);
             f(lhs_hi);
+            f(rhs);
+        }
+        MachineInstKind::Int64MulFromSignExt32 { lhs, rhs, .. } => {
+            f(lhs);
             f(rhs);
         }
         MachineInstKind::Int64PairCompare {

@@ -115,6 +115,9 @@ impl<'a> X86_64Backend<'a> {
             MachineInstKind::Int64PairShift { .. } => Err(WasmError::internal(
                 "x86_64 backend received Int64PairShift; 32-bit legalized MachineIR should not reach x86_64 codegen".into(),
             )),
+            MachineInstKind::Int64MulFromSignExt32 { .. } => Err(WasmError::internal(
+                "x86_64 backend received Int64MulFromSignExt32; this peephole only fires on 32-bit GP backends".into(),
+            )),
             MachineInstKind::IntCompare {
                 width,
                 kind,

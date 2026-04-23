@@ -968,6 +968,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             | MachineInstKind::Int64PairUnary { .. }
             | MachineInstKind::Int64PairDivRem { .. }
             | MachineInstKind::Int64PairShift { .. }
+            | MachineInstKind::Int64MulFromSignExt32 { .. }
             | MachineInstKind::ConvertI64PairToFloat { .. }
             | MachineInstKind::Int64PairCompare { .. }
             | MachineInstKind::ConvertFloatToI64Pair { .. }

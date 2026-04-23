@@ -61,6 +61,7 @@ pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendCon
                     tracked.push(TrackedStore {
                         addr: *addr,
                         src: *src,
+                        width: MachineMemWidth::U64,
                     });
                 }
             }

@@ -204,6 +204,19 @@ pub(crate) enum MachineInstKind {
         lhs_hi: MachineValue,
         rhs: MachineValue,
     },
+    /// Signed 32×32 → 64 multiply, producing an i64 pair from two narrow i32
+    /// values. Created by the `fuse_smull_sign_ext` peephole when both
+    /// operands of an `Int64PairBinary{Mul}` originated from `i64.extend_i32_s`
+    /// (i.e. their hi halves are `lo >> 31`). Backends that have a single-
+    /// instruction signed widening multiply (arm32 SMULL, arm64 SMULL X,W,W,
+    /// x86_64 IMUL after MOVSXD) emit it directly; otherwise this variant is
+    /// not produced (only 32-bit GP targets see the source pattern).
+    Int64MulFromSignExt32 {
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    },
     IntCompare {
         width: MachineIntWidth,
         kind: MachineCompareKind,
@@ -678,6 +691,7 @@ impl MachineInstKind {
             | Self::Int64PairDivRem { .. }
             | Self::Int64PairUnary { .. }
             | Self::Int64PairShift { .. }
+            | Self::Int64MulFromSignExt32 { .. }
             | Self::IntCompare { .. }
             | Self::BitfieldExtractU { .. }
             | Self::IntBinaryShifted { .. }
