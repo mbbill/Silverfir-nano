@@ -628,6 +628,294 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
     ));
 }
 
+/// The P1 gp32-i64-pair shape from Mandelbrot's inner loop:
+///
+/// ```text
+///     store.gp.u32 [fp+72] <- r4         ; local.set_slot fp[9] lo
+///     store.gp.u32 [fp+76] <- r6         ; local.set_slot fp[9] hi
+///     load.linear.gp.u32 r4 <- [fp+72]   ; local.get_slot fp[9] lo — dead
+///     load.linear.gp.u32 r6 <- [fp+76]   ; local.get_slot fp[9] hi — dead
+///     <consume r4, r6>
+/// ```
+///
+/// Both loads are value-preserving no-ops for their destination registers
+/// (the stores wrote the exact same register values to those slots with no
+/// intervening writes). Forward-stored-values must delete them.
+#[test]
+fn forwards_u32_pair_self_store_reload_from_gp32_i64_slot() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 72,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 76,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(6)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(4),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 72,
+                        },
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(6),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 76,
+                        },
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(4, 4, 8, 8, 0));
+
+    let block = &program.blocks[0];
+    // Both stores remain (they're needed — the wasm local still has to be
+    // written). Both self-loads disappear.
+    assert_eq!(block.ops.len(), 2);
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Store {
+            addr: MachineAddr { base: MachineReg(1), offset: 72 },
+            width: MachineMemWidth::U32,
+            src: MachineValue::Reg(MachineReg(4)),
+            ..
+        }
+    ));
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::Store {
+            addr: MachineAddr { base: MachineReg(1), offset: 76 },
+            width: MachineMemWidth::U32,
+            src: MachineValue::Reg(MachineReg(6)),
+            ..
+        }
+    ));
+}
+
+/// When the stored register gets clobbered between the store and the matching
+/// load, the load must NOT be forwarded even though addr + width match.
+#[test]
+fn does_not_forward_u32_load_when_stored_reg_was_clobbered() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 72,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                // Clobber r4 before the load.
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: MachineIntWidth::I32,
+                        op: MachineIntBinaryOp::Add,
+                        dst: MachineReg(4),
+                        lhs: MachineValue::Reg(MachineReg(4)),
+                        rhs: MachineValue::Imm64(1),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(5),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 72,
+                        },
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(4, 4, 8, 8, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 3);
+    assert!(matches!(
+        block.ops[2].kind,
+        MachineInstKind::Load {
+            dst: MachineReg(5),
+            width: MachineMemWidth::U32,
+            ..
+        }
+    ));
+}
+
+/// Width-mismatch safety: a `U32` store at [base+K] must NOT forward into a
+/// `U64` load at [base+K] even though the addresses are equal. We do not
+/// synthesize wider loads from narrower stores.
+#[test]
+fn does_not_forward_u32_store_into_u64_load_same_address() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 64,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(7),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 64,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(7, 8, 8, 8, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 2);
+    assert!(matches!(
+        block.ops[1].kind,
+        MachineInstKind::Load {
+            dst: MachineReg(7),
+            width: MachineMemWidth::U64,
+            ..
+        }
+    ));
+}
+
+/// Mixed-width overlap invalidation: a later `U64` store at [base+64] must
+/// kill a tracked `U32` store at [base+68] (they overlap bytes 68..72). A
+/// subsequent `U32` load at [base+68] must not be forwarded from the stale
+/// tracked U32 entry.
+#[test]
+fn u64_store_invalidates_tracked_u32_store_on_overlap() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 68,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 64,
+                        },
+                        width: MachineMemWidth::U64,
+                        src: MachineValue::Reg(MachineReg(5)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(4),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 68,
+                        },
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(4, 4, 8, 8, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 3);
+    assert!(matches!(
+        block.ops[2].kind,
+        MachineInstKind::Load {
+            dst: MachineReg(4),
+            addr: MachineAddr { base: MachineReg(1), offset: 68 },
+            width: MachineMemWidth::U32,
+            ..
+        }
+    ));
+}
+
 #[test]
 fn forwards_fp_spill_reload_into_gp_move() {
     let mut program = MachineProgram {
