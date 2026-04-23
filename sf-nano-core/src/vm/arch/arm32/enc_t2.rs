@@ -872,7 +872,8 @@ pub(super) fn ldrsh_imm(dst: Arm32Reg, base: Arm32Reg, offset: i32) -> u32 {
 
 // ─── Stack ──────────────────────────────────────────────────────────────────
 
-/// `PUSH {reg_list}` — T2 encoding (STMDB SP!, {reg_list}).
+/// `PUSH {reg_list}` — dispatches to T2 (STMDB SP!, list) or T3
+/// (STR Rt, [SP, #-4]!) depending on register count.
 ///
 /// Supports R0..R12 and LR (R14). SP (R13) and PC (R15) are forbidden by the
 /// architecture. The A32-style `reg_mask` (bit N = 1 means Rn is pushed)
@@ -882,6 +883,13 @@ pub(super) fn push(reg_mask: u16) -> u32 {
     debug_assert!(reg_mask & (1 << 13) == 0, "PUSH T2: SP (R13) forbidden");
     debug_assert!(reg_mask & (1 << 15) == 0, "PUSH T2: PC (R15) forbidden");
     debug_assert!(reg_mask != 0, "PUSH T2: empty register list");
+    // T2 STMDB with a single-register list is UNPREDICTABLE per ARMv7 ARM
+    // (A8.8.199). Emit T3 (STR Rt, [SP, #-4]!) instead. qemu 7.2 traps on
+    // the UNPREDICTABLE encoding; real M33 silicon is allowed to as well.
+    if reg_mask.count_ones() == 1 {
+        let rt = reg_mask.trailing_zeros() as u16;
+        return thumb32(0xF84D, (rt << 12) | 0x0D04);
+    }
     // Halfword 0: STMDB SP! (bits [31:16] of the instruction)
     let h0: u16 = 0xE92D;
     // Halfword 1: 0 | M | 0 | reg_list[12:0] — A32 mask already matches.
@@ -889,13 +897,21 @@ pub(super) fn push(reg_mask: u16) -> u32 {
     thumb32(h0, h1)
 }
 
-/// `POP {reg_list}` — T2 encoding (LDMIA SP!, {reg_list}).
+/// `POP {reg_list}` — dispatches to T2 (LDMIA SP!, list) or T3
+/// (LDR Rt, [SP], #4) depending on register count.
 ///
 /// Mirrors [`push`]. Supports R0..R12, LR (bit 14 = M) and PC (bit 15 = P,
 /// pops directly into PC for a return). SP (R13) is forbidden.
 pub(super) fn pop(reg_mask: u16) -> u32 {
     debug_assert!(reg_mask & (1 << 13) == 0, "POP T2: SP (R13) forbidden");
     debug_assert!(reg_mask != 0, "POP T2: empty register list");
+    // T2 LDMIA with a single-register list is UNPREDICTABLE per ARMv7 ARM
+    // (A8.8.58). Emit T3 (LDR Rt, [SP], #4) instead. Also permits popping
+    // directly into PC for a single-register return.
+    if reg_mask.count_ones() == 1 {
+        let rt = reg_mask.trailing_zeros() as u16;
+        return thumb32(0xF85D, (rt << 12) | 0x0B04);
+    }
     // Halfword 0: LDMIA SP!
     let h0: u16 = 0xE8BD;
     // Halfword 1: P | M | 0 | reg_list[12:0] — A32 mask already matches.
