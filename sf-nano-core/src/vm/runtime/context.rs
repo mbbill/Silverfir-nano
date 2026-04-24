@@ -6,6 +6,25 @@
 //! NOTE: This Rust struct follows the host compiler ABI. Shared lowering and
 //! the emulator must use the explicit target-side layout helpers in
 //! [`super::layout`] rather than assuming these host offsets/strides directly.
+//!
+//! ### Globals raw-ptr tail
+//!
+//! Global values live in `Rc<GlobalCell>` owned by individual `GlobalInst`s
+//! (so imported globals share storage with the exporter). Every `global.get` /
+//! `global.set` in JIT code needs a `*mut u64` for the backing cell.
+//!
+//! To keep the JIT lowering to two machine loads per access (indexed fetch
+//! then deref) without pinning a dedicated register, the per-global raw
+//! pointers are cached **inline at the tail of `NativeContext`**. The single
+//! allocation layout is `header | [*mut u64; globals_len]`, with the tail
+//! anchored by the zero-sized [`NativeContext::globals_ptrs_tail`] marker so
+//! its offset is a compile-time constant (`offset_of!`). JIT code reads one
+//! entry from that tail via runtime_base + const offset + idx * ptr size, then
+//! dereferences.
+//!
+//! [`NativeContextBox`] is the owning handle (custom alloc/dealloc because
+//! the allocation size depends on `globals_len` and `Box<NativeContext>` has
+//! no way to track the tail).
 
 use crate::collections;
 
@@ -13,7 +32,7 @@ use crate::{
     error::WasmError,
     module::type_defs::CompositeType,
     vm::{
-        entities::{FunctionInst, GlobalInst, ModuleInst},
+        entities::{FunctionInst, ModuleInst},
         runtime::{code::CompiledNativeModule, dispatch_view::NativeDispatchMetadata},
         store::Store,
         tag::TagHandle,
@@ -61,13 +80,6 @@ pub(crate) struct NativeTableView {
     pub(crate) elements_len: usize,
 }
 
-#[repr(C)]
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct NativeGlobalsView {
-    pub(crate) base: *mut GlobalInst,
-    pub(crate) len: usize,
-}
-
 pub(crate) use super::dispatch_view::function_kind;
 pub(crate) use super::dispatch_view::CallDispatchView as NativeFunctionView;
 
@@ -77,7 +89,6 @@ pub(crate) struct NativeContext {
     pub(crate) stack_end: *mut u64,
     pub(crate) mem0_base: *mut u8,
     pub(crate) mem0_size: u64,
-    pub(crate) globals_view: NativeGlobalsView,
     pub(crate) memory_views_base: *const NativeMemoryView,
     pub(crate) memory_views_len: usize,
     pub(crate) table_views_base: *const NativeTableView,
@@ -88,6 +99,11 @@ pub(crate) struct NativeContext {
     pub(crate) local_call_infos_len: usize,
     pub(crate) type_canon_base: *const u32,
     pub(crate) type_canon_len: usize,
+    /// Number of globals the trailing `[*mut u64]` tail holds. Fixed for the
+    /// life of the context (modules cannot change their global count at
+    /// runtime). Kept in the ABI-visible area only for the emulator's
+    /// bounds-checking; JIT code never reloads it.
+    pub(crate) globals_len: usize,
     pub(crate) store: *mut Store,
     pub(crate) current_module: *const ModuleInst,
     pub(crate) error: Option<WasmError>,
@@ -104,41 +120,41 @@ pub(crate) struct NativeContext {
     type_canon: collections::Vec<u32>,
     #[cfg(sf_call_trace)]
     pub(crate) trace_stack: collections::Vec<u32>,
+    /// Zero-sized anchor marking the start of the trailing raw-ptr array.
+    ///
+    /// Uses `[u64; 0]` rather than `[*mut u64; 0]` so the marker's alignment
+    /// (8) matches the struct's natural alignment on every target —
+    /// otherwise on 32-bit hosts with 8-aligned `u64` fields, the tail
+    /// marker would land at a 4-aligned offset while the struct size rounds
+    /// up to 8, leaving stray padding between `offset_of!(tail)` and
+    /// `size_of`. JIT code addresses the tail via
+    /// `size_of::<NativeContext>()`, so the two must agree; this is checked
+    /// by the `_GLOBALS_TAIL_IS_LAST` const assert.
+    ///
+    /// The actual tail data is `[*mut u64; globals_len]` (one host pointer
+    /// per global); only the *starting offset* is what this marker pins.
+    pub(crate) globals_ptrs_tail: [u64; 0],
 }
 
 impl NativeContext {
+    /// Allocate and initialize a runtime context, returning an owning handle.
+    ///
+    /// The allocation size is `size_of::<NativeContext>() + n_globals *
+    /// size_of::<*mut u64>()`; the trailing raw-ptr slots are zeroed. When
+    /// `store` is non-null the initial `refresh_cached_views` call pulls the
+    /// per-global `raw_ptr` into the tail; otherwise the tail stays nulled.
+    ///
+    /// Callers pass the wasm module's `globals.len()` as `n_globals`. The
+    /// count is fixed for the life of the context: modules cannot change
+    /// their global count at runtime, and `refresh_globals_ptrs` only
+    /// overwrites existing slots.
     #[inline]
-    pub(crate) fn new(store: *mut Store, stack_end: *mut u64) -> Self {
-        let mut ctx = Self {
-            stack_end,
-            mem0_base: core::ptr::null_mut(),
-            mem0_size: 0,
-            globals_view: NativeGlobalsView::default(),
-            memory_views_base: core::ptr::null(),
-            memory_views_len: 0,
-            table_views_base: core::ptr::null(),
-            table_views_len: 0,
-            function_views_base: core::ptr::null(),
-            function_views_len: 0,
-            local_call_infos_base: core::ptr::null(),
-            local_call_infos_len: 0,
-            type_canon_base: core::ptr::null(),
-            type_canon_len: 0,
-            store,
-            current_module: core::ptr::null(),
-            error: None,
-            pending_escape: PendingEscape::None,
-            #[cfg(sf_has_guard_pages)]
-            trap_kind: 0,
-            memory_views: collections::Vec::new(),
-            table_views: collections::Vec::new(),
-            function_views: collections::Vec::new(),
-            type_canon: collections::Vec::new(),
-            #[cfg(sf_call_trace)]
-            trace_stack: collections::Vec::new(),
-        };
-        ctx.refresh_cached_views();
-        ctx
+    pub(crate) fn new(
+        store: *mut Store,
+        stack_end: *mut u64,
+        n_globals: usize,
+    ) -> NativeContextBox {
+        NativeContextBox::new(store, stack_end, n_globals)
     }
 
     #[inline]
@@ -148,7 +164,7 @@ impl NativeContext {
         } else {
             self.current_module = core::ptr::null();
         }
-        self.refresh_globals_view();
+        self.refresh_globals_ptrs();
         self.refresh_memory_views();
         self.refresh_table_views();
         self.refresh_type_canon();
@@ -245,22 +261,73 @@ impl NativeContext {
         self.table_views_len = self.table_views.len();
     }
 
+    /// Repopulate the inline raw-ptr tail with the current per-global backing
+    /// pointers. Called from [`refresh_cached_views`]; the tail length is
+    /// fixed at allocation time and is never resized here.
+    ///
+    /// When `store` is non-null but reports fewer globals than the tail
+    /// length (should not happen for a well-formed module; instance counts
+    /// are baked at construction), extra tail slots are nulled defensively.
+    /// When `store` is null, every slot is nulled.
     #[inline]
-    pub(crate) fn refresh_globals_view(&mut self) {
-        let Some(store) = self.store() else {
-            self.globals_view = NativeGlobalsView::default();
+    pub(crate) fn refresh_globals_ptrs(&mut self) {
+        // Snapshot the raw Store pointer (Copy) before taking an exclusive
+        // borrow of the tail — otherwise `self.store` and `self.globals_ptrs_mut()`
+        // would alias self concurrently.
+        let store_ptr = self.store;
+        let tail = self.globals_ptrs_mut();
+        if tail.is_empty() {
             return;
-        };
+        }
+        let mut written = 0usize;
+        // SAFETY: the pointer's provenance and lifetime are managed by the
+        // owning `Instance` / `Store`; the context only reads through it
+        // between refreshes. Accessing it here while `tail` is borrowed is
+        // sound because the store is an independent allocation.
+        if let Some(store) = unsafe { store_ptr.as_ref() } {
+            let globals = &store.module().globals;
+            for (slot, global) in tail.iter_mut().zip(globals.iter()) {
+                *slot = global.raw_ptr();
+                written += 1;
+            }
+        }
+        for slot in tail.iter_mut().skip(written) {
+            *slot = core::ptr::null_mut();
+        }
+    }
 
-        let globals = &store.module().globals;
-        self.globals_view = NativeGlobalsView {
-            base: if globals.is_empty() {
-                core::ptr::null_mut()
-            } else {
-                globals.as_ptr() as *mut GlobalInst
-            },
-            len: globals.len(),
-        };
+    /// Pointer to the first inline global raw-ptr slot, or null when there
+    /// are no globals. Intended for the emulator — JIT code does not need
+    /// this (it accesses the tail via constant offset from `runtime_base`).
+    #[inline]
+    pub(crate) fn globals_ptrs_base(&self) -> *mut *mut u64 {
+        if self.globals_len == 0 {
+            core::ptr::null_mut()
+        } else {
+            // SAFETY: the tail was allocated with `globals_len` slots and is
+            // part of the same allocation as `self`.
+            unsafe {
+                (self as *const NativeContext as *mut u8)
+                    .add(core::mem::size_of::<NativeContext>())
+                    .cast::<*mut u64>()
+            }
+        }
+    }
+
+    /// Mutable slice over the inline raw-ptr tail.
+    ///
+    /// # Safety
+    ///
+    /// Safe to call in this crate because every `NativeContext` is
+    /// constructed through [`NativeContextBox`], which allocates
+    /// `globals_len` trailing slots.
+    #[inline]
+    fn globals_ptrs_mut(&mut self) -> &mut [*mut u64] {
+        if self.globals_len == 0 {
+            return &mut [];
+        }
+        let base = self.globals_ptrs_base();
+        unsafe { core::slice::from_raw_parts_mut(base, self.globals_len) }
     }
 
     #[inline]
@@ -376,6 +443,149 @@ impl NativeContext {
     }
 }
 
+/// Owning handle for a `NativeContext` with a trailing `[*mut u64; globals_len]`
+/// tail. Keeps the header and tail in one allocation so the tail lives at a
+/// constant offset from `runtime_base`, which is what keeps the JIT lowering
+/// for `global.get`/`global.set` to two loads per access.
+///
+/// The backing allocation is a `tracked_alloc::vec::Vec<u64>` — this routes
+/// through the project's tracked-allocation layer (sf-nano-core must not use
+/// the `alloc` crate directly). `u64`'s 8-byte alignment matches
+/// `NativeContext`'s alignment, and the Vec's fixed length holds the header
+/// plus `n_globals` pointer-sized tail slots (rounded up to u64 units).
+/// `Box<NativeContext>` would not work here: Box's drop uses `size_of`,
+/// which only sees the header, leaving the tail bytes astray.
+pub(crate) struct NativeContextBox {
+    /// Sized tracked-alloc backing. Indexed as `u64` for 8-byte alignment.
+    /// The first `size_of::<NativeContext>() / 8` slots hold the header;
+    /// the rest hold the inline globals-ptr tail. We never push/reserve, so
+    /// the data pointer is stable and can be reinterpreted as
+    /// `*mut NativeContext`.
+    backing: tracked_alloc::vec::Vec<u64>,
+}
+
+impl NativeContextBox {
+    fn new(store: *mut Store, stack_end: *mut u64, n_globals: usize) -> Self {
+        // Backing size in bytes: fixed header + inline raw-ptr tail.
+        let header_size = core::mem::size_of::<NativeContext>();
+        let ptr_size = core::mem::size_of::<*mut u64>();
+        let tail_size = n_globals
+            .checked_mul(ptr_size)
+            .expect("NativeContext tail size overflow");
+        let total_bytes = header_size
+            .checked_add(tail_size)
+            .expect("NativeContext allocation size overflow");
+        // Round up to u64 (8-byte) units. u64's alignment (8) is the
+        // alignment we need to reinterpret as `*mut NativeContext` on every
+        // supported target (including armv7 where `NativeContext` contains
+        // u64 fields).
+        let unit = core::mem::size_of::<u64>();
+        debug_assert!(core::mem::align_of::<u64>() >= core::mem::align_of::<NativeContext>());
+        let backing_units = total_bytes.div_ceil(unit);
+        // `vec![0u64; N]` yields a Vec of exact length N with zero-initialised
+        // contents, so the tail bytes beyond the header start as null raw_ptrs
+        // before the first `refresh_globals_ptrs` overwrites them.
+        let mut backing: tracked_alloc::vec::Vec<u64> = collections::vec![0u64; backing_units];
+        let raw = backing.as_mut_ptr() as *mut NativeContext;
+        assert!(
+            !raw.is_null(),
+            "tracked_alloc Vec returned a null data pointer",
+        );
+
+        // SAFETY: `raw` points at zero-initialised, 8-aligned memory sized
+        // to hold the header + tail. We write the full header here; tail
+        // bytes beyond are already zero from the Vec's initialisation.
+        unsafe {
+            raw.write(NativeContext {
+                stack_end,
+                mem0_base: core::ptr::null_mut(),
+                mem0_size: 0,
+                memory_views_base: core::ptr::null(),
+                memory_views_len: 0,
+                table_views_base: core::ptr::null(),
+                table_views_len: 0,
+                function_views_base: core::ptr::null(),
+                function_views_len: 0,
+                local_call_infos_base: core::ptr::null(),
+                local_call_infos_len: 0,
+                type_canon_base: core::ptr::null(),
+                type_canon_len: 0,
+                globals_len: n_globals,
+                store,
+                current_module: core::ptr::null(),
+                error: None,
+                pending_escape: PendingEscape::None,
+                #[cfg(sf_has_guard_pages)]
+                trap_kind: 0,
+                memory_views: collections::Vec::new(),
+                table_views: collections::Vec::new(),
+                function_views: collections::Vec::new(),
+                type_canon: collections::Vec::new(),
+                #[cfg(sf_call_trace)]
+                trace_stack: collections::Vec::new(),
+                globals_ptrs_tail: [0u64; 0],
+            });
+        }
+        let mut this = Self { backing };
+        // Seed cached views (globals tail, memory/table/function views) from
+        // the freshly bound store.
+        this.refresh_cached_views();
+        this
+    }
+
+    /// Reinterpret the backing's data pointer as `*mut NativeContext`. The
+    /// pointer is stable for the life of `self` because `backing` is never
+    /// resized after construction.
+    #[inline]
+    fn as_ctx_ptr(&self) -> *mut NativeContext {
+        self.backing.as_ptr() as *mut NativeContext
+    }
+}
+
+impl core::ops::Deref for NativeContextBox {
+    type Target = NativeContext;
+
+    #[inline]
+    fn deref(&self) -> &NativeContext {
+        // SAFETY: the header was initialised in `new` and the backing Vec
+        // outlives any `&Self` borrow; no push/reserve ever moves it.
+        unsafe { &*self.as_ctx_ptr() }
+    }
+}
+
+impl core::ops::DerefMut for NativeContextBox {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut NativeContext {
+        // SAFETY: see Deref. Exclusive borrow on self implies exclusive
+        // access to the underlying NativeContext.
+        unsafe { &mut *self.as_ctx_ptr() }
+    }
+}
+
+impl Drop for NativeContextBox {
+    fn drop(&mut self) {
+        // Run NativeContext's Drop on the header first (cleans up its inner
+        // Vecs), then let `backing` deallocate through tracked_alloc.
+        // SAFETY: the NativeContext at the backing's start was initialised
+        // in `new` and has not been dropped since.
+        unsafe {
+            core::ptr::drop_in_place(self.as_ctx_ptr());
+        }
+    }
+}
+
+// The inline raw-ptr tail must sit at the very end of the struct so the
+// allocated bytes past `size_of::<NativeContext>()` host the tail slots.
+// `native_runtime_abi_layout` also pins `globals_ptrs_inline_offset` to
+// `size_of::<NativeContext>()`, so this invariant keeps JIT addresses
+// agreeing with the actual in-memory tail position on native builds.
+const _GLOBALS_TAIL_IS_LAST: () = {
+    assert!(
+        core::mem::offset_of!(NativeContext, globals_ptrs_tail)
+            == core::mem::size_of::<NativeContext>()
+    );
+};
+
 pub(crate) mod ctx_offset {
     use super::NativeContext;
 
@@ -389,8 +599,6 @@ pub(crate) mod ctx_offset {
     #[cfg(test)]
     mod test_only {
         use super::super::NativeContext;
-        pub(crate) const GLOBALS_VIEW: u32 =
-            core::mem::offset_of!(NativeContext, globals_view) as u32;
         pub(crate) const MEMORY_VIEWS_BASE: u32 =
             core::mem::offset_of!(NativeContext, memory_views_base) as u32;
         pub(crate) const MEMORY_VIEWS_LEN: u32 =
@@ -432,14 +640,6 @@ pub(crate) mod table_view_offset {
         core::mem::offset_of!(NativeTableView, elements_base) as u32;
     pub(crate) const ELEMENTS_LEN: u32 =
         core::mem::offset_of!(NativeTableView, elements_len) as u32;
-}
-
-#[cfg(test)]
-pub(crate) mod globals_view_offset {
-    use super::NativeGlobalsView;
-
-    pub(crate) const BASE: u32 = core::mem::offset_of!(NativeGlobalsView, base) as u32;
-    pub(crate) const LEN: u32 = core::mem::offset_of!(NativeGlobalsView, len) as u32;
 }
 
 #[cfg(test)]
@@ -518,7 +718,12 @@ mod tests {
         for func_idx in 0..store.module().functions.len() {
             let _ = store.register_local_function(func_idx);
         }
-        let ctx = NativeContext::new((&mut *store) as *mut Store, core::ptr::null_mut());
+        let n_globals = store.module().globals.len();
+        let ctx = NativeContext::new(
+            (&mut *store) as *mut Store,
+            core::ptr::null_mut(),
+            n_globals,
+        );
 
         assert_eq!(ctx.type_canon_len, 2);
         let type_canon =
@@ -553,7 +758,12 @@ mod tests {
         for func_idx in 0..store.module().functions.len() {
             let _ = store.register_local_function(func_idx);
         }
-        let ctx = NativeContext::new((&mut *store) as *mut Store, core::ptr::null_mut());
+        let n_globals = store.module().globals.len();
+        let ctx = NativeContext::new(
+            (&mut *store) as *mut Store,
+            core::ptr::null_mut(),
+            n_globals,
+        );
 
         assert_eq!(ctx.type_canon_len, 2);
         assert_eq!(ctx.function_views_len, 1);

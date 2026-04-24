@@ -387,14 +387,19 @@ mod tests {
         value_type::ValueType,
         vm::{
             entities::{HostFn, MemInst, ModuleInst},
-            runtime::common::NativeCallStatus,
+            runtime::{common::NativeCallStatus, context::NativeContextBox},
             store::Store,
         },
     };
 
-    fn test_context(module: ModuleInst) -> (Box<Store>, NativeContext) {
+    fn test_context(module: ModuleInst) -> (Box<Store>, NativeContextBox) {
         let mut store = Box::new(Store::new(module));
-        let ctx = NativeContext::new((&mut *store) as *mut Store, core::ptr::null_mut());
+        let n_globals = store.module().globals.len();
+        let ctx = NativeContext::new(
+            (&mut *store) as *mut Store,
+            core::ptr::null_mut(),
+            n_globals,
+        );
         (store, ctx)
     }
 

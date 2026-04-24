@@ -4256,7 +4256,11 @@ fn lowers_global_get_and_set_without_helpers() {
     .expect("global get/set should lower directly");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 7);
+    // Each global access emits two MIR ops now: an indexed load of the raw
+    // pointer from the inline ptrs tail at `[runtime_base +
+    // globals_ptrs_inline_offset + idx*ptr]`, then a load or store through
+    // that pointer. Plus the const-9 setup, the block totals five ops.
+    assert_eq!(ops.len(), 5);
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Move {
@@ -4264,12 +4268,12 @@ fn lowers_global_get_and_set_without_helpers() {
             ..
         }
     ));
+    // global.set: load raw_ptr, then store through it.
     assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[2].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
+    assert!(matches!(ops[2].kind, MachineInstKind::Store { .. }));
+    // global.get: load raw_ptr, then deref.
+    assert!(matches!(ops[3].kind, MachineInstKind::Load { .. }));
     assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]

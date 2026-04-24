@@ -47,7 +47,7 @@ fn struct_new_five_i32_fields_roundtrip() {
     for (i, expected) in [100, 200, 300, 400, 500].iter().enumerate() {
         let name = format!("get{}", i);
         let result = instance.invoke(&name, &[]).expect("invoke failed");
-        assert_eq!(result.as_ref(), &[Value::I32(*expected)], "field {}", i);
+        assert_eq!(result.as_slice(), &[Value::I32(*expected)], "field {}", i);
     }
 }
 

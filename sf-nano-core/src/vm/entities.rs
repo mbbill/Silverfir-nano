@@ -378,12 +378,6 @@ impl GlobalInst {
     }
 }
 
-pub(crate) mod global_offset {
-    use super::GlobalInst;
-
-    pub(crate) const RAW_PTR: u32 = core::mem::offset_of!(GlobalInst, raw_ptr) as u32;
-}
-
 #[derive(Debug, Clone)]
 pub struct ElementInst {
     pub refs: collections::Vec<RefHandle>,

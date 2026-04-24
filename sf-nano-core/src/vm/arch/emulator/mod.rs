@@ -175,19 +175,20 @@ pub(crate) fn eval(
     }
     ensure_stack_capacity(stack_base, stack_end, runtime.total_frame_slots)?;
 
-    let mut ctx = NativeContext::new(store as *mut Store, stack_end);
+    let n_globals = store.module().globals.len();
+    let mut ctx = NativeContext::new(store as *mut Store, stack_end, n_globals);
     ctx.seed_local_call_infos(compiled);
     #[cfg(sf_call_trace)]
     {
         function_trace::init_from_env();
-        function_trace::native_root_entry(&mut ctx, spec, backend);
+        function_trace::native_root_entry(&mut *ctx, spec, backend);
     }
 
-    let result = eval_root_with_context(compiled, func_id, &mut ctx, stack_base);
+    let result = eval_root_with_context(compiled, func_id, &mut *ctx, stack_base);
 
     if let Err(ref error) = result {
         #[cfg(sf_call_trace)]
-        function_trace::native_trap_current(&mut ctx, error);
+        function_trace::native_trap_current(&mut *ctx, error);
         return Err(error.clone());
     }
 
@@ -203,7 +204,7 @@ pub(crate) fn eval(
     {
         let results_len = func_type.results().len();
         let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };
-        function_trace::native_root_exit(&mut ctx, spec, results);
+        function_trace::native_root_exit(&mut *ctx, spec, results);
     }
     Ok(out)
 }
@@ -3564,12 +3565,14 @@ mod tests {
             String::from("m"),
             TypeContext::new(collections::vec![]),
         ));
+        let n_globals = store.module().globals.len();
         let mut ctx = crate::vm::runtime::context::NativeContext::new(
             (&mut store) as *mut Store,
             core::ptr::null_mut(),
+            n_globals,
         );
         let mut emulator = Emulator {
-            ctx: &mut ctx,
+            ctx: &mut *ctx,
             compiled: &compiled,
             root_frame: core::ptr::null_mut(),
             func_id: MachineFuncId(0),
@@ -3633,12 +3636,14 @@ mod tests {
             String::from("m"),
             TypeContext::new(collections::vec![]),
         ));
+        let n_globals = store.module().globals.len();
         let mut ctx = crate::vm::runtime::context::NativeContext::new(
             (&mut store) as *mut Store,
             core::ptr::null_mut(),
+            n_globals,
         );
         let mut emulator = Emulator {
-            ctx: &mut ctx,
+            ctx: &mut *ctx,
             compiled: &compiled,
             root_frame: core::ptr::null_mut(),
             func_id: MachineFuncId(0),

@@ -1,7 +1,6 @@
 use crate::{
     error::WasmError,
     vm::{
-        entities::{global_offset, GlobalInst},
         machine::machine_ir::MachineMemWidth,
         runtime::{
             code::CompiledNativeModule,
@@ -18,9 +17,8 @@ const MEMORY_VIEWS_BASE_32: u64 = 0x1100_0000;
 const TABLE_VIEWS_BASE_32: u64 = 0x1200_0000;
 const FUNCTION_VIEWS_BASE_32: u64 = 0x1300_0000;
 const LOCAL_CALL_INFOS_BASE_32: u64 = 0x1400_0000;
-const GLOBALS_BASE_32: u64 = 0x1500_0000;
+const GLOBALS_RAW_BASE_32: u64 = 0x1500_0000;
 const TYPE_CANON_BASE_32: u64 = 0x1600_0000;
-const GLOBAL_RAW_BASE_32: u64 = GLOBALS_BASE_32 + GLOBALS_WINDOW_32 / 2;
 const MEMORY_BASE_32: u64 = 0x4000_0000;
 const MEMORY_WINDOW_32: u64 = 0x0400_0000;
 const TABLE_ELEMENTS_BASE_32: u64 = 0xC000_0000;
@@ -28,10 +26,12 @@ const TABLE_ELEMENTS_WINDOW_32: u64 = 0x0400_0000;
 const MEMORY_VIEWS_WINDOW_32: u64 = TABLE_VIEWS_BASE_32 - MEMORY_VIEWS_BASE_32;
 const TABLE_VIEWS_WINDOW_32: u64 = FUNCTION_VIEWS_BASE_32 - TABLE_VIEWS_BASE_32;
 const FUNCTION_VIEWS_WINDOW_32: u64 = LOCAL_CALL_INFOS_BASE_32 - FUNCTION_VIEWS_BASE_32;
-const LOCAL_CALL_INFOS_WINDOW_32: u64 = GLOBALS_BASE_32 - LOCAL_CALL_INFOS_BASE_32;
-const GLOBALS_WINDOW_32: u64 = TYPE_CANON_BASE_32 - GLOBALS_BASE_32;
-const GLOBALS_META_WINDOW_32: u64 = GLOBAL_RAW_BASE_32 - GLOBALS_BASE_32;
-const GLOBAL_RAW_WINDOW_32: u64 = TYPE_CANON_BASE_32 - GLOBAL_RAW_BASE_32;
+const LOCAL_CALL_INFOS_WINDOW_32: u64 = GLOBALS_RAW_BASE_32 - LOCAL_CALL_INFOS_BASE_32;
+/// Per-global storage in the synthetic globals-raw window. Values are u64
+/// regardless of target pointer width; 32-bit targets access the low/high
+/// halves through this 8-byte stride.
+const GLOBALS_RAW_STRIDE_32: u64 = 8;
+const GLOBALS_RAW_WINDOW_32: u64 = TYPE_CANON_BASE_32 - GLOBALS_RAW_BASE_32;
 const TYPE_CANON_WINDOW_32: u64 = MEMORY_BASE_32 - TYPE_CANON_BASE_32;
 const MAX_MEMORY_COUNT_32: usize =
     ((TABLE_ELEMENTS_BASE_32 - MEMORY_BASE_32) / MEMORY_WINDOW_32) as usize;
@@ -144,7 +144,9 @@ pub(super) struct Target32AddressSpace {
     table_views_base: u64,
     function_views_base: u64,
     local_call_infos_base: u64,
-    globals_base: u64,
+    /// Synthetic base for the u64 raw-value window. Entries are 8 bytes apart;
+    /// 32-bit targets access low/high halves through `GLOBALS_RAW_STRIDE_32`.
+    globals_raw_base: u64,
     type_canon_base: u64,
     layout: NativeRuntimeAbiLayout,
 }
@@ -161,10 +163,19 @@ impl Target32AddressSpace {
             table_views_base: TABLE_VIEWS_BASE_32,
             function_views_base: FUNCTION_VIEWS_BASE_32,
             local_call_infos_base: LOCAL_CALL_INFOS_BASE_32,
-            globals_base: GLOBALS_BASE_32,
+            globals_raw_base: GLOBALS_RAW_BASE_32,
             type_canon_base: TYPE_CANON_BASE_32,
             layout: native_runtime_abi_layout(4),
         }
+    }
+
+    /// Total size of the synthetic runtime-context window, including the
+    /// inline globals-ptr tail. JIT-emitted addresses inside the tail must
+    /// fall within this window so [`load`] routes them to [`load_context`].
+    #[inline]
+    fn ctx_window_size(self, globals_len: usize) -> u32 {
+        let tail_bytes = (globals_len as u32).saturating_mul(self.layout.gp_unit_bytes as u32);
+        self.layout.context.size.saturating_add(tail_bytes)
     }
 
     #[inline]
@@ -202,12 +213,8 @@ impl Target32AddressSpace {
             LOCAL_CALL_INFOS_WINDOW_32,
         )?;
         ensure_window_fits(
-            checked_region_bytes(ctx.globals_view.len, core::mem::size_of::<GlobalInst>())?,
-            GLOBALS_META_WINDOW_32,
-        )?;
-        ensure_window_fits(
-            checked_region_bytes(ctx.globals_view.len, core::mem::size_of::<u64>())?,
-            GLOBAL_RAW_WINDOW_32,
+            checked_region_bytes(ctx.globals_len, GLOBALS_RAW_STRIDE_32 as usize)?,
+            GLOBALS_RAW_WINDOW_32,
         )?;
         ensure_window_fits(
             checked_region_bytes(ctx.type_canon_len, core::mem::size_of::<u32>())?,
@@ -265,7 +272,7 @@ impl Target32AddressSpace {
         if self.contains(addr, self.stack_base, self.stack_len_bytes) {
             return Some(self.load_stack(addr, width));
         }
-        if self.contains(addr, self.ctx_base, self.layout.context.size) {
+        if self.contains(addr, self.ctx_base, self.ctx_window_size(ctx.globals_len)) {
             return Some(self.load_context(ctx, addr - self.ctx_base, width));
         }
         if ctx.memory_views_len != 0 {
@@ -300,25 +307,14 @@ impl Target32AddressSpace {
                 ));
             }
         }
-        if ctx.globals_view.len != 0 {
-            let size = u32::try_from(
-                ctx.globals_view
-                    .len
-                    .saturating_mul(core::mem::size_of::<GlobalInst>()),
-            )
-            .unwrap_or(u32::MAX);
-            if self.contains(addr, self.globals_base, size) {
-                return Some(self.load_global_view(ctx, addr - self.globals_base, width));
-            }
-
+        if ctx.globals_len != 0 {
             let raw_size = u32::try_from(
-                ctx.globals_view
-                    .len
-                    .saturating_mul(core::mem::size_of::<u64>()),
+                ctx.globals_len
+                    .saturating_mul(GLOBALS_RAW_STRIDE_32 as usize),
             )
             .unwrap_or(u32::MAX);
-            if self.contains(addr, GLOBAL_RAW_BASE_32, raw_size) {
-                return Some(self.load_global_raw(ctx, addr - GLOBAL_RAW_BASE_32, width));
+            if self.contains(addr, self.globals_raw_base, raw_size) {
+                return Some(self.load_global_raw(ctx, addr - self.globals_raw_base, width));
             }
         }
         if ctx.type_canon_len != 0 {
@@ -382,15 +378,19 @@ impl Target32AddressSpace {
                 return Some(self.store_table_element(ctx, table_index, addr - base, value));
             }
         }
-        if ctx.globals_view.len != 0 {
+        if ctx.globals_len != 0 {
             let raw_size = u32::try_from(
-                ctx.globals_view
-                    .len
-                    .saturating_mul(core::mem::size_of::<u64>()),
+                ctx.globals_len
+                    .saturating_mul(GLOBALS_RAW_STRIDE_32 as usize),
             )
             .unwrap_or(u32::MAX);
-            if self.contains(addr, GLOBAL_RAW_BASE_32, raw_size) {
-                return Some(self.store_global_raw(ctx, addr - GLOBAL_RAW_BASE_32, width, value));
+            if self.contains(addr, self.globals_raw_base, raw_size) {
+                return Some(self.store_global_raw(
+                    ctx,
+                    addr - self.globals_raw_base,
+                    width,
+                    value,
+                ));
             }
         }
         if self.is_synthetic_container(addr) {
@@ -418,6 +418,9 @@ impl Target32AddressSpace {
 
     #[inline]
     fn is_synthetic_container(self, addr: u64) -> bool {
+        // The ctx container check uses the fixed header size; the inline-ptr
+        // tail is handled by `load`/`store` dispatch via `ctx_window_size` on
+        // live ctx, not here (this helper runs without a ctx reference).
         self.contains(addr, self.ctx_base, self.layout.context.size)
             || self.contains(
                 addr,
@@ -439,11 +442,6 @@ impl Target32AddressSpace {
                 self.local_call_infos_base,
                 u32::MAX - self.local_call_infos_base as u32,
             )
-            || self.contains(
-                addr,
-                self.globals_base,
-                u32::try_from(GLOBALS_META_WINDOW_32).unwrap_or(u32::MAX),
-            )
     }
 
     #[inline]
@@ -458,7 +456,7 @@ impl Target32AddressSpace {
 
     #[inline]
     fn global_raw_base(self, global_index: usize) -> u64 {
-        GLOBAL_RAW_BASE_32 + global_index as u64 * core::mem::size_of::<u64>() as u64
+        self.globals_raw_base + global_index as u64 * GLOBALS_RAW_STRIDE_32
     }
 
     fn load_stack(self, addr: u64, width: MachineMemWidth) -> Result<u64, WasmError> {
@@ -507,15 +505,27 @@ impl Target32AddressSpace {
         if offset == ctx_layout.mem0_size_offset {
             return self.read_scalar(width, ctx.mem0_size);
         }
-        if offset == ctx_layout.globals_view_base_offset {
-            return Ok(if ctx.globals_view.len == 0 {
-                0
-            } else {
-                self.globals_base
-            });
+        if offset == ctx_layout.globals_len_offset {
+            return self.read_scalar(width, ctx.globals_len as u64);
         }
-        if offset == ctx_layout.globals_view_len_offset {
-            return self.read_scalar(width, ctx.globals_view.len as u64);
+        // Inline globals-ptr tail: any offset inside
+        // [globals_ptrs_inline_offset, globals_ptrs_inline_offset + n*ptr)
+        // resolves to the synthetic raw-value address for that index, letting
+        // the JIT's subsequent deref hit `load_global_raw` / `store_global_raw`.
+        if ctx.globals_len != 0 {
+            let inline_base = ctx_layout.globals_ptrs_inline_offset;
+            let stride = self.layout.gp_unit_bytes as u32;
+            let inline_len = (ctx.globals_len as u32).saturating_mul(stride);
+            if offset >= inline_base && offset < inline_base.saturating_add(inline_len) {
+                let rel = offset - inline_base;
+                if rel % stride != 0 {
+                    return Err(WasmError::internal(
+                        "synthetic globals-ptr tail load is misaligned",
+                    ));
+                }
+                let index = (rel / stride) as usize;
+                return Ok(self.global_raw_base(index));
+            }
         }
         if offset == ctx_layout.memory_views_base_offset {
             return Ok(if ctx.memory_views_len == 0 {
@@ -681,27 +691,41 @@ impl Target32AddressSpace {
         })
     }
 
-    fn load_global_view(
+    /// Resolve a per-global synthetic address into the host-side raw u64 slot
+    /// plus the owning global's value type. The slot is reached via the
+    /// inline raw-ptr tail (`ctx.globals_ptrs_base()`), but we still consult
+    /// the store for `value_type` to distinguish ref globals.
+    fn resolve_global_slot(
         self,
         ctx: &NativeContext,
-        offset: u64,
-        width: MachineMemWidth,
-    ) -> Result<u64, WasmError> {
-        let stride = core::mem::size_of::<GlobalInst>() as u64;
-        let index = (offset / stride) as usize;
-        if index >= ctx.globals_view.len {
+        index: usize,
+    ) -> Result<(*mut u64, crate::value_type::ValueType), WasmError> {
+        if index >= ctx.globals_len {
             return Err(WasmError::internal(
-                "synthetic 32-bit global view load is out of range: entry >=",
+                "synthetic 32-bit global slot is out of range",
             ));
         }
-        let field_offset = (offset % stride) as u32;
-        if field_offset == global_offset::RAW_PTR {
-            self.read_scalar(width, self.global_raw_base(index))
-        } else {
-            Err(WasmError::internal(
-                "synthetic 32-bit global view load uses unsupported field offset",
-            ))
+        // SAFETY: the inline tail was allocated with `ctx.globals_len` slots
+        // and populated by `refresh_globals_ptrs`; `globals_ptrs_base()`
+        // returns a valid pointer into the same allocation.
+        let raw_ptr = unsafe { *ctx.globals_ptrs_base().add(index) };
+        if raw_ptr.is_null() {
+            return Err(WasmError::internal(
+                "synthetic 32-bit global slot raw_ptr is null (refresh missed?)",
+            ));
         }
+        // SAFETY: while the context is live the owning `Store` is also live,
+        // and `refresh_cached_views` only runs between invocations. The
+        // pointer dereference here is read-only metadata (value_type).
+        let store = unsafe { ctx.store.as_ref() }
+            .ok_or_else(|| WasmError::internal("emu32 global access without a store"))?;
+        let value_type = store
+            .module()
+            .globals
+            .get(index)
+            .ok_or_else(|| WasmError::internal("emu32 global index outside store module"))?
+            .value_type;
+        Ok((raw_ptr, value_type))
     }
 
     fn load_global_raw(
@@ -710,18 +734,21 @@ impl Target32AddressSpace {
         offset: u64,
         width: MachineMemWidth,
     ) -> Result<u64, WasmError> {
-        let stride = core::mem::size_of::<u64>() as u64;
+        let stride = GLOBALS_RAW_STRIDE_32;
         let index = (offset / stride) as usize;
         let field_offset = (offset % stride) as usize;
-        if index >= ctx.globals_view.len || field_offset + width.bytes() as usize > stride as usize
-        {
+        if field_offset + width.bytes() as usize > stride as usize {
             return Err(WasmError::internal(
                 "synthetic 32-bit global raw load is out of range",
             ));
         }
+        let (raw_ptr, value_type) = self.resolve_global_slot(ctx, index)?;
+        // SAFETY: raw_ptr came from `GlobalInst::raw_ptr()`, which points at
+        // a live `UnsafeCell<u64>` owned by the (refcounted) shared cell for
+        // the life of the owning GlobalInst.
+        let raw = unsafe { *raw_ptr };
 
-        let global = unsafe { &*ctx.globals_view.base.add(index) };
-        if global.value_type.is_ref() {
+        if value_type.is_ref() {
             if field_offset != 0 || !matches!(width, MachineMemWidth::U32 | MachineMemWidth::U64) {
                 return Err(WasmError::internal(
                     "synthetic 32-bit ref global raw load uses unsupported access shape",
@@ -729,12 +756,11 @@ impl Target32AddressSpace {
             }
             return self.read_scalar(
                 width,
-                ref_to_machine_raw(as_ref(global.raw()), self.layout.gp_unit_bytes),
+                ref_to_machine_raw(as_ref(raw), self.layout.gp_unit_bytes),
             );
         }
 
-        let raw = global.raw() >> (field_offset * 8);
-        self.read_scalar(width, raw)
+        self.read_scalar(width, raw >> (field_offset * 8))
     }
 
     fn store_global_raw(
@@ -744,27 +770,32 @@ impl Target32AddressSpace {
         width: MachineMemWidth,
         value: u64,
     ) -> Result<(), WasmError> {
-        let stride = core::mem::size_of::<u64>() as u64;
+        let stride = GLOBALS_RAW_STRIDE_32;
         let index = (offset / stride) as usize;
         let field_offset = (offset % stride) as usize;
         let width_bytes = width.bytes() as usize;
-        if index >= ctx.globals_view.len || field_offset + width_bytes > stride as usize {
+        if field_offset + width_bytes > stride as usize {
             return Err(WasmError::internal(
                 "synthetic 32-bit global raw store is out of range",
             ));
         }
+        let (raw_ptr, value_type) = self.resolve_global_slot(ctx, index)?;
 
-        let global = unsafe { &mut *ctx.globals_view.base.add(index) };
-        if global.value_type.is_ref() {
+        if value_type.is_ref() {
             if field_offset != 0 || !matches!(width, MachineMemWidth::U32 | MachineMemWidth::U64) {
                 return Err(WasmError::internal(
                     "synthetic 32-bit ref global raw store uses unsupported access shape",
                 ));
             }
-            global.set_raw(machine_raw_to_ref(value, self.layout.gp_unit_bytes).encoded() as u64);
+            // SAFETY: see `resolve_global_slot`.
+            unsafe {
+                *raw_ptr = machine_raw_to_ref(value, self.layout.gp_unit_bytes).encoded() as u64;
+            }
             return Ok(());
         }
 
+        // SAFETY: see `resolve_global_slot`.
+        let current = unsafe { *raw_ptr };
         let shift = field_offset * 8;
         let bits = width_bytes * 8;
         let mask = if bits == 64 {
@@ -772,8 +803,9 @@ impl Target32AddressSpace {
         } else {
             ((1u64 << bits) - 1) << shift
         };
-        let raw = (global.raw() & !mask) | ((value << shift) & mask);
-        global.set_raw(raw);
+        let merged = (current & !mask) | ((value << shift) & mask);
+        // SAFETY: same origin as `*raw_ptr` above.
+        unsafe { *raw_ptr = merged };
         Ok(())
     }
 

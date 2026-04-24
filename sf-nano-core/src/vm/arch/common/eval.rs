@@ -67,7 +67,8 @@ pub(crate) fn eval(
     }
     ensure_stack_capacity(stack_base, stack_end, runtime.total_frame_slots)?;
 
-    let mut ctx = NativeContext::new(store as *mut Store, stack_end);
+    let n_globals = store.module().globals.len();
+    let mut ctx = NativeContext::new(store as *mut Store, stack_end, n_globals);
     ctx.seed_local_call_infos(compiled);
     // Under the new local-call ABI, no software call-link record is needed
     // at the root. The public-entry caller stub builds a backend-private
@@ -90,7 +91,7 @@ pub(crate) fn eval(
         ctx.trap_kind = 0;
     }
 
-    let status = unsafe { entry(&mut ctx, stack_base) };
+    let status = unsafe { entry(&mut *ctx, stack_base) };
 
     #[cfg(sf_has_guard_pages)]
     if ctx.trap_kind != 0 {

@@ -2036,7 +2036,7 @@ fn f64_matches_nan_pattern(actual: f64, expected: &NanPattern<wast::token::F64>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sf_nano_core::{set_backend_mode, BackendMode, Value};
+    use sf_nano_core::{set_backend_mode, BackendMode, FunctionInst, Value};
     use std::path::PathBuf;
 
     fn expect_values(values: impl AsRef<[Value]>, expected: &[Value]) {
@@ -2573,7 +2573,7 @@ mod tests {
         let ret = instance
             .invoke("as-mixed-operands", &[Value::I32(0)])
             .expect("invoke export");
-        assert_eq!(ret, vec![Value::I32(-3)]);
+        assert_eq!(ret.as_slice(), &[Value::I32(-3)]);
 
         match &instance.store().module().functions[func_index] {
             FunctionInst::Local { spec, .. } => {
@@ -2596,11 +2596,11 @@ mod tests {
         let ret_false = instance
             .invoke("params-id-break", &[Value::I32(0)])
             .expect("invoke export");
-        assert_eq!(ret_false, vec![Value::I32(3)]);
+        assert_eq!(ret_false.as_slice(), &[Value::I32(3)]);
 
         let ret_true = instance
             .invoke("params-id-break", &[Value::I32(1)])
             .expect("invoke export");
-        assert_eq!(ret_true, vec![Value::I32(3)]);
+        assert_eq!(ret_true.as_slice(), &[Value::I32(3)]);
     }
 }

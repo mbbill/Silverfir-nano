@@ -298,6 +298,25 @@ impl<'a> BlockLowerContext<'a> {
         }
     }
 
+    /// Address of the i-th inline global raw-ptr slot within the runtime
+    /// context: `[runtime_base + globals_ptrs_inline_offset + idx * ptr_size]`.
+    /// Used by `global.get`/`global.set` lowering to reach the precomputed
+    /// raw_ptr without a second indirection through a view pointer.
+    pub(super) fn globals_ptr_slot_addr(&self, idx: u32) -> Result<MachineAddr, WasmError> {
+        let layout = self.runtime_abi_layout();
+        let stride = layout.gp_unit_bytes as u64;
+        let scaled = (idx as u64)
+            .checked_mul(stride)
+            .and_then(|v| v.checked_add(layout.context.globals_ptrs_inline_offset as u64))
+            .ok_or_else(|| WasmError::internal("globals ptr slot offset overflow"))?;
+        let offset = i32::try_from(scaled)
+            .map_err(|_| WasmError::internal("globals ptr slot offset exceeds i32"))?;
+        Ok(MachineAddr {
+            base: self.regfile.runtime_base(),
+            offset,
+        })
+    }
+
     pub(super) fn frame_addr_from(
         &self,
         base: MachineReg,

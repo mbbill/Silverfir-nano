@@ -7,6 +7,7 @@
 
 use core::mem::{offset_of, size_of};
 
+use super::context::NativeContext;
 use super::dispatch_view::{CallDispatchView, NativeLocalCallInfo32, NativeLocalCallInfo64};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -37,9 +38,6 @@ pub(crate) struct NativeContextAbiLayout {
     pub stack_end_offset: u32,
     pub mem0_base_offset: u32,
     pub mem0_size_offset: u32,
-    pub globals_view_offset: u32,
-    pub globals_view_base_offset: u32,
-    pub globals_view_len_offset: u32,
     pub memory_views_base_offset: u32,
     pub memory_views_len_offset: u32,
     pub table_views_base_offset: u32,
@@ -50,8 +48,17 @@ pub(crate) struct NativeContextAbiLayout {
     pub local_call_infos_len_offset: u32,
     pub type_canon_base_offset: u32,
     pub type_canon_len_offset: u32,
+    pub globals_len_offset: u32,
     pub store_offset: u32,
     pub current_module_offset: u32,
+    /// Offset of the trailing inline raw-ptr array (`[*mut u64; globals_len]`)
+    /// within the runtime context. JIT-emitted `global.get`/`global.set` uses
+    /// this as the base for a single indexed load into the tail, followed by
+    /// a dereference of the loaded pointer.
+    pub globals_ptrs_inline_offset: u32,
+    /// Size of the fixed header. The actual per-instance allocation is
+    /// `size + globals_len * ptr_stride`; this field is the offset of the
+    /// inline ptr array as well (it starts immediately after the header).
     pub size: u32,
 }
 
@@ -124,10 +131,7 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
     let stack_end_offset = 0;
     let mem0_base_offset = align_up(stack_end_offset + ptr, ptr);
     let mem0_size_offset = align_up(mem0_base_offset + ptr, 8);
-    let globals_view_offset = mem0_size_offset + 8;
-    let globals_view_base_offset = globals_view_offset + pointer_len_view.base_offset;
-    let globals_view_len_offset = globals_view_offset + pointer_len_view.len_offset;
-    let memory_views_base_offset = globals_view_offset + pointer_len_view.stride;
+    let memory_views_base_offset = mem0_size_offset + 8;
     let memory_views_len_offset = memory_views_base_offset + ptr;
     let table_views_base_offset = memory_views_len_offset + ptr;
     let table_views_len_offset = table_views_base_offset + ptr;
@@ -137,9 +141,19 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
     let local_call_infos_len_offset = local_call_infos_base_offset + ptr;
     let type_canon_base_offset = local_call_infos_len_offset + ptr;
     let type_canon_len_offset = type_canon_base_offset + ptr;
-    let store_offset = type_canon_len_offset + ptr;
+    let globals_len_offset = type_canon_len_offset + ptr;
+    let store_offset = globals_len_offset + ptr;
     let current_module_offset = store_offset + ptr;
-    let size = current_module_offset + ptr;
+    // The inline raw-ptr tail is pinned to the host struct's tail offset
+    // (equivalent to `offset_of!(NativeContext, globals_ptrs_tail)` since the
+    // marker is the last field of the `#[repr(C)]` struct). This keeps
+    // JIT-emitted `[runtime_base + globals_ptrs_inline_offset + idx*ptr]`
+    // reads landing on the real raw_ptr slots for native builds (where
+    // target = host). For emu builds the emulator translates synthetic
+    // addresses and only requires JIT and emulator to agree on this value —
+    // which they do by sharing this layout.
+    let globals_ptrs_inline_offset = size_of::<NativeContext>() as u32;
+    let size = globals_ptrs_inline_offset;
 
     NativeRuntimeAbiLayout {
         gp_unit_bytes,
@@ -150,9 +164,6 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
             stack_end_offset,
             mem0_base_offset,
             mem0_size_offset,
-            globals_view_offset,
-            globals_view_base_offset,
-            globals_view_len_offset,
             memory_views_base_offset,
             memory_views_len_offset,
             table_views_base_offset,
@@ -163,8 +174,10 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
             local_call_infos_len_offset,
             type_canon_base_offset,
             type_canon_len_offset,
+            globals_len_offset,
             store_offset,
             current_module_offset,
+            globals_ptrs_inline_offset,
             size,
         },
         ref_handle_stride: ptr,
@@ -178,8 +191,7 @@ mod tests {
         pointer_len_abi_layout,
     };
     use crate::vm::runtime::context::{
-        ctx_offset, function_view_offset, globals_view_offset, memory_view_offset,
-        table_view_offset,
+        ctx_offset, function_view_offset, memory_view_offset, table_view_offset, NativeContext,
     };
     use crate::vm::runtime::dispatch_view::{NativeLocalCallInfo32, NativeLocalCallInfo64};
 
@@ -190,12 +202,8 @@ mod tests {
         assert_eq!(layout.context.mem0_base_offset, ctx_offset::MEM0_BASE);
         assert_eq!(layout.context.mem0_size_offset, ctx_offset::MEM0_SIZE);
         assert_eq!(
-            layout.context.globals_view_base_offset,
-            ctx_offset::GLOBALS_VIEW + globals_view_offset::BASE
-        );
-        assert_eq!(
-            layout.context.globals_view_len_offset,
-            ctx_offset::GLOBALS_VIEW + globals_view_offset::LEN
+            layout.context.globals_ptrs_inline_offset as usize,
+            core::mem::size_of::<NativeContext>()
         );
         assert_eq!(
             layout.context.memory_views_base_offset,
@@ -307,12 +315,16 @@ mod tests {
         assert_eq!(layout.pointer_len_view.stride, 8);
         assert_eq!(layout.context.mem0_base_offset, 4);
         assert_eq!(layout.context.mem0_size_offset, 8);
-        assert_eq!(layout.context.memory_views_base_offset, 24);
-        assert_eq!(layout.context.table_views_base_offset, 32);
-        assert_eq!(layout.context.function_views_base_offset, 40);
-        assert_eq!(layout.context.local_call_infos_base_offset, 48);
-        assert_eq!(layout.context.local_call_infos_len_offset, 52);
-        assert_eq!(layout.context.type_canon_base_offset, 56);
+        // With globals_view collapsed into an inline tail, the fixed
+        // ABI-visible prefix begins memory-views directly after mem0_size.
+        assert_eq!(layout.context.memory_views_base_offset, 16);
+        assert_eq!(layout.context.memory_views_len_offset, 20);
+        assert_eq!(layout.context.table_views_base_offset, 24);
+        assert_eq!(layout.context.function_views_base_offset, 32);
+        assert_eq!(layout.context.local_call_infos_base_offset, 40);
+        assert_eq!(layout.context.local_call_infos_len_offset, 44);
+        assert_eq!(layout.context.type_canon_base_offset, 48);
+        assert_eq!(layout.context.globals_len_offset, 56);
         assert_eq!(layout.ref_handle_stride, 4);
     }
 }

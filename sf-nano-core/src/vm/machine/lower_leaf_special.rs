@@ -9,7 +9,6 @@ use crate::vm::middle::ssa_ir::ir::DecodedOperand;
 use crate::{
     error::WasmError,
     vm::{
-        entities::{global_offset, GlobalInst},
         machine::machine_ir::{
             machine_ptr_width, MachineAddr, MachineBlockId, MachineBranchCond, MachineCompareKind,
             MachineConvertOp, MachineEdge, MachineInst, MachineInstKind, MachineIntBinaryOp,
@@ -486,13 +485,16 @@ impl<'a> BlockLowerContext<'a> {
 
     /// Scalar (non-i64-pair) global.get -- used by both Gp64Lowering and the
     /// non-i64 path above.
+    ///
+    /// Emits two loads: one indexed fetch of the precomputed raw_ptr from the
+    /// context's inline tail, then a deref. No intermediate view-pointer load
+    /// (the tail lives at a constant offset from `runtime_base`).
     pub(super) fn lower_global_get_scalar(
         &mut self,
         idx: u32,
         result: SsaValue,
     ) -> Result<(), WasmError> {
         let ty = self.value_storage_type(result);
-        let runtime_layout = self.runtime_abi_layout();
         let dst = self.alloc_result_value(result)?;
         let width = canonical_value_mem_width_for_value(self.program(), result);
         let base = self.borrow_free_gp_dynamic_regs(1)?[0];
@@ -501,22 +503,7 @@ impl<'a> BlockLowerContext<'a> {
                 owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base,
-                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
-                width: self.gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
-        });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: base,
-                addr: self.indexed_addr(
-                    base,
-                    idx,
-                    core::mem::size_of::<GlobalInst>(),
-                    global_offset::RAW_PTR,
-                )?,
+                addr: self.globals_ptr_slot_addr(idx)?,
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
@@ -541,7 +528,6 @@ impl<'a> BlockLowerContext<'a> {
         result: SsaValue,
     ) -> Result<(), WasmError> {
         self.ensure_v128_raw_abi()?;
-        let runtime_layout = self.runtime_abi_layout();
         let dst = self.alloc_result_value(result)?;
         let base = self.borrow_free_gp_dynamic_regs(1)?[0];
         self.emit_machine_inst(MachineInst {
@@ -549,22 +535,7 @@ impl<'a> BlockLowerContext<'a> {
                 owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base,
-                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
-                width: self.gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
-        });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: base,
-                addr: self.indexed_addr(
-                    base,
-                    idx,
-                    core::mem::size_of::<GlobalInst>(),
-                    global_offset::RAW_PTR,
-                )?,
+                addr: self.globals_ptr_slot_addr(idx)?,
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
@@ -589,29 +560,13 @@ impl<'a> BlockLowerContext<'a> {
         idx: u32,
         result: SsaValue,
     ) -> Result<(), WasmError> {
-        let runtime_layout = self.runtime_abi_layout();
         let (dst_lo, dst_hi) = self.alloc_i64_value_pair(result)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
                 owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: dst_hi,
-                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
-                width: self.gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
-        });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: dst_hi,
-                addr: self.indexed_addr(
-                    dst_hi,
-                    idx,
-                    core::mem::size_of::<GlobalInst>(),
-                    global_offset::RAW_PTR,
-                )?,
+                addr: self.globals_ptr_slot_addr(idx)?,
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
@@ -670,7 +625,6 @@ impl<'a> BlockLowerContext<'a> {
         src_value: SsaValue,
     ) -> Result<(), WasmError> {
         let ty = self.value_storage_type(src_value);
-        let runtime_layout = self.runtime_abi_layout();
         let src = self.use_value(src_value)?;
         let width = canonical_value_mem_width_for_value(self.program(), src_value);
         let base = self.borrow_free_gp_dynamic_regs(1)?[0];
@@ -679,22 +633,7 @@ impl<'a> BlockLowerContext<'a> {
                 owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base,
-                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
-                width: self.gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
-        });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: base,
-                addr: self.indexed_addr(
-                    base,
-                    idx,
-                    core::mem::size_of::<GlobalInst>(),
-                    global_offset::RAW_PTR,
-                )?,
+                addr: self.globals_ptr_slot_addr(idx)?,
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
@@ -717,7 +656,6 @@ impl<'a> BlockLowerContext<'a> {
         src_value: SsaValue,
     ) -> Result<(), WasmError> {
         self.ensure_v128_raw_abi()?;
-        let runtime_layout = self.runtime_abi_layout();
         let src = self.use_value(src_value)?;
         let temps = self.borrow_free_gp_dynamic_regs(2)?;
         let base = temps[0];
@@ -727,22 +665,7 @@ impl<'a> BlockLowerContext<'a> {
                 owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base,
-                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
-                width: self.gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
-        });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: base,
-                addr: self.indexed_addr(
-                    base,
-                    idx,
-                    core::mem::size_of::<GlobalInst>(),
-                    global_offset::RAW_PTR,
-                )?,
+                addr: self.globals_ptr_slot_addr(idx)?,
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
@@ -765,7 +688,6 @@ impl<'a> BlockLowerContext<'a> {
         idx: u32,
         src_value: SsaValue,
     ) -> Result<(), WasmError> {
-        let runtime_layout = self.runtime_abi_layout();
         let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
         let base = self.borrow_free_gp_dynamic_regs(1)?[0];
         self.emit_machine_inst(MachineInst {
@@ -773,22 +695,7 @@ impl<'a> BlockLowerContext<'a> {
                 owner: MachineRegOwner::LinearValue,
                 ty: MachineStorageType::GpWord,
                 dst: base,
-                addr: self.runtime_addr(runtime_layout.context.globals_view_base_offset),
-                width: self.gp_word_mem_width(),
-                extension: MachineLoadExtension::None,
-            },
-        });
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Load {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: base,
-                addr: self.indexed_addr(
-                    base,
-                    idx,
-                    core::mem::size_of::<GlobalInst>(),
-                    global_offset::RAW_PTR,
-                )?,
+                addr: self.globals_ptr_slot_addr(idx)?,
                 width: self.gp_word_mem_width(),
                 extension: MachineLoadExtension::None,
             },
