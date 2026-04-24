@@ -251,7 +251,7 @@ impl<'a> X86_64Backend<'a> {
         enc::mov_rr_64(&mut self.core.text, C_ARG0, map_fixed_reg(MACHINE_CTX_REG));
         self.materialize_u64(C_ARG1, trap_code(kind));
         let call_scratch = self.gp_scratch.claim_rax().detach();
-        self.materialize_u64(*call_scratch, raise_trap as usize as u64);
+        self.materialize_u64(*call_scratch, raise_trap as *const () as usize as u64);
         enc::call_reg(&mut self.core.text, *call_scratch);
         // JMP body_local_error_label — preserves RAX (the trap kind).
         let body_local_error_label = self.core.body_local_error_label;

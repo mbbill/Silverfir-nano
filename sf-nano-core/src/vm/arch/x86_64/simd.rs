@@ -2602,7 +2602,7 @@ impl<'a> X86_64Backend<'a> {
         self.materialize_u64(C_ARG1, preserved_op::V128_FROM_RAW as u64);
         enc::mov_rr_64(&mut self.core.text, C_ARG2, X86Reg::RSP);
         enc::add_ri_64(&mut self.core.text, C_ARG2, V128_PREFIX_BYTES as i32);
-        self.materialize_u64(call_target, preserved_entry as usize as u64);
+        self.materialize_u64(call_target, preserved_entry as *const () as usize as u64);
         enc::call_reg(&mut self.core.text, call_target);
 
         test_rr_64(&mut self.core.text, C_RET0, C_RET0);

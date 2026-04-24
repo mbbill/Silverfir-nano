@@ -2590,7 +2590,10 @@ impl<'a> X86_64Backend<'a> {
         self.save_caller_clobbered_gp_dynamic();
         enc::mov_rr_64(&mut self.core.text, C_ARG0, src);
         self.materialize_u64(C_ARG1, convert_op_code(op) as u64);
-        self.materialize_u64(X86Reg::R11, x86_64_saturating_trunc as usize as u64);
+        self.materialize_u64(
+            X86Reg::R11,
+            x86_64_saturating_trunc as *const () as usize as u64,
+        );
         enc::call_reg(&mut self.core.text, X86Reg::R11);
         self.restore_caller_clobbered_gp_dynamic();
         if dst != X86Reg::RAX {

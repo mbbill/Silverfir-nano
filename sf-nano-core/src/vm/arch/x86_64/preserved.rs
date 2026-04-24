@@ -193,7 +193,7 @@ impl<'a> X86_64Backend<'a> {
         if prefix_bytes != 0 {
             enc::add_ri_64(&mut self.core.text, C_ARG2, prefix_bytes as i32);
         }
-        self.materialize_u64(call_target, preserved_entry as usize as u64);
+        self.materialize_u64(call_target, preserved_entry as *const () as usize as u64);
         enc::call_reg(&mut self.core.text, call_target);
 
         // Read the result slot (if any) before restoring caller-clobbered

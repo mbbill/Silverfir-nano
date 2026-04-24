@@ -286,7 +286,7 @@ impl<'a> Arm64Backend<'a> {
         super::inst::materialize_u64_into(
             &mut self.core.text,
             call_scratch,
-            preserved_entry as usize as u64,
+            preserved_entry as *const () as usize as u64,
         );
         self.core.text.emit_u32(enc::blr(call_scratch));
 

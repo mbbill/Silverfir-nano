@@ -318,7 +318,7 @@ impl<'a> Arm32Backend<'a> {
         self.core.text.emit_u32(enc::mov_reg(C_ARG2, Arm32Reg::SP));
 
         // Step 6: dispatch the helper.
-        self.emit_host_call(preserved_entry as usize);
+        self.emit_host_call(preserved_entry as *const () as usize);
 
         // Step 7: stash status (R0) and optionally result into GP scratches.
         // After this we commit to two diverging tails — success and error —

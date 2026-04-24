@@ -84,7 +84,10 @@ pub(in crate::vm::arch::x86_64) fn emit_trapping_trunc_call(
         map_fixed_reg(MACHINE_CTX_REG),
     );
     backend.materialize_u64(C_ARG2, op_code);
-    backend.materialize_u64(call_scratch, x86_64_trapping_trunc as usize as u64);
+    backend.materialize_u64(
+        call_scratch,
+        x86_64_trapping_trunc as *const () as usize as u64,
+    );
     enc::call_reg(&mut backend.core.text, call_scratch);
 
     backend.restore_caller_clobbered_gp_dynamic();

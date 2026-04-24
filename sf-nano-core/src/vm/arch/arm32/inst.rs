@@ -2641,10 +2641,10 @@ impl<'a> Arm32Backend<'a> {
         // Slow helper path.
         self.core.bind_label(slow_path);
         self.emit_host_call(match (sign, rem) {
-            (MachineSign::Signed, false) => arm32_i64_div_s as usize,
-            (MachineSign::Unsigned, false) => arm32_i64_div_u as usize,
-            (MachineSign::Signed, true) => arm32_i64_rem_s as usize,
-            (MachineSign::Unsigned, true) => arm32_i64_rem_u as usize,
+            (MachineSign::Signed, false) => arm32_i64_div_s as *const () as usize,
+            (MachineSign::Unsigned, false) => arm32_i64_div_u as *const () as usize,
+            (MachineSign::Signed, true) => arm32_i64_rem_s as *const () as usize,
+            (MachineSign::Unsigned, true) => arm32_i64_rem_u as *const () as usize,
         });
         self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
 
@@ -2697,8 +2697,8 @@ impl<'a> Arm32Backend<'a> {
             &[lhs_lo, lhs_hi, rhs],
         )?;
         self.emit_host_call(match op {
-            MachineIntBinaryOp::Rotl => arm32_i64_rotl as usize,
-            MachineIntBinaryOp::Rotr => arm32_i64_rotr as usize,
+            MachineIntBinaryOp::Rotl => arm32_i64_rotl as *const () as usize,
+            MachineIntBinaryOp::Rotr => arm32_i64_rotr as *const () as usize,
             _other => {
                 return Err(WasmError::invalid("arm32: unsupported i64 pair shift op"));
             }
@@ -3177,10 +3177,18 @@ impl<'a> Arm32Backend<'a> {
         self.spill_caller_saved_gp_regs();
         self.emit_pair_args_to_r0_r1(src_lo, src_hi)?;
         self.emit_host_call(match (width, sign) {
-            (MachineFloatWidth::F32, MachineSign::Signed) => arm32_i64s_to_f32 as usize,
-            (MachineFloatWidth::F32, MachineSign::Unsigned) => arm32_i64u_to_f32 as usize,
-            (MachineFloatWidth::F64, MachineSign::Signed) => arm32_i64s_to_f64 as usize,
-            (MachineFloatWidth::F64, MachineSign::Unsigned) => arm32_i64u_to_f64 as usize,
+            (MachineFloatWidth::F32, MachineSign::Signed) => {
+                arm32_i64s_to_f32 as *const () as usize
+            }
+            (MachineFloatWidth::F32, MachineSign::Unsigned) => {
+                arm32_i64u_to_f32 as *const () as usize
+            }
+            (MachineFloatWidth::F64, MachineSign::Signed) => {
+                arm32_i64s_to_f64 as *const () as usize
+            }
+            (MachineFloatWidth::F64, MachineSign::Unsigned) => {
+                arm32_i64u_to_f64 as *const () as usize
+            }
         });
 
         match width {
@@ -3260,7 +3268,7 @@ impl<'a> Arm32Backend<'a> {
                 | MachineConvertOp::I64TruncSatF64S
                 | MachineConvertOp::I64TruncSatF64U
         ) {
-            self.emit_host_call(arm32_saturating_trunc as usize);
+            self.emit_host_call(arm32_saturating_trunc as *const () as usize);
             self.emit_pair_results_from_r0_r1(dst_lo, dst_hi)?;
             self.restore_caller_saved_gp_regs(&[dst_lo_hw, dst_hi_hw]);
             return Ok(());
@@ -3277,7 +3285,7 @@ impl<'a> Arm32Backend<'a> {
                 .emit_u32(enc::add_imm(*s, Arm32Reg::SP, 8, 0));
             self.core.text.emit_u32(enc::str_imm(*s, Arm32Reg::SP, 0));
         }
-        self.emit_host_call(arm32_trapping_trunc as usize);
+        self.emit_host_call(arm32_trapping_trunc as *const () as usize);
         self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R0, 0, 0));
         let ok = self.core.new_label();
         self.emit_branch(BranchFixupKind::BCond(Cond::Eq), ok);
@@ -3358,7 +3366,7 @@ impl<'a> Arm32Backend<'a> {
                 | MachineConvertOp::I32TruncSatF64S
                 | MachineConvertOp::I32TruncSatF64U
         ) {
-            self.emit_host_call(arm32_saturating_trunc as usize);
+            self.emit_host_call(arm32_saturating_trunc as *const () as usize);
             if dst_hw != Arm32Reg::R0 {
                 self.core.text.emit_u32(enc::mov_reg(dst_hw, Arm32Reg::R0));
             }
@@ -3377,7 +3385,7 @@ impl<'a> Arm32Backend<'a> {
                 .emit_u32(enc::add_imm(*s, Arm32Reg::SP, 8, 0));
             self.core.text.emit_u32(enc::str_imm(*s, Arm32Reg::SP, 0));
         }
-        self.emit_host_call(arm32_trapping_trunc as usize);
+        self.emit_host_call(arm32_trapping_trunc as *const () as usize);
         self.core.text.emit_u32(enc::cmp_imm(Arm32Reg::R0, 0, 0));
         let ok = self.core.new_label();
         self.emit_branch(BranchFixupKind::BCond(Cond::Eq), ok);
@@ -3813,7 +3821,7 @@ impl<'a> Arm32Backend<'a> {
                 if *dm != C_FP_RET0 {
                     self.core.text.emit_u32(enc::vmov_d(C_FP_RET0, *dm));
                 }
-                self.emit_host_call(arm32_f64_ceil as usize);
+                self.emit_host_call(arm32_f64_ceil as *const () as usize);
                 if dd != C_FP_RET0 {
                     self.core.text.emit_u32(enc::vmov_d(dd, C_FP_RET0));
                 }
@@ -3824,7 +3832,7 @@ impl<'a> Arm32Backend<'a> {
                 if *dm != C_FP_RET0 {
                     self.core.text.emit_u32(enc::vmov_d(C_FP_RET0, *dm));
                 }
-                self.emit_host_call(arm32_f64_floor as usize);
+                self.emit_host_call(arm32_f64_floor as *const () as usize);
                 if dd != C_FP_RET0 {
                     self.core.text.emit_u32(enc::vmov_d(dd, C_FP_RET0));
                 }
@@ -3835,7 +3843,7 @@ impl<'a> Arm32Backend<'a> {
                 if *dm != C_FP_RET0 {
                     self.core.text.emit_u32(enc::vmov_d(C_FP_RET0, *dm));
                 }
-                self.emit_host_call(arm32_f64_trunc as usize);
+                self.emit_host_call(arm32_f64_trunc as *const () as usize);
                 if dd != C_FP_RET0 {
                     self.core.text.emit_u32(enc::vmov_d(dd, C_FP_RET0));
                 }
@@ -3846,7 +3854,7 @@ impl<'a> Arm32Backend<'a> {
                 self.core
                     .text
                     .emit_u32(enc::vmov_rr_d(Arm32Reg::R0, Arm32Reg::R1, *dm));
-                self.emit_host_call(arm32_f64_nearest_bits as usize);
+                self.emit_host_call(arm32_f64_nearest_bits as *const () as usize);
                 self.core
                     .text
                     .emit_u32(enc::vmov_d_rr(dd, Arm32Reg::R0, Arm32Reg::R1));
@@ -3869,7 +3877,7 @@ impl<'a> Arm32Backend<'a> {
                 if src_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(s0, src_s));
                 }
-                self.emit_host_call(arm32_f32_ceil as usize);
+                self.emit_host_call(arm32_f32_ceil as *const () as usize);
                 if dst_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(dst_s, s0));
                 }
@@ -3883,7 +3891,7 @@ impl<'a> Arm32Backend<'a> {
                 if src_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(s0, src_s));
                 }
-                self.emit_host_call(arm32_f32_floor as usize);
+                self.emit_host_call(arm32_f32_floor as *const () as usize);
                 if dst_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(dst_s, s0));
                 }
@@ -3897,7 +3905,7 @@ impl<'a> Arm32Backend<'a> {
                 if src_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(s0, src_s));
                 }
-                self.emit_host_call(arm32_f32_trunc as usize);
+                self.emit_host_call(arm32_f32_trunc as *const () as usize);
                 if dst_s != s0 {
                     self.core.text.emit_u32(enc::vmov_s(dst_s, s0));
                 }
@@ -3908,7 +3916,7 @@ impl<'a> Arm32Backend<'a> {
                 let src_s = *dm * 2;
                 let dst_s = dd * 2;
                 self.core.text.emit_u32(enc::vmov_r_s(Arm32Reg::R0, src_s));
-                self.emit_host_call(arm32_f32_nearest_bits as usize);
+                self.emit_host_call(arm32_f32_nearest_bits as *const () as usize);
                 self.core.text.emit_u32(enc::vmov_s_r(dst_s, Arm32Reg::R0));
                 self.restore_caller_saved_gp_regs(&[]);
             }
@@ -4175,7 +4183,7 @@ impl<'a> Arm32Backend<'a> {
                 self.core
                     .text
                     .emit_u32(enc::asr_imm(Arm32Reg::R1, *src_hw, 31));
-                self.emit_host_call(arm32_i64s_to_f64 as usize);
+                self.emit_host_call(arm32_i64s_to_f64 as *const () as usize);
                 // Result is in D0 (EABI: f64 returned in D0)
                 if dd != C_FP_RET0 {
                     self.core.text.emit_u32(enc::vmov_d(dd, C_FP_RET0));
@@ -4189,7 +4197,7 @@ impl<'a> Arm32Backend<'a> {
                 // R0 = lo, R1 = 0 (zero-extend)
                 self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, *src_hw));
                 self.emit_load_u32(Arm32Reg::R1, 0);
-                self.emit_host_call(arm32_i64u_to_f64 as usize);
+                self.emit_host_call(arm32_i64u_to_f64 as *const () as usize);
                 if dd != C_FP_RET0 {
                     self.core.text.emit_u32(enc::vmov_d(dd, C_FP_RET0));
                 }
@@ -4203,7 +4211,7 @@ impl<'a> Arm32Backend<'a> {
                 self.core
                     .text
                     .emit_u32(enc::asr_imm(Arm32Reg::R1, *src_hw, 31));
-                self.emit_host_call(arm32_i64s_to_f32 as usize);
+                self.emit_host_call(arm32_i64s_to_f32 as *const () as usize);
                 // Result in S0 (EABI: f32 returned in S0)
                 {
                     let s0 = C_FP_RET0 * 2;
@@ -4219,7 +4227,7 @@ impl<'a> Arm32Backend<'a> {
                 self.spill_caller_saved_gp_regs();
                 self.core.text.emit_u32(enc::mov_reg(Arm32Reg::R0, *src_hw));
                 self.emit_load_u32(Arm32Reg::R1, 0);
-                self.emit_host_call(arm32_i64u_to_f32 as usize);
+                self.emit_host_call(arm32_i64u_to_f32 as *const () as usize);
                 {
                     let s0 = C_FP_RET0 * 2;
                     if sd != s0 {

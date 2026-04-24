@@ -247,7 +247,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
             .text
             .emit_u32(enc::mov_reg(C_ARG0, map_fixed_reg(MACHINE_CTX_REG)));
         self.emit_load_u32(C_ARG1, trap_code(kind) as u32);
-        self.emit_host_call(arm32_raise_trap as usize);
+        self.emit_host_call(arm32_raise_trap as *const () as usize);
         // The shim returns NativeCallStatus::Error (= 1) in R0. Branch to
         // body_local_error_label, which preserves R0 and propagates upward
         // through the unified Return tail.

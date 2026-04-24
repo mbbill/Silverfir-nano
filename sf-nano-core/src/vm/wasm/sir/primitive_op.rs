@@ -273,7 +273,6 @@ macro_rules! for_each_primitive_op {
     };
 }
 
-pub(crate) use for_each_primitive_op;
 macro_rules! define_primitive_ops {
     ($(
         $name:ident $( { $($field:ident : $ty:ty),* $(,)? } )? => ($pops:expr, $pushes:expr),

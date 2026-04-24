@@ -2196,6 +2196,12 @@ impl<T> Vec<T> {
 
     #[inline]
     #[track_caller]
+    pub fn retain_mut(&mut self, f: impl FnMut(&mut T) -> bool) {
+        self.mutate(|inner| inner.retain_mut(f));
+    }
+
+    #[inline]
+    #[track_caller]
     pub fn dedup(&mut self)
     where
         T: PartialEq,
