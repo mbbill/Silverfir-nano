@@ -21,8 +21,6 @@ DMA transfer to the panel.
 | --- | --- | --- |
 | [Mandelbrot](https://youtu.be/g3rskqAUEYo) | Q16.16 fixed-point fractal, hot `i64.mul` lowering, symmetry copy, host `push_frame` import | 19 fps |
 | [Cube](https://youtu.be/ULs2tGhGPfs) | all-`i32` geometry, Q15 trig LUT, projection, triangle rasterization, face culling/shading | 66 fps |
-| Wasm3 Mandelbrot comparison | same Pico 2 display path running through Wasm3 instead of Silverfir-nano's JIT | 3 fps |
-| `lcd_demo` | native display pipeline ceiling: CPU gradient fill + overlay + 40 MHz DMA push | about 74 fps |
 
 ### Mandelbrot
 
