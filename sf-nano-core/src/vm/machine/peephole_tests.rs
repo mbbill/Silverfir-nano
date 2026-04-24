@@ -123,6 +123,50 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
 }
 
 #[test]
+fn copy_propagate_drops_self_move_and_advances() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::vec![MachineBlockParam::gp_word(MachineReg(7))],
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(7),
+                        src: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntUnary {
+                        width: MachineIntWidth::I32,
+                        op: MachineIntUnaryOp::Clz,
+                        dst: MachineReg(8),
+                        src: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(7, 8, 9, 9, 0));
+
+    let block = &program.blocks[0];
+    assert_eq!(block.ops.len(), 1);
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::IntUnary {
+            dst: MachineReg(8),
+            src: MachineValue::Reg(MachineReg(7)),
+            ..
+        }
+    ));
+}
+
+#[test]
 fn does_not_copy_propagate_move_from_cached_local_block_param() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
@@ -2551,5 +2595,91 @@ fn fuses_i64_mul_with_self_spill_reload_sign_ext() {
         ),
         "expected Int64MulFromSignExt32 after spill/reload + sign-ext + i64.mul, got: {:?}",
         mul_inst.kind
+    );
+}
+
+#[test]
+fn optimize_preserves_block_ops_allocation() {
+    let mut ops = collections::Vec::with_capacity(32);
+    ops.push(MachineInst {
+        kind: MachineInstKind::Move {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst: MachineReg(7),
+            src: MachineValue::Reg(MachineReg(8)),
+        },
+    });
+    ops.push(MachineInst {
+        kind: MachineInstKind::IntUnary {
+            width: MachineIntWidth::I32,
+            op: MachineIntUnaryOp::Clz,
+            dst: MachineReg(9),
+            src: MachineValue::Reg(MachineReg(7)),
+        },
+    });
+    ops.push(MachineInst {
+        kind: MachineInstKind::Store {
+            ty: MachineStorageType::GpWord,
+            addr: MachineAddr {
+                base: MachineReg(1),
+                offset: 16,
+            },
+            width: MachineMemWidth::U32,
+            src: MachineValue::Reg(MachineReg(9)),
+        },
+    });
+    ops.push(MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst: MachineReg(10),
+            addr: MachineAddr {
+                base: MachineReg(1),
+                offset: 16,
+            },
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::None,
+        },
+    });
+    ops.push(MachineInst {
+        kind: MachineInstKind::IntBinary {
+            width: MachineIntWidth::I32,
+            op: MachineIntBinaryOp::ShrU,
+            dst: MachineReg(10),
+            lhs: MachineValue::Reg(MachineReg(10)),
+            rhs: MachineValue::Imm64(3),
+        },
+    });
+    ops.push(MachineInst {
+        kind: MachineInstKind::IntBinary {
+            width: MachineIntWidth::I32,
+            op: MachineIntBinaryOp::And,
+            dst: MachineReg(11),
+            lhs: MachineValue::Reg(MachineReg(10)),
+            rhs: MachineValue::Imm64(0x1f),
+        },
+    });
+
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::vec![MachineBlockParam::gp_word(MachineReg(8))],
+            ops,
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    let ops_ptr = program.blocks[0].ops.as_ptr();
+    let ops_capacity = program.blocks[0].ops.capacity();
+
+    optimize(&mut program, test_config(7, 8, 12, 12, 0));
+
+    assert_eq!(program.blocks[0].ops.as_ptr(), ops_ptr);
+    assert_eq!(program.blocks[0].ops.capacity(), ops_capacity);
+    assert!(
+        program.blocks[0].ops.len() < 6,
+        "test should exercise at least one in-place removal/fusion"
     );
 }

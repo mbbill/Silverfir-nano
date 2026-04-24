@@ -14,10 +14,13 @@ use super::helpers::{
 use super::TrackedLoad;
 
 pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfig) {
-    let mut tracked = collections::Vec::<TrackedLoad>::new();
-    let mut rewritten = collections::Vec::with_capacity(block.ops.len());
+    if block.ops.is_empty() {
+        return;
+    }
 
-    for mut inst in block.ops.drain(..) {
+    let mut tracked = collections::Vec::<TrackedLoad>::new();
+
+    block.ops.retain_mut(|inst| {
         let mut keep_inst = true;
         let mut produced_load = None;
         let mut rewrite_load = None;
@@ -114,9 +117,8 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
             if let Some(load) = produced_load {
                 tracked.push(load);
             }
-            rewritten.push(inst);
         }
-    }
 
-    block.ops = rewritten;
+        keep_inst
+    });
 }

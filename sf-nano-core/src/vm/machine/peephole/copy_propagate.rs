@@ -25,7 +25,6 @@ use super::helpers::{
 pub(super) struct CopyPropagateScratch {
     aliases: collections::Vec<Option<MachineReg>>,
     float_aliases: collections::Vec<Option<MachineReg>>,
-    rewritten: collections::Vec<MachineInst>,
     ownership: DynamicOwnershipTracker,
 }
 
@@ -34,7 +33,6 @@ impl CopyPropagateScratch {
         Self {
             aliases: collections::vec![None; reg_count],
             float_aliases: collections::vec![None; reg_count],
-            rewritten: collections::Vec::new(),
             ownership: DynamicOwnershipTracker::new(reg_count),
         }
     }
@@ -46,7 +44,6 @@ impl CopyPropagateScratch {
         for a in &mut self.float_aliases {
             *a = None;
         }
-        self.rewritten.clear();
     }
 }
 
@@ -56,19 +53,18 @@ pub(super) fn copy_propagate(
     scratch: &mut CopyPropagateScratch,
 ) {
     scratch.clear();
-    let original_ops = core::mem::take(&mut block.ops);
-    scratch.rewritten.reserve(
-        original_ops
-            .len()
-            .saturating_sub(scratch.rewritten.capacity()),
-    );
     let aliases = &mut scratch.aliases;
     let float_aliases = &mut scratch.float_aliases;
-    let rewritten = &mut scratch.rewritten;
     let ownership = &mut scratch.ownership;
     ownership.reset_for_block(block, config);
 
-    for (index, mut inst) in original_ops.iter().cloned().enumerate() {
+    let len = block.ops.len();
+    let mut read = 0usize;
+    let mut write = 0usize;
+
+    while read < len {
+        let mut inst = block.ops[read].clone();
+
         rewrite_sources(&mut inst.kind, aliases);
         rewrite_float_alias_sources(&mut inst.kind, float_aliases);
 
@@ -105,7 +101,9 @@ pub(super) fn copy_propagate(
         ) {
             clear_aliases(aliases);
             clear_aliases(float_aliases);
-            rewritten.push(inst);
+            block.ops[write] = inst;
+            read += 1;
+            write += 1;
             continue;
         }
 
@@ -122,6 +120,7 @@ pub(super) fn copy_propagate(
                 src: MachineValue::Reg(src),
             } => {
                 if *dst == *src {
+                    read += 1;
                     continue;
                 }
                 // Only linear-value moves are safe to elide here. Cached-local
@@ -129,9 +128,10 @@ pub(super) fn copy_propagate(
                 // must remain explicit.
                 if ownership.is_linear_value_reg(*src, config)
                     && machine_ir::same_reg_bank(*dst, *src, config)
-                    && can_elide_reg_move(&original_ops, &block.terminator, index, *dst, *src)
+                    && can_elide_reg_move(&block.ops, &block.terminator, read, *dst, *src)
                 {
                     aliases[dst.0 as usize] = Some(*src);
+                    read += 1;
                     continue;
                 }
                 if !machine_ir::is_fp_reg(*dst, config) && machine_ir::is_fp_reg(*src, config) {
@@ -142,12 +142,14 @@ pub(super) fn copy_propagate(
         }
 
         ownership.apply_inst(&inst.kind, config);
-        rewritten.push(inst);
+        block.ops[write] = inst;
+        read += 1;
+        write += 1;
     }
 
     rewrite_terminator_sources(&mut block.terminator, aliases);
     rewrite_float_alias_terminator_sources(&mut block.terminator, float_aliases);
-    block.ops = core::mem::take(rewritten);
+    block.ops.truncate(write);
 }
 
 fn can_elide_reg_move(

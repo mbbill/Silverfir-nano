@@ -28,8 +28,6 @@
 //! indirections that expose the adjacent ShrU+And / shift+binop pairs.
 //! Running before copy propagation finds almost no matches.
 
-use crate::collections;
-
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
     MachineBlock, MachineCompareKind, MachineInst, MachineInstKind, MachineIntBinaryOp,
@@ -58,44 +56,68 @@ fn can_eliminate_reg(
 }
 
 pub(super) fn fuse_isel(block: &mut MachineBlock, config: BackendConfig) {
-    let ops = &block.ops;
-    let term = &block.terminator;
-    let mut out: collections::Vec<MachineInst> = collections::Vec::with_capacity(ops.len());
-    let mut i = 0;
+    if block.ops.is_empty() {
+        return;
+    }
 
-    while i < ops.len() {
-        if i + 1 < ops.len() {
+    let term = &block.terminator;
+    let len = block.ops.len();
+    let mut read = 0;
+    let mut write = 0;
+
+    while read < len {
+        if read + 1 < len {
             // --- Pattern 1: UBFX (ShrU + And -> BitfieldExtractU) ---
-            if let Some(fused) = try_fuse_ubfx(&ops[i], &ops[i + 1], &ops[i + 2..], term, config) {
-                out.push(fused);
-                i += 2;
+            if let Some(fused) = try_fuse_ubfx(
+                &block.ops[read],
+                &block.ops[read + 1],
+                &block.ops[read + 2..len],
+                term,
+                config,
+            ) {
+                block.ops[write] = fused;
+                read += 2;
+                write += 1;
                 continue;
             }
 
             // --- Pattern 2: Shifted operand (shift + binop -> IntBinaryShifted) ---
-            if let Some(fused) =
-                try_fuse_shifted_binop(&ops[i], &ops[i + 1], &ops[i + 2..], term, config)
-            {
-                out.push(fused);
-                i += 2;
+            if let Some(fused) = try_fuse_shifted_binop(
+                &block.ops[read],
+                &block.ops[read + 1],
+                &block.ops[read + 2..len],
+                term,
+                config,
+            ) {
+                block.ops[write] = fused;
+                read += 2;
+                write += 1;
                 continue;
             }
 
             // --- Pattern 3: TST (And + IntCompare(0) -> TestBits) ---
-            if let Some(fused) =
-                try_fuse_test_bits(&ops[i], &ops[i + 1], &ops[i + 2..], term, config)
-            {
-                out.push(fused);
-                i += 2;
+            if let Some(fused) = try_fuse_test_bits(
+                &block.ops[read],
+                &block.ops[read + 1],
+                &block.ops[read + 2..len],
+                term,
+                config,
+            ) {
+                block.ops[write] = fused;
+                read += 2;
+                write += 1;
                 continue;
             }
         }
 
-        out.push(ops[i].clone());
-        i += 1;
+        if write != read {
+            block.ops[write] = block.ops[read].clone();
+        }
+        read += 1;
+        write += 1;
     }
 
-    block.ops = out;
+    block.ops.truncate(write);
 }
 
 /// Check if `mask` is a contiguous low-bit mask: `(1 << width) - 1`.

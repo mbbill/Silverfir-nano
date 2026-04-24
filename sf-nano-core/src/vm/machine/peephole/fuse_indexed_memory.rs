@@ -18,8 +18,6 @@
 //! ```
 //! -> `IndexedLoad/Store { base, index, extend=None, offset=0 }`
 
-use crate::collections;
-
 use crate::vm::machine::machine_ir::{
     MachineBlock, MachineConvertOp, MachineIndexExtend, MachineInst, MachineInstKind,
     MachineIntBinaryOp, MachineIntWidth, MachineTerminator, MachineValue,
@@ -28,31 +26,40 @@ use crate::vm::machine::machine_ir::{
 use super::helpers::reg_live_after;
 
 pub(super) fn fuse_indexed_memory(block: &mut MachineBlock) {
-    let ops = &block.ops;
-    let term = &block.terminator;
-    let mut out: collections::Vec<MachineInst> = collections::Vec::with_capacity(ops.len());
-    let mut i = 0;
+    if block.ops.is_empty() {
+        return;
+    }
 
-    while i < ops.len() {
+    let term = &block.terminator;
+    let len = block.ops.len();
+    let mut read = 0;
+    let mut write = 0;
+
+    while read < len {
         // --- Pattern A: cvt + [offset_add] + base_add + load/store ---
-        if let Some(consumed) = try_fuse_uxtw_indexed(&ops[i..], term) {
-            out.push(consumed.fused);
-            i += consumed.skip;
+        if let Some(consumed) = try_fuse_uxtw_indexed(&block.ops[read..len], term) {
+            block.ops[write] = consumed.fused;
+            read += consumed.skip;
+            write += 1;
             continue;
         }
 
         // --- Pattern B: base_add + load/store ---
-        if let Some(consumed) = try_fuse_indexed(&ops[i..], term) {
-            out.push(consumed.fused);
-            i += consumed.skip;
+        if let Some(consumed) = try_fuse_indexed(&block.ops[read..len], term) {
+            block.ops[write] = consumed.fused;
+            read += consumed.skip;
+            write += 1;
             continue;
         }
 
-        out.push(ops[i].clone());
-        i += 1;
+        if write != read {
+            block.ops[write] = block.ops[read].clone();
+        }
+        read += 1;
+        write += 1;
     }
 
-    block.ops = out;
+    block.ops.truncate(write);
 }
 
 struct FusedResult {
