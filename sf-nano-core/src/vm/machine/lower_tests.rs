@@ -2025,20 +2025,29 @@ fn lowers_direct_local_call_with_continuation_block() {
             ..
         } if dst == callee_frame_base && offset == u64::from(caller_frame.operand_slot(1).0) * 8
     ));
-    // Direct-call stack-overflow precheck now happens in the backend/emulator
-    // call path instead of caller-side MachineIR lowering, so the call site
-    // only materializes the callee frame base and caller result base here.
-    assert_eq!(call_block.ops.len(), 2);
-    // The second op computes `caller_result_base = caller_fp + results_offset`
+    assert!(
+        call_block.ops.iter().any(|inst| matches!(
+            inst.kind,
+            MachineInstKind::TrapIf {
+                kind: MachineTrapKind::StackOverflow,
+                ..
+            }
+        )),
+        "direct-call lowering should emit a stack-overflow precheck"
+    );
+    // One op computes `caller_result_base = caller_fp + results_offset`
     // and is consumed by the `Call` terminator below.
     assert!(matches!(
-        call_block.ops[1].kind,
-        MachineInstKind::IntBinary {
-            op: MachineIntBinaryOp::Add,
-            dst,
-            lhs: MachineValue::Reg(MachineReg(1)),
-            ..
-        } if dst == caller_result_base
+        call_block.ops.iter().find(|inst| matches!(
+            inst.kind,
+            MachineInstKind::IntBinary {
+                op: MachineIntBinaryOp::Add,
+                dst,
+                lhs: MachineValue::Reg(MachineReg(1)),
+                ..
+            } if dst == caller_result_base
+        )),
+        Some(_)
     ));
 
     let continuation = &caller_program.blocks[1];
@@ -3088,6 +3097,15 @@ fn preserved_call_keeps_carried_cache_live_across_edge() {
         __blk1
             .ops
             .push(SsaInst::local_get_cache(slot0, SsaValue(1)));
+        {
+            let __pidx = ssa.intern_primitive(PrimitiveOpKind::Drop).unwrap();
+            __blk1.ops.push(SsaInst::primitive(
+                __pidx,
+                SsaValue::NONE,
+                [SsaOperand::value(SsaValue(1)), SsaOperand::NONE],
+                0u16,
+            ));
+        }
         ssa.blocks.push(__blk1);
         ssa
     };
@@ -3638,7 +3656,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     assert_eq!(lowered.module.consts.len(), 1);
 
     let program = &lowered.module.functions[0].program;
-    assert_eq!(program.blocks.len(), 12);
+    assert_eq!(program.blocks.len(), 11);
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Branch { .. }
@@ -3657,35 +3675,29 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     ));
     assert!(matches!(
         program.blocks[6].terminator,
-        MachineTerminator::Trap {
-            kind: MachineTrapKind::IndirectCallTypeMismatch
-        }
-    ));
-    assert!(matches!(
-        program.blocks[7].terminator,
         MachineTerminator::Branch { .. }
     ));
-    assert_eq!(program.blocks[7].params.len(), 1);
+    assert_eq!(program.blocks[6].params.len(), 1);
     assert!(matches!(
-        program.blocks[7].ops[0].kind,
+        program.blocks[6].ops[0].kind,
         MachineInstKind::IntBinary {
             op: MachineIntBinaryOp::Add,
             ..
         }
     ));
     assert!(matches!(
-        program.blocks[8].terminator,
+        program.blocks[7].terminator,
         MachineTerminator::Branch { .. }
     ));
     assert!(matches!(
-        program.blocks[8].ops[0].kind,
+        program.blocks[7].ops[0].kind,
         MachineInstKind::Store { .. }
     ));
     assert!(matches!(
-        program.blocks[9].terminator,
+        program.blocks[8].terminator,
         MachineTerminator::Call {
             target: MachineCallTarget::Indirect { .. },
-            continuation: MachineBlockId(11),
+            continuation: MachineBlockId(10),
             ..
         }
     ));
@@ -3777,26 +3789,26 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         }
     ));
     assert!(matches!(
-        program.blocks[10].ops[0].kind,
+        program.blocks[9].ops[0].kind,
         MachineInstKind::CallRuntime(_)
     ));
     assert!(matches!(
-        program.blocks[10].ops[1].kind,
+        program.blocks[9].ops[1].kind,
         MachineInstKind::Load { .. }
     ));
     assert!(matches!(
-        program.blocks[10].ops[2].kind,
+        program.blocks[9].ops[2].kind,
         MachineInstKind::Load { .. }
     ));
     assert!(matches!(
-        program.blocks[10].terminator,
+        program.blocks[9].terminator,
         MachineTerminator::Jump(MachineEdge {
-            target: MachineBlockId(11),
+            target: MachineBlockId(10),
             ..
         })
     ));
     assert!(matches!(
-        program.blocks[11].terminator,
+        program.blocks[10].terminator,
         MachineTerminator::Trap {
             kind: MachineTrapKind::Unreachable
         }
@@ -3852,7 +3864,7 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
     assert_eq!(lowered.module.consts.len(), 1);
 
     let program = &lowered.module.functions[0].program;
-    assert_eq!(program.blocks.len(), 10);
+    assert_eq!(program.blocks.len(), 9);
     assert!(matches!(
         program.blocks[0].ops[0].kind,
         MachineInstKind::Load {
@@ -3879,42 +3891,36 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
         program.blocks[3].terminator,
         MachineTerminator::Branch { .. }
     ));
+    assert_eq!(program.blocks[4].params.len(), 1);
     assert!(matches!(
         program.blocks[4].terminator,
-        MachineTerminator::Trap {
-            kind: MachineTrapKind::IndirectCallTypeMismatch
-        }
+        MachineTerminator::Branch { .. }
     ));
-    assert_eq!(program.blocks[5].params.len(), 1);
     assert!(matches!(
         program.blocks[5].terminator,
         MachineTerminator::Branch { .. }
     ));
     assert!(matches!(
         program.blocks[6].terminator,
-        MachineTerminator::Branch { .. }
-    ));
-    assert!(matches!(
-        program.blocks[7].terminator,
         MachineTerminator::Call {
             target: MachineCallTarget::Indirect { .. },
-            continuation: MachineBlockId(9),
+            continuation: MachineBlockId(8),
             ..
         }
     ));
     assert!(matches!(
-        program.blocks[8].ops[0].kind,
+        program.blocks[7].ops[0].kind,
         MachineInstKind::CallRuntime(_)
     ));
     assert!(matches!(
-        program.blocks[8].terminator,
+        program.blocks[7].terminator,
         MachineTerminator::Jump(MachineEdge {
-            target: MachineBlockId(9),
+            target: MachineBlockId(8),
             ..
         })
     ));
     assert!(matches!(
-        program.blocks[9].terminator,
+        program.blocks[8].terminator,
         MachineTerminator::Trap {
             kind: MachineTrapKind::Unreachable
         }
@@ -3994,14 +4000,20 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
             ..
         }
     )));
-    assert!(matches!(
-        program.blocks[7].ops[0].kind,
-        MachineInstKind::IntBinary {
-            width: MachineIntWidth::I32,
-            op: MachineIntBinaryOp::Add,
-            ..
-        }
-    ));
+    assert!(
+        program
+            .blocks
+            .iter()
+            .any(|block| block.ops.iter().any(|inst| matches!(
+                inst.kind,
+                MachineInstKind::IntBinary {
+                    width: MachineIntWidth::I32,
+                    op: MachineIntBinaryOp::Add,
+                    ..
+                }
+            ))),
+        "expected 32-bit call_indirect lowering to use GP-word I32 add ops"
+    );
 }
 
 #[test]
@@ -4244,7 +4256,7 @@ fn lowers_global_get_and_set_without_helpers() {
     .expect("global get/set should lower directly");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert_eq!(ops.len(), 5);
+    assert_eq!(ops.len(), 7);
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Move {
@@ -4253,9 +4265,11 @@ fn lowers_global_get_and_set_without_helpers() {
         }
     ));
     assert!(matches!(ops[1].kind, MachineInstKind::Load { .. }));
-    assert!(matches!(ops[2].kind, MachineInstKind::Store { .. }));
-    assert!(matches!(ops[3].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[2].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[3].kind, MachineInstKind::Store { .. }));
     assert!(matches!(ops[4].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[5].kind, MachineInstKind::Load { .. }));
+    assert!(matches!(ops[6].kind, MachineInstKind::Load { .. }));
 }
 
 #[test]

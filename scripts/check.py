@@ -1,0 +1,1601 @@
+#!/usr/bin/env python3
+"""Concise validation runner for Silverfir Nano.
+
+Public modes:
+  python3 scripts/check.py fast
+  python3 scripts/check.py full
+
+The runner keeps stdout compact and writes detailed command output to
+target/check-<mode>-logs/. Failures and warnings are summarized with the
+exact command, log path, and the most useful diagnostic headers/locations.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import platform
+import re
+import shutil
+import subprocess
+import sys
+import textwrap
+import time
+from dataclasses import dataclass, field
+from pathlib import Path, PureWindowsPath
+from typing import Dict, List, Optional, Sequence, Tuple
+
+
+ROOT = Path(__file__).resolve().parents[1]
+TARGET_DIR = ROOT / "target"
+ARMV7_TARGET = "armv7-unknown-linux-musleabihf"
+X64_DARWIN_TARGET = "x86_64-apple-darwin"
+X64_LINUX_TARGET = "x86_64-unknown-linux-gnu"
+TESTSUITE_DIR = Path(os.environ.get("TESTSUITE_DIR", TARGET_DIR / "webassembly-testsuite"))
+FULL_RUNTIME_FEATURES = "jit,wasi,validator,guard-pages"
+
+
+CORE_OPTIONAL_FEATURES = [
+    "backend-emu64",
+    "backend-emu32",
+    "wasi",
+    "validator",
+    "call-trace",
+    "guard-pages",
+    "ir-dump",
+    "jitdump",
+    "memprof",
+    "thumb2-test",
+]
+
+CLI_OPTIONAL_FEATURES = [
+    "call-trace",
+    "memprof",
+    "thumb2-test",
+]
+
+CORE_FAST_COMBOS = [
+    ("default", "DEFAULT"),
+    ("all-features", "ALL"),
+    ("only-jit", "jit"),
+    ("full-runtime", FULL_RUNTIME_FEATURES),
+    ("full-dev", "jit,wasi,validator,call-trace,guard-pages,ir-dump,jitdump,memprof"),
+    ("emu64", "jit,wasi,validator,guard-pages,backend-emu64"),
+    ("emu32", "jit,wasi,validator,guard-pages,backend-emu32"),
+    ("thumb2", "jit,validator,guard-pages,thumb2-test"),
+]
+
+CLI_FAST_COMBOS = [
+    ("default", "DEFAULT"),
+    ("all-features", "ALL"),
+    ("only-jit", "jit"),
+    ("jit+memprof", "jit,memprof"),
+    ("jit+thumb2", "jit,thumb2-test"),
+]
+
+DEFAULT_TARGET_ROWS = [
+    ("arm64-darwin", "aarch64-apple-darwin", "hosted", "", ""),
+    ("arm64-linux", "aarch64-unknown-linux-gnu", "hosted", "", ""),
+    ("arm64-none", "aarch64-unknown-none", "bare", "--no-default-features --features jit", ""),
+    ("x64-darwin", "x86_64-apple-darwin", "hosted", "", ""),
+    ("x64-linux", "x86_64-unknown-linux-gnu", "hosted", "", ""),
+    ("x64-windows", "x86_64-pc-windows-gnu", "hosted", "", ""),
+]
+
+EXTRA_TARGET_ROWS = [
+    ("armv7-linux", ARMV7_TARGET, "hosted", "", ""),
+    (
+        "armv7m-linux",
+        ARMV7_TARGET,
+        "hosted",
+        "--no-default-features --features jit,thumb2-test",
+        "--no-default-features --features jit,thumb2-test",
+    ),
+]
+
+BARE_SMOKE_TARGETS = [
+    "aarch64-unknown-none",
+    "thumbv8m.main-none-eabihf",
+]
+
+@dataclass
+class Host:
+    kind: str
+    machine: str
+
+    @property
+    def is_posix_runtime(self) -> bool:
+        return self.kind in {"macos", "linux", "wsl"}
+
+
+@dataclass
+class Diagnostic:
+    kind: str
+    message: str
+    location: Optional[str] = None
+
+    def one_line(self) -> str:
+        if self.location:
+            return f"{self.location}: {self.message}"
+        return self.message
+
+
+@dataclass
+class StepResult:
+    index: int
+    name: str
+    status: str
+    command: str
+    log_path: Optional[Path]
+    rc: int = 0
+    warnings: int = 0
+    errors: int = 0
+    seconds: float = 0.0
+    diagnostics: List[Diagnostic] = field(default_factory=list)
+    message: Optional[str] = None
+
+
+def detect_host() -> Host:
+    system = platform.system()
+    machine = platform.machine().lower()
+    if system == "Darwin":
+        return Host("macos", machine)
+    if system == "Linux":
+        version = ""
+        try:
+            version = Path("/proc/version").read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            pass
+        if "microsoft" in version.lower() or os.environ.get("WSL_DISTRO_NAME"):
+            return Host("wsl", machine)
+        return Host("linux", machine)
+    if system == "Windows":
+        return Host("windows", machine)
+    return Host(system.lower(), machine)
+
+
+def windows_path_to_wsl(path_text: str) -> Optional[str]:
+    path = PureWindowsPath(path_text)
+    drive = path.drive
+    if len(drive) != 2 or drive[1] != ":":
+        return None
+    parts = [part for part in path.parts[1:] if part not in {"\\", "/"}]
+    suffix = "/".join(parts)
+    prefix = f"/mnt/{drive[0].lower()}"
+    return f"{prefix}/{suffix}" if suffix else prefix
+
+
+def wsl_env_overrides() -> List[str]:
+    overrides: List[str] = []
+    for name in ("TESTSUITE_DIR",):
+        value = os.environ.get(name)
+        if not value:
+            continue
+        converted = windows_path_to_wsl(value)
+        overrides.append(f"{name}={converted or value}")
+    return overrides
+
+
+def reexec_in_wsl(argv: Sequence[str]) -> int:
+    wsl = shutil.which("wsl.exe") or shutil.which("wsl")
+    if not wsl:
+        print(
+            "Silverfir check: native Windows detected, but wsl.exe was not found. "
+            "Install WSL or run this from a WSL shell.",
+            file=sys.stderr,
+        )
+        return 1
+
+    linux_root = windows_path_to_wsl(str(ROOT.resolve()))
+    if linux_root is None:
+        print(
+            f"Silverfir check: cannot map repository path to WSL: {ROOT.resolve()}",
+            file=sys.stderr,
+        )
+        return 1
+
+    cmd: List[str] = [wsl, "--cd", linux_root]
+    env_args = wsl_env_overrides()
+    if env_args:
+        cmd.extend(["env", *env_args])
+    cmd.extend(["python3", "-u", "scripts/check.py", *argv])
+
+    print(f"Silverfir check: native Windows detected; delegating to WSL at {linux_root}", flush=True)
+    try:
+        completed = subprocess.run(cmd, check=False)
+    except OSError as exc:
+        print(f"Silverfir check: failed to launch WSL: {exc}", file=sys.stderr)
+        return 1
+    return completed.returncode
+
+
+def shlex_join(argv: Sequence[object]) -> str:
+    import shlex
+
+    return shlex.join(str(a) for a in argv)
+
+
+def rel(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(ROOT.resolve()))
+    except ValueError:
+        return str(path)
+
+
+def clean_label(text: str) -> str:
+    return re.sub(r"[^A-Za-z0-9_.-]+", "-", text).strip("-")
+
+
+def exe_suffix_for_target(target: Optional[str], host: Host) -> str:
+    if target and "windows" in target:
+        return ".exe"
+    if target is None and host.kind == "windows":
+        return ".exe"
+    return ""
+
+
+def profile_dir(profile_name: str) -> str:
+    return "release" if profile_name == "release" else "debug"
+
+
+def binary_path(bin_name: str, profile_name: str, host: Host, target: Optional[str] = None) -> Path:
+    suffix = exe_suffix_for_target(target, host)
+    if target:
+        return TARGET_DIR / target / profile_dir(profile_name) / f"{bin_name}{suffix}"
+    return TARGET_DIR / profile_dir(profile_name) / f"{bin_name}{suffix}"
+
+
+def feature_args(spec: str) -> List[str]:
+    if spec == "DEFAULT":
+        return []
+    if spec == "ALL":
+        return ["--all-features"]
+    if spec == "EMPTY":
+        return ["--no-default-features"]
+    return ["--no-default-features", "--features", spec]
+
+
+def feature_spec_enables_memprof(spec: str) -> bool:
+    return spec == "ALL" or "memprof" in spec.split(",")
+
+
+def split_args(text: str) -> List[str]:
+    if not text:
+        return []
+    import shlex
+
+    return shlex.split(text)
+
+
+def x64_target_for_host(host: Host) -> Optional[str]:
+    if host.kind == "macos":
+        return X64_DARWIN_TARGET
+    if host.kind in {"linux", "wsl"}:
+        return X64_LINUX_TARGET
+    return None
+
+
+def is_runnable_x64_host(host: Host) -> bool:
+    return host.kind in {"macos", "linux", "wsl"} and host.machine in {
+        "x86_64",
+        "amd64",
+    }
+
+
+def append_env_word(env: Dict[str, str], name: str, value: str) -> None:
+    existing = env.get(name) or os.environ.get(name, "")
+    env[name] = f"{existing} {value}".strip() if existing else value
+
+
+def target_is_x64(target: Optional[str], host: Host) -> bool:
+    if target is not None:
+        return target.startswith("x86_64-")
+    return host.machine in {"x86_64", "amd64"}
+
+
+def cargo_env(runner: CheckRunner, target: Optional[str], env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    proc_env = dict(env or {})
+    # Cargo's RUSTFLAGS environment overrides target rustflags from
+    # .cargo/config.toml. Preserve the repo-required x64 SIMD features when
+    # this runner adds lint flags below.
+    if target_is_x64(target, runner.host):
+        append_env_word(proc_env, "RUSTFLAGS", "-C target-feature=+ssse3,+sse4.1")
+    # rustc 1.95 can ICE while rendering dead_code diagnostics for several
+    # feature-gated build rows. Suppress only that lint and keep other warning
+    # diagnostics visible to the runner.
+    append_env_word(proc_env, "RUSTFLAGS", "-A dead_code")
+    return proc_env
+
+
+DIAG_HEADER_RE = re.compile(r"^(error(?:\[[^\]]+\])?:|warning(?:\[[^\]]+\])?:)\s*(.*)$")
+LOCATION_RE = re.compile(r"^\s+-->\s+(.+)$")
+GENERATED_WARNINGS_RE = re.compile(r"generated\s+(\d+)\s+warnings?")
+RELEVANT_RE = re.compile(
+    r"(error(?:\[|:)|warning(?:\[|:)|fatal|failed|failure|panicked|not found|missing|FAIL)",
+    re.IGNORECASE,
+)
+APP_ERROR_RE = re.compile(
+    r"(\bERROR\b.*\b(FAIL|ERROR)\b|Some tests failed|Failed:\s+[1-9])",
+    re.IGNORECASE,
+)
+
+
+def parse_log(log_path: Path, rc: int, max_diagnostics: int) -> Tuple[int, int, List[Diagnostic]]:
+    try:
+        lines = log_path.read_text(encoding="utf-8", errors="replace").splitlines()
+    except OSError:
+        return (1 if rc else 0, 0, [])
+
+    errors = 0
+    warnings = 0
+    diagnostics: List[Diagnostic] = []
+
+    for i, line in enumerate(lines):
+        match = DIAG_HEADER_RE.match(line)
+        if not match:
+            continue
+        kind = "error" if match.group(1).startswith("error") else "warning"
+        if kind == "error":
+            errors += 1
+        else:
+            warnings += 1
+
+        location = None
+        for lookahead in lines[i + 1 : i + 8]:
+            loc_match = LOCATION_RE.match(lookahead)
+            if loc_match:
+                location = loc_match.group(1).strip()
+                break
+        if len(diagnostics) < max_diagnostics:
+            diagnostics.append(Diagnostic(kind, f"{kind}: {match.group(2).strip()}", location))
+
+    for line in lines:
+        stripped = line.strip()
+        if not APP_ERROR_RE.search(stripped):
+            continue
+        errors += 1
+        if len(diagnostics) < max_diagnostics:
+            diagnostics.append(Diagnostic("error", stripped))
+
+    generated_max = 0
+    for line in lines:
+        gen = GENERATED_WARNINGS_RE.search(line)
+        if gen:
+            generated_max = max(generated_max, int(gen.group(1)))
+    warnings = max(warnings, generated_max)
+
+    if rc != 0 and errors == 0:
+        errors = 1
+        if not diagnostics:
+            relevant = [line.strip() for line in lines if RELEVANT_RE.search(line)]
+            tail = [line.strip() for line in lines[-20:] if line.strip()]
+            for line in (relevant or tail)[:max_diagnostics]:
+                diagnostics.append(Diagnostic("error", line))
+
+    return errors, warnings, diagnostics
+
+
+class CheckRunner:
+    def __init__(
+        self,
+        mode: str,
+        host: Host,
+        strict: bool,
+        install_targets: bool,
+        max_diagnostics: int,
+        phase: Optional[str] = None,
+    ) -> None:
+        self.mode = mode
+        self.host = host
+        self.strict = strict
+        self.install_targets = install_targets
+        self.max_diagnostics = max_diagnostics
+        self.phase = phase
+        log_suffix = f"-{phase}" if phase else ""
+        self.log_dir = TARGET_DIR / f"check-{mode}{log_suffix}-logs"
+        self.log_dir.mkdir(parents=True, exist_ok=True)
+        self.tmp_dir = self.log_dir / "tmp"
+        self.tmp_dir.mkdir(parents=True, exist_ok=True)
+        self.results: List[StepResult] = []
+        self.step_index = 0
+        self.colima_started = False
+
+    def run(
+        self,
+        name: str,
+        argv: Sequence[object],
+        *,
+        env: Optional[Dict[str, str]] = None,
+        cwd: Path = ROOT,
+        log_name: Optional[str] = None,
+        ignore_warnings: bool = False,
+    ) -> StepResult:
+        self.step_index += 1
+        log_path = self.log_dir / f"{log_name or clean_label(name)}.log"
+        display = shlex_join(argv)
+
+        start = time.monotonic()
+        proc_env = os.environ.copy()
+        if env:
+            proc_env.update({k: str(v) for k, v in env.items()})
+
+        try:
+            with log_path.open("w", encoding="utf-8", errors="replace") as log:
+                log.write(f"$ {display}\n")
+                log.write(f"# cwd: {cwd}\n\n")
+                completed = subprocess.run(
+                    [str(a) for a in argv],
+                    cwd=str(cwd),
+                    env=proc_env,
+                    stdout=log,
+                    stderr=subprocess.STDOUT,
+                    check=False,
+                )
+            rc = completed.returncode
+        except FileNotFoundError as exc:
+            with log_path.open("w", encoding="utf-8", errors="replace") as log:
+                log.write(f"$ {display}\n")
+                log.write(f"# cwd: {cwd}\n\n")
+                log.write(f"missing executable: {exc.filename}\n")
+            rc = 127
+
+        seconds = time.monotonic() - start
+        errors, warnings, diagnostics = parse_log(log_path, rc, self.max_diagnostics)
+        if ignore_warnings and rc == 0:
+            warnings = 0
+            diagnostics = [d for d in diagnostics if d.kind != "warning"]
+
+        if rc != 0:
+            status = "FAIL"
+        elif warnings > 0:
+            status = "WARN"
+        else:
+            status = "OK"
+
+        result = StepResult(
+            index=self.step_index,
+            name=name,
+            status=status,
+            command=display,
+            log_path=log_path,
+            rc=rc,
+            warnings=warnings,
+            errors=errors,
+            seconds=seconds,
+            diagnostics=diagnostics,
+        )
+        self.results.append(result)
+        self._print_step_result(result)
+        return result
+
+    def skip(self, name: str, reason: str) -> StepResult:
+        self.step_index += 1
+        result = StepResult(
+            index=self.step_index,
+            name=name,
+            status="SKIP",
+            command="-",
+            log_path=None,
+            message=reason,
+        )
+        self.results.append(result)
+        self._print_step_result(result)
+        return result
+
+    def fail(self, name: str, message: str, *, command: str = "-") -> StepResult:
+        self.step_index += 1
+        log_path = self.log_dir / f"{clean_label(name)}.log"
+        log_path.write_text(message.rstrip() + "\n", encoding="utf-8")
+        result = StepResult(
+            index=self.step_index,
+            name=name,
+            status="FAIL",
+            command=command,
+            log_path=log_path,
+            rc=1,
+            errors=1,
+            diagnostics=[Diagnostic("error", message)],
+            message=message,
+        )
+        self.results.append(result)
+        self._print_step_result(result)
+        return result
+
+    def _print_step_result(self, result: StepResult) -> None:
+        duration = f"{result.seconds:.1f}s" if result.seconds else ""
+        if result.status == "OK":
+            if self.mode == "fast" or result.index % 10 == 0:
+                print(f"[{result.index:03d}] ok: {result.name} {duration}".rstrip())
+        elif result.status == "WARN":
+            print(f"[{result.index:03d}] WARN: {result.name}")
+            print(f"      {result.warnings} warning(s), log: {rel(result.log_path)}")
+        elif result.status == "FAIL":
+            print(f"[{result.index:03d}] FAIL: {result.name}")
+            print(f"      {result.errors} error(s), log: {rel(result.log_path)}")
+        else:
+            print(f"[{result.index:03d}] SKIP: {result.name}")
+            print(f"      {result.message}")
+
+    def final_report(self) -> int:
+        counts = {status: 0 for status in ("OK", "WARN", "FAIL", "SKIP")}
+        for result in self.results:
+            counts[result.status] += 1
+
+        print()
+        print("=== Summary ===")
+        phase = f" phase={self.phase}" if self.phase else ""
+        print(
+            f"mode={self.mode}{phase} host={self.host.kind}/{self.host.machine} "
+            f"ok={counts['OK']} warn={counts['WARN']} fail={counts['FAIL']} skip={counts['SKIP']}"
+        )
+        print(f"logs: {rel(self.log_dir)}")
+
+        issues = [r for r in self.results if r.status in {"FAIL", "WARN"}]
+        if issues:
+            print()
+            print("=== Issues ===")
+            for result in issues:
+                print(f"{result.status}: {result.name}")
+                if result.command != "-":
+                    print(f"  command: {result.command}")
+                if result.log_path:
+                    print(f"  log: {rel(result.log_path)}")
+                if result.diagnostics:
+                    for diagnostic in result.diagnostics:
+                        print(f"  - {diagnostic.one_line()}")
+                elif result.message:
+                    print(f"  - {result.message}")
+
+        skipped = [r for r in self.results if r.status == "SKIP"]
+        if skipped:
+            print()
+            print("=== Skipped ===")
+            for result in skipped:
+                print(f"- {result.name}: {result.message}")
+
+        if counts["FAIL"] > 0:
+            return 1
+        if self.strict and counts["WARN"] > 0:
+            return 1
+        return 0
+
+
+def command_exists(name: str) -> bool:
+    return shutil.which(name) is not None
+
+
+def rustup_installed_targets() -> Optional[set[str]]:
+    if not command_exists("rustup"):
+        return None
+    proc = subprocess.run(
+        ["rustup", "target", "list", "--installed"],
+        cwd=str(ROOT),
+        stdout=subprocess.PIPE,
+        stderr=subprocess.DEVNULL,
+        text=True,
+        check=False,
+    )
+    if proc.returncode != 0:
+        return None
+    return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
+
+
+def ensure_rust_target(runner: CheckRunner, target: str) -> bool:
+    installed = rustup_installed_targets()
+    if installed is None:
+        runner.fail(
+            f"rustup target check ({target})",
+            "rustup is required to verify cross-compile targets.",
+            command="rustup target list --installed",
+        )
+        return False
+    if target in installed:
+        return True
+    if runner.install_targets:
+        result = runner.run(
+            f"install rust target {target}",
+            ["rustup", "target", "add", target],
+            log_name=f"rustup-target-add-{clean_label(target)}",
+        )
+        return result.status != "FAIL"
+    runner.fail(
+        f"rust target missing ({target})",
+        f"missing rustup target {target}; run: rustup target add {target}",
+        command=f"rustup target add {target}",
+    )
+    return False
+
+
+def ensure_testsuite(runner: CheckRunner) -> bool:
+    if TESTSUITE_DIR.is_dir():
+        return True
+    runner.fail(
+        "spectest testsuite",
+        f"missing testsuite directory: {TESTSUITE_DIR}. Set TESTSUITE_DIR or populate target/webassembly-testsuite.",
+    )
+    return False
+
+
+def ensure_armv7_runner(runner: CheckRunner) -> bool:
+    if runner.host.kind == "macos":
+        if not command_exists("colima"):
+            runner.fail("armv7 qemu runner", "missing colima; install Colima or run ARMv7 checks on Linux/WSL.")
+            return False
+        status = subprocess.run(
+            ["colima", "status"],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if status.returncode != 0:
+            start = runner.run("colima start", ["colima", "start"], log_name="colima-start")
+            if start.status == "FAIL":
+                return False
+            runner.colima_started = True
+        qemu = subprocess.run(
+            ["colima", "ssh", "--", "which", "qemu-arm-static"],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if qemu.returncode != 0:
+            update = runner.run(
+                "colima install qemu-user-static (apt update)",
+                ["colima", "ssh", "--", "sudo", "apt-get", "update", "-qq"],
+                log_name="colima-apt-update",
+            )
+            if update.status == "FAIL":
+                return False
+            install = runner.run(
+                "colima install qemu-user-static",
+                ["colima", "ssh", "--", "sudo", "apt-get", "install", "-y", "-qq", "qemu-user-static"],
+                log_name="colima-install-qemu-user-static",
+            )
+            return install.status != "FAIL"
+        return True
+
+    if runner.host.kind in {"linux", "wsl"}:
+        if command_exists("qemu-arm-static"):
+            return True
+        runner.fail(
+            "armv7 qemu runner",
+            "missing qemu-arm-static; on Debian/Ubuntu/WSL install it with: sudo apt-get install -y qemu-user-static",
+        )
+        return False
+
+    runner.skip("armv7 qemu runner", "ARMv7 runtime checks require macOS+Colima or Linux/WSL.")
+    return False
+
+
+def cleanup_colima(runner: CheckRunner) -> None:
+    if not runner.colima_started:
+        return
+    runner.run("colima stop", ["colima", "stop"], log_name="colima-stop")
+
+
+def cargo_check(
+    runner: CheckRunner,
+    name: str,
+    package: Optional[str],
+    *,
+    profile_name: str = "dev",
+    target: Optional[str] = None,
+    feature_spec: Optional[str] = None,
+    extra_args: Optional[Sequence[str]] = None,
+    env: Optional[Dict[str, str]] = None,
+    log_name: Optional[str] = None,
+    cwd: Path = ROOT,
+    ignore_warnings: bool = False,
+    allow_dead_code: bool = False,
+) -> StepResult:
+    argv: List[str] = ["cargo", "check"]
+    if profile_name == "release":
+        argv.append("--release")
+    if target:
+        argv.extend(["--target", target])
+    if package:
+        argv.extend(["-p", package])
+    if feature_spec is not None:
+        argv.extend(feature_args(feature_spec))
+    if extra_args:
+        argv.extend(extra_args)
+
+    proc_env = cargo_env(runner, target, env)
+    if runner.strict and not ignore_warnings:
+        append_env_word(proc_env, "RUSTFLAGS", "-D warnings")
+    if runner.strict or allow_dead_code:
+        append_env_word(proc_env, "RUSTFLAGS", "-A dead_code")
+
+    return runner.run(
+        name,
+        argv,
+        env=proc_env,
+        cwd=cwd,
+        log_name=log_name,
+        ignore_warnings=ignore_warnings,
+    )
+
+
+def cargo_build(
+    runner: CheckRunner,
+    name: str,
+    package: str,
+    *,
+    profile_name: str,
+    target: Optional[str],
+    features: str,
+    log_name: Optional[str] = None,
+) -> StepResult:
+    argv: List[str] = ["cargo", "build"]
+    if profile_name == "release":
+        argv.append("--release")
+    if target:
+        argv.extend(["--target", target])
+    argv.extend(["-p", package, "--no-default-features", "--features", features])
+    return runner.run(name, argv, env=cargo_env(runner, target), log_name=log_name)
+
+
+def cargo_build_package(
+    runner: CheckRunner,
+    name: str,
+    package: str,
+    *,
+    profile_name: str,
+    target: Optional[str],
+    log_name: Optional[str] = None,
+) -> StepResult:
+    argv: List[str] = ["cargo", "build"]
+    if profile_name == "release":
+        argv.append("--release")
+    if target:
+        argv.extend(["--target", target])
+    argv.extend(["-p", package])
+    return runner.run(name, argv, env=cargo_env(runner, target), log_name=log_name)
+
+
+def skip_after_failed_dependency(runner: CheckRunner, name: str, dependency: StepResult) -> None:
+    runner.skip(name, f"dependency failed: {dependency.name}; see {rel(dependency.log_path)}")
+
+
+def run_workspace_tests(runner: CheckRunner, profile_name: str = "debug") -> None:
+    argv = ["cargo", "test", "--workspace"]
+    if profile_name == "release":
+        argv.append("--release")
+    runner.run(
+        f"workspace tests ({profile_name})",
+        argv,
+        env=cargo_env(runner, None),
+        log_name=f"workspace-tests-{profile_name}",
+    )
+
+
+def full_core_combos() -> List[Tuple[str, str]]:
+    combos = [
+        ("default", "DEFAULT"),
+        ("all-features", "ALL"),
+        ("only-jit", "jit"),
+    ]
+    for feature in CORE_OPTIONAL_FEATURES:
+        combos.append((f"jit+{feature}", f"jit,{feature}"))
+    for i, feature_a in enumerate(CORE_OPTIONAL_FEATURES):
+        for feature_b in CORE_OPTIONAL_FEATURES[i + 1 :]:
+            combos.append((f"jit+{feature_a}+{feature_b}", f"jit,{feature_a},{feature_b}"))
+    combos.extend(
+        [
+            ("cli", "jit,wasi,guard-pages"),
+            ("cli+tracing", "jit,wasi,guard-pages,call-trace"),
+            ("cli+ir-dump", "jit,wasi,guard-pages,ir-dump"),
+            ("cli+jitdump", "jit,wasi,guard-pages,jitdump"),
+            ("cli+memprof", "jit,wasi,guard-pages,memprof"),
+            ("cli+emu64", "jit,wasi,guard-pages,backend-emu64"),
+            ("cli+emu32", "jit,wasi,guard-pages,backend-emu32"),
+            ("spectest", "jit,validator,guard-pages"),
+            ("spectest+emu64", "jit,validator,guard-pages,backend-emu64"),
+            ("spectest+emu32", "jit,validator,guard-pages,backend-emu32"),
+            ("full-runtime", FULL_RUNTIME_FEATURES),
+            ("full-runtime+emu64", f"{FULL_RUNTIME_FEATURES},backend-emu64"),
+            ("full-runtime+emu32", f"{FULL_RUNTIME_FEATURES},backend-emu32"),
+            ("full-dev", "jit,wasi,validator,call-trace,guard-pages,ir-dump,jitdump,memprof"),
+            ("cli+thumb2", "jit,wasi,guard-pages,thumb2-test"),
+            ("spectest+thumb2", "jit,validator,guard-pages,thumb2-test"),
+        ]
+    )
+    return combos
+
+
+def full_cli_combos() -> List[Tuple[str, str]]:
+    combos = [
+        ("default", "DEFAULT"),
+        ("all-features", "ALL"),
+        ("only-jit", "jit"),
+    ]
+    for feature in CLI_OPTIONAL_FEATURES:
+        combos.append((f"jit+{feature}", f"jit,{feature}"))
+    for i, feature_a in enumerate(CLI_OPTIONAL_FEATURES):
+        for feature_b in CLI_OPTIONAL_FEATURES[i + 1 :]:
+            combos.append((f"jit+{feature_a}+{feature_b}", f"jit,{feature_a},{feature_b}"))
+    return combos
+
+
+def emulator_warning_smoke_spec(spec: str) -> bool:
+    has_emu64 = "backend-emu64" in spec.split(",")
+    has_emu32 = "backend-emu32" in spec.split(",")
+    return has_emu64 != has_emu32
+
+
+def run_feature_checks(runner: CheckRunner, *, full: bool, profiles: Sequence[str]) -> None:
+    core_combos = full_core_combos() if full else CORE_FAST_COMBOS
+    cli_combos = full_cli_combos() if full else CLI_FAST_COMBOS
+
+    for profile_name in profiles:
+        for label, spec in core_combos:
+            cargo_check(
+                runner,
+                f"feature check core {label} ({profile_name})",
+                "sf-nano-core",
+                profile_name=profile_name,
+                feature_spec=spec,
+                log_name=f"feature-core-{clean_label(label)}-{profile_name}",
+                ignore_warnings=emulator_warning_smoke_spec(spec),
+                allow_dead_code=feature_spec_enables_memprof(spec),
+            )
+
+        for label, spec in cli_combos:
+            cargo_check(
+                runner,
+                f"feature check cli {label} ({profile_name})",
+                "sf-nano-cli",
+                profile_name=profile_name,
+                feature_spec=spec,
+                log_name=f"feature-cli-{clean_label(label)}-{profile_name}",
+                allow_dead_code=feature_spec_enables_memprof(spec),
+            )
+
+    for profile_name in profiles:
+        cargo_check(
+            runner,
+            f"workspace default features ({profile_name})",
+            None,
+            profile_name=profile_name,
+            extra_args=["--workspace"],
+            log_name=f"workspace-{profile_name}",
+        )
+
+    cli_minimal = ROOT / "sf-nano-cli-minimal"
+    if cli_minimal.is_dir():
+        for profile_name in profiles:
+            cargo_check(
+                runner,
+                f"cli-minimal ({profile_name})",
+                None,
+                profile_name=profile_name,
+                cwd=cli_minimal,
+                log_name=f"cli-minimal-{profile_name}",
+            )
+
+
+def run_target_matrix(runner: CheckRunner, *, include_all: bool) -> None:
+    if not command_exists("rustup"):
+        runner.fail("target matrix prerequisites", "rustup is required for target matrix checks.")
+        return
+
+    rows = list(DEFAULT_TARGET_ROWS)
+    if include_all:
+        rows.extend(EXTRA_TARGET_ROWS)
+
+    package_keys = ["core", "cli", "spectest", "wasitest"]
+    for label, target, kind, core_extra, cli_spectest_override in rows:
+        if not target_installed_or_install(runner, target, f"target matrix {label}"):
+            continue
+
+        if kind == "hosted":
+            for package_key in package_keys:
+                run_target_package_check(
+                    runner,
+                    label,
+                    target,
+                    package_key,
+                    core_extra,
+                    cli_spectest_override,
+                )
+        else:
+            run_target_package_check(runner, label, target, "core", core_extra, "")
+
+    bare_smoke_dir = ROOT / "sf-nano-bare-smoke"
+    if not bare_smoke_dir.is_dir():
+        return
+    for bare_target in BARE_SMOKE_TARGETS:
+        if not target_installed_or_install(runner, bare_target, f"bare-smoke {bare_target}"):
+            continue
+        target_dir = TARGET_DIR / "check-targets-build" / f"bare-smoke-{bare_target}"
+        target_dir.mkdir(parents=True, exist_ok=True)
+        runner.run(
+            f"bare-smoke cargo check ({bare_target})",
+            ["cargo", "check", "--target", bare_target],
+            cwd=bare_smoke_dir,
+            env=cargo_env(runner, bare_target, {"CARGO_TARGET_DIR": str(target_dir)}),
+            log_name=f"target-bare-smoke-{clean_label(bare_target)}",
+        )
+
+
+def target_installed_or_install(runner: CheckRunner, target: str, name: str) -> bool:
+    installed = rustup_installed_targets()
+    if installed is None:
+        runner.fail(name, "could not read installed rustup targets.", command="rustup target list --installed")
+        return False
+    if target in installed:
+        return True
+    if runner.install_targets:
+        result = runner.run(
+            f"install rust target {target}",
+            ["rustup", "target", "add", target],
+            log_name=f"rustup-target-add-{clean_label(target)}",
+        )
+        return result.status != "FAIL"
+    runner.skip(name, f"missing rustup target {target}; use --install-targets or run rustup target add {target}")
+    return False
+
+
+def run_target_package_check(
+    runner: CheckRunner,
+    label: str,
+    target: str,
+    package_key: str,
+    core_extra: str,
+    cli_spectest_override: str,
+) -> None:
+    if package_key == "core":
+        package = "sf-nano-core"
+        extra = split_args(core_extra)
+    elif package_key == "cli":
+        package = "sf-nano-cli"
+        extra = split_args(cli_spectest_override) or ["--no-default-features", "--features", "jit"]
+    elif package_key == "spectest":
+        package = "sf-nano-spectest"
+        extra = split_args(cli_spectest_override) or ["--no-default-features", "--features", "jit"]
+    elif package_key == "wasitest":
+        package = "sf-nano-wasitest"
+        extra = []
+    else:
+        raise ValueError(package_key)
+
+    target_dir = TARGET_DIR / "check-targets-build" / f"{label}-{package_key}"
+    target_dir.mkdir(parents=True, exist_ok=True)
+    env = cargo_env(runner, target, {"CARGO_TARGET_DIR": str(target_dir)})
+
+    argv = ["cargo", "check", "--target", target, "-p", package, *extra]
+    if runner.strict:
+        append_env_word(env, "RUSTFLAGS", "-D warnings")
+        append_env_word(env, "RUSTFLAGS", "-A dead_code")
+    runner.run(
+        f"target check {label}/{package_key}",
+        argv,
+        env=env,
+        log_name=f"target-{clean_label(label)}-{package_key}",
+    )
+
+
+def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_args: Sequence[str]) -> None:
+    if not ensure_testsuite(runner):
+        return
+
+    env = {"TESTSUITE_DIR": str(TESTSUITE_DIR)}
+    for profile_name in profiles:
+        native_build = cargo_build(
+            runner,
+            f"build spectest native ({profile_name})",
+            "sf-nano-spectest",
+            profile_name=profile_name,
+            target=None,
+            features="jit",
+            log_name=f"spectest-build-native-{profile_name}",
+        )
+        host_bin = binary_path("sf-nano-spectest", profile_name, runner.host)
+        if native_build.status == "FAIL":
+            skip_after_failed_dependency(runner, f"spectest native ({profile_name})", native_build)
+        else:
+            run_binary_if_present(
+                runner,
+                f"spectest native ({profile_name})",
+                [host_bin, "--backend", "native", *extra_args],
+                env=env,
+                log_name=f"spectest-native-{profile_name}",
+            )
+
+        emu64_build = cargo_build(
+            runner,
+            f"build spectest emu64 ({profile_name})",
+            "sf-nano-spectest",
+            profile_name=profile_name,
+            target=None,
+            features="jit,backend-emu64",
+            log_name=f"spectest-build-emu64-{profile_name}",
+        )
+        if emu64_build.status == "FAIL":
+            skip_after_failed_dependency(runner, f"spectest emu64 ({profile_name})", emu64_build)
+        else:
+            run_binary_if_present(
+                runner,
+                f"spectest emu64 ({profile_name})",
+                [host_bin, *extra_args],
+                env=env,
+                log_name=f"spectest-emu64-{profile_name}",
+            )
+
+        emu32_build = cargo_build(
+            runner,
+            f"build spectest emu32 ({profile_name})",
+            "sf-nano-spectest",
+            profile_name=profile_name,
+            target=None,
+            features="jit,backend-emu32",
+            log_name=f"spectest-build-emu32-{profile_name}",
+        )
+        if emu32_build.status == "FAIL":
+            skip_after_failed_dependency(runner, f"spectest emu32 ({profile_name})", emu32_build)
+        else:
+            run_binary_if_present(
+                runner,
+                f"spectest emu32 ({profile_name})",
+                [host_bin, *extra_args],
+                env=env,
+                log_name=f"spectest-emu32-{profile_name}",
+            )
+
+        run_x64_spectest(runner, profile_name, extra_args, env)
+        run_armv7_spectests(runner, profile_name, extra_args, env)
+
+
+def run_binary_if_present(
+    runner: CheckRunner,
+    name: str,
+    argv: Sequence[object],
+    *,
+    env: Optional[Dict[str, str]] = None,
+    log_name: Optional[str] = None,
+) -> Optional[StepResult]:
+    binary = Path(argv[0])
+    if not binary.exists():
+        runner.fail(name, f"expected binary not found: {binary}", command=shlex_join(argv))
+        return None
+    return runner.run(name, argv, env=env, log_name=log_name)
+
+
+def run_x64_spectest(
+    runner: CheckRunner,
+    profile_name: str,
+    extra_args: Sequence[str],
+    env: Dict[str, str],
+) -> None:
+    target = x64_target_for_host(runner.host)
+    if target is None:
+        runner.skip(f"spectest x64 ({profile_name})", "x64 runtime checks require macOS, Linux, or WSL.")
+        return
+    if not is_runnable_x64_host(runner.host):
+        runner.skip(f"spectest x64 ({profile_name})", f"host architecture {runner.host.machine} cannot run x64 binary directly.")
+        return
+    if not ensure_rust_target(runner, target):
+        return
+
+    build = cargo_build(
+        runner,
+        f"build spectest x64 ({profile_name})",
+        "sf-nano-spectest",
+        profile_name=profile_name,
+        target=target,
+        features="jit",
+        log_name=f"spectest-build-x64-{profile_name}",
+    )
+    if build.status == "FAIL":
+        skip_after_failed_dependency(runner, f"spectest x64 ({profile_name})", build)
+        return
+    x64_bin = binary_path("sf-nano-spectest", profile_name, runner.host, target)
+    argv: List[object]
+    if runner.host.kind == "macos":
+        argv = ["arch", "-x86_64", x64_bin, "--backend", "native", *extra_args]
+    else:
+        argv = [x64_bin, "--backend", "native", *extra_args]
+    run_binary_if_present(runner, f"spectest x64 ({profile_name})", argv, env=env, log_name=f"spectest-x64-{profile_name}")
+
+
+def run_armv7_spectests(
+    runner: CheckRunner,
+    profile_name: str,
+    extra_args: Sequence[str],
+    env: Dict[str, str],
+) -> None:
+    if not ensure_rust_target(runner, ARMV7_TARGET):
+        return
+    if not ensure_armv7_runner(runner):
+        return
+
+    build_a = cargo_build(
+        runner,
+        f"build spectest armv7a ({profile_name})",
+        "sf-nano-spectest",
+        profile_name=profile_name,
+        target=ARMV7_TARGET,
+        features="jit",
+        log_name=f"spectest-build-armv7a-{profile_name}",
+    )
+    arm_bin = binary_path("sf-nano-spectest", profile_name, runner.host, ARMV7_TARGET)
+    saved_a = arm_bin.with_name(f"{arm_bin.name}.armv7a")
+    if build_a.status == "FAIL":
+        skip_after_failed_dependency(runner, f"spectest armv7a ({profile_name})", build_a)
+    elif arm_bin.exists():
+        shutil.copy2(arm_bin, saved_a)
+        run_armv7_binary(
+            runner,
+            f"spectest armv7a ({profile_name})",
+            saved_a,
+            ["--backend", "native", *extra_args],
+            env,
+            f"spectest-armv7a-{profile_name}",
+        )
+    else:
+        runner.fail(f"spectest armv7a ({profile_name})", f"expected binary not found: {arm_bin}")
+
+    build_m = cargo_build(
+        runner,
+        f"build spectest armv7m ({profile_name})",
+        "sf-nano-spectest",
+        profile_name=profile_name,
+        target=ARMV7_TARGET,
+        features="jit,thumb2-test",
+        log_name=f"spectest-build-armv7m-{profile_name}",
+    )
+    saved_m = arm_bin.with_name(f"{arm_bin.name}.armv7m")
+    if build_m.status == "FAIL":
+        skip_after_failed_dependency(runner, f"spectest armv7m ({profile_name})", build_m)
+    elif arm_bin.exists():
+        shutil.copy2(arm_bin, saved_m)
+        run_armv7_binary(
+            runner,
+            f"spectest armv7m ({profile_name})",
+            saved_m,
+            ["--backend", "native", *extra_args],
+            env,
+            f"spectest-armv7m-{profile_name}",
+        )
+    else:
+        runner.fail(f"spectest armv7m ({profile_name})", f"expected binary not found: {arm_bin}")
+
+
+def run_armv7_binary(
+    runner: CheckRunner,
+    name: str,
+    binary: Path,
+    args: Sequence[str],
+    env: Dict[str, str],
+    log_name: str,
+) -> None:
+    if not binary.exists():
+        runner.fail(name, f"expected binary not found: {binary}")
+        return
+    if runner.host.kind == "macos":
+        argv: List[object] = [
+            "colima",
+            "ssh",
+            "--",
+            "env",
+            f"TESTSUITE_DIR={env['TESTSUITE_DIR']}",
+            "qemu-arm-static",
+            "-cpu",
+            "cortex-a15",
+            binary,
+            *args,
+        ]
+        runner.run(name, argv, log_name=log_name)
+        return
+
+    argv = ["qemu-arm-static", "-cpu", "cortex-a15", binary, *args]
+    runner.run(name, argv, env=env, log_name=log_name)
+
+
+def run_wasitest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_args: Sequence[str]) -> None:
+    for profile_name in profiles:
+        run_wasitest_host_profile(runner, profile_name, extra_args)
+
+    if "release" in profiles:
+        run_wasitest_release_cross_targets(runner, extra_args)
+
+
+def run_wasitest_host_profile(runner: CheckRunner, profile_name: str, extra_args: Sequence[str]) -> None:
+    cli_build = cargo_build(
+        runner,
+        f"build wasitest cli native ({profile_name})",
+        "sf-nano-cli",
+        profile_name=profile_name,
+        target=None,
+        features="jit",
+        log_name=f"wasitest-build-cli-native-{profile_name}",
+    )
+    harness_build = cargo_build_package(
+        runner,
+        f"build wasitest harness native ({profile_name})",
+        "sf-nano-wasitest",
+        profile_name=profile_name,
+        target=None,
+        log_name=f"wasitest-build-harness-native-{profile_name}",
+    )
+    cli_bin = binary_path("sf-nano-cli", profile_name, runner.host)
+    wasitest_bin = binary_path("sf-nano-wasitest", profile_name, runner.host)
+    if cli_build.status == "FAIL":
+        skip_after_failed_dependency(runner, f"wasitest native ({profile_name})", cli_build)
+    elif harness_build.status == "FAIL":
+        skip_after_failed_dependency(runner, f"wasitest native ({profile_name})", harness_build)
+    else:
+        run_binary_if_present(
+            runner,
+            f"wasitest native ({profile_name})",
+            [wasitest_bin, "--cli-path", cli_bin, "--backend", "native", *extra_args],
+            log_name=f"wasitest-native-{profile_name}",
+        )
+
+    for backend in ("emu64", "emu32"):
+        emu_build = cargo_build(
+            runner,
+            f"build wasitest cli {backend} ({profile_name})",
+            "sf-nano-cli",
+            profile_name=profile_name,
+            target=None,
+            features=f"jit,backend-{backend}",
+            log_name=f"wasitest-build-cli-{backend}-{profile_name}",
+        )
+        if emu_build.status == "FAIL":
+            skip_after_failed_dependency(runner, f"wasitest {backend} ({profile_name})", emu_build)
+        elif harness_build.status == "FAIL":
+            skip_after_failed_dependency(runner, f"wasitest {backend} ({profile_name})", harness_build)
+        else:
+            run_binary_if_present(
+                runner,
+                f"wasitest {backend} ({profile_name})",
+                [wasitest_bin, "--cli-path", cli_bin, *extra_args],
+                log_name=f"wasitest-{backend}-{profile_name}",
+            )
+
+
+def run_wasitest_release_cross_targets(runner: CheckRunner, extra_args: Sequence[str]) -> None:
+    target = x64_target_for_host(runner.host)
+    if target and is_runnable_x64_host(runner.host) and ensure_rust_target(runner, target):
+        cli_build = cargo_build(
+            runner,
+            "build wasitest cli x64 (release)",
+            "sf-nano-cli",
+            profile_name="release",
+            target=target,
+            features="jit",
+            log_name="wasitest-build-cli-x64-release",
+        )
+        harness_build = cargo_build_package(
+            runner,
+            "build wasitest harness x64 (release)",
+            "sf-nano-wasitest",
+            profile_name="release",
+            target=target,
+            log_name="wasitest-build-harness-x64-release",
+        )
+        cli_bin = binary_path("sf-nano-cli", "release", runner.host, target)
+        wasitest_bin = binary_path("sf-nano-wasitest", "release", runner.host, target)
+        if cli_build.status == "FAIL":
+            skip_after_failed_dependency(runner, "wasitest x64 (release)", cli_build)
+        elif harness_build.status == "FAIL":
+            skip_after_failed_dependency(runner, "wasitest x64 (release)", harness_build)
+        else:
+            if runner.host.kind == "macos":
+                argv: List[object] = ["arch", "-x86_64", wasitest_bin, "--cli-path", cli_bin, "--backend", "native", *extra_args]
+            else:
+                argv = [wasitest_bin, "--cli-path", cli_bin, "--backend", "native", *extra_args]
+            run_binary_if_present(runner, "wasitest x64 (release)", argv, log_name="wasitest-x64-release")
+    else:
+        runner.skip("wasitest x64 (release)", "x64 runtime checks require runnable x64 host support.")
+
+    if not ensure_rust_target(runner, ARMV7_TARGET):
+        return
+    if not ensure_armv7_runner(runner):
+        return
+
+    harness_build = cargo_build_package(
+        runner,
+        "build wasitest harness native (release for armv7)",
+        "sf-nano-wasitest",
+        profile_name="release",
+        target=None,
+        log_name="wasitest-build-harness-native-release-for-armv7",
+    )
+    native_wasitest = binary_path("sf-nano-wasitest", "release", runner.host)
+
+    for label, features in (("armv7a", "jit"), ("armv7m", "jit,thumb2-test")):
+        cli_build = cargo_build(
+            runner,
+            f"build wasitest cli {label} (release)",
+            "sf-nano-cli",
+            profile_name="release",
+            target=ARMV7_TARGET,
+            features=features,
+            log_name=f"wasitest-build-cli-{label}-release",
+        )
+        cli_bin = binary_path("sf-nano-cli", "release", runner.host, ARMV7_TARGET)
+        saved = cli_bin.with_name(f"{cli_bin.name}.{label}")
+        if harness_build.status == "FAIL":
+            skip_after_failed_dependency(runner, f"wasitest {label} (release)", harness_build)
+            continue
+        if cli_build.status == "FAIL":
+            skip_after_failed_dependency(runner, f"wasitest {label} (release)", cli_build)
+            continue
+        if cli_bin.exists():
+            shutil.copy2(cli_bin, saved)
+        else:
+            runner.fail(f"wasitest {label} (release)", f"expected binary not found: {cli_bin}")
+            continue
+        wrapper = make_armv7_wasi_wrapper(runner, label, saved)
+        run_binary_if_present(
+            runner,
+            f"wasitest {label} (release)",
+            [native_wasitest, "--cli-path", wrapper, "--backend", "native", *extra_args],
+            env={"TMPDIR": str(runner.tmp_dir)},
+            log_name=f"wasitest-{label}-release",
+        )
+
+
+def make_armv7_wasi_wrapper(runner: CheckRunner, label: str, cli_bin: Path) -> Path:
+    wrapper = runner.tmp_dir / f"wasitest-{label}-qemu-wrapper.sh"
+    if runner.host.kind == "macos":
+        script = f"""\
+#!/usr/bin/env bash
+set -euo pipefail
+exec colima ssh -- sh -lc 'exec qemu-arm-static -cpu cortex-a15 "$@"' sh {shlex_quote(str(cli_bin))} "$@"
+"""
+    else:
+        script = f"""\
+#!/usr/bin/env bash
+set -euo pipefail
+exec qemu-arm-static -cpu cortex-a15 {shlex_quote(str(cli_bin))} "$@"
+"""
+    wrapper.write_text(script, encoding="utf-8")
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def shlex_quote(text: str) -> str:
+    import shlex
+
+    return shlex.quote(text)
+
+
+def run_windows_native_spectest(
+    runner: CheckRunner,
+    *,
+    profiles: Sequence[str],
+    extra_args: Sequence[str],
+) -> None:
+    if not ensure_testsuite(runner):
+        return
+
+    env = {"TESTSUITE_DIR": str(TESTSUITE_DIR)}
+    for profile_name in profiles:
+        build = cargo_build(
+            runner,
+            f"windows x64 build spectest native ({profile_name})",
+            "sf-nano-spectest",
+            profile_name=profile_name,
+            target=None,
+            features="jit",
+            log_name=f"windows-spectest-build-native-{profile_name}",
+        )
+        host_bin = binary_path("sf-nano-spectest", profile_name, runner.host)
+        if build.status == "FAIL":
+            skip_after_failed_dependency(runner, f"windows x64 spectest native ({profile_name})", build)
+        else:
+            run_binary_if_present(
+                runner,
+                f"windows x64 spectest native ({profile_name})",
+                [host_bin, "--backend", "native", *extra_args],
+                env=env,
+                log_name=f"windows-spectest-native-{profile_name}",
+            )
+
+
+def run_windows_native_fast(runner: CheckRunner, extra_args: Sequence[str]) -> None:
+    # This deliberately uses the plain command users type at the workspace
+    # root. Do not route it through cargo_env(), because that would hide
+    # missing repo-level target configuration.
+    runner.run(
+        "windows x64 release build",
+        ["cargo", "build", "--release"],
+        log_name="windows-cargo-build-release",
+    )
+    run_workspace_tests(runner, "release")
+    run_windows_native_spectest(runner, profiles=["release"], extra_args=extra_args)
+
+
+def run_windows_native_full(
+    runner: CheckRunner,
+    *,
+    debug_only: bool,
+    release_only: bool,
+    extra_args: Sequence[str],
+) -> None:
+    profiles = selected_profiles(debug_only, release_only)
+    if "debug" in profiles:
+        runner.run(
+            "windows x64 workspace check (debug)",
+            ["cargo", "check"],
+            log_name="windows-cargo-check-debug",
+        )
+    if "release" in profiles:
+        runner.run(
+            "windows x64 release build",
+            ["cargo", "build", "--release"],
+            log_name="windows-cargo-build-release",
+        )
+
+    for profile_name in profiles:
+        run_workspace_tests(runner, profile_name)
+
+    run_windows_native_spectest(runner, profiles=profiles, extra_args=extra_args)
+
+    for profile_name in profiles:
+        run_wasitest_host_profile(runner, profile_name, [])
+
+
+def run_windows_native_phase(args: argparse.Namespace, host: Host) -> int:
+    runner = CheckRunner(
+        args.mode,
+        host,
+        strict=args.strict,
+        install_targets=args.install_targets,
+        max_diagnostics=max(1, args.max_diagnostics),
+        phase="windows",
+    )
+
+    print(f"Silverfir check: mode={args.mode} phase=windows host={host.kind}/{host.machine}")
+    print(f"log dir: {rel(runner.log_dir)}")
+
+    if args.mode == "fast":
+        if args.debug_only:
+            runner.fail("argument check", "fast mode is release-only; remove --debug-only.")
+        else:
+            run_windows_native_fast(runner, args.extra_args)
+    else:
+        run_windows_native_full(
+            runner,
+            debug_only=args.debug_only,
+            release_only=args.release_only,
+            extra_args=args.extra_args,
+        )
+
+    return runner.final_report()
+
+
+def run_fast(runner: CheckRunner, extra_args: Sequence[str]) -> None:
+    runner.run(
+        "workspace release build",
+        ["cargo", "build", "--workspace", "--release"],
+        env=cargo_env(runner, None),
+        log_name="cargo-workspace-release",
+    )
+    run_workspace_tests(runner, "release")
+    run_feature_checks(runner, full=False, profiles=["release"])
+    run_target_matrix(runner, include_all=False)
+    run_spectest_suite(runner, profiles=["release"], extra_args=extra_args)
+
+
+def run_full(
+    runner: CheckRunner,
+    *,
+    debug_only: bool,
+    release_only: bool,
+    include_all_targets: bool,
+    extra_args: Sequence[str],
+) -> None:
+    profiles = selected_profiles(debug_only, release_only)
+    for profile_name in profiles:
+        run_workspace_tests(runner, profile_name)
+    run_feature_checks(runner, full=True, profiles=profiles)
+    run_target_matrix(runner, include_all=include_all_targets)
+    run_spectest_suite(runner, profiles=profiles, extra_args=extra_args)
+    run_wasitest_suite(runner, profiles=profiles, extra_args=[])
+
+
+def selected_profiles(debug_only: bool, release_only: bool) -> List[str]:
+    if debug_only and release_only:
+        raise SystemExit("--debug-only and --release-only are mutually exclusive")
+    if debug_only:
+        return ["debug"]
+    if release_only:
+        return ["release"]
+    return ["debug", "release"]
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parse_argv = list(argv)
+    extra_args: List[str] = []
+    if "--" in parse_argv:
+        split_at = parse_argv.index("--")
+        extra_args = parse_argv[split_at + 1 :]
+        parse_argv = parse_argv[:split_at]
+
+    parser = argparse.ArgumentParser(
+        description="Run Silverfir Nano validation checks with concise output.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog=textwrap.dedent(
+            """\
+            Examples:
+              python3 scripts/check.py fast
+              python3 scripts/check.py full --release-only --install-targets
+              python3 scripts/check.py fast -- i32 --log-level info
+            """
+        ),
+    )
+    parser.add_argument("mode", choices=["fast", "full"], help="validation mode")
+    parser.add_argument("--strict", action="store_true", help="make warnings fail where supported")
+    parser.add_argument("--install-targets", action="store_true", help="install missing rustup targets")
+    parser.add_argument("--max-diagnostics", type=int, default=8, help="diagnostics to print per issue step")
+    parser.add_argument("--debug-only", action="store_true", help="full mode: run debug profile checks only")
+    parser.add_argument("--release-only", action="store_true", help="full mode: run release profile checks only")
+    target_group = parser.add_mutually_exclusive_group()
+    target_group.add_argument("--all-targets", action="store_true", help="full mode: include extra target rows")
+    target_group.add_argument("--default-targets", action="store_true", help="full mode: use default target rows")
+    args = parser.parse_args(parse_argv)
+    args.extra_args = extra_args
+    return args
+
+
+def main(argv: Sequence[str]) -> int:
+    args = parse_args(argv)
+    host = detect_host()
+    if host.kind == "windows":
+        if os.environ.get("SF_CHECK_NO_WSL_REEXEC"):
+            return run_windows_native_phase(args, host)
+        print(
+            "Silverfir check: native Windows detected; running Windows x64 phase first, "
+            "then WSL/Linux phase.",
+            flush=True,
+        )
+        windows_rc = run_windows_native_phase(args, host)
+        print()
+        print("Silverfir check: starting WSL/Linux phase", flush=True)
+        wsl_rc = reexec_in_wsl(argv)
+        return 1 if windows_rc or wsl_rc else 0
+
+    runner = CheckRunner(
+        args.mode,
+        host,
+        strict=args.strict,
+        install_targets=args.install_targets,
+        max_diagnostics=max(1, args.max_diagnostics),
+    )
+
+    print(f"Silverfir check: mode={args.mode} host={host.kind}/{host.machine}")
+    print(f"log dir: {rel(runner.log_dir)}")
+
+    try:
+        if args.mode == "fast":
+            if args.debug_only:
+                runner.fail("argument check", "fast mode is release-only; remove --debug-only.")
+            else:
+                run_fast(runner, args.extra_args)
+        else:
+            include_all_targets = True
+            if args.default_targets:
+                include_all_targets = False
+            if args.all_targets:
+                include_all_targets = True
+            run_full(
+                runner,
+                debug_only=args.debug_only,
+                release_only=args.release_only,
+                include_all_targets=include_all_targets,
+                extra_args=args.extra_args,
+            )
+    finally:
+        cleanup_colima(runner)
+
+    return runner.final_report()
+
+
+if __name__ == "__main__":
+    raise SystemExit(main(sys.argv[1:]))

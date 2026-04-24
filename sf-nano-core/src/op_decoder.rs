@@ -1333,8 +1333,8 @@ mod tests {
     #[test]
     fn simd_prefix_reports_invalid_instead_of_panicking() {
         let code = [PREFIX_FD, 0x00, END];
-        let mut decoder = Decoder::new(&code);
         let mut handler = DrainHandler;
+        let mut decoder = Decoder::new(&code);
         decoder.add_handler(&mut handler);
 
         let err = decoder
@@ -1351,8 +1351,8 @@ mod tests {
         code[0] = PREFIX_FD;
         code[1] = 0x0c;
         code[18] = END;
-        let mut decoder = Decoder::new(&code);
         let mut handler = DrainHandler;
+        let mut decoder = Decoder::new(&code);
         decoder.add_handler(&mut handler);
         decoder
             .decode_function()
@@ -1362,8 +1362,8 @@ mod tests {
     #[test]
     fn v128_block_type_reports_invalid_instead_of_panicking() {
         let code = [BLOCK, 0x7b, END, END];
-        let mut decoder = Decoder::new(&code);
         let mut handler = DrainHandler;
+        let mut decoder = Decoder::new(&code);
         decoder.add_handler(&mut handler);
 
         #[cfg(not(sf_has_simd))]

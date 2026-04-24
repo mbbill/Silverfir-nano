@@ -10,6 +10,10 @@ fn compile(wat_src: &str) -> Vec<u8> {
     wat::parse_str(wat_src).expect("wat parse failed")
 }
 
+fn expect_values(values: impl AsRef<[Value]>, expected: &[Value]) {
+    assert_eq!(values.as_ref(), expected);
+}
+
 #[test]
 fn struct_new_five_i32_fields_roundtrip() {
     let wasm = compile(
@@ -43,7 +47,7 @@ fn struct_new_five_i32_fields_roundtrip() {
     for (i, expected) in [100, 200, 300, 400, 500].iter().enumerate() {
         let name = format!("get{}", i);
         let result = instance.invoke(&name, &[]).expect("invoke failed");
-        assert_eq!(result, vec![Value::I32(*expected)], "field {}", i);
+        assert_eq!(result.as_ref(), &[Value::I32(*expected)], "field {}", i);
     }
 }
 
@@ -83,15 +87,15 @@ fn struct_new_eight_mixed_fields_roundtrip() {
     let r = instance
         .invoke("build_and_get_i32", &[Value::I32(1111), Value::I32(2222)])
         .expect("invoke failed");
-    assert_eq!(r, vec![Value::I32(2222)]);
+    expect_values(r, &[Value::I32(2222)]);
 
     let r = instance
         .invoke("build_and_get_i64", &[Value::I64(9999)])
         .expect("invoke failed");
-    assert_eq!(r, vec![Value::I64(9999)]);
+    expect_values(r, &[Value::I64(9999)]);
 
     let r = instance
         .invoke("build_and_get_f64", &[Value::F64(3.14)])
         .expect("invoke failed");
-    assert_eq!(r, vec![Value::F64(3.14)]);
+    expect_values(r, &[Value::F64(3.14)]);
 }

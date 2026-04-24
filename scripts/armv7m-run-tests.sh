@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 #
+# Deprecated direct entry point. Prefer `python3 scripts/check.py full`; this
+# script is kept as a low-level helper.
+#
 # Run the WASI benchmark tests with the arm32 backend emitting Thumb-2
 # (instead of A32) under QEMU inside Colima.
 #

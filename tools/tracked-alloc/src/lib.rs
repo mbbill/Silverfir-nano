@@ -3861,16 +3861,46 @@ mod tests {
 
     #[test]
     fn vec_macro_matches_standard_behavior() {
-        let values = vec![1u32, 2, 3];
-        assert_eq!(values.len(), 3);
-        assert_eq!(values[1], 2);
+        #[cfg(feature = "memprof")]
+        let _guard = tracking_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        #[cfg(feature = "memprof")]
+        {
+            set_tracking_enabled(false);
+            reset_tracking();
+        }
+
+        {
+            let values = vec![1u32, 2, 3];
+            assert_eq!(values.len(), 3);
+            assert_eq!(values[1], 2);
+        }
+
+        #[cfg(feature = "memprof")]
+        reset_tracking();
     }
 
     #[test]
     fn from_alloc_vec_round_trip() {
-        let values = from_alloc_vec(alloc::vec![1u8, 2, 3]);
-        let raw: inner::Vec<u8> = values.into();
-        assert_eq!(raw, alloc::vec![1u8, 2, 3]);
+        #[cfg(feature = "memprof")]
+        let _guard = tracking_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        #[cfg(feature = "memprof")]
+        {
+            set_tracking_enabled(false);
+            reset_tracking();
+        }
+
+        {
+            let values = from_alloc_vec(alloc::vec![1u8, 2, 3]);
+            let raw: inner::Vec<u8> = values.into();
+            assert_eq!(raw, alloc::vec![1u8, 2, 3]);
+        }
+
+        #[cfg(feature = "memprof")]
+        reset_tracking();
     }
 
     #[test]

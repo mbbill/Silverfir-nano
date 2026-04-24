@@ -2036,9 +2036,12 @@ fn f64_matches_nan_pattern(actual: f64, expected: &NanPattern<wast::token::F64>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sf_nano_core::module::Module;
-    use sf_nano_core::{set_backend_mode, BackendMode, FunctionInst, Value};
+    use sf_nano_core::{set_backend_mode, BackendMode, Value};
     use std::path::PathBuf;
+
+    fn expect_values(values: impl AsRef<[Value]>, expected: &[Value]) {
+        assert_eq!(values.as_ref(), expected);
+    }
 
     fn instantiate_first_module_with_backend(path: &str, backend: BackendMode) -> WastTestRunner {
         set_backend_mode(backend);
@@ -2089,7 +2092,7 @@ mod tests {
         let ret = instance
             .invoke("as-br_table-last", &[Value::I32(1)])
             .expect("invoke export");
-        assert_eq!(ret, vec![Value::I32(2)]);
+        expect_values(ret, &[Value::I32(2)]);
     }
 
     #[test]
@@ -2099,7 +2102,7 @@ mod tests {
         let ret = instance
             .invoke("as-if-else", &[Value::I32(0), Value::I32(6)])
             .expect("invoke export");
-        assert_eq!(ret, vec![Value::I32(4)]);
+        expect_values(ret, &[Value::I32(4)]);
     }
 
     #[test]
@@ -2109,7 +2112,7 @@ mod tests {
         let ret = instance
             .invoke("malloc_aliasing", &[])
             .expect("invoke export");
-        assert_eq!(ret, vec![Value::I32(43)]);
+        expect_values(ret, &[Value::I32(43)]);
     }
 
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]

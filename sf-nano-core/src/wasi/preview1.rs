@@ -2886,7 +2886,6 @@ pub(crate) fn path_symlink(
                 _ => ERRNO_IO,
             },
         });
-        return Ok(());
     }
 
     #[cfg(not(windows))]

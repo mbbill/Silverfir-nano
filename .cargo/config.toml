@@ -4,5 +4,18 @@ memprof = "run --release -p sf-nano-cli --features memprof --bin sf-nano-cli -- 
 [target.armv7-unknown-linux-musleabihf]
 linker = "rust-lld"
 
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "target-feature=+ssse3,+sse4.1"]
+
+[target.x86_64-unknown-linux-musl]
+rustflags = ["-C", "target-feature=+ssse3,+sse4.1"]
+
+[target.x86_64-apple-darwin]
+rustflags = ["-C", "target-feature=+ssse3,+sse4.1"]
+
 [target.x86_64-pc-windows-msvc]
 linker = "lld-link.exe"
+rustflags = ["-C", "target-feature=+ssse3,+sse4.1"]
+
+[target.x86_64-pc-windows-gnu]
+rustflags = ["-C", "target-feature=+ssse3,+sse4.1"]

@@ -6,7 +6,7 @@ fn compile(wat_src: &str) -> Vec<u8> {
     wat::parse_str(wat_src).expect("wat parse failed")
 }
 
-fn expect_trap(result: Result<Vec<Value>, WasmError>, needle: &str) {
+fn expect_trap<T: core::fmt::Debug>(result: Result<T, WasmError>, needle: &str) {
     let err = result.expect_err("expected trap, got success");
     let msg = err.message();
     assert!(
@@ -15,6 +15,10 @@ fn expect_trap(result: Result<Vec<Value>, WasmError>, needle: &str) {
         needle,
         msg
     );
+}
+
+fn expect_values(values: impl AsRef<[Value]>, expected: &[Value]) {
+    assert_eq!(values.as_ref(), expected);
 }
 
 #[test]
@@ -33,7 +37,7 @@ fn array_get_oob_traps() {
     let ok = instance
         .invoke("get", &[Value::I32(0)])
         .expect("in-bounds get");
-    assert_eq!(ok, vec![Value::F32(0.0)]);
+    expect_values(ok, &[Value::F32(0.0)]);
     let err = instance.invoke("get", &[Value::I32(10)]);
     expect_trap(err, "out of bounds");
 }
@@ -54,11 +58,11 @@ fn array_get_oob_traps_via_param_ref() {
     let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
     let mk = instance.invoke("mk", &[]).expect("mk");
     let v = mk.into_iter().next().unwrap();
-    assert_eq!(
+    expect_values(
         instance
             .invoke("get2", &[v.clone(), Value::I32(0)])
             .expect("get2(0)"),
-        vec![Value::F32(0.0)]
+        &[Value::F32(0.0)],
     );
     expect_trap(
         instance.invoke("get2", &[v, Value::I32(10)]),
@@ -81,9 +85,9 @@ fn array_get_oob_traps_after_unrelated_call() {
         "#,
     );
     let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
-    assert_eq!(
+    expect_values(
         instance.invoke("get", &[Value::I32(0)]).expect("get0"),
-        vec![Value::F32(0.0)]
+        &[Value::F32(0.0)],
     );
     expect_trap(instance.invoke("get", &[Value::I32(10)]), "out of bounds");
 }
@@ -106,9 +110,9 @@ fn array_get_oob_traps_via_call() {
         "#,
     );
     let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
-    assert_eq!(
+    expect_values(
         instance.invoke("get", &[Value::I32(0)]).expect("get0"),
-        vec![Value::F32(0.0)]
+        &[Value::F32(0.0)],
     );
     expect_trap(instance.invoke("get", &[Value::I32(10)]), "out of bounds");
 }
@@ -148,20 +152,17 @@ fn array_get_oob_traps_after_many_allocations() {
     let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
     let _ = instance.invoke("new", &[]).expect("new");
     let _ = instance.invoke("new", &[]).expect("new");
-    assert_eq!(
+    expect_values(
         instance.invoke("get", &[Value::I32(0)]).expect("get0"),
-        vec![Value::F32(0.0)]
+        &[Value::F32(0.0)],
     );
-    assert_eq!(
+    expect_values(
         instance
             .invoke("set_get", &[Value::I32(1), Value::F32(7.0)])
             .expect("set_get"),
-        vec![Value::F32(7.0)]
+        &[Value::F32(7.0)],
     );
-    assert_eq!(
-        instance.invoke("len", &[]).expect("len"),
-        vec![Value::I32(3)]
-    );
+    expect_values(instance.invoke("len", &[]).expect("len"), &[Value::I32(3)]);
     expect_trap(instance.invoke("get", &[Value::I32(10)]), "out of bounds");
     expect_trap(
         instance.invoke("set_get", &[Value::I32(10), Value::F32(7.0)]),
@@ -186,7 +187,7 @@ fn array_set_roundtrip() {
     let r = instance
         .invoke("set_get", &[Value::I32(1), Value::F32(7.0)])
         .expect("invoke");
-    assert_eq!(r, vec![Value::F32(7.0)]);
+    expect_values(r, &[Value::F32(7.0)]);
 }
 
 #[test]
@@ -204,9 +205,9 @@ fn array_get_s_u_packed() {
     );
     let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
     let r = instance.invoke("gets", &[Value::I32(3)]).expect("gets");
-    assert_eq!(r, vec![Value::I32(-1)]);
+    expect_values(r, &[Value::I32(-1)]);
     let r = instance.invoke("getu", &[Value::I32(3)]).expect("getu");
-    assert_eq!(r, vec![Value::I32(0xff)]);
+    expect_values(r, &[Value::I32(0xff)]);
 }
 
 #[test]
@@ -221,5 +222,5 @@ fn array_len_returns_length() {
     );
     let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
     let r = instance.invoke("len", &[]).expect("invoke");
-    assert_eq!(r, vec![Value::I32(42)]);
+    expect_values(r, &[Value::I32(42)]);
 }

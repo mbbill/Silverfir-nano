@@ -1,5 +1,8 @@
 #!/usr/bin/env bash
 #
+# Deprecated direct entry point. Prefer `python3 scripts/check.py fast` or
+# `python3 scripts/check.py full`; this script is kept as a low-level helper.
+#
 # Run the x86_64 spectest under Rosetta on macOS.
 #
 # Usage:

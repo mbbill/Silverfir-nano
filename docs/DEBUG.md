@@ -49,6 +49,16 @@ cargo test -p sf-nano-core --lib
 cargo run --bin sf-nano-spectest -- --backend native
 ```
 
+Run the project validation gates:
+
+```bash
+# Fast day-to-day gate: release build, workspace tests, selected compile checks, and release spectests.
+python3 scripts/check.py fast
+
+# Full gate: workspace tests, full feature matrix, target matrix, spectests, and WASI tests.
+python3 scripts/check.py full
+```
+
 ## Backend Modes
 
 The CLI accepts:
@@ -140,14 +150,14 @@ cargo run --bin sf-nano-spectest -- --backend native path/to/test.wast
 Notes:
 
 - If `TESTSUITE_DIR` is set, spectest uses it.
-- Otherwise it falls back to `target/webassembly-testsuite-2.0`.
+- Otherwise it falls back to `target/webassembly-testsuite`.
 - `--log-level trace|debug|info|warn|error` controls runner verbosity.
 - `RUST_BACKTRACE=1` is useful when chasing an unexpected panic inside spectest.
 
 Example:
 
 ```bash
-TESTSUITE_DIR=$PWD/target/webassembly-testsuite-2.0 \
+TESTSUITE_DIR=$PWD/target/webassembly-testsuite \
 RUST_BACKTRACE=1 \
 cargo run --bin sf-nano-spectest -- --backend native --log-level info if
 ```
@@ -584,15 +594,33 @@ Then inspect:
 ## Cross-Architecture Testing (ARMv7)
 
 The native backend targets ARMv7-A (32-bit ARM) in addition to ARM64 and x86_64.
-To test on an Apple Silicon Mac, cross-compile and run under QEMU user-mode
-emulation inside the Colima VM.
+For normal validation, use the unified runner:
+
+```bash
+python3 scripts/check.py fast
+python3 scripts/check.py full --release-only
+```
+
+The runner uses Colima plus `qemu-arm-static` on macOS, and local
+`qemu-arm-static` on Linux/WSL. The manual commands below are only for
+debugging the ARMv7 environment directly.
 
 ### Prerequisites
+
+Linux/WSL:
+
+```bash
+sudo apt-get install -y qemu-user-static
+rustup target add armv7-unknown-linux-musleabihf
+```
+
+macOS:
 
 ```bash
 brew install colima docker qemu
 colima start
 colima ssh -- sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+rustup target add armv7-unknown-linux-musleabihf
 ```
 
 ### Step 1: Verify the environment with --emu
@@ -605,7 +633,12 @@ setup are all functional — before introducing target-specific JIT issues.
 # Cross-compile (static musl, no default features to skip guard-pages)
 cargo build --target armv7-unknown-linux-musleabihf -p sf-nano-cli --no-default-features
 
-# Run with emulator backend via QEMU
+# Linux/WSL: run with emulator backend via QEMU
+qemu-arm-static -cpu cortex-a15 \
+  target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
+  --emu benchmarks/wasi/coremark/coremark.wasm
+
+# macOS: run inside the Colima VM
 colima ssh -- qemu-arm-static \
   /Users/$USER/Dev/Silverfir-nano/target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
   --emu /Users/$USER/Dev/Silverfir-nano/benchmarks/wasi/coremark/coremark.wasm
@@ -619,6 +652,12 @@ The goal is to validate the ARMv7-A native codegen, not the emulator.
 Drop `--emu` so the CLI uses the real JIT backend:
 
 ```bash
+# Linux/WSL
+qemu-arm-static -cpu cortex-a15 \
+  target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
+  benchmarks/wasi/coremark/coremark.wasm
+
+# macOS
 colima ssh -- qemu-arm-static \
   /Users/$USER/Dev/Silverfir-nano/target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
   /Users/$USER/Dev/Silverfir-nano/benchmarks/wasi/coremark/coremark.wasm
@@ -629,6 +668,13 @@ Run spectests the same way:
 ```bash
 cargo build --target armv7-unknown-linux-musleabihf -p sf-nano-spectest --no-default-features
 
+# Linux/WSL
+TESTSUITE_DIR=$PWD/target/webassembly-testsuite \
+qemu-arm-static -cpu cortex-a15 \
+  target/armv7-unknown-linux-musleabihf/debug/sf-nano-spectest \
+  --backend native
+
+# macOS
 colima ssh -- qemu-arm-static \
   /Users/$USER/Dev/Silverfir-nano/target/armv7-unknown-linux-musleabihf/debug/sf-nano-spectest \
   --backend native
@@ -641,7 +687,7 @@ colima ssh -- qemu-arm-static \
   compiled in.
 - The binary is statically linked (musl), so no shared libraries are needed
   inside QEMU.
-- Colima mounts the macOS home directory, so host paths work directly.
+- Colima mounts the macOS home directory, so host paths work directly there.
 - QEMU user-mode translates ARMv7 instructions but uses the host kernel for
   syscalls, so mmap/mprotect behavior may differ from real hardware.
 

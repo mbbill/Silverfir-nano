@@ -130,10 +130,12 @@ fn main() {
 
     info!("Using testsuite from: {}", testsuite_dir.display());
 
-    run_wast_tests_with_large_stack(testsuite_dir, args.filters);
+    if !run_wast_tests_with_large_stack(testsuite_dir, args.filters) {
+        std::process::exit(1);
+    }
 }
 
-fn run_wast_tests_with_large_stack(testsuite_dir: PathBuf, filters: Vec<String>) {
+fn run_wast_tests_with_large_stack(testsuite_dir: PathBuf, filters: Vec<String>) -> bool {
     let stack_size = recommended_worker_stack_size();
     let builder = thread::Builder::new()
         .name("sf-nano-spectest".into())
@@ -143,7 +145,7 @@ fn run_wast_tests_with_large_stack(testsuite_dir: PathBuf, filters: Vec<String>)
         .unwrap_or_else(|err| panic!("failed to spawn spectest worker thread: {err}"));
     handle
         .join()
-        .unwrap_or_else(|panic| std::panic::resume_unwind(panic));
+        .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
 }
 
 fn recommended_worker_stack_size() -> usize {
@@ -162,7 +164,7 @@ fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {
     }
 }
 
-fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
+fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) -> bool {
     let start_time = Instant::now();
 
     let wast_files = find_wast_files(testsuite_dir);
@@ -327,4 +329,5 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) {
 
     let total_duration = start_time.elapsed();
     print_summary(&stats, total_duration);
+    stats.failed == 0 && stats.errored == 0
 }

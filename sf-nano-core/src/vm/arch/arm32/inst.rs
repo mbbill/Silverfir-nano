@@ -1531,6 +1531,53 @@ impl<'a> Arm32Backend<'a> {
             return Ok(());
         }
 
+        if let MachineValue::Reg(r) = src {
+            if self.is_fp_machine_reg(*r) {
+                let dd = self.map_fp_dreg(*r)?;
+                match width {
+                    MachineMemWidth::U64 => {
+                        {
+                            let s = self.gp_scratch.scoped_alloc();
+                            self.core.text.emit_u32(enc::vmov_r_s(*s, dd * 2));
+                            emit_store_word_to(
+                                &mut self.core.text,
+                                &self.gp_scratch,
+                                *s,
+                                base_hw,
+                                offset,
+                            );
+                        }
+                        {
+                            let s = self.gp_scratch.scoped_alloc();
+                            self.core.text.emit_u32(enc::vmov_r_s(*s, dd * 2 + 1));
+                            emit_store_word_to(
+                                &mut self.core.text,
+                                &self.gp_scratch,
+                                *s,
+                                base_hw,
+                                offset + 4,
+                            );
+                        }
+                    }
+                    MachineMemWidth::U32 => {
+                        let s = self.gp_scratch.scoped_alloc();
+                        self.core.text.emit_u32(enc::vmov_r_s(*s, dd * 2));
+                        emit_store_word_to(
+                            &mut self.core.text,
+                            &self.gp_scratch,
+                            *s,
+                            base_hw,
+                            offset,
+                        );
+                    }
+                    _ => {
+                        return Err(WasmError::invalid("arm32: unsupported FP raw store width"));
+                    }
+                }
+                return Ok(());
+            }
+        }
+
         // GP source
         let src_hw = prepare_gp(&mut self.core.text, &self.gp_scratch, *src)?.detach();
 

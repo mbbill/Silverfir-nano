@@ -148,6 +148,21 @@ node benchmarks/wasi/run_v8.mjs
 cd sf-nano-cli-minimal && cargo run --release
 ```
 
+## Validation
+
+Use the Python runner as the canonical validation entry point:
+
+```bash
+# Fast day-to-day gate: release build, workspace tests, selected compile checks, and release spectests.
+python3 scripts/check.py fast
+
+# Full gate: workspace tests, full feature matrix, target matrix, spectests, and WASI tests.
+python3 scripts/check.py full
+
+# Forward extra spectest arguments after --.
+python3 scripts/check.py fast -- i32 --log-level info
+```
+
 ## License
 
 MIT / Apache-2.0
