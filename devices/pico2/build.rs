@@ -67,7 +67,7 @@ fn build_wasm_kernel(out_dir: &PathBuf) {
         .join("wasm32-unknown-unknown")
         .join("release")
         .join("sf_nano_pico2_wasm_kernel.wasm");
-    std::fs::copy(&wasm, out_dir.join("mandelbrot.wasm"))
+    std::fs::copy(&wasm, out_dir.join("kernel.wasm"))
         .unwrap_or_else(|e| panic!("copy {wasm:?}: {e}"));
 
     // Track the whole sub-crate directory. A narrower list of files

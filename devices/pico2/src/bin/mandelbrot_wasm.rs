@@ -40,8 +40,10 @@ use lib::display::{self, st7735};
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
-/// The Wasm module compiled by `build.rs` from `wasm-kernel/`.
-const WASM_MANDELBROT: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/mandelbrot.wasm"));
+/// The Wasm module compiled by `build.rs` from `wasm-kernel/`. The
+/// actual demo inside can be swapped by editing the `use … as demo;`
+/// line in `wasm-kernel/src/lib.rs` — the host side stays the same.
+const WASM_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kernel.wasm"));
 
 /// Peripherals owned by the `push_frame` host function. Populated once
 /// in `main` before module instantiation, then `take()`-shuffled on
@@ -188,7 +190,6 @@ fn main() -> ! {
     lib::init();
 
     let mut pac = hal::pac::Peripherals::take().unwrap();
-    let mut core_pac = cortex_m::Peripherals::take().unwrap();
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
 
     let clocks = hal::clocks::init_clocks_and_plls(
@@ -205,9 +206,6 @@ fn main() -> ! {
     let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
     let sys_hz = clocks.system_clock.freq().to_Hz();
 
-    core_pac.DCB.enable_trace();
-    core_pac.DWT.enable_cycle_counter();
-
     let sio = hal::Sio::new(pac.SIO);
     let pins = hal::gpio::Pins::new(
         pac.IO_BANK0,
@@ -217,7 +215,7 @@ fn main() -> ! {
     );
 
     defmt::info!("mandelbrot_wasm: clocks up, sys={} Hz", sys_hz);
-    defmt::info!("mandelbrot_wasm: wasm module is {} bytes", WASM_MANDELBROT.len());
+    defmt::info!("mandelbrot_wasm: wasm module is {} bytes", WASM_KERNEL.len());
 
     let mosi = pins.gpio11.into_function::<hal::gpio::FunctionSpi>();
     let miso = pins.gpio28.into_function::<hal::gpio::FunctionSpi>();
@@ -273,7 +271,7 @@ fn main() -> ! {
         );
     }
     defmt::info!("mandelbrot_wasm: instantiating...");
-    let mut instance = match Instance::new(WASM_MANDELBROT, &imports) {
+    let mut instance = match Instance::new(WASM_KERNEL, &imports) {
         Ok(inst) => inst,
         Err(e) => {
             defmt::error!("instantiate failed: {=str}", e.message());
@@ -283,23 +281,25 @@ fn main() -> ! {
     defmt::info!("mandelbrot_wasm: instance created; entering render loop");
 
     // Per-frame host loop: invoke `run` once per frame, bracket with
-    // DWT to measure. The running fps is published into `DISPLAYED_FPS`
-    // which `push_frame` reads to stamp the overlay onto the outgoing
-    // framebuffer bytes.
+    // the rp235x timer to measure. We used to use `DWT::cycle_count`,
+    // but that only runs while the debug unit is enabled (i.e. while
+    // probe-rs is attached) — disconnecting the probe would freeze
+    // DWT and the fps overlay would drop to 0 even though rendering
+    // kept going. `timer.get_counter()` is the always-on peripheral
+    // counter, so it reports accurate fps with or without a probe.
     let mut frame: u32 = 0;
     let mut accum_us: u64 = 0;
     let mut samples: u32 = 0;
     let mut last_log = timer.get_counter();
 
     loop {
-        let t0 = cortex_m::peripheral::DWT::cycle_count();
+        let t0 = timer.get_counter();
         if let Err(e) = instance.invoke("run", &[Value::I32(frame as i32)]) {
             defmt::error!("invoke run failed: {=str}", e.message());
             halt();
         }
-        let t1 = cortex_m::peripheral::DWT::cycle_count();
-        let cycles = t1.wrapping_sub(t0);
-        let frame_us = cycles as u64 / (sys_hz as u64 / 1_000_000);
+        let t1 = timer.get_counter();
+        let frame_us = (t1 - t0).to_micros();
         accum_us = accum_us.saturating_add(frame_us);
         samples += 1;
 
