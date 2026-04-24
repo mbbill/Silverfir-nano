@@ -24,8 +24,8 @@ so later optimization has less work and lower risk".
 
 | Stage | Main job | Main optimization value |
 | --- | --- | --- |
-| Wasm -> Semantic IR | Preserve Wasm structure and types | Inline tiny leaf callees before frame/register decisions exist |
-| Semantic IR -> Prepared SSA-IR | Make slots, transient budget, and call boundaries explicit | Cheap local forwarding, constant folding, sink planning, and low-cost CFG cleanup |
+| Wasm -> Semantic IR | Preserve Wasm structure and types | Keep the frontend structured enough that cheap global-ish choices are still possible (dormant leaf-inliner slot lives here) |
+| Semantic IR -> Prepared SSA-IR | Make slots, transient budget, and call barriers explicit | Joint cache/transient planning, constant folding, sink planning, and low-cost CFG cleanup |
 | SSA-IR -> Machine IR | Map bounded SSA live ranges into a fixed register partition | One-pass lowering, cached-local aliasing, dead-input register reuse, cheap call handling |
 | Machine IR optimize | Recover native patterns from the fixed-shape lowering | Addressing-mode fusion, copy propagation, load/store forwarding, branch fusion |
 | Machine IR -> Native Code | Select ISA forms late | Immediate forms, indexed addressing, shifted operands, compact edge moves, small tails |
@@ -47,9 +47,12 @@ has a home.
 
 Main code:
 
+- `sf-nano-core/src/vm/build.rs` (`decode_function_semantic`)
 - `sf-nano-core/src/vm/wasm/decode.rs`
-- `sf-nano-core/src/vm/wasm/inline.rs`
 - `sf-nano-core/src/vm/wasm/sir/semantic_ir.rs`
+- `sf-nano-core/src/vm/wasm/sir/primitive_op.rs`
+- `sf-nano-core/src/vm/wasm/inline.rs` (dormant — retained but not wired
+  into the current pipeline)
 
 ### Optimization-enabling representation
 
@@ -71,17 +74,24 @@ Why it lives here:
 - Later passes can reason about loops, calls, and locals without reverse
   engineering them from low-level code.
 
-### Optimization: small leaf inlining
+### Optimization: small leaf inlining (dormant)
 
-`inline_calls_in_function()` replaces eligible `CallDirect` sites with the
-callee body.
+`inline_calls_in_function()` in `wasm/inline.rs` replaces eligible
+`CallDirect` sites with the callee body. The module currently has no live
+callers — it is retained under `#![allow(dead_code)]` so it can be re-wired
+after the middle-layer rewrite settles, but the production pipeline in
+`build.rs` does not invoke it today.
 
-Current policy:
+Current policy (when re-enabled):
 
-- callee must be a leaf (no nested calls)
-- at most `200` semantic ops
-- at most `8` parameters
-- fixed-point iteration is used, so transitive chains are fully inlined
+- callee must be a straight-line leaf (no nested calls, no structured
+  control flow — only primitives and local ops)
+- at most `MAX_INLINE_OPS = 12` semantic ops at non-loop call sites, or
+  `MAX_INLINE_OPS * LOOP_INLINE_MULTIPLIER = 120` ops at call sites inside
+  a loop
+- at most `MAX_INLINE_PARAMS = 16` parameters
+- one pass over the caller; transitive chains are not re-expanded after
+  substitution
 
 Simple example:
 
@@ -127,19 +137,39 @@ How the pipeline design enables it:
 
 ## 2. Semantic IR -> Prepared SSA-IR
 
-Main code:
+Main code (pipeline entry is `prepare_function` in `middle/mod.rs`):
 
-- `sf-nano-core/src/vm/middle/mod.rs`
-- `sf-nano-core/src/vm/middle/frame.rs`
-- `sf-nano-core/src/vm/middle/local_cache.rs`
-- `sf-nano-core/src/vm/middle/spill_plan.rs`
-- `sf-nano-core/src/vm/middle/lower_cfg.rs`
-- `sf-nano-core/src/vm/middle/lower_ops.rs`
-- `sf-nano-core/src/vm/middle/lower_term.rs`
-- `sf-nano-core/src/vm/middle/thread_jumps.rs`
-- `sf-nano-core/src/vm/middle/optimize.rs`
-- `sf-nano-core/src/vm/middle/sink_plan.rs`
-- `sf-nano-core/src/vm/middle/ssa_ir/ir.rs`
+- `sf-nano-core/src/vm/middle/mod.rs` — drives the stage
+- `sf-nano-core/src/vm/middle/frame.rs` — canonical frame-slot layout
+- `sf-nano-core/src/vm/middle/cfg.rs` — explicit semantic CFG + reachability
+- `sf-nano-core/src/vm/middle/slot_ssa.rs` — slot-only SSA skeleton
+- `sf-nano-core/src/vm/middle/joint_plan/` — joint transient/cache planner
+  (entry-region analysis, local-access decisions, init-local facts,
+  region solver)
+- `sf-nano-core/src/vm/middle/rewrite/` — final SSA-IR materialization
+  (function body + edge repair)
+- `sf-nano-core/src/vm/middle/cleanup.rs` — structural CFG cleanups
+  (cache-run canonicalization, jump threading, single-predecessor merge,
+  unreachable-block removal)
+- `sf-nano-core/src/vm/middle/optimize.rs` — constant folding and
+  constant-operand absorption
+- `sf-nano-core/src/vm/middle/sink_plan.rs` — cached-local sink planning
+- `sf-nano-core/src/vm/middle/ssa_ir/ir.rs` — SSA-IR definitions
+
+Pipeline order in `prepare_function`:
+
+```text
+validate semantic
+plan_frame_layout
+cfg::build_semantic_cfg
+slot_ssa::lower_slot_only_ssa
+JointPlanner::build  (joint_plan/*)
+rewrite::rewrite_function
+cleanup::cleanup_program
+optimize::optimize_program
+sink_plan::plan_sinks
+validate prepared SSA
+```
 
 This stage is where the engine makes most of its important optimization
 decisions. It does not try to produce final code yet. It produces an IR whose
@@ -169,13 +199,16 @@ graph-coloring RA.
 
 ### Optimization: local-cache selection
 
-`analyze_local_cache_prefs()` decides which canonical locals are worth pinning
-in dedicated cache registers.
+The joint planner (`joint_plan/entry_region.rs` + `joint_plan/build.rs`)
+scores locals per block and decides which canonical locals are worth keeping
+resident in dedicated cache registers at each block entry.
 
 What it does:
 
-- scores locals by access frequency
-- weights accesses inside loops more heavily
+- scores locals by access frequency within a block, with a write-first
+  bonus at boundaries and a reuse bonus for repeat reads
+- inherits scores across block edges so hot locals stay cached through
+  loops
 - respects separate GP and FP budgets
 - on 32-bit GP targets, charges `i64` locals as two GP units
 
@@ -204,7 +237,9 @@ How the pipeline enables it:
 
 ### Optimization: entry zero-init elision for cached locals
 
-The same analysis computes `reads_before_write` for each cached local.
+`joint_plan::init_locals::locals_reads_before_write` computes
+`reads_before_write` for each local slot and stores it in
+`SsaProgram.local_slot_info`.
 
 What it does:
 
@@ -231,12 +266,17 @@ Why it belongs here:
 
 ### Optimization: post-call selective reload skipping
 
-`continuation_skip_reload()` computes, for each call site, which cached locals
-will be overwritten before they are read after the call.
+The joint planner's per-block entry-region analysis decides which cached
+locals a block needs resident on entry. At a call continuation, the
+successor block's entry-cache requirement governs what is reloaded: if a
+cached local will be overwritten before it is read, the successor simply
+does not request it, so the edge repair in `rewrite/edge.rs` never emits
+a reload for it.
 
-What it does:
+What this achieves:
 
-- marks cached locals that do not need to be reloaded at the continuation
+- cached locals that are dead-before-overwrite on the call continuation
+  are not reloaded
 - avoids useless "save before call, reload after call, overwrite immediately"
   traffic
 
@@ -248,7 +288,8 @@ local.set 0, ...
 ```
 
 If local `0` is cached and not read before that `local.set`, the continuation
-can skip reloading local `0`.
+block does not list it as an entry requirement, and the continuation edge
+skips reloading local `0`.
 
 Why it belongs here:
 
@@ -259,8 +300,9 @@ Why it belongs here:
 
 ### Optimization-enabling structure: explicit spill/fill planning
 
-`prepare_semantic_ops()` constrains the live transient window to the configured
-GP/FP budgets and inserts explicit `Spill` / `Fill` actions when needed.
+`rewrite::rewrite_function` constrains the live transient window to the
+configured GP/FP budgets and inserts explicit `Spill` / `Fill` actions when
+needed, guided by the joint planner's decisions.
 
 What it does:
 
@@ -294,8 +336,9 @@ How the pipeline enables later optimization:
 
 ### Optimization: flat CFG construction + reachability pruning
 
-`build_block_ranges()` and `retain_reachable_blocks()` turn structured control
-into a flat basic-block CFG and drop blocks that can never execute.
+`cfg::build_semantic_cfg` (using `build_block_ranges` + `retain_reachable_blocks`)
+turns structured control into a flat basic-block CFG and drops blocks that
+can never execute.
 
 What it optimizes:
 
@@ -324,30 +367,35 @@ Why it belongs here:
 - it needs both current live-window state and precomputed target entry state
 - later passes do not know the original stack-shape contract anymore
 
-### Optimization-enabling structure: local versioning and leaf/boundary split
+### Optimization-enabling structure: leaf/call split in SSA ops
 
-Block lowering turns semantic ops into:
+Block lowering turns semantic ops into these SSA-IR variants:
 
-- `Value` ops for pure-ish arithmetic / compare / convert work
-- `Boundary` ops for calls and runtime helpers
-- `LocalGet` / `LocalSet`
-- `Spill` / `Fill`
-
-Every `LocalSet` also carries a monotonically increasing local version.
+- primitive value ops for pure-ish arithmetic / compare / convert work
+- `Call` ops for compiled-call and runtime-dispatch sites
+- `LocalGetSlot` / `LocalSetSlot` for frame-slot traffic
+- `LocalGetCache` / `LocalSetCache` for cached-local traffic
+- `LocalEnsureCache` / `LocalReserveCache` / `LocalDropCache` for explicit
+  cache residency transitions
+- `Spill` / `Fill` for deep-stack publish/refresh
 
 Why that matters:
 
 - calls become exact barriers for later legality checks
-- local versioning makes it cheap to prove whether an old local value is still
-  live
+- the explicit cache-transition ops make the boundary contract visible in
+  SSA rather than implicit in the backend
 - pure value ops remain easy targets for constant folding and sink planning
 
 ### Optimization: CFG simplification after SSA construction
 
-`thread_jumps::simplify_cfg()` runs two cheap CFG cleanups:
+`cleanup::cleanup_program` iterates a handful of cheap CFG cleanups until
+fixed point:
 
-1. jump threading through trivial empty goto blocks
-2. single-predecessor block merging
+1. canonicalize cache-only instruction runs (`simplify_cache_only_runs`)
+2. jump threading through trivial empty goto blocks
+   (`thread_one_empty_goto_block`)
+3. single-predecessor block merging (`merge_one_goto_successor`)
+4. unreachable-block removal (`remove_unreachable_blocks`)
 
 Simple example:
 
@@ -370,34 +418,6 @@ Why it belongs here:
   local
 - doing it earlier would require structured-control surgery
 - doing it later would make MachineIR and native code carry useless block glue
-
-### Optimization: slot-value forwarding
-
-`forward_slot_values()` removes redundant local reloads when the stored value is
-still live.
-
-Simple example:
-
-```text
-local.set x, v0
-local.get x -> v1
-i32.add v0, v1
-```
-
-If `v0` already lives long enough, the `local.get` becomes an alias of `v0`,
-eliminating the reload.
-
-Important limits:
-
-- only canonical local slots are forwarded
-- `Spill` / `Fill` traffic for deep stack values is intentionally left explicit
-- forwarding is blocked across `Boundary` ops
-
-Why it belongs here:
-
-- this is the last stage where local slot traffic is still explicit and typed
-- later MachineIR may have already converted the local into cached-register
-  aliases or moves
 
 ### Optimization: constant folding and constant-operand absorption
 
@@ -443,8 +463,9 @@ Why it belongs here:
 
 ### Optimization: sink planning
 
-`plan_sinks()` finds `LocalSet` operations whose producer can write directly
-into the local's cached home register.
+`sink_plan::plan_sinks` finds `LocalSetCache` operations whose producer can
+write directly into the local's cached home register, and annotates the SSA
+program's `value_sink_local` table accordingly.
 
 Simple example:
 
@@ -454,8 +475,10 @@ i32.add v0, #1 -> v1
 local.set x, v1
 ```
 
-If no boundary and no intervening read of the old `x` exists, the add result
-can be placed directly in `x`'s cache register and the `local.set` disappears.
+If no call and no intervening read of the old `x` exists, the add result
+can be placed directly in `x`'s cache register and the `LocalSetCache`
+disappears (machine lowering consumes the sink annotation via
+`apply_sink_premap`).
 
 Why it belongs here:
 
@@ -475,14 +498,17 @@ Main code:
 - `sf-nano-core/src/vm/machine/lower_module.rs`
 - `sf-nano-core/src/vm/machine/lower_context.rs`
 - `sf-nano-core/src/vm/machine/lower_regalloc.rs`
+- `sf-nano-core/src/vm/machine/lower_cache_layout.rs`
 - `sf-nano-core/src/vm/machine/lower_cached.rs`
 - `sf-nano-core/src/vm/machine/lower_inst.rs`
 - `sf-nano-core/src/vm/machine/lower_leaf_arith.rs`
 - `sf-nano-core/src/vm/machine/lower_leaf_special.rs`
 - `sf-nano-core/src/vm/machine/lower_call.rs`
 - `sf-nano-core/src/vm/machine/lower_const_pool.rs`
-- `sf-nano-core/src/vm/machine/gp32/lower_leaf.rs`
+- `sf-nano-core/src/vm/machine/lower_i64.rs`
 - `sf-nano-core/src/vm/machine/lower_i64_gp64.rs`
+- `sf-nano-core/src/vm/machine/gp32/lower_leaf.rs`
+- `sf-nano-core/src/vm/machine/validate.rs`
 
 This stage is where the "simple pipeline" claim becomes concrete. Because the
 SSA stage already bounded transient pressure and assigned canonical homes, the
@@ -493,7 +519,7 @@ Machine lowerer can stay one-pass and local.
 `MachineRegFile::new()` partitions the virtual register space as:
 
 ```text
-[fixed | gp_local_cache | gp_transient | fp_transient | fp_local_cache]
+[fixed | gp_dynamic | fp_dynamic]
 ```
 
 Fixed registers include:
@@ -503,31 +529,40 @@ Fixed registers include:
 - `mem0_base`
 - `mem0_size`
 
+The GP and FP dynamic banks are single ordered pools; cached-local residency
+and linear-value ownership are tracked in `BlockLowerContext` state rather
+than by register number. The bank order is a backend preference — it still
+gives cached locals and transients mostly-disjoint preferred registers in
+practice, but ownership is authoritative.
+
 Why that matters:
 
 - no later pass has to rediscover ABI roles
-- cached locals and transient temps do not compete in an unconstrained pool
+- cached locals and transient temps share one pool under explicit metadata,
+  so sink-pinning and alias tracking stay exact instead of implicit
 - one-pass allocation becomes possible
 
 ### Optimization: entry cached-local initialization
 
-At entry, `emit_entry_cached_locals()`:
+At each block entry, `lower_cache_layout::compute_block_entry_cache_params`
+plus `rewrite`-emitted `LocalEnsureCache` / `LocalReserveCache` ops drive
+machine lowering to:
 
-- loads cached parameters from frame slots
-- zero-initializes only locals that may be read before write
-- skips untouched cached locals entirely when `reads_before_write == false`
+- load cached parameters from frame slots
+- zero-initialize only locals that may be read before write
+- skip untouched cached locals entirely when `reads_before_write == false`
 
-This is the backend realization of the earlier analysis.
+This is the backend realization of the earlier joint-plan analysis.
 
 ### Optimization: `LocalGet` source aliasing
 
-When a local is cached, lowering a `LocalGet` does not emit a load. It just
-maps the SSA value to the cache register.
+When a local is cached, lowering a `LocalGetCache` does not emit a load. It
+just maps the SSA value to the cache register.
 
 Simple example:
 
 ```text
-local.get x -> v0
+LocalGetCache x -> v0
 i32.add v0, #1
 ```
 
@@ -546,7 +581,7 @@ Simple example:
 
 ```text
 i32.add v0, #1 -> v1
-local.set x, v1
+LocalSetCache x, v1
 ```
 
 becomes "emit the add directly into `x`'s cache register".
@@ -624,12 +659,14 @@ Why it belongs here:
 
 ### Optimization: save/reload only around true boundaries
 
-Because `Boundary` ops were already made explicit, this stage can use a simple
-rule:
+Because `Call` ops were already made explicit in SSA, this stage can use a
+simple rule:
 
-- no live transient values may cross a boundary
-- cached locals are saved before call/helper boundaries
-- cached locals are selectively reloaded after calls using `skip_reload`
+- no live transient values may cross a call
+- cached locals are saved before calls and runtime helpers
+- cached locals are selectively reloaded after calls based on the successor
+  block's entry-cache requirement (reloads the continuation does not need
+  are never emitted)
 
 The pipeline turns calls from "hard global allocation problem" into "publish to
 slots, call, reload what is still needed".
@@ -706,15 +743,18 @@ Main code:
 This stage is intentionally small. It wins because MachineIR is already shaped
 to expose profitable local patterns.
 
-Pass order today:
+Pass order today (block-local unless noted):
 
-1. constant deduplication
-2. store-to-load forwarding
-3. load-to-load reuse
-4. indexed memory fusion
-5. copy propagation
-6. instruction-selection fusion
-7. compare-and-branch fusion
+1. constant deduplication (`deduplicate_constants`)
+2. store-to-load forwarding (`forward_stored_values`)
+3. load-to-load reuse (`reuse_loaded_values`)
+4. indexed memory fusion (`fuse_indexed_memory`)
+5. copy propagation (`copy_propagate`)
+6. instruction-selection fusion (`fuse_isel`)
+7. signed 32x32→64 multiply recovery on 32-bit GP targets
+   (`fuse_smull_sign_ext`)
+8. compare-and-branch fusion (`fuse_compare_branch`, runs across whole
+   program because it needs successor-block liveness)
 
 ### Optimization: constant deduplication
 
@@ -833,8 +873,18 @@ Why it belongs here:
 
 - the backend wants these fused nodes
 - earlier stages should stay ISA-neutral
-- later native emission can map them to one instruction on ARM64/ARMv7a, or
+- later native emission can map them to one instruction on ARM64/ARM32, or
   decompose them if necessary
+
+### Optimization: signed 32x32→64 multiply recovery (32-bit GP only)
+
+`fuse_smull_sign_ext()` replaces an `Int64PairBinary{Mul}` whose operands
+both come from `i64.extend_i32_s` with a single `Int64MulFromSignExt32` op,
+so 32-bit GP backends can emit one signed-long-multiply instruction
+(`SMULL` on ARM32) instead of a 64×64 pair multiply.
+
+This only fires on targets that carry the `Int64PairBinary` form — 64-bit
+GP targets skip it entirely.
 
 ### Optimization: compare-and-branch fusion
 
@@ -868,8 +918,11 @@ Main code:
 - `sf-nano-core/src/vm/arch/abi.md`
 - `sf-nano-core/src/vm/arch/common/core.rs`
 - `sf-nano-core/src/vm/arch/arm64/*`
-- `sf-nano-core/src/vm/arch/armv7a/*`
+- `sf-nano-core/src/vm/arch/arm32/*` (shared by the `armv7a` and `thumbm`
+  backends)
 - `sf-nano-core/src/vm/arch/x86_64/*`
+- `sf-nano-core/src/vm/arch/emulator/*` (MachineIR interpreter backend,
+  used for testing and the `emu64` / `emu32` configs)
 - `sf-nano-core/src/vm/runtime/runtime_call/*`
 - `sf-nano-core/src/vm/runtime/preserved/*`
 
@@ -1124,8 +1177,8 @@ Why it belongs here:
 The fused MachineIR ops created earlier now pay off:
 
 - `IndexedLoad` / `IndexedStore` -> native indexed addressing modes
-- `BitfieldExtractU` -> `UBFX` on ARM64/ARMv7a
-- `IntBinaryShifted` -> barrel-shifter forms on ARM64/ARMv7a
+- `BitfieldExtractU` -> `UBFX` on ARM64/ARM32
+- `IntBinaryShifted` -> barrel-shifter forms on ARM64/ARM32
 - `TestBits` -> `TEST`/`TST`
 - branch conditions reuse compare/test flags directly
 
