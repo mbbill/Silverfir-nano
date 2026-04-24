@@ -26,11 +26,17 @@ DMA transfer to the panel.
 
 ### Mandelbrot
 
-<video src="artifacts/sf-nano-mandelbrot-readme.mp4" controls width="640"></video>
+https://github.com/user-attachments/assets/29b5c194-77d4-4c8c-92f3-4474b726f60c
+
+[YouTube](https://youtu.be/g3rskqAUEYo) |
+[small MP4](artifacts/sf-nano-mandelbrot-readme.mp4)
 
 ### Cube
 
-<video src="artifacts/sf-nano-cube-readme.mp4" controls width="640"></video>
+https://github.com/user-attachments/assets/171bb9fc-7113-4102-b355-c0b1c16b4e8e
+
+[YouTube](https://youtu.be/ULs2tGhGPfs) |
+[small MP4](artifacts/sf-nano-cube-readme.mp4)
 
 The `mandelbrot_wasm` binary is the generic Wasm display host. The active Wasm
 demo is selected in `wasm-kernel/src/lib.rs`:
