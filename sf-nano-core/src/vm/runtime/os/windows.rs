@@ -50,6 +50,14 @@ pub(crate) fn free_executable(base: *mut u8, _capacity: usize) {
     unsafe { VirtualFree(base, 0, MEM_RELEASE) };
 }
 
+pub(crate) unsafe fn shrink_executable(
+    _base: *mut u8,
+    old_capacity: usize,
+    _new_capacity: usize,
+) -> Result<usize, &'static str> {
+    Ok(old_capacity)
+}
+
 #[inline]
 pub(crate) unsafe fn begin_write_executable(base: *mut u8, capacity: usize) {
     unsafe {

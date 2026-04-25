@@ -1,7 +1,10 @@
 //! Executable memory ownership for the native backend.
 //!
 //! This owns one OS-backed writable/executable region. The current machine
-//! backend uses it as a module-wide arena for finalized native code.
+//! backend uses it as a module-wide arena for finalized native code. Hosted
+//! builds may reserve a large compile-time maximum and then release the unused
+//! tail after finalization so 32-bit targets do not retain one full arena of
+//! virtual address space per compiled module.
 //!
 //! All OS coupling — page allocation, W^X toggling, instruction-cache
 //! invalidation — is delegated to [`crate::vm::runtime::os`]. This module
@@ -15,6 +18,13 @@ use super::os;
 use tracked_alloc::{
     AllocationDescriptor, AllocationHandle, AllocationState, RUNTIME_MEMORY_OWNER,
 };
+
+const EXECUTABLE_PAGE_SIZE: usize = 16 * 1024;
+
+#[inline]
+fn align_up(value: usize, align: usize) -> usize {
+    value.div_ceil(align) * align
+}
 
 pub struct CodeBuffer {
     base: *mut u8,
@@ -85,6 +95,19 @@ impl CodeBuffer {
         }
         #[cfg(feature = "memprof")]
         self.trace.update(self.trace_state());
+    }
+
+    pub fn shrink_to_fit_pages(&mut self) -> Result<(), &'static str> {
+        let trimmed = align_up(self.offset.max(1), EXECUTABLE_PAGE_SIZE);
+        let trimmed = trimmed.min(self.capacity);
+        if trimmed == self.capacity {
+            return Ok(());
+        }
+        let capacity = unsafe { os::shrink_executable(self.base, self.capacity, trimmed)? };
+        self.capacity = capacity;
+        #[cfg(feature = "memprof")]
+        self.trace.update(self.trace_state());
+        Ok(())
     }
 
     #[inline]

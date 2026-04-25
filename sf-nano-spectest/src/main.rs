@@ -120,10 +120,13 @@ fn main() {
         }
     };
 
-    if !testsuite_dir.exists() {
+    // Keep this aligned with discovery: read_dir validates the testsuite and
+    // avoids qemu-riscv32's optimized Rust std statx metadata crash.
+    if let Err(err) = std::fs::read_dir(&testsuite_dir) {
         error!(
-            "Testsuite directory not found at: {}",
-            testsuite_dir.display()
+            "Testsuite directory not readable at {}: {}",
+            testsuite_dir.display(),
+            err
         );
         std::process::exit(1);
     }

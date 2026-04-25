@@ -114,6 +114,9 @@ impl<'a> Riscv64Backend<'a> {
                 .emit_u32(enc::add(abi::C_ARG2, abi::stack_reg(), abi::C_ARG2));
         }
         self.materialize_u64(call_scratch, preserved_entry as *const () as usize as u64);
+        self.emit_restore_host_platform_regs(
+            (abi::PRESERVED_HELPER_FRAME_SIZE + prefix_bytes) as i32,
+        );
         self.core
             .text
             .emit_u32(enc::jalr(abi::link_reg(), call_scratch, 0));

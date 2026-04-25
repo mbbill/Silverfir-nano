@@ -604,6 +604,9 @@ fn finish_native_compile_streaming(
     executable.emit_bytes(&function_info_bytes);
     let written_len = executable.len();
     executable.finish_write(0, written_len);
+    executable
+        .shrink_to_fit_pages()
+        .map_err(WasmError::internal)?;
     let function_info_base = unsafe { executable.as_ptr().add(function_info_table_offset) };
     drop(arch_lower_phase);
 
@@ -705,6 +708,13 @@ fn finish_native_compile(
         lowered.abi,
     )?);
     let entries = arch::dispatch_compile_module(active_backend, module, &compiled)?;
+    if !is_emulator_backend(active_backend) {
+        module
+            .native_code_buffer()
+            .map_err(WasmError::internal)?
+            .shrink_to_fit_pages()
+            .map_err(WasmError::internal)?;
+    }
     drop(arch_lower_phase);
 
     let bytes: usize = entries
@@ -905,16 +915,20 @@ mod tests {
         utils::limits::Limits,
         value_type::ValueType,
         vm::{
-            arch::backend_mode_test_lock,
             entities::{FunctionInst, MemInst, ModuleInst},
             store::Store,
         },
     };
 
+    #[cfg(any(sf_backend_emu64, sf_backend_emu32))]
+    use crate::vm::arch::backend_mode_test_lock;
+
+    #[cfg(any(sf_backend_emu64, sf_backend_emu32))]
     struct CompiledBackendGuard {
         _lock: std::sync::MutexGuard<'static, ()>,
     }
 
+    #[cfg(any(sf_backend_emu64, sf_backend_emu32))]
     fn enable_compiled_backend() -> CompiledBackendGuard {
         let lock = backend_mode_test_lock()
             .lock()
@@ -922,6 +936,7 @@ mod tests {
         CompiledBackendGuard { _lock: lock }
     }
 
+    #[cfg(sf_backend_emu32)]
     fn encode_u32_leb(mut value: u32, out: &mut collections::Vec<u8>) {
         loop {
             let mut byte = (value & 0x7f) as u8;
@@ -936,6 +951,7 @@ mod tests {
         }
     }
 
+    #[cfg(sf_backend_emu32)]
     fn local_get_code(index: u32) -> collections::Vec<u8> {
         let mut code = collections::vec![0x20];
         encode_u32_leb(index, &mut code);
@@ -943,6 +959,7 @@ mod tests {
         code
     }
 
+    #[cfg(sf_backend_emu32)]
     fn long_argument_caller_code(helper_params: &[ValueType]) -> collections::Vec<u8> {
         let mut code = collections::Vec::new();
         for (index, ty) in helper_params.iter().copied().enumerate() {

@@ -139,6 +139,12 @@ pub(crate) fn sltiu(rd: RiscvReg, rs1: RiscvReg, imm: i32) -> u32 {
 }
 
 #[inline]
+#[cfg(sf_backend_riscv32)]
+pub(crate) fn andi(rd: RiscvReg, rs1: RiscvReg, imm: i32) -> u32 {
+    i_type(imm, rs1, 0b111, rd, 0b0010011)
+}
+
+#[inline]
 pub(crate) fn xori(rd: RiscvReg, rs1: RiscvReg, imm: i32) -> u32 {
     i_type(imm, rs1, 0b100, rd, 0b0010011)
 }

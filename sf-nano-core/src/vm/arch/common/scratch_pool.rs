@@ -65,6 +65,42 @@ impl<R: Copy, const N: usize> ScratchPool<R, N> {
         panic!("ScratchPool: all {} registers are in use", N);
     }
 
+    /// Allocate a scratch register other than `forbidden`.
+    #[cfg(sf_backend_riscv64)]
+    pub(crate) fn scoped_alloc_excluding(&self, forbidden: R) -> ScratchGuard<'_, R, N>
+    where
+        R: PartialEq,
+    {
+        self.scoped_alloc_excluding_any([forbidden])
+    }
+
+    /// Allocate a scratch register other than any register in `forbidden`.
+    #[cfg(any(sf_backend_riscv32, sf_backend_riscv64))]
+    pub(crate) fn scoped_alloc_excluding_any<const M: usize>(
+        &self,
+        forbidden: [R; M],
+    ) -> ScratchGuard<'_, R, N>
+    where
+        R: PartialEq,
+    {
+        let mask = self.in_use.get();
+        let mut cursor = self.cursor.get() as usize;
+        for _ in 0..N {
+            let idx = cursor % N;
+            cursor += 1;
+            if mask & (1 << idx) == 0 && !forbidden.iter().any(|reg| self.regs[idx] == *reg) {
+                self.in_use.set(mask | (1 << idx));
+                self.cursor.set(cursor as u8);
+                return ScratchGuard {
+                    pool: self,
+                    idx: idx as u8,
+                    reg: self.regs[idx],
+                };
+            }
+        }
+        panic!("ScratchPool: no available register outside the excluded register");
+    }
+
     /// Allocate a scratch register without RAII, returning its pool index.
     /// The caller must later call `free_index()` with the same index.
     ///

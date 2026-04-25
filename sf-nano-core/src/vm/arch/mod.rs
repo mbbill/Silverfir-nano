@@ -440,7 +440,7 @@ pub(crate) fn dispatch_eval(
     }
 }
 
-#[cfg(test)]
+#[cfg(all(test, any(sf_backend_emu64, sf_backend_emu32)))]
 pub(crate) fn backend_mode_test_lock() -> &'static std::sync::Mutex<()> {
     use std::sync::{Mutex, OnceLock};
 

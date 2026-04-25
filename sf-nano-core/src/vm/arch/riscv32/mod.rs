@@ -31,26 +31,6 @@ fn join_u64(lo: u32, hi: u32) -> u64 {
     u64::from(lo) | (u64::from(hi) << 32)
 }
 
-pub(crate) extern "C" fn rv32_i64_shl(lo: u32, hi: u32, count: u32) -> u64 {
-    join_u64(lo, hi).wrapping_shl(count & 63)
-}
-
-pub(crate) extern "C" fn rv32_i64_shr_s(lo: u32, hi: u32, count: u32) -> u64 {
-    ((join_u64(lo, hi) as i64) >> (count & 63)) as u64
-}
-
-pub(crate) extern "C" fn rv32_i64_shr_u(lo: u32, hi: u32, count: u32) -> u64 {
-    join_u64(lo, hi) >> (count & 63)
-}
-
-pub(crate) extern "C" fn rv32_i64_rotl(lo: u32, hi: u32, count: u32) -> u64 {
-    join_u64(lo, hi).rotate_left(count & 63)
-}
-
-pub(crate) extern "C" fn rv32_i64_rotr(lo: u32, hi: u32, count: u32) -> u64 {
-    join_u64(lo, hi).rotate_right(count & 63)
-}
-
 pub(crate) extern "C" fn rv32_i64_div_s(lhs_lo: u32, lhs_hi: u32, rhs_lo: u32, rhs_hi: u32) -> u64 {
     let lhs = join_u64(lhs_lo, lhs_hi) as i64;
     let rhs = join_u64(rhs_lo, rhs_hi) as i64;

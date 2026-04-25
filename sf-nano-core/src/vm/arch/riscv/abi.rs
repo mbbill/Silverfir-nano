@@ -43,6 +43,115 @@ struct RegPlan {
     callee_saved_fp: &'static [RiscvFpReg],
 }
 
+#[cfg(sf_backend_riscv32)]
+const GP_DYNAMIC: &[RiscvReg] = &[
+    // Less-special caller-saved regs first: a3-a7, t3-t6. RV32 keeps t2,
+    // gp, and tp in the scratch pool to support register-only i64 lowering.
+    x(13),
+    x(14),
+    x(15),
+    x(16),
+    x(17),
+    x(28),
+    x(29),
+    x(30),
+    x(31),
+    // Caller-saved C argument/result registers are valid dynamic regs, but
+    // come after the less-special caller-saved bank.
+    x(10),
+    x(11),
+    x(12),
+    // Callee-saved dynamic bank: s0-s1, s6-s11.
+    x(8),
+    x(9),
+    x(22),
+    x(23),
+    x(24),
+    x(25),
+    x(26),
+    x(27),
+];
+
+#[cfg(sf_backend_riscv64)]
+const GP_DYNAMIC: &[RiscvReg] = &[
+    // Less-special caller-saved regs first: a3-a7, t2, t3-t6. The
+    // current C-boundary lowering stages directly through a0-a2.
+    x(13),
+    x(14),
+    x(15),
+    x(16),
+    x(17),
+    x(7),
+    x(28),
+    x(29),
+    x(30),
+    x(31),
+    // Caller-saved C argument/result registers are valid dynamic regs, but
+    // come after the less-special caller-saved bank.
+    x(10),
+    x(11),
+    x(12),
+    // Callee-saved dynamic bank: s0-s1, s6-s11.
+    x(8),
+    x(9),
+    x(22),
+    x(23),
+    x(24),
+    x(25),
+    x(26),
+    x(27),
+];
+
+#[cfg(sf_backend_riscv32)]
+const GP_DYNAMIC_CALLER_SAVED: &[RiscvReg] = &[
+    x(13),
+    x(14),
+    x(15),
+    x(16),
+    x(17),
+    x(28),
+    x(29),
+    x(30),
+    x(31),
+    x(10),
+    x(11),
+    x(12),
+];
+
+#[cfg(sf_backend_riscv64)]
+const GP_DYNAMIC_CALLER_SAVED: &[RiscvReg] = &[
+    x(13),
+    x(14),
+    x(15),
+    x(16),
+    x(17),
+    x(7),
+    x(28),
+    x(29),
+    x(30),
+    x(31),
+    x(10),
+    x(11),
+    x(12),
+];
+
+#[cfg(sf_backend_riscv32)]
+const GP_SCRATCH: &[RiscvReg] = &[
+    x(5), // t0
+    x(6), // t1
+    x(1), // ra
+    x(3), // gp
+    x(4), // tp
+    x(7), // t2
+];
+
+#[cfg(sf_backend_riscv64)]
+const GP_SCRATCH: &[RiscvReg] = &[
+    x(5), // t0
+    x(6), // t1
+    x(1), // ra
+];
+
 const REG_PLAN: RegPlan = RegPlan {
     // Keep fixed MachineIR roles in RISC-V callee-saved registers so host
     // helper calls cannot disturb them.
@@ -58,50 +167,9 @@ const REG_PLAN: RegPlan = RegPlan {
     // do not consume return/argument regs unnecessarily. Then use the
     // callee-saved bank for values that benefit from surviving C calls without
     // helper-side spills.
-    gp_dynamic: &[
-        // Less-special caller-saved regs first: a3-a7, t2, t3-t6. The
-        // current C-boundary lowering stages directly through a0-a2.
-        x(13),
-        x(14),
-        x(15),
-        x(16),
-        x(17),
-        x(7),
-        x(28),
-        x(29),
-        x(30),
-        x(31),
-        // Caller-saved C argument/result registers are valid dynamic regs, but
-        // come after the less-special caller-saved bank.
-        x(10),
-        x(11),
-        x(12),
-        // Callee-saved dynamic bank: s0-s1, s6-s11.
-        x(8),
-        x(9),
-        x(22),
-        x(23),
-        x(24),
-        x(25),
-        x(26),
-        x(27),
-    ],
-    gp_dynamic_caller_saved: &[
-        x(13),
-        x(14),
-        x(15),
-        x(16),
-        x(17),
-        x(7),
-        x(28),
-        x(29),
-        x(30),
-        x(31),
-        x(10),
-        x(11),
-        x(12),
-    ],
-    gp_scratch: &[x(5), x(6)], // t0-t1
+    gp_dynamic: GP_DYNAMIC,
+    gp_dynamic_caller_saved: GP_DYNAMIC_CALLER_SAVED,
+    gp_scratch: GP_SCRATCH,
 
     // Save RA because public-entry calls overwrite it before the C ABI
     // epilogue returns to Rust. Save dynamic s0-s1, the fixed s2-s5 roles,
@@ -191,8 +259,15 @@ const REG_PLAN: RegPlan = RegPlan {
     ],
 };
 
+#[cfg(sf_backend_riscv32)]
 const _: () = assert!(
-    REG_PLAN.gp_dynamic.len() + REG_PLAN.gp_scratch.len() + 4 + 5 == 32,
+    REG_PLAN.gp_dynamic.len() + REG_PLAN.gp_scratch.len() + 4 + 2 == 32,
+    "RV32 GP register plan must account for all 32 x-registers"
+);
+
+#[cfg(sf_backend_riscv64)]
+const _: () = assert!(
+    REG_PLAN.gp_dynamic.len() + REG_PLAN.gp_scratch.len() + 4 + 4 == 32,
     "RISC-V GP register plan must account for all 32 x-registers"
 );
 
@@ -225,8 +300,25 @@ pub(crate) const fn compile_backend_config(
     )
 }
 
-pub(crate) fn new_gp_scratch_pool() -> ScratchPool<RiscvReg, 2> {
-    ScratchPool::new([REG_PLAN.gp_scratch[0], REG_PLAN.gp_scratch[1]])
+#[cfg(sf_backend_riscv32)]
+pub(crate) fn new_gp_scratch_pool() -> ScratchPool<RiscvReg, 6> {
+    ScratchPool::new([
+        REG_PLAN.gp_scratch[0],
+        REG_PLAN.gp_scratch[1],
+        REG_PLAN.gp_scratch[2],
+        REG_PLAN.gp_scratch[3],
+        REG_PLAN.gp_scratch[4],
+        REG_PLAN.gp_scratch[5],
+    ])
+}
+
+#[cfg(sf_backend_riscv64)]
+pub(crate) fn new_gp_scratch_pool() -> ScratchPool<RiscvReg, 3> {
+    ScratchPool::new([
+        REG_PLAN.gp_scratch[0],
+        REG_PLAN.gp_scratch[1],
+        REG_PLAN.gp_scratch[2],
+    ])
 }
 
 pub(crate) fn new_fp_scratch_pool() -> ScratchPool<RiscvFpReg, 2> {
@@ -337,6 +429,18 @@ pub(crate) const fn stack_reg() -> RiscvReg {
 #[inline]
 pub(crate) const fn link_reg() -> RiscvReg {
     RiscvReg::RA
+}
+
+#[inline]
+#[cfg(sf_backend_riscv32)]
+pub(crate) const fn global_pointer_reg() -> RiscvReg {
+    x(3)
+}
+
+#[inline]
+#[cfg(sf_backend_riscv32)]
+pub(crate) const fn thread_pointer_reg() -> RiscvReg {
+    x(4)
 }
 
 #[inline]

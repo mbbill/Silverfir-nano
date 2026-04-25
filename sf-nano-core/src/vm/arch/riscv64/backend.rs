@@ -49,6 +49,7 @@ const CALLEE_SAVED_FP_FRAME_OFFSET: i32 = CALLEE_SAVED_GP_FRAME_SIZE;
 const CALLEE_SAVED_FP_FRAME_SIZE: i32 = abi::callee_saved_fp_count() as i32 * STACK_SLOT_BYTES;
 const CALLEE_SAVED_FRAME_SIZE: i32 =
     ((CALLEE_SAVED_FP_FRAME_OFFSET + CALLEE_SAVED_FP_FRAME_SIZE + 15) / 16) * 16;
+const BODY_LINK_RA_OFFSET: i32 = 0;
 const BODY_LINK_FRAME_SIZE: i32 = 16;
 const CALL_RECORD_SIZE: i32 = 16;
 
@@ -139,7 +140,7 @@ impl RiscvTruncSpec {
 pub(crate) struct Riscv64Backend<'a> {
     pub core: CompilerCore<'a>,
     pub(super) fixups: collections::Vec<BranchFixup>,
-    pub(super) gp_scratch: ScratchPool<RiscvReg, 2>,
+    pub(super) gp_scratch: ScratchPool<RiscvReg, 3>,
     pub(super) fp_scratch: ScratchPool<RiscvFpReg, 2>,
 }
 
@@ -228,11 +229,12 @@ impl<'a> ArchBackend<'a> for Riscv64Backend<'a> {
 
     fn lower_body_prelude(&mut self) {
         self.emit_addi(abi::stack_reg(), abi::stack_reg(), -BODY_LINK_FRAME_SIZE);
-        self.emit_sd(abi::link_reg(), abi::stack_reg(), 0);
+        self.emit_sd(abi::link_reg(), abi::stack_reg(), BODY_LINK_RA_OFFSET);
     }
 
     fn lower_body_local_error_tail(&mut self) {
-        self.emit_ld(abi::link_reg(), abi::stack_reg(), 0);
+        self.emit_ld(abi::link_reg(), abi::stack_reg(), BODY_LINK_RA_OFFSET);
+        self.emit_restore_host_platform_regs(0);
         self.emit_ld(
             abi::map_fixed_reg(MACHINE_FP_REG),
             abi::stack_reg(),
@@ -445,6 +447,11 @@ impl<'a> Riscv64Backend<'a> {
         self.core
             .text
             .emit_u32(enc::store(0b011, src, base, offset));
+    }
+
+    pub(super) fn emit_restore_host_platform_regs(&mut self, _body_link_base_offset: i32) {
+        // RV64 keeps psABI gp/tp reserved, so generated code never has to
+        // repair them at host boundaries.
     }
 
     #[inline]
@@ -3365,7 +3372,8 @@ impl<'a> Riscv64Backend<'a> {
             }
         }
 
-        self.emit_ld(abi::link_reg(), abi::stack_reg(), 0);
+        self.emit_ld(abi::link_reg(), abi::stack_reg(), BODY_LINK_RA_OFFSET);
+        self.emit_restore_host_platform_regs(0);
         self.emit_ld(
             fp,
             abi::stack_reg(),
@@ -3404,13 +3412,17 @@ impl<'a> Riscv64Backend<'a> {
         match target {
             MachineCallTarget::Direct(callee) => {
                 let scratch = self.gp_scratch.scoped_alloc().detach();
+                self.emit_restore_host_platform_regs(CALL_RECORD_SIZE);
                 self.emit_direct_call_target_literal(*scratch, *callee, true)?;
             }
             MachineCallTarget::Indirect { callee_entry, .. } => {
                 let callee_entry = self.map_gp_reg(*callee_entry)?;
+                let target = self.gp_scratch.scoped_alloc().detach();
+                self.emit_mv(*target, callee_entry);
+                self.emit_restore_host_platform_regs(CALL_RECORD_SIZE);
                 self.core
                     .text
-                    .emit_u32(enc::jalr(abi::link_reg(), callee_entry, 0));
+                    .emit_u32(enc::jalr(abi::link_reg(), *target, 0));
             }
         }
 
@@ -3436,20 +3448,30 @@ impl<'a> Riscv64Backend<'a> {
 
         match target {
             MachineCallTarget::Direct(callee) => {
-                let scratch = self.gp_scratch.scoped_alloc().detach();
-                self.emit_ld(abi::link_reg(), abi::stack_reg(), 0);
-                self.emit_addi(abi::stack_reg(), abi::stack_reg(), BODY_LINK_FRAME_SIZE);
+                let scratch = self
+                    .gp_scratch
+                    .scoped_alloc_excluding(abi::link_reg())
+                    .detach();
                 self.emit_mv(fp, callee_fp);
+                self.emit_ld(abi::link_reg(), abi::stack_reg(), BODY_LINK_RA_OFFSET);
+                self.emit_restore_host_platform_regs(0);
+                self.emit_addi(abi::stack_reg(), abi::stack_reg(), BODY_LINK_FRAME_SIZE);
                 self.emit_direct_call_target_literal(*scratch, *callee, false)?;
             }
             MachineCallTarget::Indirect { callee_entry, .. } => {
                 let callee_entry = self.map_gp_reg(*callee_entry)?;
-                self.emit_ld(abi::link_reg(), abi::stack_reg(), 0);
-                self.emit_addi(abi::stack_reg(), abi::stack_reg(), BODY_LINK_FRAME_SIZE);
+                let target = self
+                    .gp_scratch
+                    .scoped_alloc_excluding(abi::link_reg())
+                    .detach();
+                self.emit_mv(*target, callee_entry);
                 self.emit_mv(fp, callee_fp);
+                self.emit_ld(abi::link_reg(), abi::stack_reg(), BODY_LINK_RA_OFFSET);
+                self.emit_restore_host_platform_regs(0);
+                self.emit_addi(abi::stack_reg(), abi::stack_reg(), BODY_LINK_FRAME_SIZE);
                 self.core
                     .text
-                    .emit_u32(enc::jalr(abi::zero_reg(), callee_entry, 0));
+                    .emit_u32(enc::jalr(abi::zero_reg(), *target, 0));
             }
         }
         Ok(())
@@ -3469,6 +3491,7 @@ impl<'a> Riscv64Backend<'a> {
         {
             let scratch = self.gp_scratch.scoped_alloc().detach();
             self.materialize_u64(*scratch, call_runtime_entry_ptr() as usize as u64);
+            self.emit_restore_host_platform_regs(abi::PRESERVED_HELPER_FRAME_SIZE as i32);
             self.core
                 .text
                 .emit_u32(enc::jalr(abi::link_reg(), *scratch, 0));
@@ -3526,6 +3549,7 @@ impl<'a> Riscv64Backend<'a> {
         self.materialize_u64(abi::C_ARG1, trap_code(kind));
         let scratch = self.gp_scratch.scoped_alloc().detach();
         self.materialize_u64(*scratch, raise_trap as *const () as usize as u64);
+        self.emit_restore_host_platform_regs(0);
         self.core
             .text
             .emit_u32(enc::jalr(abi::link_reg(), *scratch, 0));

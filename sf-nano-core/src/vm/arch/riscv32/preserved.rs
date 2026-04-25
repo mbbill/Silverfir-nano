@@ -189,8 +189,7 @@ impl<'a> Riscv32Backend<'a> {
     ) {
         use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
 
-        let call_scratch_idx = result_scratch_idx.unwrap_or_else(|| self.gp_scratch.alloc());
-        let call_scratch = self.gp_scratch.reg(call_scratch_idx);
+        let call_scratch = self.alloc_host_call_scratch();
 
         self.emit_mv(abi::C_ARG0, abi::map_fixed_reg(MACHINE_CTX_REG));
         self.materialize_u64(abi::C_ARG1, op_code as u64);
@@ -204,18 +203,23 @@ impl<'a> Riscv32Backend<'a> {
                 .text
                 .emit_u32(enc::add(abi::C_ARG2, abi::stack_reg(), abi::C_ARG2));
         }
-        self.materialize_u64(call_scratch, preserved_entry as *const () as usize as u64);
+        self.materialize_u64(*call_scratch, preserved_entry as *const () as usize as u64);
+        self.emit_restore_host_platform_regs(
+            (abi::PRESERVED_HELPER_FRAME_SIZE + prefix_bytes) as i32,
+        );
         self.core
             .text
-            .emit_u32(enc::jalr(abi::link_reg(), call_scratch, 0));
+            .emit_u32(enc::jalr(abi::link_reg(), *call_scratch, 0));
 
         let error_path = self.core.new_label();
         self.emit_branch_to(enc::Cond::Ne, abi::C_RET0, abi::zero_reg(), error_path);
+        drop(call_scratch);
 
-        if result_scratch_idx.is_some() {
+        if let Some(result_scratch_idx) = result_scratch_idx {
+            let result_scratch = self.gp_scratch.reg(result_scratch_idx);
             self.emit_load_raw(
                 0b010,
-                call_scratch,
+                result_scratch,
                 abi::stack_reg(),
                 prefix_bytes as i32 + (preserved_io::RET0 as i32 * 8),
             );
@@ -234,9 +238,6 @@ impl<'a> Riscv32Backend<'a> {
         self.emit_jal(abi::zero_reg(), body_local_error_label);
 
         self.core.bind_label(done);
-        if result_scratch_idx.is_none() {
-            self.gp_scratch.free_index(call_scratch_idx);
-        }
     }
 
     pub(super) fn emit_preserved_call_and_close_with_result(
@@ -247,7 +248,7 @@ impl<'a> Riscv32Backend<'a> {
     ) -> Result<(), WasmError> {
         use crate::vm::runtime::preserved::preserved_entry;
 
-        let call_scratch = self.gp_scratch.scoped_alloc().detach();
+        let call_scratch = self.alloc_host_call_scratch();
 
         self.emit_mv(abi::C_ARG0, abi::map_fixed_reg(MACHINE_CTX_REG));
         self.materialize_u64(abi::C_ARG1, op_code as u64);
@@ -262,12 +263,16 @@ impl<'a> Riscv32Backend<'a> {
                 .emit_u32(enc::add(abi::C_ARG2, abi::stack_reg(), abi::C_ARG2));
         }
         self.materialize_u64(*call_scratch, preserved_entry as *const () as usize as u64);
+        self.emit_restore_host_platform_regs(
+            (abi::PRESERVED_HELPER_FRAME_SIZE + prefix_bytes) as i32,
+        );
         self.core
             .text
             .emit_u32(enc::jalr(abi::link_reg(), *call_scratch, 0));
 
         let error_path = self.core.new_label();
         self.emit_branch_to(enc::Cond::Ne, abi::C_RET0, abi::zero_reg(), error_path);
+        drop(call_scratch);
 
         self.emit_restore_preserved_gp(prefix_bytes);
         self.emit_restore_preserved_fp(prefix_bytes);

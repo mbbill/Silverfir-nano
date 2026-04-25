@@ -8,10 +8,17 @@ pub fn find_wast_files(dir: &Path) -> Vec<std::path::PathBuf> {
     if let Ok(entries) = fs::read_dir(dir) {
         for entry in entries.flatten() {
             let path = entry.path();
+            // Prefer the directory entry type over Path metadata probes here.
+            // qemu-riscv32 has crashed in optimized Rust std statx metadata
+            // paths before any WAST execution; read_dir already gives us the
+            // file type we need without changing discovery semantics.
+            let Ok(file_type) = entry.file_type() else {
+                continue;
+            };
 
-            if path.is_file() && path.extension().is_some_and(|ext| ext == "wast") {
+            if file_type.is_file() && path.extension().is_some_and(|ext| ext == "wast") {
                 wast_files.push(path);
-            } else if path.is_dir() {
+            } else if file_type.is_dir() {
                 wast_files.extend(find_wast_files(&path));
             }
         }

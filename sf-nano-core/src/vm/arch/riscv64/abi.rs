@@ -28,7 +28,7 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
     common::compile_backend_config(GP_UNIT_BYTES, SCALAR_CALL_SCRATCH_SLOTS)
 }
 
-pub(super) fn new_gp_scratch_pool() -> ScratchPool<RiscvReg, 2> {
+pub(super) fn new_gp_scratch_pool() -> ScratchPool<RiscvReg, 3> {
     common::new_gp_scratch_pool()
 }
 

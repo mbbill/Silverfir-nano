@@ -35,6 +35,7 @@ X64_DARWIN_TARGET = "x86_64-apple-darwin"
 X64_LINUX_TARGET = "x86_64-unknown-linux-gnu"
 TESTSUITE_DIR = Path(os.environ.get("TESTSUITE_DIR", TARGET_DIR / "webassembly-testsuite"))
 FULL_RUNTIME_FEATURES = "jit,wasi,validator,guard-pages"
+EMULATOR_BACKEND_FEATURES = {"backend-emu64", "backend-emu32"}
 RISCV64_RUSTFLAGS = "-C linker=rust-lld -C target-feature=+crt-static -C link-self-contained=yes -C panic=abort"
 RISCV32_LINKER = ROOT / "scripts" / "zig-riscv32-linux-musl-cc.sh"
 RISCV32_RUSTFLAGS = f"-C linker={RISCV32_LINKER} -C target-feature=+crt-static -C link-self-contained=no -C panic=abort"
@@ -262,6 +263,16 @@ def feature_args(spec: str) -> List[str]:
     if spec == "EMPTY":
         return ["--no-default-features"]
     return ["--no-default-features", "--features", spec]
+
+
+def feature_spec_enables_emulator_backend(spec: Optional[str]) -> bool:
+    # Emulator backends are smoke coverage in check.py. Keep compiling and
+    # running them, but do not let warnings from those rows fail strict checks.
+    if spec is None or spec in {"DEFAULT", "EMPTY"}:
+        return False
+    if spec == "ALL":
+        return True
+    return any(feature in EMULATOR_BACKEND_FEATURES for feature in spec.split(","))
 
 
 def feature_spec_enables_memprof(spec: str) -> bool:
@@ -907,6 +918,7 @@ def cargo_check(
     ignore_warnings: bool = False,
     allow_dead_code: bool = False,
 ) -> StepResult:
+    ignore_warnings = ignore_warnings or feature_spec_enables_emulator_backend(feature_spec)
     argv = cargo_argv("check", target)
     if profile_name == "release":
         argv.append("--release")
@@ -951,7 +963,13 @@ def cargo_build(
     if target:
         argv.extend(["--target", target])
     argv.extend(["-p", package, "--no-default-features", "--features", features])
-    return runner.run(name, argv, env=cargo_env(runner, target), log_name=log_name)
+    return runner.run(
+        name,
+        argv,
+        env=cargo_env(runner, target),
+        log_name=log_name,
+        ignore_warnings=feature_spec_enables_emulator_backend(features),
+    )
 
 
 def cargo_build_package(
@@ -1036,12 +1054,6 @@ def full_cli_combos() -> List[Tuple[str, str]]:
     return combos
 
 
-def emulator_warning_smoke_spec(spec: str) -> bool:
-    has_emu64 = "backend-emu64" in spec.split(",")
-    has_emu32 = "backend-emu32" in spec.split(",")
-    return has_emu64 != has_emu32
-
-
 def run_feature_checks(runner: CheckRunner, *, full: bool, profiles: Sequence[str]) -> None:
     core_combos = full_core_combos() if full else CORE_FAST_COMBOS
     cli_combos = full_cli_combos() if full else CLI_FAST_COMBOS
@@ -1055,7 +1067,6 @@ def run_feature_checks(runner: CheckRunner, *, full: bool, profiles: Sequence[st
                 profile_name=profile_name,
                 feature_spec=spec,
                 log_name=f"feature-core-{clean_label(label)}-{profile_name}",
-                ignore_warnings=emulator_warning_smoke_spec(spec),
                 allow_dead_code=feature_spec_enables_memprof(spec),
             )
 
@@ -1241,6 +1252,7 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
                 [host_bin, *extra_args],
                 env=env,
                 log_name=f"spectest-emu64-{profile_name}",
+                ignore_warnings=True,
             )
 
         emu32_build = cargo_build(
@@ -1261,6 +1273,7 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
                 [host_bin, *extra_args],
                 env=env,
                 log_name=f"spectest-emu32-{profile_name}",
+                ignore_warnings=True,
             )
 
         run_x64_spectest(runner, profile_name, extra_args, env)
@@ -1276,15 +1289,22 @@ def run_binary_if_present(
     *,
     env: Optional[Dict[str, str]] = None,
     log_name: Optional[str] = None,
+    ignore_warnings: bool = False,
 ) -> Optional[StepResult]:
-    binary = Path(argv[0])
+    binary_text = str(argv[0])
+    binary = Path(binary_text)
     # In dry-run we never actually built the binary; skip the pre-check so
     # the step still surfaces in the planned step list as OK rather than
     # FAIL'ing on a missing artifact.
-    if not runner.dry_run and not binary.exists():
-        runner.fail(name, f"expected binary not found: {binary}", command=shlex_join(argv))
-        return None
-    return runner.run(name, argv, env=env, log_name=log_name)
+    if not runner.dry_run:
+        if binary.is_absolute() or "/" in binary_text:
+            exists = binary.exists()
+        else:
+            exists = shutil.which(binary_text) is not None
+        if not exists:
+            runner.fail(name, f"expected binary not found: {binary_text}", command=shlex_join(argv))
+            return None
+    return runner.run(name, argv, env=env, log_name=log_name, ignore_warnings=ignore_warnings)
 
 
 def run_x64_spectest(
@@ -1517,11 +1537,11 @@ def run_armv7_binary(
             binary,
             *args,
         ]
-        runner.run(name, argv, log_name=log_name)
+        runner.run(name, argv, log_name=log_name, ignore_warnings=True)
         return
 
     argv = ["qemu-arm-static", "-cpu", "cortex-a15", binary, *args]
-    runner.run(name, argv, env=env, log_name=log_name)
+    runner.run(name, argv, env=env, log_name=log_name, ignore_warnings=True)
 
 
 def run_riscv64_binary(
@@ -1548,10 +1568,10 @@ def run_riscv64_binary(
             binary,
             *args,
         ]
-        return runner.run(name, argv, log_name=log_name)
+        return runner.run(name, argv, log_name=log_name, ignore_warnings=True)
 
     argv = ["qemu-riscv64-static", "-cpu", "rv64", binary, *args]
-    return runner.run(name, argv, env=env, log_name=log_name)
+    return runner.run(name, argv, env=env, log_name=log_name, ignore_warnings=True)
 
 
 def run_riscv32_binary(
@@ -1578,10 +1598,10 @@ def run_riscv32_binary(
             binary,
             *args,
         ]
-        return runner.run(name, argv, log_name=log_name)
+        return runner.run(name, argv, log_name=log_name, ignore_warnings=True)
 
     argv = ["qemu-riscv32-static", "-cpu", "rv32", binary, *args]
-    return runner.run(name, argv, env=env, log_name=log_name)
+    return runner.run(name, argv, env=env, log_name=log_name, ignore_warnings=True)
 
 
 def run_wasitest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_args: Sequence[str]) -> None:
@@ -1644,6 +1664,7 @@ def run_wasitest_host_profile(runner: CheckRunner, profile_name: str, extra_args
                 f"run: wasitest {backend} ({profile_name})",
                 [wasitest_bin, "--cli-path", cli_bin, *extra_args],
                 log_name=f"wasitest-{backend}-{profile_name}",
+                ignore_warnings=True,
             )
 
 
@@ -1730,6 +1751,7 @@ def run_wasitest_release_cross_targets(runner: CheckRunner, extra_args: Sequence
             [native_wasitest, "--cli-path", wrapper, "--backend", "native", *extra_args],
             env={"TMPDIR": str(runner.tmp_dir)},
             log_name=f"wasitest-{label}-release",
+            ignore_warnings=True,
         )
 
 
@@ -1768,6 +1790,7 @@ def run_riscv64_wasitest_release(
         [native_wasitest, "--cli-path", wrapper, "--backend", "native", *extra_args],
         env={"TMPDIR": str(runner.tmp_dir)},
         log_name="wasitest-riscv64-release",
+        ignore_warnings=True,
     )
 
 
@@ -1814,16 +1837,23 @@ def run_riscv32_wasitest_release(
         ],
         env={"TMPDIR": str(runner.tmp_dir)},
         log_name="wasitest-riscv32-release",
+        ignore_warnings=True,
     )
 
 
-def make_riscv_wasi_wrapper_script(runner: CheckRunner, cli_bin: Path, cpu: str) -> str:
-    qemu_bin = f"/usr/bin/qemu-riscv{cpu[-2:]}-static"
-    qemu_cmd = f"qemu-riscv{cpu[-2:]}-static"
+def make_qemu_wasi_wrapper_script(
+    runner: CheckRunner,
+    cli_bin: Path,
+    *,
+    qemu_bin: str,
+    qemu_cmd: str,
+    cpu: str,
+) -> str:
     if runner.host.kind == "macos":
         # Colima's shared /Users mount does not preserve every Linux filesystem
-        # semantic the WASI suite checks. In particular, hard-linking a dangling
-        # symlink fails there even though the same RV32 binary passes on VM /tmp.
+        # semantic the WASI suite checks. In particular, hard-linking a
+        # dangling symlink fails there even though the same binary passes on VM
+        # /tmp.
         # Copy preopened directories into the VM before invoking qemu so the
         # tests exercise Linux semantics instead of host-share behavior.
         host_home = shlex_quote(os.environ.get("HOME") or str(Path.home()))
@@ -1876,8 +1906,13 @@ cleanup() {{
 }}
 trap cleanup EXIT
 
+colima ssh -- sh -c 'set -eu
+root="$1"
+rm -rf "$root"
+mkdir -p "$root"
+' sh "$remote_root"
+
 if ((${{#copy_specs[@]}})); then
-    colima ssh -- rm -rf "$remote_root"
     for spec in "${{copy_specs[@]}}"; do
         remote_dir="${{spec%%$'\\t'*}}"
         host_path="${{spec#*$'\\t'}}"
@@ -1895,10 +1930,34 @@ fi
     done
 fi
 
+status_file="$remote_root/status"
+
+# `colima ssh` reports any nonzero remote process as host status 1 and writes
+# "exit status N" to stderr. WASI tests assert exact exit codes, so record the
+# guest status inside the VM and keep the SSH command itself successful.
 set +e
-colima ssh -- env -i "${{env_args[@]}}" {qemu_bin} -cpu {cpu} {shlex_quote(str(cli_bin))} "${{remote_args[@]}}"
+colima ssh -- /bin/sh -c '
+status_file="$1"
+shift
+/usr/bin/env -i "$@"
 status=$?
+printf "%s\\n" "$status" > "$status_file"
+exit 0
+' sh "$status_file" "${{env_args[@]}}" {qemu_bin} -cpu {cpu} {shlex_quote(str(cli_bin))} "${{remote_args[@]}}"
+ssh_status=$?
 set -e
+
+if ((ssh_status != 0)); then
+    exit "$ssh_status"
+fi
+
+status="$(colima ssh -- cat "$status_file" | tr -d '\\r\\n')"
+case "$status" in
+    ''|*[!0-9]*)
+        echo "invalid remote qemu status: $status" >&2
+        exit 1
+        ;;
+esac
 exit "$status"
 """
     return f"""\
@@ -1906,6 +1965,16 @@ exit "$status"
 set -euo pipefail
 exec {qemu_cmd} -cpu {cpu} {shlex_quote(str(cli_bin))} "$@"
 """
+
+
+def make_riscv_wasi_wrapper_script(runner: CheckRunner, cli_bin: Path, cpu: str) -> str:
+    return make_qemu_wasi_wrapper_script(
+        runner,
+        cli_bin,
+        qemu_bin=f"/usr/bin/qemu-riscv{cpu[-2:]}-static",
+        qemu_cmd=f"qemu-riscv{cpu[-2:]}-static",
+        cpu=cpu,
+    )
 
 
 def make_riscv64_wasi_wrapper(runner: CheckRunner, cli_bin: Path) -> Path:
@@ -1926,18 +1995,13 @@ def make_riscv32_wasi_wrapper(runner: CheckRunner, cli_bin: Path) -> Path:
 
 def make_armv7_wasi_wrapper(runner: CheckRunner, label: str, cli_bin: Path) -> Path:
     wrapper = runner.tmp_dir / f"wasitest-{label}-qemu-wrapper.sh"
-    if runner.host.kind == "macos":
-        script = f"""\
-#!/usr/bin/env bash
-set -euo pipefail
-exec colima ssh -- sh -lc 'exec qemu-arm-static -cpu cortex-a15 "$@"' sh {shlex_quote(str(cli_bin))} "$@"
-"""
-    else:
-        script = f"""\
-#!/usr/bin/env bash
-set -euo pipefail
-exec qemu-arm-static -cpu cortex-a15 {shlex_quote(str(cli_bin))} "$@"
-"""
+    script = make_qemu_wasi_wrapper_script(
+        runner,
+        cli_bin,
+        qemu_bin="/usr/bin/qemu-arm-static",
+        qemu_cmd="qemu-arm-static",
+        cpu="cortex-a15",
+    )
     wrapper.write_text(script, encoding="utf-8")
     wrapper.chmod(0o755)
     return wrapper

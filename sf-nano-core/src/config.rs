@@ -2,8 +2,10 @@
 //!
 //! A one-shot global installed by the embedder via [`set_runtime_config`].
 //! Hosted targets get a default that preserves today's behavior
-//! (12 MiB / 16 MiB code arena, wasm32 page ceiling). The bare-metal
-//! target (`sf_os_none`) has an explicit zero default — the embedder
+//! (16 MiB compile-time code arena cap, wasm32 page ceiling). Finalized
+//! native code buffers release unused executable pages on hosted POSIX targets,
+//! so small modules do not retain the full cap as virtual address space. The
+//! bare-metal target (`sf_os_none`) has an explicit zero default — the embedder
 //! **must** call [`set_runtime_config`] before any `CodeBuffer::new()` /
 //! `MemInst::new()` call, otherwise those fail with a clear error.
 //!
@@ -53,9 +55,6 @@ impl RuntimeConfig {
     /// on the consumer side).
     #[cfg(not(sf_os_none))]
     pub const DEFAULT: Self = {
-        #[cfg(target_pointer_width = "32")]
-        const CODE_DEFAULT: usize = 12 * 1024 * 1024;
-        #[cfg(not(target_pointer_width = "32"))]
         const CODE_DEFAULT: usize = 16 * 1024 * 1024;
         Self {
             code_arena_bytes: CODE_DEFAULT,
