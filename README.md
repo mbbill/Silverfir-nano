@@ -22,6 +22,20 @@ things that matter when you want to run AI on edge devices:
    the field. The runtime stays fixed; models, policies, and agent tools move
    as portable artifacts.
 
+## See it running on a Raspberry Pi Pico 2
+
+The Mandelbrot below is a Wasm guest, verified, JIT-compiled to Thumb-2, and
+executed entirely on the Pico 2 (RP2350, Cortex-M33, 520 KB SRAM), rendering
+in real time to a 160x128 LCD. No interpreter, no AOT — the `.wasm` artifact
+goes in, native code comes out, on the device.
+
+https://github.com/user-attachments/assets/29b5c194-77d4-4c8c-92f3-4474b726f60c
+
+19 fps, including Q16.16 fractal compute, host import overhead, overlay
+stamping, and DMA to the panel. See
+[devices/pico2/README.md](devices/pico2/README.md) for bring-up details and
+the Cube demo.
+
 ## Why this matters for edge AI
 
 Edge AI devices don't look like servers. They have kilobytes-to-megabytes of
