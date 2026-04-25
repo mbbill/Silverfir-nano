@@ -6,6 +6,4 @@
 
 pub(super) mod abi;
 pub(crate) mod backend;
-mod enc;
 mod preserved;
-mod reg;

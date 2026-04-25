@@ -1,6 +1,6 @@
 //! Linux host primitives for `jitdump`: file open via `fopen`/`fileno`,
 //! monotonic time via `clock_gettime(CLOCK_MONOTONIC)`, and ELF machine
-//! arch tag (`EM_AARCH64` on arm64, `EM_RISCV` on RV64, else `EM_NONE`).
+//! arch tag (`EM_AARCH64` on arm64, `EM_RISCV` on RISC-V, else `EM_NONE`).
 
 use std::ffi::CString;
 use std::fs::File;
@@ -11,9 +11,9 @@ use std::path::Path;
 
 #[cfg(sf_backend_arm64)]
 use super::EM_AARCH64;
-#[cfg(not(any(sf_backend_arm64, sf_backend_riscv64)))]
+#[cfg(not(any(sf_backend_arm64, sf_backend_riscv64, sf_backend_riscv32)))]
 use super::EM_NONE;
-#[cfg(sf_backend_riscv64)]
+#[cfg(any(sf_backend_riscv64, sf_backend_riscv32))]
 use super::EM_RISCV;
 
 const CLOCK_MONOTONIC: i32 = 1;
@@ -65,11 +65,11 @@ pub(super) fn elf_machine_arch() -> u32 {
     {
         EM_AARCH64
     }
-    #[cfg(sf_backend_riscv64)]
+    #[cfg(any(sf_backend_riscv64, sf_backend_riscv32))]
     {
         EM_RISCV
     }
-    #[cfg(not(any(sf_backend_arm64, sf_backend_riscv64)))]
+    #[cfg(not(any(sf_backend_arm64, sf_backend_riscv64, sf_backend_riscv32)))]
     {
         EM_NONE
     }

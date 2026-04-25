@@ -7,7 +7,6 @@ use crate::{
             backend::ArchBackend, helpers::page_align_function, pipeline::compile_function,
         },
         entities::ModuleInst,
-        machine::machine_ir::{MachineBlock, MachineBlockId, MachineReg, MachineValue},
         runtime::{
             code::CompiledNativeModule, code_buf::CodeBuffer, dispatch_view::NativeLocalCallInfo64,
         },
@@ -182,96 +181,4 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
     }
 
     Ok(entries)
-}
-
-/// Validate that `reg` is a GP register (not FP). Returns the reg unchanged.
-pub(crate) fn validate_gp_reg<'a, A: ArchBackend<'a>>(
-    backend: &A,
-    reg: MachineReg,
-) -> Result<MachineReg, WasmError> {
-    if backend.core().is_fp_reg(reg) {
-        return Err(WasmError::invalid(
-            "expected GP register, got FP machine reg",
-        ));
-    }
-    Ok(reg)
-}
-
-/// Returns true if jumping to `target` with `args` can be elided because the
-/// target is the physical fallthrough and the args are an identity mapping.
-pub(crate) fn is_fallthrough_edge(
-    target: MachineBlockId,
-    args: &[MachineValue],
-    fallthrough: Option<MachineBlockId>,
-    blocks: &[MachineBlock],
-) -> bool {
-    if fallthrough != Some(target) {
-        return false;
-    }
-    let Some(block) = blocks.get(target.as_usize()) else {
-        return false;
-    };
-    if block.params.len() != args.len() {
-        return false;
-    }
-    block
-        .params
-        .iter()
-        .zip(args.iter())
-        .all(|(param, arg)| match arg {
-            MachineValue::Reg(reg) | MachineValue::ReservedReg(reg) => *reg == param.reg,
-            MachineValue::Imm64(_) => false,
-        })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::is_fallthrough_edge;
-    use crate::collections;
-    use crate::vm::machine::machine_ir::{
-        MachineBlock, MachineBlockId, MachineBlockParam, MachineReg, MachineRegOwner,
-        MachineTerminator, MachineValue,
-    };
-
-    fn block(id: u32, params: &[MachineBlockParam]) -> MachineBlock {
-        MachineBlock {
-            id: MachineBlockId(id),
-            params: params.to_vec().into(),
-            ops: collections::Vec::new(),
-            terminator: MachineTerminator::Return,
-        }
-    }
-
-    #[test]
-    fn reserved_regs_count_as_identity_for_fallthrough_edges() {
-        let params = [
-            MachineBlockParam::gp_word(MachineReg(4)).with_owner(MachineRegOwner::CachedLocal),
-            MachineBlockParam::gp_word(MachineReg(5)).with_owner(MachineRegOwner::CachedLocal),
-        ];
-        let blocks = [block(0, &[]), block(1, &params)];
-
-        assert!(is_fallthrough_edge(
-            MachineBlockId(1),
-            &[
-                MachineValue::ReservedReg(MachineReg(4)),
-                MachineValue::ReservedReg(MachineReg(5)),
-            ],
-            Some(MachineBlockId(1)),
-            &blocks,
-        ));
-    }
-
-    #[test]
-    fn mismatched_reserved_reg_is_not_identity_for_fallthrough_edges() {
-        let params =
-            [MachineBlockParam::gp_word(MachineReg(4)).with_owner(MachineRegOwner::CachedLocal)];
-        let blocks = [block(0, &[]), block(1, &params)];
-
-        assert!(!is_fallthrough_edge(
-            MachineBlockId(1),
-            &[MachineValue::ReservedReg(MachineReg(7))],
-            Some(MachineBlockId(1)),
-            &blocks,
-        ));
-    }
 }

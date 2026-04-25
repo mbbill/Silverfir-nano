@@ -7,8 +7,9 @@
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{MachineValue, MACHINE_CTX_REG};
 
+use super::abi;
 use super::backend::Riscv64Backend;
-use super::{abi, enc};
+use crate::vm::arch::riscv::enc;
 
 impl<'a> Riscv64Backend<'a> {
     pub(super) fn emit_adjust_stack_down(&mut self, mut bytes: u32) {

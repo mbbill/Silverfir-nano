@@ -36,6 +36,7 @@ pub struct TestResult {
     pub config: TestConfig,
     pub output: Option<TestOutput>,
     pub is_executed: bool,
+    pub skip_reason: Option<String>,
     pub failures: Vec<TestFailure>,
     pub duration: std::time::Duration,
     pub command_line: Option<String>,

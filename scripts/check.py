@@ -30,12 +30,16 @@ ROOT = Path(__file__).resolve().parents[1]
 TARGET_DIR = ROOT / "target"
 ARMV7_TARGET = "armv7-unknown-linux-musleabihf"
 RISCV64_TARGET = "riscv64gc-unknown-linux-musl"
+RISCV32_TARGET = "riscv32gc-unknown-linux-musl"
 X64_DARWIN_TARGET = "x86_64-apple-darwin"
 X64_LINUX_TARGET = "x86_64-unknown-linux-gnu"
 TESTSUITE_DIR = Path(os.environ.get("TESTSUITE_DIR", TARGET_DIR / "webassembly-testsuite"))
 FULL_RUNTIME_FEATURES = "jit,wasi,validator,guard-pages"
 RISCV64_RUSTFLAGS = "-C linker=rust-lld -C target-feature=+crt-static -C link-self-contained=yes -C panic=abort"
+RISCV32_LINKER = ROOT / "scripts" / "zig-riscv32-linux-musl-cc.sh"
+RISCV32_RUSTFLAGS = f"-C linker={RISCV32_LINKER} -C target-feature=+crt-static -C link-self-contained=no -C panic=abort"
 RISCV64_SELECT_REGRESSION_ARGS = ["select", "call", "call_indirect", "if"]
+RISCV32_SELECT_REGRESSION_ARGS = RISCV64_SELECT_REGRESSION_ARGS
 
 
 CORE_OPTIONAL_FEATURES = [
@@ -88,6 +92,7 @@ DEFAULT_TARGET_ROWS = [
 EXTRA_TARGET_ROWS = [
     ("armv7-linux", ARMV7_TARGET, "hosted", "", ""),
     ("riscv64-linux", RISCV64_TARGET, "hosted", "", ""),
+    ("riscv32-linux", RISCV32_TARGET, "hosted", "", ""),
     (
         "armv7m-linux",
         ARMV7_TARGET,
@@ -338,11 +343,20 @@ def cargo_env(runner: CheckRunner, target: Optional[str], env: Optional[Dict[str
         append_env_word(proc_env, "RUSTFLAGS", "-C target-feature=+ssse3,+sse4.1")
     if target == RISCV64_TARGET:
         append_env_word(proc_env, "RUSTFLAGS", RISCV64_RUSTFLAGS)
+    if target == RISCV32_TARGET:
+        append_env_word(proc_env, "RUSTFLAGS", RISCV32_RUSTFLAGS)
+        proc_env.setdefault("ZIG_GLOBAL_CACHE_DIR", str(TARGET_DIR / "zig-cache"))
     # rustc 1.95 can ICE while rendering dead_code diagnostics for several
     # feature-gated build rows. Suppress only that lint and keep other warning
     # diagnostics visible to the runner.
     append_env_word(proc_env, "RUSTFLAGS", "-A dead_code")
     return proc_env
+
+
+def cargo_argv(subcommand: str, target: Optional[str]) -> List[str]:
+    if target == RISCV32_TARGET:
+        return ["cargo", "+nightly", subcommand, "-Z", "build-std=std,panic_abort"]
+    return ["cargo", subcommand]
 
 
 DIAG_HEADER_RE = re.compile(r"^(error(?:\[[^\]]+\])?:|warning(?:\[[^\]]+\])?:)\s*(.*)$")
@@ -641,6 +655,8 @@ def rustup_installed_targets() -> Optional[set[str]]:
 
 
 def ensure_rust_target(runner: CheckRunner, target: str) -> bool:
+    if target == RISCV32_TARGET:
+        return ensure_riscv32_build_toolchain(runner)
     installed = rustup_installed_targets()
     if installed is None:
         runner.fail(
@@ -664,6 +680,37 @@ def ensure_rust_target(runner: CheckRunner, target: str) -> bool:
         command=f"rustup target add {target}",
     )
     return False
+
+
+def ensure_riscv32_build_toolchain(runner: CheckRunner) -> bool:
+    if runner.dry_run:
+        return True
+    if not command_exists("cargo"):
+        runner.fail("riscv32 build toolchain", "missing cargo.")
+        return False
+    if not command_exists("zig"):
+        runner.fail(
+            "riscv32 build toolchain",
+            "missing zig; RV32 musl linking uses scripts/zig-riscv32-linux-musl-cc.sh.",
+        )
+        return False
+    nightly = subprocess.run(
+        ["cargo", "+nightly", "--version"],
+        cwd=str(ROOT),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+        check=False,
+    )
+    if nightly.returncode != 0:
+        runner.fail(
+            "riscv32 build toolchain",
+            "missing usable nightly toolchain; RV32 uses cargo +nightly -Z build-std.",
+        )
+        return False
+    if not RISCV32_LINKER.exists():
+        runner.fail("riscv32 build toolchain", f"missing linker wrapper: {RISCV32_LINKER}")
+        return False
+    return True
 
 
 def ensure_testsuite(runner: CheckRunner) -> bool:
@@ -784,6 +831,61 @@ def ensure_riscv64_runner(runner: CheckRunner) -> bool:
     return False
 
 
+def ensure_riscv32_runner(runner: CheckRunner) -> bool:
+    if runner.host.kind == "macos":
+        if not command_exists("colima"):
+            runner.fail("riscv32 qemu runner", "missing colima; install Colima or run RV32 checks on Linux/WSL.")
+            return False
+        status = subprocess.run(
+            ["colima", "status"],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if status.returncode != 0:
+            start = runner.run("colima start", ["colima", "start"], log_name="colima-start")
+            if start.status == "FAIL":
+                return False
+            runner.colima_started = True
+            if runner.dry_run:
+                return True
+        qemu = subprocess.run(
+            ["colima", "ssh", "--", "which", "qemu-riscv32-static"],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if qemu.returncode != 0:
+            update = runner.run(
+                "colima install qemu-user-static (apt update)",
+                ["colima", "ssh", "--", "sudo", "apt-get", "update", "-qq"],
+                log_name="colima-apt-update-riscv32",
+            )
+            if update.status == "FAIL":
+                return False
+            install = runner.run(
+                "colima install qemu-user-static",
+                ["colima", "ssh", "--", "sudo", "apt-get", "install", "-y", "-qq", "qemu-user-static"],
+                log_name="colima-install-qemu-user-static-riscv32",
+            )
+            return install.status != "FAIL"
+        return True
+
+    if runner.host.kind in {"linux", "wsl"}:
+        if command_exists("qemu-riscv32-static"):
+            return True
+        runner.fail(
+            "riscv32 qemu runner",
+            "missing qemu-riscv32-static; on Debian/Ubuntu/WSL install it with: sudo apt-get install -y qemu-user-static",
+        )
+        return False
+
+    runner.skip("riscv32 qemu runner", "RV32 runtime checks require macOS+Colima or Linux/WSL.")
+    return False
+
+
 def cleanup_colima(runner: CheckRunner) -> None:
     if not runner.colima_started:
         return
@@ -805,7 +907,7 @@ def cargo_check(
     ignore_warnings: bool = False,
     allow_dead_code: bool = False,
 ) -> StepResult:
-    argv: List[str] = ["cargo", "check"]
+    argv = cargo_argv("check", target)
     if profile_name == "release":
         argv.append("--release")
     if target:
@@ -843,7 +945,7 @@ def cargo_build(
     features: str,
     log_name: Optional[str] = None,
 ) -> StepResult:
-    argv: List[str] = ["cargo", "build"]
+    argv = cargo_argv("build", target)
     if profile_name == "release":
         argv.append("--release")
     if target:
@@ -861,7 +963,7 @@ def cargo_build_package(
     target: Optional[str],
     log_name: Optional[str] = None,
 ) -> StepResult:
-    argv: List[str] = ["cargo", "build"]
+    argv = cargo_argv("build", target)
     if profile_name == "release":
         argv.append("--release")
     if target:
@@ -1036,6 +1138,8 @@ def run_target_matrix(runner: CheckRunner, *, include_all: bool) -> None:
 
 
 def target_installed_or_install(runner: CheckRunner, target: str, name: str) -> bool:
+    if target == RISCV32_TARGET:
+        return ensure_riscv32_build_toolchain(runner)
     installed = rustup_installed_targets()
     if installed is None:
         runner.fail(name, "could not read installed rustup targets.", command="rustup target list --installed")
@@ -1080,7 +1184,7 @@ def run_target_package_check(
     target_dir.mkdir(parents=True, exist_ok=True)
     env = cargo_env(runner, target, {"CARGO_TARGET_DIR": str(target_dir)})
 
-    argv = ["cargo", "check", "--target", target, "-p", package, *extra]
+    argv = [*cargo_argv("check", target), "--target", target, "-p", package, *extra]
     if runner.strict:
         append_env_word(env, "RUSTFLAGS", "-D warnings")
         append_env_word(env, "RUSTFLAGS", "-A dead_code")
@@ -1161,6 +1265,7 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
 
         run_x64_spectest(runner, profile_name, extra_args, env)
         run_riscv64_spectest(runner, profile_name, extra_args, env)
+        run_riscv32_spectest(runner, profile_name, extra_args, env)
         run_armv7_spectests(runner, profile_name, extra_args, env)
 
 
@@ -1267,6 +1372,57 @@ def run_riscv64_spectest(
         ["--backend", "native", *extra_args],
         env,
         f"spectest-riscv64-{profile_name}",
+    )
+
+
+def run_riscv32_spectest(
+    runner: CheckRunner,
+    profile_name: str,
+    extra_args: Sequence[str],
+    env: Dict[str, str],
+) -> None:
+    if not ensure_rust_target(runner, RISCV32_TARGET):
+        return
+    if not ensure_riscv32_runner(runner):
+        return
+
+    build = cargo_build(
+        runner,
+        f"cargo build: spectest riscv32 ({profile_name})",
+        "sf-nano-spectest",
+        profile_name=profile_name,
+        target=RISCV32_TARGET,
+        features="jit",
+        log_name=f"spectest-build-riscv32-{profile_name}",
+    )
+    if build.status == "FAIL":
+        skip_after_failed_dependency(runner, f"run: spectest riscv32 ({profile_name})", build)
+        return
+
+    rv32_bin = binary_path("sf-nano-spectest", profile_name, runner.host, RISCV32_TARGET)
+    smoke = run_riscv32_binary(
+        runner,
+        f"run: spectest riscv32 select/call smoke ({profile_name})",
+        rv32_bin,
+        ["--backend", "native", *RISCV32_SELECT_REGRESSION_ARGS],
+        env,
+        f"spectest-riscv32-select-call-smoke-{profile_name}",
+    )
+    if smoke is None:
+        return
+    if smoke.status == "FAIL":
+        skip_after_failed_dependency(runner, f"run: spectest riscv32 ({profile_name})", smoke)
+        return
+
+    if list(extra_args) == RISCV32_SELECT_REGRESSION_ARGS:
+        return
+    run_riscv32_binary(
+        runner,
+        f"run: spectest riscv32 ({profile_name})",
+        rv32_bin,
+        ["--backend", "native", *extra_args],
+        env,
+        f"spectest-riscv32-{profile_name}",
     )
 
 
@@ -1398,6 +1554,36 @@ def run_riscv64_binary(
     return runner.run(name, argv, env=env, log_name=log_name)
 
 
+def run_riscv32_binary(
+    runner: CheckRunner,
+    name: str,
+    binary: Path,
+    args: Sequence[str],
+    env: Dict[str, str],
+    log_name: str,
+) -> Optional[StepResult]:
+    if not runner.dry_run and not binary.exists():
+        runner.fail(name, f"expected binary not found: {binary}")
+        return None
+    if runner.host.kind == "macos":
+        argv: List[object] = [
+            "colima",
+            "ssh",
+            "--",
+            "env",
+            f"TESTSUITE_DIR={env['TESTSUITE_DIR']}",
+            "qemu-riscv32-static",
+            "-cpu",
+            "rv32",
+            binary,
+            *args,
+        ]
+        return runner.run(name, argv, log_name=log_name)
+
+    argv = ["qemu-riscv32-static", "-cpu", "rv32", binary, *args]
+    return runner.run(name, argv, env=env, log_name=log_name)
+
+
 def run_wasitest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_args: Sequence[str]) -> None:
     for profile_name in profiles:
         run_wasitest_host_profile(runner, profile_name, extra_args)
@@ -1507,6 +1693,7 @@ def run_wasitest_release_cross_targets(runner: CheckRunner, extra_args: Sequence
     native_wasitest = binary_path("sf-nano-wasitest", "release", runner.host)
 
     run_riscv64_wasitest_release(runner, extra_args, qemu_harness_build, native_wasitest)
+    run_riscv32_wasitest_release(runner, extra_args, qemu_harness_build, native_wasitest)
 
     if not ensure_rust_target(runner, ARMV7_TARGET):
         return
@@ -1584,11 +1771,63 @@ def run_riscv64_wasitest_release(
     )
 
 
-def make_riscv64_wasi_wrapper(runner: CheckRunner, cli_bin: Path) -> Path:
-    wrapper = runner.tmp_dir / "wasitest-riscv64-qemu-wrapper.sh"
+def run_riscv32_wasitest_release(
+    runner: CheckRunner,
+    extra_args: Sequence[str],
+    harness_build: StepResult,
+    native_wasitest: Path,
+) -> None:
+    if not ensure_rust_target(runner, RISCV32_TARGET):
+        return
+    if not ensure_riscv32_runner(runner):
+        return
+
+    cli_build = cargo_build(
+        runner,
+        "cargo build: wasitest cli riscv32 (release)",
+        "sf-nano-cli",
+        profile_name="release",
+        target=RISCV32_TARGET,
+        features="jit",
+        log_name="wasitest-build-cli-riscv32-release",
+    )
+    cli_bin = binary_path("sf-nano-cli", "release", runner.host, RISCV32_TARGET)
+    if harness_build.status == "FAIL":
+        skip_after_failed_dependency(runner, "run: wasitest riscv32 (release)", harness_build)
+        return
+    if cli_build.status == "FAIL":
+        skip_after_failed_dependency(runner, "run: wasitest riscv32 (release)", cli_build)
+        return
+
+    wrapper = make_riscv32_wasi_wrapper(runner, cli_bin)
+    run_binary_if_present(
+        runner,
+        "run: wasitest riscv32 (release)",
+        [
+            native_wasitest,
+            "--cli-path",
+            wrapper,
+            "--backend",
+            "native",
+            "--skip-rv32-qemu-timestamp-tests",
+            *extra_args,
+        ],
+        env={"TMPDIR": str(runner.tmp_dir)},
+        log_name="wasitest-riscv32-release",
+    )
+
+
+def make_riscv_wasi_wrapper_script(runner: CheckRunner, cli_bin: Path, cpu: str) -> str:
+    qemu_bin = f"/usr/bin/qemu-riscv{cpu[-2:]}-static"
+    qemu_cmd = f"qemu-riscv{cpu[-2:]}-static"
     if runner.host.kind == "macos":
+        # Colima's shared /Users mount does not preserve every Linux filesystem
+        # semantic the WASI suite checks. In particular, hard-linking a dangling
+        # symlink fails there even though the same RV32 binary passes on VM /tmp.
+        # Copy preopened directories into the VM before invoking qemu so the
+        # tests exercise Linux semantics instead of host-share behavior.
         host_home = shlex_quote(os.environ.get("HOME") or str(Path.home()))
-        script = f"""\
+        return f"""\
 #!/usr/bin/env bash
 set -euo pipefail
 export HOME={host_home}
@@ -1599,14 +1838,87 @@ while IFS= read -r key; do
     esac
     env_args+=("$key=${{!key}}")
 done < <(compgen -e)
-exec colima ssh -- env -i "${{env_args[@]}}" /usr/bin/qemu-riscv64-static -cpu rv64 {shlex_quote(str(cli_bin))} "$@"
+
+remote_root="/tmp/sf-nano-wasitest-{cpu}-$$-${{RANDOM}}"
+remote_args=()
+copy_specs=()
+preopen_index=0
+while (($#)); do
+    case "$1" in
+        --dir)
+            if (($# < 2)); then
+                echo "missing value for --dir" >&2
+                exit 2
+            fi
+            dir_arg="$2"
+            shift 2
+            if [[ "$dir_arg" == *::* ]]; then
+                guest="${{dir_arg%%::*}}"
+                host_path="${{dir_arg#*::}}"
+            else
+                guest="$dir_arg"
+                host_path="$dir_arg"
+            fi
+            remote_dir="$remote_root/preopens/$preopen_index"
+            preopen_index=$((preopen_index + 1))
+            copy_specs+=("$remote_dir"$'\\t'"$host_path")
+            remote_args+=(--dir "$guest::$remote_dir")
+            ;;
+        *)
+            remote_args+=("$1")
+            shift
+            ;;
+    esac
+done
+
+cleanup() {{
+    colima ssh -- rm -rf "$remote_root" >/dev/null 2>&1 || true
+}}
+trap cleanup EXIT
+
+if ((${{#copy_specs[@]}})); then
+    colima ssh -- rm -rf "$remote_root"
+    for spec in "${{copy_specs[@]}}"; do
+        remote_dir="${{spec%%$'\\t'*}}"
+        host_path="${{spec#*$'\\t'}}"
+        colima ssh -- sh -c 'set -eu
+dst="$1"
+src="$2"
+rm -rf "$dst"
+mkdir -p "$dst"
+if [ -d "$src" ]; then
+    cp -a "$src"/. "$dst"/
+elif [ -e "$src" ]; then
+    cp -a "$src" "$dst"/
+fi
+' sh "$remote_dir" "$host_path"
+    done
+fi
+
+set +e
+colima ssh -- env -i "${{env_args[@]}}" {qemu_bin} -cpu {cpu} {shlex_quote(str(cli_bin))} "${{remote_args[@]}}"
+status=$?
+set -e
+exit "$status"
 """
-    else:
-        script = f"""\
+    return f"""\
 #!/usr/bin/env bash
 set -euo pipefail
-exec qemu-riscv64-static -cpu rv64 {shlex_quote(str(cli_bin))} "$@"
+exec {qemu_cmd} -cpu {cpu} {shlex_quote(str(cli_bin))} "$@"
 """
+
+
+def make_riscv64_wasi_wrapper(runner: CheckRunner, cli_bin: Path) -> Path:
+    wrapper = runner.tmp_dir / "wasitest-riscv64-qemu-wrapper.sh"
+    script = make_riscv_wasi_wrapper_script(runner, cli_bin, "rv64")
+    wrapper.write_text(script, encoding="utf-8")
+    wrapper.chmod(0o755)
+    return wrapper
+
+
+def make_riscv32_wasi_wrapper(runner: CheckRunner, cli_bin: Path) -> Path:
+    wrapper = runner.tmp_dir / "wasitest-riscv32-qemu-wrapper.sh"
+    script = make_riscv_wasi_wrapper_script(runner, cli_bin, "rv32")
     wrapper.write_text(script, encoding="utf-8")
     wrapper.chmod(0o755)
     return wrapper

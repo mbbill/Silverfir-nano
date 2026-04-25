@@ -1,4 +1,4 @@
-//! RV64 ABI policy over the shared RISC-V register plan.
+//! RV32 ABI policy over the shared RISC-V register plan.
 
 use crate::{
     error::WasmError,
@@ -13,15 +13,22 @@ use crate::vm::arch::riscv::{
     reg::{RiscvFpReg, RiscvReg},
 };
 
-pub(super) const GP_UNIT_BYTES: u8 = 8;
-pub(super) const GP_SAVE_BYTES: u32 = 8;
+pub(super) const GP_UNIT_BYTES: u8 = 4;
+pub(super) const GP_SAVE_BYTES: u32 = 4;
 pub(super) const FP_SAVE_BYTES: u32 = 8;
-const SCALAR_CALL_SCRATCH_SLOTS: u16 = 3;
+const SCALAR_CALL_SCRATCH_SLOTS: u16 = 8;
+
+const fn align_up(value: u32, align: u32) -> u32 {
+    value.div_ceil(align) * align
+}
 
 pub(super) const C_ARG0: RiscvReg = common::C_ARG0;
 pub(super) const C_ARG1: RiscvReg = common::C_ARG1;
 pub(super) const C_ARG2: RiscvReg = common::C_ARG2;
+pub(super) const C_ARG3: RiscvReg = common::C_ARG3;
+pub(super) const C_ARG4: RiscvReg = common::C_ARG4;
 pub(super) const C_RET0: RiscvReg = common::C_RET0;
+pub(super) const C_RET1: RiscvReg = common::C_RET1;
 
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
@@ -95,14 +102,22 @@ pub(super) fn fp_dynamic_caller_saved_regs() -> &'static [RiscvFpReg] {
 
 pub(super) const PRESERVED_HELPER_GP_OFFSET: u32 = common::preserved_io_size();
 
-pub(super) const PRESERVED_HELPER_FP_OFFSET: u32 =
-    PRESERVED_HELPER_GP_OFFSET + common::gp_dynamic_caller_saved_count() as u32 * GP_SAVE_BYTES;
+pub(super) const PRESERVED_HELPER_GP_SIZE: u32 =
+    common::gp_dynamic_caller_saved_count() as u32 * GP_SAVE_BYTES;
+
+pub(super) const PRESERVED_HELPER_FP_OFFSET: u32 = align_up(
+    PRESERVED_HELPER_GP_OFFSET + PRESERVED_HELPER_GP_SIZE,
+    FP_SAVE_BYTES,
+);
 
 pub(super) const PRESERVED_HELPER_FRAME_SIZE: u32 = {
     let raw =
         PRESERVED_HELPER_FP_OFFSET + common::fp_dynamic_caller_saved_count() as u32 * FP_SAVE_BYTES;
     raw.div_ceil(16) * 16
 };
+
+const _: () = assert!(PRESERVED_HELPER_FP_OFFSET % FP_SAVE_BYTES == 0);
+const _: () = assert!(PRESERVED_HELPER_FRAME_SIZE % 16 == 0);
 
 #[inline]
 pub(super) const fn stack_reg() -> RiscvReg {

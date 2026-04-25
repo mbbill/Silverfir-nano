@@ -8,7 +8,7 @@
 mod imp {
     use core::fmt::Write as _;
     use core::hash::Hasher;
-    use core::sync::atomic::{AtomicU64, Ordering};
+    use core::sync::atomic::{AtomicUsize, Ordering};
     use std::fs::File;
     use std::io::{BufWriter, Write};
     use std::sync::{Mutex, OnceLock};
@@ -29,7 +29,7 @@ mod imp {
     const CANONICAL_F64_NAN: u64 = 0x7ff8_0000_0000_0000;
 
     #[unsafe(no_mangle)]
-    pub(crate) static FUNCTION_TRACE_ACTIVE: AtomicU64 = AtomicU64::new(0);
+    pub(crate) static FUNCTION_TRACE_ACTIVE: AtomicUsize = AtomicUsize::new(0);
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     enum EventKind {
@@ -128,14 +128,14 @@ mod imp {
             let include_memory = std::env::var_os(TRACE_MEMORY_ENV).is_some();
             let changed = self.path != path || self.include_memory != include_memory;
             if !changed {
-                FUNCTION_TRACE_ACTIVE.store(self.recorder.is_some() as u64, Ordering::Release);
+                FUNCTION_TRACE_ACTIVE.store(self.recorder.is_some() as usize, Ordering::Release);
                 return;
             }
 
             self.path = path.clone();
             self.include_memory = include_memory;
             self.recorder = path.as_deref().and_then(TraceRecorder::new);
-            FUNCTION_TRACE_ACTIVE.store(self.recorder.is_some() as u64, Ordering::Release);
+            FUNCTION_TRACE_ACTIVE.store(self.recorder.is_some() as usize, Ordering::Release);
         }
     }
 

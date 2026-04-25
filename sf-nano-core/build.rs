@@ -16,6 +16,7 @@
 //   aarch64                → sf_backend_arm64
 //   arm + thumbv*-none-*   → sf_backend_thumbm   (arm32 module, Thumb-2 encoding)
 //   arm (everything else)  → sf_backend_armv7a   (arm32 module, A32 encoding)
+//   riscv32gc*             → sf_backend_riscv32  (RV32GC scalar codegen)
 //   riscv64gc*             → sf_backend_riscv64  (RV64GC scalar codegen)
 //   x86_64                 → sf_backend_x64
 //   feature backend-emu64  → sf_backend_emu64
@@ -35,6 +36,7 @@
 //
 // Supported (backend × os) matrix:
 //   arm64  × { linux, macos, none }
+//   riscv32 × { linux, none }
 //   riscv64 × { linux, none }
 //   x86_64 × { linux, macos, windows, none }
 //   arm    × { linux, none }
@@ -73,6 +75,7 @@ const DECLARED_CFGS: &[&str] = &[
     "sf_backend_arm64",
     "sf_backend_armv7a",
     "sf_backend_thumbm",
+    "sf_backend_riscv32",
     "sf_backend_riscv64",
     "sf_backend_x64",
     "sf_backend_emu64",
@@ -127,6 +130,7 @@ enum SelectedBackend {
     Arm64,
     Armv7a,
     ThumbM,
+    Riscv32,
     Riscv64,
     X64,
     Emu64,
@@ -157,6 +161,7 @@ fn selected_backend() -> Option<SelectedBackend> {
                 Some(SelectedBackend::Armv7a)
             }
         }
+        "riscv32" if target_implies_rv32gc(&target) => Some(SelectedBackend::Riscv32),
         "riscv64" if target_implies_rv64gc(&target) => Some(SelectedBackend::Riscv64),
         "x86_64" => Some(SelectedBackend::X64),
         _ => None,
@@ -188,6 +193,13 @@ fn emit_backend_cfgs() {
             // no DP variant exists for M-profile). Wasm f64 on thumbm
             // requires a separate legalization story and is out of
             // scope for the initial bring-up.
+        }
+        Some(SelectedBackend::Riscv32) => {
+            println!("cargo:rustc-cfg=sf_backend_riscv32");
+            // riscv32gc is hard-float with F/D by target contract. Like RV64,
+            // rustc may not report F/D through target-feature cfgs here.
+            println!("cargo:rustc-cfg=sf_fp_dp");
+            require_target_feature("m", "rv32 backend requires the RISC-V M extension");
         }
         Some(SelectedBackend::Riscv64) => {
             println!("cargo:rustc-cfg=sf_backend_riscv64");
@@ -284,6 +296,10 @@ fn target_features() -> Vec<String> {
 
 fn target_implies_rv64gc(target: &str) -> bool {
     target.starts_with("riscv64gc-")
+}
+
+fn target_implies_rv32gc(target: &str) -> bool {
+    target.starts_with("riscv32gc-")
 }
 
 fn has_std_enabled() -> bool {

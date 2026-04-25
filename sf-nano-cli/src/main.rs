@@ -204,6 +204,8 @@ fn run_cli(args: &[String]) -> i32 {
                     "x86_64"
                 } else if cfg!(target_arch = "arm") {
                     "armv7a"
+                } else if cfg!(target_arch = "riscv32") {
+                    "riscv32"
                 } else if cfg!(target_arch = "riscv64") {
                     "riscv64"
                 } else {

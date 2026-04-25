@@ -11,9 +11,9 @@ use super::abi::map_fixed_reg;
 use super::fusion::map_int_cond;
 use super::inst::{materialize_u64_into, prepare_gp};
 use super::{abi, enc};
+use crate::vm::arch::common::helpers::is_fallthrough_edge;
 use crate::vm::arch::common::helpers::trap_code;
 use crate::vm::arch::common::types::{LocalPtrPatch, PendingLocalPtrPatch};
-use crate::vm::arch::shared_64::is_fallthrough_edge;
 use crate::vm::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
 
 impl<'a> super::backend::Arm64Backend<'a> {

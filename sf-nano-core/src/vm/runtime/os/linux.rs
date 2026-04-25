@@ -2,7 +2,7 @@
 //!
 //! Executable memory is mapped RW and flipped to RX on each finalize via
 //! `mprotect`. The instruction cache is flushed per-architecture: aarch64
-//! and x86_64 use the compiler-builtins `__clear_cache`; ARM32 and RV64 use
+//! and x86_64 use the compiler-builtins `__clear_cache`; ARM32 and RISC-V use
 //! Linux cache-flush syscalls directly because `rust-lld` does not resolve
 //! the builtin on musl.
 //!
@@ -55,7 +55,7 @@ unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     }
 }
 
-#[cfg(sf_backend_riscv64)]
+#[cfg(any(sf_backend_riscv64, sf_backend_riscv32))]
 #[inline]
 unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     // RISC-V Linux provides a dedicated icache-flush syscall because `fence.i`
@@ -80,12 +80,22 @@ unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     }
 }
 
-#[cfg(not(any(sf_backend_arm64, sf_backend_armv7a, sf_backend_riscv64)))]
+#[cfg(not(any(
+    sf_backend_arm64,
+    sf_backend_armv7a,
+    sf_backend_riscv64,
+    sf_backend_riscv32
+)))]
 unsafe extern "C" {
     fn __clear_cache(start: *mut u8, end: *mut u8);
 }
 
-#[cfg(not(any(sf_backend_arm64, sf_backend_armv7a, sf_backend_riscv64)))]
+#[cfg(not(any(
+    sf_backend_arm64,
+    sf_backend_armv7a,
+    sf_backend_riscv64,
+    sf_backend_riscv32
+)))]
 #[inline]
 unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     unsafe { __clear_cache(start, end) };

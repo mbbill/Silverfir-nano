@@ -28,6 +28,13 @@ use structopt::StructOpt;
 
 const WASI_TESTSUITE_DIR: &str = env!("WASI_TESTSUITE_DIR");
 const TEST_TIMEOUT_SECS: u64 = 10;
+// qemu-riscv32-static in the Colima/Linux runner reports RV32 Linux timestamp
+// update syscalls used by Rust's filetime path as unimplemented (`statx`
+// succeeds, then syscall 412 and the legacy syscall 88 both return ENOSYS).
+// Keep this as an explicit runner option so native hosts and other targets
+// continue to execute the same WASI tests.
+const RV32_QEMU_TIMESTAMP_TESTS: &[&str] =
+    &["fd_filestat_set", "path_filestat", "symlink_filestat"];
 
 #[derive(StructOpt, Debug, Clone)]
 #[structopt(
@@ -62,6 +69,10 @@ struct Cli {
     /// Backend to use for execution (auto, native, jit).
     #[structopt(long = "backend")]
     backend: Option<String>,
+
+    /// Skip RV32 qemu-user timestamp-setting tests whose syscalls are not implemented.
+    #[structopt(long = "skip-rv32-qemu-timestamp-tests")]
+    skip_rv32_qemu_timestamp_tests: bool,
 }
 
 fn main() {
@@ -229,7 +240,20 @@ fn run_test_suite(suite_dir: &Path, cli_path: &Path, cli: &Cli) -> TestSuite {
 
     let mut test_results = Vec::new();
     for (wasm_file, test_name) in tests {
-        let result = execute_single_test(&wasm_file, &test_name, cli_path, cli);
+        let result = if should_skip_test(&test_name, cli) {
+            TestResult {
+                name: test_name,
+                config: TestConfig::default(),
+                output: None,
+                is_executed: false,
+                skip_reason: Some(rv32_qemu_timestamp_skip_reason()),
+                failures: Vec::new(),
+                duration: Duration::default(),
+                command_line: None,
+            }
+        } else {
+            execute_single_test(&wasm_file, &test_name, cli_path, cli)
+        };
         if !cli.quiet {
             print_test_result(&result);
         }
@@ -245,6 +269,14 @@ fn run_test_suite(suite_dir: &Path, cli_path: &Path, cli: &Cli) -> TestSuite {
         test_results,
         duration: start_time.elapsed(),
     }
+}
+
+fn should_skip_test(test_name: &str, cli: &Cli) -> bool {
+    cli.skip_rv32_qemu_timestamp_tests && RV32_QEMU_TIMESTAMP_TESTS.contains(&test_name)
+}
+
+fn rv32_qemu_timestamp_skip_reason() -> String {
+    "qemu-riscv32-static reports RV32 Linux timestamp-setting syscalls as ENOSYS".to_string()
 }
 
 fn print_test_result(result: &TestResult) {
@@ -265,6 +297,18 @@ fn print_test_result(result: &TestResult) {
             "  {} {} ({:.2?}) - {}",
             status_symbol, result.name, result.duration, failure_msg
         );
+    } else if !result.is_executed {
+        if let Some(reason) = result.skip_reason.as_deref() {
+            println!(
+                "  {} {} ({:.2?}) - {}",
+                status_symbol, result.name, result.duration, reason
+            );
+        } else {
+            println!(
+                "  {} {} ({:.2?})",
+                status_symbol, result.name, result.duration
+            );
+        }
     } else {
         println!(
             "  {} {} ({:.2?})",
@@ -289,6 +333,7 @@ fn execute_single_test(
                 config,
                 output: None,
                 is_executed: true,
+                skip_reason: None,
                 failures: vec![TestFailure {
                     failure_type: "file_read".to_string(),
                     message: format!("Failed to read test file: {}", err),
@@ -314,6 +359,7 @@ fn execute_single_test(
                 config,
                 output: Some(output),
                 is_executed: true,
+                skip_reason: None,
                 failures,
                 duration: start_time.elapsed(),
                 command_line: Some(command_line),
@@ -324,6 +370,7 @@ fn execute_single_test(
             config,
             output: None,
             is_executed: true,
+            skip_reason: None,
             failures: vec![TestFailure {
                 failure_type: "execution".to_string(),
                 message: err,

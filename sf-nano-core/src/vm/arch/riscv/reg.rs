@@ -1,21 +1,21 @@
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub(super) struct RiscvFpReg(u8);
+pub(crate) struct RiscvFpReg(u8);
 
 impl RiscvFpReg {
     #[inline]
-    pub(super) const fn from_raw(index: u8) -> Self {
+    pub(crate) const fn from_raw(index: u8) -> Self {
         Self(index)
     }
 
     #[inline]
-    pub(super) const fn idx(self) -> u32 {
+    pub(crate) const fn idx(self) -> u32 {
         self.0 as u32
     }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u8)]
-pub(super) enum RiscvReg {
+pub(crate) enum RiscvReg {
     X0 = 0,
     X1 = 1,
     X2 = 2,
@@ -51,12 +51,12 @@ pub(super) enum RiscvReg {
 }
 
 impl RiscvReg {
-    pub(super) const ZERO: Self = Self::X0;
-    pub(super) const RA: Self = Self::X1;
-    pub(super) const SP: Self = Self::X2;
+    pub(crate) const ZERO: Self = Self::X0;
+    pub(crate) const RA: Self = Self::X1;
+    pub(crate) const SP: Self = Self::X2;
 
     #[inline]
-    pub(super) const fn from_raw(index: u8) -> Self {
+    pub(crate) const fn from_raw(index: u8) -> Self {
         match index {
             0 => Self::X0,
             1 => Self::X1,
@@ -95,7 +95,7 @@ impl RiscvReg {
     }
 
     #[inline]
-    pub(super) const fn idx(self) -> u32 {
+    pub(crate) const fn idx(self) -> u32 {
         self as u32
     }
 }

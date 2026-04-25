@@ -920,9 +920,12 @@ Main code:
 - `sf-nano-core/src/vm/arch/arm64/*`
 - `sf-nano-core/src/vm/arch/arm32/*` (shared by the `armv7a` and `thumbm`
   backends)
+- `sf-nano-core/src/vm/arch/riscv/*` (shared RISC-V ABI, encoder, and
+  register mapping)
 - `sf-nano-core/src/vm/arch/riscv64/*`
+- `sf-nano-core/src/vm/arch/riscv32/*`
 - `sf-nano-core/src/vm/arch/x86_64/*`
-- `sf-nano-core/src/vm/arch/emulator/*` (MachineIR interpreter backend,
+- `sf-nano-core/src/vm/arch/emulator/*` (debug MachineIR execution backend,
   used for testing and the `emu64` / `emu32` configs)
 - `sf-nano-core/src/vm/runtime/runtime_call/*`
 - `sf-nano-core/src/vm/runtime/preserved/*`
@@ -1017,11 +1020,12 @@ Higher-level backend lowering should work in terms of:
 
 not in terms of hard-coded physical register names.
 
-ARM64 and RV64 are the current examples of the intended structure:
+ARM64 and RISC-V are the current examples of the intended structure:
 
 - the physical register plan lives in `abi.rs`
   (`sf-nano-core/src/vm/arch/arm64/abi.rs`,
-  `sf-nano-core/src/vm/arch/riscv64/abi.rs`, etc.)
+  `sf-nano-core/src/vm/arch/riscv64/abi.rs`,
+  `sf-nano-core/src/vm/arch/riscv32/abi.rs`, etc.)
 - raw register construction is hidden there
 - lowering code gets temps from the scratch pool
 - zero/SP-like forms are expressed through semantic helpers instead of raw

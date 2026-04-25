@@ -148,6 +148,8 @@ struct FunctionEmitSummary {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PendingPatchEncoding {
+    #[cfg(sf_backend_riscv32)]
+    U32,
     #[cfg(any(
         sf_backend_arm64,
         sf_backend_riscv64,
@@ -235,6 +237,8 @@ fn patch_code_buffer_word(
     value: usize,
 ) {
     match patch_encoding(active_backend) {
+        #[cfg(sf_backend_riscv32)]
+        PendingPatchEncoding::U32 => executable.patch_u32(code_offset, value as u32),
         #[cfg(any(
             sf_backend_arm64,
             sf_backend_riscv64,
@@ -271,6 +275,8 @@ fn patch_encoding(active_backend: arch::NativeBackend) -> PendingPatchEncoding {
         arch::NativeBackend::Armv7a => PendingPatchEncoding::MovwMovt,
         #[cfg(sf_backend_thumbm)]
         arch::NativeBackend::ThumbM => PendingPatchEncoding::MovwMovt,
+        #[cfg(sf_backend_riscv32)]
+        arch::NativeBackend::Riscv32 => PendingPatchEncoding::U32,
         #[cfg(sf_backend_riscv64)]
         arch::NativeBackend::Riscv64 => PendingPatchEncoding::U64,
         #[cfg(sf_backend_x64)]

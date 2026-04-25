@@ -1,16 +1,13 @@
-//! RV64 backend implementation.
+//! RV32 backend implementation.
 
 use crate::collections;
 
 use crate::{
     error::WasmError,
     vm::{
-        arch::{
-            common::{
-                backend::ArchBackend, core::CompilerCore, scratch_pool::ScratchPool,
-                types::ParallelSource,
-            },
-            shared_64::{EmittedFunction64, ModuleLinkBackend64},
+        arch::common::{
+            backend::ArchBackend, core::CompilerCore, scratch_pool::ScratchPool,
+            types::ParallelSource,
         },
         machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
@@ -37,6 +34,7 @@ use crate::vm::arch::riscv::{
     reg::{RiscvFpReg, RiscvReg},
 };
 
+use super::preserved::PreservedResultTarget;
 use crate::vm::arch::common::{
     helpers::{convert_result_float_width, is_fallthrough_edge, trap_code},
     types::DirectCallPatch,
@@ -44,13 +42,19 @@ use crate::vm::arch::common::{
 use crate::vm::runtime::preserved::{io as preserved_io, op as preserved_op};
 
 const STACK_SLOT_BYTES: i32 = 8;
-const CALLEE_SAVED_GP_FRAME_SIZE: i32 = abi::callee_saved_gp_count() as i32 * STACK_SLOT_BYTES;
+const GP_SAVE_BYTES: i32 = abi::GP_SAVE_BYTES as i32;
+const FP_SAVE_BYTES: i32 = abi::FP_SAVE_BYTES as i32;
+const CALLEE_SAVED_GP_RAW_FRAME_SIZE: i32 = abi::callee_saved_gp_count() as i32 * GP_SAVE_BYTES;
+const CALLEE_SAVED_GP_FRAME_SIZE: i32 =
+    ((CALLEE_SAVED_GP_RAW_FRAME_SIZE + FP_SAVE_BYTES - 1) / FP_SAVE_BYTES) * FP_SAVE_BYTES;
 const CALLEE_SAVED_FP_FRAME_OFFSET: i32 = CALLEE_SAVED_GP_FRAME_SIZE;
-const CALLEE_SAVED_FP_FRAME_SIZE: i32 = abi::callee_saved_fp_count() as i32 * STACK_SLOT_BYTES;
+const CALLEE_SAVED_FP_FRAME_SIZE: i32 = abi::callee_saved_fp_count() as i32 * FP_SAVE_BYTES;
 const CALLEE_SAVED_FRAME_SIZE: i32 =
     ((CALLEE_SAVED_FP_FRAME_OFFSET + CALLEE_SAVED_FP_FRAME_SIZE + 15) / 16) * 16;
-const BODY_LINK_FRAME_SIZE: i32 = 16;
-const CALL_RECORD_SIZE: i32 = 16;
+const _: () = assert!(CALLEE_SAVED_FP_FRAME_OFFSET % FP_SAVE_BYTES == 0);
+const _: () = assert!(CALLEE_SAVED_FRAME_SIZE % 16 == 0);
+const BODY_LINK_FRAME_SIZE: i32 = 8;
+const CALL_RECORD_SIZE: i32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BranchFixupKind {
@@ -65,10 +69,10 @@ pub(super) struct BranchFixup {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct CompiledRiscv64Entry {
+pub(crate) struct CompiledRiscv32Entry {
     pub entry: NativeRootEntry,
     pub text_len: usize,
-    #[cfg(sf_ir_dump)]
+    #[cfg(sf_has_debug_regions)]
     pub debug_regions: collections::Vec<crate::vm::arch::common::types::DebugRegion>,
 }
 
@@ -136,15 +140,15 @@ impl RiscvTruncSpec {
 }
 
 #[derive(Debug)]
-pub(crate) struct Riscv64Backend<'a> {
+pub(crate) struct Riscv32Backend<'a> {
     pub core: CompilerCore<'a>,
     pub(super) fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<RiscvReg, 2>,
     pub(super) fp_scratch: ScratchPool<RiscvFpReg, 2>,
 }
 
-impl<'a> ArchBackend<'a> for Riscv64Backend<'a> {
-    const NAME: &'static str = "riscv64";
+impl<'a> ArchBackend<'a> for Riscv32Backend<'a> {
+    const NAME: &'static str = "riscv32";
 
     fn max_total_regs() -> usize {
         abi::max_total_machine_regs()
@@ -178,24 +182,24 @@ impl<'a> ArchBackend<'a> for Riscv64Backend<'a> {
     fn lower_prologue(&mut self) {
         self.emit_addi(abi::stack_reg(), abi::stack_reg(), -CALLEE_SAVED_FRAME_SIZE);
         for (index, &reg) in abi::callee_saved_regs().iter().enumerate() {
-            self.emit_sd(reg, abi::stack_reg(), (index as i32) * STACK_SLOT_BYTES);
+            self.emit_sw(reg, abi::stack_reg(), (index as i32) * GP_SAVE_BYTES);
         }
         for (index, &reg) in abi::callee_saved_fp_regs().iter().enumerate() {
             self.emit_fsd(
                 reg,
                 abi::stack_reg(),
-                CALLEE_SAVED_FP_FRAME_OFFSET + (index as i32) * STACK_SLOT_BYTES,
+                CALLEE_SAVED_FP_FRAME_OFFSET + (index as i32) * FP_SAVE_BYTES,
             );
         }
 
         self.emit_mv(abi::map_fixed_reg(MACHINE_CTX_REG), abi::C_ARG0);
         self.emit_mv(abi::map_fixed_reg(MACHINE_FP_REG), abi::C_ARG1);
-        self.emit_ld(
+        self.emit_lw(
             abi::map_fixed_reg(MACHINE_MEM0_BASE_REG),
             abi::map_fixed_reg(MACHINE_CTX_REG),
             ctx_offset::MEM0_BASE as i32,
         );
-        self.emit_ld(
+        self.emit_lw(
             abi::map_fixed_reg(MACHINE_MEM0_SIZE_REG),
             abi::map_fixed_reg(MACHINE_CTX_REG),
             ctx_offset::MEM0_SIZE as i32,
@@ -205,8 +209,8 @@ impl<'a> ArchBackend<'a> for Riscv64Backend<'a> {
     fn lower_root_caller_stub(&mut self) {
         let fp = abi::map_fixed_reg(MACHINE_FP_REG);
         self.emit_addi(abi::stack_reg(), abi::stack_reg(), -CALL_RECORD_SIZE);
-        self.emit_sd(fp, abi::stack_reg(), 0);
-        self.emit_sd(fp, abi::stack_reg(), 8);
+        self.emit_sw(fp, abi::stack_reg(), 0);
+        self.emit_sw(fp, abi::stack_reg(), 4);
         let internal_entry_label = self.core.internal_entry_label;
         self.emit_jal(abi::link_reg(), internal_entry_label);
     }
@@ -216,11 +220,11 @@ impl<'a> ArchBackend<'a> for Riscv64Backend<'a> {
             self.emit_fld(
                 reg,
                 abi::stack_reg(),
-                CALLEE_SAVED_FP_FRAME_OFFSET + (index as i32) * STACK_SLOT_BYTES,
+                CALLEE_SAVED_FP_FRAME_OFFSET + (index as i32) * FP_SAVE_BYTES,
             );
         }
         for (index, &reg) in abi::callee_saved_regs().iter().enumerate() {
-            self.emit_ld(reg, abi::stack_reg(), (index as i32) * STACK_SLOT_BYTES);
+            self.emit_lw(reg, abi::stack_reg(), (index as i32) * GP_SAVE_BYTES);
         }
         self.emit_addi(abi::stack_reg(), abi::stack_reg(), CALLEE_SAVED_FRAME_SIZE);
         self.core.text.emit_u32(enc::ret());
@@ -228,15 +232,15 @@ impl<'a> ArchBackend<'a> for Riscv64Backend<'a> {
 
     fn lower_body_prelude(&mut self) {
         self.emit_addi(abi::stack_reg(), abi::stack_reg(), -BODY_LINK_FRAME_SIZE);
-        self.emit_sd(abi::link_reg(), abi::stack_reg(), 0);
+        self.emit_sw(abi::link_reg(), abi::stack_reg(), 0);
     }
 
     fn lower_body_local_error_tail(&mut self) {
-        self.emit_ld(abi::link_reg(), abi::stack_reg(), 0);
-        self.emit_ld(
+        self.emit_lw(abi::link_reg(), abi::stack_reg(), 0);
+        self.emit_lw(
             abi::map_fixed_reg(MACHINE_FP_REG),
             abi::stack_reg(),
-            BODY_LINK_FRAME_SIZE + 8,
+            BODY_LINK_FRAME_SIZE + 4,
         );
         self.emit_addi(
             abi::stack_reg(),
@@ -297,16 +301,16 @@ impl<'a> ArchBackend<'a> for Riscv64Backend<'a> {
                 .labels
                 .get(fixup.label)
                 .and_then(|offset| *offset)
-                .ok_or_else(|| WasmError::internal("riscv64 branch target label is unresolved"))?;
+                .ok_or_else(|| WasmError::internal("riscv32 branch target label is unresolved"))?;
             let delta = target as isize - fixup.inst_offset as isize;
             if delta & 1 != 0 {
                 return Err(WasmError::internal(
-                    "riscv64 branch fixup target is not halfword aligned",
+                    "riscv32 branch fixup target is not halfword aligned",
                 ));
             }
             if !(JAL_MIN..=JAL_MAX).contains(&delta) {
                 return Err(WasmError::internal(
-                    "riscv64 jal branch fixup is out of pc-relative range",
+                    "riscv32 jal branch fixup is out of pc-relative range",
                 ));
             }
             let patched = match fixup.kind {
@@ -381,7 +385,7 @@ impl<'a> ArchBackend<'a> for Riscv64Backend<'a> {
     fn emit_nop_padding(buf: &mut CodeBuffer, bytes: usize) {
         debug_assert!(
             bytes % 4 == 0,
-            "RV64 NOP padding should stay instruction-aligned"
+            "RV32 NOP padding should stay instruction-aligned"
         );
         let nop = enc::nop().to_le_bytes();
         let mut remaining = bytes;
@@ -395,24 +399,10 @@ impl<'a> ArchBackend<'a> for Riscv64Backend<'a> {
     }
 }
 
-impl<'a> ModuleLinkBackend64<'a> for Riscv64Backend<'a> {
-    type CompiledEntry = CompiledRiscv64Entry;
-
-    fn make_entry(buf: &CodeBuffer, emitted: &EmittedFunction64) -> Self::CompiledEntry {
-        let entry = unsafe { buf.fn_ptr::<NativeRootEntry>(emitted.text_offset) };
-        CompiledRiscv64Entry {
-            entry,
-            text_len: emitted.text_len,
-            #[cfg(sf_ir_dump)]
-            debug_regions: emitted.debug_regions.clone(),
-        }
-    }
-}
-
-impl<'a> Riscv64Backend<'a> {
+impl<'a> Riscv32Backend<'a> {
     #[inline]
     fn unsupported_error() -> WasmError {
-        WasmError::invalid("riscv64 backend does not support this MachineIR instruction yet")
+        WasmError::invalid("riscv32 backend does not support this MachineIR instruction yet")
     }
 
     #[inline]
@@ -434,17 +424,17 @@ impl<'a> Riscv64Backend<'a> {
     }
 
     #[inline]
-    fn emit_ld(&mut self, dst: RiscvReg, base: RiscvReg, offset: i32) {
+    fn emit_lw(&mut self, dst: RiscvReg, base: RiscvReg, offset: i32) {
         debug_assert!(Self::fits_i12(offset));
-        self.core.text.emit_u32(enc::load(0b011, dst, base, offset));
+        self.core.text.emit_u32(enc::load(0b010, dst, base, offset));
     }
 
     #[inline]
-    fn emit_sd(&mut self, src: RiscvReg, base: RiscvReg, offset: i32) {
+    fn emit_sw(&mut self, src: RiscvReg, base: RiscvReg, offset: i32) {
         debug_assert!(Self::fits_i12(offset));
         self.core
             .text
-            .emit_u32(enc::store(0b011, src, base, offset));
+            .emit_u32(enc::store(0b010, src, base, offset));
     }
 
     #[inline]
@@ -473,24 +463,25 @@ impl<'a> Riscv64Backend<'a> {
         });
     }
 
-    fn map_gp_reg(&self, reg: MachineReg) -> Result<RiscvReg, WasmError> {
+    pub(super) fn map_gp_reg(&self, reg: MachineReg) -> Result<RiscvReg, WasmError> {
         crate::vm::arch::common::helpers::validate_gp_reg(self, reg)?;
         abi::map_reg(reg)
     }
 
-    fn map_fp_reg(&self, reg: MachineReg) -> Result<RiscvFpReg, WasmError> {
+    pub(super) fn map_fp_reg(&self, reg: MachineReg) -> Result<RiscvFpReg, WasmError> {
         abi::map_fp_reg(reg)
     }
 
     pub(super) fn materialize_u64(&mut self, dst: RiscvReg, value: u64) {
-        let signed = value as i64;
+        let value = value as u32;
+        let signed = value as i32;
         if (-2048..=2047).contains(&signed) {
-            self.emit_addi(dst, abi::zero_reg(), signed as i32);
+            self.emit_addi(dst, abi::zero_reg(), signed);
             return;
         }
 
         let mut started = false;
-        for byte_index in (0..8).rev() {
+        for byte_index in (0..4).rev() {
             let byte = ((value >> (byte_index * 8)) & 0xff) as i32;
             if !started {
                 if byte == 0 {
@@ -522,10 +513,11 @@ impl<'a> Riscv64Backend<'a> {
                     match self.core.fp_reg_width(reg)? {
                         MachineFloatWidth::F32 => {
                             self.core.text.emit_u32(enc::fmv_x_w(dst, src));
-                            self.zext_w(dst, dst);
                         }
                         MachineFloatWidth::F64 => {
-                            self.core.text.emit_u32(enc::fmv_x_d(dst, src));
+                            return Err(WasmError::invalid(
+                                "riscv32 cannot move f64 into one GP register",
+                            ));
                         }
                     }
                 } else {
@@ -536,7 +528,7 @@ impl<'a> Riscv64Backend<'a> {
             MachineValue::Imm64(value) => self.materialize_u64(dst, value),
             MachineValue::ReservedReg(_) => {
                 return Err(WasmError::internal(
-                    "riscv64 cannot consume reserved cache register as a real value",
+                    "riscv32 cannot consume reserved cache register as a real value",
                 ))
             }
         }
@@ -554,7 +546,7 @@ impl<'a> Riscv64Backend<'a> {
                 let src = self.map_fp_reg(reg)?;
                 let src_width = self.core.fp_reg_width(reg)?;
                 if src_width != width {
-                    return Err(WasmError::invalid("riscv64 float move width mismatch"));
+                    return Err(WasmError::invalid("riscv32 float move width mismatch"));
                 }
                 if dst != src {
                     self.core.text.emit_u32(match width {
@@ -565,49 +557,71 @@ impl<'a> Riscv64Backend<'a> {
             }
             MachineValue::Reg(reg) => {
                 let src = self.map_gp_reg(reg)?;
-                self.core.text.emit_u32(match width {
-                    MachineFloatWidth::F32 => enc::fmv_w_x(dst, src),
-                    MachineFloatWidth::F64 => enc::fmv_d_x(dst, src),
-                });
+                match width {
+                    MachineFloatWidth::F32 => {
+                        self.core.text.emit_u32(enc::fmv_w_x(dst, src));
+                    }
+                    MachineFloatWidth::F64 => {
+                        return Err(WasmError::invalid(
+                            "riscv32 cannot build f64 from one GP register",
+                        ))
+                    }
+                }
             }
             MachineValue::Imm64(value) => {
                 let scratch = self.gp_scratch.scoped_alloc().detach();
-                self.materialize_u64(*scratch, value);
-                self.core.text.emit_u32(match width {
-                    MachineFloatWidth::F32 => enc::fmv_w_x(dst, *scratch),
-                    MachineFloatWidth::F64 => enc::fmv_d_x(dst, *scratch),
-                });
+                match width {
+                    MachineFloatWidth::F32 => {
+                        self.materialize_u64(*scratch, value);
+                        self.core.text.emit_u32(enc::fmv_w_x(dst, *scratch));
+                    }
+                    MachineFloatWidth::F64 => {
+                        self.emit_adjust_stack_down(8);
+                        self.materialize_u64(*scratch, value);
+                        self.emit_sw(*scratch, abi::stack_reg(), 0);
+                        self.materialize_u64(*scratch, value >> 32);
+                        self.emit_sw(*scratch, abi::stack_reg(), 4);
+                        self.emit_fld(dst, abi::stack_reg(), 0);
+                        self.emit_adjust_stack_up(8);
+                    }
+                }
             }
             MachineValue::ReservedReg(_) => {
                 return Err(WasmError::internal(
-                    "riscv64 cannot consume reserved cache register as an FP value",
+                    "riscv32 cannot consume reserved cache register as an FP value",
                 ))
             }
         }
         Ok(())
     }
 
-    fn move_fp_to_gp(&mut self, dst: RiscvReg, src: RiscvFpReg, width: MachineFloatWidth) {
+    fn move_fp_to_gp(
+        &mut self,
+        dst: RiscvReg,
+        src: RiscvFpReg,
+        width: MachineFloatWidth,
+    ) -> Result<(), WasmError> {
         match width {
             MachineFloatWidth::F32 => {
                 self.core.text.emit_u32(enc::fmv_x_w(dst, src));
-                self.zext_w(dst, dst);
             }
             MachineFloatWidth::F64 => {
-                self.core.text.emit_u32(enc::fmv_x_d(dst, src));
+                return Err(WasmError::invalid(
+                    "riscv32 cannot move f64 into one GP register",
+                ));
             }
         }
+        Ok(())
     }
 
     #[inline]
     fn zext_w(&mut self, dst: RiscvReg, src: RiscvReg) {
-        self.core.text.emit_u32(enc::slli(dst, src, 32));
-        self.core.text.emit_u32(enc::srli(dst, dst, 32));
+        self.emit_mv(dst, src);
     }
 
     #[inline]
     fn sext_w(&mut self, dst: RiscvReg, src: RiscvReg) {
-        self.core.text.emit_u32(enc::addiw(dst, src, 0));
+        self.emit_mv(dst, src);
     }
 
     fn canonicalize_compare_operand(
@@ -721,27 +735,27 @@ impl<'a> Riscv64Backend<'a> {
             (
                 MachineMemWidth::U32,
                 MachineLoadExtension::None | MachineLoadExtension::ZeroExtend,
-            ) => 0b110,
-            (
-                MachineMemWidth::U64,
-                MachineLoadExtension::None | MachineLoadExtension::ZeroExtend,
-            ) => 0b011,
-            (MachineMemWidth::U64, MachineLoadExtension::SignExtend) => {
+            ) => 0b010,
+            (MachineMemWidth::U64, _) => {
                 return Err(WasmError::invalid(
-                    "riscv64 backend does not support sign-extending U64 loads",
+                    "riscv32 backend requires split GP lowering for U64 loads",
                 ))
             }
         })
     }
 
     #[inline]
-    fn store_funct3(width: MachineMemWidth) -> u32 {
-        match width {
+    fn store_funct3(width: MachineMemWidth) -> Result<u32, WasmError> {
+        Ok(match width {
             MachineMemWidth::U8 => 0b000,
             MachineMemWidth::U16 => 0b001,
             MachineMemWidth::U32 => 0b010,
-            MachineMemWidth::U64 => 0b011,
-        }
+            MachineMemWidth::U64 => {
+                return Err(WasmError::invalid(
+                    "riscv32 backend requires split GP lowering for U64 stores",
+                ))
+            }
+        })
     }
 
     fn patch_pcrel_literal_load(
@@ -756,7 +770,7 @@ impl<'a> Riscv64Backend<'a> {
         let lo = delta - (hi << 12);
         if !(-524_288..=524_287).contains(&hi) || !(-2048..=2047).contains(&lo) {
             return Err(WasmError::internal(
-                "riscv64 inline literal is out of pc-relative load range",
+                "riscv32 inline literal is out of pc-relative load range",
             ));
         }
         self.core
@@ -764,12 +778,12 @@ impl<'a> Riscv64Backend<'a> {
             .patch_u32(auipc_offset, enc::auipc(dst, (hi as u32) & 0x000f_ffff));
         self.core
             .text
-            .patch_u32(load_offset, enc::load(0b011, dst, dst, lo as i32));
+            .patch_u32(load_offset, enc::load(0b010, dst, dst, lo as i32));
         Ok(())
     }
 
     fn align_inline_literal(&mut self) {
-        if self.core.text.len() & 7 != 0 {
+        if self.core.text.len() & 3 != 0 {
             self.core.text.emit_u32(enc::nop());
         }
     }
@@ -781,13 +795,13 @@ impl<'a> Riscv64Backend<'a> {
         skip_after_return: bool,
     ) -> Result<(), WasmError> {
         let auipc_offset = self.core.text.emit_u32(enc::auipc(dst, 0));
-        let load_offset = self.core.text.emit_u32(enc::load(0b011, dst, dst, 0));
+        let load_offset = self.core.text.emit_u32(enc::load(0b010, dst, dst, 0));
         if skip_after_return {
             self.core.text.emit_u32(enc::jalr(abi::link_reg(), dst, 0));
             let after_literal = self.core.new_label();
             self.emit_jal(abi::zero_reg(), after_literal);
             self.align_inline_literal();
-            let literal_offset = self.core.text.emit_u64(0);
+            let literal_offset = self.core.text.emit_u32(0);
             self.core.bind_label(after_literal);
             self.patch_pcrel_literal_load(auipc_offset, load_offset, dst, literal_offset)?;
             self.core.direct_call_patches.push(DirectCallPatch {
@@ -797,7 +811,7 @@ impl<'a> Riscv64Backend<'a> {
         } else {
             self.core.text.emit_u32(enc::jalr(abi::zero_reg(), dst, 0));
             self.align_inline_literal();
-            let literal_offset = self.core.text.emit_u64(0);
+            let literal_offset = self.core.text.emit_u32(0);
             self.patch_pcrel_literal_load(auipc_offset, load_offset, dst, literal_offset)?;
             self.core.direct_call_patches.push(DirectCallPatch {
                 literal_offset,
@@ -861,7 +875,7 @@ impl<'a> Riscv64Backend<'a> {
                 }
                 MachineValue::ReservedReg(_) => {
                     return Err(WasmError::internal(
-                        "riscv64 branch condition cannot read reserved cache register",
+                        "riscv32 branch condition cannot read reserved cache register",
                     ))
                 }
             },
@@ -909,7 +923,7 @@ impl<'a> Riscv64Backend<'a> {
                     MachineCompareKind::Ne => enc::Cond::Ne,
                     _ => {
                         return Err(WasmError::internal(
-                            "riscv64 TestBits branch uses unsupported compare kind",
+                            "riscv32 TestBits branch uses unsupported compare kind",
                         ))
                     }
                 };
@@ -976,6 +990,49 @@ impl<'a> Riscv64Backend<'a> {
                 lhs,
                 rhs,
             } => self.lower_int_binary(*width, *op, *dst, *lhs, *rhs),
+            MachineInstKind::Int64PairBinary {
+                op,
+                dst_lo,
+                dst_hi,
+                lhs_lo,
+                lhs_hi,
+                rhs_lo,
+                rhs_hi,
+            } => self
+                .lower_int64_pair_binary(*op, *dst_lo, *dst_hi, *lhs_lo, *lhs_hi, *rhs_lo, *rhs_hi),
+            MachineInstKind::Int64MulFromSignExt32 {
+                dst_lo,
+                dst_hi,
+                lhs,
+                rhs,
+            } => self.lower_int64_mul_from_sign_ext32(*dst_lo, *dst_hi, *lhs, *rhs),
+            MachineInstKind::Int64PairUnary {
+                op,
+                dst_lo,
+                dst_hi,
+                src_lo,
+                src_hi,
+            } => self.lower_int64_pair_unary(*op, *dst_lo, *dst_hi, *src_lo, *src_hi),
+            MachineInstKind::Int64PairDivRem {
+                sign,
+                rem,
+                dst_lo,
+                dst_hi,
+                lhs_lo,
+                lhs_hi,
+                rhs_lo,
+                rhs_hi,
+            } => self.lower_int64_pair_div_rem(
+                *sign, *rem, *dst_lo, *dst_hi, *lhs_lo, *lhs_hi, *rhs_lo, *rhs_hi,
+            ),
+            MachineInstKind::Int64PairShift {
+                op,
+                dst_lo,
+                dst_hi,
+                lhs_lo,
+                lhs_hi,
+                rhs,
+            } => self.lower_int64_pair_shift(*op, *dst_lo, *dst_hi, *lhs_lo, *lhs_hi, *rhs),
             MachineInstKind::IntCompare {
                 width,
                 kind,
@@ -984,6 +1041,16 @@ impl<'a> Riscv64Backend<'a> {
                 lhs,
                 rhs,
             } => self.lower_int_compare(*width, *kind, *sign, *dst, *lhs, *rhs),
+            MachineInstKind::Int64PairCompare {
+                kind,
+                sign,
+                dst,
+                lhs_lo,
+                lhs_hi,
+                rhs_lo,
+                rhs_hi,
+            } => self
+                .lower_int64_pair_compare(*kind, *sign, *dst, *lhs_lo, *lhs_hi, *rhs_lo, *rhs_hi),
             MachineInstKind::BitfieldExtractU {
                 width,
                 dst,
@@ -1244,72 +1311,21 @@ impl<'a> Riscv64Backend<'a> {
                 src,
                 dst,
                 dst_hi,
-            } => {
-                if dst_hi.is_some() {
-                    return Err(WasmError::internal(
-                        "riscv64 backend received pair-valued struct.get",
-                    ));
-                }
-                let op_code = match signed {
-                    None => preserved_op::STRUCT_GET,
-                    Some(true) => preserved_op::STRUCT_GET_S,
-                    Some(false) => preserved_op::STRUCT_GET_U,
-                };
-                self.lower_preserved_result(
-                    op_code,
-                    *type_idx,
-                    *field_idx,
-                    *src,
-                    MachineValue::Imm64(0),
-                    MachineValue::Imm64(0),
-                    *ty,
-                    *dst,
-                )
-            }
+            } => self.lower_struct_get(*type_idx, *field_idx, *signed, *ty, *src, *dst, *dst_hi),
             MachineInstKind::StructSet {
                 type_idx,
                 field_idx,
                 ref_src,
                 value_lo,
                 value_hi,
-            } => {
-                if value_hi.is_some() {
-                    return Err(WasmError::internal(
-                        "riscv64 backend received pair-valued struct.set",
-                    ));
-                }
-                self.lower_preserved_no_result(
-                    preserved_op::STRUCT_SET,
-                    *type_idx,
-                    *field_idx,
-                    *ref_src,
-                    *value_lo,
-                    MachineValue::Imm64(0),
-                )
-            }
+            } => self.lower_struct_set(*type_idx, *field_idx, *ref_src, *value_lo, *value_hi),
             MachineInstKind::ArrayNew {
                 type_idx,
                 init_lo,
                 init_hi,
                 length,
                 dst,
-            } => {
-                if init_hi.is_some() {
-                    return Err(WasmError::internal(
-                        "riscv64 backend received pair-valued array.new",
-                    ));
-                }
-                self.lower_preserved_result(
-                    preserved_op::ARRAY_NEW,
-                    *type_idx,
-                    0,
-                    *init_lo,
-                    *length,
-                    MachineValue::Imm64(0),
-                    MachineStorageType::GpWord,
-                    *dst,
-                )
-            }
+            } => self.lower_array_new(*type_idx, *init_lo, *init_hi, *length, *dst),
             MachineInstKind::ArrayNewDefault {
                 type_idx,
                 length,
@@ -1369,49 +1385,14 @@ impl<'a> Riscv64Backend<'a> {
                 index,
                 dst,
                 dst_hi,
-            } => {
-                if dst_hi.is_some() {
-                    return Err(WasmError::internal(
-                        "riscv64 backend received pair-valued array.get",
-                    ));
-                }
-                let op_code = match signed {
-                    None => preserved_op::ARRAY_GET,
-                    Some(true) => preserved_op::ARRAY_GET_S,
-                    Some(false) => preserved_op::ARRAY_GET_U,
-                };
-                self.lower_preserved_result(
-                    op_code,
-                    *type_idx,
-                    0,
-                    *ref_src,
-                    *index,
-                    MachineValue::Imm64(0),
-                    *ty,
-                    *dst,
-                )
-            }
+            } => self.lower_array_get(*type_idx, *signed, *ty, *ref_src, *index, *dst, *dst_hi),
             MachineInstKind::ArraySet {
                 type_idx,
                 ref_src,
                 index,
                 value_lo,
                 value_hi,
-            } => {
-                if value_hi.is_some() {
-                    return Err(WasmError::internal(
-                        "riscv64 backend received pair-valued array.set",
-                    ));
-                }
-                self.lower_preserved_no_result(
-                    preserved_op::ARRAY_SET,
-                    *type_idx,
-                    0,
-                    *ref_src,
-                    *index,
-                    *value_lo,
-                )
-            }
+            } => self.lower_array_set(*type_idx, *ref_src, *index, *value_lo, *value_hi),
             MachineInstKind::ArrayFill {
                 type_idx,
                 ref_src,
@@ -1419,23 +1400,7 @@ impl<'a> Riscv64Backend<'a> {
                 value_lo,
                 value_hi,
                 len,
-            } => {
-                if value_hi.is_some() {
-                    return Err(WasmError::internal(
-                        "riscv64 backend received pair-valued array.fill",
-                    ));
-                }
-                self.lower_preserved_no_result_extended(
-                    preserved_op::ARRAY_FILL,
-                    &[(preserved_io::IMM0, *type_idx)],
-                    &[
-                        (preserved_io::ARG0, *ref_src),
-                        (preserved_io::ARG1, *index),
-                        (preserved_io::ARG2, *value_lo),
-                        (preserved_io::ARG3, *len),
-                    ],
-                )
-            }
+            } => self.lower_array_fill(*type_idx, *ref_src, *index, *value_lo, *value_hi, *len),
             MachineInstKind::ArrayCopy {
                 dst_type_idx,
                 src_type_idx,
@@ -1508,8 +1473,30 @@ impl<'a> Riscv64Backend<'a> {
                 MachineStorageType::GpWord,
                 *dst,
             ),
+            MachineInstKind::ConvertI64PairToFloat {
+                width,
+                sign,
+                dst,
+                src_lo,
+                src_hi,
+            } => self.lower_convert_i64_pair_to_float(*width, *sign, *dst, *src_lo, *src_hi),
+            MachineInstKind::ConvertFloatToI64Pair {
+                op,
+                dst_lo,
+                dst_hi,
+                src,
+            } => self.lower_convert_float_to_i64_pair(*op, *dst_lo, *dst_hi, *src),
+            MachineInstKind::ReinterpretF64ToI64Pair {
+                dst_lo,
+                dst_hi,
+                src,
+            } => self.lower_reinterpret_f64_to_i64_pair(*dst_lo, *dst_hi, *src),
+            MachineInstKind::ReinterpretI64PairToF64 {
+                dst,
+                src_lo,
+                src_hi,
+            } => self.lower_reinterpret_i64_pair_to_f64(*dst, *src_lo, *src_hi),
             MachineInstKind::Convert { op, dst, src } => self.lower_convert(*op, *dst, *src),
-            _ => Err(Self::unsupported_error()),
         }
     }
 
@@ -1530,23 +1517,24 @@ impl<'a> Riscv64Backend<'a> {
                 }
                 ParallelSource::Reg { reg, .. } => {
                     let src_gp = self.map_gp_reg(reg)?;
-                    self.core.text.emit_u32(match width {
-                        MachineFloatWidth::F32 => enc::fmv_w_x(dst_fp, src_gp),
-                        MachineFloatWidth::F64 => enc::fmv_d_x(dst_fp, src_gp),
-                    });
+                    match width {
+                        MachineFloatWidth::F32 => {
+                            self.core.text.emit_u32(enc::fmv_w_x(dst_fp, src_gp));
+                        }
+                        MachineFloatWidth::F64 => {
+                            return Err(WasmError::invalid(
+                                "riscv32 cannot build f64 from one GP register",
+                            ))
+                        }
+                    }
                 }
                 ParallelSource::Imm(value) => {
-                    let scratch = self.gp_scratch.scoped_alloc().detach();
-                    self.materialize_u64(*scratch, value);
-                    self.core.text.emit_u32(match width {
-                        MachineFloatWidth::F32 => enc::fmv_w_x(dst_fp, *scratch),
-                        MachineFloatWidth::F64 => enc::fmv_d_x(dst_fp, *scratch),
-                    });
+                    self.load_fp_value_into(dst_fp, width, MachineValue::Imm64(value))?;
                 }
                 ParallelSource::FpTemp(id, temp_width) => {
                     let temp = self.fp_scratch.reg(id);
                     if temp_width != width {
-                        return Err(WasmError::invalid("riscv64 FP temp width mismatch"));
+                        return Err(WasmError::invalid("riscv32 FP temp width mismatch"));
                     }
                     self.core.text.emit_u32(match width {
                         MachineFloatWidth::F32 => enc::fmv_s(dst_fp, temp),
@@ -1555,14 +1543,20 @@ impl<'a> Riscv64Backend<'a> {
                 }
                 ParallelSource::GpTemp(id) => {
                     let temp = self.gp_scratch.reg(id);
-                    self.core.text.emit_u32(match width {
-                        MachineFloatWidth::F32 => enc::fmv_w_x(dst_fp, temp),
-                        MachineFloatWidth::F64 => enc::fmv_d_x(dst_fp, temp),
-                    });
+                    match width {
+                        MachineFloatWidth::F32 => {
+                            self.core.text.emit_u32(enc::fmv_w_x(dst_fp, temp));
+                        }
+                        MachineFloatWidth::F64 => {
+                            return Err(WasmError::invalid(
+                                "riscv32 cannot build f64 from one GP temp",
+                            ))
+                        }
+                    }
                 }
                 ParallelSource::ReservedReg(_) => {
                     return Err(WasmError::internal(
-                        "riscv64 received non-identity reserved cache edge move",
+                        "riscv32 received non-identity reserved cache edge move",
                     ))
                 }
             }
@@ -1574,7 +1568,7 @@ impl<'a> Riscv64Backend<'a> {
             ParallelSource::Reg { reg, .. } => {
                 if self.core.is_fp_reg(reg) {
                     let src_fp = self.map_fp_reg(reg)?;
-                    self.move_fp_to_gp(dst_gp, src_fp, self.core.fp_reg_width(reg)?);
+                    self.move_fp_to_gp(dst_gp, src_fp, self.core.fp_reg_width(reg)?)?;
                 } else {
                     let src = self.map_gp_reg(reg)?;
                     self.emit_mv(dst_gp, src);
@@ -1582,13 +1576,13 @@ impl<'a> Riscv64Backend<'a> {
             }
             ParallelSource::ReservedReg(_) => {
                 return Err(WasmError::internal(
-                    "riscv64 received non-identity reserved cache edge move",
+                    "riscv32 received non-identity reserved cache edge move",
                 ))
             }
             ParallelSource::Imm(value) => self.materialize_u64(dst_gp, value),
             ParallelSource::GpTemp(id) => self.emit_mv(dst_gp, self.gp_scratch.reg(id)),
             ParallelSource::FpTemp(id, width) => {
-                self.move_fp_to_gp(dst_gp, self.fp_scratch.reg(id), width);
+                self.move_fp_to_gp(dst_gp, self.fp_scratch.reg(id), width)?;
             }
         }
         Ok(())
@@ -1609,7 +1603,7 @@ impl<'a> Riscv64Backend<'a> {
                 let tmp = self.fp_scratch.scoped_alloc().detach();
                 self.load_fp_value_into(*tmp, width, src)?;
                 let dst = self.map_gp_reg(dst)?;
-                self.move_fp_to_gp(dst, *tmp, width);
+                self.move_fp_to_gp(dst, *tmp, width)?;
             }
             return Ok(());
         }
@@ -1654,6 +1648,10 @@ impl<'a> Riscv64Backend<'a> {
         }
         let dst = self.map_gp_reg(dst)?;
         let base = self.map_gp_reg(addr.base)?;
+        if width == MachineMemWidth::U64 {
+            self.emit_load_raw(0b010, dst, base, addr.offset);
+            return Ok(());
+        }
         let funct3 = Self::load_funct3(width, extension)?;
         self.emit_load_raw(funct3, dst, base, addr.offset);
         Ok(())
@@ -1681,9 +1679,21 @@ impl<'a> Riscv64Backend<'a> {
                 return Ok(());
             }
         }
+        if width == MachineMemWidth::U64 {
+            let src_s = self.gp_scratch.scoped_alloc().detach();
+            self.load_value_into(*src_s, src)?;
+            self.emit_store_raw(0b010, *src_s, base, addr.offset);
+            let hi = match src {
+                MachineValue::Imm64(value) => value >> 32,
+                _ => 0,
+            };
+            self.materialize_u64(*src_s, hi);
+            self.emit_store_raw(0b010, *src_s, base, addr.offset + 4);
+            return Ok(());
+        }
         let src_s = self.gp_scratch.scoped_alloc().detach();
         self.load_value_into(*src_s, src)?;
-        self.emit_store_raw(Self::store_funct3(width), *src_s, base, addr.offset);
+        self.emit_store_raw(Self::store_funct3(width)?, *src_s, base, addr.offset);
         Ok(())
     }
 
@@ -1734,6 +1744,10 @@ impl<'a> Riscv64Backend<'a> {
             }
         } else {
             let dst = self.map_gp_reg(dst)?;
+            if width == MachineMemWidth::U64 {
+                self.emit_load_raw(0b010, dst, *addr, offset);
+                return Ok(());
+            }
             self.emit_load_raw(Self::load_funct3(width, extension)?, dst, *addr, offset);
         }
         Ok(())
@@ -1783,9 +1797,21 @@ impl<'a> Riscv64Backend<'a> {
                 return Ok(());
             }
         }
+        if width == MachineMemWidth::U64 {
+            let src_s = self.gp_scratch.scoped_alloc().detach();
+            self.load_value_into(*src_s, src)?;
+            self.emit_store_raw(0b010, *src_s, *addr, store_offset);
+            let hi = match src {
+                MachineValue::Imm64(value) => value >> 32,
+                _ => 0,
+            };
+            self.materialize_u64(*src_s, hi);
+            self.emit_store_raw(0b010, *src_s, *addr, store_offset + 4);
+            return Ok(());
+        }
         let src_s = self.gp_scratch.scoped_alloc().detach();
         self.load_value_into(*src_s, src)?;
-        self.emit_store_raw(Self::store_funct3(width), *src_s, *addr, store_offset);
+        self.emit_store_raw(Self::store_funct3(width)?, *src_s, *addr, store_offset);
         Ok(())
     }
 
@@ -1800,25 +1826,15 @@ impl<'a> Riscv64Backend<'a> {
         self.load_value_into(dst, src)?;
         match (width, op) {
             (MachineIntWidth::I32, MachineIntUnaryOp::Extend8S) => {
-                self.core.text.emit_u32(enc::slli(dst, dst, 56));
-                self.core.text.emit_u32(enc::srai(dst, dst, 56));
-                self.zext_w(dst, dst);
+                self.core.text.emit_u32(enc::slli(dst, dst, 24));
+                self.core.text.emit_u32(enc::srai(dst, dst, 24));
             }
             (MachineIntWidth::I32, MachineIntUnaryOp::Extend16S) => {
-                self.core.text.emit_u32(enc::slli(dst, dst, 48));
-                self.core.text.emit_u32(enc::srai(dst, dst, 48));
-                self.zext_w(dst, dst);
+                self.core.text.emit_u32(enc::slli(dst, dst, 16));
+                self.core.text.emit_u32(enc::srai(dst, dst, 16));
             }
-            (MachineIntWidth::I32, MachineIntUnaryOp::Extend32S) => self.zext_w(dst, dst),
-            (MachineIntWidth::I64, MachineIntUnaryOp::Extend8S) => {
-                self.core.text.emit_u32(enc::slli(dst, dst, 56));
-                self.core.text.emit_u32(enc::srai(dst, dst, 56));
-            }
-            (MachineIntWidth::I64, MachineIntUnaryOp::Extend16S) => {
-                self.core.text.emit_u32(enc::slli(dst, dst, 48));
-                self.core.text.emit_u32(enc::srai(dst, dst, 48));
-            }
-            (MachineIntWidth::I64, MachineIntUnaryOp::Extend32S) => self.sext_w(dst, dst),
+            (MachineIntWidth::I32, MachineIntUnaryOp::Extend32S) => {}
+            (MachineIntWidth::I64, _) => return Err(Self::unsupported_error()),
             (_, MachineIntUnaryOp::Clz) => self.emit_clz(width, dst),
             (_, MachineIntUnaryOp::Ctz) => self.emit_ctz(width, dst),
             (_, MachineIntUnaryOp::Popcnt) => self.emit_popcnt(width, dst),
@@ -1940,68 +1956,32 @@ impl<'a> Riscv64Backend<'a> {
         rhs: RiscvReg,
     ) -> Result<(), WasmError> {
         match (width, op) {
-            (MachineIntWidth::I64, MachineIntBinaryOp::Add) => {
+            (MachineIntWidth::I32, MachineIntBinaryOp::Add) => {
                 self.core.text.emit_u32(enc::add(dst, lhs, rhs));
             }
-            (MachineIntWidth::I64, MachineIntBinaryOp::Sub) => {
+            (MachineIntWidth::I32, MachineIntBinaryOp::Sub) => {
                 self.core.text.emit_u32(enc::sub(dst, lhs, rhs));
             }
-            (MachineIntWidth::I64, MachineIntBinaryOp::Mul) => {
-                self.core.text.emit_u32(enc::mul(dst, lhs, rhs));
-            }
-            (MachineIntWidth::I64, MachineIntBinaryOp::And) => {
-                self.core.text.emit_u32(enc::and(dst, lhs, rhs));
-            }
-            (MachineIntWidth::I64, MachineIntBinaryOp::Or) => {
-                self.core.text.emit_u32(enc::or(dst, lhs, rhs));
-            }
-            (MachineIntWidth::I64, MachineIntBinaryOp::Xor) => {
-                self.core.text.emit_u32(enc::xor(dst, lhs, rhs));
-            }
-            (MachineIntWidth::I64, MachineIntBinaryOp::Shl) => {
-                self.core.text.emit_u32(enc::sll(dst, lhs, rhs));
-            }
-            (MachineIntWidth::I64, MachineIntBinaryOp::ShrU) => {
-                self.core.text.emit_u32(enc::srl(dst, lhs, rhs));
-            }
-            (MachineIntWidth::I64, MachineIntBinaryOp::ShrS) => {
-                self.core.text.emit_u32(enc::sra(dst, lhs, rhs));
-            }
-            (MachineIntWidth::I32, MachineIntBinaryOp::Add) => {
-                self.core.text.emit_u32(enc::addw(dst, lhs, rhs));
-                self.zext_w(dst, dst);
-            }
-            (MachineIntWidth::I32, MachineIntBinaryOp::Sub) => {
-                self.core.text.emit_u32(enc::subw(dst, lhs, rhs));
-                self.zext_w(dst, dst);
-            }
             (MachineIntWidth::I32, MachineIntBinaryOp::Mul) => {
-                self.core.text.emit_u32(enc::mulw(dst, lhs, rhs));
-                self.zext_w(dst, dst);
+                self.core.text.emit_u32(enc::mul(dst, lhs, rhs));
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::And) => {
                 self.core.text.emit_u32(enc::and(dst, lhs, rhs));
-                self.zext_w(dst, dst);
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::Or) => {
                 self.core.text.emit_u32(enc::or(dst, lhs, rhs));
-                self.zext_w(dst, dst);
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::Xor) => {
                 self.core.text.emit_u32(enc::xor(dst, lhs, rhs));
-                self.zext_w(dst, dst);
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::Shl) => {
-                self.core.text.emit_u32(enc::sllw(dst, lhs, rhs));
-                self.zext_w(dst, dst);
+                self.core.text.emit_u32(enc::sll(dst, lhs, rhs));
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::ShrU) => {
-                self.core.text.emit_u32(enc::srlw(dst, lhs, rhs));
-                self.zext_w(dst, dst);
+                self.core.text.emit_u32(enc::srl(dst, lhs, rhs));
             }
             (MachineIntWidth::I32, MachineIntBinaryOp::ShrS) => {
-                self.core.text.emit_u32(enc::sraw(dst, lhs, rhs));
-                self.zext_w(dst, dst);
+                self.core.text.emit_u32(enc::sra(dst, lhs, rhs));
             }
             _ => return Err(Self::unsupported_error()),
         }
@@ -2028,40 +2008,23 @@ impl<'a> Riscv64Backend<'a> {
             | MachineIntBinaryOp::RemU => self.lower_div_rem_regs(width, op, dst, *lhs_s, *rhs_s),
             MachineIntBinaryOp::Rotl | MachineIntBinaryOp::Rotr => {
                 match (width, op) {
-                    (MachineIntWidth::I64, MachineIntBinaryOp::Rotl) => {
+                    (MachineIntWidth::I32, MachineIntBinaryOp::Rotl) => {
                         self.core.text.emit_u32(enc::sll(dst, *lhs_s, *rhs_s));
                         self.core
                             .text
                             .emit_u32(enc::sub(*rhs_s, abi::zero_reg(), *rhs_s));
                         self.core.text.emit_u32(enc::srl(*rhs_s, *lhs_s, *rhs_s));
                     }
-                    (MachineIntWidth::I64, MachineIntBinaryOp::Rotr) => {
+                    (MachineIntWidth::I32, MachineIntBinaryOp::Rotr) => {
                         self.core.text.emit_u32(enc::srl(dst, *lhs_s, *rhs_s));
                         self.core
                             .text
                             .emit_u32(enc::sub(*rhs_s, abi::zero_reg(), *rhs_s));
                         self.core.text.emit_u32(enc::sll(*rhs_s, *lhs_s, *rhs_s));
                     }
-                    (MachineIntWidth::I32, MachineIntBinaryOp::Rotl) => {
-                        self.core.text.emit_u32(enc::sllw(dst, *lhs_s, *rhs_s));
-                        self.core
-                            .text
-                            .emit_u32(enc::sub(*rhs_s, abi::zero_reg(), *rhs_s));
-                        self.core.text.emit_u32(enc::srlw(*rhs_s, *lhs_s, *rhs_s));
-                    }
-                    (MachineIntWidth::I32, MachineIntBinaryOp::Rotr) => {
-                        self.core.text.emit_u32(enc::srlw(dst, *lhs_s, *rhs_s));
-                        self.core
-                            .text
-                            .emit_u32(enc::sub(*rhs_s, abi::zero_reg(), *rhs_s));
-                        self.core.text.emit_u32(enc::sllw(*rhs_s, *lhs_s, *rhs_s));
-                    }
-                    _ => unreachable!(),
+                    _ => return Err(Self::unsupported_error()),
                 }
                 self.core.text.emit_u32(enc::or(dst, dst, *rhs_s));
-                if width == MachineIntWidth::I32 {
-                    self.zext_w(dst, dst);
-                }
                 Ok(())
             }
             _ => self.emit_int_binary_regs(width, op, dst, *lhs_s, *rhs_s),
@@ -2094,7 +2057,7 @@ impl<'a> Riscv64Backend<'a> {
             let done = self.core.new_label();
             let min = match width {
                 MachineIntWidth::I32 => i32::MIN as i64 as u64,
-                MachineIntWidth::I64 => i64::MIN as u64,
+                MachineIntWidth::I64 => return Err(Self::unsupported_error()),
             };
             self.materialize_u64(dst, min);
             self.emit_branch_to(enc::Cond::Ne, lhs, dst, normal);
@@ -2111,19 +2074,11 @@ impl<'a> Riscv64Backend<'a> {
             }
             self.core.bind_label(normal);
             match (width, op) {
-                (MachineIntWidth::I64, MachineIntBinaryOp::DivS) => {
+                (MachineIntWidth::I32, MachineIntBinaryOp::DivS) => {
                     self.core.text.emit_u32(enc::div(dst, lhs, rhs));
                 }
-                (MachineIntWidth::I64, MachineIntBinaryOp::RemS) => {
-                    self.core.text.emit_u32(enc::rem(dst, lhs, rhs));
-                }
-                (MachineIntWidth::I32, MachineIntBinaryOp::DivS) => {
-                    self.core.text.emit_u32(enc::divw(dst, lhs, rhs));
-                    self.zext_w(dst, dst);
-                }
                 (MachineIntWidth::I32, MachineIntBinaryOp::RemS) => {
-                    self.core.text.emit_u32(enc::remw(dst, lhs, rhs));
-                    self.zext_w(dst, dst);
+                    self.core.text.emit_u32(enc::rem(dst, lhs, rhs));
                 }
                 _ => unreachable!(),
             };
@@ -2132,21 +2087,13 @@ impl<'a> Riscv64Backend<'a> {
         }
 
         match (width, op) {
-            (MachineIntWidth::I64, MachineIntBinaryOp::DivU) => {
+            (MachineIntWidth::I32, MachineIntBinaryOp::DivU) => {
                 self.core.text.emit_u32(enc::divu(dst, lhs, rhs));
             }
-            (MachineIntWidth::I64, MachineIntBinaryOp::RemU) => {
+            (MachineIntWidth::I32, MachineIntBinaryOp::RemU) => {
                 self.core.text.emit_u32(enc::remu(dst, lhs, rhs));
             }
-            (MachineIntWidth::I32, MachineIntBinaryOp::DivU) => {
-                self.core.text.emit_u32(enc::divuw(dst, lhs, rhs));
-                self.zext_w(dst, dst);
-            }
-            (MachineIntWidth::I32, MachineIntBinaryOp::RemU) => {
-                self.core.text.emit_u32(enc::remuw(dst, lhs, rhs));
-                self.zext_w(dst, dst);
-            }
-            _ => unreachable!(),
+            _ => return Err(Self::unsupported_error()),
         };
         Ok(())
     }
@@ -2249,33 +2196,19 @@ impl<'a> Riscv64Backend<'a> {
         let shifted = self.gp_scratch.scoped_alloc().detach();
         self.emit_mv(*shifted, rhs);
         match (width, shift) {
-            (MachineIntWidth::I64, MachineShiftOp::Lsl) => {
-                self.core
-                    .text
-                    .emit_u32(enc::slli(*shifted, *shifted, u32::from(amount)));
-            }
-            (MachineIntWidth::I64, MachineShiftOp::Lsr) => {
-                self.core
-                    .text
-                    .emit_u32(enc::srli(*shifted, *shifted, u32::from(amount)));
-            }
-            (MachineIntWidth::I64, MachineShiftOp::Asr) => {
-                self.core
-                    .text
-                    .emit_u32(enc::srai(*shifted, *shifted, u32::from(amount)));
-            }
             (MachineIntWidth::I32, MachineShiftOp::Lsl) => {
                 self.materialize_u64(*shifted, u64::from(amount));
-                self.core.text.emit_u32(enc::sllw(*shifted, rhs, *shifted));
+                self.core.text.emit_u32(enc::sll(*shifted, rhs, *shifted));
             }
             (MachineIntWidth::I32, MachineShiftOp::Lsr) => {
                 self.materialize_u64(*shifted, u64::from(amount));
-                self.core.text.emit_u32(enc::srlw(*shifted, rhs, *shifted));
+                self.core.text.emit_u32(enc::srl(*shifted, rhs, *shifted));
             }
             (MachineIntWidth::I32, MachineShiftOp::Asr) => {
                 self.materialize_u64(*shifted, u64::from(amount));
-                self.core.text.emit_u32(enc::sraw(*shifted, rhs, *shifted));
+                self.core.text.emit_u32(enc::sra(*shifted, rhs, *shifted));
             }
+            (MachineIntWidth::I64, _) => return Err(Self::unsupported_error()),
         };
         self.emit_int_binary_regs(width, op, dst, lhs, *shifted)
     }
@@ -2309,7 +2242,7 @@ impl<'a> Riscv64Backend<'a> {
             }
             _ => {
                 return Err(WasmError::internal(
-                    "riscv64 TestBits uses unsupported compare kind",
+                    "riscv32 TestBits uses unsupported compare kind",
                 ))
             }
         }
@@ -2354,6 +2287,835 @@ impl<'a> Riscv64Backend<'a> {
         self.core.bind_label(false_path);
         self.lower_move(ty, dst, on_false)?;
         self.core.bind_label(done);
+        Ok(())
+    }
+
+    fn emit_bool_imm(&mut self, dst: RiscvReg, value: bool) {
+        self.emit_addi(dst, abi::zero_reg(), i32::from(value));
+    }
+
+    fn store_stack_word_value(
+        &mut self,
+        offset: i32,
+        value: MachineValue,
+    ) -> Result<(), WasmError> {
+        let scratch = self.gp_scratch.scoped_alloc().detach();
+        self.load_value_into(*scratch, value)?;
+        self.emit_store_raw(0b010, *scratch, abi::stack_reg(), offset);
+        Ok(())
+    }
+
+    fn spill_i64_binary_inputs(
+        &mut self,
+        lhs_lo: MachineValue,
+        lhs_hi: MachineValue,
+        rhs_lo: MachineValue,
+        rhs_hi: MachineValue,
+    ) -> Result<(), WasmError> {
+        self.store_stack_word_value(0, lhs_lo)?;
+        self.store_stack_word_value(4, lhs_hi)?;
+        self.store_stack_word_value(8, rhs_lo)?;
+        self.store_stack_word_value(12, rhs_hi)?;
+        Ok(())
+    }
+
+    fn lower_int64_pair_binary(
+        &mut self,
+        op: MachineIntBinaryOp,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs_lo: MachineValue,
+        lhs_hi: MachineValue,
+        rhs_lo: MachineValue,
+        rhs_hi: MachineValue,
+    ) -> Result<(), WasmError> {
+        let dst_lo = self.map_gp_reg(dst_lo)?;
+        let dst_hi = self.map_gp_reg(dst_hi)?;
+        self.emit_adjust_stack_down(16);
+        self.spill_i64_binary_inputs(lhs_lo, lhs_hi, rhs_lo, rhs_hi)?;
+        let a = self.gp_scratch.scoped_alloc().detach();
+        let b = self.gp_scratch.scoped_alloc().detach();
+        match op {
+            MachineIntBinaryOp::Add => {
+                self.emit_lw(*a, abi::stack_reg(), 0);
+                self.emit_lw(*b, abi::stack_reg(), 8);
+                self.core.text.emit_u32(enc::add(dst_lo, *a, *b));
+                self.core.text.emit_u32(enc::sltu(*a, dst_lo, *a));
+                self.emit_lw(dst_hi, abi::stack_reg(), 4);
+                self.emit_lw(*b, abi::stack_reg(), 12);
+                self.core.text.emit_u32(enc::add(dst_hi, dst_hi, *b));
+                self.core.text.emit_u32(enc::add(dst_hi, dst_hi, *a));
+            }
+            MachineIntBinaryOp::Sub => {
+                self.emit_lw(*a, abi::stack_reg(), 0);
+                self.emit_lw(*b, abi::stack_reg(), 8);
+                self.core.text.emit_u32(enc::sub(dst_lo, *a, *b));
+                self.core.text.emit_u32(enc::sltu(*a, *a, *b));
+                self.emit_lw(dst_hi, abi::stack_reg(), 4);
+                self.emit_lw(*b, abi::stack_reg(), 12);
+                self.core.text.emit_u32(enc::sub(dst_hi, dst_hi, *b));
+                self.core.text.emit_u32(enc::sub(dst_hi, dst_hi, *a));
+            }
+            MachineIntBinaryOp::Mul => {
+                self.emit_lw(*a, abi::stack_reg(), 0);
+                self.emit_lw(*b, abi::stack_reg(), 8);
+                self.core.text.emit_u32(enc::mul(dst_lo, *a, *b));
+                self.core.text.emit_u32(enc::mulhu(dst_hi, *a, *b));
+                self.emit_lw(*b, abi::stack_reg(), 12);
+                self.core.text.emit_u32(enc::mul(*b, *a, *b));
+                self.core.text.emit_u32(enc::add(dst_hi, dst_hi, *b));
+                self.emit_lw(*a, abi::stack_reg(), 4);
+                self.emit_lw(*b, abi::stack_reg(), 8);
+                self.core.text.emit_u32(enc::mul(*a, *a, *b));
+                self.core.text.emit_u32(enc::add(dst_hi, dst_hi, *a));
+            }
+            MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor => {
+                let emit = match op {
+                    MachineIntBinaryOp::And => enc::and,
+                    MachineIntBinaryOp::Or => enc::or,
+                    MachineIntBinaryOp::Xor => enc::xor,
+                    _ => unreachable!(),
+                };
+                self.emit_lw(*a, abi::stack_reg(), 0);
+                self.emit_lw(*b, abi::stack_reg(), 8);
+                self.core.text.emit_u32(emit(dst_lo, *a, *b));
+                self.emit_lw(*a, abi::stack_reg(), 4);
+                self.emit_lw(*b, abi::stack_reg(), 12);
+                self.core.text.emit_u32(emit(dst_hi, *a, *b));
+            }
+            _ => {
+                self.emit_adjust_stack_up(16);
+                return Err(Self::unsupported_error());
+            }
+        }
+        drop(a);
+        drop(b);
+        self.emit_adjust_stack_up(16);
+        Ok(())
+    }
+
+    fn lower_int64_mul_from_sign_ext32(
+        &mut self,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    ) -> Result<(), WasmError> {
+        let dst_lo = self.map_gp_reg(dst_lo)?;
+        let dst_hi = self.map_gp_reg(dst_hi)?;
+        let lhs_s = self.gp_scratch.scoped_alloc().detach();
+        let rhs_s = self.gp_scratch.scoped_alloc().detach();
+        self.load_value_into(*lhs_s, lhs)?;
+        self.load_value_into(*rhs_s, rhs)?;
+        self.core.text.emit_u32(enc::mul(dst_lo, *lhs_s, *rhs_s));
+        self.core.text.emit_u32(enc::mulh(dst_hi, *lhs_s, *rhs_s));
+        Ok(())
+    }
+
+    fn lower_int64_pair_unary(
+        &mut self,
+        op: MachineIntUnaryOp,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        src_lo: MachineValue,
+        src_hi: MachineValue,
+    ) -> Result<(), WasmError> {
+        let dst_lo = self.map_gp_reg(dst_lo)?;
+        let dst_hi = self.map_gp_reg(dst_hi)?;
+        self.emit_adjust_stack_down(8);
+        self.store_stack_word_value(0, src_lo)?;
+        self.store_stack_word_value(4, src_hi)?;
+        match op {
+            MachineIntUnaryOp::Clz => {
+                let hi_nonzero = self.core.new_label();
+                let done = self.core.new_label();
+                self.emit_lw(dst_lo, abi::stack_reg(), 4);
+                self.emit_branch_to(enc::Cond::Ne, dst_lo, abi::zero_reg(), hi_nonzero);
+                self.emit_lw(dst_lo, abi::stack_reg(), 0);
+                self.emit_clz(MachineIntWidth::I32, dst_lo);
+                self.emit_addi(dst_lo, dst_lo, 32);
+                self.emit_jal(abi::zero_reg(), done);
+                self.core.bind_label(hi_nonzero);
+                self.emit_clz(MachineIntWidth::I32, dst_lo);
+                self.core.bind_label(done);
+                self.emit_addi(dst_hi, abi::zero_reg(), 0);
+            }
+            MachineIntUnaryOp::Ctz => {
+                let lo_zero = self.core.new_label();
+                let done = self.core.new_label();
+                self.emit_lw(dst_lo, abi::stack_reg(), 0);
+                self.emit_branch_to(enc::Cond::Eq, dst_lo, abi::zero_reg(), lo_zero);
+                self.emit_ctz(MachineIntWidth::I32, dst_lo);
+                self.emit_jal(abi::zero_reg(), done);
+                self.core.bind_label(lo_zero);
+                self.emit_lw(dst_lo, abi::stack_reg(), 4);
+                self.emit_ctz(MachineIntWidth::I32, dst_lo);
+                self.emit_addi(dst_lo, dst_lo, 32);
+                self.core.bind_label(done);
+                self.emit_addi(dst_hi, abi::zero_reg(), 0);
+            }
+            MachineIntUnaryOp::Popcnt => {
+                self.emit_lw(dst_lo, abi::stack_reg(), 0);
+                self.emit_popcnt(MachineIntWidth::I32, dst_lo);
+                self.emit_lw(dst_hi, abi::stack_reg(), 4);
+                self.emit_popcnt(MachineIntWidth::I32, dst_hi);
+                self.core.text.emit_u32(enc::add(dst_lo, dst_lo, dst_hi));
+                self.emit_addi(dst_hi, abi::zero_reg(), 0);
+            }
+            MachineIntUnaryOp::Extend8S => {
+                self.emit_lw(dst_lo, abi::stack_reg(), 0);
+                self.core.text.emit_u32(enc::slli(dst_lo, dst_lo, 24));
+                self.core.text.emit_u32(enc::srai(dst_lo, dst_lo, 24));
+                self.core.text.emit_u32(enc::srai(dst_hi, dst_lo, 31));
+            }
+            MachineIntUnaryOp::Extend16S => {
+                self.emit_lw(dst_lo, abi::stack_reg(), 0);
+                self.core.text.emit_u32(enc::slli(dst_lo, dst_lo, 16));
+                self.core.text.emit_u32(enc::srai(dst_lo, dst_lo, 16));
+                self.core.text.emit_u32(enc::srai(dst_hi, dst_lo, 31));
+            }
+            MachineIntUnaryOp::Extend32S => {
+                self.emit_lw(dst_lo, abi::stack_reg(), 0);
+                self.core.text.emit_u32(enc::srai(dst_hi, dst_lo, 31));
+            }
+        }
+        self.emit_adjust_stack_up(8);
+        Ok(())
+    }
+
+    fn emit_host_pair_result_call(
+        &mut self,
+        target: usize,
+        args: &[MachineValue],
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+    ) -> Result<(), WasmError> {
+        debug_assert!(args.len() <= 4);
+        self.emit_preserved_frame_open_with_prefix(16);
+        for (index, &arg) in args.iter().enumerate() {
+            self.store_stack_word_value((index as i32) * 4, arg)?;
+        }
+        let c_args = [abi::C_ARG0, abi::C_ARG1, abi::C_ARG2, abi::C_ARG3];
+        for (index, &reg) in c_args.iter().take(args.len()).enumerate() {
+            self.emit_lw(reg, abi::stack_reg(), (index as i32) * 4);
+        }
+        let call_scratch = self.gp_scratch.scoped_alloc().detach();
+        self.materialize_u64(*call_scratch, target as u64);
+        self.core
+            .text
+            .emit_u32(enc::jalr(abi::link_reg(), *call_scratch, 0));
+        drop(call_scratch);
+        let result_lo = self.gp_scratch.scoped_alloc().detach();
+        let result_hi = self.gp_scratch.scoped_alloc().detach();
+        self.emit_mv(*result_lo, abi::C_RET0);
+        self.emit_mv(*result_hi, abi::C_RET1);
+        self.emit_restore_preserved_gp(16);
+        self.emit_restore_preserved_fp(16);
+        let dst_lo = self.map_gp_reg(dst_lo)?;
+        let dst_hi = self.map_gp_reg(dst_hi)?;
+        self.emit_mv(dst_lo, *result_lo);
+        self.emit_mv(dst_hi, *result_hi);
+        drop(result_lo);
+        drop(result_hi);
+        self.emit_adjust_stack_up(abi::PRESERVED_HELPER_FRAME_SIZE + 16);
+        Ok(())
+    }
+
+    fn lower_int64_pair_div_rem(
+        &mut self,
+        sign: MachineSign,
+        rem: bool,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs_lo: MachineValue,
+        lhs_hi: MachineValue,
+        rhs_lo: MachineValue,
+        rhs_hi: MachineValue,
+    ) -> Result<(), WasmError> {
+        use super::{rv32_i64_div_s, rv32_i64_div_u, rv32_i64_rem_s, rv32_i64_rem_u};
+
+        self.emit_adjust_stack_down(16);
+        self.spill_i64_binary_inputs(lhs_lo, lhs_hi, rhs_lo, rhs_hi)?;
+        let a = self.gp_scratch.scoped_alloc().detach();
+        let b = self.gp_scratch.scoped_alloc().detach();
+        self.emit_lw(*a, abi::stack_reg(), 8);
+        self.emit_lw(*b, abi::stack_reg(), 12);
+        self.core.text.emit_u32(enc::or(*a, *a, *b));
+        let div_zero = self
+            .core
+            .ensure_trap_label(MachineTrapKind::IntegerDivideByZero);
+        let nonzero = self.core.new_label();
+        self.emit_branch_to(enc::Cond::Ne, *a, abi::zero_reg(), nonzero);
+        self.emit_adjust_stack_up(16);
+        self.emit_jal(abi::zero_reg(), div_zero);
+        self.core.bind_label(nonzero);
+
+        if sign == MachineSign::Signed && !rem {
+            let no_overflow = self.core.new_label();
+            self.emit_lw(*a, abi::stack_reg(), 0);
+            self.emit_branch_to(enc::Cond::Ne, *a, abi::zero_reg(), no_overflow);
+            self.emit_lw(*a, abi::stack_reg(), 4);
+            self.materialize_u64(*b, 0x8000_0000);
+            self.emit_branch_to(enc::Cond::Ne, *a, *b, no_overflow);
+            self.emit_lw(*a, abi::stack_reg(), 8);
+            self.materialize_u64(*b, u32::MAX as u64);
+            self.emit_branch_to(enc::Cond::Ne, *a, *b, no_overflow);
+            self.emit_lw(*a, abi::stack_reg(), 12);
+            self.emit_branch_to(enc::Cond::Ne, *a, *b, no_overflow);
+            let overflow = self
+                .core
+                .ensure_trap_label(MachineTrapKind::IntegerOverflow);
+            self.emit_adjust_stack_up(16);
+            self.emit_jal(abi::zero_reg(), overflow);
+            self.core.bind_label(no_overflow);
+        }
+        drop(a);
+        drop(b);
+        self.emit_adjust_stack_up(16);
+
+        let target = match (sign, rem) {
+            (MachineSign::Signed, false) => rv32_i64_div_s as *const () as usize,
+            (MachineSign::Unsigned, false) => rv32_i64_div_u as *const () as usize,
+            (MachineSign::Signed, true) => rv32_i64_rem_s as *const () as usize,
+            (MachineSign::Unsigned, true) => rv32_i64_rem_u as *const () as usize,
+        };
+        self.emit_host_pair_result_call(target, &[lhs_lo, lhs_hi, rhs_lo, rhs_hi], dst_lo, dst_hi)
+    }
+
+    fn lower_int64_pair_shift(
+        &mut self,
+        op: MachineIntBinaryOp,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs_lo: MachineValue,
+        lhs_hi: MachineValue,
+        rhs: MachineValue,
+    ) -> Result<(), WasmError> {
+        use super::{rv32_i64_rotl, rv32_i64_rotr, rv32_i64_shl, rv32_i64_shr_s, rv32_i64_shr_u};
+
+        if let MachineValue::Imm64(count) = rhs {
+            return self.lower_int64_pair_shift_const(
+                op,
+                dst_lo,
+                dst_hi,
+                lhs_lo,
+                lhs_hi,
+                (count as u32) & 63,
+            );
+        }
+        let target = match op {
+            MachineIntBinaryOp::Shl => rv32_i64_shl as *const () as usize,
+            MachineIntBinaryOp::ShrS => rv32_i64_shr_s as *const () as usize,
+            MachineIntBinaryOp::ShrU => rv32_i64_shr_u as *const () as usize,
+            MachineIntBinaryOp::Rotl => rv32_i64_rotl as *const () as usize,
+            MachineIntBinaryOp::Rotr => rv32_i64_rotr as *const () as usize,
+            _ => return Err(Self::unsupported_error()),
+        };
+        self.emit_host_pair_result_call(target, &[lhs_lo, lhs_hi, rhs], dst_lo, dst_hi)
+    }
+
+    fn lower_int64_pair_shift_const(
+        &mut self,
+        op: MachineIntBinaryOp,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        lhs_lo: MachineValue,
+        lhs_hi: MachineValue,
+        n: u32,
+    ) -> Result<(), WasmError> {
+        let dst_lo = self.map_gp_reg(dst_lo)?;
+        let dst_hi = self.map_gp_reg(dst_hi)?;
+        self.emit_adjust_stack_down(8);
+        self.store_stack_word_value(0, lhs_lo)?;
+        self.store_stack_word_value(4, lhs_hi)?;
+        let lo = self.gp_scratch.scoped_alloc().detach();
+        let hi = self.gp_scratch.scoped_alloc().detach();
+        self.emit_lw(*lo, abi::stack_reg(), 0);
+        self.emit_lw(*hi, abi::stack_reg(), 4);
+        match op {
+            MachineIntBinaryOp::Shl => self.emit_i64_shl_const(dst_lo, dst_hi, *lo, *hi, n),
+            MachineIntBinaryOp::ShrS => self.emit_i64_shr_const(dst_lo, dst_hi, *lo, *hi, n, true),
+            MachineIntBinaryOp::ShrU => self.emit_i64_shr_const(dst_lo, dst_hi, *lo, *hi, n, false),
+            MachineIntBinaryOp::Rotl => self.emit_i64_rotl_const(dst_lo, dst_hi, *lo, *hi, n),
+            MachineIntBinaryOp::Rotr => {
+                let n = if n == 0 { 0 } else { 64 - n };
+                self.emit_i64_rotl_const(dst_lo, dst_hi, *lo, *hi, n);
+            }
+            _ => {
+                self.emit_adjust_stack_up(8);
+                return Err(Self::unsupported_error());
+            }
+        }
+        drop(lo);
+        drop(hi);
+        self.emit_adjust_stack_up(8);
+        Ok(())
+    }
+
+    fn emit_i64_shl_const(
+        &mut self,
+        dst_lo: RiscvReg,
+        dst_hi: RiscvReg,
+        lo: RiscvReg,
+        hi: RiscvReg,
+        n: u32,
+    ) {
+        if n == 0 {
+            self.emit_mv(dst_lo, lo);
+            self.emit_mv(dst_hi, hi);
+        } else if n < 32 {
+            self.core.text.emit_u32(enc::slli(dst_hi, hi, n));
+            self.core.text.emit_u32(enc::srli(hi, lo, 32 - n));
+            self.core.text.emit_u32(enc::or(dst_hi, dst_hi, hi));
+            self.core.text.emit_u32(enc::slli(dst_lo, lo, n));
+        } else if n == 32 {
+            self.emit_mv(dst_hi, lo);
+            self.emit_addi(dst_lo, abi::zero_reg(), 0);
+        } else {
+            self.core.text.emit_u32(enc::slli(dst_hi, lo, n - 32));
+            self.emit_addi(dst_lo, abi::zero_reg(), 0);
+        }
+    }
+
+    fn emit_i64_shr_const(
+        &mut self,
+        dst_lo: RiscvReg,
+        dst_hi: RiscvReg,
+        lo: RiscvReg,
+        hi: RiscvReg,
+        n: u32,
+        signed: bool,
+    ) {
+        if n == 0 {
+            self.emit_mv(dst_lo, lo);
+            self.emit_mv(dst_hi, hi);
+        } else if n < 32 {
+            self.core.text.emit_u32(enc::srli(dst_lo, lo, n));
+            self.core.text.emit_u32(enc::slli(lo, hi, 32 - n));
+            self.core.text.emit_u32(enc::or(dst_lo, dst_lo, lo));
+            self.core.text.emit_u32(if signed {
+                enc::srai(dst_hi, hi, n)
+            } else {
+                enc::srli(dst_hi, hi, n)
+            });
+        } else if n == 32 {
+            self.emit_mv(dst_lo, hi);
+            if signed {
+                self.core.text.emit_u32(enc::srai(dst_hi, hi, 31));
+            } else {
+                self.emit_addi(dst_hi, abi::zero_reg(), 0);
+            }
+        } else {
+            let m = n - 32;
+            self.core.text.emit_u32(if signed {
+                enc::srai(dst_lo, hi, m)
+            } else {
+                enc::srli(dst_lo, hi, m)
+            });
+            if signed {
+                self.core.text.emit_u32(enc::srai(dst_hi, hi, 31));
+            } else {
+                self.emit_addi(dst_hi, abi::zero_reg(), 0);
+            }
+        }
+    }
+
+    fn emit_i64_rotl_const(
+        &mut self,
+        dst_lo: RiscvReg,
+        dst_hi: RiscvReg,
+        lo: RiscvReg,
+        hi: RiscvReg,
+        n: u32,
+    ) {
+        if n == 0 {
+            self.emit_mv(dst_lo, lo);
+            self.emit_mv(dst_hi, hi);
+            return;
+        }
+        if n == 32 {
+            self.emit_mv(dst_lo, hi);
+            self.emit_mv(dst_hi, lo);
+            return;
+        }
+        let (lo, hi, n) = if n > 32 {
+            (hi, lo, n - 32)
+        } else {
+            (lo, hi, n)
+        };
+        self.core.text.emit_u32(enc::slli(dst_hi, hi, n));
+        self.core.text.emit_u32(enc::srli(dst_lo, lo, 32 - n));
+        self.core.text.emit_u32(enc::or(dst_hi, dst_hi, dst_lo));
+        self.core.text.emit_u32(enc::slli(dst_lo, lo, n));
+        self.core.text.emit_u32(enc::srli(hi, hi, 32 - n));
+        self.core.text.emit_u32(enc::or(dst_lo, dst_lo, hi));
+    }
+
+    fn lower_int64_pair_compare(
+        &mut self,
+        kind: MachineCompareKind,
+        sign: MachineSign,
+        dst: MachineReg,
+        lhs_lo: MachineValue,
+        lhs_hi: MachineValue,
+        rhs_lo: MachineValue,
+        rhs_hi: MachineValue,
+    ) -> Result<(), WasmError> {
+        let dst = self.map_gp_reg(dst)?;
+        self.emit_adjust_stack_down(16);
+        self.spill_i64_binary_inputs(lhs_lo, lhs_hi, rhs_lo, rhs_hi)?;
+        let a = self.gp_scratch.scoped_alloc().detach();
+        let b = self.gp_scratch.scoped_alloc().detach();
+        self.emit_lw(*a, abi::stack_reg(), 4);
+        self.emit_lw(*b, abi::stack_reg(), 12);
+
+        let set_true = self.core.new_label();
+        let set_false = self.core.new_label();
+        let done = self.core.new_label();
+
+        match kind {
+            MachineCompareKind::Eq => {
+                self.core.text.emit_u32(enc::xor(*a, *a, *b));
+                self.emit_lw(*b, abi::stack_reg(), 0);
+                self.emit_lw(dst, abi::stack_reg(), 8);
+                self.core.text.emit_u32(enc::xor(*b, *b, dst));
+                self.core.text.emit_u32(enc::or(*a, *a, *b));
+                self.core.text.emit_u32(enc::sltiu(dst, *a, 1));
+                self.emit_adjust_stack_up(16);
+                return Ok(());
+            }
+            MachineCompareKind::Ne => {
+                self.core.text.emit_u32(enc::xor(*a, *a, *b));
+                self.emit_lw(*b, abi::stack_reg(), 0);
+                self.emit_lw(dst, abi::stack_reg(), 8);
+                self.core.text.emit_u32(enc::xor(*b, *b, dst));
+                self.core.text.emit_u32(enc::or(*a, *a, *b));
+                self.core.text.emit_u32(enc::sltu(dst, abi::zero_reg(), *a));
+                self.emit_adjust_stack_up(16);
+                return Ok(());
+            }
+            _ => {}
+        }
+
+        match sign {
+            MachineSign::Signed => {
+                self.core.text.emit_u32(enc::slt(dst, *a, *b));
+                self.emit_branch_to(
+                    enc::Cond::Ne,
+                    dst,
+                    abi::zero_reg(),
+                    match kind {
+                        MachineCompareKind::Lt | MachineCompareKind::Le => set_true,
+                        MachineCompareKind::Gt | MachineCompareKind::Ge => set_false,
+                        _ => unreachable!(),
+                    },
+                );
+                self.core.text.emit_u32(enc::slt(dst, *b, *a));
+            }
+            MachineSign::Unsigned => {
+                self.core.text.emit_u32(enc::sltu(dst, *a, *b));
+                self.emit_branch_to(
+                    enc::Cond::Ne,
+                    dst,
+                    abi::zero_reg(),
+                    match kind {
+                        MachineCompareKind::Lt | MachineCompareKind::Le => set_true,
+                        MachineCompareKind::Gt | MachineCompareKind::Ge => set_false,
+                        _ => unreachable!(),
+                    },
+                );
+                self.core.text.emit_u32(enc::sltu(dst, *b, *a));
+            }
+        }
+        self.emit_branch_to(
+            enc::Cond::Ne,
+            dst,
+            abi::zero_reg(),
+            match kind {
+                MachineCompareKind::Lt | MachineCompareKind::Le => set_false,
+                MachineCompareKind::Gt | MachineCompareKind::Ge => set_true,
+                _ => unreachable!(),
+            },
+        );
+
+        self.emit_lw(*a, abi::stack_reg(), 0);
+        self.emit_lw(*b, abi::stack_reg(), 8);
+        let lo_true = match kind {
+            MachineCompareKind::Lt => {
+                self.core.text.emit_u32(enc::sltu(dst, *a, *b));
+                set_true
+            }
+            MachineCompareKind::Le => {
+                self.core.text.emit_u32(enc::sltu(dst, *b, *a));
+                set_false
+            }
+            MachineCompareKind::Gt => {
+                self.core.text.emit_u32(enc::sltu(dst, *b, *a));
+                set_true
+            }
+            MachineCompareKind::Ge => {
+                self.core.text.emit_u32(enc::sltu(dst, *a, *b));
+                set_false
+            }
+            _ => unreachable!(),
+        };
+        self.emit_branch_to(enc::Cond::Ne, dst, abi::zero_reg(), lo_true);
+        self.emit_jal(
+            abi::zero_reg(),
+            match kind {
+                MachineCompareKind::Lt | MachineCompareKind::Gt => set_false,
+                MachineCompareKind::Le | MachineCompareKind::Ge => set_true,
+                _ => unreachable!(),
+            },
+        );
+
+        self.core.bind_label(set_true);
+        self.emit_bool_imm(dst, true);
+        self.emit_jal(abi::zero_reg(), done);
+        self.core.bind_label(set_false);
+        self.emit_bool_imm(dst, false);
+        self.core.bind_label(done);
+        drop(a);
+        drop(b);
+        self.emit_adjust_stack_up(16);
+        Ok(())
+    }
+
+    fn convert_op_code(op: MachineConvertOp) -> u32 {
+        match op {
+            MachineConvertOp::I32TruncF32S => 0,
+            MachineConvertOp::I32TruncF32U => 1,
+            MachineConvertOp::I32TruncF64S => 2,
+            MachineConvertOp::I32TruncF64U => 3,
+            MachineConvertOp::I64TruncF32S => 4,
+            MachineConvertOp::I64TruncF32U => 5,
+            MachineConvertOp::I64TruncF64S => 6,
+            MachineConvertOp::I64TruncF64U => 7,
+            MachineConvertOp::I32TruncSatF32S => 8,
+            MachineConvertOp::I32TruncSatF32U => 9,
+            MachineConvertOp::I32TruncSatF64S => 10,
+            MachineConvertOp::I32TruncSatF64U => 11,
+            MachineConvertOp::I64TruncSatF32S => 12,
+            MachineConvertOp::I64TruncSatF32U => 13,
+            MachineConvertOp::I64TruncSatF64S => 14,
+            MachineConvertOp::I64TruncSatF64U => 15,
+            _ => u32::MAX,
+        }
+    }
+
+    fn emit_call_target(&mut self, target: usize) {
+        let call_scratch = self.gp_scratch.scoped_alloc().detach();
+        self.materialize_u64(*call_scratch, target as u64);
+        self.core
+            .text
+            .emit_u32(enc::jalr(abi::link_reg(), *call_scratch, 0));
+    }
+
+    fn lower_convert_i64_pair_to_float(
+        &mut self,
+        width: MachineFloatWidth,
+        sign: MachineSign,
+        dst: MachineReg,
+        src_lo: MachineValue,
+        src_hi: MachineValue,
+    ) -> Result<(), WasmError> {
+        use super::{
+            rv32_i64s_to_f32_bits, rv32_i64s_to_f64_bits, rv32_i64u_to_f32_bits,
+            rv32_i64u_to_f64_bits,
+        };
+
+        let target = match (width, sign) {
+            (MachineFloatWidth::F32, MachineSign::Signed) => {
+                rv32_i64s_to_f32_bits as *const () as usize
+            }
+            (MachineFloatWidth::F32, MachineSign::Unsigned) => {
+                rv32_i64u_to_f32_bits as *const () as usize
+            }
+            (MachineFloatWidth::F64, MachineSign::Signed) => {
+                rv32_i64s_to_f64_bits as *const () as usize
+            }
+            (MachineFloatWidth::F64, MachineSign::Unsigned) => {
+                rv32_i64u_to_f64_bits as *const () as usize
+            }
+        };
+        let dst_fp = self.map_fp_reg(dst)?;
+        self.emit_preserved_frame_open_with_prefix(16);
+        self.store_stack_word_value(0, src_lo)?;
+        self.store_stack_word_value(4, src_hi)?;
+        self.emit_lw(abi::C_ARG0, abi::stack_reg(), 0);
+        self.emit_lw(abi::C_ARG1, abi::stack_reg(), 4);
+        self.emit_call_target(target);
+        let result_lo = self.gp_scratch.scoped_alloc().detach();
+        let result_hi = self.gp_scratch.scoped_alloc().detach();
+        self.emit_mv(*result_lo, abi::C_RET0);
+        self.emit_mv(*result_hi, abi::C_RET1);
+        self.emit_restore_preserved_gp(16);
+        self.emit_restore_preserved_fp(16);
+        match width {
+            MachineFloatWidth::F32 => {
+                self.core.text.emit_u32(enc::fmv_w_x(dst_fp, *result_lo));
+            }
+            MachineFloatWidth::F64 => {
+                self.emit_store_raw(0b010, *result_lo, abi::stack_reg(), 0);
+                self.emit_store_raw(0b010, *result_hi, abi::stack_reg(), 4);
+                self.emit_fp_load_raw(0b011, dst_fp, abi::stack_reg(), 0);
+            }
+        }
+        self.core.set_fp_reg_width(dst, width)?;
+        drop(result_lo);
+        drop(result_hi);
+        self.emit_adjust_stack_up(abi::PRESERVED_HELPER_FRAME_SIZE + 16);
+        Ok(())
+    }
+
+    fn store_float_bits_to_stack(
+        &mut self,
+        offset: i32,
+        width: MachineFloatWidth,
+        src: MachineValue,
+    ) -> Result<(), WasmError> {
+        match src {
+            MachineValue::Reg(reg) if self.core.is_fp_reg(reg) => {
+                let src_fp = self.map_fp_reg(reg)?;
+                match width {
+                    MachineFloatWidth::F32 => {
+                        let scratch = self.gp_scratch.scoped_alloc().detach();
+                        self.core.text.emit_u32(enc::fmv_x_w(*scratch, src_fp));
+                        self.emit_store_raw(0b010, *scratch, abi::stack_reg(), offset);
+                        self.emit_addi(*scratch, abi::zero_reg(), 0);
+                        self.emit_store_raw(0b010, *scratch, abi::stack_reg(), offset + 4);
+                    }
+                    MachineFloatWidth::F64 => {
+                        self.emit_fp_store_raw(0b011, src_fp, abi::stack_reg(), offset);
+                    }
+                }
+            }
+            MachineValue::Imm64(bits) => {
+                let scratch = self.gp_scratch.scoped_alloc().detach();
+                self.materialize_u64(*scratch, bits);
+                self.emit_store_raw(0b010, *scratch, abi::stack_reg(), offset);
+                self.materialize_u64(*scratch, bits >> 32);
+                self.emit_store_raw(0b010, *scratch, abi::stack_reg(), offset + 4);
+            }
+            MachineValue::Reg(reg) => {
+                if width != MachineFloatWidth::F32 {
+                    return Err(WasmError::invalid(
+                        "riscv32 cannot read f64 bits from one GP register",
+                    ));
+                }
+                let src = self.map_gp_reg(reg)?;
+                self.emit_store_raw(0b010, src, abi::stack_reg(), offset);
+                let scratch = self.gp_scratch.scoped_alloc().detach();
+                self.emit_addi(*scratch, abi::zero_reg(), 0);
+                self.emit_store_raw(0b010, *scratch, abi::stack_reg(), offset + 4);
+            }
+            MachineValue::ReservedReg(_) => {
+                return Err(WasmError::internal(
+                    "riscv32 cannot consume reserved cache register as float bits",
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_convert_float_to_i64_pair(
+        &mut self,
+        op: MachineConvertOp,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        src: MachineValue,
+    ) -> Result<(), WasmError> {
+        use super::rv32_float_to_i64_pair;
+
+        let width = match op {
+            MachineConvertOp::I64TruncF32S
+            | MachineConvertOp::I64TruncF32U
+            | MachineConvertOp::I64TruncSatF32S
+            | MachineConvertOp::I64TruncSatF32U => MachineFloatWidth::F32,
+            MachineConvertOp::I64TruncF64S
+            | MachineConvertOp::I64TruncF64U
+            | MachineConvertOp::I64TruncSatF64S
+            | MachineConvertOp::I64TruncSatF64U => MachineFloatWidth::F64,
+            _ => return Err(Self::unsupported_error()),
+        };
+        self.emit_preserved_frame_open_with_prefix(16);
+        self.store_float_bits_to_stack(0, width, src)?;
+        self.emit_mv(abi::C_ARG0, abi::map_fixed_reg(MACHINE_CTX_REG));
+        self.emit_lw(abi::C_ARG1, abi::stack_reg(), 0);
+        self.emit_lw(abi::C_ARG2, abi::stack_reg(), 4);
+        self.materialize_u64(abi::C_ARG3, u64::from(Self::convert_op_code(op)));
+        self.emit_addi(abi::C_ARG4, abi::stack_reg(), 8);
+        self.emit_call_target(rv32_float_to_i64_pair as *const () as usize);
+
+        let error_path = self.core.new_label();
+        self.emit_branch_to(enc::Cond::Ne, abi::C_RET0, abi::zero_reg(), error_path);
+
+        self.emit_restore_preserved_gp(16);
+        self.emit_restore_preserved_fp(16);
+        let dst_lo = self.map_gp_reg(dst_lo)?;
+        let dst_hi = self.map_gp_reg(dst_hi)?;
+        self.emit_lw(dst_lo, abi::stack_reg(), 8);
+        self.emit_lw(dst_hi, abi::stack_reg(), 12);
+        self.emit_adjust_stack_up(abi::PRESERVED_HELPER_FRAME_SIZE + 16);
+        let done = self.core.new_label();
+        self.emit_jal(abi::zero_reg(), done);
+
+        self.core.bind_label(error_path);
+        self.emit_adjust_stack_up(abi::PRESERVED_HELPER_FRAME_SIZE + 16);
+        let body_local_error_label = self.core.body_local_error_label;
+        self.emit_jal(abi::zero_reg(), body_local_error_label);
+        self.core.bind_label(done);
+        Ok(())
+    }
+
+    fn lower_reinterpret_f64_to_i64_pair(
+        &mut self,
+        dst_lo: MachineReg,
+        dst_hi: MachineReg,
+        src: MachineValue,
+    ) -> Result<(), WasmError> {
+        let dst_lo = self.map_gp_reg(dst_lo)?;
+        let dst_hi = self.map_gp_reg(dst_hi)?;
+        match src {
+            MachineValue::Imm64(bits) => {
+                self.materialize_u64(dst_lo, bits);
+                self.materialize_u64(dst_hi, bits >> 32);
+            }
+            MachineValue::Reg(reg) if self.core.is_fp_reg(reg) => {
+                let src_fp = self.map_fp_reg(reg)?;
+                self.emit_adjust_stack_down(8);
+                self.emit_fp_store_raw(0b011, src_fp, abi::stack_reg(), 0);
+                self.emit_lw(dst_lo, abi::stack_reg(), 0);
+                self.emit_lw(dst_hi, abi::stack_reg(), 4);
+                self.emit_adjust_stack_up(8);
+            }
+            MachineValue::Reg(_) => {
+                return Err(WasmError::invalid(
+                    "riscv32 cannot reinterpret one GP register as f64 pair",
+                ))
+            }
+            MachineValue::ReservedReg(_) => {
+                return Err(WasmError::internal(
+                    "riscv32 cannot consume reserved cache register as f64 bits",
+                ))
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_reinterpret_i64_pair_to_f64(
+        &mut self,
+        dst: MachineReg,
+        src_lo: MachineValue,
+        src_hi: MachineValue,
+    ) -> Result<(), WasmError> {
+        let dst_fp = self.map_fp_reg(dst)?;
+        self.emit_adjust_stack_down(8);
+        self.store_stack_word_value(0, src_lo)?;
+        self.store_stack_word_value(4, src_hi)?;
+        self.emit_fp_load_raw(0b011, dst_fp, abi::stack_reg(), 0);
+        self.emit_adjust_stack_up(8);
+        self.core.set_fp_reg_width(dst, MachineFloatWidth::F64)?;
         Ok(())
     }
 
@@ -2427,7 +3189,7 @@ impl<'a> Riscv64Backend<'a> {
         }
         if !self.core.is_fp_reg(dst) {
             let dst_gp = self.map_gp_reg(dst)?;
-            self.move_fp_to_gp(dst_gp, result_fp, width);
+            self.move_fp_to_gp(dst_gp, result_fp, width)?;
         }
         Ok(())
     }
@@ -2517,7 +3279,7 @@ impl<'a> Riscv64Backend<'a> {
         }
         if !self.core.is_fp_reg(dst) {
             let dst_gp = self.map_gp_reg(dst)?;
-            self.move_fp_to_gp(dst_gp, result_fp, width);
+            self.move_fp_to_gp(dst_gp, result_fp, width)?;
         }
         Ok(())
     }
@@ -2622,35 +3384,42 @@ impl<'a> Riscv64Backend<'a> {
     ) -> Result<(), WasmError> {
         let dst_float_width = convert_result_float_width(op);
         match op {
-            MachineConvertOp::I32WrapI64 | MachineConvertOp::I64ExtendI32U => {
+            MachineConvertOp::I32WrapI64 => {
                 let dst = self.map_gp_reg(dst)?;
                 let src_s = self.gp_scratch.scoped_alloc().detach();
                 self.load_value_into(*src_s, src)?;
                 self.zext_w(dst, *src_s);
             }
-            MachineConvertOp::I64ExtendI32S => {
-                let dst = self.map_gp_reg(dst)?;
-                let src_s = self.gp_scratch.scoped_alloc().detach();
-                self.load_value_into(*src_s, src)?;
-                self.sext_w(dst, *src_s);
+            MachineConvertOp::I64ExtendI32S | MachineConvertOp::I64ExtendI32U => {
+                return Err(WasmError::invalid(
+                    "riscv32 requires pair lowering for i64.extend_i32",
+                ));
             }
-            MachineConvertOp::I32ReinterpretF32 | MachineConvertOp::I64ReinterpretF64 => {
+            MachineConvertOp::I32ReinterpretF32 => {
                 let dst = self.map_gp_reg(dst)?;
                 self.load_value_into(dst, src)?;
-                if matches!(op, MachineConvertOp::I32ReinterpretF32) {
-                    self.zext_w(dst, dst);
-                }
+                self.zext_w(dst, dst);
             }
-            MachineConvertOp::F32ReinterpretI32 | MachineConvertOp::F64ReinterpretI64 => {
+            MachineConvertOp::I64ReinterpretF64 => {
+                return Err(WasmError::invalid(
+                    "riscv32 requires pair lowering for i64.reinterpret_f64",
+                ));
+            }
+            MachineConvertOp::F32ReinterpretI32 => {
                 let width = dst_float_width.expect("float reinterpret width");
                 self.lower_move(
                     match width {
                         MachineFloatWidth::F32 => MachineStorageType::Fp32,
-                        MachineFloatWidth::F64 => MachineStorageType::Fp64,
+                        MachineFloatWidth::F64 => unreachable!(),
                     },
                     dst,
                     src,
                 )?;
+            }
+            MachineConvertOp::F64ReinterpretI64 => {
+                return Err(WasmError::invalid(
+                    "riscv32 requires pair lowering for f64.reinterpret_i64",
+                ));
             }
             MachineConvertOp::F64PromoteF32 => {
                 let src_fp = self.fp_scratch.scoped_alloc().detach();
@@ -2668,12 +3437,8 @@ impl<'a> Riscv64Backend<'a> {
             }
             MachineConvertOp::F32ConvertI32S
             | MachineConvertOp::F32ConvertI32U
-            | MachineConvertOp::F32ConvertI64S
-            | MachineConvertOp::F32ConvertI64U
             | MachineConvertOp::F64ConvertI32S
-            | MachineConvertOp::F64ConvertI32U
-            | MachineConvertOp::F64ConvertI64S
-            | MachineConvertOp::F64ConvertI64U => {
+            | MachineConvertOp::F64ConvertI32U => {
                 let src_gp = self.gp_scratch.scoped_alloc().detach();
                 self.load_value_into(*src_gp, src)?;
                 let width = dst_float_width.expect("int-to-float result width");
@@ -2681,35 +3446,47 @@ impl<'a> Riscv64Backend<'a> {
                 self.core.text.emit_u32(match op {
                     MachineConvertOp::F32ConvertI32S => enc::fcvt_s_w(dst_fp, *src_gp),
                     MachineConvertOp::F32ConvertI32U => enc::fcvt_s_wu(dst_fp, *src_gp),
-                    MachineConvertOp::F32ConvertI64S => enc::fcvt_s_l(dst_fp, *src_gp),
-                    MachineConvertOp::F32ConvertI64U => enc::fcvt_s_lu(dst_fp, *src_gp),
                     MachineConvertOp::F64ConvertI32S => enc::fcvt_d_w(dst_fp, *src_gp),
                     MachineConvertOp::F64ConvertI32U => enc::fcvt_d_wu(dst_fp, *src_gp),
-                    MachineConvertOp::F64ConvertI64S => enc::fcvt_d_l(dst_fp, *src_gp),
-                    MachineConvertOp::F64ConvertI64U => enc::fcvt_d_lu(dst_fp, *src_gp),
                     _ => unreachable!(),
                 });
                 self.finish_convert_fp_dst(dst, dst_fp, width)?;
             }
+            MachineConvertOp::F32ConvertI64S
+            | MachineConvertOp::F32ConvertI64U
+            | MachineConvertOp::F64ConvertI64S
+            | MachineConvertOp::F64ConvertI64U => {
+                return Err(WasmError::invalid(
+                    "riscv32 requires pair lowering for i64-to-float conversion",
+                ));
+            }
             MachineConvertOp::I32TruncSatF32S
             | MachineConvertOp::I32TruncSatF32U
             | MachineConvertOp::I32TruncSatF64S
-            | MachineConvertOp::I32TruncSatF64U
-            | MachineConvertOp::I64TruncSatF32S
+            | MachineConvertOp::I32TruncSatF64U => {
+                self.lower_saturating_trunc(op, dst, src)?;
+            }
+            MachineConvertOp::I64TruncSatF32S
             | MachineConvertOp::I64TruncSatF32U
             | MachineConvertOp::I64TruncSatF64S
             | MachineConvertOp::I64TruncSatF64U => {
-                self.lower_saturating_trunc(op, dst, src)?;
+                return Err(WasmError::invalid(
+                    "riscv32 requires pair lowering for i64 trunc_sat",
+                ));
             }
             MachineConvertOp::I32TruncF32S
             | MachineConvertOp::I32TruncF32U
             | MachineConvertOp::I32TruncF64S
-            | MachineConvertOp::I32TruncF64U
-            | MachineConvertOp::I64TruncF32S
+            | MachineConvertOp::I32TruncF64U => {
+                self.lower_trapping_trunc(op, dst, src)?;
+            }
+            MachineConvertOp::I64TruncF32S
             | MachineConvertOp::I64TruncF32U
             | MachineConvertOp::I64TruncF64S
             | MachineConvertOp::I64TruncF64U => {
-                self.lower_trapping_trunc(op, dst, src)?;
+                return Err(WasmError::invalid(
+                    "riscv32 requires pair lowering for i64 trunc",
+                ));
             }
         }
         Ok(())
@@ -2737,7 +3514,7 @@ impl<'a> Riscv64Backend<'a> {
     ) -> Result<(), WasmError> {
         if !self.core.is_fp_reg(dst) {
             let dst_gp = self.map_gp_reg(dst)?;
-            self.move_fp_to_gp(dst_gp, dst_fp, width);
+            self.move_fp_to_gp(dst_gp, dst_fp, width)?;
         }
         Ok(())
     }
@@ -2750,14 +3527,12 @@ impl<'a> Riscv64Backend<'a> {
     ) -> Result<(), WasmError> {
         let dst = self.map_gp_reg(dst)?;
         let width = match op {
-            MachineConvertOp::I32TruncSatF32S
-            | MachineConvertOp::I32TruncSatF32U
-            | MachineConvertOp::I64TruncSatF32S
-            | MachineConvertOp::I64TruncSatF32U => MachineFloatWidth::F32,
-            MachineConvertOp::I32TruncSatF64S
-            | MachineConvertOp::I32TruncSatF64U
-            | MachineConvertOp::I64TruncSatF64S
-            | MachineConvertOp::I64TruncSatF64U => MachineFloatWidth::F64,
+            MachineConvertOp::I32TruncSatF32S | MachineConvertOp::I32TruncSatF32U => {
+                MachineFloatWidth::F32
+            }
+            MachineConvertOp::I32TruncSatF64S | MachineConvertOp::I32TruncSatF64U => {
+                MachineFloatWidth::F64
+            }
             _ => unreachable!(),
         };
         let src_fp = self.fp_scratch.scoped_alloc().detach();
@@ -2778,10 +3553,6 @@ impl<'a> Riscv64Backend<'a> {
             MachineConvertOp::I32TruncSatF32U => enc::fcvt_wu_s_rtz(dst, *src_fp),
             MachineConvertOp::I32TruncSatF64S => enc::fcvt_w_d_rtz(dst, *src_fp),
             MachineConvertOp::I32TruncSatF64U => enc::fcvt_wu_d_rtz(dst, *src_fp),
-            MachineConvertOp::I64TruncSatF32S => enc::fcvt_l_s_rtz(dst, *src_fp),
-            MachineConvertOp::I64TruncSatF32U => enc::fcvt_lu_s_rtz(dst, *src_fp),
-            MachineConvertOp::I64TruncSatF64S => enc::fcvt_l_d_rtz(dst, *src_fp),
-            MachineConvertOp::I64TruncSatF64U => enc::fcvt_lu_d_rtz(dst, *src_fp),
             _ => unreachable!(),
         });
         if matches!(
@@ -2804,53 +3575,68 @@ impl<'a> Riscv64Backend<'a> {
         result_fp: RiscvFpReg,
         src_fp: RiscvFpReg,
     ) -> Result<(), WasmError> {
-        let bits = self.gp_scratch.scoped_alloc().detach();
-        self.move_fp_to_gp(*bits, src_fp, width);
-        let tmp = self.gp_scratch.scoped_alloc().detach();
-        let threshold = match width {
-            MachineFloatWidth::F32 => 0x4b00_0000_u64, // 2^23
-            MachineFloatWidth::F64 => 0x4330_0000_0000_0000_u64, // 2^52
+        use super::{
+            rv32_f32_ceil_bits, rv32_f32_floor_bits, rv32_f32_nearest_bits, rv32_f32_trunc_bits,
+            rv32_f64_ceil_bits, rv32_f64_floor_bits, rv32_f64_nearest_bits, rv32_f64_trunc_bits,
         };
-        let abs_mask = match width {
-            MachineFloatWidth::F32 => 0x7fff_ffff_u64,
-            MachineFloatWidth::F64 => 0x7fff_ffff_ffff_ffff_u64,
-        };
-        self.materialize_u64(*tmp, abs_mask);
-        self.core.text.emit_u32(enc::and(*bits, *bits, *tmp));
 
-        let return_src = self.core.new_label();
-        let done = self.core.new_label();
-        self.emit_branch_to(enc::Cond::Eq, *bits, abi::zero_reg(), return_src);
-        self.materialize_u64(*tmp, threshold);
-        self.emit_branch_to(enc::Cond::Geu, *bits, *tmp, return_src);
-
-        let rm = match op {
-            MachineFloatUnaryOp::Ceil => enc::ROUND_RUP,
-            MachineFloatUnaryOp::Floor => enc::ROUND_RDN,
-            MachineFloatUnaryOp::Trunc => enc::ROUND_RTZ,
-            MachineFloatUnaryOp::Nearest => enc::ROUND_RNE,
+        let target = match (width, op) {
+            (MachineFloatWidth::F32, MachineFloatUnaryOp::Ceil) => {
+                rv32_f32_ceil_bits as *const () as usize
+            }
+            (MachineFloatWidth::F32, MachineFloatUnaryOp::Floor) => {
+                rv32_f32_floor_bits as *const () as usize
+            }
+            (MachineFloatWidth::F32, MachineFloatUnaryOp::Trunc) => {
+                rv32_f32_trunc_bits as *const () as usize
+            }
+            (MachineFloatWidth::F32, MachineFloatUnaryOp::Nearest) => {
+                rv32_f32_nearest_bits as *const () as usize
+            }
+            (MachineFloatWidth::F64, MachineFloatUnaryOp::Ceil) => {
+                rv32_f64_ceil_bits as *const () as usize
+            }
+            (MachineFloatWidth::F64, MachineFloatUnaryOp::Floor) => {
+                rv32_f64_floor_bits as *const () as usize
+            }
+            (MachineFloatWidth::F64, MachineFloatUnaryOp::Trunc) => {
+                rv32_f64_trunc_bits as *const () as usize
+            }
+            (MachineFloatWidth::F64, MachineFloatUnaryOp::Nearest) => {
+                rv32_f64_nearest_bits as *const () as usize
+            }
             _ => unreachable!(),
         };
-        self.core.text.emit_u32(match width {
-            MachineFloatWidth::F32 => enc::fcvt_l_s_round(*tmp, src_fp, rm),
-            MachineFloatWidth::F64 => enc::fcvt_l_d_round(*tmp, src_fp, rm),
-        });
-        self.core.text.emit_u32(match width {
-            MachineFloatWidth::F32 => enc::fcvt_s_l(result_fp, *tmp),
-            MachineFloatWidth::F64 => enc::fcvt_d_l(result_fp, *tmp),
-        });
-        self.core.text.emit_u32(match width {
-            MachineFloatWidth::F32 => enc::fsgnj_s(result_fp, result_fp, src_fp),
-            MachineFloatWidth::F64 => enc::fsgnj_d(result_fp, result_fp, src_fp),
-        });
-        self.emit_jal(abi::zero_reg(), done);
 
-        self.core.bind_label(return_src);
-        self.core.text.emit_u32(match width {
-            MachineFloatWidth::F32 => enc::fmv_s(result_fp, src_fp),
-            MachineFloatWidth::F64 => enc::fmv_d(result_fp, src_fp),
-        });
-        self.core.bind_label(done);
+        self.emit_preserved_frame_open_with_prefix(16);
+        match width {
+            MachineFloatWidth::F32 => {
+                self.core.text.emit_u32(enc::fmv_x_w(abi::C_ARG0, src_fp));
+            }
+            MachineFloatWidth::F64 => {
+                self.emit_fp_store_raw(0b011, src_fp, abi::stack_reg(), 0);
+                self.emit_lw(abi::C_ARG0, abi::stack_reg(), 0);
+                self.emit_lw(abi::C_ARG1, abi::stack_reg(), 4);
+            }
+        }
+        self.emit_call_target(target);
+        let result_lo = self.gp_scratch.scoped_alloc().detach();
+        let result_hi = self.gp_scratch.scoped_alloc().detach();
+        self.emit_mv(*result_lo, abi::C_RET0);
+        self.emit_mv(*result_hi, abi::C_RET1);
+        self.emit_restore_preserved_gp(16);
+        self.emit_restore_preserved_fp(16);
+        match width {
+            MachineFloatWidth::F32 => {
+                self.core.text.emit_u32(enc::fmv_w_x(result_fp, *result_lo));
+            }
+            MachineFloatWidth::F64 => {
+                self.emit_store_raw(0b010, *result_lo, abi::stack_reg(), 0);
+                self.emit_store_raw(0b010, *result_hi, abi::stack_reg(), 4);
+                self.emit_fp_load_raw(0b011, result_fp, abi::stack_reg(), 0);
+            }
+        }
+        self.emit_adjust_stack_up(abi::PRESERVED_HELPER_FRAME_SIZE + 16);
         Ok(())
     }
 
@@ -2902,10 +3688,6 @@ impl<'a> Riscv64Backend<'a> {
             MachineConvertOp::I32TruncF32U => enc::fcvt_wu_s_rtz(dst, *src_fp),
             MachineConvertOp::I32TruncF64S => enc::fcvt_w_d_rtz(dst, *src_fp),
             MachineConvertOp::I32TruncF64U => enc::fcvt_wu_d_rtz(dst, *src_fp),
-            MachineConvertOp::I64TruncF32S => enc::fcvt_l_s_rtz(dst, *src_fp),
-            MachineConvertOp::I64TruncF32U => enc::fcvt_lu_s_rtz(dst, *src_fp),
-            MachineConvertOp::I64TruncF64S => enc::fcvt_l_d_rtz(dst, *src_fp),
-            MachineConvertOp::I64TruncF64U => enc::fcvt_lu_d_rtz(dst, *src_fp),
             _ => unreachable!(),
         });
         if matches!(
@@ -2935,15 +3717,14 @@ impl<'a> Riscv64Backend<'a> {
         dst: MachineReg,
         delta: MachineValue,
     ) -> Result<(), WasmError> {
-        let dst = self.map_gp_reg(dst)?;
         self.emit_preserved_frame_open();
         self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
         self.emit_io_store_value(preserved_io::ARG0, delta)?;
-        let result_scratch_idx = self.gp_scratch.alloc();
-        let result_scratch = self.gp_scratch.reg(result_scratch_idx);
-        self.emit_preserved_call_and_close(preserved_op::MEMORY_GROW, Some(result_scratch_idx));
-        self.emit_mv(dst, result_scratch);
-        self.gp_scratch.free_index(result_scratch_idx);
+        self.emit_preserved_call_and_close_with_result(
+            preserved_op::MEMORY_GROW,
+            PreservedResultTarget::GpWord(dst),
+            0,
+        )?;
         Ok(())
     }
 
@@ -2972,12 +3753,25 @@ impl<'a> Riscv64Backend<'a> {
         imms: &[(usize, u32)],
         args: &[(usize, MachineValue)],
     ) -> Result<(), WasmError> {
+        self.lower_preserved_no_result_with_pairs(op_code, imms, args, &[])
+    }
+
+    fn lower_preserved_no_result_with_pairs(
+        &mut self,
+        op_code: u32,
+        imms: &[(usize, u32)],
+        args: &[(usize, MachineValue)],
+        pair_args: &[(usize, MachineValue, MachineValue)],
+    ) -> Result<(), WasmError> {
         self.emit_preserved_frame_open();
         for &(slot, imm) in imms {
             self.emit_io_store_imm(slot, imm);
         }
         for &(slot, value) in args {
             self.emit_io_store_value(slot, value)?;
+        }
+        for &(slot, lo, hi) in pair_args {
+            self.emit_io_store_pair(slot, lo, hi)?;
         }
         self.emit_preserved_call_and_close(op_code, None);
         Ok(())
@@ -3001,21 +3795,11 @@ impl<'a> Riscv64Backend<'a> {
         self.emit_io_store_value(preserved_io::ARG1, arg1)?;
         self.emit_io_store_value(preserved_io::ARG2, arg2)?;
 
-        let result_scratch_idx = self.gp_scratch.alloc();
-        let result_scratch = self.gp_scratch.reg(result_scratch_idx);
-        self.emit_preserved_call_and_close(op_code, Some(result_scratch_idx));
-        if let Some(width) = ty.float_width() {
-            let dst_fp = self.map_fp_reg(dst)?;
-            self.core.text.emit_u32(match width {
-                MachineFloatWidth::F32 => enc::fmv_w_x(dst_fp, result_scratch),
-                MachineFloatWidth::F64 => enc::fmv_d_x(dst_fp, result_scratch),
-            });
-            self.core.set_fp_reg_width(dst, width)?;
-        } else {
-            let dst = self.map_gp_reg(dst)?;
-            self.emit_mv(dst, result_scratch);
-        }
-        self.gp_scratch.free_index(result_scratch_idx);
+        let result = match ty.float_width() {
+            Some(width) => PreservedResultTarget::Float { dst, width },
+            None => PreservedResultTarget::GpWord(dst),
+        };
+        self.emit_preserved_call_and_close_with_result(op_code, result, 0)?;
         Ok(())
     }
 
@@ -3027,6 +3811,18 @@ impl<'a> Riscv64Backend<'a> {
         ty: MachineStorageType,
         dst: MachineReg,
     ) -> Result<(), WasmError> {
+        let result = Self::preserved_result_target(ty, dst, None);
+        self.lower_preserved_result_with_target(op_code, imms, args, &[], result)
+    }
+
+    fn lower_preserved_result_with_target(
+        &mut self,
+        op_code: u32,
+        imms: &[(usize, u32)],
+        args: &[(usize, MachineValue)],
+        pair_args: &[(usize, MachineValue, MachineValue)],
+        result: PreservedResultTarget,
+    ) -> Result<(), WasmError> {
         self.emit_preserved_frame_open();
         for &(slot, imm) in imms {
             self.emit_io_store_imm(slot, imm);
@@ -3034,23 +3830,28 @@ impl<'a> Riscv64Backend<'a> {
         for &(slot, value) in args {
             self.emit_io_store_value(slot, value)?;
         }
-
-        let result_scratch_idx = self.gp_scratch.alloc();
-        let result_scratch = self.gp_scratch.reg(result_scratch_idx);
-        self.emit_preserved_call_and_close(op_code, Some(result_scratch_idx));
-        if let Some(width) = ty.float_width() {
-            let dst_fp = self.map_fp_reg(dst)?;
-            self.core.text.emit_u32(match width {
-                MachineFloatWidth::F32 => enc::fmv_w_x(dst_fp, result_scratch),
-                MachineFloatWidth::F64 => enc::fmv_d_x(dst_fp, result_scratch),
-            });
-            self.core.set_fp_reg_width(dst, width)?;
-        } else {
-            let dst = self.map_gp_reg(dst)?;
-            self.emit_mv(dst, result_scratch);
+        for &(slot, lo, hi) in pair_args {
+            self.emit_io_store_pair(slot, lo, hi)?;
         }
-        self.gp_scratch.free_index(result_scratch_idx);
+        self.emit_preserved_call_and_close_with_result(op_code, result, 0)?;
         Ok(())
+    }
+
+    fn preserved_result_target(
+        ty: MachineStorageType,
+        dst: MachineReg,
+        dst_hi: Option<MachineReg>,
+    ) -> PreservedResultTarget {
+        if let Some(dst_hi) = dst_hi {
+            PreservedResultTarget::GpPair {
+                dst_lo: dst,
+                dst_hi,
+            }
+        } else if let Some(width) = ty.float_width() {
+            PreservedResultTarget::Float { dst, width }
+        } else {
+            PreservedResultTarget::GpWord(dst)
+        }
     }
 
     fn lower_struct_new(
@@ -3059,13 +3860,93 @@ impl<'a> Riscv64Backend<'a> {
         fields: &[(MachineValue, Option<MachineValue>)],
         dst: MachineReg,
     ) -> Result<(), WasmError> {
-        self.lower_payload_preserved_op(
-            preserved_op::STRUCT_NEW,
-            type_idx,
-            fields,
-            dst,
-            "riscv64 backend received pair-valued struct.new",
+        self.lower_payload_preserved_op(preserved_op::STRUCT_NEW, type_idx, fields, dst)
+    }
+
+    fn lower_struct_get(
+        &mut self,
+        type_idx: u32,
+        field_idx: u32,
+        signed: Option<bool>,
+        ty: MachineStorageType,
+        src: MachineValue,
+        dst: MachineReg,
+        dst_hi: Option<MachineReg>,
+    ) -> Result<(), WasmError> {
+        let op_code = match signed {
+            None => preserved_op::STRUCT_GET,
+            Some(true) => preserved_op::STRUCT_GET_S,
+            Some(false) => preserved_op::STRUCT_GET_U,
+        };
+        let result = Self::preserved_result_target(ty, dst, dst_hi);
+        self.lower_preserved_result_with_target(
+            op_code,
+            &[
+                (preserved_io::IMM0, type_idx),
+                (preserved_io::IMM1, field_idx),
+            ],
+            &[(preserved_io::ARG0, src)],
+            &[],
+            result,
         )
+    }
+
+    fn lower_struct_set(
+        &mut self,
+        type_idx: u32,
+        field_idx: u32,
+        ref_src: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+    ) -> Result<(), WasmError> {
+        let imms = [
+            (preserved_io::IMM0, type_idx),
+            (preserved_io::IMM1, field_idx),
+        ];
+        match value_hi {
+            Some(value_hi) => self.lower_preserved_no_result_with_pairs(
+                preserved_op::STRUCT_SET,
+                &imms,
+                &[(preserved_io::ARG0, ref_src)],
+                &[(preserved_io::ARG1, value_lo, value_hi)],
+            ),
+            None => self.lower_preserved_no_result_with_pairs(
+                preserved_op::STRUCT_SET,
+                &imms,
+                &[
+                    (preserved_io::ARG0, ref_src),
+                    (preserved_io::ARG1, value_lo),
+                ],
+                &[],
+            ),
+        }
+    }
+
+    fn lower_array_new(
+        &mut self,
+        type_idx: u32,
+        init_lo: MachineValue,
+        init_hi: Option<MachineValue>,
+        length: MachineValue,
+        dst: MachineReg,
+    ) -> Result<(), WasmError> {
+        let result = PreservedResultTarget::GpWord(dst);
+        match init_hi {
+            Some(init_hi) => self.lower_preserved_result_with_target(
+                preserved_op::ARRAY_NEW,
+                &[(preserved_io::IMM0, type_idx), (preserved_io::IMM1, 0)],
+                &[(preserved_io::ARG1, length)],
+                &[(preserved_io::ARG0, init_lo, init_hi)],
+                result,
+            ),
+            None => self.lower_preserved_result_with_target(
+                preserved_op::ARRAY_NEW,
+                &[(preserved_io::IMM0, type_idx), (preserved_io::IMM1, 0)],
+                &[(preserved_io::ARG0, init_lo), (preserved_io::ARG1, length)],
+                &[],
+                result,
+            ),
+        }
     }
 
     fn lower_array_new_fixed(
@@ -3074,13 +3955,95 @@ impl<'a> Riscv64Backend<'a> {
         elements: &[(MachineValue, Option<MachineValue>)],
         dst: MachineReg,
     ) -> Result<(), WasmError> {
-        self.lower_payload_preserved_op(
-            preserved_op::ARRAY_NEW_FIXED,
-            type_idx,
-            elements,
-            dst,
-            "riscv64 backend received pair-valued array.new_fixed",
+        self.lower_payload_preserved_op(preserved_op::ARRAY_NEW_FIXED, type_idx, elements, dst)
+    }
+
+    fn lower_array_get(
+        &mut self,
+        type_idx: u32,
+        signed: Option<bool>,
+        ty: MachineStorageType,
+        ref_src: MachineValue,
+        index: MachineValue,
+        dst: MachineReg,
+        dst_hi: Option<MachineReg>,
+    ) -> Result<(), WasmError> {
+        let op_code = match signed {
+            None => preserved_op::ARRAY_GET,
+            Some(true) => preserved_op::ARRAY_GET_S,
+            Some(false) => preserved_op::ARRAY_GET_U,
+        };
+        let result = Self::preserved_result_target(ty, dst, dst_hi);
+        self.lower_preserved_result_with_target(
+            op_code,
+            &[(preserved_io::IMM0, type_idx), (preserved_io::IMM1, 0)],
+            &[(preserved_io::ARG0, ref_src), (preserved_io::ARG1, index)],
+            &[],
+            result,
         )
+    }
+
+    fn lower_array_set(
+        &mut self,
+        type_idx: u32,
+        ref_src: MachineValue,
+        index: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+    ) -> Result<(), WasmError> {
+        let imms = [(preserved_io::IMM0, type_idx), (preserved_io::IMM1, 0)];
+        match value_hi {
+            Some(value_hi) => self.lower_preserved_no_result_with_pairs(
+                preserved_op::ARRAY_SET,
+                &imms,
+                &[(preserved_io::ARG0, ref_src), (preserved_io::ARG1, index)],
+                &[(preserved_io::ARG2, value_lo, value_hi)],
+            ),
+            None => self.lower_preserved_no_result_with_pairs(
+                preserved_op::ARRAY_SET,
+                &imms,
+                &[
+                    (preserved_io::ARG0, ref_src),
+                    (preserved_io::ARG1, index),
+                    (preserved_io::ARG2, value_lo),
+                ],
+                &[],
+            ),
+        }
+    }
+
+    fn lower_array_fill(
+        &mut self,
+        type_idx: u32,
+        ref_src: MachineValue,
+        index: MachineValue,
+        value_lo: MachineValue,
+        value_hi: Option<MachineValue>,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        match value_hi {
+            Some(value_hi) => self.lower_preserved_no_result_with_pairs(
+                preserved_op::ARRAY_FILL,
+                &[(preserved_io::IMM0, type_idx)],
+                &[
+                    (preserved_io::ARG0, ref_src),
+                    (preserved_io::ARG1, index),
+                    (preserved_io::ARG3, len),
+                ],
+                &[(preserved_io::ARG2, value_lo, value_hi)],
+            ),
+            None => self.lower_preserved_no_result_with_pairs(
+                preserved_op::ARRAY_FILL,
+                &[(preserved_io::IMM0, type_idx)],
+                &[
+                    (preserved_io::ARG0, ref_src),
+                    (preserved_io::ARG1, index),
+                    (preserved_io::ARG2, value_lo),
+                    (preserved_io::ARG3, len),
+                ],
+                &[],
+            ),
+        }
     }
 
     fn lower_payload_preserved_op(
@@ -3089,16 +4052,16 @@ impl<'a> Riscv64Backend<'a> {
         type_idx: u32,
         items: &[(MachineValue, Option<MachineValue>)],
         dst: MachineReg,
-        pair_error: &'static str,
     ) -> Result<(), WasmError> {
         let payload_bytes = ((items.len() as u32 * 8) + 15) & !15;
         let payload_slots = (payload_bytes / 8) as usize;
         self.emit_preserved_frame_open_with_prefix(payload_bytes);
         for (index, (value_lo, value_hi)) in items.iter().enumerate() {
-            if value_hi.is_some() {
-                return Err(WasmError::internal(pair_error));
+            if let Some(value_hi) = value_hi {
+                self.emit_io_store_pair_at(0, index, *value_lo, *value_hi)?;
+            } else {
+                self.emit_io_store_value_at(0, index, *value_lo)?;
             }
-            self.emit_io_store_value_at(0, index, *value_lo)?;
         }
         self.emit_io_store_imm_at(payload_slots, preserved_io::IMM0, type_idx);
         self.emit_io_store_imm_at(payload_slots, preserved_io::IMM1, items.len() as u32);
@@ -3108,22 +4071,24 @@ impl<'a> Riscv64Backend<'a> {
             let scratch = self.gp_scratch.scoped_alloc().detach();
             self.emit_mv(*scratch, abi::stack_reg());
             self.emit_store_raw(
-                0b011,
+                0b010,
                 *scratch,
                 abi::stack_reg(),
                 ((payload_slots + preserved_io::ARG0) * 8) as i32,
             );
+            self.emit_addi(*scratch, abi::zero_reg(), 0);
+            self.emit_store_raw(
+                0b010,
+                *scratch,
+                abi::stack_reg(),
+                ((payload_slots + preserved_io::ARG0) * 8 + 4) as i32,
+            );
         }
-        let result_scratch_idx = self.gp_scratch.alloc();
-        let result_scratch = self.gp_scratch.reg(result_scratch_idx);
-        self.emit_preserved_call_and_close_with_prefix(
+        self.emit_preserved_call_and_close_with_result(
             op_code,
-            Some(result_scratch_idx),
+            PreservedResultTarget::GpWord(dst),
             payload_bytes,
-        );
-        let dst = self.map_gp_reg(dst)?;
-        self.emit_mv(dst, result_scratch);
-        self.gp_scratch.free_index(result_scratch_idx);
+        )?;
         Ok(())
     }
 
@@ -3193,16 +4158,15 @@ impl<'a> Riscv64Backend<'a> {
         init_val: MachineValue,
         delta: MachineValue,
     ) -> Result<(), WasmError> {
-        let dst = self.map_gp_reg(dst)?;
         self.emit_preserved_frame_open();
         self.emit_io_store_imm(preserved_io::IMM0, table_idx);
         self.emit_io_store_value(preserved_io::ARG0, init_val)?;
         self.emit_io_store_value(preserved_io::ARG1, delta)?;
-        let result_scratch_idx = self.gp_scratch.alloc();
-        let result_scratch = self.gp_scratch.reg(result_scratch_idx);
-        self.emit_preserved_call_and_close(preserved_op::TABLE_GROW, Some(result_scratch_idx));
-        self.emit_mv(dst, result_scratch);
-        self.gp_scratch.free_index(result_scratch_idx);
+        self.emit_preserved_call_and_close_with_result(
+            preserved_op::TABLE_GROW,
+            PreservedResultTarget::GpWord(dst),
+            0,
+        )?;
         Ok(())
     }
 
@@ -3355,22 +4319,21 @@ impl<'a> Riscv64Backend<'a> {
         let fp = abi::map_fixed_reg(MACHINE_FP_REG);
         let result_base = self.gp_scratch.scoped_alloc().detach();
         let temp = self.gp_scratch.scoped_alloc().detach();
-        self.emit_ld(*result_base, abi::stack_reg(), BODY_LINK_FRAME_SIZE);
+        self.emit_lw(*result_base, abi::stack_reg(), BODY_LINK_FRAME_SIZE);
 
         if let Some(results) = runtime.return_results {
             for index in 0..results.slots as i32 {
                 let frame_offset = (results.base_slot as i32 + index) * STACK_SLOT_BYTES;
-                self.emit_load_raw(0b011, *temp, fp, frame_offset);
-                self.emit_store_raw(0b011, *temp, *result_base, index * STACK_SLOT_BYTES);
+                let result_offset = index * STACK_SLOT_BYTES;
+                self.emit_load_raw(0b010, *temp, fp, frame_offset);
+                self.emit_store_raw(0b010, *temp, *result_base, result_offset);
+                self.emit_load_raw(0b010, *temp, fp, frame_offset + 4);
+                self.emit_store_raw(0b010, *temp, *result_base, result_offset + 4);
             }
         }
 
-        self.emit_ld(abi::link_reg(), abi::stack_reg(), 0);
-        self.emit_ld(
-            fp,
-            abi::stack_reg(),
-            BODY_LINK_FRAME_SIZE + STACK_SLOT_BYTES,
-        );
+        self.emit_lw(abi::link_reg(), abi::stack_reg(), 0);
+        self.emit_lw(fp, abi::stack_reg(), BODY_LINK_FRAME_SIZE + 4);
         self.emit_addi(
             abi::stack_reg(),
             abi::stack_reg(),
@@ -3397,8 +4360,8 @@ impl<'a> Riscv64Backend<'a> {
         let continuation_is_fallthrough = fallthrough == Some(continuation);
 
         self.emit_addi(abi::stack_reg(), abi::stack_reg(), -CALL_RECORD_SIZE);
-        self.emit_sd(caller_result_base, abi::stack_reg(), 0);
-        self.emit_sd(fp, abi::stack_reg(), 8);
+        self.emit_sw(caller_result_base, abi::stack_reg(), 0);
+        self.emit_sw(fp, abi::stack_reg(), 4);
         self.emit_mv(fp, callee_fp);
 
         match target {
@@ -3437,14 +4400,14 @@ impl<'a> Riscv64Backend<'a> {
         match target {
             MachineCallTarget::Direct(callee) => {
                 let scratch = self.gp_scratch.scoped_alloc().detach();
-                self.emit_ld(abi::link_reg(), abi::stack_reg(), 0);
+                self.emit_lw(abi::link_reg(), abi::stack_reg(), 0);
                 self.emit_addi(abi::stack_reg(), abi::stack_reg(), BODY_LINK_FRAME_SIZE);
                 self.emit_mv(fp, callee_fp);
                 self.emit_direct_call_target_literal(*scratch, *callee, false)?;
             }
             MachineCallTarget::Indirect { callee_entry, .. } => {
                 let callee_entry = self.map_gp_reg(*callee_entry)?;
-                self.emit_ld(abi::link_reg(), abi::stack_reg(), 0);
+                self.emit_lw(abi::link_reg(), abi::stack_reg(), 0);
                 self.emit_addi(abi::stack_reg(), abi::stack_reg(), BODY_LINK_FRAME_SIZE);
                 self.emit_mv(fp, callee_fp);
                 self.core
@@ -3460,7 +4423,7 @@ impl<'a> Riscv64Backend<'a> {
             .core
             .compiled
             .const_ptr(MachineConstId(const_idx as u32))
-            .ok_or_else(|| WasmError::internal("riscv64 runtime-call metadata is out of range"))?;
+            .ok_or_else(|| WasmError::internal("riscv32 runtime-call metadata is out of range"))?;
 
         self.emit_preserved_frame_open();
         self.emit_mv(abi::C_ARG0, abi::map_fixed_reg(MACHINE_CTX_REG));
@@ -3498,7 +4461,7 @@ impl<'a> Riscv64Backend<'a> {
     ) -> Result<(), WasmError> {
         if entries.is_empty() {
             return Err(WasmError::internal(
-                "riscv64 MachineIR jump table requires at least one entry",
+                "riscv32 MachineIR jump table requires at least one entry",
             ));
         }
         if entries.len() == 1 {

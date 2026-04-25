@@ -11,7 +11,8 @@ use std::hash::{Hash, Hasher};
 use std::io::{IsTerminal, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
 use std::string::{String, ToString};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Instant, SystemTime, UNIX_EPOCH};
 use std::vec::Vec;
 
 use crate::error::WasmError;
@@ -291,6 +292,30 @@ fn ns_to_filetime(ns: u64) -> FileTime {
     FileTime::from_unix_time(secs, nsec)
 }
 
+fn realtime_ns() -> u64 {
+    match SystemTime::now().duration_since(UNIX_EPOCH) {
+        Ok(d) => d.as_secs() * 1_000_000_000 + d.subsec_nanos() as u64,
+        Err(_) => 0,
+    }
+}
+
+fn monotonic_ns() -> u64 {
+    static START: OnceLock<Instant> = OnceLock::new();
+    static LAST: OnceLock<Mutex<u64>> = OnceLock::new();
+
+    let start = START.get_or_init(Instant::now);
+    let elapsed = start.elapsed().as_nanos() as u64;
+    let mut last = LAST.get_or_init(|| Mutex::new(0)).lock().unwrap();
+    let next = if elapsed > *last {
+        elapsed
+    } else {
+        (*last).saturating_add(1)
+    };
+    *last = next;
+    next
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "riscv32")))]
 fn timestamp_ns(time: std::io::Result<SystemTime>) -> u64 {
     time.ok()
         .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
@@ -351,6 +376,289 @@ fn dir_fd_state(fd: i32) -> Result<(PathBuf, u64, u64), i32> {
     })
 }
 
+#[derive(Clone, Copy)]
+struct HostPathKind {
+    is_file: bool,
+    is_dir: bool,
+    is_symlink: bool,
+}
+
+impl HostPathKind {
+    fn filetype(self) -> u8 {
+        if self.is_symlink {
+            FILETYPE_SYMBOLIC_LINK
+        } else if self.is_dir {
+            FILETYPE_DIRECTORY
+        } else if self.is_file {
+            FILETYPE_REGULAR_FILE
+        } else {
+            FILETYPE_UNKNOWN
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+struct HostStat {
+    kind: HostPathKind,
+    ino: u64,
+    size: u64,
+    atim: u64,
+    mtim: u64,
+    ctim: u64,
+}
+
+fn write_host_filestat(mem: &mut [u8], buf_ptr: u32, stat: HostStat) -> Result<(), WasmError> {
+    write_filestat(
+        mem,
+        buf_ptr,
+        1,
+        stat.ino,
+        stat.kind.filetype(),
+        1,
+        stat.size,
+        stat.atim,
+        stat.mtim,
+        stat.ctim,
+    )
+}
+
+#[cfg(all(target_os = "linux", target_arch = "riscv32"))]
+mod rv32_linux_stat {
+    // RV32 Linux/musl under qemu-riscv32-static has a narrow host-side
+    // incompatibility in Rust's std metadata path. The real trace showed the
+    // guest process issuing `statx(...) = 0` and then faulting or corrupting
+    // runtime-call state while `std::fs::{metadata, symlink_metadata}` /
+    // `File::metadata` decoded the result. WASI needs exactly this information
+    // for path classification and filestat, so RV32/Linux uses the kernel
+    // `statx` ABI directly here. Keep this target-specific; all other targets
+    // stay on `std::fs`, and any removal must be revalidated with
+    // `sf-nano-wasitest` under qemu-riscv32-static.
+    use std::ffi::CString;
+    use std::mem::MaybeUninit;
+    use std::os::fd::AsRawFd;
+    use std::os::raw::{c_char, c_long};
+    use std::os::unix::ffi::OsStrExt;
+
+    #[repr(C)]
+    pub(super) struct StatxTimestamp {
+        tv_sec: i64,
+        tv_nsec: u32,
+        __pad: i32,
+    }
+
+    #[repr(C)]
+    pub(super) struct Statx {
+        stx_mask: u32,
+        stx_blksize: u32,
+        stx_attributes: u64,
+        stx_nlink: u32,
+        stx_uid: u32,
+        stx_gid: u32,
+        stx_mode: u16,
+        __pad1: [u16; 1],
+        stx_ino: u64,
+        stx_size: u64,
+        stx_blocks: u64,
+        stx_attributes_mask: u64,
+        stx_atime: StatxTimestamp,
+        stx_btime: StatxTimestamp,
+        stx_ctime: StatxTimestamp,
+        stx_mtime: StatxTimestamp,
+        stx_rdev_major: u32,
+        stx_rdev_minor: u32,
+        stx_dev_major: u32,
+        stx_dev_minor: u32,
+        stx_mnt_id: u64,
+        stx_dio_mem_align: u32,
+        stx_dio_offset_align: u32,
+        __pad3: [u64; 12],
+    }
+
+    unsafe extern "C" {
+        fn syscall(number: c_long, ...) -> c_long;
+    }
+
+    const SYS_STATX: c_long = 291;
+    const AT_FDCWD: c_long = -100;
+    const AT_EMPTY_PATH: c_long = 0x1000;
+    const AT_SYMLINK_NOFOLLOW: c_long = 0x100;
+    const AT_NO_AUTOMOUNT: c_long = 0x800;
+    const STATX_BASIC_STATS: c_long = 0x07ff;
+    const S_IFMT: u16 = 0o170000;
+    const S_IFDIR: u16 = 0o040000;
+    const S_IFREG: u16 = 0o100000;
+    const S_IFLNK: u16 = 0o120000;
+
+    fn timestamp_ns(ts: &StatxTimestamp) -> u64 {
+        if ts.tv_sec < 0 {
+            0
+        } else {
+            (ts.tv_sec as u64)
+                .saturating_mul(1_000_000_000)
+                .saturating_add(u64::from(ts.tv_nsec))
+        }
+    }
+
+    fn stat_from_statx(statx: Statx) -> super::HostStat {
+        let mode = statx.stx_mode & S_IFMT;
+        let kind = super::HostPathKind {
+            is_file: mode == S_IFREG,
+            is_dir: mode == S_IFDIR,
+            is_symlink: mode == S_IFLNK,
+        };
+        super::HostStat {
+            kind,
+            ino: statx.stx_ino,
+            size: if kind.is_file { statx.stx_size } else { 0 },
+            atim: timestamp_ns(&statx.stx_atime),
+            mtim: timestamp_ns(&statx.stx_mtime),
+            ctim: timestamp_ns(&statx.stx_ctime),
+        }
+    }
+
+    fn statx_raw(
+        fd: c_long,
+        path: *const c_char,
+        flags: c_long,
+    ) -> Result<super::HostStat, std::io::Error> {
+        let mut statx_buf = MaybeUninit::<Statx>::zeroed();
+        let rc = unsafe {
+            syscall(
+                SYS_STATX,
+                fd,
+                path,
+                flags,
+                STATX_BASIC_STATS,
+                statx_buf.as_mut_ptr(),
+            )
+        };
+        if rc != 0 {
+            return Err(std::io::Error::last_os_error());
+        }
+        Ok(stat_from_statx(unsafe { statx_buf.assume_init() }))
+    }
+
+    pub(super) fn path(
+        host_path: &std::path::Path,
+        follow_symlink: bool,
+    ) -> Result<super::HostStat, std::io::Error> {
+        let c_path = CString::new(host_path.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let flags = AT_NO_AUTOMOUNT
+            | if follow_symlink {
+                0
+            } else {
+                AT_SYMLINK_NOFOLLOW
+            };
+        statx_raw(AT_FDCWD, c_path.as_ptr(), flags)
+    }
+
+    pub(super) fn file(file: &std::fs::File) -> Result<super::HostStat, std::io::Error> {
+        let empty = b"\0";
+        statx_raw(
+            file.as_raw_fd() as c_long,
+            empty.as_ptr().cast::<c_char>(),
+            AT_EMPTY_PATH | AT_NO_AUTOMOUNT,
+        )
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "riscv32"))]
+fn stat_path_metadata(host_path: &Path, follow_symlink: bool) -> Result<HostStat, std::io::Error> {
+    rv32_linux_stat::path(host_path, follow_symlink)
+}
+
+#[cfg(all(target_os = "linux", target_arch = "riscv32"))]
+fn stat_file_metadata(file: &std::fs::File, _host_path: &Path) -> Result<HostStat, std::io::Error> {
+    rv32_linux_stat::file(file)
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "riscv32")))]
+fn stat_path_metadata(host_path: &Path, follow_symlink: bool) -> Result<HostStat, std::io::Error> {
+    let meta = if follow_symlink {
+        std::fs::metadata(host_path)?
+    } else {
+        std::fs::symlink_metadata(host_path)?
+    };
+    Ok(host_stat_from_metadata(&meta, host_path))
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "riscv32")))]
+fn stat_file_metadata(file: &std::fs::File, host_path: &Path) -> Result<HostStat, std::io::Error> {
+    let meta = file.metadata()?;
+    Ok(host_stat_from_metadata(&meta, host_path))
+}
+
+fn stat_path_kind(host_path: &Path, follow_symlink: bool) -> Result<HostPathKind, std::io::Error> {
+    Ok(stat_path_metadata(host_path, follow_symlink)?.kind)
+}
+
+#[cfg(target_os = "linux")]
+mod linux_link {
+    // WASI `path_link` does not follow the source path in this implementation.
+    // Use `linkat` directly so Linux receives that contract explicitly instead
+    // of depending on `std::fs::hard_link` behavior.
+    use std::ffi::CString;
+    use std::os::raw::{c_char, c_int};
+    use std::os::unix::ffi::OsStrExt;
+
+    unsafe extern "C" {
+        fn linkat(
+            olddirfd: c_int,
+            oldpath: *const c_char,
+            newdirfd: c_int,
+            newpath: *const c_char,
+            flags: c_int,
+        ) -> c_int;
+    }
+
+    const AT_FDCWD: c_int = -100;
+
+    pub(super) fn hard_link_no_follow(
+        old_path: &std::path::Path,
+        new_path: &std::path::Path,
+    ) -> Result<(), std::io::Error> {
+        let old_c = CString::new(old_path.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let new_c = CString::new(new_path.as_os_str().as_bytes())
+            .map_err(|_| std::io::Error::from(std::io::ErrorKind::InvalidInput))?;
+        let rc = unsafe { linkat(AT_FDCWD, old_c.as_ptr(), AT_FDCWD, new_c.as_ptr(), 0) };
+        if rc == 0 {
+            Ok(())
+        } else {
+            Err(std::io::Error::last_os_error())
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn hard_link_no_follow(old_path: &Path, new_path: &Path) -> Result<(), std::io::Error> {
+    linux_link::hard_link_no_follow(old_path, new_path)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn hard_link_no_follow(old_path: &Path, new_path: &Path) -> Result<(), std::io::Error> {
+    std::fs::hard_link(old_path, new_path)
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "riscv32")))]
+fn host_stat_from_metadata(meta: &std::fs::Metadata, host_path: &Path) -> HostStat {
+    let kind = HostPathKind {
+        is_file: meta.is_file(),
+        is_dir: meta.is_dir(),
+        is_symlink: meta.file_type().is_symlink(),
+    };
+    HostStat {
+        kind,
+        ino: derive_ino_from_meta(meta, host_path),
+        size: if kind.is_file { meta.len() } else { 0 },
+        atim: timestamp_ns(meta.accessed()),
+        mtim: timestamp_ns(meta.modified()),
+        ctim: timestamp_ns(meta.created()),
+    }
+}
+
+#[cfg(not(all(target_os = "linux", target_arch = "riscv32")))]
 fn derive_ino_from_meta(meta: &std::fs::Metadata, _host_path: &Path) -> u64 {
     #[cfg(unix)]
     {
@@ -377,19 +685,13 @@ fn derive_ino_from_meta(meta: &std::fs::Metadata, _host_path: &Path) -> u64 {
 }
 
 fn derive_ino_for_path(host_path: &Path) -> u64 {
-    match std::fs::symlink_metadata(host_path) {
-        Ok(meta) => derive_ino_from_meta(&meta, host_path),
+    match stat_path_metadata(host_path, false) {
+        Ok(stat) => stat.ino,
         Err(_) => {
             let mut hasher = std::collections::hash_map::DefaultHasher::new();
             host_path.to_string_lossy().hash(&mut hasher);
             hasher.finish() & ((1u64 << 53) - 1)
         }
-    }
-}
-
-fn entry_host_path(entry: &FdEntry) -> PathBuf {
-    match entry {
-        FdEntry::Dir { host_path, .. } | FdEntry::File { host_path, .. } => host_path.clone(),
     }
 }
 
@@ -814,7 +1116,10 @@ pub(crate) fn fd_seek(
 
     let result = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
         Some(FdEntry::File {
-            file, rights_base, ..
+            file,
+            host_path,
+            rights_base,
+            ..
         }) => {
             if (*rights_base & RIGHT_FD_SEEK) == 0 {
                 return Err(ERRNO_NOTCAPABLE);
@@ -827,8 +1132,8 @@ pub(crate) fn fd_seek(
                         }
                     }
                 } else if whence == 2 {
-                    if let Ok(meta) = file.metadata() {
-                        if (-offset as u64) > meta.len() {
+                    if let Ok(stat) = stat_file_metadata(file, host_path) {
+                        if (-offset as u64) > stat.size {
                             return Err(ERRNO_INVAL);
                         }
                     }
@@ -1125,24 +1430,9 @@ pub(crate) fn clock_time_get(
     let time_ptr = as_i32(&args[2])? as u32;
 
     let nanos = if clock_id == 0 {
-        match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => d.as_secs() * 1_000_000_000 + d.subsec_nanos() as u64,
-            Err(_) => 0,
-        }
+        realtime_ns()
     } else {
-        #[cfg(windows)]
-        {
-            static START: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
-            let start = START.get_or_init(std::time::Instant::now);
-            start.elapsed().as_nanos() as u64
-        }
-        #[cfg(not(windows))]
-        {
-            match SystemTime::now().duration_since(UNIX_EPOCH) {
-                Ok(d) => d.as_secs() * 1_000_000_000 + d.subsec_nanos() as u64,
-                Err(_) => 0,
-            }
-        }
+        monotonic_ns()
     };
 
     let mem = get_mem(caller)?;
@@ -1277,9 +1567,9 @@ pub(crate) fn path_open(
         return Ok(());
     }
 
-    match std::fs::symlink_metadata(&host_path) {
-        Ok(meta) => {
-            if meta.file_type().is_symlink() && (dirflags & 1) == 0 {
+    let nofollow_kind = match stat_path_kind(&host_path, false) {
+        Ok(kind) => {
+            if kind.is_symlink && (dirflags & 1) == 0 {
                 results[0] = Value::I32(if (oflags & OFLAGS_DIRECTORY) != 0 {
                     ERRNO_NOTDIR
                 } else {
@@ -1287,41 +1577,53 @@ pub(crate) fn path_open(
                 });
                 return Ok(());
             }
+            Some(kind)
         }
-        Err(_) => {}
-    }
+        Err(_) => None,
+    };
 
     if had_trailing_slash {
-        match std::fs::symlink_metadata(&host_path) {
-            Ok(meta) => {
-                if meta.is_file() {
+        match nofollow_kind {
+            Some(kind) => {
+                if kind.is_file {
                     results[0] = Value::I32(ERRNO_NOTDIR);
                     return Ok(());
                 }
             }
-            Err(e) => {
+            None => match stat_path_kind(&host_path, false) {
+                Ok(kind) => {
+                    if kind.is_file {
+                        results[0] = Value::I32(ERRNO_NOTDIR);
+                        return Ok(());
+                    }
+                }
+                Err(e) => {
+                    results[0] = Value::I32(path_error_to_errno(&e));
+                    return Ok(());
+                }
+            },
+        }
+    }
+
+    let follow_kind = match stat_path_kind(&host_path, true) {
+        Ok(kind) => Some(kind),
+        Err(e) => {
+            if (oflags & OFLAGS_DIRECTORY) != 0 {
                 results[0] = Value::I32(path_error_to_errno(&e));
                 return Ok(());
             }
+            None
         }
-    }
+    };
 
     if (oflags & OFLAGS_DIRECTORY) != 0 {
-        match std::fs::metadata(&host_path) {
-            Ok(meta) => {
-                if !meta.is_dir() {
-                    results[0] = Value::I32(ERRNO_NOTDIR);
-                    return Ok(());
-                }
-            }
-            Err(e) => {
-                results[0] = Value::I32(path_error_to_errno(&e));
-                return Ok(());
-            }
+        if !follow_kind.is_some_and(|kind| kind.is_dir) {
+            results[0] = Value::I32(ERRNO_NOTDIR);
+            return Ok(());
         }
     }
 
-    if host_path.is_dir() {
+    if follow_kind.is_some_and(|kind| kind.is_dir) {
         let has_read = (rights_base & RIGHT_FD_READ) != 0;
         let has_write = (rights_base & RIGHT_FD_WRITE) != 0;
         if has_read && has_write {
@@ -1344,7 +1646,7 @@ pub(crate) fn path_open(
         return Ok(());
     }
 
-    if host_path.is_file() {
+    if follow_kind.is_some_and(|kind| kind.is_file) {
         if (oflags & OFLAGS_CREAT) != 0 && (oflags & OFLAGS_EXCL) != 0 {
             results[0] = Value::I32(ERRNO_EXIST);
             return Ok(());
@@ -1382,7 +1684,8 @@ pub(crate) fn path_open(
                 results[0] = Value::I32(ERRNO_SUCCESS);
             }
             Err(e) => {
-                results[0] = Value::I32(path_error_to_errno(&e));
+                let errno = path_error_to_errno(&e);
+                results[0] = Value::I32(errno);
             }
         }
         return Ok(());
@@ -1624,21 +1927,20 @@ pub(crate) fn fd_filestat_get(
     }
 
     enum StatTarget {
-        Path(PathBuf, bool),
-        File(std::fs::Metadata, PathBuf),
+        Path(PathBuf),
+        Stat(HostStat),
     }
 
     let target = super::with_ctx(|ctx| {
         if let Some(idx) = preopen_index_for_fd(ctx, fd) {
-            return Ok(StatTarget::Path(ctx.preopens[idx].host_path.clone(), true));
+            return Ok(StatTarget::Path(ctx.preopens[idx].host_path.clone()));
         }
         match ctx.fds.get(&fd) {
-            Some(FdEntry::Dir { host_path, .. }) => Ok(StatTarget::Path(host_path.clone(), true)),
-            Some(FdEntry::File { file, .. }) => match file.metadata() {
-                Ok(meta) => Ok(StatTarget::File(
-                    meta,
-                    entry_host_path(ctx.fds.get(&fd).unwrap()),
-                )),
+            Some(FdEntry::Dir { host_path, .. }) => Ok(StatTarget::Path(host_path.clone())),
+            Some(FdEntry::File {
+                file, host_path, ..
+            }) => match stat_file_metadata(file, host_path) {
+                Ok(stat) => Ok(StatTarget::Stat(stat)),
                 Err(_) => Err(ERRNO_NOENT),
             },
             None => Err(ERRNO_BADF),
@@ -1646,43 +1948,15 @@ pub(crate) fn fd_filestat_get(
     });
 
     match target {
-        Ok(StatTarget::Path(host_path, is_dir)) => match std::fs::metadata(&host_path) {
-            Ok(meta) => {
-                let ino = derive_ino_from_meta(&meta, &host_path);
-                write_filestat(
-                    mem,
-                    buf_ptr,
-                    1,
-                    ino,
-                    if is_dir {
-                        FILETYPE_DIRECTORY
-                    } else {
-                        FILETYPE_REGULAR_FILE
-                    },
-                    1,
-                    if meta.is_file() { meta.len() } else { 0 },
-                    timestamp_ns(meta.accessed()),
-                    timestamp_ns(meta.modified()),
-                    timestamp_ns(meta.created()),
-                )?;
+        Ok(StatTarget::Path(host_path)) => match stat_path_metadata(&host_path, true) {
+            Ok(stat) => {
+                write_host_filestat(mem, buf_ptr, stat)?;
                 results[0] = Value::I32(ERRNO_SUCCESS);
             }
             Err(_) => results[0] = Value::I32(ERRNO_NOENT),
         },
-        Ok(StatTarget::File(meta, host_path)) => {
-            let ino = derive_ino_from_meta(&meta, &host_path);
-            write_filestat(
-                mem,
-                buf_ptr,
-                1,
-                ino,
-                FILETYPE_REGULAR_FILE,
-                1,
-                meta.len(),
-                timestamp_ns(meta.accessed()),
-                timestamp_ns(meta.modified()),
-                timestamp_ns(meta.created()),
-            )?;
+        Ok(StatTarget::Stat(stat)) => {
+            write_host_filestat(mem, buf_ptr, stat)?;
             results[0] = Value::I32(ERRNO_SUCCESS);
         }
         Err(errno) => results[0] = Value::I32(errno),
@@ -2083,15 +2357,18 @@ pub(crate) fn fd_allocate(
 
     let errno = super::with_ctx_mut(|ctx| match ctx.fds.get_mut(&fd) {
         Some(FdEntry::File {
-            file, rights_base, ..
+            file,
+            host_path,
+            rights_base,
+            ..
         }) => {
             if (*rights_base & RIGHT_FD_ALLOCATE) == 0 {
                 return ERRNO_NOTCAPABLE;
             }
             let want = offset.saturating_add(len);
-            match file.metadata() {
-                Ok(meta) => {
-                    if want > meta.len() && file.set_len(want).is_err() {
+            match stat_file_metadata(file, host_path) {
+                Ok(stat) => {
+                    if want > stat.size && file.set_len(want).is_err() {
                         ERRNO_IO
                     } else {
                         ERRNO_SUCCESS
@@ -2294,45 +2571,14 @@ pub(crate) fn path_filestat_get(
         }
     };
 
-    let metadata = match if (flags & 1) != 0 {
-        std::fs::metadata(&host_path)
-    } else {
-        std::fs::symlink_metadata(&host_path)
-    } {
-        Ok(m) => m,
+    let stat = match stat_path_metadata(&host_path, (flags & 1) != 0) {
+        Ok(stat) => stat,
         Err(e) => {
             results[0] = Value::I32(path_error_to_errno(&e));
             return Ok(());
         }
     };
-
-    let filetype = if metadata.file_type().is_symlink() {
-        FILETYPE_SYMBOLIC_LINK
-    } else if metadata.is_dir() {
-        FILETYPE_DIRECTORY
-    } else if metadata.is_file() {
-        FILETYPE_REGULAR_FILE
-    } else {
-        FILETYPE_UNKNOWN
-    };
-    let size = if metadata.is_file() {
-        metadata.len()
-    } else {
-        0
-    };
-    let ino = derive_ino_from_meta(&metadata, &host_path);
-    write_filestat(
-        mem,
-        buf_ptr,
-        1,
-        ino,
-        filetype,
-        1,
-        size,
-        timestamp_ns(metadata.accessed()),
-        timestamp_ns(metadata.modified()),
-        timestamp_ns(metadata.created()),
-    )?;
+    write_host_filestat(mem, buf_ptr, stat)?;
     results[0] = Value::I32(ERRNO_SUCCESS);
     Ok(())
 }
@@ -2388,7 +2634,7 @@ pub(crate) fn path_filestat_set_times(
             return Ok(());
         }
     };
-    if let Err(e) = std::fs::symlink_metadata(&host_path) {
+    if let Err(e) = stat_path_metadata(&host_path, false) {
         results[0] = Value::I32(path_error_to_errno(&e));
         return Ok(());
     }
@@ -2517,9 +2763,9 @@ pub(crate) fn path_remove_directory(
     };
 
     if has_trailing_slash {
-        match std::fs::symlink_metadata(&host) {
-            Ok(meta) => {
-                if meta.is_file() {
+        match stat_path_metadata(&host, false) {
+            Ok(stat) => {
+                if stat.kind.is_file {
                     results[0] = Value::I32(if cfg!(windows) {
                         ERRNO_NOENT
                     } else {
@@ -2577,9 +2823,9 @@ pub(crate) fn path_unlink_file(
     };
 
     if has_trailing_slash {
-        match std::fs::symlink_metadata(&host) {
-            Ok(meta) => {
-                results[0] = Value::I32(if meta.is_dir() {
+        match stat_path_metadata(&host, false) {
+            Ok(stat) => {
+                results[0] = Value::I32(if stat.kind.is_dir {
                     ERRNO_ISDIR
                 } else {
                     ERRNO_NOTDIR
@@ -2593,8 +2839,8 @@ pub(crate) fn path_unlink_file(
         }
     }
 
-    if let Ok(meta) = std::fs::symlink_metadata(&host) {
-        if meta.file_type().is_symlink() {
+    if let Ok(stat) = stat_path_metadata(&host, false) {
+        if stat.kind.is_symlink {
             results[0] = Value::I32(match std::fs::remove_file(&host) {
                 Ok(()) => ERRNO_SUCCESS,
                 Err(e) => {
@@ -2677,15 +2923,15 @@ pub(crate) fn path_rename(
         }
     };
 
-    if let (Ok(old_meta), Ok(new_meta)) = (
-        std::fs::symlink_metadata(&old_host),
-        std::fs::symlink_metadata(&new_host),
+    if let (Ok(old_stat), Ok(new_stat)) = (
+        stat_path_metadata(&old_host, false),
+        stat_path_metadata(&new_host, false),
     ) {
-        if old_meta.is_dir() && new_meta.is_file() {
+        if old_stat.kind.is_dir && new_stat.kind.is_file {
             results[0] = Value::I32(ERRNO_NOTDIR);
             return Ok(());
         }
-        if old_meta.is_file() && new_meta.is_dir() {
+        if old_stat.kind.is_file && new_stat.kind.is_dir {
             results[0] = Value::I32(ERRNO_ISDIR);
             return Ok(());
         }
@@ -2764,15 +3010,15 @@ pub(crate) fn path_link(
         }
     };
 
-    if std::fs::metadata(&old_host)
-        .map(|m| m.is_dir())
+    if stat_path_metadata(&old_host, false)
+        .map(|stat| stat.kind.is_dir)
         .unwrap_or(false)
     {
         results[0] = Value::I32(ERRNO_ACCES);
         return Ok(());
     }
 
-    results[0] = Value::I32(match std::fs::hard_link(&old_host, &new_host) {
+    results[0] = Value::I32(match hard_link_no_follow(&old_host, &new_host) {
         Ok(()) => ERRNO_SUCCESS,
         Err(e) => path_error_to_errno(&e),
     });
@@ -2829,11 +3075,11 @@ pub(crate) fn path_symlink(
                     return Ok(());
                 }
             };
-            results[0] = Value::I32(match std::fs::symlink_metadata(&candidate) {
-                Ok(meta) => {
-                    if meta.is_dir() {
+            results[0] = Value::I32(match stat_path_metadata(&candidate, false) {
+                Ok(stat) => {
+                    if stat.kind.is_dir {
                         ERRNO_EXIST
-                    } else if meta.is_file() {
+                    } else if stat.kind.is_file {
                         ERRNO_NOTDIR
                     } else {
                         ERRNO_EXIST

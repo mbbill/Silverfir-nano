@@ -598,7 +598,8 @@ Then inspect:
 
 ## Cross-Architecture Testing
 
-The native backend targets RV64GC and ARMv7-A in addition to ARM64 and x86_64.
+The native backend targets RV64GC, RV32GC, and ARMv7-A in addition to ARM64
+and x86_64.
 For normal validation, use the unified runner:
 
 ```bash
@@ -624,7 +625,7 @@ macOS:
 ```bash
 brew install colima docker qemu
 colima start
-colima ssh -- sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+colima ssh -- sudo apt-get update -qq && colima ssh -- sudo apt-get install -y -qq qemu-user-static
 rustup target add riscv64gc-unknown-linux-musl
 ```
 
@@ -640,6 +641,48 @@ Use the checked-in helper scripts when debugging RV64 directly:
 The scripts cross-compile with the static musl RV64GC target and run the CLI
 or spectest binary under `qemu-riscv64-static -cpu rv64`.
 
+### RV32 prerequisites
+
+Linux/WSL:
+
+```bash
+sudo apt-get install -y qemu-user-static zig
+rustup toolchain install nightly
+```
+
+macOS:
+
+```bash
+brew install colima docker qemu zig
+colima start
+colima ssh -- sudo apt-get update -qq && colima ssh -- sudo apt-get install -y -qq qemu-user-static
+rustup toolchain install nightly
+```
+
+RV32 uses `riscv32gc-unknown-linux-musl` with `cargo +nightly -Z build-std`
+and `scripts/zig-riscv32-linux-musl-cc.sh`; rustup does not ship a prebuilt
+standard library for this target.
+
+### RV32 smoke tests
+
+Use the checked-in helper scripts when debugging RV32 directly:
+
+```bash
+./scripts/riscv32-spectest.sh -- if
+./scripts/riscv32-run-tests.sh
+```
+
+The scripts cross-compile with the static musl RV32GC target and run the CLI
+or spectest binary under `qemu-riscv32-static -cpu rv32`.
+
+For WASI validation, the unified runner passes
+`--skip-rv32-qemu-timestamp-tests` to `sf-nano-wasitest`. This skips only
+`fd_filestat_set`, `path_filestat`, and `symlink_filestat`: qemu-riscv32-static
+returns ENOSYS for both timestamp-setting syscall paths observed in this
+runner. On macOS, the RISC-V WASI wrapper also copies preopened directories to
+VM `/tmp` before invoking QEMU, because Colima's shared `/Users` mount does not
+preserve the hard-link behavior the WASI `path_link` test requires.
+
 ### ARMv7 prerequisites
 
 Linux/WSL:
@@ -654,7 +697,7 @@ macOS:
 ```bash
 brew install colima docker qemu
 colima start
-colima ssh -- sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+colima ssh -- sudo apt-get update -qq && colima ssh -- sudo apt-get install -y -qq qemu-user-static
 rustup target add armv7-unknown-linux-musleabihf
 ```
 

@@ -445,7 +445,7 @@ impl<'a> X86_64Backend<'a> {
     // ── Register mapping ─────────────────────────────────────────────────
 
     pub(super) fn map_gp_reg(&self, reg: MachineReg) -> Result<X86Reg, WasmError> {
-        crate::vm::arch::shared_64::validate_gp_reg(self, reg)?;
+        crate::vm::arch::common::helpers::validate_gp_reg(self, reg)?;
         map_reg(reg)
     }
 
