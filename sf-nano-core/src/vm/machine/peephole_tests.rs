@@ -756,7 +756,10 @@ fn forwards_u32_pair_self_store_reload_from_gp32_i64_slot() {
     assert!(matches!(
         block.ops[0].kind,
         MachineInstKind::Store {
-            addr: MachineAddr { base: MachineReg(1), offset: 72 },
+            addr: MachineAddr {
+                base: MachineReg(1),
+                offset: 72
+            },
             width: MachineMemWidth::U32,
             src: MachineValue::Reg(MachineReg(4)),
             ..
@@ -765,7 +768,10 @@ fn forwards_u32_pair_self_store_reload_from_gp32_i64_slot() {
     assert!(matches!(
         block.ops[1].kind,
         MachineInstKind::Store {
-            addr: MachineAddr { base: MachineReg(1), offset: 76 },
+            addr: MachineAddr {
+                base: MachineReg(1),
+                offset: 76
+            },
             width: MachineMemWidth::U32,
             src: MachineValue::Reg(MachineReg(6)),
             ..
@@ -953,7 +959,10 @@ fn u64_store_invalidates_tracked_u32_store_on_overlap() {
         block.ops[2].kind,
         MachineInstKind::Load {
             dst: MachineReg(4),
-            addr: MachineAddr { base: MachineReg(1), offset: 68 },
+            addr: MachineAddr {
+                base: MachineReg(1),
+                offset: 68
+            },
             width: MachineMemWidth::U32,
             ..
         }

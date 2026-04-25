@@ -873,8 +873,8 @@ Why it belongs here:
 
 - the backend wants these fused nodes
 - earlier stages should stay ISA-neutral
-- later native emission can map them to one instruction on ARM64/ARM32, or
-  decompose them if necessary
+- later native emission can map them to one instruction on ARM64/ARM32/RV64
+  where the ISA has a matching form, or decompose them if necessary
 
 ### Optimization: signed 32x32→64 multiply recovery (32-bit GP only)
 
@@ -920,6 +920,7 @@ Main code:
 - `sf-nano-core/src/vm/arch/arm64/*`
 - `sf-nano-core/src/vm/arch/arm32/*` (shared by the `armv7a` and `thumbm`
   backends)
+- `sf-nano-core/src/vm/arch/riscv64/*`
 - `sf-nano-core/src/vm/arch/x86_64/*`
 - `sf-nano-core/src/vm/arch/emulator/*` (MachineIR interpreter backend,
   used for testing and the `emu64` / `emu32` configs)
@@ -1016,9 +1017,11 @@ Higher-level backend lowering should work in terms of:
 
 not in terms of hard-coded physical register names.
 
-ARM64 is the current example of the intended structure:
+ARM64 and RV64 are the current examples of the intended structure:
 
-- the physical register plan lives in `sf-nano-core/src/vm/arch/arm64/abi.rs`
+- the physical register plan lives in `abi.rs`
+  (`sf-nano-core/src/vm/arch/arm64/abi.rs`,
+  `sf-nano-core/src/vm/arch/riscv64/abi.rs`, etc.)
 - raw register construction is hidden there
 - lowering code gets temps from the scratch pool
 - zero/SP-like forms are expressed through semantic helpers instead of raw
@@ -1047,8 +1050,9 @@ That means:
 - once the boundary sequence ends, those registers go back to being ordinary
   physical registers with no special backend privilege
 
-This is why ARM64 `X0` / `X1` / `X2` are dangerous outside real runtime-call
-glue even though the ISA itself would let the backend use them freely.
+This is why ARM64 `X0` / `X1` / `X2`, or RV64 `A0` / `A1` / `A2`, are
+dangerous outside real runtime-call glue even though the ISA itself would let
+the backend use them freely.
 
 #### 6. MachineIR is the shared / arch boundary
 
@@ -1151,9 +1155,9 @@ correctness condition visible to the next person touching the code.
 Backends try native immediate forms before falling back to scratch
 materialization.
 
-ARM64 currently recognizes, among others:
+Backends recognize target-specific immediate forms, among others:
 
-- add/sub immediate forms
+- add/sub immediate forms on ARM64 and RV64
 - logical immediates
 - shift immediates
 - multiply by powers of two as shift
@@ -1177,8 +1181,10 @@ Why it belongs here:
 The fused MachineIR ops created earlier now pay off:
 
 - `IndexedLoad` / `IndexedStore` -> native indexed addressing modes
-- `BitfieldExtractU` -> `UBFX` on ARM64/ARM32
-- `IntBinaryShifted` -> barrel-shifter forms on ARM64/ARM32
+- `BitfieldExtractU` -> `UBFX` on ARM64/ARM32, or shift/mask sequences where
+  the ISA lacks a dedicated bitfield extract
+- `IntBinaryShifted` -> barrel-shifter forms on ARM64/ARM32, or decomposed
+  shift+ALU forms elsewhere
 - `TestBits` -> `TEST`/`TST`
 - branch conditions reuse compare/test flags directly
 

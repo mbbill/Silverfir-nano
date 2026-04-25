@@ -29,10 +29,13 @@ from typing import Dict, List, Optional, Sequence, Tuple
 ROOT = Path(__file__).resolve().parents[1]
 TARGET_DIR = ROOT / "target"
 ARMV7_TARGET = "armv7-unknown-linux-musleabihf"
+RISCV64_TARGET = "riscv64gc-unknown-linux-musl"
 X64_DARWIN_TARGET = "x86_64-apple-darwin"
 X64_LINUX_TARGET = "x86_64-unknown-linux-gnu"
 TESTSUITE_DIR = Path(os.environ.get("TESTSUITE_DIR", TARGET_DIR / "webassembly-testsuite"))
 FULL_RUNTIME_FEATURES = "jit,wasi,validator,guard-pages"
+RISCV64_RUSTFLAGS = "-C linker=rust-lld -C target-feature=+crt-static -C link-self-contained=yes -C panic=abort"
+RISCV64_SELECT_REGRESSION_ARGS = ["select", "call", "call_indirect", "if"]
 
 
 CORE_OPTIONAL_FEATURES = [
@@ -84,6 +87,7 @@ DEFAULT_TARGET_ROWS = [
 
 EXTRA_TARGET_ROWS = [
     ("armv7-linux", ARMV7_TARGET, "hosted", "", ""),
+    ("riscv64-linux", RISCV64_TARGET, "hosted", "", ""),
     (
         "armv7m-linux",
         ARMV7_TARGET,
@@ -275,11 +279,43 @@ def x64_target_for_host(host: Host) -> Optional[str]:
     return None
 
 
+_ROSETTA_PROBE_CACHE: Optional[bool] = None
+
+
+def _has_rosetta_x86_64() -> bool:
+    """Detect whether the host can run x86_64 Mach-O binaries via Rosetta 2.
+
+    Apple Silicon Macs with Rosetta installed can run x86_64 binaries
+    transparently when invoked via `arch -x86_64`. We probe by trying to
+    execute a known x86_64 helper and caching the result.
+    """
+    global _ROSETTA_PROBE_CACHE
+    if _ROSETTA_PROBE_CACHE is not None:
+        return _ROSETTA_PROBE_CACHE
+    try:
+        proc = subprocess.run(
+            ["/usr/bin/arch", "-x86_64", "/usr/bin/true"],
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        _ROSETTA_PROBE_CACHE = proc.returncode == 0
+    except (FileNotFoundError, OSError):
+        _ROSETTA_PROBE_CACHE = False
+    return _ROSETTA_PROBE_CACHE
+
+
 def is_runnable_x64_host(host: Host) -> bool:
-    return host.kind in {"macos", "linux", "wsl"} and host.machine in {
-        "x86_64",
-        "amd64",
-    }
+    if host.kind in {"linux", "wsl"} and host.machine in {"x86_64", "amd64"}:
+        return True
+    if host.kind == "macos":
+        if host.machine in {"x86_64", "amd64"}:
+            return True
+        # Apple Silicon: x86_64 binaries run transparently under Rosetta 2,
+        # which the spectest/wasitest paths invoke explicitly via
+        # `arch -x86_64`. Skip x64 only if Rosetta isn't installed.
+        return _has_rosetta_x86_64()
+    return False
 
 
 def append_env_word(env: Dict[str, str], name: str, value: str) -> None:
@@ -300,6 +336,8 @@ def cargo_env(runner: CheckRunner, target: Optional[str], env: Optional[Dict[str
     # this runner adds lint flags below.
     if target_is_x64(target, runner.host):
         append_env_word(proc_env, "RUSTFLAGS", "-C target-feature=+ssse3,+sse4.1")
+    if target == RISCV64_TARGET:
+        append_env_word(proc_env, "RUSTFLAGS", RISCV64_RUSTFLAGS)
     # rustc 1.95 can ICE while rendering dead_code diagnostics for several
     # feature-gated build rows. Suppress only that lint and keep other warning
     # diagnostics visible to the runner.
@@ -384,6 +422,7 @@ class CheckRunner:
         install_targets: bool,
         max_diagnostics: int,
         phase: Optional[str] = None,
+        dry_run: bool = False,
     ) -> None:
         self.mode = mode
         self.host = host
@@ -391,6 +430,7 @@ class CheckRunner:
         self.install_targets = install_targets
         self.max_diagnostics = max_diagnostics
         self.phase = phase
+        self.dry_run = dry_run
         log_suffix = f"-{phase}" if phase else ""
         self.log_dir = TARGET_DIR / f"check-{mode}{log_suffix}-logs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
@@ -413,6 +453,26 @@ class CheckRunner:
         self.step_index += 1
         log_path = self.log_dir / f"{log_name or clean_label(name)}.log"
         display = shlex_join(argv)
+
+        # Dry-run short-circuit: record the step as OK without launching any
+        # subprocess. Lets `--dry-run` surface the full per-step list for
+        # tuning the progress output without a full build cycle.
+        if self.dry_run:
+            result = StepResult(
+                index=self.step_index,
+                name=name,
+                status="OK",
+                command=display,
+                log_path=log_path,
+                rc=0,
+                warnings=0,
+                errors=0,
+                seconds=0.0,
+                diagnostics=[],
+            )
+            self.results.append(result)
+            self._print_step_result(result)
+            return result
 
         start = time.monotonic()
         proc_env = os.environ.copy()
@@ -503,18 +563,20 @@ class CheckRunner:
 
     def _print_step_result(self, result: StepResult) -> None:
         duration = f"{result.seconds:.1f}s" if result.seconds else ""
+        # Status prefix is a fixed-width tag so progress is easy to scan and
+        # grep. Step index is dropped — it carried no information users
+        # acted on and made it harder to spot the status at a glance.
         if result.status == "OK":
-            if self.mode == "fast" or result.index % 10 == 0:
-                print(f"[{result.index:03d}] ok: {result.name} {duration}".rstrip())
+            print(f"[OK]   {result.name} {duration}".rstrip())
         elif result.status == "WARN":
-            print(f"[{result.index:03d}] WARN: {result.name}")
-            print(f"      {result.warnings} warning(s), log: {rel(result.log_path)}")
+            print(f"[WARN] {result.name}")
+            print(f"       {result.warnings} warning(s), log: {rel(result.log_path)}")
         elif result.status == "FAIL":
-            print(f"[{result.index:03d}] FAIL: {result.name}")
-            print(f"      {result.errors} error(s), log: {rel(result.log_path)}")
+            print(f"[FAIL] {result.name}")
+            print(f"       {result.errors} error(s), log: {rel(result.log_path)}")
         else:
-            print(f"[{result.index:03d}] SKIP: {result.name}")
-            print(f"      {result.message}")
+            print(f"[SKIP] {result.name}")
+            print(f"       {result.message}")
 
     def final_report(self) -> int:
         counts = {status: 0 for status in ("OK", "WARN", "FAIL", "SKIP")}
@@ -546,17 +608,15 @@ class CheckRunner:
                 elif result.message:
                     print(f"  - {result.message}")
 
-        skipped = [r for r in self.results if r.status == "SKIP"]
-        if skipped:
-            print()
-            print("=== Skipped ===")
-            for result in skipped:
-                print(f"- {result.name}: {result.message}")
+        # Skipped steps are already printed inline with their reason, so
+        # omit the trailing summary section — it was duplicate noise.
 
-        if counts["FAIL"] > 0:
+        fail_on_warn = self.strict and counts["WARN"] > 0
+        print()
+        if counts["FAIL"] > 0 or fail_on_warn:
+            print("FAILED")
             return 1
-        if self.strict and counts["WARN"] > 0:
-            return 1
+        print("PASSED")
         return 0
 
 
@@ -610,7 +670,7 @@ def ensure_testsuite(runner: CheckRunner) -> bool:
     if TESTSUITE_DIR.is_dir():
         return True
     runner.fail(
-        "spectest testsuite",
+        "setup: spectest testsuite",
         f"missing testsuite directory: {TESTSUITE_DIR}. Set TESTSUITE_DIR or populate target/webassembly-testsuite.",
     )
     return False
@@ -666,6 +726,61 @@ def ensure_armv7_runner(runner: CheckRunner) -> bool:
         return False
 
     runner.skip("armv7 qemu runner", "ARMv7 runtime checks require macOS+Colima or Linux/WSL.")
+    return False
+
+
+def ensure_riscv64_runner(runner: CheckRunner) -> bool:
+    if runner.host.kind == "macos":
+        if not command_exists("colima"):
+            runner.fail("riscv64 qemu runner", "missing colima; install Colima or run RV64 checks on Linux/WSL.")
+            return False
+        status = subprocess.run(
+            ["colima", "status"],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if status.returncode != 0:
+            start = runner.run("colima start", ["colima", "start"], log_name="colima-start")
+            if start.status == "FAIL":
+                return False
+            runner.colima_started = True
+            if runner.dry_run:
+                return True
+        qemu = subprocess.run(
+            ["colima", "ssh", "--", "which", "qemu-riscv64-static"],
+            cwd=str(ROOT),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            check=False,
+        )
+        if qemu.returncode != 0:
+            update = runner.run(
+                "colima install qemu-user-static (apt update)",
+                ["colima", "ssh", "--", "sudo", "apt-get", "update", "-qq"],
+                log_name="colima-apt-update-riscv64",
+            )
+            if update.status == "FAIL":
+                return False
+            install = runner.run(
+                "colima install qemu-user-static",
+                ["colima", "ssh", "--", "sudo", "apt-get", "install", "-y", "-qq", "qemu-user-static"],
+                log_name="colima-install-qemu-user-static-riscv64",
+            )
+            return install.status != "FAIL"
+        return True
+
+    if runner.host.kind in {"linux", "wsl"}:
+        if command_exists("qemu-riscv64-static"):
+            return True
+        runner.fail(
+            "riscv64 qemu runner",
+            "missing qemu-riscv64-static; on Debian/Ubuntu/WSL install it with: sudo apt-get install -y qemu-user-static",
+        )
+        return False
+
+    runner.skip("riscv64 qemu runner", "RV64 runtime checks require macOS+Colima or Linux/WSL.")
     return False
 
 
@@ -764,7 +879,7 @@ def run_workspace_tests(runner: CheckRunner, profile_name: str = "debug") -> Non
     if profile_name == "release":
         argv.append("--release")
     runner.run(
-        f"workspace tests ({profile_name})",
+        f"cargo test: workspace ({profile_name})",
         argv,
         env=cargo_env(runner, None),
         log_name=f"workspace-tests-{profile_name}",
@@ -833,7 +948,7 @@ def run_feature_checks(runner: CheckRunner, *, full: bool, profiles: Sequence[st
         for label, spec in core_combos:
             cargo_check(
                 runner,
-                f"feature check core {label} ({profile_name})",
+                f"cargo check: core feature {label} ({profile_name})",
                 "sf-nano-core",
                 profile_name=profile_name,
                 feature_spec=spec,
@@ -845,7 +960,7 @@ def run_feature_checks(runner: CheckRunner, *, full: bool, profiles: Sequence[st
         for label, spec in cli_combos:
             cargo_check(
                 runner,
-                f"feature check cli {label} ({profile_name})",
+                f"cargo check: cli feature {label} ({profile_name})",
                 "sf-nano-cli",
                 profile_name=profile_name,
                 feature_spec=spec,
@@ -856,7 +971,7 @@ def run_feature_checks(runner: CheckRunner, *, full: bool, profiles: Sequence[st
     for profile_name in profiles:
         cargo_check(
             runner,
-            f"workspace default features ({profile_name})",
+            f"cargo check: workspace default features ({profile_name})",
             None,
             profile_name=profile_name,
             extra_args=["--workspace"],
@@ -868,7 +983,7 @@ def run_feature_checks(runner: CheckRunner, *, full: bool, profiles: Sequence[st
         for profile_name in profiles:
             cargo_check(
                 runner,
-                f"cli-minimal ({profile_name})",
+                f"cargo check: cli-minimal ({profile_name})",
                 None,
                 profile_name=profile_name,
                 cwd=cli_minimal,
@@ -970,7 +1085,7 @@ def run_target_package_check(
         append_env_word(env, "RUSTFLAGS", "-D warnings")
         append_env_word(env, "RUSTFLAGS", "-A dead_code")
     runner.run(
-        f"target check {label}/{package_key}",
+        f"cargo check: target {label}/{package_key}",
         argv,
         env=env,
         log_name=f"target-{clean_label(label)}-{package_key}",
@@ -985,7 +1100,7 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
     for profile_name in profiles:
         native_build = cargo_build(
             runner,
-            f"build spectest native ({profile_name})",
+            f"cargo build: spectest native ({profile_name})",
             "sf-nano-spectest",
             profile_name=profile_name,
             target=None,
@@ -994,11 +1109,11 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
         )
         host_bin = binary_path("sf-nano-spectest", profile_name, runner.host)
         if native_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"spectest native ({profile_name})", native_build)
+            skip_after_failed_dependency(runner, f"run: spectest native ({profile_name})", native_build)
         else:
             run_binary_if_present(
                 runner,
-                f"spectest native ({profile_name})",
+                f"run: spectest native ({profile_name})",
                 [host_bin, "--backend", "native", *extra_args],
                 env=env,
                 log_name=f"spectest-native-{profile_name}",
@@ -1006,7 +1121,7 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
 
         emu64_build = cargo_build(
             runner,
-            f"build spectest emu64 ({profile_name})",
+            f"cargo build: spectest emu64 ({profile_name})",
             "sf-nano-spectest",
             profile_name=profile_name,
             target=None,
@@ -1014,11 +1129,11 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
             log_name=f"spectest-build-emu64-{profile_name}",
         )
         if emu64_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"spectest emu64 ({profile_name})", emu64_build)
+            skip_after_failed_dependency(runner, f"run: spectest emu64 ({profile_name})", emu64_build)
         else:
             run_binary_if_present(
                 runner,
-                f"spectest emu64 ({profile_name})",
+                f"run: spectest emu64 ({profile_name})",
                 [host_bin, *extra_args],
                 env=env,
                 log_name=f"spectest-emu64-{profile_name}",
@@ -1026,7 +1141,7 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
 
         emu32_build = cargo_build(
             runner,
-            f"build spectest emu32 ({profile_name})",
+            f"cargo build: spectest emu32 ({profile_name})",
             "sf-nano-spectest",
             profile_name=profile_name,
             target=None,
@@ -1034,17 +1149,18 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
             log_name=f"spectest-build-emu32-{profile_name}",
         )
         if emu32_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"spectest emu32 ({profile_name})", emu32_build)
+            skip_after_failed_dependency(runner, f"run: spectest emu32 ({profile_name})", emu32_build)
         else:
             run_binary_if_present(
                 runner,
-                f"spectest emu32 ({profile_name})",
+                f"run: spectest emu32 ({profile_name})",
                 [host_bin, *extra_args],
                 env=env,
                 log_name=f"spectest-emu32-{profile_name}",
             )
 
         run_x64_spectest(runner, profile_name, extra_args, env)
+        run_riscv64_spectest(runner, profile_name, extra_args, env)
         run_armv7_spectests(runner, profile_name, extra_args, env)
 
 
@@ -1057,7 +1173,10 @@ def run_binary_if_present(
     log_name: Optional[str] = None,
 ) -> Optional[StepResult]:
     binary = Path(argv[0])
-    if not binary.exists():
+    # In dry-run we never actually built the binary; skip the pre-check so
+    # the step still surfaces in the planned step list as OK rather than
+    # FAIL'ing on a missing artifact.
+    if not runner.dry_run and not binary.exists():
         runner.fail(name, f"expected binary not found: {binary}", command=shlex_join(argv))
         return None
     return runner.run(name, argv, env=env, log_name=log_name)
@@ -1071,17 +1190,17 @@ def run_x64_spectest(
 ) -> None:
     target = x64_target_for_host(runner.host)
     if target is None:
-        runner.skip(f"spectest x64 ({profile_name})", "x64 runtime checks require macOS, Linux, or WSL.")
+        runner.skip(f"run: spectest x64 ({profile_name})", "x64 runtime checks require macOS, Linux, or WSL.")
         return
     if not is_runnable_x64_host(runner.host):
-        runner.skip(f"spectest x64 ({profile_name})", f"host architecture {runner.host.machine} cannot run x64 binary directly.")
+        runner.skip(f"run: spectest x64 ({profile_name})", f"host architecture {runner.host.machine} cannot run x64 binary directly.")
         return
     if not ensure_rust_target(runner, target):
         return
 
     build = cargo_build(
         runner,
-        f"build spectest x64 ({profile_name})",
+        f"cargo build: spectest x64 ({profile_name})",
         "sf-nano-spectest",
         profile_name=profile_name,
         target=target,
@@ -1089,7 +1208,7 @@ def run_x64_spectest(
         log_name=f"spectest-build-x64-{profile_name}",
     )
     if build.status == "FAIL":
-        skip_after_failed_dependency(runner, f"spectest x64 ({profile_name})", build)
+        skip_after_failed_dependency(runner, f"run: spectest x64 ({profile_name})", build)
         return
     x64_bin = binary_path("sf-nano-spectest", profile_name, runner.host, target)
     argv: List[object]
@@ -1097,7 +1216,58 @@ def run_x64_spectest(
         argv = ["arch", "-x86_64", x64_bin, "--backend", "native", *extra_args]
     else:
         argv = [x64_bin, "--backend", "native", *extra_args]
-    run_binary_if_present(runner, f"spectest x64 ({profile_name})", argv, env=env, log_name=f"spectest-x64-{profile_name}")
+    run_binary_if_present(runner, f"run: spectest x64 ({profile_name})", argv, env=env, log_name=f"spectest-x64-{profile_name}")
+
+
+def run_riscv64_spectest(
+    runner: CheckRunner,
+    profile_name: str,
+    extra_args: Sequence[str],
+    env: Dict[str, str],
+) -> None:
+    if not ensure_rust_target(runner, RISCV64_TARGET):
+        return
+    if not ensure_riscv64_runner(runner):
+        return
+
+    build = cargo_build(
+        runner,
+        f"cargo build: spectest riscv64 ({profile_name})",
+        "sf-nano-spectest",
+        profile_name=profile_name,
+        target=RISCV64_TARGET,
+        features="jit",
+        log_name=f"spectest-build-riscv64-{profile_name}",
+    )
+    if build.status == "FAIL":
+        skip_after_failed_dependency(runner, f"run: spectest riscv64 ({profile_name})", build)
+        return
+
+    rv64_bin = binary_path("sf-nano-spectest", profile_name, runner.host, RISCV64_TARGET)
+    smoke = run_riscv64_binary(
+        runner,
+        f"run: spectest riscv64 select/call smoke ({profile_name})",
+        rv64_bin,
+        ["--backend", "native", *RISCV64_SELECT_REGRESSION_ARGS],
+        env,
+        f"spectest-riscv64-select-call-smoke-{profile_name}",
+    )
+    if smoke is None:
+        return
+    if smoke.status == "FAIL":
+        skip_after_failed_dependency(runner, f"run: spectest riscv64 ({profile_name})", smoke)
+        return
+
+    if list(extra_args) == RISCV64_SELECT_REGRESSION_ARGS:
+        return
+    run_riscv64_binary(
+        runner,
+        f"run: spectest riscv64 ({profile_name})",
+        rv64_bin,
+        ["--backend", "native", *extra_args],
+        env,
+        f"spectest-riscv64-{profile_name}",
+    )
 
 
 def run_armv7_spectests(
@@ -1113,7 +1283,7 @@ def run_armv7_spectests(
 
     build_a = cargo_build(
         runner,
-        f"build spectest armv7a ({profile_name})",
+        f"cargo build: spectest armv7a ({profile_name})",
         "sf-nano-spectest",
         profile_name=profile_name,
         target=ARMV7_TARGET,
@@ -1123,23 +1293,26 @@ def run_armv7_spectests(
     arm_bin = binary_path("sf-nano-spectest", profile_name, runner.host, ARMV7_TARGET)
     saved_a = arm_bin.with_name(f"{arm_bin.name}.armv7a")
     if build_a.status == "FAIL":
-        skip_after_failed_dependency(runner, f"spectest armv7a ({profile_name})", build_a)
-    elif arm_bin.exists():
-        shutil.copy2(arm_bin, saved_a)
+        skip_after_failed_dependency(runner, f"run: spectest armv7a ({profile_name})", build_a)
+    elif arm_bin.exists() or runner.dry_run:
+        # In dry-run we skip the copy (the artifact wasn't really built);
+        # run_armv7_binary's runner.run still short-circuits to OK below.
+        if arm_bin.exists():
+            shutil.copy2(arm_bin, saved_a)
         run_armv7_binary(
             runner,
-            f"spectest armv7a ({profile_name})",
+            f"run: spectest armv7a ({profile_name})",
             saved_a,
             ["--backend", "native", *extra_args],
             env,
             f"spectest-armv7a-{profile_name}",
         )
     else:
-        runner.fail(f"spectest armv7a ({profile_name})", f"expected binary not found: {arm_bin}")
+        runner.fail(f"run: spectest armv7a ({profile_name})", f"expected binary not found: {arm_bin}")
 
     build_m = cargo_build(
         runner,
-        f"build spectest armv7m ({profile_name})",
+        f"cargo build: spectest armv7m ({profile_name})",
         "sf-nano-spectest",
         profile_name=profile_name,
         target=ARMV7_TARGET,
@@ -1148,19 +1321,20 @@ def run_armv7_spectests(
     )
     saved_m = arm_bin.with_name(f"{arm_bin.name}.armv7m")
     if build_m.status == "FAIL":
-        skip_after_failed_dependency(runner, f"spectest armv7m ({profile_name})", build_m)
-    elif arm_bin.exists():
-        shutil.copy2(arm_bin, saved_m)
+        skip_after_failed_dependency(runner, f"run: spectest armv7m ({profile_name})", build_m)
+    elif arm_bin.exists() or runner.dry_run:
+        if arm_bin.exists():
+            shutil.copy2(arm_bin, saved_m)
         run_armv7_binary(
             runner,
-            f"spectest armv7m ({profile_name})",
+            f"run: spectest armv7m ({profile_name})",
             saved_m,
             ["--backend", "native", *extra_args],
             env,
             f"spectest-armv7m-{profile_name}",
         )
     else:
-        runner.fail(f"spectest armv7m ({profile_name})", f"expected binary not found: {arm_bin}")
+        runner.fail(f"run: spectest armv7m ({profile_name})", f"expected binary not found: {arm_bin}")
 
 
 def run_armv7_binary(
@@ -1171,7 +1345,7 @@ def run_armv7_binary(
     env: Dict[str, str],
     log_name: str,
 ) -> None:
-    if not binary.exists():
+    if not runner.dry_run and not binary.exists():
         runner.fail(name, f"expected binary not found: {binary}")
         return
     if runner.host.kind == "macos":
@@ -1194,6 +1368,36 @@ def run_armv7_binary(
     runner.run(name, argv, env=env, log_name=log_name)
 
 
+def run_riscv64_binary(
+    runner: CheckRunner,
+    name: str,
+    binary: Path,
+    args: Sequence[str],
+    env: Dict[str, str],
+    log_name: str,
+) -> Optional[StepResult]:
+    if not runner.dry_run and not binary.exists():
+        runner.fail(name, f"expected binary not found: {binary}")
+        return None
+    if runner.host.kind == "macos":
+        argv: List[object] = [
+            "colima",
+            "ssh",
+            "--",
+            "env",
+            f"TESTSUITE_DIR={env['TESTSUITE_DIR']}",
+            "qemu-riscv64-static",
+            "-cpu",
+            "rv64",
+            binary,
+            *args,
+        ]
+        return runner.run(name, argv, log_name=log_name)
+
+    argv = ["qemu-riscv64-static", "-cpu", "rv64", binary, *args]
+    return runner.run(name, argv, env=env, log_name=log_name)
+
+
 def run_wasitest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_args: Sequence[str]) -> None:
     for profile_name in profiles:
         run_wasitest_host_profile(runner, profile_name, extra_args)
@@ -1205,7 +1409,7 @@ def run_wasitest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
 def run_wasitest_host_profile(runner: CheckRunner, profile_name: str, extra_args: Sequence[str]) -> None:
     cli_build = cargo_build(
         runner,
-        f"build wasitest cli native ({profile_name})",
+        f"cargo build: wasitest cli native ({profile_name})",
         "sf-nano-cli",
         profile_name=profile_name,
         target=None,
@@ -1214,7 +1418,7 @@ def run_wasitest_host_profile(runner: CheckRunner, profile_name: str, extra_args
     )
     harness_build = cargo_build_package(
         runner,
-        f"build wasitest harness native ({profile_name})",
+        f"cargo build: wasitest harness native ({profile_name})",
         "sf-nano-wasitest",
         profile_name=profile_name,
         target=None,
@@ -1223,13 +1427,13 @@ def run_wasitest_host_profile(runner: CheckRunner, profile_name: str, extra_args
     cli_bin = binary_path("sf-nano-cli", profile_name, runner.host)
     wasitest_bin = binary_path("sf-nano-wasitest", profile_name, runner.host)
     if cli_build.status == "FAIL":
-        skip_after_failed_dependency(runner, f"wasitest native ({profile_name})", cli_build)
+        skip_after_failed_dependency(runner, f"run: wasitest native ({profile_name})", cli_build)
     elif harness_build.status == "FAIL":
-        skip_after_failed_dependency(runner, f"wasitest native ({profile_name})", harness_build)
+        skip_after_failed_dependency(runner, f"run: wasitest native ({profile_name})", harness_build)
     else:
         run_binary_if_present(
             runner,
-            f"wasitest native ({profile_name})",
+            f"run: wasitest native ({profile_name})",
             [wasitest_bin, "--cli-path", cli_bin, "--backend", "native", *extra_args],
             log_name=f"wasitest-native-{profile_name}",
         )
@@ -1237,7 +1441,7 @@ def run_wasitest_host_profile(runner: CheckRunner, profile_name: str, extra_args
     for backend in ("emu64", "emu32"):
         emu_build = cargo_build(
             runner,
-            f"build wasitest cli {backend} ({profile_name})",
+            f"cargo build: wasitest cli {backend} ({profile_name})",
             "sf-nano-cli",
             profile_name=profile_name,
             target=None,
@@ -1245,13 +1449,13 @@ def run_wasitest_host_profile(runner: CheckRunner, profile_name: str, extra_args
             log_name=f"wasitest-build-cli-{backend}-{profile_name}",
         )
         if emu_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"wasitest {backend} ({profile_name})", emu_build)
+            skip_after_failed_dependency(runner, f"run: wasitest {backend} ({profile_name})", emu_build)
         elif harness_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"wasitest {backend} ({profile_name})", harness_build)
+            skip_after_failed_dependency(runner, f"run: wasitest {backend} ({profile_name})", harness_build)
         else:
             run_binary_if_present(
                 runner,
-                f"wasitest {backend} ({profile_name})",
+                f"run: wasitest {backend} ({profile_name})",
                 [wasitest_bin, "--cli-path", cli_bin, *extra_args],
                 log_name=f"wasitest-{backend}-{profile_name}",
             )
@@ -1262,7 +1466,7 @@ def run_wasitest_release_cross_targets(runner: CheckRunner, extra_args: Sequence
     if target and is_runnable_x64_host(runner.host) and ensure_rust_target(runner, target):
         cli_build = cargo_build(
             runner,
-            "build wasitest cli x64 (release)",
+            "cargo build: wasitest cli x64 (release)",
             "sf-nano-cli",
             profile_name="release",
             target=target,
@@ -1271,7 +1475,7 @@ def run_wasitest_release_cross_targets(runner: CheckRunner, extra_args: Sequence
         )
         harness_build = cargo_build_package(
             runner,
-            "build wasitest harness x64 (release)",
+            "cargo build: wasitest harness x64 (release)",
             "sf-nano-wasitest",
             profile_name="release",
             target=target,
@@ -1280,37 +1484,39 @@ def run_wasitest_release_cross_targets(runner: CheckRunner, extra_args: Sequence
         cli_bin = binary_path("sf-nano-cli", "release", runner.host, target)
         wasitest_bin = binary_path("sf-nano-wasitest", "release", runner.host, target)
         if cli_build.status == "FAIL":
-            skip_after_failed_dependency(runner, "wasitest x64 (release)", cli_build)
+            skip_after_failed_dependency(runner, "run: wasitest x64 (release)", cli_build)
         elif harness_build.status == "FAIL":
-            skip_after_failed_dependency(runner, "wasitest x64 (release)", harness_build)
+            skip_after_failed_dependency(runner, "run: wasitest x64 (release)", harness_build)
         else:
             if runner.host.kind == "macos":
                 argv: List[object] = ["arch", "-x86_64", wasitest_bin, "--cli-path", cli_bin, "--backend", "native", *extra_args]
             else:
                 argv = [wasitest_bin, "--cli-path", cli_bin, "--backend", "native", *extra_args]
-            run_binary_if_present(runner, "wasitest x64 (release)", argv, log_name="wasitest-x64-release")
+            run_binary_if_present(runner, "run: wasitest x64 (release)", argv, log_name="wasitest-x64-release")
     else:
-        runner.skip("wasitest x64 (release)", "x64 runtime checks require runnable x64 host support.")
+        runner.skip("run: wasitest x64 (release)", "x64 runtime checks require runnable x64 host support.")
+
+    qemu_harness_build = cargo_build_package(
+        runner,
+        "cargo build: wasitest harness native (release for qemu)",
+        "sf-nano-wasitest",
+        profile_name="release",
+        target=None,
+        log_name="wasitest-build-harness-native-release-for-qemu",
+    )
+    native_wasitest = binary_path("sf-nano-wasitest", "release", runner.host)
+
+    run_riscv64_wasitest_release(runner, extra_args, qemu_harness_build, native_wasitest)
 
     if not ensure_rust_target(runner, ARMV7_TARGET):
         return
     if not ensure_armv7_runner(runner):
         return
 
-    harness_build = cargo_build_package(
-        runner,
-        "build wasitest harness native (release for armv7)",
-        "sf-nano-wasitest",
-        profile_name="release",
-        target=None,
-        log_name="wasitest-build-harness-native-release-for-armv7",
-    )
-    native_wasitest = binary_path("sf-nano-wasitest", "release", runner.host)
-
     for label, features in (("armv7a", "jit"), ("armv7m", "jit,thumb2-test")):
         cli_build = cargo_build(
             runner,
-            f"build wasitest cli {label} (release)",
+            f"cargo build: wasitest cli {label} (release)",
             "sf-nano-cli",
             profile_name="release",
             target=ARMV7_TARGET,
@@ -1319,25 +1525,91 @@ def run_wasitest_release_cross_targets(runner: CheckRunner, extra_args: Sequence
         )
         cli_bin = binary_path("sf-nano-cli", "release", runner.host, ARMV7_TARGET)
         saved = cli_bin.with_name(f"{cli_bin.name}.{label}")
-        if harness_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"wasitest {label} (release)", harness_build)
+        if qemu_harness_build.status == "FAIL":
+            skip_after_failed_dependency(runner, f"run: wasitest {label} (release)", qemu_harness_build)
             continue
         if cli_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"wasitest {label} (release)", cli_build)
+            skip_after_failed_dependency(runner, f"run: wasitest {label} (release)", cli_build)
             continue
         if cli_bin.exists():
             shutil.copy2(cli_bin, saved)
-        else:
-            runner.fail(f"wasitest {label} (release)", f"expected binary not found: {cli_bin}")
+        elif not runner.dry_run:
+            runner.fail(f"run: wasitest {label} (release)", f"expected binary not found: {cli_bin}")
             continue
         wrapper = make_armv7_wasi_wrapper(runner, label, saved)
         run_binary_if_present(
             runner,
-            f"wasitest {label} (release)",
+            f"run: wasitest {label} (release)",
             [native_wasitest, "--cli-path", wrapper, "--backend", "native", *extra_args],
             env={"TMPDIR": str(runner.tmp_dir)},
             log_name=f"wasitest-{label}-release",
         )
+
+
+def run_riscv64_wasitest_release(
+    runner: CheckRunner,
+    extra_args: Sequence[str],
+    harness_build: StepResult,
+    native_wasitest: Path,
+) -> None:
+    if not ensure_rust_target(runner, RISCV64_TARGET):
+        return
+    if not ensure_riscv64_runner(runner):
+        return
+
+    cli_build = cargo_build(
+        runner,
+        "cargo build: wasitest cli riscv64 (release)",
+        "sf-nano-cli",
+        profile_name="release",
+        target=RISCV64_TARGET,
+        features="jit",
+        log_name="wasitest-build-cli-riscv64-release",
+    )
+    cli_bin = binary_path("sf-nano-cli", "release", runner.host, RISCV64_TARGET)
+    if harness_build.status == "FAIL":
+        skip_after_failed_dependency(runner, "run: wasitest riscv64 (release)", harness_build)
+        return
+    if cli_build.status == "FAIL":
+        skip_after_failed_dependency(runner, "run: wasitest riscv64 (release)", cli_build)
+        return
+
+    wrapper = make_riscv64_wasi_wrapper(runner, cli_bin)
+    run_binary_if_present(
+        runner,
+        "run: wasitest riscv64 (release)",
+        [native_wasitest, "--cli-path", wrapper, "--backend", "native", *extra_args],
+        env={"TMPDIR": str(runner.tmp_dir)},
+        log_name="wasitest-riscv64-release",
+    )
+
+
+def make_riscv64_wasi_wrapper(runner: CheckRunner, cli_bin: Path) -> Path:
+    wrapper = runner.tmp_dir / "wasitest-riscv64-qemu-wrapper.sh"
+    if runner.host.kind == "macos":
+        host_home = shlex_quote(os.environ.get("HOME") or str(Path.home()))
+        script = f"""\
+#!/usr/bin/env bash
+set -euo pipefail
+export HOME={host_home}
+env_args=()
+while IFS= read -r key; do
+    case "$key" in
+        _|HOME|PWD|SHLVL) continue ;;
+    esac
+    env_args+=("$key=${{!key}}")
+done < <(compgen -e)
+exec colima ssh -- env -i "${{env_args[@]}}" /usr/bin/qemu-riscv64-static -cpu rv64 {shlex_quote(str(cli_bin))} "$@"
+"""
+    else:
+        script = f"""\
+#!/usr/bin/env bash
+set -euo pipefail
+exec qemu-riscv64-static -cpu rv64 {shlex_quote(str(cli_bin))} "$@"
+"""
+    wrapper.write_text(script, encoding="utf-8")
+    wrapper.chmod(0o755)
+    return wrapper
 
 
 def make_armv7_wasi_wrapper(runner: CheckRunner, label: str, cli_bin: Path) -> Path:
@@ -1448,10 +1720,13 @@ def run_windows_native_phase(args: argparse.Namespace, host: Host) -> int:
         strict=args.strict,
         install_targets=args.install_targets,
         max_diagnostics=max(1, args.max_diagnostics),
+        dry_run=args.dry_run,
         phase="windows",
     )
 
     print(f"Silverfir check: mode={args.mode} phase=windows host={host.kind}/{host.machine}")
+    if args.dry_run:
+        print("dry-run: listing steps only; no subprocesses will execute")
     print(f"log dir: {rel(runner.log_dir)}")
 
     if args.mode == "fast":
@@ -1536,6 +1811,12 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
     parser.add_argument("--max-diagnostics", type=int, default=8, help="diagnostics to print per issue step")
     parser.add_argument("--debug-only", action="store_true", help="full mode: run debug profile checks only")
     parser.add_argument("--release-only", action="store_true", help="full mode: run release profile checks only")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="use this to check what will be tested on this platform and what is skipped "
+        "(lists every scheduled step without running any subprocess)",
+    )
     target_group = parser.add_mutually_exclusive_group()
     target_group.add_argument("--all-targets", action="store_true", help="full mode: include extra target rows")
     target_group.add_argument("--default-targets", action="store_true", help="full mode: use default target rows")
@@ -1567,9 +1848,12 @@ def main(argv: Sequence[str]) -> int:
         strict=args.strict,
         install_targets=args.install_targets,
         max_diagnostics=max(1, args.max_diagnostics),
+        dry_run=args.dry_run,
     )
 
     print(f"Silverfir check: mode={args.mode} host={host.kind}/{host.machine}")
+    if args.dry_run:
+        print("dry-run: listing steps only; no subprocesses will execute")
     print(f"log dir: {rel(runner.log_dir)}")
 
     try:

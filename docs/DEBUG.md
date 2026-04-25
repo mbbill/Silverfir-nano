@@ -69,7 +69,7 @@ The CLI accepts:
 
 | Mode | What it does |
 |---|---|
-| `native` | Native JIT backend. On AArch64 release builds this is the real ARM64 backend. |
+| `native` | Native JIT backend. On supported release targets this is the real architecture backend. |
 | `auto` | Resolve best available backend. Today that always means `native` because the JIT (`jit` feature) is the only compiled-in execution backend. |
 
 Details that matter:
@@ -92,7 +92,11 @@ Goal:
 Today that means:
 
 - on AArch64, normal `--backend native` execution uses the ARM64 backend
-- on non-AArch64, `native` is only available in debug builds through the emulator backend
+- on x86_64, normal `--backend native` execution uses the x86_64 backend
+- on RV64GC Linux, normal `--backend native` execution uses the RV64 backend
+- on ARMv7-A Linux, normal `--backend native` execution uses the ARMv7-A backend
+- on unsupported targets, `native` is unavailable unless a debug emulator
+  backend is explicitly selected
 
 ### Reference backend
 
@@ -126,6 +130,7 @@ Both CLI and spectest print one runtime line before execution:
 ```text
 [runtime] jit backend=arm64
 [runtime] jit backend=x86_64
+[runtime] jit backend=riscv64
 [runtime] jit backend=emulator
 ```
 
@@ -591,9 +596,9 @@ Then inspect:
 | `SF_FUNCTION_TRACE` | Record sparse function-boundary traces (requires `call-trace` feature) |
 | `SF_FUNCTION_TRACE_MEMORY=1` | Add memory hashing to function traces |
 
-## Cross-Architecture Testing (ARMv7)
+## Cross-Architecture Testing
 
-The native backend targets ARMv7-A (32-bit ARM) in addition to ARM64 and x86_64.
+The native backend targets RV64GC and ARMv7-A in addition to ARM64 and x86_64.
 For normal validation, use the unified runner:
 
 ```bash
@@ -601,11 +606,41 @@ python3 scripts/check.py fast
 python3 scripts/check.py full --release-only
 ```
 
-The runner uses Colima plus `qemu-arm-static` on macOS, and local
-`qemu-arm-static` on Linux/WSL. The manual commands below are only for
-debugging the ARMv7 environment directly.
+The runner uses Colima plus `qemu-*-static` on macOS, and local
+`qemu-*-static` on Linux/WSL. The manual commands below are only for
+debugging the cross-architecture environment directly.
 
-### Prerequisites
+### RV64 prerequisites
+
+Linux/WSL:
+
+```bash
+sudo apt-get install -y qemu-user-static
+rustup target add riscv64gc-unknown-linux-musl
+```
+
+macOS:
+
+```bash
+brew install colima docker qemu
+colima start
+colima ssh -- sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-static
+rustup target add riscv64gc-unknown-linux-musl
+```
+
+### RV64 smoke tests
+
+Use the checked-in helper scripts when debugging RV64 directly:
+
+```bash
+./scripts/riscv64-spectest.sh -- if
+./scripts/riscv64-run-tests.sh
+```
+
+The scripts cross-compile with the static musl RV64GC target and run the CLI
+or spectest binary under `qemu-riscv64-static -cpu rv64`.
+
+### ARMv7 prerequisites
 
 Linux/WSL:
 
@@ -623,7 +658,7 @@ colima ssh -- sudo apt-get update -qq && sudo apt-get install -y -qq qemu-user-s
 rustup target add armv7-unknown-linux-musleabihf
 ```
 
-### Step 1: Verify the environment with --emu
+### ARMv7 Step 1: Verify the environment with --emu
 
 The `--emu` flag uses the platform-independent emulator backend. It works on
 any architecture and confirms the build, the cross toolchain, and the QEMU
@@ -646,7 +681,7 @@ colima ssh -- qemu-arm-static \
 
 If this passes, the toolchain and runtime environment are working.
 
-### Step 2: Test the real ARMv7 JIT
+### ARMv7 Step 2: Test the real ARMv7 JIT
 
 The goal is to validate the ARMv7-A native codegen, not the emulator.
 Drop `--emu` so the CLI uses the real JIT backend:
@@ -694,6 +729,6 @@ colima ssh -- qemu-arm-static \
 ## Practical Rules
 
 - Use `native` for normal runs; it's the only real execution backend today.
-- Use `--emu64` / `--emu32` when you suspect ARM64 codegen vs generic MachineIR semantics divergence — the reference emulator runs the same MIR through a non-ISA interpreter.
+- Use `--emu64` / `--emu32` when you suspect native codegen vs generic MachineIR semantics divergence — the reference emulator runs the same MIR through a non-ISA interpreter.
 - Use `native_index.txt` (via `SF_NATIVE_DUMP_DIR` + `ir-dump` feature) for static meaning and `samply-for-ai` with jitdump for runtime hotness.
 - If `base`, `fusion`, `micro-jit`, `function-trace`, or `SF_JIT_MAP` come up in old notes, scripts, or external docs: those are obsolete. The current names are `native`, `jit`, `call-trace`, and jitdump respectively.

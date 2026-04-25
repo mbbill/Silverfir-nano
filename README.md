@@ -46,20 +46,22 @@ Silverfir-nano closes that gap: a single small engine that verifies and
 JITs the guest on the device itself, on everything from an M4 laptop to a
 tiny MCU.
 
-## One engine, from x86_64 to Cortex-M
+## One engine, from x86_64 and RV64GC to Cortex-M
 
-Silverfir-nano has four native backends:
+Silverfir-nano has five native backends:
 
 - **x86_64**
 - **ARM64 (A64)**
+- **RISC-V 64 (RV64GC)**
 - **ARMv7-A (A32)**
 - **ARMv7-M and above (Thumb-2)** — tested through ARMv8-M / Cortex-M33
 
 They all share the same frontend, middle-end, and register allocator.
-Codegen quality doesn't degrade as you step down to smaller targets: the
-same compiler that produces Cranelift-competitive output on Apple M4 also
-runs on a Raspberry Pi Pico 2 (RP2350, Cortex-M33), emitting native Thumb-2
-into a small executable SRAM arena and running it in place.
+Codegen quality doesn't degrade as you move across ISAs or step down to
+smaller targets: the same compiler that produces Cranelift-competitive output
+on Apple M4 also emits RV64GC code for Linux/QEMU validation and runs on a
+Raspberry Pi Pico 2 (RP2350, Cortex-M33), emitting native Thumb-2 into a small
+executable SRAM arena and running it in place.
 
 Most WebAssembly runtimes aimed at microcontrollers are interpreters, often
 with instruction fusion or a threaded dispatcher on top. Silverfir-nano takes
@@ -158,6 +160,9 @@ python3 scripts/check.py fast
 
 # Full gate: workspace tests, full feature matrix, target matrix, spectests, and WASI tests.
 python3 scripts/check.py full
+
+# Show the full platform-specific plan without running subprocesses.
+python3 scripts/check.py full --release-only --default-targets --dry-run
 
 # Forward extra spectest arguments after --.
 python3 scripts/check.py fast -- i32 --log-level info

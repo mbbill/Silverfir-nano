@@ -2,9 +2,9 @@
 //!
 //! Executable memory is mapped RW and flipped to RX on each finalize via
 //! `mprotect`. The instruction cache is flushed per-architecture: aarch64
-//! and x86_64 use the compiler-builtins `__clear_cache`; ARM32 uses the
-//! Linux `cacheflush` syscall directly because `rust-lld` does not
-//! resolve the builtin on musl.
+//! and x86_64 use the compiler-builtins `__clear_cache`; ARM32 and RV64 use
+//! Linux cache-flush syscalls directly because `rust-lld` does not resolve
+//! the builtin on musl.
 //!
 //! Guarded memory is a `PROT_NONE` reservation plus per-page `mprotect` to
 //! `PROT_READ|PROT_WRITE` on `commit_guarded`.
@@ -55,12 +55,37 @@ unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     }
 }
 
-#[cfg(not(any(sf_backend_arm64, sf_backend_armv7a)))]
+#[cfg(sf_backend_riscv64)]
+#[inline]
+unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
+    // RISC-V Linux provides a dedicated icache-flush syscall because `fence.i`
+    // is local to one hart and a process may migrate. Use the syscall for the
+    // normal path and fall back to a local fence for older environments.
+    const SYS_RISCV_FLUSH_ICACHE: usize = 259;
+    const SYS_RISCV_FLUSH_ICACHE_ALL: usize = 0;
+
+    let rc: usize;
+    unsafe {
+        core::arch::asm!(
+            "ecall",
+            inlateout("a0") start as usize => rc,
+            in("a1") end as usize,
+            in("a2") SYS_RISCV_FLUSH_ICACHE_ALL,
+            in("a7") SYS_RISCV_FLUSH_ICACHE,
+            options(nostack),
+        );
+        if (rc as isize) < 0 {
+            core::arch::asm!("fence.i", options(nostack));
+        }
+    }
+}
+
+#[cfg(not(any(sf_backend_arm64, sf_backend_armv7a, sf_backend_riscv64)))]
 unsafe extern "C" {
     fn __clear_cache(start: *mut u8, end: *mut u8);
 }
 
-#[cfg(not(any(sf_backend_arm64, sf_backend_armv7a)))]
+#[cfg(not(any(sf_backend_arm64, sf_backend_armv7a, sf_backend_riscv64)))]
 #[inline]
 unsafe fn clear_instruction_cache(start: *mut u8, end: *mut u8) {
     unsafe { __clear_cache(start, end) };

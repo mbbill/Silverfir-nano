@@ -148,7 +148,13 @@ struct FunctionEmitSummary {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum PendingPatchEncoding {
-    #[cfg(any(sf_backend_arm64, sf_backend_x64, sf_backend_emu64, sf_backend_emu32))]
+    #[cfg(any(
+        sf_backend_arm64,
+        sf_backend_riscv64,
+        sf_backend_x64,
+        sf_backend_emu64,
+        sf_backend_emu32
+    ))]
     U64,
     #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
     MovwMovt,
@@ -229,7 +235,13 @@ fn patch_code_buffer_word(
     value: usize,
 ) {
     match patch_encoding(active_backend) {
-        #[cfg(any(sf_backend_arm64, sf_backend_x64, sf_backend_emu64, sf_backend_emu32))]
+        #[cfg(any(
+            sf_backend_arm64,
+            sf_backend_riscv64,
+            sf_backend_x64,
+            sf_backend_emu64,
+            sf_backend_emu32
+        ))]
         PendingPatchEncoding::U64 => executable.patch_u64(code_offset, value as u64),
         #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
         PendingPatchEncoding::MovwMovt => {
@@ -259,6 +271,8 @@ fn patch_encoding(active_backend: arch::NativeBackend) -> PendingPatchEncoding {
         arch::NativeBackend::Armv7a => PendingPatchEncoding::MovwMovt,
         #[cfg(sf_backend_thumbm)]
         arch::NativeBackend::ThumbM => PendingPatchEncoding::MovwMovt,
+        #[cfg(sf_backend_riscv64)]
+        arch::NativeBackend::Riscv64 => PendingPatchEncoding::U64,
         #[cfg(sf_backend_x64)]
         arch::NativeBackend::X86_64 => PendingPatchEncoding::U64,
         #[cfg(sf_backend_emu64)]

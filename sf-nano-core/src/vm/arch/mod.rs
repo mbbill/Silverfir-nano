@@ -25,13 +25,15 @@ use crate::vm::arch::common::types::FunctionArtifact;
 pub(crate) mod common;
 #[cfg(any(sf_backend_emu64, sf_backend_emu32))]
 pub(crate) mod emulator;
-#[cfg(any(sf_backend_arm64, sf_backend_x64))]
+#[cfg(any(sf_backend_arm64, sf_backend_x64, sf_backend_riscv64))]
 mod shared_64;
 
 #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
 pub(crate) mod arm32;
 #[cfg(sf_backend_arm64)]
 pub(crate) mod arm64;
+#[cfg(sf_backend_riscv64)]
+pub(crate) mod riscv64;
 #[cfg(sf_backend_x64)]
 pub(crate) mod x86_64;
 
@@ -44,6 +46,8 @@ pub(crate) enum NativeBackend {
     Armv7a,
     #[cfg(sf_backend_thumbm)]
     ThumbM,
+    #[cfg(sf_backend_riscv64)]
+    Riscv64,
     #[cfg(sf_backend_x64)]
     X86_64,
     #[cfg(sf_backend_emu64)]
@@ -64,6 +68,8 @@ pub(crate) fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
         NativeBackend::Armv7a => arm32::abi::compile_backend_config(),
         #[cfg(sf_backend_thumbm)]
         NativeBackend::ThumbM => arm32::abi::compile_backend_config(),
+        #[cfg(sf_backend_riscv64)]
+        NativeBackend::Riscv64 => riscv64::abi::compile_backend_config(),
         #[cfg(sf_backend_x64)]
         NativeBackend::X86_64 => x86_64::abi::compile_backend_config(),
         #[cfg(sf_backend_emu64)]
@@ -83,6 +89,8 @@ impl NativeBackend {
             Self::Armv7a => "armv7a",
             #[cfg(sf_backend_thumbm)]
             Self::ThumbM => "thumbm",
+            #[cfg(sf_backend_riscv64)]
+            Self::Riscv64 => "riscv64",
             #[cfg(sf_backend_x64)]
             Self::X86_64 => "x86_64",
             #[cfg(sf_backend_emu64)]
@@ -108,6 +116,11 @@ const fn compiled_native_backend() -> Option<NativeBackend> {
     #[cfg(sf_backend_thumbm)]
     {
         return Some(NativeBackend::ThumbM);
+    }
+
+    #[cfg(sf_backend_riscv64)]
+    {
+        return Some(NativeBackend::Riscv64);
     }
 
     #[cfg(sf_backend_x64)]
@@ -245,6 +258,22 @@ pub(crate) fn dispatch_compile_module(
                 })
                 .collect())
         }
+        #[cfg(sf_backend_riscv64)]
+        NativeBackend::Riscv64 => {
+            let entries =
+                shared_64::compile_module_64::<riscv64::backend::Riscv64Backend>(module, compiled)?;
+            Ok(entries
+                .into_iter()
+                .map(|opt| {
+                    opt.map(|e| CompiledArchEntry {
+                        entry: e.entry,
+                        text_len: e.text_len,
+                        #[cfg(sf_ir_dump)]
+                        debug_regions: e.debug_regions,
+                    })
+                })
+                .collect())
+        }
         #[cfg(sf_backend_emu64)]
         NativeBackend::Emu64 => Ok(collections::Vec::new()),
         #[cfg(sf_backend_emu32)]
@@ -276,6 +305,10 @@ pub(crate) fn dispatch_compile_function_into_buffer(
         #[cfg(sf_backend_x64)]
         NativeBackend::X86_64 => common::pipeline::compile_function_into_buffer::<
             x86_64::backend::X86_64Backend,
+        >(compiled, function, executable),
+        #[cfg(sf_backend_riscv64)]
+        NativeBackend::Riscv64 => common::pipeline::compile_function_into_buffer::<
+            riscv64::backend::Riscv64Backend,
         >(compiled, function, executable),
         #[cfg(sf_backend_emu64)]
         NativeBackend::Emu64 => Err(WasmError::invalid(
@@ -320,6 +353,12 @@ pub(crate) fn dispatch_emit_nop_padding(
                 buf, bytes,
             )
         }
+        #[cfg(sf_backend_riscv64)]
+        NativeBackend::Riscv64 => {
+            <riscv64::backend::Riscv64Backend as common::backend::ArchBackend>::emit_nop_padding(
+                buf, bytes,
+            )
+        }
         #[cfg(sf_backend_emu64)]
         NativeBackend::Emu64 => {}
         #[cfg(sf_backend_emu32)]
@@ -350,6 +389,8 @@ pub(crate) fn dispatch_eval(
         NativeBackend::ThumbM => common::eval::eval(spec, code, store, args, backend_name),
         #[cfg(sf_backend_x64)]
         NativeBackend::X86_64 => common::eval::eval(spec, code, store, args, backend_name),
+        #[cfg(sf_backend_riscv64)]
+        NativeBackend::Riscv64 => common::eval::eval(spec, code, store, args, backend_name),
         #[cfg(sf_backend_emu64)]
         NativeBackend::Emu64 => emulator::eval(spec, code, store, args, backend_name),
         #[cfg(sf_backend_emu32)]

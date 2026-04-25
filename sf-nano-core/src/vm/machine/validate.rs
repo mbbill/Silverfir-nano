@@ -352,7 +352,8 @@ impl MachineProgram {
                 self.validate_reg_storage_type(*dst_hi, MachineStorageType::GpWord, config)?;
                 if dst_lo == dst_hi {
                     return Err(WasmError::internal(
-                        "machine Int64MulFromSignExt32 requires distinct low/high destinations".into(),
+                        "machine Int64MulFromSignExt32 requires distinct low/high destinations"
+                            .into(),
                     ));
                 }
             }

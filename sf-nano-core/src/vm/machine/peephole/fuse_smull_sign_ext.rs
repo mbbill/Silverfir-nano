@@ -100,9 +100,8 @@ pub(super) fn fuse_smull_sign_ext(block: &mut MachineBlock, total_reg_count: usi
 
     let mut sign_ext_of: collections::Vec<Option<MachineReg>> =
         collections::vec![None; total_reg_count];
-    let mut value_alias: collections::Vec<MachineReg> = (0..total_reg_count as u16)
-        .map(MachineReg)
-        .collect();
+    let mut value_alias: collections::Vec<MachineReg> =
+        (0..total_reg_count as u16).map(MachineReg).collect();
     let mut spills: collections::Vec<TrackedSpill> = collections::Vec::new();
 
     let canon = |r: MachineReg, alias: &[MachineReg]| -> MachineReg {
@@ -186,8 +185,7 @@ pub(super) fn fuse_smull_sign_ext(block: &mut MachineBlock, total_reg_count: usi
                 width: MachineMemWidth::U32,
                 ..
             } => {
-                spills
-                    .retain(|e| !(e.addr.base == addr.base && e.addr.offset == addr.offset));
+                spills.retain(|e| !(e.addr.base == addr.base && e.addr.offset == addr.offset));
                 let captured_sign = sign_ext_of.get(src_reg.0 as usize).copied().flatten();
                 let captured_alias = canon(*src_reg, &value_alias);
                 spills.push(TrackedSpill {
@@ -198,8 +196,7 @@ pub(super) fn fuse_smull_sign_ext(block: &mut MachineBlock, total_reg_count: usi
                 });
             }
             MachineInstKind::Store { addr, .. } => {
-                spills
-                    .retain(|e| !(e.addr.base == addr.base && e.addr.offset == addr.offset));
+                spills.retain(|e| !(e.addr.base == addr.base && e.addr.offset == addr.offset));
             }
             MachineInstKind::Load {
                 dst,
@@ -207,14 +204,9 @@ pub(super) fn fuse_smull_sign_ext(block: &mut MachineBlock, total_reg_count: usi
                 width: MachineMemWidth::U32,
                 ..
             } => {
-                let recovered = spills
-                    .iter()
-                    .rev()
-                    .find(|e| {
-                        e.addr.base == addr.base
-                            && e.addr.offset == addr.offset
-                            && e.stored_reg == *dst
-                    });
+                let recovered = spills.iter().rev().find(|e| {
+                    e.addr.base == addr.base && e.addr.offset == addr.offset && e.stored_reg == *dst
+                });
                 let idx = dst.0 as usize;
                 if idx < sign_ext_of.len() {
                     if let Some(spill) = recovered {

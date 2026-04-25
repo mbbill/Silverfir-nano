@@ -57,10 +57,16 @@ loses confidence, stalling the load for 5+ extra cycles. This was measured as
 a **17% regression on SHA-256** on Apple Silicon when using the scratch-base
 form.
 
-**Rule**: When emitting `IndexedLoad`/`IndexedStore` with `offset != 0`, fold
-the offset into the **index** register and keep the original `base` as the
-load/store base operand. Do NOT compute `base + extend(index)` into a scratch
-register and use `[scratch, #offset]`.
+**Rule**: When the ISA has a real base+index addressing form and
+`offset != 0`, fold the offset into the **index** register and keep the
+original `base` as the load/store base operand. Do NOT compute
+`base + extend(index)` into a scratch register and use `[scratch, #offset]`.
+
+ISAs without base+index memory operands, such as RISC-V, cannot preserve that
+exact physical base register. They should still avoid extra scratch pressure:
+compute the effective address once, use the load/store immediate field when the
+static offset fits, and fold larger offsets into the address before acquiring
+other long-lived scratch operands.
 
 ### Per-architecture emit strategy
 
@@ -100,14 +106,37 @@ displacement is part of the instruction encoding, not a computed register.
 
 Similar to ARM64 but 32-bit (no UXTW needed). Same stable-base rule applies.
 
+#### RISC-V 64
+
+RISC-V loads and stores have only `[base + signed-12-bit-offset]` addressing.
+There is no base+index memory form, so the backend computes
+`addr = base + extend(index)` into a scratch register:
+
+```
+offset fits signed 12 bits:
+  ADD   tmp, base, index
+  LW/LD dst, offset(tmp)
+
+offset does not fit:
+  ADD   tmp, base, index
+  LI    off_tmp, offset
+  ADD   tmp, tmp, off_tmp
+  LW/LD dst, 0(tmp)
+```
+
+For indexed stores, fold an out-of-range offset into `tmp` before loading or
+materializing the source value. Otherwise the address scratch, source scratch,
+and large-offset scratch can overlap live ranges and exhaust a small scratch
+pool.
+
 ### Summary table
 
-| Scenario | ARM64 | x86_64 | ARMv7 |
-|----------|-------|--------|-------|
-| offset=0, no extend | `LDR [base, index]` (1) | `MOV [base+index]` (1) | `LDR [base, index]` (1) |
-| offset=0, UXTW | `LDR [base, W, UXTW]` (1) | `MOVZX+MOV [base+idx]` (2) | N/A (32-bit) |
-| offset!=0, UXTW | `MOV+ADD+LDR [base,tmp]` (3) | `MOVZX+MOV [base+idx+off]` (2) | `ADD+LDR [base+idx,off]` (2) |
-| offset!=0, no extend | `MOV+ADD+LDR [base,tmp]` (3) | `MOV [base+idx+off]` (1) | `ADD+LDR [base+idx,off]` (2) |
+| Scenario | ARM64 | x86_64 | ARMv7 | RV64 |
+|----------|-------|--------|-------|------|
+| offset=0, no extend | `LDR [base, index]` (1) | `MOV [base+index]` (1) | `LDR [base, index]` (1) | `ADD+LD [tmp]` (2) |
+| offset=0, UXTW | `LDR [base, W, UXTW]` (1) | `MOVZX+MOV [base+idx]` (2) | N/A (32-bit) | `ZEXT.W+ADD+LD [tmp]` (3) |
+| offset!=0, UXTW | `MOV+ADD+LDR [base,tmp]` (3) | `MOVZX+MOV [base+idx+off]` (2) | `ADD+LDR [base+idx,off]` (2) | fits: `ZEXT.W+ADD+LD off(tmp)`; large: add offset first |
+| offset!=0, no extend | `MOV+ADD+LDR [base,tmp]` (3) | `MOV [base+idx+off]` (1) | `ADD+LDR [base+idx,off]` (2) | fits: `ADD+LD off(tmp)`; large: add offset first |
 
 ---
 
@@ -127,6 +156,7 @@ Each backend maps this to its most efficient form:
 - **ARM64**: `CMP + B.cond` (hardware macro-fused). Also `CBZ`/`CBNZ`/`TBZ`/`TBNZ` for zero-compare patterns.
 - **x86_64**: `CMP + Jcc` (hardware macro-fused on Intel/AMD).
 - **ARMv7**: `CMP + B.cond` or IT-block conditional execution.
+- **RV64**: `SLT`/`SLTU`/`SUB`-style condition setup plus `BEQ`/`BNE`/`BLT`/`BGE` forms where directly encodable.
 
 Float compares are NOT fused in the shared peephole because x86_64 requires
 multi-instruction NaN handling that cannot be expressed as a single branch.
@@ -157,3 +187,4 @@ The NOP encoding is architecture-specific:
 - ARM64: `0xd503201f` (NOP)
 - x86_64: `0xCC` (INT3)
 - ARMv7: `0xe1a00000` (MOV R0, R0)
+- RV64: `0x00000013` (ADDI X0, X0, 0)
