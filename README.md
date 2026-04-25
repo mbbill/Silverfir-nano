@@ -69,7 +69,7 @@ Silverfir-nano has six native backends:
 - **RISC-V 64 (RV64GC)**
 - **RISC-V 32 (RV32GC)**
 - **ARMv7-A (A32)**
-- **ARMv7-M and above (Thumb-2)** — tested through ARMv8-M / Cortex-M33
+- **ARMv7-M and above (Thumb-2)**
 
 They all share the same frontend, middle-end, and register allocator.
 Codegen quality doesn't degrade as you move across ISAs or step down to
