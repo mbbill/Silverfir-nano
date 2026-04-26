@@ -18,9 +18,9 @@ use core::sync::atomic::{AtomicBool, Ordering};
 
 use crate::config::CODE_ARENA_BYTES;
 
-/// 16-byte-aligned executable arena. Aligned past the 4-byte Thumb-2
-/// instruction minimum so the JIT can place 8- or 16-byte literal
-/// pools without realignment fixups at the arena base.
+/// 16-byte-aligned executable arena. This satisfies both ARM and RV32
+/// codegen and gives the JIT room to place literal pools without
+/// realignment fixups at the arena base.
 #[repr(align(16))]
 struct CodeArena {
     // Accessed only via raw-pointer casts in `sf_os_alloc_executable`;
@@ -65,7 +65,7 @@ pub extern "C" fn sf_os_free_executable(_base: *mut u8, _capacity: usize) {
     CODE_ARENA_TAKEN.store(false, Ordering::Release);
 }
 
-/// No-op on RP2350 M33: SRAM is always writable without MPU setup,
+/// No-op on RP2350: SRAM is always writable without MPU setup,
 /// and we have no W^X page permissions to toggle.
 #[unsafe(no_mangle)]
 pub extern "C" fn sf_os_begin_write_executable(_base: *mut u8, _capacity: usize) {}

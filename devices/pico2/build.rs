@@ -1,6 +1,5 @@
-//! Copy the arch-appropriate `memory.x` into OUT_DIR so the runtime
-//! crate's `link.x` (cortex-m-rt for ARM, riscv-rt for RV32) can find
-//! it, then build the `wasm-demo/` sub-crate as a
+//! Copy the arch-appropriate `memory.x` into OUT_DIR for the active
+//! linker script, then build the `wasm-demo/` sub-crate as a
 //! `wasm32-unknown-unknown` release artifact so `demo_host.rs`
 //! can `include_bytes!` the result.
 
@@ -14,10 +13,9 @@ fn main() {
     println!("cargo:rustc-link-search={}", out.display());
 
     // Pick the per-arch memory.x:
-    //   ARM (target_arch = "arm")     → memory.arm.x  (FLASH/RAM, anchors .vector_table)
-    //   RV32 (target_arch = "riscv32") → memory.rv.x  (REGION_* aliases, anchors .text)
-    // Both files share the physical FLASH/RAM regions; only the linker-script
-    // glue differs to match the rt crate's expectations. See the file headers
+    //   ARM (target_arch = "arm")     -> memory.arm.x  (cortex-m-rt supplement)
+    //   RV32 (target_arch = "riscv32") -> memory.rv.x  (standalone linker script)
+    // Both files share the physical FLASH/RAM regions. See the file headers
     // for details.
     let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let memory_x: &[u8] = match arch.as_str() {

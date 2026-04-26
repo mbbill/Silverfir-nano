@@ -1,14 +1,14 @@
 # Silverfir-nano on Raspberry Pi Pico 2
 
 `devices/pico2` is the real-hardware bring-up target for running the
-Silverfir-nano WebAssembly JIT on the RP2350 Cortex-M33 in a `no_std`
-firmware image. It builds a Wasm demo guest, verifies/instantiates it through
-`sf-nano-core`, JITs it to Thumb-2 in SRAM, and drives a 160x128 ST7735s LCD
-from the Wasm-rendered framebuffer.
+Silverfir-nano WebAssembly JIT on the RP2350 in a `no_std` firmware image.
+It builds a Wasm demo guest, verifies/instantiates it through `sf-nano-core`,
+JITs it to native code in SRAM, and drives a 160x128 ST7735s LCD from the
+Wasm-rendered framebuffer.
 
 This is not an interpreter demo. The guest program stays as a `.wasm` artifact
-until boot time, then the Pico 2 emits and executes native Thumb-2 code on the
-device.
+until boot time, then the Pico 2 emits and executes native code for the active
+boot architecture.
 
 ## Demo Results
 
@@ -17,10 +17,12 @@ Pico-LCD-1.8 shield, release firmware, 150 MHz system clock, and 40 MHz SPI.
 The FPS number includes rendering, host import overhead, overlay stamping, and
 DMA transfer to the panel.
 
-| Demo | What it stresses | Result |
+| Target / demo | What it stresses | Result |
 | --- | --- | --- |
-| [Mandelbrot](https://youtu.be/g3rskqAUEYo) | Q16.16 fixed-point fractal, hot `i64.mul` lowering, symmetry copy, host `push_frame` import | 19 fps |
-| [Cube](https://youtu.be/ULs2tGhGPfs) | all-`i32` geometry, Q15 trig LUT, projection, triangle rasterization, face culling/shading | 66 fps |
+| ARM Wasm/JIT [Mandelbrot](https://youtu.be/g3rskqAUEYo) | Q16.16 fixed-point fractal, hot `i64.mul` lowering, symmetry copy, host `push_frame` import | 19 fps |
+| ARM Wasm/JIT [Cube](https://youtu.be/ULs2tGhGPfs) | all-`i32` geometry, Q15 trig LUT, projection, triangle rasterization, face culling/shading | 66 fps |
+| RV32 native Mandelbrot | Same Mandelbrot kernel compiled directly by rustc | 44 fps |
+| RV32 Wasm/JIT Mandelbrot | Same Wasm guest JIT-compiled for Hazard3 | 13 fps |
 
 ### Mandelbrot
 
@@ -64,7 +66,7 @@ after the copy completes.
 
 Tested setup:
 
-- Raspberry Pi Pico 2 or Pico 2 W target board, RP2350, Cortex-M33.
+- Raspberry Pi Pico 2 or Pico 2 W target board, RP2350.
 - SWD probe, usually a Pico 1 flashed with Raspberry Pi `debugprobe` firmware.
 - Waveshare Pico-LCD-1.8 shield, 160x128 ST7735s, RGB565.
 
@@ -149,11 +151,13 @@ The aliases expand to `cargo run --target <triple>` and the runner in
 probe-rs run --chip RP235x --protocol swd
 ```
 
-then streams `defmt` logs over RTT until you stop it. The chip name `RP235x`
-is the same for both core types — probe-rs picks the active boot core
-automatically. To switch between boot architectures on a board, flash a UF2
-of the desired family (the IMAGE_DEF block in flash tells the boot ROM which
-cores to start).
+On the ARM/Cortex-M33 path it then streams `defmt` logs over RTT until you
+stop it. With probe-rs 0.31.0, the `RP235x` chip metadata exposes the M33
+cores but not the Hazard3 cores, so RV32 images can be built and programmed
+but `probe-rs run` cannot attach to the RISC-V core or stream RTT after the
+reset into RV mode. To switch between boot architectures on a board, flash a
+UF2 or ELF of the desired family; the IMAGE_DEF block in flash tells the Boot
+ROM which cores to start.
 
 To build a USB-BOOTSEL-flashable UF2:
 
@@ -198,8 +202,9 @@ lives in `src/arch/`.
 The `build.rs` file does two jobs:
 
 - Picks `memory.arm.x` or `memory.rv.x` based on `CARGO_CFG_TARGET_ARCH` and
-  copies it into Cargo's output directory so the rt crate's `link.x` can
-  link the RP2350 flash/RAM layout.
+  copies it into Cargo's output directory. ARM uses it as the supplement pulled
+  in by `cortex-m-rt`'s `link.x`; RV32 uses `memory.rv.x` as a standalone
+  linker script matching the upstream `rp235x-hal` Pico 2 RISC-V examples.
 - Builds `wasm-demo/` as `wasm32-unknown-unknown --release`, then copies the
   resulting `sf_nano_pico2_wasm_demo.wasm` to `OUT_DIR/demo.wasm` for
   `include_bytes!`.
@@ -228,9 +233,9 @@ JIT work. That installs:
   `sf_os_alloc_executable`.
 
 RP2350 SRAM is executable without MPU permission changes in this firmware. The
-write-finish hook still executes `dsb` + `isb` so newly emitted instructions
-are visible to the Cortex-M33 fetch pipeline before the JIT jumps into them.
-There is no instruction cache to flush on RP2350.
+write-finish hook still executes the architecture-specific store / instruction
+barriers so newly emitted instructions are visible before the JIT jumps into
+them. There is no instruction cache to flush on RP2350.
 
 `flip-link` is used so native stack overflow faults instead of silently
 corrupting the large heap/code-arena regions in `.bss`.

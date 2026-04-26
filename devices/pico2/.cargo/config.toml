@@ -1,30 +1,23 @@
 # Cargo configuration for the Pico 2 / Pico 2 W firmware.
 #
-# RP2350 boots either as 2× Cortex-M33 (ARM) or 2× Hazard3 (RV32IMAC).
-# Same chip, same memory map, same peripherals; the boot ROM picks which
-# core set runs based on the IMAGE_DEF block in flash. We support both
-# from a single firmware crate via per-target deps in Cargo.toml and the
-# `[target.<triple>]` blocks below.
+# RP2350 boots either as two Cortex-M33 cores or two Hazard3 RV32IMAC
+# cores. Same chip, same memory map, same peripherals; the boot ROM picks
+# which core set runs based on the IMAGE_DEF block in flash.
 #
 # Toggle with the aliases:
-#   cargo arm-run     — flash & run the ARM/Cortex-M33 build
-#   cargo rv-run      — flash & run the RV32/Hazard3 build
-#   cargo arm-build   — release build only, ARM target
-#   cargo rv-build    — release build only, RV target
+#   cargo arm-run
+#   cargo rv-run
+#   cargo arm-build
+#   cargo rv-build
 #
-# Or pass `--target …` explicitly. There is intentionally no `[build] target`
-# pin so neither arch is privileged.
-#
-# Runner: probe-rs flashes the ELF over SWD via the debugprobe-firmware
-# Pico-1 attached to the target, then attaches to RTT and streams defmt.
-# The chip name `RP235x` is the same for both core types — probe-rs
-# selects the active boot core automatically.
+# Runner note: probe-rs 0.31.0 can flash RV32 images over the SWD-facing
+# M33 debug path, but the bundled RP235x chip metadata exposes only the
+# M33 cores. After reset into Hazard3 mode, RTT/debug attach is therefore
+# not available through this runner.
 
 [env]
 # defmt filters log levels at compile time via this env var. Without it
-# set, all `defmt::info!` / `error!` / etc. macros compile to no-ops and
-# the RTT buffer stays empty, so `probe-rs run` sees nothing. `trace`
-# enables every level; tighten later if build noise becomes an issue.
+# set, defmt::info/error macros compile to no-ops and RTT stays empty.
 DEFMT_LOG = "trace"
 
 [alias]
@@ -33,18 +26,13 @@ rv-run    = "run   --target riscv32imac-unknown-none-elf"
 arm-build = "build --target thumbv8m.main-none-eabihf"
 rv-build  = "build --target riscv32imac-unknown-none-elf"
 
-# ── ARM / Cortex-M33 ─────────────────────────────────────────────────────
+# ARM / Cortex-M33
 #
-# --nmagic:      turn off page alignment; saves flash.
-# -Tlink.x:      cortex-m-rt's master linker script (pulls in memory.x).
-# -Tdefmt.x:     defmt section layout, required by defmt-rtt.
-# -target-cpu:   tell LLVM to emit M33 instructions (DSP, optional CRC,
-#                MVE not used here but available).
-# -linker=flip-link: swap stack placement so overflow faults instead of
-#                silently corrupting BSS. Critical on MCU where our
-#                .bss holds a 320-KiB heap + 128-KiB code arena just
-#                below the default stack-top; without flip-link a
-#                stack overflow would scribble onto those.
+# --nmagic:    turn off page alignment; saves flash.
+# -Tlink.x:    cortex-m-rt's master linker script, which pulls memory.x.
+# -Tdefmt.x:   defmt section layout, required by defmt-rtt.
+# target-cpu:  ask LLVM for Cortex-M33 codegen.
+# flip-link:   place the stack so overflow faults instead of corrupting BSS.
 [target.thumbv8m.main-none-eabihf]
 rustflags = [
     "-C", "linker=flip-link",
@@ -55,28 +43,20 @@ rustflags = [
 ]
 runner = "probe-rs run --chip RP235x --protocol swd"
 
-# ── RV32 / Hazard3 ───────────────────────────────────────────────────────
+# RV32 / Hazard3
 #
-# Hazard3 is RV32IMAC + Zba/Zbb/Zbs/Zcmp/Zicsr/Zifencei. No F/D extension.
-# The base `riscv32imac-unknown-none-elf` triple covers IMAC; the Zb*
-# extensions can be enabled later via `target-feature` once we confirm
-# rust+LLVM accept them on this triple.
+# Hazard3 is RV32IMAC plus optional bit-manipulation extensions. The base
+# riscv32imac-unknown-none-elf target is enough for first bring-up.
 #
-# `link.x` and `defmt.x` here resolve to riscv-rt's linker scripts (the
-# `Tlink.x` flag is the same; the file content differs per rt crate).
-#
-# Unlike cortex-m-rt, riscv-rt's `link.x` does NOT auto-include memory.x
-# or device.x — both must be passed explicitly, BEFORE `-Tlink.x`:
-#   memory.x — our MEMORY block + REGION_ALIAS for REGION_TEXT etc.
-#   device.x — rp235x-pac's per-IRQ `PROVIDE(NAME = DefaultHandler)`
-#              fragment, so all RP2350 vector entries default to the
-#              riscv-rt DefaultHandler instead of failing to link.
+# memory.x is a standalone RP2350 RISC-V linker script based on the
+# upstream rp235x-hal examples. It replaces riscv-rt's link.x so reset
+# code starts at flash origin and IMAGE_DEF is embedded inside .text,
+# which is the known-good Pico 2 RISC-V boot layout. defmt.x is still
+# supplied separately for defmt-rtt.
 [target.riscv32imac-unknown-none-elf]
 rustflags = [
     "-C", "link-arg=--nmagic",
     "-C", "link-arg=-Tmemory.x",
-    "-C", "link-arg=-Tdevice.x",
-    "-C", "link-arg=-Tlink.x",
     "-C", "link-arg=-Tdefmt.x",
 ]
 runner = "probe-rs run --chip RP235x --protocol swd"

@@ -1,5 +1,5 @@
 //! Native-CPU demo — same selected render kernel as `demo_host`,
-//! compiled straight to Thumb-2 by rustc. Serves as the performance
+//! compiled straight to the active target by rustc. Serves as the performance
 //! ceiling the Wasm JIT is measured against.
 //!
 //! `cargo run --bin native_demo --release`.

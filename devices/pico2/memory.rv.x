@@ -1,25 +1,16 @@
-/* Memory map for Raspberry Pi Pico 2 / Pico 2 W (RP2350), Hazard3 RV mode.
+/* Standalone linker script for Raspberry Pi Pico 2 / Pico 2 W (RP2350),
+ * Hazard3 RV32IMAC mode.
  *
- * Same physical layout as the ARM build (`memory.arm.x`); the differences
- * are linker-script naming conventions and where `.start_block` sits.
+ * This follows the upstream rp235x-hal RISC-V example layout: the riscv-rt
+ * reset code starts at 0x1000_0000, and the RP2350 IMAGE_DEF block is kept
+ * inside .text shortly after that reset stub. The boot ROM scans the first
+ * 4 KiB for IMAGE_DEF, but when no explicit entry-point item is present it
+ * expects execution to begin at the image start. Keeping _start at flash
+ * origin therefore matters.
  *
- * - cortex-m-rt's link.x consumes FLASH/RAM directly and ships a
- *   `.vector_table` section at the start of flash to anchor `INSERT
- *   AFTER`.
- * - riscv-rt's link.x consumes REGION_TEXT/REGION_RODATA/REGION_DATA/
- *   REGION_BSS/REGION_HEAP/REGION_STACK and has no `.vector_table` —
- *   `.text` itself is the first thing in REGION_TEXT.
- *
- * For the RP2350 boot ROM to recognize this image, the IMAGE_DEF block
- * (in `.start_block`) must live in the first 4 KiB of flash. Under the
- * RV layout we reserve 256 bytes at the start of flash for it and move
- * `_stext` past those bytes; the `.text` section then lands right after
- * the boot block.
- *
- * Naming-convention shim: rp_binary_info references `__sidata` /
- * `__sdata` / `__edata` (cortex-m-rt-style double underscore). riscv-rt
- * provides single-underscore equivalents. Alias one to the other so the
- * link succeeds without patching rp_binary_info.
+ * This file replaces riscv-rt's link.x for RV builds. It is based on
+ * riscv-rt 0.12's link.x plus the RP2350 boot metadata sections used by
+ * rp235x-hal-examples.
  */
 
 MEMORY {
@@ -29,82 +20,236 @@ MEMORY {
     /* SRAM banks 0-7, 512 KiB total, striped across banks for bandwidth. */
     RAM   : ORIGIN = 0x20000000, LENGTH = 512K
 
-    /* SRAM banks 8 and 9 use direct (non-striped) mapping. Reserved for
-     * future per-core-dedicated regions; unused in milestone 1. */
+    /* SRAM banks 8 and 9 use direct mapping. */
     SRAM8 : ORIGIN = 0x20080000, LENGTH = 4K
     SRAM9 : ORIGIN = 0x20081000, LENGTH = 4K
 }
 
-/* riscv-rt expects REGION_* names, not FLASH/RAM. Alias all of them onto
- * the physical regions defined above. */
-REGION_ALIAS("REGION_TEXT",   FLASH);
-REGION_ALIAS("REGION_RODATA", FLASH);
-REGION_ALIAS("REGION_DATA",   RAM);
-REGION_ALIAS("REGION_BSS",    RAM);
-REGION_ALIAS("REGION_HEAP",   RAM);
-REGION_ALIAS("REGION_STACK",  RAM);
+PROVIDE(_stext = ORIGIN(FLASH));
+PROVIDE(_stack_start = ORIGIN(RAM) + LENGTH(RAM));
+PROVIDE(_max_hart_id = 0);
 
-/* Per-hart native stack. The 320 KiB Rust heap (in .bss via
- * embedded-alloc) + 128 KiB JIT code arena + other .data/.bss already
- * consume ~460 KiB of the 512 KiB RAM, leaving roughly 52 KiB for stack
- * + heap-region (we keep _heap_size = 0 since embedded-alloc owns the
- * real heap). 32 KiB is a comfortable native stack for sf-nano-core's
- * compile path; the Wasm operand stack (config::WASM_STACK_BYTES, also
- * 32 KiB) is allocated separately from the embedded-alloc heap.
- *
- * The ARM build sidesteps this by using `flip-link`, which puts the
- * stack at the top of RAM growing down so an overflow faults instead
- * of corrupting .bss. flip-link only supports cortex-m-rt today, so
- * the RV build relies on the explicit reservation below. */
+/* The native stack must coexist with the static Rust heap and the JIT code
+ * arena. 32 KiB matched the earlier RV layout and leaves room for sf-nano. */
 PROVIDE(_hart_stack_size = 32K);
+PROVIDE(_heap_size = 0);
 
-/* Reserve 256 bytes at the start of flash for the boot block. The
- * IMAGE_DEF struct in rp235x-hal is well under 64 bytes; this leaves
- * comfortable headroom and stays well within the boot ROM's 4 KiB cap.
- * `_stext` overrides riscv-rt's default of `ORIGIN(REGION_TEXT)` so
- * `.text` lands after the boot block instead of at the very same
- * address. */
-_stext = ORIGIN(REGION_TEXT) + 0x100;
+PROVIDE(InstructionMisaligned = ExceptionHandler);
+PROVIDE(InstructionFault = ExceptionHandler);
+PROVIDE(IllegalInstruction = ExceptionHandler);
+PROVIDE(Breakpoint = ExceptionHandler);
+PROVIDE(LoadMisaligned = ExceptionHandler);
+PROVIDE(LoadFault = ExceptionHandler);
+PROVIDE(StoreMisaligned = ExceptionHandler);
+PROVIDE(StoreFault = ExceptionHandler);
+PROVIDE(UserEnvCall = ExceptionHandler);
+PROVIDE(SupervisorEnvCall = ExceptionHandler);
+PROVIDE(MachineEnvCall = ExceptionHandler);
+PROVIDE(InstructionPageFault = ExceptionHandler);
+PROVIDE(LoadPageFault = ExceptionHandler);
+PROVIDE(StorePageFault = ExceptionHandler);
 
-/* Place `.start_block` at the very start of flash, before riscv-rt's
- * `.text.dummy` advances the location counter to `_stext`. The
- * `.text.dummy (NOLOAD)` section then accounts for the 256-byte gap
- * without emitting any bytes itself. */
-SECTIONS {
-    .start_block ORIGIN(REGION_TEXT) : ALIGN(4)
-    {
-        __start_block_addr = .;
-        KEEP(*(.start_block));
-        KEEP(*(.boot_info));
-    } > FLASH
-} INSERT BEFORE .text.dummy;
+PROVIDE(SupervisorSoft = DefaultHandler);
+PROVIDE(MachineSoft = DefaultHandler);
+PROVIDE(SupervisorTimer = DefaultHandler);
+PROVIDE(MachineTimer = DefaultHandler);
+PROVIDE(SupervisorExternal = DefaultHandler);
+PROVIDE(MachineExternal = DefaultHandler);
 
-/* Picotool binary-info records, pointed at by IMAGE_DEF. */
-SECTIONS {
-    .bi_entries : ALIGN(4)
-    {
-        __bi_entries_start = .;
-        KEEP(*(.bi_entries));
-        . = ALIGN(4);
-        __bi_entries_end = .;
-    } > FLASH
-} INSERT AFTER .text;
+PROVIDE(DefaultHandler = DefaultInterruptHandler);
+PROVIDE(ExceptionHandler = DefaultExceptionHandler);
 
-/* Trailing boot block; used by picotool for image signatures. */
-SECTIONS {
-    .end_block : ALIGN(4)
-    {
-        __end_block_addr = .;
-        KEEP(*(.end_block));
-        __flash_binary_end = .;
-    } > FLASH
-} INSERT AFTER .bi_entries;
+PROVIDE(__pre_init = default_pre_init);
+PROVIDE(_setup_interrupts = default_setup_interrupts);
+
+PROVIDE(TIMER0_IRQ_0 = DefaultHandler);
+PROVIDE(TIMER0_IRQ_1 = DefaultHandler);
+PROVIDE(TIMER0_IRQ_2 = DefaultHandler);
+PROVIDE(TIMER0_IRQ_3 = DefaultHandler);
+PROVIDE(TIMER1_IRQ_0 = DefaultHandler);
+PROVIDE(TIMER1_IRQ_1 = DefaultHandler);
+PROVIDE(TIMER1_IRQ_2 = DefaultHandler);
+PROVIDE(TIMER1_IRQ_3 = DefaultHandler);
+PROVIDE(PWM_IRQ_WRAP_0 = DefaultHandler);
+PROVIDE(PWM_IRQ_WRAP_1 = DefaultHandler);
+PROVIDE(DMA_IRQ_0 = DefaultHandler);
+PROVIDE(DMA_IRQ_1 = DefaultHandler);
+PROVIDE(DMA_IRQ_2 = DefaultHandler);
+PROVIDE(DMA_IRQ_3 = DefaultHandler);
+PROVIDE(USBCTRL_IRQ = DefaultHandler);
+PROVIDE(PIO0_IRQ_0 = DefaultHandler);
+PROVIDE(PIO0_IRQ_1 = DefaultHandler);
+PROVIDE(PIO1_IRQ_0 = DefaultHandler);
+PROVIDE(PIO1_IRQ_1 = DefaultHandler);
+PROVIDE(PIO2_IRQ_0 = DefaultHandler);
+PROVIDE(PIO2_IRQ_1 = DefaultHandler);
+PROVIDE(IO_IRQ_BANK0 = DefaultHandler);
+PROVIDE(IO_IRQ_BANK0_NS = DefaultHandler);
+PROVIDE(IO_IRQ_QSPI = DefaultHandler);
+PROVIDE(IO_IRQ_QSPI_NS = DefaultHandler);
+PROVIDE(SIO_IRQ_FIFO = DefaultHandler);
+PROVIDE(SIO_IRQ_BELL = DefaultHandler);
+PROVIDE(SIO_IRQ_FIFO_NS = DefaultHandler);
+PROVIDE(SIO_IRQ_BELL_NS = DefaultHandler);
+PROVIDE(SIO_IRQ_MTIMECMP = DefaultHandler);
+PROVIDE(CLOCKS_IRQ = DefaultHandler);
+PROVIDE(SPI0_IRQ = DefaultHandler);
+PROVIDE(SPI1_IRQ = DefaultHandler);
+PROVIDE(UART0_IRQ = DefaultHandler);
+PROVIDE(UART1_IRQ = DefaultHandler);
+PROVIDE(ADC_IRQ_FIFO = DefaultHandler);
+PROVIDE(I2C0_IRQ = DefaultHandler);
+PROVIDE(I2C1_IRQ = DefaultHandler);
+PROVIDE(OTP_IRQ = DefaultHandler);
+PROVIDE(TRNG_IRQ = DefaultHandler);
+PROVIDE(PLL_SYS_IRQ = DefaultHandler);
+PROVIDE(PLL_USB_IRQ = DefaultHandler);
+PROVIDE(POWMAN_IRQ_POW = DefaultHandler);
+PROVIDE(POWMAN_IRQ_TIMER = DefaultHandler);
+PROVIDE(SW0_IRQ = DefaultHandler);
+PROVIDE(SW1_IRQ = DefaultHandler);
+PROVIDE(SW2_IRQ = DefaultHandler);
+PROVIDE(SW3_IRQ = DefaultHandler);
+PROVIDE(SW4_IRQ = DefaultHandler);
+PROVIDE(SW5_IRQ = DefaultHandler);
+
+PROVIDE(DefaultIrqHandler = DefaultInterruptHandler);
+PROVIDE(_mp_hook = default_mp_hook);
+PROVIDE(_start_trap = default_start_trap);
+
+SECTIONS
+{
+  .text.dummy (NOLOAD) :
+  {
+    /* This section is intended to make _stext address work. */
+    . = ABSOLUTE(_stext);
+  } > FLASH
+
+  .text _stext :
+  {
+    /* Put reset code first so the image entry is at flash origin. */
+    KEEP(*(.init));
+    KEEP(*(.init.rust));
+    . = ALIGN(4);
+
+    /* RP2350 boot ROM image definition. Must be in the first 4 KiB. */
+    __start_block_addr = .;
+    KEEP(*(.start_block));
+    KEEP(*(.boot_info));
+    . = ALIGN(4);
+
+    *(.trap);
+    *(.trap.rust);
+    *(.text.abort);
+    *(.text .text.*);
+    . = ALIGN(4);
+  } > FLASH
+
+  .bi_entries : ALIGN(4)
+  {
+    __bi_entries_start = .;
+    KEEP(*(.bi_entries));
+    . = ALIGN(4);
+    __bi_entries_end = .;
+  } > FLASH
+
+  .rodata : ALIGN(4)
+  {
+    *(.srodata .srodata.*);
+    *(.rodata .rodata.*);
+    . = ALIGN(4);
+  } > FLASH
+
+  .data : ALIGN(32)
+  {
+    _sidata = LOADADDR(.data);
+    __sidata = LOADADDR(.data);
+    _sdata = .;
+    __sdata = .;
+    PROVIDE(__global_pointer$ = . + 0x800);
+    *(.sdata .sdata.* .sdata2 .sdata2.*);
+    *(.data .data.*);
+    . = ALIGN(32);
+    _edata = .;
+    __edata = .;
+  } > RAM AT > FLASH
+
+  .bss (NOLOAD) : ALIGN(32)
+  {
+    _sbss = .;
+    *(.sbss .sbss.* .bss .bss.*);
+    . = ALIGN(32);
+    _ebss = .;
+  } > RAM
+
+  /* defmt-rtt stores its ring buffer in .uninit.*. Keep it RAM-only so
+   * elf2uf2 does not treat the buffer as initialized flash contents. */
+  .uninit (NOLOAD) : ALIGN(4)
+  {
+    *(.uninit .uninit.*);
+    . = ALIGN(4);
+  } > RAM
+
+  .end_block : ALIGN(4)
+  {
+    __end_block_addr = .;
+    KEEP(*(.end_block));
+    __flash_binary_end = .;
+  } > FLASH
+
+  .heap (NOLOAD) :
+  {
+    _sheap = .;
+    . += _heap_size;
+    . = ALIGN(4);
+    _eheap = .;
+  } > RAM
+
+  .stack (NOLOAD) :
+  {
+    _estack = .;
+    . = ABSOLUTE(_stack_start);
+    _sstack = .;
+  } > RAM
+
+  .got (INFO) :
+  {
+    KEEP(*(.got .got.*));
+  }
+
+  .eh_frame (INFO) : { KEEP(*(.eh_frame)) }
+  .eh_frame_hdr (INFO) : { *(.eh_frame_hdr) }
+}
 
 PROVIDE(start_to_end = __end_block_addr - __start_block_addr);
 PROVIDE(end_to_start = __start_block_addr - __end_block_addr);
 
-/* rp_binary_info uses cortex-m-rt-style symbol names for the data-init
- * region; alias them onto riscv-rt's single-underscore equivalents. */
-PROVIDE(__sidata = _sidata);
-PROVIDE(__sdata  = _sdata);
-PROVIDE(__edata  = _edata);
+ASSERT(ORIGIN(FLASH) % 4 == 0, "
+ERROR(riscv-rt): the start of FLASH must be 4-byte aligned");
+
+ASSERT(ORIGIN(RAM) % 32 == 0, "
+ERROR(riscv-rt): the start of RAM must be 32-byte aligned");
+
+ASSERT(_stext % 4 == 0, "
+ERROR(riscv-rt): _stext must be 4-byte aligned");
+
+ASSERT(_sdata % 32 == 0 && _edata % 32 == 0, "
+BUG(riscv-rt): .data is not 32-byte aligned");
+
+ASSERT(_sidata % 32 == 0, "
+BUG(riscv-rt): the LMA of .data is not 32-byte aligned");
+
+ASSERT(_sbss % 32 == 0 && _ebss % 32 == 0, "
+BUG(riscv-rt): .bss is not 32-byte aligned");
+
+ASSERT(_sheap % 4 == 0, "
+BUG(riscv-rt): start of .heap is not 4-byte aligned");
+
+ASSERT(_stext + SIZEOF(.text) < ORIGIN(FLASH) + LENGTH(FLASH), "
+ERROR(riscv-rt): .text must be placed inside FLASH");
+
+ASSERT(SIZEOF(.stack) > (_max_hart_id + 1) * _hart_stack_size, "
+ERROR(riscv-rt): .stack section is too small for all harts");
+
+ASSERT(SIZEOF(.got) == 0, "
+.got section detected in the input files. Dynamic relocations are unsupported.");

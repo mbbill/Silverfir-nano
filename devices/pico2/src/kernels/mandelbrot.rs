@@ -74,7 +74,7 @@ pub fn render(bytes: &mut [u8], frame: u32) {
     // byte-for-byte mirrors by vertical symmetry: escape(cx, +cy) ==
     // escape(cx, -cy) for z₀ = 0, so pixel color depends only on |cy|.
     // Halves the compute cost of the kernel at the price of a ~40 KiB
-    // memcpy (fast on M33).
+    // copy.
     const HALF: usize = HEIGHT / 2;
     const ROW_BYTES: usize = WIDTH * 2;
 

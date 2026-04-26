@@ -50,8 +50,8 @@ const WASM_DEMO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/demo.wasm"));
 
 /// Peripherals owned by the `push_frame` host function. Populated once
 /// in `main` before module instantiation, then `take()`-shuffled on
-/// every frame — same pattern we use in `lcd_demo` and
-/// `native_demo` so the DMA can take the SPI+channel by value
+/// every frame — same pattern used by `native_demo` so the DMA can
+/// take the SPI+channel by value
 /// and hand them back via `wait()`.
 struct DisplayCtx {
     spi: Option<DisplaySpi>,

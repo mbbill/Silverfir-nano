@@ -86,47 +86,43 @@ SWD, which succeeds.
 From this directory:
 
 ```
-cargo run                   # heartbeat firmware: build, flash, attach to RTT
-cargo run --bin lcd_demo    # LCD demo: draws a test frame on the Waveshare shield
+cargo arm-run --bin demo_host   --release
+cargo arm-run --bin native_demo --release
+cargo rv-run  --bin demo_host   --release
+cargo rv-run  --bin native_demo --release
+
+cargo arm-run --bin demo_host --release --no-default-features --features demo-cube
 ```
 
 Equivalent to:
 
 ```
-cargo build --bin <name>
-probe-rs run --chip RP235x --protocol swd target/thumbv8m.main-none-eabihf/debug/<name>
+cargo build --target <triple> --bin <name> --release
+probe-rs run --chip RP235x --protocol swd target/<triple>/release/<name>
 ```
 
-The runner is wired in `.cargo/config.toml`. `cargo run` streams defmt
-output until you Ctrl-C (both binaries stay in a heartbeat loop
-forever).
+The runner is wired in `.cargo/config.toml`. On ARM, `cargo run` streams
+defmt output until you Ctrl-C. On RV32 with probe-rs 0.31.0, the ELF can
+be programmed, but post-reset Hazard3 debug/RTT attach is not available
+through the `RP235x` chip definition.
 
 Other useful commands:
 
 ```
-cargo size --bin heartbeat -- -A    # section sizes (flash + RAM footprint)
-cargo nm   --bin heartbeat          # symbol table (grep _SEGGER_RTT to verify RTT)
-cargo objdump --bin heartbeat -- -d --no-show-raw-insn   # disassemble
+cargo size --target <triple> --bin demo_host --release -- -A
+cargo nm --target <triple> --bin demo_host --release -- --defined-only
+cargo objdump --target <triple> --bin demo_host --release -- -h
 ```
 
 ### Binaries
 
-- **`heartbeat`** (`src/bin/heartbeat.rs`) — minimal bring-up (M1).
-  Prints a 1 Hz tick counter over RTT. Proves the toolchain, boot
-  block, probe-rs flash and RTT paths all work end-to-end.
-- **`lcd_demo`** (`src/bin/lcd_demo.rs`) — benchmarks the display
-  pipeline. Animated gradient with an FPS overlay, DMA-driven push to
-  the Waveshare Pico-LCD-1.8 at 40 MHz SPI. Baseline ≈ **74 fps /
-  13.3 ms per frame** for CPU fill + DMA, SPI wire time alone being
-  8.2 ms of that.
-- **`native_demo`** (`src/bin/native_demo.rs`) — same selected demo
+- **`native_demo`** (`src/bin/native_demo.rs`) - same selected demo
   kernel as the Wasm demo, compiled natively. The ceiling the JIT is
-  measured against.
-- **`demo_host`** (`src/bin/demo_host.rs`) — **the
-  headline demo.** Same kernel compiled to `wasm32-unknown-unknown`,
-  JIT-executed by sf-nano-core. Currently **9 fps / 110 ms per
-  frame**, ~55 % of native (or ~50 % compute-only, subtracting the
-  shared 10 ms DMA push). `cargo run` default.
+  measured against. Verified RV32 Mandelbrot: **44 fps**.
+- **`demo_host`** (`src/bin/demo_host.rs`) - the headline demo.
+  Same kernel compiled to `wasm32-unknown-unknown`, JIT-executed by
+  sf-nano-core. Verified Mandelbrot: **19 fps** on ARM and **13 fps**
+  on RV32. `cargo run` default.
 
 ## 5. Key configuration decisions and why
 
@@ -143,13 +139,13 @@ see `sf-nano-core/build.rs` comment on `sf_fp_dp`) cross the host/JIT
 boundary only via integer arguments in `sf_os_*` shims. They do not
 have to match.
 
-### 5.2 JIT codegen on M33: no FP at all
+### 5.2 JIT codegen: no FP at all
 
 Wasm specifies f64. M-profile FPUs (FPv5-SP-D16 in M33) are
 **single-precision only** — no double-precision M-profile FPU exists.
-Conclusion for this target: JIT emits **zero FP code**. Integer-only
-Wasm modules only. `sf-nano-core/build.rs` already leaves `sf_fp_dp`
-off for `sf_arch_thumbm`; keep it that way.
+Hazard3 also has no F/D extension. Conclusion for this target: JIT emits
+**zero FP code**. Integer-only Wasm modules only. Keep `sf_fp_dp` off for
+the Pico 2 backends.
 
 ### 5.3 `DEFMT_LOG=trace` is mandatory
 
@@ -174,9 +170,17 @@ issue.
 
 The RP2350 Boot ROM requires an `IMAGE_DEF` block in the first 4 KiB
 of flash to recognize an image. `rp235x-hal` provides the const via
-`hal::block::ImageDef::secure_exe()`; `memory.x` puts `.start_block`
-right after `.vector_table`. Do not remove either piece — without a
-valid `IMAGE_DEF` the chip will not execute the image at all.
+`hal::block::ImageDef::secure_exe()`; on ARM, `memory.arm.x` puts
+`.start_block` right after `.vector_table`. Do not remove either
+piece — without a valid `IMAGE_DEF` the chip will not execute the image
+at all.
+
+RV32 is different from the ARM layout above. `memory.rv.x` is a
+standalone linker script following the upstream `rp235x-hal` examples:
+the reset stub starts at `0x10000000`, and `.start_block` is embedded
+inside `.text` shortly after that reset stub. Do not move RV `_start`
+behind the boot block unless also adding an explicit RP2350 entry-point
+item.
 
 ### 5.5 `probe-rs` chip name: `RP235x`
 
@@ -187,8 +191,8 @@ re-check if a future probe-rs version complains.
 ### 5.6 Waveshare Pico-LCD-1.8 shield (if installed)
 
 The Waveshare 1.8" 160×128 ST7735s shield plugs onto the 40-pin
-header and is exercised by `lcd_demo`. Pinout (fixed by the shield
-PCB):
+header and is exercised by `demo_host` and `native_demo`. Pinout
+(fixed by the shield PCB):
 
 | LCD signal | Pico GPIO | Role in firmware            |
 |------------|----------:|-----------------------------|
@@ -207,12 +211,12 @@ shield and just holds the "miso" slot in the tuple.
 
 #### Architecture: hand-rolled init + raw DMA
 
-`lcd_demo` **does not use `mipidsi`**. The embedded-hal-bus
+The display path **does not use `mipidsi`**. The embedded-hal-bus
 `ExclusiveDevice` that `mipidsi`'s `SpiInterface` wants owns its
 inner `Spi` bus with no disassembly method — once you've handed the
 bus over you can't get it back for DMA. It's less work to inline the
-~60-byte ST7735s init sequence (`st7735s_init` in `lcd_demo.rs`,
-values copied from Waveshare's MicroPython driver) and own the raw
+ST7735s init sequence (`display::st7735::init`, values copied from
+Waveshare's MicroPython driver) and own the raw
 `Spi<Enabled, SPI1, ..., 8>` bus throughout.
 
 Per-frame pipeline:
@@ -265,7 +269,7 @@ What's going on:
   addressing for the affected row. The very next frame's CASET/RASET
   resets the window and things snap back.
 
-Mitigation in `lcd_demo.rs`:
+Mitigation in `display::st7735` and the frame-push paths:
 
 - `write_cmd` and `write_data` **call `spi.flush()` explicitly after
   every `spi.write()`**, before toggling CS. Without this, CASET /
@@ -294,9 +298,8 @@ These values are for this exact Waveshare 1.8" shield:
   MADCTL.
 
 If you swap in a different 1.8" ST7735 variant, start from these and
-iterate one value at a time — `fill_pattern` in `lcd_demo.rs` makes
-a good diagnostic harness because it animates, so any drift /
-tearing shows immediately.
+iterate one value at a time. The cube feature is a good diagnostic
+harness because it animates, so any drift / tearing shows immediately.
 
 ## 6. Diagnosing when things go wrong
 
@@ -315,9 +318,10 @@ tearing shows immediately.
    then `probe-rs read --chip RP235x --protocol swd b32 0x20000100 1`
    after flashing and resetting. If the value is not `deadbeef`, the
    firmware crashed or is stuck before reaching `main`.
-4. **Is the RTT symbol linked?** `cargo nm --bin heartbeat |
-   grep _SEGGER_RTT`. Should show `_SEGGER_RTT` in the `.data`
-   section (typically around `0x20000008`).
+4. **Is the RTT symbol linked?** `cargo nm --target <triple> --bin
+   demo_host --release -- --defined-only | grep _SEGGER_RTT`. Should
+   show `_SEGGER_RTT` in the `.data` section (typically around
+   `0x20000008`).
 5. **Is the RTT control block populated?** `probe-rs read --chip
    RP235x --protocol swd b8 0x20000008 16` — the first 16 bytes
    should be `53 45 47 47 45 52 20 52 54 54 00 00 00 00 00 00`
@@ -341,7 +345,7 @@ RUST_LOG=probe_rs=info probe-rs run --chip RP235x --protocol swd <elf>
 Useful to confirm the flash sections landed where you expect, and
 that probe-rs finished its `reset_and_halt` sequence cleanly.
 
-### Expected flash layout
+### Expected ARM flash layout
 
 From `cargo size -- -A` (milestone-1 baseline):
 
@@ -360,12 +364,28 @@ Milestone-1 footprint: ~15 KiB flash, ~1 KiB RAM. 4 MiB flash /
 520 KiB SRAM on the board, so we have an absurd amount of headroom
 for sf-nano-core + a code arena.
 
+Expected RV32 boot layout, matching upstream `rp235x-hal` examples:
+
+| Section / symbol      | Addr         | Notes                                      |
+|-----------------------|-------------:|--------------------------------------------|
+| `_start` / `_stext`   | `0x10000000` | riscv-rt reset stub at flash origin        |
+| `.start_block`        | ~`0x10000138`| `IMAGE_DEF`, embedded inside `.text`       |
+| `.bi_entries`         | after .text  | picotool metadata                          |
+| `.data`               | `0x20000000` | SRAM start                                 |
+| `.bss` / `.uninit`    | after .data  | zeroed / explicitly uninitialized RAM      |
+
 ## 7. Known gotchas / non-obvious things
 
 - **`probe-rs run`'s `Finished in X.XXs` line is flash completion,
   not process exit.** The process keeps running and streams RTT
   until the chip halts or you Ctrl-C. Silence after this line means
   "flash succeeded, but no RTT data" — go to §6.
+- **RV32 `probe-rs run` currently ends with an ARM DAP fault after
+  programming.** Tested with probe-rs 0.31.0: the RV ELF flashes and
+  the chip switches out of the M33 debug view, but `probe-rs` cannot
+  attach to Hazard3 or read RTT because its `RP235x` metadata only
+  declares the ARMv8-M cores. Validate RV firmware by display output,
+  UF2 boot, or a future UART/JTAG-capable path.
 - **`--connect-under-reset` requires a wired reset line** (probe GP1
   → target RUN). We never wired it. Do not add this flag; attach
   uses SWD-driven reset and works fine.
@@ -382,7 +402,7 @@ for sf-nano-core + a code arena.
   Pico 2 it is GP25. No board-agnostic blink demo. Use RTT logs to
   prove life instead.
 - **LCD power draw can wedge SWD mid-flash.** Observed during
-  `lcd_demo` bring-up: probe-rs errors out with
+  display bring-up: probe-rs errors out with
   `Arm(Dap(NoAcknowledge))` or `InnerTransferBlockRequest ... failed`
   part-way through writing flash. Probable cause is the LCD
   backlight + SPI traffic perturbing the 3V3 rail or SWD signal
@@ -412,68 +432,31 @@ for sf-nano-core + a code arena.
 
 - CYW43 Wi-Fi (future `devices/pico2w/` crate with `embassy-rp` +
   `cyw43` + `embassy-net`).
-- LCD drawing from JIT-compiled Wasm. The display pipeline is
-  validated by `lcd_demo` and the JIT is validated by the M4 sum
-  demo in `main.rs`, but nothing ties the two together yet. The
-  planned next demo is a fixed-point Mandelbrot in Wasm, rendered
-  via the same DMA pipeline `lcd_demo` uses, plus a parallel native
-  Rust Mandelbrot binary for a JIT-vs-native speed comparison.
-- `picotool` integration. Not installed by default here; the ELF
-  does carry `.bi_entries` metadata, so any future `picotool info`
-  invocation will Just Work without firmware changes.
-- A release profile that has been exercised on hardware. Only
-  `cargo run` (dev) has been verified end-to-end; release should
-  work but confirm before relying on it.
-- DMA double-buffering. `lcd_demo` uses single-buffered DMA —
-  CPU blocks on `transfer.wait()` during each 8.2 ms SPI push. A
-  JIT-driven frame producer that takes longer than SPI will
-  benefit from Level-3 pipelining (two 40-KiB framebuffers, swap on
-  frame boundary). Adds 40 KiB of BSS. See
-  `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md` / the pipeline notes in
-  the design discussion — not yet implemented.
+- Hazard3 debug/RTT through probe-rs. With probe-rs 0.31.0 the RV32
+  ELF can be flashed over the M33 SWD path, but after reset the chip
+  leaves the ARM debug view and probe-rs reports an ARM DAP fault.
+  Validate RV firmware by display output for now.
+- DMA double-buffering. Both `native_demo` and `demo_host` use
+  single-buffered DMA; CPU/JIT work and SPI transfer are serialized.
+  A future pipelined path would need a second 40 KiB framebuffer or a
+  Wasm-memory ownership scheme that keeps two guest buffers live.
 
 ## 9. Milestone log
 
-- **M1 (completed).** Boot + clocks + defmt-RTT heartbeat. Produces
-  `heartbeat: alive @ 150 MHz SYSCLK` followed by `tick N` at ~1 Hz.
-- **LCD validation side-quest (completed).** Initial `lcd_demo`
-  validated SPI1 + Waveshare Pico-LCD-1.8 via `mipidsi` +
-  `embedded-graphics`. Surfaced the green-tab offset / color-order
-  tuning and the LCD-backlight-vs-SWD wedging gotcha.
-- **M2 (completed).** sf-nano-core linked. Shared lib crate
-  `sf-nano-pico2` (`src/lib.rs`) carries the `#[global_allocator]`
-  (embedded-alloc) and null `sf_os_*` stubs. Behavior unchanged —
-  heartbeat still prints, JIT crate is just in the link graph.
-- **RuntimeConfig + linear-memory quota (completed, sf-nano-core
-  slice 1).** Added `sf_nano_core::RuntimeConfig` (code arena bytes,
-  wasm memory max pages, wasm operand-stack bytes) with a one-shot
-  `set_runtime_config`. Fixed the double-`CodeBuffer` allocation in
-  `finish_native_compile_streaming` via `install_native_code_buffer`
-  — one real alloc per compile instead of alloc-swap-drop. See
-  `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md`.
-- **M3 (completed).** Real `sf_os_alloc_executable` arena (64 KiB
-  static, 16-byte aligned) in `os_shim.rs`. Clean alloc/free cycle
-  logged over RTT via a self-test before the heartbeat.
-- **M4 (completed).** Hardcoded integer Wasm module (`sum_1_to_10.wat`,
-  since removed) baked into flash via the `wat` build-dependency,
-  JIT-compiled and invoked at startup. Printed `sum 1..=10 = 55` over
-  RTT on real hardware — first end-to-end JIT-on-MCU proof. Superseded
-  by `demo_host`, which exercises the same path at real workload
-  scale.
-- **Aggressive memory budget (completed).** Heap 320 KiB, code arena
-  128 KiB, wasm memory max 3 pages (192 KiB), wasm stack 32 KiB,
-  native stack ~62 KiB via `flip-link` (stack-overflow trap instead
-  of silent BSS corruption). ~520 KiB of SRAM fully accounted for.
-- **DMA LCD pipeline side-quest (completed).** `lcd_demo` rewritten
-  to bypass `mipidsi` for pixel pushes, hand-rolled ST7735s init,
-  single-buffer DMA via `rp235x_hal::dma::single_buffer` at 40 MHz
-  SPI. FPS overlay via `embedded-graphics` into the framebuffer
-  before each push. Surfaced the PL022 `flush()` + CS-deassert race
-  (§5.6.1) — fixed with explicit per-write flushes and a short CPU
-  cushion after DMA. Baseline ~74 fps with CPU fill; SPI wire time
-  alone is 8.2 ms of that, so JIT-rendered frames have ~5 ms of CPU
-  budget to match this number.
-- **Next: JIT Mandelbrot demo.** Fixed-point integer Mandelbrot in
-  Wasm, rendered via the DMA pipeline. Plus a parallel native Rust
-  Mandelbrot binary for a direct JIT-vs-native speed comparison on
-  the same hardware path.
+- **Boot + RTT bring-up (completed).** Proved clocks, boot block, SWD
+  flashing, and ARM RTT logging on real hardware.
+- **Display pipeline (completed).** Hand-rolled ST7735s init, raw SPI1
+  writes for commands, and single-buffer DMA for framebuffer pushes at
+  40 MHz. The PL022 flush / CS-deassert race is documented in 5.6.1.
+- **sf-nano runtime bring-up (completed).** Linked `sf-nano-core`,
+  installed the embedded allocator and executable arena, and moved to
+  explicit `RuntimeConfig` limits for code arena, Wasm memory, and
+  operand stack.
+- **Demo cleanup (completed).** Shared render kernels live under
+  `src/kernels`; `native_demo` and `demo_host` select Mandelbrot or
+  cube through Cargo features.
+- **ARM demo validation (completed).** Wasm/JIT Mandelbrot runs at
+  about 19 fps; Wasm/JIT cube runs about 66 fps on the Waveshare LCD.
+- **RV32 validation (completed).** `memory.rv.x` now follows the
+  upstream `rp235x-hal` RISC-V boot layout. RV32 native Mandelbrot runs
+  at 44 fps and RV32 Wasm/JIT Mandelbrot runs at 13 fps.

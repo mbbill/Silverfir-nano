@@ -1,7 +1,6 @@
 //! Thin embedded-graphics `DrawTarget` wrapper around a raw RGB565-BE
-//! byte slice. Used only by the FPS overlay and the `lcd_demo`'s
-//! fill-pattern helpers; Mandelbrot writes pixels directly, skipping
-//! the trait layer.
+//! byte slice. Used by the FPS / label overlay helpers; the render
+//! kernels write pixels directly, skipping the trait layer.
 
 use embedded_graphics::{
     pixelcolor::{raw::RawU16, Rgb565},
