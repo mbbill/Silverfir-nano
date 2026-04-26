@@ -1,10 +1,7 @@
 //! Executable memory ownership for the native backend.
 //!
 //! This owns one OS-backed writable/executable region. The current machine
-//! backend uses it as a module-wide arena for finalized native code. Hosted
-//! builds may reserve a large compile-time maximum and then release the unused
-//! tail after finalization so 32-bit targets do not retain one full arena of
-//! virtual address space per compiled module.
+//! backend uses it as a module-wide arena for finalized native code.
 //!
 //! All OS coupling — page allocation, W^X toggling, instruction-cache
 //! invalidation — is delegated to [`crate::vm::runtime::os`]. This module
@@ -14,17 +11,12 @@
 use core::ptr;
 
 use super::os;
+#[cfg(sf_has_guard_pages)]
+use super::trap_signal;
 #[cfg(feature = "memprof")]
 use tracked_alloc::{
     AllocationDescriptor, AllocationHandle, AllocationState, RUNTIME_MEMORY_OWNER,
 };
-
-const EXECUTABLE_PAGE_SIZE: usize = 16 * 1024;
-
-#[inline]
-fn align_up(value: usize, align: usize) -> usize {
-    value.div_ceil(align) * align
-}
 
 pub struct CodeBuffer {
     base: *mut u8,
@@ -32,6 +24,19 @@ pub struct CodeBuffer {
     offset: usize,
     #[cfg(feature = "memprof")]
     trace: AllocationHandle,
+}
+
+impl CodeBuffer {
+    #[cfg(sf_has_guard_pages)]
+    #[inline]
+    fn unregister_trap_ranges(&self) {
+        if self.base.is_null() || self.capacity == 0 {
+            return;
+        }
+        let start = self.base as usize;
+        let end = start.saturating_add(self.capacity);
+        trap_signal::unregister_jit_ranges_in(start, end);
+    }
 }
 
 impl core::fmt::Debug for CodeBuffer {
@@ -95,19 +100,6 @@ impl CodeBuffer {
         }
         #[cfg(feature = "memprof")]
         self.trace.update(self.trace_state());
-    }
-
-    pub fn shrink_to_fit_pages(&mut self) -> Result<(), &'static str> {
-        let trimmed = align_up(self.offset.max(1), EXECUTABLE_PAGE_SIZE);
-        let trimmed = trimmed.min(self.capacity);
-        if trimmed == self.capacity {
-            return Ok(());
-        }
-        let capacity = unsafe { os::shrink_executable(self.base, self.capacity, trimmed)? };
-        self.capacity = capacity;
-        #[cfg(feature = "memprof")]
-        self.trace.update(self.trace_state());
-        Ok(())
     }
 
     #[inline]
@@ -213,6 +205,8 @@ impl CodeBuffer {
 
     #[inline]
     pub fn reset(&mut self) {
+        #[cfg(sf_has_guard_pages)]
+        self.unregister_trap_ranges();
         self.offset = 0;
         #[cfg(feature = "memprof")]
         self.trace.update(self.trace_state());
@@ -244,6 +238,8 @@ impl CodeBuffer {
 
 impl Drop for CodeBuffer {
     fn drop(&mut self) {
+        #[cfg(sf_has_guard_pages)]
+        self.unregister_trap_ranges();
         #[cfg(feature = "memprof")]
         self.trace.remove();
         os::free_executable(self.base, self.capacity);

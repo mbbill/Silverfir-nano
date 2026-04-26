@@ -127,23 +127,6 @@ pub(crate) fn free_executable(base: *mut u8, capacity: usize) {
     unsafe { munmap(base, capacity) };
 }
 
-pub(crate) unsafe fn shrink_executable(
-    base: *mut u8,
-    old_capacity: usize,
-    new_capacity: usize,
-) -> Result<usize, &'static str> {
-    if new_capacity >= old_capacity {
-        return Ok(old_capacity);
-    }
-    let tail = old_capacity - new_capacity;
-    let tail_base = unsafe { base.add(new_capacity) };
-    let rc = unsafe { munmap(tail_base, tail) };
-    if rc != 0 {
-        return Err("munmap failed while shrinking native code buffer");
-    }
-    Ok(new_capacity)
-}
-
 #[inline]
 pub(crate) unsafe fn begin_write_executable(base: *mut u8, capacity: usize) {
     unsafe {

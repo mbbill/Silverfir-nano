@@ -1,9 +1,19 @@
 use crate::error::WasmError;
+#[cfg(any(
+    sf_backend_arm64,
+    sf_backend_riscv32,
+    sf_backend_riscv64,
+    sf_backend_x64
+))]
 use crate::vm::arch::common::backend::ArchBackend;
-use crate::vm::machine::machine_ir::{
-    MachineBlock, MachineBlockId, MachineConvertOp, MachineFloatWidth, MachineReg, MachineTrapKind,
-    MachineValue,
-};
+#[cfg(any(
+    sf_backend_arm64,
+    sf_backend_riscv32,
+    sf_backend_riscv64,
+    sf_backend_x64
+))]
+use crate::vm::machine::machine_ir::{MachineBlock, MachineBlockId, MachineReg, MachineValue};
+use crate::vm::machine::machine_ir::{MachineConvertOp, MachineFloatWidth, MachineTrapKind};
 
 // ── Trap code mapping ────────────────────────────────────────────────────────
 
@@ -62,6 +72,12 @@ pub(crate) fn convert_result_float_width(op: MachineConvertOp) -> Option<Machine
 }
 
 /// Validate that `reg` is a GP register (not FP). Returns the reg unchanged.
+#[cfg(any(
+    sf_backend_arm64,
+    sf_backend_riscv32,
+    sf_backend_riscv64,
+    sf_backend_x64
+))]
 pub(crate) fn validate_gp_reg<'a, A: ArchBackend<'a>>(
     backend: &A,
     reg: MachineReg,
@@ -76,6 +92,12 @@ pub(crate) fn validate_gp_reg<'a, A: ArchBackend<'a>>(
 
 /// Returns true if jumping to `target` with `args` can be elided because the
 /// target is the physical fallthrough and the args are an identity mapping.
+#[cfg(any(
+    sf_backend_arm64,
+    sf_backend_riscv32,
+    sf_backend_riscv64,
+    sf_backend_x64
+))]
 pub(crate) fn is_fallthrough_edge(
     target: MachineBlockId,
     args: &[MachineValue],

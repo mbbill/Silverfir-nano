@@ -22,6 +22,7 @@ unsafe extern "system" {
 const MEM_COMMIT: u32 = 0x1000;
 const MEM_RESERVE: u32 = 0x2000;
 const MEM_RELEASE: u32 = 0x8000;
+#[cfg(sf_has_guard_pages)]
 const PAGE_NOACCESS: u32 = 0x01;
 const PAGE_READWRITE: u32 = 0x04;
 const PAGE_EXECUTE_READ: u32 = 0x20;
@@ -48,14 +49,6 @@ pub(crate) fn free_executable(base: *mut u8, _capacity: usize) {
         return;
     }
     unsafe { VirtualFree(base, 0, MEM_RELEASE) };
-}
-
-pub(crate) unsafe fn shrink_executable(
-    _base: *mut u8,
-    old_capacity: usize,
-    _new_capacity: usize,
-) -> Result<usize, &'static str> {
-    Ok(old_capacity)
 }
 
 #[inline]

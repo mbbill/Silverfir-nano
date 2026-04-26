@@ -287,10 +287,15 @@ impl Store {
         if handle.is_null() || handle.is_special() {
             return None;
         }
-        self.function_registry
+        let entry = self
+            .function_registry
             .borrow()
             .get(handle.payload())
-            .copied()
+            .copied()?;
+        if entry.store.is_null() {
+            return None;
+        }
+        Some(entry)
     }
 
     pub(crate) fn register_i31(&mut self, value: i32) -> RefHandle {
@@ -353,5 +358,16 @@ impl Store {
     // Resolve a stored raw handle back into the concrete v128 payload.
     pub(crate) fn get_v128(&self, raw: u64) -> Option<[u8; 16]> {
         self.simd_registry.get(raw)
+    }
+}
+
+impl Drop for Store {
+    fn drop(&mut self) {
+        let self_ptr = self as *mut Store;
+        for entry in self.function_registry.borrow_mut().iter_mut() {
+            if entry.store == self_ptr {
+                entry.store = core::ptr::null_mut();
+            }
+        }
     }
 }

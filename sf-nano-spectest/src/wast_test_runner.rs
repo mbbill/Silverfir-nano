@@ -569,6 +569,7 @@ pub struct WastTestRunner {
     instances: HashMap<String, Instance>,
     module_bytes: HashMap<String, Vec<u8>>,
     module_counter: u32,
+    current_module: Option<String>,
     named_modules: HashMap<String, String>,
     registered_as: HashMap<String, String>,
     module_definitions: HashMap<String, Vec<u8>>,
@@ -584,6 +585,7 @@ impl WastTestRunner {
             instances: HashMap::new(),
             module_bytes: HashMap::new(),
             module_counter: 0,
+            current_module: None,
             named_modules: HashMap::new(),
             registered_as: HashMap::new(),
             module_definitions: HashMap::new(),
@@ -1007,7 +1009,10 @@ impl WastTestRunner {
                     })?
                     .clone()
             }
-            None => self.last_module_name(),
+            None => self
+                .current_module
+                .clone()
+                .ok_or_else(|| TestError::infrastructure("No current module".to_string()))?,
         };
 
         self.registered_as.insert(name.to_string(), internal_name);
@@ -1190,6 +1195,7 @@ impl WastTestRunner {
 
         register_forwarding_instances(&mut self.instances, &self.registered_as);
         let instance = self.instantiate_with_registry(&compiled.wasm_bytes, false)?;
+        let previous_current = self.current_module.replace(internal_name.clone());
 
         self.instances.insert(internal_name.clone(), instance);
         self.module_bytes
@@ -1201,6 +1207,9 @@ impl WastTestRunner {
 
         self.sync_registered_imports_back_to_sources(&internal_name)?;
         self.sync_registered_imports_from_sources()?;
+        if let Some(previous_current) = previous_current {
+            self.drop_unreachable_module(&previous_current);
+        }
 
         Ok(internal_name)
     }
@@ -1209,6 +1218,31 @@ impl WastTestRunner {
     fn try_instantiate_temp(&mut self, wasm_bytes: &[u8]) -> Result<Instance, WasmError> {
         register_forwarding_instances(&mut self.instances, &self.registered_as);
         self.instantiate_with_registry(wasm_bytes, true)
+    }
+
+    fn drop_unreachable_module(&mut self, internal_name: &str) {
+        if self.current_module.as_deref() == Some(internal_name) {
+            return;
+        }
+        if self
+            .named_modules
+            .values()
+            .any(|name| name.as_str() == internal_name)
+        {
+            return;
+        }
+        if self
+            .registered_as
+            .values()
+            .any(|name| name.as_str() == internal_name)
+        {
+            return;
+        }
+
+        self.instances.remove(internal_name);
+        self.module_bytes.remove(internal_name);
+        self.linked_function_refs
+            .retain(|(dst, src, _), _| dst != internal_name && src != internal_name);
     }
 
     fn instantiate_with_registry(
@@ -1611,12 +1645,11 @@ impl WastTestRunner {
                     .or_else(|| self.instances.get(name).map(|_| name.to_string()))
                     .ok_or_else(|| format!("Module '{}' not found", name))
             }
-            None => Ok(self.last_module_name()),
+            None => self
+                .current_module
+                .clone()
+                .ok_or_else(|| "No current module".to_string()),
         }
-    }
-
-    fn last_module_name(&self) -> String {
-        format!("module_{}", self.module_counter.saturating_sub(1))
     }
 
     // -----------------------------------------------------------------------
@@ -2036,7 +2069,9 @@ fn f64_matches_nan_pattern(actual: f64, expected: &NanPattern<wast::token::F64>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sf_nano_core::{set_backend_mode, BackendMode, FunctionInst, Value};
+    #[cfg(target_arch = "aarch64")]
+    use sf_nano_core::FunctionInst;
+    use sf_nano_core::{set_backend_mode, BackendMode, Value};
     use std::path::PathBuf;
 
     fn expect_values(values: impl AsRef<[Value]>, expected: &[Value]) {

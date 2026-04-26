@@ -343,17 +343,22 @@ impl NativeContext {
         let type_canon = &self.type_canon;
         let current_store = self.store;
         let registry = store.clone_function_registry();
+        let invalid_view = NativeFunctionView {
+            kind: function_kind::INVALID,
+            type_canon: u32::MAX,
+            local_target: u32::MAX,
+        };
         let function_views: collections::Vec<_> = registry
             .borrow()
             .iter()
-            .filter_map(|entry| unsafe {
-                entry
-                    .store
-                    .as_ref()
-                    .map(|owner_store| (owner_store, entry.local_index))
-            })
-            .map(|(owner_store, local_index)| {
-                let func = &owner_store.module().functions[local_index];
+            .map(|entry| {
+                let Some(owner_store) = (unsafe { entry.store.as_ref() }) else {
+                    return invalid_view;
+                };
+                let Some(func) = owner_store.module().functions.get(entry.local_index) else {
+                    return invalid_view;
+                };
+                let local_index = entry.local_index;
                 let is_local =
                     core::ptr::eq(owner_store as *const Store, current_store as *const Store)
                         && matches!(func, FunctionInst::Local { .. });
@@ -666,7 +671,7 @@ mod tests {
         value_type::ValueType,
         vm::{
             entities::{Caller, ModuleInst},
-            store::Store,
+            store::{LinkRegistry, Store},
             value::Value,
         },
     };
@@ -689,6 +694,32 @@ mod tests {
             is_final: true,
             rec_group: None,
         })
+    }
+
+    fn store_with_registry(module: ModuleInst, registry: &LinkRegistry) -> Box<Store> {
+        Box::new(Store::new_with_registries(
+            module,
+            registry.function_registry_shared(),
+            registry.ref_registry_shared(),
+            #[cfg(sf_has_simd)]
+            registry.simd_registry_shared(),
+        ))
+    }
+
+    fn module_with_local(name: &str) -> ModuleInst {
+        let func_type = Rc::new(FunctionType::new(collections::vec![], collections::vec![]));
+        let types = TypeContext::new(collections::vec![Rc::new(DefType {
+            composite: CompositeType::Func(Rc::clone(&func_type)),
+            supertypes: collections::vec![],
+            is_final: true,
+            rec_group: None,
+        })]);
+        let mut module = ModuleInst::new(String::from(name), types);
+        module.functions.push(FunctionInst::Local {
+            spec: FunctionSpec::new(func_type, 1),
+            type_index: 0,
+        });
+        module
     }
 
     #[test]
@@ -732,6 +763,47 @@ mod tests {
         assert_eq!(ctx.function_views_len, 1);
         let view = unsafe { &*ctx.function_views_base };
         assert_eq!(view.type_canon, 0);
+    }
+
+    #[test]
+    fn refresh_function_views_preserves_dead_registry_slots() {
+        let registry = LinkRegistry::new();
+        {
+            let mut dropped_store = store_with_registry(module_with_local("dropped"), &registry);
+            let dropped_handle = dropped_store.register_local_function(0);
+            assert_eq!(dropped_handle.payload(), 0);
+        }
+
+        let mut live_store = store_with_registry(module_with_local("live"), &registry);
+        let live_handle = live_store.register_local_function(0);
+        assert_eq!(live_handle.payload(), 1);
+
+        let n_globals = live_store.module().globals.len();
+        let ctx = NativeContext::new(
+            (&mut *live_store) as *mut Store,
+            core::ptr::null_mut(),
+            n_globals,
+        );
+
+        assert_eq!(ctx.function_views_len, 2);
+        let views =
+            unsafe { core::slice::from_raw_parts(ctx.function_views_base, ctx.function_views_len) };
+        assert_eq!(
+            views[0],
+            NativeFunctionView {
+                kind: function_kind::INVALID,
+                type_canon: u32::MAX,
+                local_target: u32::MAX,
+            }
+        );
+        assert_eq!(
+            views[1],
+            NativeFunctionView {
+                kind: function_kind::LOCAL,
+                type_canon: 0,
+                local_target: 0,
+            }
+        );
     }
 
     #[test]

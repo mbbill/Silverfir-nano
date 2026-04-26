@@ -11,6 +11,7 @@ use crate::vm::{backend::BackendConfig, machine::machine_ir::MachineModuleAbi};
 pub(crate) mod function_kind {
     pub(crate) const LOCAL: u32 = 0;
     pub(crate) const EXTERNAL: u32 = 1;
+    pub(crate) const INVALID: u32 = 2;
 }
 
 /// Per-function dispatch facts used by indirect dispatch.

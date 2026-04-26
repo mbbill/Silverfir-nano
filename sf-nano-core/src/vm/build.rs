@@ -604,9 +604,6 @@ fn finish_native_compile_streaming(
     executable.emit_bytes(&function_info_bytes);
     let written_len = executable.len();
     executable.finish_write(0, written_len);
-    executable
-        .shrink_to_fit_pages()
-        .map_err(WasmError::internal)?;
     let function_info_base = unsafe { executable.as_ptr().add(function_info_table_offset) };
     drop(arch_lower_phase);
 
@@ -708,13 +705,6 @@ fn finish_native_compile(
         lowered.abi,
     )?);
     let entries = arch::dispatch_compile_module(active_backend, module, &compiled)?;
-    if !is_emulator_backend(active_backend) {
-        module
-            .native_code_buffer()
-            .map_err(WasmError::internal)?
-            .shrink_to_fit_pages()
-            .map_err(WasmError::internal)?;
-    }
     drop(arch_lower_phase);
 
     let bytes: usize = entries

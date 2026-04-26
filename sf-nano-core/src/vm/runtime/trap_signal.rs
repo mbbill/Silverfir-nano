@@ -86,6 +86,23 @@ pub(crate) fn register_jit_ranges(ranges: &[(usize, usize, usize)]) {
     unlock_trap_table();
 }
 
+/// Remove JIT ranges that belong to an executable code buffer.
+///
+/// Code buffers own the machine code backing these ranges. Once a buffer is
+/// reset or dropped, any existing fault-to-error-tail mapping inside that
+/// address interval is stale even if the OS later reuses the same virtual
+/// address for another module.
+pub(crate) fn unregister_jit_ranges_in(code_start: usize, code_end: usize) {
+    lock_trap_table();
+    unsafe {
+        let table = &raw mut TRAP_TABLE;
+        if let Some(table) = (*table).as_mut() {
+            table.retain(|range| range.code_end <= code_start || range.code_start >= code_end);
+        }
+    }
+    unlock_trap_table();
+}
+
 /// Look up the error-return address for a faulting PC.
 ///
 /// Must be called with the trap table lock held (or from the signal handler
@@ -206,6 +223,26 @@ mod tests {
         unsafe {
             assert_eq!(lookup_return_error(0x1080), None);
         }
+    }
+
+    #[test]
+    fn unregister_jit_ranges_in_drops_only_overlapping_entries() {
+        clear_registered_jit_ranges();
+        register_jit_ranges(&[
+            (0x1000, 0x1100, 0x2000),
+            (0x1200, 0x1300, 0x2200),
+            (0x2000, 0x2100, 0x3000),
+        ]);
+
+        unregister_jit_ranges_in(0x1000, 0x1800);
+
+        unsafe {
+            assert_eq!(lookup_return_error(0x1080), None);
+            assert_eq!(lookup_return_error(0x1280), None);
+            assert_eq!(lookup_return_error(0x2080), Some(0x3000));
+        }
+
+        clear_registered_jit_ranges();
     }
 
     #[test]

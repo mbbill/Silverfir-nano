@@ -1686,11 +1686,11 @@ mod tests {
     fn grow_shared_memory_for_test(memory: &MemInst, new_pages: usize) {
         let old_pages = memory.current_pages();
         assert!(new_pages >= old_pages);
-        let delta_pages = new_pages - old_pages;
 
         let mut backing = memory.backing_mut();
         #[cfg(sf_has_guard_pages)]
         if let Some(guard) = backing.guard.as_mut() {
+            let delta_pages = new_pages - old_pages;
             guard
                 .grow(delta_pages)
                 .expect("shared guard memory grow should succeed");
