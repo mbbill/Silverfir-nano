@@ -7,7 +7,7 @@ use embedded_graphics::{
     text::{Alignment, Text},
 };
 
-use crate::{framebuffer::Framebuffer, kernels::mandelbrot::WIDTH};
+use crate::{demo::WIDTH, framebuffer::Framebuffer};
 
 pub fn format_fps<'a>(buf: &'a mut [u8], fps: u32) -> &'a str {
     let prefix = b"FPS: ";

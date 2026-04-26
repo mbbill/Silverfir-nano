@@ -70,11 +70,12 @@ Run from this directory:
 .\scripts\build.cmd --release
 ```
 
-The default build is the Wasm/JIT Mandelbrot firmware. To build the native
-Mandelbrot firmware:
+The default build is the Wasm/JIT Mandelbrot firmware. Select a different demo
+with Cargo features:
 
 ```powershell
 .\scripts\build.cmd --release --no-default-features --features mode-native,demo-mandelbrot
+.\scripts\build.cmd --release --no-default-features --features mode-wasm,demo-cube
 ```
 
 `.cargo/config.toml` sets the default target to
@@ -93,6 +94,12 @@ Flash the native Mandelbrot test firmware:
 
 ```powershell
 .\scripts\flash.cmd COM4 -NoMonitor --release --no-default-features --features mode-native,demo-mandelbrot
+```
+
+Flash the Wasm/JIT cube firmware:
+
+```powershell
+.\scripts\flash.cmd COM4 -NoMonitor --release --no-default-features --features mode-wasm,demo-cube
 ```
 
 The flash script uses:
@@ -119,14 +126,15 @@ src/os_shim.rs             - bare-metal executable-memory hooks for sf-nano-core
 src/display.rs             - minimal ST7789 init and RGB565 blitter
 src/framebuffer.rs         - embedded-graphics draw target for overlays
 src/overlay.rs             - Pico2-style FPS and sf-nano text overlays
+src/kernels/cube.rs        - Pico2 cube kernel shared with wasm-demo
 src/kernels/mandelbrot.rs  - Q16.16 Mandelbrot kernel shared with wasm-demo
 wasm-demo/                 - nested no_std Wasm guest crate
 ```
 
-The Mandelbrot framebuffer is `160x128`, matching the Pico2 benchmark size so
-the ESP32-C6 numbers are directly comparable. It is centered on the `320x172`
-LCD at `(80,22)`. The LCD is configured with MADCTL `0x60`, which rotates the
-panel into landscape mode and moves the ST7789 34-pixel glass offset to Y.
+The demo framebuffer is `160x128`, matching the Pico2 benchmark size so the
+ESP32-C6 numbers are directly comparable. It is centered on the `320x172` LCD
+at `(80,22)`. The LCD is configured with MADCTL `0x60`, which rotates the panel
+into landscape mode and moves the ST7789 34-pixel glass offset to Y.
 
 ## Memory Model
 
@@ -154,6 +162,13 @@ native mandelbrot: 160x128 centered at 80,22
 native mandelbrot frame 359: 59 fps render=12446us push=4313us total=16759us n=60
 ```
 
+Native cube serial log:
+
+```text
+native cube: 160x128 centered at 80,22
+native cube frame 646: 164 fps render=1755us push=4312us total=6068us n=165
+```
+
 Wasm/JIT Mandelbrot serial log:
 
 ```text
@@ -162,7 +177,17 @@ wasm mandelbrot: 160x128 offset=16448 memory=65536 centered at 80,22
 wasm mandelbrot frame 119: 14 fps invoke=64397us push=4629us total=69026us n=15
 ```
 
+Wasm/JIT cube serial log:
+
+```text
+wasm module: 2984 bytes
+wasm cube: 160x128 offset=16748 memory=65536 centered at 80,22
+wasm cube frame 601: 103 fps invoke=4993us push=4648us total=9641us n=104
+```
+
 DMA removes most display-driver overhead, but the current HAL bus write is
 still synchronous. Native FPS is now limited mostly by Mandelbrot render time;
 Wasm FPS is limited mostly by JIT invoke time. Pico2's RV32 reference numbers
-for the same Mandelbrot size are 44 fps native and 13 fps Wasm/JIT.
+for the same Mandelbrot size are 44 fps native and 13 fps Wasm/JIT. The cube
+test is display-bound on ESP32-C6: native cube render is about 1.8-2.1 ms, JIT
+invoke time is about 5-6 ms, and the 80 MHz SPI DMA push is about 4.3-4.6 ms.

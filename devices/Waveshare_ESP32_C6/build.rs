@@ -53,8 +53,11 @@ fn build_wasm_demo(out_dir: &PathBuf) {
 
 fn selected_demo_feature() -> &'static str {
     let mandelbrot = std::env::var_os("CARGO_FEATURE_DEMO_MANDELBROT").is_some();
-    match mandelbrot {
-        true => "demo-mandelbrot",
-        false => panic!("select one demo feature"),
+    let cube = std::env::var_os("CARGO_FEATURE_DEMO_CUBE").is_some();
+    match (mandelbrot, cube) {
+        (true, false) => "demo-mandelbrot",
+        (false, true) => "demo-cube",
+        (true, true) => panic!("select exactly one demo feature"),
+        (false, false) => panic!("select one demo feature"),
     }
 }

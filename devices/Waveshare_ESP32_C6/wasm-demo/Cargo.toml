@@ -15,6 +15,7 @@ path = "src/lib.rs"
 
 [features]
 default = ["demo-mandelbrot"]
+demo-cube = []
 demo-mandelbrot = []
 
 [profile.release]

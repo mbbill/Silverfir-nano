@@ -29,6 +29,7 @@ sf-nano-core = { path = "../../sf-nano-core", default-features = false, features
 
 [features]
 default = ["mode-wasm", "demo-mandelbrot"]
+demo-cube = []
 demo-mandelbrot = []
 mode-native = []
 mode-wasm = ["dep:sf-nano-core"]

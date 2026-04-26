@@ -7,6 +7,10 @@ extern crate alloc;
 compile_error!("select exactly one of mode-native or mode-wasm");
 #[cfg(not(any(feature = "mode-native", feature = "mode-wasm")))]
 compile_error!("select one of mode-native or mode-wasm");
+#[cfg(all(feature = "demo-mandelbrot", feature = "demo-cube"))]
+compile_error!("select exactly one demo feature");
+#[cfg(not(any(feature = "demo-mandelbrot", feature = "demo-cube")))]
+compile_error!("select one demo feature");
 
 #[cfg(feature = "mode-wasm")]
 mod arch;
@@ -41,13 +45,22 @@ use esp_println::println;
 #[cfg(feature = "mode-wasm")]
 use sf_nano_core::{Import, Instance, Value};
 
+#[cfg(feature = "demo-cube")]
+pub(crate) use kernels::cube as demo;
+#[cfg(feature = "demo-mandelbrot")]
+pub(crate) use kernels::mandelbrot as demo;
+
 use display::Display;
-use kernels::mandelbrot;
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 const DISPLAY_DMA_TX_BYTES: usize = 32_736;
 const DISPLAY_SPI_MHZ: u32 = 80;
+
+#[cfg(feature = "demo-cube")]
+const DEMO_NAME: &str = "cube";
+#[cfg(feature = "demo-mandelbrot")]
+const DEMO_NAME: &str = "mandelbrot";
 
 #[cfg(feature = "mode-wasm")]
 const WASM_DEMO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/demo.wasm"));
@@ -62,9 +75,9 @@ fn main() -> ! {
     crate::config::init();
 
     #[cfg(feature = "mode-native")]
-    println!("waveshare-esp32-c6: native mandelbrot + spi dma");
+    println!("waveshare-esp32-c6: native {} + spi dma", DEMO_NAME);
     #[cfg(feature = "mode-wasm")]
-    println!("waveshare-esp32-c6: wasm mandelbrot + spi dma");
+    println!("waveshare-esp32-c6: wasm {} + spi dma", DEMO_NAME);
 
     println!("heap: {} bytes", heap::HEAP_SIZE);
     println!("display spi clock: {} MHz", DISPLAY_SPI_MHZ);
@@ -138,15 +151,16 @@ fn run_native<SPI>(mut display: Display<SPI>) -> !
 where
     SPI: embedded_hal::spi::SpiBus<u8>,
 {
-    let framebuffer = Box::leak(vec![0u8; mandelbrot::FB_BYTES].into_boxed_slice());
+    let framebuffer = Box::leak(vec![0u8; demo::FB_BYTES].into_boxed_slice());
 
-    let x = ((board::LCD_WIDTH - mandelbrot::WIDTH) / 2) as u16;
-    let y = ((board::LCD_HEIGHT - mandelbrot::HEIGHT) / 2) as u16;
+    let x = ((board::LCD_WIDTH - demo::WIDTH) / 2) as u16;
+    let y = ((board::LCD_HEIGHT - demo::HEIGHT) / 2) as u16;
 
     println!(
-        "native mandelbrot: {}x{} centered at {},{}",
-        mandelbrot::WIDTH,
-        mandelbrot::HEIGHT,
+        "native {}: {}x{} centered at {},{}",
+        DEMO_NAME,
+        demo::WIDTH,
+        demo::HEIGHT,
         x,
         y
     );
@@ -160,22 +174,16 @@ where
     let mut displayed_fps = 0u32;
 
     const FPS_ORIGIN: (i32, i32) = (2, 2);
-    const LABEL_ORIGIN: (i32, i32) = (mandelbrot::WIDTH as i32 - 48, 2);
+    const LABEL_ORIGIN: (i32, i32) = (demo::WIDTH as i32 - 48, 2);
 
     loop {
         let frame_start = Instant::now();
-        mandelbrot::render(framebuffer, frame);
+        demo::render(framebuffer, frame);
         overlay::stamp_fps_overlay(framebuffer, FPS_ORIGIN, displayed_fps);
         overlay::stamp_sf_nano_overlay(framebuffer, LABEL_ORIGIN);
         let render_done = Instant::now();
 
-        display.draw_rgb565_be(
-            x,
-            y,
-            mandelbrot::WIDTH as u16,
-            mandelbrot::HEIGHT as u16,
-            framebuffer,
-        );
+        display.draw_rgb565_be(x, y, demo::WIDTH as u16, demo::HEIGHT as u16, framebuffer);
         let frame_done = Instant::now();
 
         render_accumulator_us += (render_done - frame_start).as_micros();
@@ -194,8 +202,8 @@ where
                 0
             };
             println!(
-                "native mandelbrot frame {}: {} fps render={}us push={}us total={}us n={}",
-                frame, displayed_fps, avg_render, avg_push, avg_total, fps_samples
+                "native {} frame {}: {} fps render={}us push={}us total={}us n={}",
+                DEMO_NAME, frame, displayed_fps, avg_render, avg_push, avg_total, fps_samples
             );
 
             fps_samples = 0;
@@ -236,7 +244,7 @@ where
             fatal(&mut display, 0xF800);
         }
     };
-    let framebuffer_end = match framebuffer_offset.checked_add(mandelbrot::FB_BYTES) {
+    let framebuffer_end = match framebuffer_offset.checked_add(demo::FB_BYTES) {
         Some(end) => end,
         None => {
             println!("framebuffer range overflow");
@@ -253,13 +261,14 @@ where
         fatal(&mut display, 0xF800);
     }
 
-    let x = ((board::LCD_WIDTH - mandelbrot::WIDTH) / 2) as u16;
-    let y = ((board::LCD_HEIGHT - mandelbrot::HEIGHT) / 2) as u16;
+    let x = ((board::LCD_WIDTH - demo::WIDTH) / 2) as u16;
+    let y = ((board::LCD_HEIGHT - demo::HEIGHT) / 2) as u16;
 
     println!(
-        "wasm mandelbrot: {}x{} offset={} memory={} centered at {},{}",
-        mandelbrot::WIDTH,
-        mandelbrot::HEIGHT,
+        "wasm {}: {}x{} offset={} memory={} centered at {},{}",
+        DEMO_NAME,
+        demo::WIDTH,
+        demo::HEIGHT,
         framebuffer_offset,
         memory_len,
         x,
@@ -275,7 +284,7 @@ where
     let mut displayed_fps = 0u32;
 
     const FPS_ORIGIN: (i32, i32) = (2, 2);
-    const LABEL_ORIGIN: (i32, i32) = (mandelbrot::WIDTH as i32 - 48, 2);
+    const LABEL_ORIGIN: (i32, i32) = (demo::WIDTH as i32 - 48, 2);
 
     loop {
         let frame_start = Instant::now();
@@ -296,13 +305,7 @@ where
             let fb = &mut mem[framebuffer_offset..framebuffer_end];
             overlay::stamp_fps_overlay(fb, FPS_ORIGIN, displayed_fps);
             overlay::stamp_sf_nano_overlay(fb, LABEL_ORIGIN);
-            display.draw_rgb565_be(
-                x,
-                y,
-                mandelbrot::WIDTH as u16,
-                mandelbrot::HEIGHT as u16,
-                fb,
-            );
+            display.draw_rgb565_be(x, y, demo::WIDTH as u16, demo::HEIGHT as u16, fb);
         }
         let frame_done = Instant::now();
 
@@ -322,8 +325,8 @@ where
                 0
             };
             println!(
-                "wasm mandelbrot frame {}: {} fps invoke={}us push={}us total={}us n={}",
-                frame, displayed_fps, avg_invoke, avg_push, avg_total, fps_samples
+                "wasm {} frame {}: {} fps invoke={}us push={}us total={}us n={}",
+                DEMO_NAME, frame, displayed_fps, avg_invoke, avg_push, avg_total, fps_samples
             );
 
             fps_samples = 0;

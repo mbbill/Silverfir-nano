@@ -5,7 +5,7 @@ use embedded_graphics::{
     prelude::*,
 };
 
-use crate::kernels::mandelbrot::{HEIGHT, WIDTH};
+use crate::demo::{HEIGHT, WIDTH};
 
 pub struct Framebuffer<'a> {
     pub bytes: &'a mut [u8],
