@@ -29,14 +29,14 @@ DMA transfer to the panel.
 https://github.com/user-attachments/assets/29b5c194-77d4-4c8c-92f3-4474b726f60c
 
 [YouTube](https://youtu.be/g3rskqAUEYo) |
-[small MP4](artifacts/sf-nano-mandelbrot-readme.mp4)
+[small MP4](assets/sf-nano-mandelbrot-readme.mp4)
 
 ### Cube
 
 https://github.com/user-attachments/assets/171bb9fc-7113-4102-b355-c0b1c16b4e8e
 
 [YouTube](https://youtu.be/ULs2tGhGPfs) |
-[small MP4](artifacts/sf-nano-cube-readme.mp4)
+[small MP4](assets/sf-nano-cube-readme.mp4)
 
 The `demo_host` binary is the native Pico 2 host for the selected Wasm demo.
 The default demo is Mandelbrot; select cube with Cargo features:
@@ -51,12 +51,12 @@ The same features select the native comparison binary's demo.
 
 ## Prebuilt Firmware
 
-The `artifacts/` directory also includes flashable RP2350 UF2 binaries:
+The `assets/` directory also includes flashable RP2350 UF2 binaries:
 
 | File | Purpose |
 | --- | --- |
-| [`sf-nano-pico2-rp2350.uf2`](artifacts/sf-nano-pico2-rp2350.uf2) | Silverfir-nano Pico 2 firmware. Use this to try the JIT demo without building locally. |
-| [`wasm3-pico2-rp2350.uf2`](artifacts/wasm3-pico2-rp2350.uf2) | Wasm3 Pico 2 comparison firmware; the Mandelbrot demo runs at 3 fps. |
+| [`sf-nano-pico2-rp2350.uf2`](assets/sf-nano-pico2-rp2350.uf2) | Silverfir-nano Pico 2 firmware. Use this to try the JIT demo without building locally. |
+| [`wasm3-pico2-rp2350.uf2`](assets/wasm3-pico2-rp2350.uf2) | Wasm3 Pico 2 comparison firmware; the Mandelbrot demo runs at 3 fps. |
 
 To flash one, hold BOOTSEL while plugging in the Pico 2, then copy the UF2
 file onto the mounted `RPI-RP2` drive. The board resets into the new firmware
