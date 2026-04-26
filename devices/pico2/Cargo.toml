@@ -15,22 +15,29 @@ default-run = "mandelbrot_wasm"
 [workspace]
 
 # Auto-discovered binaries live in `src/bin/`:
-#   - heartbeat          : minimal bring-up, 1 Hz tick log over RTT
-#   - lcd_demo           : SPI + DMA framebuffer pipeline, gradient + fps
 #   - mandelbrot_native  : CPU-only Mandelbrot (performance ceiling)
 #   - mandelbrot_wasm    : same kernel, JIT-executed — the headline demo
+#
+# Both bins compile for both supported targets (Cortex-M33 ARM and Hazard3
+# RV32IMAC). Toggle with `cargo arm-run` / `cargo rv-run` (aliases in
+# `.cargo/config.toml`).
 
 [dependencies]
-cortex-m = "0.7"
-cortex-m-rt = "0.7"
 defmt = "0.3"
 defmt-rtt = "0.4"
 embedded-alloc = "0.7"
 embedded-graphics = "0.8"
 embedded-hal = "1.0"
 embedded-hal-bus = "0.3"
-mipidsi = "0.10"
-panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+# Silverfir JIT core. `default-features = false` drops guard-pages
+# (std-requiring) and leaves just the bare JIT. Matches the dep spec
+# in sf-nano-bare-smoke/, which is this crate's no-std link reference.
+sf-nano-core = { path = "../../sf-nano-core", default-features = false, features = ["jit"] }
+
+# rp235x-hal supports both ARM and RV modes via target-specific deps it
+# carries internally (cortex-m / cortex-m-rt on thumbv8m, riscv / riscv-rt
+# on riscv32imac). Same crate, same version, same feature set.
 rp235x-hal = { version = "0.4", features = [
     "binary-info",
     "critical-section-impl",
@@ -38,10 +45,20 @@ rp235x-hal = { version = "0.4", features = [
     "defmt",
 ] }
 
-# Silverfir JIT core. `default-features = false` drops guard-pages
-# (std-requiring) and leaves just the bare JIT. Matches the dep spec
-# in sf-nano-bare-smoke/, which is this crate's no-std link reference.
-sf-nano-core = { path = "../../sf-nano-core", default-features = false, features = ["jit"] }
+# ARM-only runtime crate. Only pulled in when `target_arch = "arm"`.
+# `panic-probe` (defmt-aware panic handler that breakpoints under probe-rs)
+# is Cortex-M only — for RV32 builds, the panic handler is hand-rolled in
+# `src/arch/rv.rs` and uses defmt + `ebreak`.
+[target.'cfg(target_arch = "arm")'.dependencies]
+cortex-m = "0.7"
+cortex-m-rt = "0.7"
+panic-probe = { version = "0.3", features = ["print-defmt"] }
+
+# RV32-only runtime crate. The `riscv` crate version follows what
+# rp235x-hal pins (0.11 in 0.4.0); riscv-rt follows similarly (0.12).
+[target.'cfg(target_arch = "riscv32")'.dependencies]
+riscv = "0.11"
+riscv-rt = "0.12"
 
 
 # Debug builds stay compact enough to flash quickly while still carrying

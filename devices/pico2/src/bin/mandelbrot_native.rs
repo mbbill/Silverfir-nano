@@ -10,11 +10,13 @@
 extern crate alloc;
 
 use defmt_rtt as _;
+// Panic handler: panic-probe on ARM, sf_nano_pico2::arch::rv on RV (see lib).
+#[cfg(target_arch = "arm")]
 use panic_probe as _;
 use rp235x_hal as hal;
 
 use alloc::boxed::Box;
-use embedded_hal::{digital::OutputPin, spi::MODE_0, spi::SpiBus};
+use embedded_hal::{digital::OutputPin, spi::SpiBus, spi::MODE_0};
 use hal::{
     clocks::Clock,
     dma::{single_buffer, DMAExt},
@@ -37,7 +39,6 @@ fn main() -> ! {
     lib::init();
 
     let mut pac = hal::pac::Peripherals::take().unwrap();
-    let mut core_pac = cortex_m::Peripherals::take().unwrap();
     let mut watchdog = hal::Watchdog::new(pac.WATCHDOG);
 
     let clocks = hal::clocks::init_clocks_and_plls(
@@ -53,9 +54,6 @@ fn main() -> ! {
 
     let mut timer = hal::Timer::new_timer0(pac.TIMER0, &mut pac.RESETS, &clocks);
     let sys_hz = clocks.system_clock.freq().to_Hz();
-
-    core_pac.DCB.enable_trace();
-    core_pac.DWT.enable_cycle_counter();
 
     let sio = hal::Sio::new(pac.SIO);
     let pins = hal::gpio::Pins::new(
@@ -114,20 +112,28 @@ fn main() -> ! {
     const LABEL_ORIGIN: (i32, i32) = (112, 2);
 
     loop {
-        let t_frame_start = cortex_m::peripheral::DWT::cycle_count();
+        // Timing uses the rp235x always-on peripheral timer (μs resolution).
+        // Previous version used DWT::cycle_count, but that is ARM-only and
+        // additionally only runs while the debug unit is enabled (i.e.
+        // while probe-rs is attached) — disconnecting the probe would
+        // freeze DWT and the fps overlay would drop to 0 even though
+        // rendering kept going. The peripheral timer reports correctly
+        // with or without a probe and works on both ARM and RV32 modes
+        // of RP2350.
+        let t_frame_start = timer.get_counter();
 
         // --- Compute + overlay ---
-        let t_compute_start = cortex_m::peripheral::DWT::cycle_count();
+        let t_compute_start = timer.get_counter();
         {
             let bytes: &mut [u8] = fb_opt.as_mut().unwrap().as_mut_slice();
             lib::mandelbrot_kernel::render(bytes, frame);
             display::stamp_fps_overlay(bytes, FPS_ORIGIN, displayed_fps);
             display::stamp_sf_nano_overlay(bytes, LABEL_ORIGIN);
         }
-        let t_compute_end = cortex_m::peripheral::DWT::cycle_count();
+        let t_compute_end = timer.get_counter();
 
         // --- Push: address window + DMA ---
-        let t_push_start = cortex_m::peripheral::DWT::cycle_count();
+        let t_push_start = timer.get_counter();
         let mut spi = spi_opt.take().unwrap();
         let ch = ch_opt.take().unwrap();
         let bytes = fb_opt.take().unwrap();
@@ -144,23 +150,19 @@ fn main() -> ! {
         let transfer = single_buffer::Config::new(ch, bytes, spi).start();
         let (ch_back, bytes_back, mut spi_back) = transfer.wait();
         SpiBus::<u8>::flush(&mut spi_back).ok();
-        cortex_m::asm::delay(100);
+        lib::arch::delay_cycles(100);
         cs.set_high().ok();
 
         spi_opt = Some(spi_back);
         ch_opt = Some(ch_back);
         fb_opt = Some(bytes_back);
-        let t_push_end = cortex_m::peripheral::DWT::cycle_count();
+        let t_push_end = timer.get_counter();
 
         // --- Timing bookkeeping ---
-        let t_frame_end = cortex_m::peripheral::DWT::cycle_count();
-        let cycles_frame = t_frame_end.wrapping_sub(t_frame_start);
-        let cycles_compute = t_compute_end.wrapping_sub(t_compute_start);
-        let cycles_push = t_push_end.wrapping_sub(t_push_start);
-        let us_per_cycle_div = sys_hz as u64 / 1_000_000;
-        let frame_us = cycles_frame as u64 / us_per_cycle_div;
-        let compute_us = cycles_compute as u64 / us_per_cycle_div;
-        let push_us = cycles_push as u64 / us_per_cycle_div;
+        let t_frame_end = timer.get_counter();
+        let frame_us = (t_frame_end - t_frame_start).to_micros();
+        let compute_us = (t_compute_end - t_compute_start).to_micros();
+        let push_us = (t_push_end - t_push_start).to_micros();
         fps_accumulator_us = fps_accumulator_us.saturating_add(frame_us);
         compute_accumulator_us = compute_accumulator_us.saturating_add(compute_us);
         push_accumulator_us = push_accumulator_us.saturating_add(push_us);

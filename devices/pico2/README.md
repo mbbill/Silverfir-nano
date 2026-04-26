@@ -88,15 +88,21 @@ traffic, so GP28 is used only to satisfy the type.
 
 ## Toolchain
 
+This crate builds for both RP2350 boot architectures from one source tree:
+
+- ARM mode: 2× Cortex-M33 (`thumbv8m.main-none-eabihf`)
+- RV mode:  2× Hazard3 RV32IMAC (`riscv32imac-unknown-none-elf`)
+
 Install once:
 
 ```bash
 rustup target add thumbv8m.main-none-eabihf
+rustup target add riscv32imac-unknown-none-elf
 rustup target add wasm32-unknown-unknown
 rustup component add llvm-tools
 cargo install probe-rs-tools --locked
 cargo install cargo-binutils --locked
-cargo install flip-link --locked
+cargo install flip-link --locked          # ARM build only; safe to install regardless
 ```
 
 Optional, for UF2 generation:
@@ -117,41 +123,42 @@ The correct `probe-rs` chip name is `RP235x`.
 
 ## Build And Run
 
-Run from this directory:
+Run from this directory. There is no default target — pick the arch with one
+of the cargo aliases defined in `.cargo/config.toml`:
 
 ```bash
-cargo run --bin heartbeat
-cargo run --bin lcd_demo --release
-cargo run --bin mandelbrot_native --release
-cargo run --bin mandelbrot_wasm --release
+cargo arm-run --bin mandelbrot_wasm   --release      # ARM / Cortex-M33
+cargo rv-run  --bin mandelbrot_wasm   --release      # RV32 / Hazard3
+cargo arm-run --bin mandelbrot_native --release
+cargo rv-run  --bin mandelbrot_native --release
 ```
 
-`Cargo.toml` sets `default-run = "mandelbrot_wasm"`, so this is equivalent:
-
-```bash
-cargo run --release
-```
-
-The runner in `.cargo/config.toml` flashes the ELF with:
+The aliases expand to `cargo run --target <triple>` and the runner in
+`.cargo/config.toml` flashes the ELF with:
 
 ```text
 probe-rs run --chip RP235x --protocol swd
 ```
 
-and streams `defmt` logs over RTT until you stop it.
+then streams `defmt` logs over RTT until you stop it. The chip name `RP235x`
+is the same for both core types — probe-rs picks the active boot core
+automatically. To switch between boot architectures on a board, flash a UF2
+of the desired family (the IMAGE_DEF block in flash tells the boot ROM which
+cores to start).
 
 To build a USB-BOOTSEL-flashable UF2:
 
 ```bash
-./build-uf2.sh                 # default: mandelbrot_wasm
-./build-uf2.sh heartbeat
-./build-uf2.sh lcd_demo
-./build-uf2.sh mandelbrot_native
+./build-uf2.sh                                  # mandelbrot_wasm, ARM
+./build-uf2.sh mandelbrot_wasm    rv            # mandelbrot_wasm, RV32
+./build-uf2.sh mandelbrot_native                # mandelbrot_native, ARM
+./build-uf2.sh mandelbrot_native  rv            # mandelbrot_native, RV32
 ```
 
-The script builds the release ELF, converts it to RP2350 ARM secure UF2, and
-verifies the UF2 family ID (`0xE48BFF59`). Use `picotool` when available, or
-`elf2uf2-rs` as a fallback.
+The script builds the release ELF, converts it to RP2350 UF2 with the
+appropriate family ID (`0xE48BFF59` for ARM, `0x1C40F63F` for RV), and
+verifies the result. Use `picotool` when available, or `elf2uf2-rs` as a
+fallback.
 
 ## Important Build Details
 
@@ -159,21 +166,29 @@ This crate is intentionally not a member of the repository workspace. It has
 its own `[workspace]` stub and lockfile so embedded dependencies and target
 configuration do not affect hosted builds.
 
-The firmware target is:
+Two firmware targets are supported:
 
 ```text
-thumbv8m.main-none-eabihf
+thumbv8m.main-none-eabihf      # ARM,  Cortex-M33,  hard-float ABI (FPv5-SP-D16)
+riscv32imac-unknown-none-elf   # RV32, Hazard3,     no F/D extension
 ```
 
-That is the hard-float Cortex-M33 target expected by `rp235x-hal`. This does
-not mean the JIT emits floating-point code. On Cortex-M profiles, the available
-FPU is single-precision only while WebAssembly requires `f64`, so the Thumb-M
-JIT path is integer-only for now.
+Neither path emits floating-point code from the JIT: WebAssembly requires
+`f64`, the M-profile FPU is single-precision only, and Hazard3 has no FPU at
+all. So both ports run integer-only Wasm modules. The Mandelbrot and cube
+demos are already integer-only (Q16.16 / Q15 fixed-point), so the same Wasm
+binary executes on both.
+
+Per-arch dependencies are split via `[target.'cfg(target_arch = …)']` blocks
+in `Cargo.toml`: `cortex-m` + `cortex-m-rt` + `panic-probe` on ARM, `riscv` +
+`riscv-rt` on RV32. The arch-specific glue (cpu barriers, RV panic handler)
+lives in `src/arch/`.
 
 The `build.rs` file does two jobs:
 
-- Copies `memory.x` into Cargo's output directory so `cortex-m-rt` can link the
-  RP2350 flash/RAM layout.
+- Picks `memory.arm.x` or `memory.rv.x` based on `CARGO_CFG_TARGET_ARCH` and
+  copies it into Cargo's output directory so the rt crate's `link.x` can
+  link the RP2350 flash/RAM layout.
 - Builds `wasm-kernel/` as `wasm32-unknown-unknown --release`, then copies the
   resulting `sf_nano_pico2_wasm_kernel.wasm` to `OUT_DIR/kernel.wasm` for
   `include_bytes!`.

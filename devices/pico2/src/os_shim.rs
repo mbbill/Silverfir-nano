@@ -6,11 +6,13 @@
 //! streaming compile path emits directly into the module's persistent
 //! buffer (no scratch+swap), so one concurrent allocation is enough.
 //!
-//! The RP2350 Cortex-M33 has no instruction cache and no MPU-enforced
-//! W^X by default, so SRAM is always writable and executable. The one
-//! thing the finish-write path owes the CPU is a `dsb sy; isb sy`
-//! barrier so the pipeline discards stale prefetches of newly-emitted
-//! instructions.
+//! Neither the Cortex-M33 nor the Hazard3 cores on RP2350 have an
+//! instruction cache or MPU-enforced W^X by default, so SRAM is always
+//! writable and executable. The one thing the finish-write path owes
+//! the CPU is a data/instruction barrier (`dsb sy; isb sy` on ARM,
+//! `fence rw,rw; fence.i` on RV) so the pipeline discards stale
+//! prefetches of newly-emitted instructions. Both are routed through
+//! [`crate::arch`].
 
 use core::sync::atomic::{AtomicBool, Ordering};
 
@@ -68,10 +70,10 @@ pub extern "C" fn sf_os_free_executable(_base: *mut u8, _capacity: usize) {
 #[unsafe(no_mangle)]
 pub extern "C" fn sf_os_begin_write_executable(_base: *mut u8, _capacity: usize) {}
 
-/// Make newly-written instructions visible to the M33's instruction
-/// fetch pipeline. `dsb sy` drains in-flight stores; `isb sy` flushes
-/// the prefetch buffer so stale instructions are discarded. No cache
-/// maintenance needed — RP2350 M33 cores are cacheless.
+/// Make newly-written instructions visible to the CPU's fetch pipeline.
+/// `dsb` drains in-flight stores; `isb` flushes the prefetch buffer so
+/// stale instructions are discarded. No cache maintenance needed —
+/// neither RP2350 core type has an L1 I-cache.
 #[unsafe(no_mangle)]
 pub extern "C" fn sf_os_finish_write_executable(
     _base: *mut u8,
@@ -79,6 +81,6 @@ pub extern "C" fn sf_os_finish_write_executable(
     _written_start: usize,
     _written_len: usize,
 ) {
-    cortex_m::asm::dsb();
-    cortex_m::asm::isb();
+    crate::arch::dsb();
+    crate::arch::isb();
 }

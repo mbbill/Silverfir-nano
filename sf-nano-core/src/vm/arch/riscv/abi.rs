@@ -190,6 +190,12 @@ const REG_PLAN: RegPlan = RegPlan {
         x(27),
     ],
 
+    // FP register banks vanish when `sf_fp_dp` is off (no F/D extension on
+    // the target — e.g. RV32IMAC for Pico 2 RV mode). Keep `fp_scratch` as
+    // a 2-slot pool of placeholder regs so the backend's `ScratchPool<…, 2>`
+    // type stays the same; the FP code paths are unreachable and stripped
+    // by the linker. Mirrors the arm32/thumbm posture.
+    #[cfg(sf_fp_dp)]
     fp_dynamic: &[
         f(10),
         f(11),
@@ -222,6 +228,10 @@ const REG_PLAN: RegPlan = RegPlan {
         f(26),
         f(27),
     ],
+    #[cfg(not(sf_fp_dp))]
+    fp_dynamic: &[],
+
+    #[cfg(sf_fp_dp)]
     fp_dynamic_caller_saved: &[
         f(10),
         f(11),
@@ -242,7 +252,12 @@ const REG_PLAN: RegPlan = RegPlan {
         f(30),
         f(31),
     ],
+    #[cfg(not(sf_fp_dp))]
+    fp_dynamic_caller_saved: &[],
+
     fp_scratch: &[f(0), f(1)],
+
+    #[cfg(sf_fp_dp)]
     callee_saved_fp: &[
         f(8),
         f(9),
@@ -257,6 +272,8 @@ const REG_PLAN: RegPlan = RegPlan {
         f(26),
         f(27),
     ],
+    #[cfg(not(sf_fp_dp))]
+    callee_saved_fp: &[],
 };
 
 #[cfg(sf_backend_riscv32)]
@@ -271,6 +288,9 @@ const _: () = assert!(
     "RISC-V GP register plan must account for all 32 x-registers"
 );
 
+// Compile-time check applies only to the F/D-enabled register plan. In the
+// no-fp_dp build, `fp_dynamic` is intentionally empty.
+#[cfg(sf_fp_dp)]
 const _: () = assert!(
     REG_PLAN.fp_dynamic.len() + REG_PLAN.fp_scratch.len() == 32,
     "RISC-V FP register plan must account for all 32 f-registers"

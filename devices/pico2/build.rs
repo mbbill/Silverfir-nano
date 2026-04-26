@@ -1,7 +1,8 @@
-//! Copy `memory.x` into OUT_DIR so cortex-m-rt's `link.x` can find it,
-//! then build the `wasm-kernel/` sub-crate as a `wasm32-unknown-unknown`
-//! release artifact so `mandelbrot_wasm.rs` can `include_bytes!` the
-//! result.
+//! Copy the arch-appropriate `memory.x` into OUT_DIR so the runtime
+//! crate's `link.x` (cortex-m-rt for ARM, riscv-rt for RV32) can find
+//! it, then build the `wasm-kernel/` sub-crate as a
+//! `wasm32-unknown-unknown` release artifact so `mandelbrot_wasm.rs`
+//! can `include_bytes!` the result.
 
 use std::fs::File;
 use std::io::Write;
@@ -12,11 +13,23 @@ fn main() {
     let out = PathBuf::from(std::env::var_os("OUT_DIR").unwrap());
     println!("cargo:rustc-link-search={}", out.display());
 
-    let memory_x = include_bytes!("memory.x");
+    // Pick the per-arch memory.x:
+    //   ARM (target_arch = "arm")     → memory.arm.x  (FLASH/RAM, anchors .vector_table)
+    //   RV32 (target_arch = "riscv32") → memory.rv.x  (REGION_* aliases, anchors .text)
+    // Both files share the physical FLASH/RAM regions; only the linker-script
+    // glue differs to match the rt crate's expectations. See the file headers
+    // for details.
+    let arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
+    let memory_x: &[u8] = match arch.as_str() {
+        "arm" => include_bytes!("memory.arm.x"),
+        "riscv32" => include_bytes!("memory.rv.x"),
+        other => panic!("sf-nano-pico2 has no memory.x for target_arch = \"{other}\""),
+    };
     let mut f = File::create(out.join("memory.x")).unwrap();
     f.write_all(memory_x).unwrap();
 
-    println!("cargo:rerun-if-changed=memory.x");
+    println!("cargo:rerun-if-changed=memory.arm.x");
+    println!("cargo:rerun-if-changed=memory.rv.x");
     println!("cargo:rerun-if-changed=build.rs");
 
     build_wasm_kernel(&out);

@@ -2,12 +2,12 @@
 #
 # Build a flashable UF2 from a pico2 release binary.
 #
-# The thumbv8m.main-none-eabihf release ELF is ~14 MiB on disk but
-# almost all of that is DWARF debug info. The actual loadable image
-# (.text + .rodata + .vector_table + .bi_entries + .data) is under
-# 1 MiB. This script runs `cargo build --release` for the chosen
-# binary, then converts the ELF to RP2350 UF2 format for USB-BOOTSEL
-# drag-and-drop or `picotool load`.
+# RP2350 supports two boot architectures: 2× Cortex-M33 (ARM) or 2×
+# Hazard3 (RV32IMAC). The IMAGE_DEF block tells the boot ROM which
+# core type to start, and the UF2 file declares its family ID
+# accordingly:
+#   ARM (thumbv8m.main-none-eabihf)        → family rp2350-arm-s,  0xE48BFF59
+#   RV  (riscv32imac-unknown-none-elf)     → family rp2350-riscv,  0x1C40F63F
 #
 # Converter preference: picotool > elf2uf2-rs. picotool is the
 # reference tool from pico-sdk and understands the `.bi_entries`
@@ -16,16 +16,21 @@
 # `cargo install elf2uf2-rs`.
 #
 # Usage:
-#   ./build-uf2.sh                     # mandelbrot_wasm (default-run)
-#   ./build-uf2.sh heartbeat
-#   ./build-uf2.sh lcd_demo
-#   ./build-uf2.sh mandelbrot_native
+#   ./build-uf2.sh [BIN_NAME] [ARCH]
+#     BIN_NAME defaults to mandelbrot_wasm
+#     ARCH     defaults to arm; pass "rv" for the RV32 build
+#
+# Examples:
+#   ./build-uf2.sh                                # mandelbrot_wasm, arm
+#   ./build-uf2.sh mandelbrot_native              # mandelbrot_native, arm
+#   ./build-uf2.sh mandelbrot_wasm rv             # mandelbrot_wasm, RV32
 #
 # Output: <bin>.uf2 next to the release ELF.
 
 set -euo pipefail
 
 RP2350_ARM_S_FAMILY_HEX="0xE48BFF59"
+RP2350_RISCV_FAMILY_HEX="0x1C40F63F"
 
 find_python() {
     if command -v python3 &>/dev/null; then
@@ -37,26 +42,27 @@ find_python() {
     fi
 }
 
-patch_uf2_family_to_rp2350() {
+patch_uf2_family() {
     local path="$1"
+    local family_hex="$2"
     local py
     py="$(find_python)" || {
         echo "ERROR: python is required to correct elf2uf2-rs output for RP2350." >&2
         exit 1
     }
 
-    "$py" - "$path" <<'PY'
+    "$py" - "$path" "$family_hex" <<'PY'
 import pathlib
 import sys
 
 path = pathlib.Path(sys.argv[1])
+family = int(sys.argv[2], 16)
 data = bytearray(path.read_bytes())
 if len(data) % 512 != 0:
     raise SystemExit(f"ERROR: {path} is not a valid UF2 size")
 
-rp2350_arm_s = 0xE48BFF59
 for offset in range(0, len(data), 512):
-    data[offset + 28:offset + 32] = rp2350_arm_s.to_bytes(4, "little")
+    data[offset + 28:offset + 32] = family.to_bytes(4, "little")
 
 path.write_bytes(data)
 PY
@@ -64,13 +70,14 @@ PY
 
 verify_uf2_family() {
     local path="$1"
+    local family_hex="$2"
     local py
     py="$(find_python)" || {
         echo "ERROR: python is required to verify UF2 family IDs." >&2
         exit 1
     }
 
-    "$py" - "$path" "$RP2350_ARM_S_FAMILY_HEX" <<'PY'
+    "$py" - "$path" "$family_hex" <<'PY'
 import pathlib
 import sys
 
@@ -90,14 +97,32 @@ PY
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_NAME="${1:-mandelbrot_wasm}"
-TARGET="thumbv8m.main-none-eabihf"
+ARCH="${2:-arm}"
+
+case "$ARCH" in
+    arm)
+        TARGET="thumbv8m.main-none-eabihf"
+        FAMILY_NAME="rp2350-arm-s"
+        FAMILY_HEX="$RP2350_ARM_S_FAMILY_HEX"
+        ;;
+    rv|riscv|rv32)
+        TARGET="riscv32imac-unknown-none-elf"
+        FAMILY_NAME="rp2350-riscv"
+        FAMILY_HEX="$RP2350_RISCV_FAMILY_HEX"
+        ;;
+    *)
+        echo "ERROR: unknown ARCH '$ARCH' — expected 'arm' or 'rv'." >&2
+        exit 1
+        ;;
+esac
+
 ELF_PATH="$SCRIPT_DIR/target/$TARGET/release/$BIN_NAME"
 UF2_PATH="$ELF_PATH.uf2"
 
 cd "$SCRIPT_DIR"
 
-echo "[pico2-uf2] Building release ELF: $BIN_NAME"
-cargo build --release --bin "$BIN_NAME"
+echo "[pico2-uf2] Building release ELF: $BIN_NAME ($ARCH → $TARGET)"
+cargo build --release --bin "$BIN_NAME" --target "$TARGET"
 
 if [[ ! -f "$ELF_PATH" ]]; then
     echo "ERROR: expected ELF not found at $ELF_PATH" >&2
@@ -105,13 +130,13 @@ if [[ ! -f "$ELF_PATH" ]]; then
 fi
 
 if command -v picotool &>/dev/null; then
-    echo "[pico2-uf2] Converting via picotool -> $UF2_PATH"
-    picotool uf2 convert "$ELF_PATH" "$UF2_PATH" --family rp2350-arm-s
+    echo "[pico2-uf2] Converting via picotool -> $UF2_PATH (family $FAMILY_NAME)"
+    picotool uf2 convert "$ELF_PATH" "$UF2_PATH" --family "$FAMILY_NAME"
 elif command -v elf2uf2-rs &>/dev/null; then
     echo "[pico2-uf2] Converting via elf2uf2-rs -> $UF2_PATH"
     elf2uf2-rs "$ELF_PATH" "$UF2_PATH"
-    echo "[pico2-uf2] Correcting UF2 family -> $RP2350_ARM_S_FAMILY_HEX"
-    patch_uf2_family_to_rp2350 "$UF2_PATH"
+    echo "[pico2-uf2] Correcting UF2 family -> $FAMILY_HEX"
+    patch_uf2_family "$UF2_PATH" "$FAMILY_HEX"
 else
     echo "ERROR: no UF2 converter found." >&2
     echo "  Install picotool: https://github.com/raspberrypi/picotool" >&2
@@ -119,7 +144,7 @@ else
     exit 1
 fi
 
-verify_uf2_family "$UF2_PATH"
+verify_uf2_family "$UF2_PATH" "$FAMILY_HEX"
 SIZE_BYTES=$(wc -c < "$UF2_PATH")
 printf "[pico2-uf2] Done: %s (%s bytes)\n" "$UF2_PATH" "$SIZE_BYTES"
 echo "[pico2-uf2] Flash by dropping the file onto the RP2350 BOOTSEL drive,"

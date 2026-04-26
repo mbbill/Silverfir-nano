@@ -16,7 +16,8 @@
 //   aarch64                → sf_backend_arm64
 //   arm + thumbv*-none-*   → sf_backend_thumbm   (arm32 module, Thumb-2 encoding)
 //   arm (everything else)  → sf_backend_armv7a   (arm32 module, A32 encoding)
-//   riscv32gc*             → sf_backend_riscv32  (RV32GC scalar codegen)
+//   riscv32gc*             → sf_backend_riscv32  (RV32GC scalar codegen, sf_fp_dp on)
+//   riscv32imac* (etc.)    → sf_backend_riscv32  (no F/D — Hazard3 / Pico 2 RV mode)
 //   riscv64gc*             → sf_backend_riscv64  (RV64GC scalar codegen)
 //   x86_64                 → sf_backend_x64
 //   feature backend-emu64  → sf_backend_emu64
@@ -161,7 +162,7 @@ fn selected_backend() -> Option<SelectedBackend> {
                 Some(SelectedBackend::Armv7a)
             }
         }
-        "riscv32" if target_implies_rv32gc(&target) => Some(SelectedBackend::Riscv32),
+        "riscv32" if target_implies_rv32_supported(&target) => Some(SelectedBackend::Riscv32),
         "riscv64" if target_implies_rv64gc(&target) => Some(SelectedBackend::Riscv64),
         "x86_64" => Some(SelectedBackend::X64),
         _ => None,
@@ -196,9 +197,15 @@ fn emit_backend_cfgs() {
         }
         Some(SelectedBackend::Riscv32) => {
             println!("cargo:rustc-cfg=sf_backend_riscv32");
-            // riscv32gc is hard-float with F/D by target contract. Like RV64,
-            // rustc may not report F/D through target-feature cfgs here.
-            println!("cargo:rustc-cfg=sf_fp_dp");
+            // sf_fp_dp is on for `riscv32gc-*` (F/D guaranteed by triple
+            // contract; rustc may not report F/D via target-feature here).
+            // For non-`gc` triples (e.g. `riscv32imac-*` on Hazard3 /
+            // RP2350 RV mode) the backend stays selected but emits no FP
+            // ops, mirroring the integer-only sf_backend_thumbm posture.
+            let target = env::var("TARGET").unwrap_or_default();
+            if target_implies_rv32gc(&target) {
+                println!("cargo:rustc-cfg=sf_fp_dp");
+            }
             require_target_feature("m", "rv32 backend requires the RISC-V M extension");
         }
         Some(SelectedBackend::Riscv64) => {
@@ -300,6 +307,18 @@ fn target_implies_rv64gc(target: &str) -> bool {
 
 fn target_implies_rv32gc(target: &str) -> bool {
     target.starts_with("riscv32gc-")
+}
+
+/// Set of `riscv32-*` target triples the rv32 backend can lower for. The
+/// `gc` family is hard-float (sf_fp_dp on); the no-FPU families
+/// (`riscv32imac`, `riscv32imc`, `riscv32imafc`-style with no D) build with
+/// sf_fp_dp off and emit integer-only Wasm modules.
+fn target_implies_rv32_supported(target: &str) -> bool {
+    target_implies_rv32gc(target)
+        || target.starts_with("riscv32imac-")
+        || target.starts_with("riscv32imc-")
+        || target.starts_with("riscv32im-")
+        || target.starts_with("riscv32i-")
 }
 
 fn has_std_enabled() -> bool {

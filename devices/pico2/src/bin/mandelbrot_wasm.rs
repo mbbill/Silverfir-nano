@@ -20,10 +20,12 @@
 extern crate alloc;
 
 use defmt_rtt as _;
+// Panic handler: panic-probe on ARM, sf_nano_pico2::arch::rv on RV (see lib).
+#[cfg(target_arch = "arm")]
 use panic_probe as _;
 use rp235x_hal as hal;
 
-use embedded_hal::{digital::OutputPin, spi::MODE_0, spi::SpiBus};
+use embedded_hal::{digital::OutputPin, spi::SpiBus, spi::MODE_0};
 use hal::{
     clocks::Clock,
     dma::{single_buffer, DMAExt, ReadTarget},
@@ -177,7 +179,7 @@ fn push_frame(
     let transfer = single_buffer::Config::new(ch, source, spi).start();
     let (ch_back, _source_back, mut spi_back) = transfer.wait();
     SpiBus::<u8>::flush(&mut spi_back).ok();
-    cortex_m::asm::delay(100);
+    lib::arch::delay_cycles(100);
     ctx.cs.set_high().ok();
 
     ctx.spi = Some(spi_back);
@@ -215,7 +217,10 @@ fn main() -> ! {
     );
 
     defmt::info!("mandelbrot_wasm: clocks up, sys={} Hz", sys_hz);
-    defmt::info!("mandelbrot_wasm: wasm module is {} bytes", WASM_KERNEL.len());
+    defmt::info!(
+        "mandelbrot_wasm: wasm module is {} bytes",
+        WASM_KERNEL.len()
+    );
 
     let mosi = pins.gpio11.into_function::<hal::gpio::FunctionSpi>();
     let miso = pins.gpio28.into_function::<hal::gpio::FunctionSpi>();
@@ -331,7 +336,7 @@ fn main() -> ! {
 
 fn halt() -> ! {
     loop {
-        cortex_m::asm::wfi();
+        lib::arch::wfi();
     }
 }
 
