@@ -27,8 +27,6 @@ to the panel.
 
 https://github.com/user-attachments/assets/db58cd3f-d4f2-4f34-b6e5-30e568588505
 
-[small MP4](assets/sf-nano-esp32-c6-cube-readme.mp4)
-
 ## Build And Run
 
 Run from this directory:
