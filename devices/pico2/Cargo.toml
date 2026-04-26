@@ -7,7 +7,7 @@ description = "Silverfir-nano bring-up firmware for Raspberry Pi Pico 2 / Pico 2
 license = "MIT OR Apache-2.0"
 publish = false
 rust-version = "1.82"
-default-run = "mandelbrot_wasm"
+default-run = "demo_host"
 
 # Standalone crate: keeps its own Cargo.lock, dep graph, and target config.
 # Not a member of the main Silverfir-nano workspace — embedded deps stay out
@@ -15,8 +15,8 @@ default-run = "mandelbrot_wasm"
 [workspace]
 
 # Auto-discovered binaries live in `src/bin/`:
-#   - mandelbrot_native  : CPU-only Mandelbrot (performance ceiling)
-#   - mandelbrot_wasm    : same kernel, JIT-executed — the headline demo
+#   - native_demo        : selected demo compiled natively (performance ceiling)
+#   - demo_host          : selected Wasm demo, JIT-executed on-device
 #
 # Both bins compile for both supported targets (Cortex-M33 ARM and Hazard3
 # RV32IMAC). Toggle with `cargo arm-run` / `cargo rv-run` (aliases in
@@ -60,6 +60,10 @@ panic-probe = { version = "0.3", features = ["print-defmt"] }
 riscv = "0.11"
 riscv-rt = "0.12"
 
+[features]
+default = ["demo-mandelbrot"]
+demo-mandelbrot = []
+demo-cube = []
 
 # Debug builds stay compact enough to flash quickly while still carrying
 # symbols for probe-rs / defmt. opt-level = 1 keeps RTT timing sane without

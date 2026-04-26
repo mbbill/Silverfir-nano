@@ -2,7 +2,7 @@
 
 `devices/pico2` is the real-hardware bring-up target for running the
 Silverfir-nano WebAssembly JIT on the RP2350 Cortex-M33 in a `no_std`
-firmware image. It builds a Wasm kernel, verifies/instantiates it through
+firmware image. It builds a Wasm demo guest, verifies/instantiates it through
 `sf-nano-core`, JITs it to Thumb-2 in SRAM, and drives a 160x128 ST7735s LCD
 from the Wasm-rendered framebuffer.
 
@@ -36,15 +36,16 @@ https://github.com/user-attachments/assets/171bb9fc-7113-4102-b355-c0b1c16b4e8e
 [YouTube](https://youtu.be/ULs2tGhGPfs) |
 [small MP4](artifacts/sf-nano-cube-readme.mp4)
 
-The `mandelbrot_wasm` binary is the generic Wasm display host. The active Wasm
-demo is selected in `wasm-kernel/src/lib.rs`:
+The `demo_host` binary is the native Pico 2 host for the selected Wasm demo.
+The default demo is Mandelbrot; select cube with Cargo features:
 
-```rust
-use mandelbrot as demo;
-// use cube as demo;
+```bash
+cargo arm-run --bin demo_host --release
+cargo arm-run --bin demo_host --release --no-default-features --features demo-cube
+cargo arm-run --bin native_demo --release --no-default-features --features demo-cube
 ```
 
-Swap those two lines to run the cube demo through the same host binary.
+The same features select the native comparison binary's demo.
 
 ## Prebuilt Firmware
 
@@ -127,10 +128,18 @@ Run from this directory. There is no default target — pick the arch with one
 of the cargo aliases defined in `.cargo/config.toml`:
 
 ```bash
-cargo arm-run --bin mandelbrot_wasm   --release      # ARM / Cortex-M33
-cargo rv-run  --bin mandelbrot_wasm   --release      # RV32 / Hazard3
-cargo arm-run --bin mandelbrot_native --release
-cargo rv-run  --bin mandelbrot_native --release
+cargo arm-run --bin demo_host         --release      # ARM / Cortex-M33
+cargo rv-run  --bin demo_host         --release      # RV32 / Hazard3
+cargo arm-run --bin native_demo       --release
+cargo rv-run  --bin native_demo       --release
+```
+
+The default feature is `demo-mandelbrot`. To run cube instead, disable default
+features and select `demo-cube`:
+
+```bash
+cargo arm-run --bin demo_host   --release --no-default-features --features demo-cube
+cargo arm-run --bin native_demo --release --no-default-features --features demo-cube
 ```
 
 The aliases expand to `cargo run --target <triple>` and the runner in
@@ -149,10 +158,12 @@ cores to start).
 To build a USB-BOOTSEL-flashable UF2:
 
 ```bash
-./build-uf2.sh                                  # mandelbrot_wasm, ARM
-./build-uf2.sh mandelbrot_wasm    rv            # mandelbrot_wasm, RV32
-./build-uf2.sh mandelbrot_native                # mandelbrot_native, ARM
-./build-uf2.sh mandelbrot_native  rv            # mandelbrot_native, RV32
+./build-uf2.sh                                  # demo_host, ARM
+./build-uf2.sh demo_host          rv            # demo_host, RV32
+./build-uf2.sh native_demo                      # native_demo, ARM
+./build-uf2.sh native_demo        rv            # native_demo, RV32
+./build-uf2.sh demo_host          arm cube      # demo_host cube, ARM
+./build-uf2.sh native_demo        arm cube      # native_demo cube, ARM
 ```
 
 The script builds the release ELF, converts it to RP2350 UF2 with the
@@ -189,8 +200,8 @@ The `build.rs` file does two jobs:
 - Picks `memory.arm.x` or `memory.rv.x` based on `CARGO_CFG_TARGET_ARCH` and
   copies it into Cargo's output directory so the rt crate's `link.x` can
   link the RP2350 flash/RAM layout.
-- Builds `wasm-kernel/` as `wasm32-unknown-unknown --release`, then copies the
-  resulting `sf_nano_pico2_wasm_kernel.wasm` to `OUT_DIR/kernel.wasm` for
+- Builds `wasm-demo/` as `wasm32-unknown-unknown --release`, then copies the
+  resulting `sf_nano_pico2_wasm_demo.wasm` to `OUT_DIR/demo.wasm` for
   `include_bytes!`.
 
 The Wasm build forces:
@@ -226,7 +237,7 @@ corrupting the large heap/code-arena regions in `.bss`.
 
 ## JIT Path
 
-The host binary embeds the Wasm kernel bytes and instantiates them with one
+The host binary embeds the Wasm demo bytes and instantiates them with one
 import:
 
 ```text

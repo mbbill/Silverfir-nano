@@ -1,7 +1,7 @@
 //! Copy the arch-appropriate `memory.x` into OUT_DIR so the runtime
 //! crate's `link.x` (cortex-m-rt for ARM, riscv-rt for RV32) can find
-//! it, then build the `wasm-kernel/` sub-crate as a
-//! `wasm32-unknown-unknown` release artifact so `mandelbrot_wasm.rs`
+//! it, then build the `wasm-demo/` sub-crate as a
+//! `wasm32-unknown-unknown` release artifact so `demo_host.rs`
 //! can `include_bytes!` the result.
 
 use std::fs::File;
@@ -32,19 +32,19 @@ fn main() {
     println!("cargo:rerun-if-changed=memory.rv.x");
     println!("cargo:rerun-if-changed=build.rs");
 
-    build_wasm_kernel(&out);
+    build_wasm_demo(&out);
 }
 
-fn build_wasm_kernel(out_dir: &PathBuf) {
+fn build_wasm_demo(out_dir: &PathBuf) {
     // Invoke cargo on the sub-crate. Its own `[workspace]` stub keeps
     // it isolated from this firmware's dep graph; --manifest-path also
     // keeps cwd independent of where the firmware build is running
     // from.
     let crate_root = PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").unwrap());
-    let manifest = crate_root.join("wasm-kernel/Cargo.toml");
+    let manifest = crate_root.join("wasm-demo/Cargo.toml");
 
     // Explicitly set RUSTFLAGS for the wasm build. `.cargo/config.toml`
-    // inside wasm-kernel/ is NOT auto-discovered when cargo runs with
+    // inside wasm-demo/ is NOT auto-discovered when cargo runs with
     // --manifest-path from a different CWD — config lookup follows
     // CWD (and CARGO_HOME), not the manifest path. Setting RUSTFLAGS
     // via the environment is the reliable path.
@@ -54,38 +54,53 @@ fn build_wasm_kernel(out_dir: &PathBuf) {
     // 17-page default (1 MiB stack + data). See the host-side
     // RuntimeConfig's wasm_memory_max_pages quota.
     let wasm_rustflags = "-C link-arg=-zstack-size=16384";
-    let status = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()))
-        .arg("build")
+    let demo_feature = selected_demo_feature();
+    let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));
+    cmd.arg("build")
         .arg("--manifest-path")
         .arg(&manifest)
         .arg("--target")
         .arg("wasm32-unknown-unknown")
         .arg("--release")
+        .arg("--no-default-features")
+        .arg("--features")
+        .arg(demo_feature)
         .env("RUSTFLAGS", wasm_rustflags)
         // Clear the parent build's encoded rustflags (contains
         // `-C target-cpu=cortex-m33`, which would be rejected for wasm32).
         .env_remove("CARGO_ENCODED_RUSTFLAGS")
-        // current_dir lets cargo also pick up wasm-kernel/.cargo/config.toml
+        // current_dir lets cargo also pick up wasm-demo/.cargo/config.toml
         // for anyone running this build manually.
-        .current_dir(crate_root.join("wasm-kernel"))
-        .status()
-        .expect("failed to launch cargo for wasm-kernel");
+        .current_dir(crate_root.join("wasm-demo"));
+
+    let status = cmd.status().expect("failed to launch cargo for wasm-demo");
     if !status.success() {
-        panic!("wasm-kernel cargo build failed (exit: {status:?})");
+        panic!("wasm-demo cargo build failed (exit: {status:?})");
     }
 
     let wasm = crate_root
-        .join("wasm-kernel")
+        .join("wasm-demo")
         .join("target")
         .join("wasm32-unknown-unknown")
         .join("release")
-        .join("sf_nano_pico2_wasm_kernel.wasm");
-    std::fs::copy(&wasm, out_dir.join("kernel.wasm"))
+        .join("sf_nano_pico2_wasm_demo.wasm");
+    std::fs::copy(&wasm, out_dir.join("demo.wasm"))
         .unwrap_or_else(|e| panic!("copy {wasm:?}: {e}"));
 
     // Track the whole sub-crate directory. A narrower list of files
     // missed updates to `.cargo/config.toml` — we want any change
-    // inside wasm-kernel/ to trigger a rebuild here.
-    println!("cargo:rerun-if-changed=wasm-kernel");
-    println!("cargo:rerun-if-changed=src/mandelbrot_kernel.rs");
+    // inside wasm-demo/ to trigger a rebuild here.
+    println!("cargo:rerun-if-changed=wasm-demo");
+    println!("cargo:rerun-if-changed=src/kernels");
+}
+
+fn selected_demo_feature() -> &'static str {
+    let mandelbrot = std::env::var_os("CARGO_FEATURE_DEMO_MANDELBROT").is_some();
+    let cube = std::env::var_os("CARGO_FEATURE_DEMO_CUBE").is_some();
+    match (mandelbrot, cube) {
+        (true, false) => "demo-mandelbrot",
+        (false, true) => "demo-cube",
+        (true, true) => panic!("select exactly one demo feature"),
+        (false, false) => panic!("select one demo feature"),
+    }
 }

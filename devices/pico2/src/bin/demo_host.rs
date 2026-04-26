@@ -1,8 +1,9 @@
-//! Wasm Mandelbrot demo — same kernel source as `mandelbrot_native`,
-//! compiled to `wasm32-unknown-unknown` and JIT-executed by
-//! sf-nano-core on the device. The headline number is its fps
-//! divided by the native binary's fps: how close is sf-nano-core's
-//! M33 JIT lowering to native-compiled Rust on the same CPU?
+//! Native Pico 2 demo host — embeds the selected Wasm render demo and
+//! runs it through sf-nano-core on the device.
+//!
+//! The guest crate compiles the selected shared render kernel to
+//! `wasm32-unknown-unknown` and JIT-executes it with sf-nano-core on
+//! the device.
 //!
 //! Architecture: the Wasm module owns rendering into its own linear
 //! memory, then calls the host-imported `env.push_frame` to present.
@@ -12,7 +13,7 @@
 //! invariant is held by the handler's synchronous DMA-wait: nothing
 //! else touches the Wasm memory while DMA is running.
 //!
-//! `cargo run --bin mandelbrot_wasm --release`
+//! `cargo run --bin demo_host --release`
 
 #![no_std]
 #![no_main]
@@ -42,15 +43,15 @@ use lib::display::{self, st7735};
 #[used]
 pub static IMAGE_DEF: hal::block::ImageDef = hal::block::ImageDef::secure_exe();
 
-/// The Wasm module compiled by `build.rs` from `wasm-kernel/`. The
+/// The Wasm module compiled by `build.rs` from `wasm-demo/`. The
 /// actual demo inside can be swapped by editing the `use … as demo;`
-/// line in `wasm-kernel/src/lib.rs` — the host side stays the same.
-const WASM_KERNEL: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/kernel.wasm"));
+/// line in `wasm-demo/src/lib.rs` — the host side stays the same.
+const WASM_DEMO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/demo.wasm"));
 
 /// Peripherals owned by the `push_frame` host function. Populated once
 /// in `main` before module instantiation, then `take()`-shuffled on
 /// every frame — same pattern we use in `lcd_demo` and
-/// `mandelbrot_native` so the DMA can take the SPI+channel by value
+/// `native_demo` so the DMA can take the SPI+channel by value
 /// and hand them back via `wait()`.
 struct DisplayCtx {
     spi: Option<DisplaySpi>,
@@ -69,7 +70,7 @@ static mut DISPLAY_CTX: Option<DisplayCtx> = None;
 /// `push_frame` reads this and stamps the overlay onto the framebuffer
 /// inside Wasm linear memory just before the DMA transfer, so the fps
 /// readout lives on-panel without any fps-rendering code on the Wasm
-/// side — keeps the kernel focused on Mandelbrot math.
+/// side — keeps the guest focused on rendering.
 static mut DISPLAYED_FPS: u32 = 0;
 
 // --- Custom DMA source for Wasm linear memory ------------------------
@@ -216,10 +217,10 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    defmt::info!("mandelbrot_wasm: clocks up, sys={} Hz", sys_hz);
+    defmt::info!("demo_host: clocks up, sys={} Hz", sys_hz);
     defmt::info!(
-        "mandelbrot_wasm: wasm module is {} bytes",
-        WASM_KERNEL.len()
+        "demo_host: wasm module is {} bytes",
+        WASM_DEMO.len()
     );
 
     let mosi = pins.gpio11.into_function::<hal::gpio::FunctionSpi>();
@@ -239,7 +240,7 @@ fn main() -> ! {
         40u32.MHz(),
         MODE_0,
     );
-    defmt::info!("mandelbrot_wasm: SPI1 @ 40 MHz");
+    defmt::info!("demo_host: SPI1 @ 40 MHz");
 
     // ST7735s init needs the same CS/DC pins as `push_frame`, and we
     // can't share ownership — so initialize through locals and move
@@ -247,7 +248,7 @@ fn main() -> ! {
     let mut cs = cs;
     let mut dc = dc;
     st7735::init(&mut spi_bus, &mut cs, &mut dc, &mut rst, &mut timer);
-    defmt::info!("mandelbrot_wasm: ST7735s init complete");
+    defmt::info!("demo_host: ST7735s init complete");
 
     let dma = pac.DMA.split(&mut pac.RESETS);
 
@@ -275,15 +276,15 @@ fn main() -> ! {
             rc.wasm_stack_bytes
         );
     }
-    defmt::info!("mandelbrot_wasm: instantiating...");
-    let mut instance = match Instance::new(WASM_KERNEL, &imports) {
+    defmt::info!("demo_host: instantiating...");
+    let mut instance = match Instance::new(WASM_DEMO, &imports) {
         Ok(inst) => inst,
         Err(e) => {
             defmt::error!("instantiate failed: {=str}", e.message());
             halt();
         }
     };
-    defmt::info!("mandelbrot_wasm: instance created; entering render loop");
+    defmt::info!("demo_host: instance created; entering render loop");
 
     // Per-frame host loop: invoke `run` once per frame, bracket with
     // the rp235x timer to measure. We used to use `DWT::cycle_count`,
@@ -345,6 +346,6 @@ fn halt() -> ! {
 pub static PICOTOOL_ENTRIES: [hal::binary_info::EntryAddr; 4] = [
     hal::binary_info::rp_cargo_bin_name!(),
     hal::binary_info::rp_cargo_version!(),
-    hal::binary_info::rp_program_description!(c"sf-nano-pico2 Wasm Mandelbrot (JIT)"),
+    hal::binary_info::rp_program_description!(c"sf-nano-pico2 Wasm demo host"),
     hal::binary_info::rp_program_build_attribute!(),
 ];

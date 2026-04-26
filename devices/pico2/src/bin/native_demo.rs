@@ -1,11 +1,17 @@
-//! Native-CPU Mandelbrot demo — same kernel source as
-//! `mandelbrot_wasm`, compiled straight to Thumb-2 by rustc. Serves
-//! as the performance ceiling the Wasm JIT is measured against.
+//! Native-CPU demo — same selected render kernel as `demo_host`,
+//! compiled straight to Thumb-2 by rustc. Serves as the performance
+//! ceiling the Wasm JIT is measured against.
 //!
-//! `cargo run --bin mandelbrot_native --release`.
+//! `cargo run --bin native_demo --release`.
 
 #![no_std]
 #![no_main]
+
+#[cfg(all(feature = "demo-mandelbrot", feature = "demo-cube"))]
+compile_error!("select exactly one demo feature");
+
+#[cfg(not(any(feature = "demo-mandelbrot", feature = "demo-cube")))]
+compile_error!("select one demo feature");
 
 extern crate alloc;
 
@@ -28,7 +34,13 @@ use sf_nano_pico2 as lib;
 
 use lib::board::XTAL_FREQ_HZ;
 use lib::display::{self, st7735};
-use lib::mandelbrot_kernel::FB_BYTES;
+#[cfg(feature = "demo-mandelbrot")]
+use lib::kernels::mandelbrot as demo;
+
+#[cfg(feature = "demo-cube")]
+use lib::kernels::cube as demo;
+
+use demo::FB_BYTES;
 
 #[unsafe(link_section = ".start_block")]
 #[used]
@@ -63,7 +75,7 @@ fn main() -> ! {
         &mut pac.RESETS,
     );
 
-    defmt::info!("mandelbrot_native: clocks up, sys={} Hz", sys_hz);
+    defmt::info!("native_demo: clocks up, sys={} Hz", sys_hz);
 
     let mosi = pins.gpio11.into_function::<hal::gpio::FunctionSpi>();
     let miso = pins.gpio28.into_function::<hal::gpio::FunctionSpi>();
@@ -82,10 +94,10 @@ fn main() -> ! {
         40u32.MHz(),
         MODE_0,
     );
-    defmt::info!("mandelbrot_native: SPI1 @ 40 MHz");
+    defmt::info!("native_demo: SPI1 @ 40 MHz");
 
     st7735::init(&mut spi_bus, &mut cs, &mut dc, &mut rst, &mut timer);
-    defmt::info!("mandelbrot_native: ST7735s init complete");
+    defmt::info!("native_demo: ST7735s init complete");
 
     let dma = pac.DMA.split(&mut pac.RESETS);
 
@@ -96,7 +108,7 @@ fn main() -> ! {
     let mut ch_opt = Some(dma.ch0);
     let mut fb_opt: Option<&'static mut [u8; FB_BYTES]> = Some(fb_bytes);
 
-    defmt::info!("mandelbrot_native: entering render loop");
+    defmt::info!("native_demo: entering render loop");
 
     let mut frame: u32 = 0;
     let mut compute_accumulator_us: u64 = 0;
@@ -106,7 +118,7 @@ fn main() -> ! {
     let mut last_log = timer.get_counter();
     let mut displayed_fps: u32 = 0;
 
-    // Top-left overlay origin — same convention as mandelbrot_wasm.
+    // Top-left overlay origin — same convention as demo_host.
     const FPS_ORIGIN: (i32, i32) = (2, 2);
     // Top-right "sf-nano" label. Panel is 160 wide; 46×12 rect with a 2px margin.
     const LABEL_ORIGIN: (i32, i32) = (112, 2);
@@ -126,7 +138,7 @@ fn main() -> ! {
         let t_compute_start = timer.get_counter();
         {
             let bytes: &mut [u8] = fb_opt.as_mut().unwrap().as_mut_slice();
-            lib::mandelbrot_kernel::render(bytes, frame);
+            demo::render(bytes, frame);
             display::stamp_fps_overlay(bytes, FPS_ORIGIN, displayed_fps);
             display::stamp_sf_nano_overlay(bytes, LABEL_ORIGIN);
         }
@@ -204,6 +216,6 @@ fn main() -> ! {
 pub static PICOTOOL_ENTRIES: [hal::binary_info::EntryAddr; 4] = [
     hal::binary_info::rp_cargo_bin_name!(),
     hal::binary_info::rp_cargo_version!(),
-    hal::binary_info::rp_program_description!(c"sf-nano-pico2 native Mandelbrot"),
+    hal::binary_info::rp_program_description!(c"sf-nano-pico2 native demo"),
     hal::binary_info::rp_program_build_attribute!(),
 ];

@@ -2,7 +2,7 @@
 //!
 //! Used for the FPS readout and the "sf-nano" label. The background
 //! rectangle is drawn via a raw byte loop rather than
-//! `embedded_graphics::primitives::Rectangle`: in `mandelbrot_wasm`'s
+//! `embedded_graphics::primitives::Rectangle`: in `demo_host`'s
 //! `push_frame` host callback the e-g Rectangle path froze the JIT's
 //! animation (the panel showed a single frame and stopped updating)
 //! while equivalent raw writes did not. The root cause is unexplained

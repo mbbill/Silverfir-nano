@@ -1,9 +1,8 @@
 //! Shared integer Mandelbrot kernel — Q16.16 i64 variant.
 //!
-//! Same source compiled twice: once natively as part of this crate
-//! (used by `mandelbrot_native`), and once to `wasm32-unknown-unknown`
-//! via a sub-crate (used by `mandelbrot_wasm` through sf-nano-core's
-//! JIT). Whichever renders faster wins.
+//! Same source compiled two ways: directly into `native_demo`,
+//! and into the `wasm-demo/` sub-crate that `demo_host` executes
+//! through sf-nano-core's JIT. Whichever renders faster wins.
 //!
 //! Q16.16 fixed-point: `qmul` routes through `i64` so the 32×32 product
 //! doesn't overflow. This is the "harder" kernel — the `(a as i64)

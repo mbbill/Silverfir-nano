@@ -119,11 +119,10 @@ cargo objdump --bin heartbeat -- -d --no-show-raw-insn   # disassemble
   the Waveshare Pico-LCD-1.8 at 40 MHz SPI. Baseline ≈ **74 fps /
   13.3 ms per frame** for CPU fill + DMA, SPI wire time alone being
   8.2 ms of that.
-- **`mandelbrot_native`** (`src/bin/mandelbrot_native.rs`) — same
-  Mandelbrot kernel as the Wasm demo, compiled natively. The ceiling
-  the JIT is measured against — currently **18 fps / 55 ms per
-  frame** on Q17.14 integer math.
-- **`mandelbrot_wasm`** (`src/bin/mandelbrot_wasm.rs`) — **the
+- **`native_demo`** (`src/bin/native_demo.rs`) — same selected demo
+  kernel as the Wasm demo, compiled natively. The ceiling the JIT is
+  measured against.
+- **`demo_host`** (`src/bin/demo_host.rs`) — **the
   headline demo.** Same kernel compiled to `wasm32-unknown-unknown`,
   JIT-executed by sf-nano-core. Currently **9 fps / 110 ms per
   frame**, ~55 % of native (or ~50 % compute-only, subtracting the
@@ -459,7 +458,7 @@ for sf-nano-core + a code arena.
   since removed) baked into flash via the `wat` build-dependency,
   JIT-compiled and invoked at startup. Printed `sum 1..=10 = 55` over
   RTT on real hardware — first end-to-end JIT-on-MCU proof. Superseded
-  by `mandelbrot_wasm`, which exercises the same path at real workload
+  by `demo_host`, which exercises the same path at real workload
   scale.
 - **Aggressive memory budget (completed).** Heap 320 KiB, code arena
   128 KiB, wasm memory max 3 pages (192 KiB), wasm stack 32 KiB,

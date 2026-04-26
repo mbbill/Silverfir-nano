@@ -16,14 +16,16 @@
 # `cargo install elf2uf2-rs`.
 #
 # Usage:
-#   ./build-uf2.sh [BIN_NAME] [ARCH]
-#     BIN_NAME defaults to mandelbrot_wasm
+#   ./build-uf2.sh [BIN_NAME] [ARCH] [DEMO]
+#     BIN_NAME defaults to demo_host
 #     ARCH     defaults to arm; pass "rv" for the RV32 build
+#     DEMO     defaults to mandelbrot; pass "cube" for the cube demo
 #
 # Examples:
-#   ./build-uf2.sh                                # mandelbrot_wasm, arm
-#   ./build-uf2.sh mandelbrot_native              # mandelbrot_native, arm
-#   ./build-uf2.sh mandelbrot_wasm rv             # mandelbrot_wasm, RV32
+#   ./build-uf2.sh                                # demo_host, arm
+#   ./build-uf2.sh native_demo                    # native_demo, arm
+#   ./build-uf2.sh demo_host rv                   # demo_host, RV32
+#   ./build-uf2.sh demo_host arm cube             # demo_host cube, ARM
 #
 # Output: <bin>.uf2 next to the release ELF.
 
@@ -96,8 +98,9 @@ PY
 }
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-BIN_NAME="${1:-mandelbrot_wasm}"
+BIN_NAME="${1:-demo_host}"
 ARCH="${2:-arm}"
+DEMO="${3:-mandelbrot}"
 
 case "$ARCH" in
     arm)
@@ -116,13 +119,26 @@ case "$ARCH" in
         ;;
 esac
 
+case "$DEMO" in
+    mandelbrot)
+        DEMO_FEATURE="demo-mandelbrot"
+        ;;
+    cube)
+        DEMO_FEATURE="demo-cube"
+        ;;
+    *)
+        echo "ERROR: unknown DEMO '$DEMO' — expected 'mandelbrot' or 'cube'." >&2
+        exit 1
+        ;;
+esac
+
 ELF_PATH="$SCRIPT_DIR/target/$TARGET/release/$BIN_NAME"
 UF2_PATH="$ELF_PATH.uf2"
 
 cd "$SCRIPT_DIR"
 
-echo "[pico2-uf2] Building release ELF: $BIN_NAME ($ARCH → $TARGET)"
-cargo build --release --bin "$BIN_NAME" --target "$TARGET"
+echo "[pico2-uf2] Building release ELF: $BIN_NAME ($ARCH → $TARGET, demo=$DEMO)"
+cargo build --release --bin "$BIN_NAME" --target "$TARGET" --no-default-features --features "$DEMO_FEATURE"
 
 if [[ ! -f "$ELF_PATH" ]]; then
     echo "ERROR: expected ELF not found at $ELF_PATH" >&2

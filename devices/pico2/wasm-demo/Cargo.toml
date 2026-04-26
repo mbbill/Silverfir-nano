@@ -1,9 +1,9 @@
 [package]
-name = "sf-nano-pico2-wasm-kernel"
+name = "sf-nano-pico2-wasm-demo"
 version = "0.1.0"
 edition = "2021"
 authors = ["Bill Ming <mbbill@gmail.com>"]
-description = "Mandelbrot kernel compiled to wasm32-unknown-unknown, to be JIT-executed by sf-nano-core on Pico 2"
+description = "Selected Pico 2 render demo compiled to wasm32-unknown-unknown for sf-nano-core"
 license = "MIT OR Apache-2.0"
 publish = false
 
@@ -14,6 +14,11 @@ publish = false
 [lib]
 crate-type = ["cdylib"]
 path = "src/lib.rs"
+
+[features]
+default = ["demo-mandelbrot"]
+demo-mandelbrot = []
+demo-cube = []
 
 # Build-profile mirrors a typical Wasm release: small, fast, no unwind.
 # `opt-level = 3` is the speed profile — we want the native compiler

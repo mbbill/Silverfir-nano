@@ -7,7 +7,7 @@
 //!
 //! Builds for both Cortex-M33 (ARM) and Hazard3 (RV32IMAC) — all
 //! arch-specific glue is concentrated in [`arch`]; everything else
-//! (board, display, heap, kernel, os_shim) is single-source.
+//! (board, display, heap, kernels, os_shim) is single-source.
 
 #![no_std]
 
@@ -18,7 +18,7 @@ pub mod board;
 pub mod config;
 pub mod display;
 pub mod heap;
-pub mod mandelbrot_kernel;
+pub mod kernels;
 pub mod os_shim;
 
 /// Install the heap + runtime configuration for this board. Must be

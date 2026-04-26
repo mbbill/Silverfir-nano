@@ -3,5 +3,5 @@
 version = 4
 
 [[package]]
-name = "sf-nano-pico2-wasm-kernel"
+name = "sf-nano-pico2-wasm-demo"
 version = "0.1.0"
