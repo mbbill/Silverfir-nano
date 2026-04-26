@@ -1,0 +1,16 @@
+# Cargo configuration for the Waveshare ESP32-C6-LCD-1.47 firmware.
+#
+# The ESP32-C6 main CPU is RV32IMAC. Flashing uses the USB Serial/JTAG
+# COM port through espflash/cargo-espflash.
+
+[build]
+target = "riscv32imac-unknown-none-elf"
+
+[target.riscv32imac-unknown-none-elf]
+rustflags = [
+    "-C", "link-arg=-Tlinkall.x",
+
+    # Required for useful esp-backtrace output on RISC-V.
+    "-C", "force-frame-pointers",
+]
+runner = "espflash flash --chip esp32c6 --flash-size 8mb --monitor"
