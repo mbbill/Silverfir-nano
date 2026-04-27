@@ -176,8 +176,8 @@ fn palette(iter: u32, frame: u32) -> u16 {
         return 0x0000; // black — interior of the set
     }
     let hue = (iter.wrapping_add(frame)) & 0x1f; // 0..32
-    // 32-step rainbow table, RGB565. Six color segments (red→yellow→
-    // green→cyan→blue→magenta→red), a bit over 5 steps each.
+                                                 // 32-step rainbow table, RGB565. Six color segments (red→yellow→
+                                                 // green→cyan→blue→magenta→red), a bit over 5 steps each.
     const TABLE: [u16; 32] = [
         0xF800, 0xF880, 0xF900, 0xF980, 0xFA00, 0xFA80, 0xFB00, 0xFB80, 0xFC00, 0xFCC0, 0xFD80,
         0xFE40, 0xFF00, 0xF720, 0xEF60, 0xE780, 0xDFC0, 0xD7E0, 0x87E0, 0x37E0, 0x07E4, 0x07EA,

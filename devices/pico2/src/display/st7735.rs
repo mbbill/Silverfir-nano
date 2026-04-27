@@ -57,8 +57,13 @@ where
 /// Drive the ST7735s through its full startup sequence: hardware reset,
 /// MADCTL / COLMOD / frame rate / gamma / power settings, sleep-out,
 /// display-on. Runs once at boot; cost doesn't matter.
-pub fn init<SPI, CS, DC, RST, D>(spi: &mut SPI, cs: &mut CS, dc: &mut DC, rst: &mut RST, delay: &mut D)
-where
+pub fn init<SPI, CS, DC, RST, D>(
+    spi: &mut SPI,
+    cs: &mut CS,
+    dc: &mut DC,
+    rst: &mut RST,
+    delay: &mut D,
+) where
     SPI: SpiBus<u8>,
     CS: OutputPin,
     DC: OutputPin,

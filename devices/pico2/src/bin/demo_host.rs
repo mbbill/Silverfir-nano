@@ -218,10 +218,7 @@ fn main() -> ! {
     );
 
     defmt::info!("demo_host: clocks up, sys={} Hz", sys_hz);
-    defmt::info!(
-        "demo_host: wasm module is {} bytes",
-        WASM_DEMO.len()
-    );
+    defmt::info!("demo_host: wasm module is {} bytes", WASM_DEMO.len());
 
     let mosi = pins.gpio11.into_function::<hal::gpio::FunctionSpi>();
     let miso = pins.gpio28.into_function::<hal::gpio::FunctionSpi>();

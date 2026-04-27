@@ -21,14 +21,11 @@ pub const FB_BYTES: usize = WIDTH * HEIGHT * 2;
 // for a 64-entry LUT). That mismatch produced a rotation that
 // collapsed into non-uniform scaling with periodic sign flips.
 static COS_Q15: [i32; 64] = [
-     32767,  32610,  32138,  31357,  30274,  28899,  27246,  25330,
-     23170,  20788,  18205,  15447,  12540,   9512,   6393,   3212,
-         0,  -3212,  -6393,  -9512, -12540, -15447, -18205, -20788,
-    -23170, -25330, -27246, -28899, -30274, -31357, -32138, -32610,
-    -32767, -32610, -32138, -31357, -30274, -28899, -27246, -25330,
-    -23170, -20788, -18205, -15447, -12540,  -9512,  -6393,  -3212,
-         0,   3212,   6393,   9512,  12540,  15447,  18205,  20788,
-     23170,  25330,  27246,  28899,  30274,  31357,  32138,  32610,
+    32767, 32610, 32138, 31357, 30274, 28899, 27246, 25330, 23170, 20788, 18205, 15447, 12540,
+    9512, 6393, 3212, 0, -3212, -6393, -9512, -12540, -15447, -18205, -20788, -23170, -25330,
+    -27246, -28899, -30274, -31357, -32138, -32610, -32767, -32610, -32138, -31357, -30274, -28899,
+    -27246, -25330, -23170, -20788, -18205, -15447, -12540, -9512, -6393, -3212, 0, 3212, 6393,
+    9512, 12540, 15447, 18205, 20788, 23170, 25330, 27246, 28899, 30274, 31357, 32138, 32610,
 ];
 
 /// Cosine with 16 sub-steps per LUT entry. The input unit is
@@ -65,13 +62,13 @@ const CY: i32 = (HEIGHT as i32) / 2;
 
 const VERTS: [V3; 8] = [
     (-HALF, -HALF, -HALF), // 0
-    ( HALF, -HALF, -HALF), // 1
-    ( HALF,  HALF, -HALF), // 2
-    (-HALF,  HALF, -HALF), // 3
-    (-HALF, -HALF,  HALF), // 4
-    ( HALF, -HALF,  HALF), // 5
-    ( HALF,  HALF,  HALF), // 6
-    (-HALF,  HALF,  HALF), // 7
+    (HALF, -HALF, -HALF),  // 1
+    (HALF, HALF, -HALF),   // 2
+    (-HALF, HALF, -HALF),  // 3
+    (-HALF, -HALF, HALF),  // 4
+    (HALF, -HALF, HALF),   // 5
+    (HALF, HALF, HALF),    // 6
+    (-HALF, HALF, HALF),   // 7
 ];
 
 /// Each face lists its 4 corners in CCW order viewed from outside.
@@ -90,11 +87,11 @@ const FACES: [[u8; 4]; 6] = [
 /// and flat shading (light points along +Z from the camera).
 const FACE_NORMALS: [V3; 6] = [
     (0, 0, -32767),
-    (0, 0,  32767),
-    ( 32767, 0, 0),
+    (0, 0, 32767),
+    (32767, 0, 0),
     (-32767, 0, 0),
     (0, -32767, 0),
-    (0,  32767, 0),
+    (0, 32767, 0),
 ];
 
 /// Classic "demo cube" palette — one color per face axis.
@@ -141,8 +138,12 @@ fn shade(base: u16, brightness_q15: i32) -> u16 {
     // most-facing the camera and faces turning edge-on. That changing
     // brightness is itself a strong 3D-rotation cue.
     let mut lit = 4915 + ((brightness_q15 * 27852) >> 15);
-    if lit > 32767 { lit = 32767; }
-    if lit < 0 { lit = 0; }
+    if lit > 32767 {
+        lit = 32767;
+    }
+    if lit < 0 {
+        lit = 0;
+    }
     let r = (r * lit >> 15) as u16;
     let g = (g * lit >> 15) as u16;
     let b = (b * lit >> 15) as u16;
@@ -152,13 +153,7 @@ fn shade(base: u16, brightness_q15: i32) -> u16 {
 // ── Triangle rasterizer ─────────────────────────────────────────────
 /// Flat-fill a triangle using edge-function coverage. Winding is
 /// auto-corrected so either CCW or CW input draws the same triangle.
-fn fill_triangle(
-    bytes: &mut [u8],
-    v0: (i32, i32),
-    v1: (i32, i32),
-    v2: (i32, i32),
-    color: u16,
-) {
+fn fill_triangle(bytes: &mut [u8], v0: (i32, i32), v1: (i32, i32), v2: (i32, i32), color: u16) {
     let (x0, y0) = v0;
     let (mut x1, mut y1) = v1;
     let (mut x2, mut y2) = v2;
@@ -187,9 +182,12 @@ fn fill_triangle(
     //   e(v_a, v_b)(x, y) = (x_b − x_a)(y − y_a) − (y_b − y_a)(x − x_a)
     // Step per +x: −(y_b − y_a) = y_a − y_b
     // Step per +y:  (x_b − x_a)
-    let dex0 = y0 - y1; let dey0 = x1 - x0;
-    let dex1 = y1 - y2; let dey1 = x2 - x1;
-    let dex2 = y2 - y0; let dey2 = x0 - x2;
+    let dex0 = y0 - y1;
+    let dey0 = x1 - x0;
+    let dex1 = y1 - y2;
+    let dey1 = x2 - x1;
+    let dex2 = y2 - y0;
+    let dey2 = x0 - x2;
 
     // Initial edge values at (min_x, min_y).
     let mut row_e0 = (x1 - x0) * (min_y - y0) - (y1 - y0) * (min_x - x0);
@@ -254,24 +252,48 @@ pub fn render(bytes: &mut [u8], frame: u32) {
         i += 1;
     }
 
-    // Draw each non-back-facing face as two triangles.
+    // Collect visible faces, then draw back-to-front. Back-face culling alone
+    // is not enough: a later face in fixed index order can otherwise overwrite
+    // a nearer face that should cover it.
+    let mut visible = [(0usize, 0i32, 0i32); 6]; // face index, avg-z numerator, brightness
+    let mut visible_count = 0usize;
     let mut face_i = 0;
     while face_i < 6 {
         let n_rot = rotate(FACE_NORMALS[face_i], yc, ys, pc, ps);
         // Camera looks +Z from origin, so a face is visible when its
         // outward normal points back toward us (z component < 0).
         if n_rot.2 < 0 {
-            // Brightness = how directly the face aims at the camera.
-            // `-n_rot.z` is already positive Q15 in that range.
-            let color = shade(FACE_COLORS[face_i], -n_rot.2);
-            let f = FACES[face_i];
-            let v0 = proj[f[0] as usize];
-            let v1 = proj[f[1] as usize];
-            let v2 = proj[f[2] as usize];
-            let v3 = proj[f[3] as usize];
-            fill_triangle(bytes, v0, v1, v2, color);
-            fill_triangle(bytes, v0, v2, v3, color);
+            visible[visible_count] = (face_i, n_rot.2, -n_rot.2);
+            visible_count += 1;
         }
         face_i += 1;
+    }
+
+    // Larger camera-space Z is farther away, so sort descending and paint the
+    // nearest visible faces last.
+    let mut sort_i = 1usize;
+    while sort_i < visible_count {
+        let item = visible[sort_i];
+        let mut j = sort_i;
+        while j > 0 && visible[j - 1].1 < item.1 {
+            visible[j] = visible[j - 1];
+            j -= 1;
+        }
+        visible[j] = item;
+        sort_i += 1;
+    }
+
+    let mut draw_i = 0usize;
+    while draw_i < visible_count {
+        let (face_i, _, brightness) = visible[draw_i];
+        let color = shade(FACE_COLORS[face_i], brightness);
+        let f = FACES[face_i];
+        let v0 = proj[f[0] as usize];
+        let v1 = proj[f[1] as usize];
+        let v2 = proj[f[2] as usize];
+        let v3 = proj[f[3] as usize];
+        fill_triangle(bytes, v0, v1, v2, color);
+        fill_triangle(bytes, v0, v2, v3, color);
+        draw_i += 1;
     }
 }

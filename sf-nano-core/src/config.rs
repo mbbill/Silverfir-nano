@@ -6,9 +6,8 @@
 //! native code buffers release unused executable pages on hosted POSIX targets,
 //! so small modules do not retain the full cap as virtual address space. The
 //! bare-metal target (`sf_os_none`) has an explicit zero default — the embedder
-//! **must** call [`set_runtime_config`] before any `CodeBuffer::new()` /
-//! `Instance::new()` / `CodeBuffer::new()` path, otherwise those fail
-//! with a clear error.
+//! **must** call [`set_runtime_config`] before any `Instance::new()` /
+//! `CodeBuffer::new()` path, otherwise those fail with a clear error.
 //!
 //! Design: see `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md`.
 //!

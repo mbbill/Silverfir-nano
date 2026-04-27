@@ -5,12 +5,13 @@
 //! `#[global_allocator]` — this module registers a static-buffer
 //! linked-list allocator from `embedded-alloc`.
 //!
-//! Sized to fit: module metadata, per-invoke Wasm operand stack
-//! (`WASM_STACK_BYTES` bytes each), and up to
-//! `WASM_MEMORY_MAX_PAGES × 64 KiB` of linear memory. The JIT code
-//! arena lives in its own static region in `os_shim.rs`, not here.
-//! Keep this value paired with the `config.rs` constants — see the
-//! memory-budget table in `HACKING.md` §5 when tuning.
+//! Sized to fit: module metadata, materialized Wasm linear memory, and
+//! the per-invoke Wasm operand stack (`WASM_STACK_BYTES` bytes each).
+//! JIT builds compile before materializing local linear memory to reduce
+//! peak heap pressure. The JIT code arena lives in its own static region
+//! in `os_shim.rs`, not here.
+//! Keep this value paired with the `config.rs` constants — see
+//! `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md` when tuning.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem::MaybeUninit;
@@ -67,7 +68,7 @@ unsafe impl GlobalAlloc for DiagnosticHeap {
 #[global_allocator]
 static HEAP: DiagnosticHeap = DiagnosticHeap(LlffHeap::empty());
 
-const HEAP_SIZE: usize = 320 * 1024;
+const HEAP_SIZE: usize = 448 * 1024;
 static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
 
 /// Install the heap. Must be called exactly once, before any `Box`,

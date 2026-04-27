@@ -223,14 +223,19 @@ module's initial linear memory beyond the Pico runtime quota.
 The firmware calls `sf_nano_pico2::init()` at startup before any allocation or
 JIT work. That installs:
 
-- A 320 KiB `embedded-alloc` global heap for Rust allocation, Wasm module
-  metadata, Wasm linear memory, and the per-invoke operand stack.
+- A 448 KiB `embedded-alloc` global heap for Rust allocation, Wasm module
+  metadata, materialized Wasm linear memory, and the per-invoke operand stack.
 - An `sf-nano-core` `RuntimeConfig` with:
-  - 128 KiB JIT code arena.
+  - 32 KiB JIT code arena.
   - 3 Wasm memory pages max per linear memory (192 KiB).
-  - 32 KiB Wasm operand/call stack per invoke.
-- A single 128 KiB executable SRAM arena exposed through
+  - 16 KiB Wasm operand/call stack per invoke.
+- A single 32 KiB executable SRAM arena exposed through
   `sf_os_alloc_executable`.
+
+In JIT builds, `sf-nano-core` compiles the module before materializing local
+linear memories. That keeps the framebuffer-sized Wasm memory out of the heap
+during peak compile-time allocation pressure; memory is allocated before active
+data segments and execution.
 
 RP2350 SRAM is executable without MPU permission changes in this firmware. The
 write-finish hook still executes the architecture-specific store / instruction
