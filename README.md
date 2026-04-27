@@ -1,26 +1,31 @@
 # Silverfir-nano
 
-## A compact, optimizing WebAssembly JIT for on-device AI.
+## A compact, optimizing WebAssembly 3.0 JIT, from desktop to microcontroller.
 
-Silverfir-nano is a `no_std` WebAssembly JIT engine designed around four
-things that matter when you want to run AI on edge devices:
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="assets/highlights-dark.svg">
+  <img src="assets/highlights.svg" alt="Silverfir-nano: Fast, Small, Portable, Full Wasm 3.0, On-device JIT" width="560">
+</picture>
 
-1. **Small** — the minimal stripped binary lives in the few-hundred-KB range,
-   with zero runtime dependencies and only `alloc` required.
-2. **Fast** — not a single-pass baseline JIT. Silverfir-nano emits
-   register-allocated, region-optimized native code: on Apple M4 it beats
-   Wasmtime's fully-optimizing Cranelift on most workloads and goes
-   head-to-head with V8 TurboFan. The same engine, same codegen quality,
-   also runs on a Raspberry Pi Pico 2 — an optimizing Wasm JIT on a
-   Cortex-M is something the field hasn't really seen before.
-3. **Secure** — every guest runs inside the WebAssembly sandbox:
-   memory-isolated, capability-gated, portable, and auditable. You ship a
-   `.wasm` binary, not a pre-compiled machine-code blob — so the artifact you
-   deploy is the same one you can re-verify on-device before it ever runs.
-   No native plugins, no ad-hoc FFI trust boundaries.
-4. **Updatable** — one `.wasm` blob, one verification surface, atomic swap in
-   the field. The runtime stays fixed; models, policies, and agent tools move
-   as portable artifacts.
+Silverfir-nano is a `no_std` WebAssembly JIT engine built to be strong on
+every axis a Wasm runtime is judged on, not just one:
+
+1. **Fast** — register-allocated, region-optimized native code. On Apple M4
+   it beats Wasmtime's fully-optimizing Cranelift on most workloads and goes
+   head-to-head with V8 TurboFan.
+2. **Small** — the minimal stripped binary lives in the few-hundred-KB range,
+   with zero runtime dependencies and only `alloc` required. Fits comfortably
+   inside 512 KB of SRAM.
+3. **Portable** — six native backends, the same compiler from x86_64 and
+   ARM64 down to RV32 and Thumb-2. The compiler that competes with Cranelift
+   on M4 emits Thumb-2 on a Cortex-M33 — codegen quality doesn't degrade as
+   you step down.
+4. **Full Wasm 3.0** — GC, exception handling, SIMD and relaxed SIMD, tail
+   calls, memory64, multi-memory, typeful references, and extended constant
+   expressions. 100% pass on the official Wasm spec testsuite.
+5. **On-device JIT** — verification and code generation both happen on the
+   target itself. You ship a `.wasm` artifact, not a relocatable machine-code
+   blob; the runtime verifies and JITs it on the chip, even on a Cortex-M.
 
 ## See it running on a Raspberry Pi Pico 2
 
@@ -36,31 +41,7 @@ stamping, and DMA to the panel. See
 [devices/pico2/README.md](devices/pico2/README.md) for bring-up details and
 the Cube demo.
 
-## Why this matters for edge AI
-
-Edge AI devices don't look like servers. They have kilobytes-to-megabytes of
-RAM, tight power budgets, and a hard requirement to stay updatable in the
-field without becoming a supply-chain incident.
-
-The usual options force a bad trade:
-
-- **Native code per device** — fast, but no sandbox, no portable updates,
-  and every shipped binary is a fresh attack surface.
-- **Ahead-of-time Wasm toolchains** — portable in theory, but the thing
-  you actually ship to the device is a relocatable machine-code binary.
-  That artifact is much harder to verify than the original `.wasm`, and a
-  corrupted or tampered AOT blob is indistinguishable from a valid one
-  without a separate signing and attestation path. You've traded the Wasm
-  sandbox for "trust the builder."
-- **Pure interpreters on MCU** — tiny and safe, but an order of magnitude
-  too slow for anything resembling on-device inference, DSP, or fast agent
-  tool use.
-
-Silverfir-nano closes that gap: a single small engine that verifies and
-JITs the guest on the device itself, on everything from an M4 laptop to a
-tiny MCU.
-
-## One JIT compiler, from desktops to microcontrollers
+## One JIT compiler, from desktop to microcontroller
 
 Silverfir-nano has six native backends:
 
