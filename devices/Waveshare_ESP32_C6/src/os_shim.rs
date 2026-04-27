@@ -10,7 +10,10 @@ struct CodeArena {
     bytes: [u8; CODE_ARENA_BYTES],
 }
 
-#[unsafe(link_section = ".rwtext.jit")]
+// ESP32-C6 has a 64-KiB `dram2_seg` that is only free after the
+// second-stage bootloader exits. The JIT arena is claimed from `main`, so it
+// can live there and leave the normal RAM region to the Rust heap.
+#[unsafe(link_section = ".dram2_uninit")]
 static mut CODE_ARENA: CodeArena = CodeArena {
     bytes: [0; CODE_ARENA_BYTES],
 };

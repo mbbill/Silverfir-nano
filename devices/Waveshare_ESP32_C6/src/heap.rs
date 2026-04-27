@@ -1,8 +1,9 @@
 //! Pico2-style fixed global heap for `alloc`.
 //!
-//! Native Mandelbrot only needs a framebuffer allocation today, but the next
-//! Wasm/JIT step will need the same heap discipline Pico2 uses for module
-//! metadata, linear memory, and invoke stacks.
+//! The Wasm/JIT path uses this heap for module metadata, materialized linear
+//! memory, and per-invoke stacks. JIT compilation runs before local linear
+//! memories are materialized so the framebuffer-sized memory is not live
+//! during peak compile-time allocation pressure.
 
 use core::{
     alloc::{GlobalAlloc, Layout},
@@ -61,7 +62,7 @@ unsafe impl GlobalAlloc for DiagnosticHeap {
 #[global_allocator]
 static HEAP: DiagnosticHeap = DiagnosticHeap(LlffHeap::empty());
 
-pub const HEAP_SIZE: usize = 320 * 1024;
+pub const HEAP_SIZE: usize = 384 * 1024;
 static mut HEAP_MEM: [MaybeUninit<u8>; HEAP_SIZE] = [MaybeUninit::uninit(); HEAP_SIZE];
 
 pub fn init() {

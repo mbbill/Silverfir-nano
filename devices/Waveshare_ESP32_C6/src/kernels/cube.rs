@@ -254,24 +254,48 @@ pub fn render(bytes: &mut [u8], frame: u32) {
         i += 1;
     }
 
-    // Draw each non-back-facing face as two triangles.
+    // Collect visible faces, then draw back-to-front. Back-face culling alone
+    // is not enough: a later face in fixed index order can otherwise overwrite
+    // a nearer face that should cover it.
+    let mut visible = [(0usize, 0i32, 0i32); 6]; // face index, avg-z numerator, brightness
+    let mut visible_count = 0usize;
     let mut face_i = 0;
     while face_i < 6 {
         let n_rot = rotate(FACE_NORMALS[face_i], yc, ys, pc, ps);
         // Camera looks +Z from origin, so a face is visible when its
         // outward normal points back toward us (z component < 0).
         if n_rot.2 < 0 {
-            // Brightness = how directly the face aims at the camera.
-            // `-n_rot.z` is already positive Q15 in that range.
-            let color = shade(FACE_COLORS[face_i], -n_rot.2);
-            let f = FACES[face_i];
-            let v0 = proj[f[0] as usize];
-            let v1 = proj[f[1] as usize];
-            let v2 = proj[f[2] as usize];
-            let v3 = proj[f[3] as usize];
-            fill_triangle(bytes, v0, v1, v2, color);
-            fill_triangle(bytes, v0, v2, v3, color);
+            visible[visible_count] = (face_i, n_rot.2, -n_rot.2);
+            visible_count += 1;
         }
         face_i += 1;
+    }
+
+    // Larger camera-space Z is farther away, so sort descending and paint the
+    // nearest visible faces last.
+    let mut sort_i = 1usize;
+    while sort_i < visible_count {
+        let item = visible[sort_i];
+        let mut j = sort_i;
+        while j > 0 && visible[j - 1].1 < item.1 {
+            visible[j] = visible[j - 1];
+            j -= 1;
+        }
+        visible[j] = item;
+        sort_i += 1;
+    }
+
+    let mut draw_i = 0usize;
+    while draw_i < visible_count {
+        let (face_i, _, brightness) = visible[draw_i];
+        let color = shade(FACE_COLORS[face_i], brightness);
+        let f = FACES[face_i];
+        let v0 = proj[f[0] as usize];
+        let v1 = proj[f[1] as usize];
+        let v2 = proj[f[2] as usize];
+        let v3 = proj[f[3] as usize];
+        fill_triangle(bytes, v0, v1, v2, color);
+        fill_triangle(bytes, v0, v2, v3, color);
+        draw_i += 1;
     }
 }
