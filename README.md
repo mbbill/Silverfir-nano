@@ -29,17 +29,24 @@ every axis a Wasm runtime is judged on, not just one:
 
 ## See it running on a Raspberry Pi Pico 2
 
-The Mandelbrot below is a Wasm guest, verified, JIT-compiled to Thumb-2, and
-executed entirely on the Pico 2 (RP2350, Cortex-M33, 520 KB SRAM), rendering
-in real time to a 160x128 LCD. No interpreter, no AOT — the `.wasm` artifact
-goes in, native code comes out, on the device.
+The Mandelbrot below is a Wasm guest that Silverfir-nano verifies and
+JIT-compiles to native code on the Pico 2 itself, with no interpreter and
+no ahead-of-time toolchain in the deployment path. The `.wasm` is the
+artifact that ships to the device.
 
 https://github.com/user-attachments/assets/29b5c194-77d4-4c8c-92f3-4474b726f60c
 
-19 fps, including Q16.16 fractal compute, host import overhead, overlay
-stamping, and DMA to the panel. See
-[devices/pico2/README.md](devices/pico2/README.md) for bring-up details and
-the Cube demo.
+The RP2350 packages two independent CPU cores — an Arm Cortex-M33 and a
+Hazard3 RISC-V (RV32IMAC) — and Silverfir-nano targets both. See
+[devices/pico2/README.md](devices/pico2/README.md) for bring-up, the Cube
+demo, and per-core numbers.
+
+## And on the Waveshare ESP32-C6
+
+The same RV32 backend also runs on the Waveshare ESP32-C6-LCD-1.47 board
+(Espressif `riscv32imac` core), JITing a Wasm Mandelbrot guest on-chip. See
+[devices/Waveshare_ESP32_C6/README.md](devices/Waveshare_ESP32_C6/README.md)
+for bring-up.
 
 ## One JIT compiler, from desktop to microcontroller
 
@@ -54,30 +61,25 @@ Silverfir-nano has six native backends:
 
 They all share the same frontend, middle-end, and register allocator.
 Codegen quality doesn't degrade as you move across ISAs or step down to
-smaller targets: the same compiler that produces Cranelift-competitive output
-on Apple M4 also emits RV64GC and RV32GC code for Linux/QEMU validation and
-runs on a Raspberry Pi Pico 2 (RP2350, Cortex-M33), emitting native Thumb-2
-into a small executable SRAM arena and running it in place.
+smaller targets: the same compiler that produces Cranelift-competitive
+output on Apple M4 also runs on a Raspberry Pi Pico 2, targeting both its
+Arm Cortex-M33 (Thumb-2) and its Hazard3 RISC-V (RV32IMAC) cores.
 
 Most WebAssembly runtimes aimed at microcontrollers are interpreters, often
-with instruction fusion or a threaded dispatcher on top. Silverfir-nano takes
-a different route and emits native machine code on the device itself, even
-on a Cortex-M.
+with instruction fusion or a threaded dispatcher on top. Silverfir-nano
+takes a different route and emits native machine code on the device itself,
+even on a Cortex-M.
 
 What makes that credible is not any one trick but the shape of the compiler:
 
-- **The compiler pipeline is streamable end-to-end.** Each IR transform
-  stage — Wasm decode, semantic IR, SSA-IR, MachineIR, native emission —
-  consumes its input and produces its output incrementally, per function.
-  A fully materialized IR for the whole module is never held in memory,
-  which is what makes JIT-on-MCU possible at all.
+- **The pipeline is streamable end-to-end.** Each transform stage consumes
+  its input and produces its output incrementally, per function. A fully
+  materialized IR for the whole module is never held in memory — that is
+  what makes JIT-on-MCU possible at all.
 - **The middle-end allocator is designed for JIT budget *and* good
   codegen.** [`ALGORITHM4`](docs/ALGORITHM4.md) is a region-based
-  cost-optimal public-cache residency allocator driven by Lagrangian
-  relaxation over the structured region tree that Wasm gives for free.
-  It runs per-function at JIT scale in a few thousand operations, and
-  the output competes with what much heavier optimizing compilers
-  produce.
+  cost-optimal cache residency allocator that runs per-function at JIT
+  scale, with output competitive with much heavier optimizing compilers.
 
 ## Performance (Apple M4)
 
@@ -99,11 +101,9 @@ See [full benchmark results](benchmarks/wasi/RESULTS.md)
 
 ## WebAssembly Compatibility
 
-Silverfir-nano supports all Core WebAssembly 3.0 features and is validated
-against the official
+Validated against the official
 [WebAssembly spec testsuite](https://github.com/WebAssembly/spec/tree/main/test).
-
-Supported Core WebAssembly 3.0 feature groups include:
+Feature groups supported:
 
 - **Extended constant expressions** — arithmetic in const expressions and
   `global.get` of previously declared immutable globals.
