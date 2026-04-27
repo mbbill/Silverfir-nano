@@ -129,6 +129,11 @@ pub(crate) fn jal(rd: RiscvReg, offset: i32) -> u32 {
 }
 
 #[inline]
+pub(crate) fn lui(rd: RiscvReg, imm20: u32) -> u32 {
+    u_type(imm20 & 0x000f_ffff, rd, 0b0110111)
+}
+
+#[inline]
 pub(crate) fn addi(rd: RiscvReg, rs1: RiscvReg, imm: i32) -> u32 {
     i_type(imm, rs1, 0b000, rd, 0b0010011)
 }

@@ -520,29 +520,16 @@ impl<'a> Riscv32Backend<'a> {
     pub(super) fn materialize_u64(&mut self, dst: RiscvReg, value: u64) {
         let value = value as u32;
         let signed = value as i32;
-        if (-2048..=2047).contains(&signed) {
+        if Self::fits_i12(signed) {
             self.emit_addi(dst, abi::zero_reg(), signed);
             return;
         }
 
-        let mut started = false;
-        for byte_index in (0..4).rev() {
-            let byte = ((value >> (byte_index * 8)) & 0xff) as i32;
-            if !started {
-                if byte == 0 {
-                    continue;
-                }
-                self.emit_addi(dst, abi::zero_reg(), byte);
-                started = true;
-            } else {
-                self.core.text.emit_u32(enc::slli(dst, dst, 8));
-                if byte != 0 {
-                    self.core.text.emit_u32(enc::ori(dst, dst, byte));
-                }
-            }
-        }
-        if !started {
-            self.emit_addi(dst, abi::zero_reg(), 0);
+        let lo = ((value << 20) as i32) >> 20;
+        let hi = value.wrapping_add(0x800) >> 12;
+        self.core.text.emit_u32(enc::lui(dst, hi));
+        if lo != 0 {
+            self.emit_addi(dst, dst, lo);
         }
     }
 
@@ -908,15 +895,13 @@ impl<'a> Riscv32Backend<'a> {
                     }
                 }
                 MachineValue::Reg(reg) => {
-                    let cond_s = self.gp_scratch.scoped_alloc().detach();
-                    self.load_value_into(*cond_s, MachineValue::Reg(reg))?;
-                    self.zext_w(*cond_s, *cond_s);
+                    let cond_s = self.map_gp_reg(reg)?;
                     let branch = if take_true {
                         enc::Cond::Ne
                     } else {
                         enc::Cond::Eq
                     };
-                    self.emit_branch_to(branch, *cond_s, abi::zero_reg(), label);
+                    self.emit_branch_to(branch, cond_s, abi::zero_reg(), label);
                 }
                 MachineValue::ReservedReg(_) => {
                     return Err(WasmError::internal(
@@ -931,6 +916,43 @@ impl<'a> Riscv32Backend<'a> {
                 lhs,
                 rhs,
             } => {
+                if width == MachineIntWidth::I32 {
+                    let direct_lhs = match lhs {
+                        MachineValue::Reg(reg) => Some(self.map_gp_reg(reg)?),
+                        _ => None,
+                    };
+                    let direct_rhs = match rhs {
+                        MachineValue::Reg(reg) => Some(self.map_gp_reg(reg)?),
+                        _ => None,
+                    };
+                    if direct_lhs.is_some() || direct_rhs.is_some() {
+                        let lhs_s = self.gp_scratch.scoped_alloc().detach();
+                        let rhs_s = self.gp_scratch.scoped_alloc().detach();
+                        let lhs_reg = if let Some(reg) = direct_lhs {
+                            reg
+                        } else {
+                            self.load_value_into(*lhs_s, lhs)?;
+                            *lhs_s
+                        };
+                        let rhs_reg = if let Some(reg) = direct_rhs {
+                            reg
+                        } else {
+                            self.load_value_into(*rhs_s, rhs)?;
+                            *rhs_s
+                        };
+                        let (mut branch, swap) = Self::branch_cond_for_compare(kind, sign);
+                        if !take_true {
+                            branch = branch.invert();
+                        }
+                        let (lhs_reg, rhs_reg) = if swap {
+                            (rhs_reg, lhs_reg)
+                        } else {
+                            (lhs_reg, rhs_reg)
+                        };
+                        self.emit_branch_to(branch, lhs_reg, rhs_reg, label);
+                        return Ok(());
+                    }
+                }
                 let lhs_s = self.gp_scratch.scoped_alloc().detach();
                 let rhs_s = self.gp_scratch.scoped_alloc().detach();
                 self.load_value_into(*lhs_s, lhs)?;
@@ -2042,6 +2064,73 @@ impl<'a> Riscv32Backend<'a> {
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
         let dst = self.map_gp_reg(dst)?;
+        if width == MachineIntWidth::I32 {
+            if let (MachineValue::Reg(lhs), MachineValue::Reg(rhs)) = (lhs, rhs) {
+                match op {
+                    MachineIntBinaryOp::Add
+                    | MachineIntBinaryOp::Sub
+                    | MachineIntBinaryOp::Mul
+                    | MachineIntBinaryOp::And
+                    | MachineIntBinaryOp::Or
+                    | MachineIntBinaryOp::Xor
+                    | MachineIntBinaryOp::Shl
+                    | MachineIntBinaryOp::ShrU
+                    | MachineIntBinaryOp::ShrS => {
+                        let lhs = self.map_gp_reg(lhs)?;
+                        let rhs = self.map_gp_reg(rhs)?;
+                        return self.emit_int_binary_regs(width, op, dst, lhs, rhs);
+                    }
+                    _ => {}
+                }
+            }
+            if let (MachineValue::Reg(lhs), MachineValue::Imm64(rhs)) = (lhs, rhs) {
+                let lhs = self.map_gp_reg(lhs)?;
+                let rhs = rhs as u32 as i32;
+                match op {
+                    MachineIntBinaryOp::Add if Self::fits_i12(rhs) => {
+                        self.emit_addi(dst, lhs, rhs);
+                        return Ok(());
+                    }
+                    MachineIntBinaryOp::Sub
+                        if rhs != i32::MIN && Self::fits_i12(rhs.wrapping_neg()) =>
+                    {
+                        self.emit_addi(dst, lhs, rhs.wrapping_neg());
+                        return Ok(());
+                    }
+                    MachineIntBinaryOp::And if Self::fits_i12(rhs) => {
+                        self.core.text.emit_u32(enc::andi(dst, lhs, rhs));
+                        return Ok(());
+                    }
+                    MachineIntBinaryOp::Or if Self::fits_i12(rhs) => {
+                        self.core.text.emit_u32(enc::ori(dst, lhs, rhs));
+                        return Ok(());
+                    }
+                    MachineIntBinaryOp::Xor if Self::fits_i12(rhs) => {
+                        self.core.text.emit_u32(enc::xori(dst, lhs, rhs));
+                        return Ok(());
+                    }
+                    MachineIntBinaryOp::Shl => {
+                        self.core
+                            .text
+                            .emit_u32(enc::slli(dst, lhs, (rhs as u32) & 31));
+                        return Ok(());
+                    }
+                    MachineIntBinaryOp::ShrU => {
+                        self.core
+                            .text
+                            .emit_u32(enc::srli(dst, lhs, (rhs as u32) & 31));
+                        return Ok(());
+                    }
+                    MachineIntBinaryOp::ShrS => {
+                        self.core
+                            .text
+                            .emit_u32(enc::srai(dst, lhs, (rhs as u32) & 31));
+                        return Ok(());
+                    }
+                    _ => {}
+                }
+            }
+        }
         let lhs_s = self.gp_scratch.scoped_alloc().detach();
         let rhs_s = self.gp_scratch.scoped_alloc().detach();
         self.load_value_into(*lhs_s, lhs)?;
