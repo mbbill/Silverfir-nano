@@ -2608,6 +2608,91 @@ fn fuses_i64_mul_with_self_spill_reload_sign_ext() {
 }
 
 #[test]
+fn fuses_i64_mul_after_pair_extend32s_with_copied_halves() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Int64PairUnary {
+                        op: MachineIntUnaryOp::Extend32S,
+                        dst_lo: MachineReg(13),
+                        dst_hi: MachineReg(14),
+                        src_lo: MachineValue::Reg(MachineReg(4)),
+                        src_hi: MachineValue::Reg(MachineReg(18)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(4),
+                        src: MachineValue::Reg(MachineReg(13)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(18),
+                        src: MachineValue::Reg(MachineReg(14)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(19),
+                        src: MachineValue::Reg(MachineReg(13)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(20),
+                        src: MachineValue::Reg(MachineReg(14)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Int64PairBinary {
+                        op: MachineIntBinaryOp::Mul,
+                        dst_lo: MachineReg(4),
+                        dst_hi: MachineReg(18),
+                        lhs_lo: MachineValue::Reg(MachineReg(4)),
+                        lhs_hi: MachineValue::Reg(MachineReg(18)),
+                        rhs_lo: MachineValue::Reg(MachineReg(19)),
+                        rhs_hi: MachineValue::Reg(MachineReg(20)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(7, 4, 22, 24, 0));
+
+    let block = &program.blocks[0];
+    let mul_inst = block.ops.last().expect("block must have a final inst");
+    assert!(
+        matches!(
+            mul_inst.kind,
+            MachineInstKind::Int64MulFromSignExt32 {
+                dst_lo: MachineReg(4),
+                dst_hi: MachineReg(18),
+                lhs: MachineValue::Reg(MachineReg(4)),
+                rhs: MachineValue::Reg(MachineReg(4)),
+            }
+        ),
+        "expected Int64MulFromSignExt32 after i64.extend32_s pair lowering, got: {:?}",
+        mul_inst.kind
+    );
+}
+
+#[test]
 fn optimize_preserves_block_ops_allocation() {
     let mut ops = collections::Vec::with_capacity(32);
     ops.push(MachineInst {

@@ -50,6 +50,10 @@
 //! If both sides match, rewrite to `Int64MulFromSignExt32` using the
 //! canonical aliases as operands.
 //!
+//! Newer gp32 lowering can also preserve `i64.extend32_s` as
+//! `Int64PairUnary{Extend32S}`. That form is tracked the same way: the low
+//! half aliases the source low half, and the high half is `sign(low)`.
+//!
 //! ## Spill/reload
 //!
 //! Self-spill+self-reload (`Store [slot] U32 <- Reg(R); Load R <- [slot]
@@ -72,8 +76,8 @@
 use crate::collections;
 
 use crate::vm::machine::machine_ir::{
-    MachineAddr, MachineBlock, MachineInstKind, MachineIntBinaryOp, MachineMemWidth, MachineReg,
-    MachineValue,
+    MachineAddr, MachineBlock, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
+    MachineMemWidth, MachineReg, MachineValue,
 };
 
 #[derive(Clone, Copy)]
@@ -164,6 +168,25 @@ pub(super) fn fuse_smull_sign_ext(block: &mut MachineBlock, total_reg_count: usi
                 if idx < sign_ext_of.len() {
                     sign_ext_of[idx] = Some(src_canon);
                     value_alias[idx] = *dst; // ShrS produces a fresh value
+                }
+            }
+            MachineInstKind::Int64PairUnary {
+                op: MachineIntUnaryOp::Extend32S,
+                dst_lo,
+                dst_hi,
+                src_lo: MachineValue::Reg(src_lo),
+                ..
+            } => {
+                let src_canon = canon(*src_lo, &value_alias);
+                let lo_idx = dst_lo.0 as usize;
+                if lo_idx < sign_ext_of.len() {
+                    sign_ext_of[lo_idx] = None;
+                    value_alias[lo_idx] = src_canon;
+                }
+                let hi_idx = dst_hi.0 as usize;
+                if hi_idx < sign_ext_of.len() {
+                    sign_ext_of[hi_idx] = Some(src_canon);
+                    value_alias[hi_idx] = *dst_hi;
                 }
             }
             MachineInstKind::Move {
