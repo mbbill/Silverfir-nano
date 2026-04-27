@@ -224,7 +224,7 @@ impl MemInst {
         })
     }
 
-    #[cfg(sf_jit)]
+    #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
     pub(crate) fn new_unallocated(limits: Limits) -> Result<Self, WasmError> {
         check_memory_quota(&limits)?;
         Ok(MemInst {
