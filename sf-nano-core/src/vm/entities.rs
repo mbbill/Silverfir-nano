@@ -186,6 +186,7 @@ impl TableInst {
 #[derive(Debug)]
 pub(crate) struct MemBacking {
     pub(crate) data: collections::Vec<u8>,
+    pub(crate) allocated: bool,
     #[cfg(sf_has_guard_pages)]
     pub(crate) guard: Option<GuardPageMemory>,
 }
@@ -215,6 +216,21 @@ impl MemInst {
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
                 data: collections::vec![0u8; initial_bytes],
+                allocated: true,
+                #[cfg(sf_has_guard_pages)]
+                guard: None,
+            })),
+            limits,
+        })
+    }
+
+    #[cfg(sf_jit)]
+    pub(crate) fn new_unallocated(limits: Limits) -> Result<Self, WasmError> {
+        check_memory_quota(&limits)?;
+        Ok(MemInst {
+            backing: Rc::new(RefCell::new(MemBacking {
+                data: collections::Vec::new(),
+                allocated: false,
                 #[cfg(sf_has_guard_pages)]
                 guard: None,
             })),
@@ -230,6 +246,7 @@ impl MemInst {
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
                 data: collections::Vec::new(),
+                allocated: true,
                 guard: Some(guard),
             })),
             limits,
@@ -249,6 +266,23 @@ impl MemInst {
     #[inline]
     pub(crate) fn clone_shared_backing(&self) -> Rc<RefCell<MemBacking>> {
         Rc::clone(&self.backing)
+    }
+
+    #[cfg(sf_jit)]
+    pub(crate) fn ensure_allocated(&self) -> Result<(), WasmError> {
+        let mut backing = self.backing.borrow_mut();
+        #[cfg(sf_has_guard_pages)]
+        if backing.guard.is_some() {
+            return Ok(());
+        }
+        if backing.allocated {
+            return Ok(());
+        }
+
+        let initial_bytes = self.limits.min() * crate::constants::WASM_PAGE_SIZE;
+        backing.data = collections::vec![0u8; initial_bytes];
+        backing.allocated = true;
+        Ok(())
     }
 
     #[inline]

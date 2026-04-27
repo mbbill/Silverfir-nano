@@ -804,7 +804,11 @@ impl Instance {
                     {
                         memories.push(MemInst::new_guarded(mem.limits().clone())?);
                     }
-                    #[cfg(not(sf_has_guard_pages))]
+                    #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
+                    {
+                        memories.push(MemInst::new_unallocated(mem.limits().clone())?);
+                    }
+                    #[cfg(all(not(sf_jit), not(sf_has_guard_pages)))]
                     {
                         memories.push(MemInst::new(mem.limits().clone())?);
                     }
@@ -864,7 +868,11 @@ impl Instance {
                                 {
                                     MemInst::new_guarded(*import_limits)?
                                 }
-                                #[cfg(not(sf_has_guard_pages))]
+                                #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
+                                {
+                                    MemInst::new_unallocated(*import_limits)?
+                                }
+                                #[cfg(all(not(sf_jit), not(sf_has_guard_pages)))]
                                 {
                                     MemInst::new(*import_limits)?
                                 }
@@ -1103,6 +1111,9 @@ impl Instance {
         }
 
         let init_result = (|| -> Result<(), WasmError> {
+            #[cfg(sf_jit)]
+            crate::vm::build::ensure_module_compiled(&store)?;
+
             for (i, global) in mod_globals.iter().enumerate() {
                 if let GlobalDef::Local(spec) = global.def() {
                     let value = eval_const_expr(spec.init_expr(), &mut store)?;
@@ -1167,6 +1178,13 @@ impl Instance {
                     Element::Declarative { .. } => {
                         store.module_mut().elements[i].drop_segment();
                     }
+                }
+            }
+
+            #[cfg(sf_jit)]
+            {
+                for memory in &store.module().memories {
+                    memory.ensure_allocated()?;
                 }
             }
 

@@ -7,7 +7,8 @@
 //! so small modules do not retain the full cap as virtual address space. The
 //! bare-metal target (`sf_os_none`) has an explicit zero default — the embedder
 //! **must** call [`set_runtime_config`] before any `CodeBuffer::new()` /
-//! `MemInst::new()` call, otherwise those fail with a clear error.
+//! `Instance::new()` / `CodeBuffer::new()` path, otherwise those fail
+//! with a clear error.
 //!
 //! Design: see `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md`.
 //!
@@ -34,7 +35,9 @@ pub struct RuntimeConfig {
 
     /// Maximum 64-KiB Wasm pages a single linear memory is allowed to
     /// reach. Enforced at instantiation for the initial page count and
-    /// at `memory.grow` for the requested new size.
+    /// at `memory.grow` for the requested new size. In JIT builds,
+    /// local memory backing is materialized after compilation but this
+    /// quota is still checked before compilation starts.
     /// `u32` is enough for wasm32 (ceiling 65536). Memory64 modules
     /// are allowed but cannot exceed `u32::MAX` pages through this
     /// config; practical MCU targets set this to 1–16 anyway.
@@ -65,8 +68,8 @@ impl RuntimeConfig {
     };
 
     /// Bare-metal default: zeros. The embedder MUST override via
-    /// [`set_runtime_config`]. Any `CodeBuffer::new()` or
-    /// `MemInst::new()` call before that override fails cleanly.
+    /// [`set_runtime_config`]. Any `Instance::new()` / `CodeBuffer::new()`
+    /// path before that override fails cleanly.
     #[cfg(sf_os_none)]
     pub const DEFAULT: Self = Self {
         code_arena_bytes: 0,
