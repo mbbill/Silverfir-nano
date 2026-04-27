@@ -5,8 +5,8 @@ use crate::collections;
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
     is_fp_reg, is_gp_reg, MachineAddr, MachineBranchCond, MachineCallTarget, MachineEdge,
-    MachineInst, MachineInstKind, MachineMemWidth, MachineReg, MachineStorageType,
-    MachineTerminator, MachineValue,
+    MachineInst, MachineInstKind, MachineIntUnaryOp, MachineMemWidth, MachineReg,
+    MachineStorageType, MachineTerminator, MachineValue,
 };
 
 // --- Instruction analysis ---
@@ -252,7 +252,7 @@ pub(super) fn count_value_uses(kind: &MachineInstKind, reg: MachineReg) -> usize
 }
 
 /// Visit all source (read) values in an instruction.
-pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue)) {
+pub(crate) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&MachineValue)) {
     match kind {
         MachineInstKind::Move { src, .. } => f(src),
         MachineInstKind::FloatConst { .. } => {}
@@ -350,6 +350,16 @@ pub(super) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
             f(lhs_hi);
             f(rhs_lo);
             f(rhs_hi);
+        }
+        MachineInstKind::Int64PairUnary {
+            op:
+                MachineIntUnaryOp::Extend8S
+                | MachineIntUnaryOp::Extend16S
+                | MachineIntUnaryOp::Extend32S,
+            src_lo,
+            ..
+        } => {
+            f(src_lo);
         }
         MachineInstKind::Int64PairUnary { src_lo, src_hi, .. } => {
             f(src_lo);

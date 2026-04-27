@@ -32,7 +32,7 @@ mod fuse_compare_branch;
 mod fuse_indexed_memory;
 mod fuse_isel;
 mod fuse_smull_sign_ext;
-mod helpers;
+pub(crate) mod helpers;
 mod reuse_loaded_values;
 
 use crate::vm::backend::BackendConfig;

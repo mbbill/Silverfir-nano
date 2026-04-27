@@ -20,6 +20,7 @@ use crate::{
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
             MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
+        machine::peephole::helpers as mir_helpers,
         runtime::{
             code::{CodegenModuleView, NativeRootEntry},
             code_buf::CodeBuffer,
@@ -150,6 +151,7 @@ pub(crate) struct Riscv32Backend<'a> {
     pub(super) fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<RiscvReg, 6>,
     pub(super) fp_scratch: ScratchPool<RiscvFpReg, 2>,
+    low32_dead_hi_defs: collections::Vec<collections::Vec<bool>>,
 }
 
 impl<'a> ArchBackend<'a> for Riscv32Backend<'a> {
@@ -164,11 +166,13 @@ impl<'a> ArchBackend<'a> for Riscv32Backend<'a> {
     }
 
     fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
+        let low32_dead_hi_defs = Self::compute_low32_dead_hi_defs(function);
         Self {
             core: CompilerCore::new(compiled, function, abi::FP_MACHINE_REG_COUNT),
             fixups: collections::Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),
+            low32_dead_hi_defs,
         }
     }
 
@@ -416,6 +420,503 @@ impl<'a> ArchBackend<'a> for Riscv32Backend<'a> {
 }
 
 impl<'a> Riscv32Backend<'a> {
+    fn compute_low32_dead_hi_defs(
+        function: &MachineFunction,
+    ) -> collections::Vec<collections::Vec<bool>> {
+        let block_count = function
+            .program
+            .blocks
+            .iter()
+            .map(|block| block.id.0 as usize + 1)
+            .max()
+            .unwrap_or(0);
+        let reg_count = abi::max_total_machine_regs();
+        let mut demand_in = collections::vec![collections::vec![false; reg_count]; block_count];
+
+        loop {
+            let mut changed = false;
+            for block in function.program.blocks.iter().rev() {
+                let mut demand = Self::terminator_demand(function, &block.terminator, &demand_in);
+                for inst in block.ops.iter().rev() {
+                    Self::transfer_inst_demand(&inst.kind, &mut demand);
+                }
+                let block_index = block.id.0 as usize;
+                if block_index < demand_in.len() && demand_in[block_index] != demand {
+                    demand_in[block_index] = demand;
+                    changed = true;
+                }
+            }
+            if !changed {
+                break;
+            }
+        }
+
+        let mut dead_hi_defs = collections::Vec::new();
+        dead_hi_defs.resize_with(block_count, collections::Vec::new);
+        for block in &function.program.blocks {
+            let block_index = block.id.0 as usize;
+            if block_index >= dead_hi_defs.len() {
+                continue;
+            }
+            dead_hi_defs[block_index] = collections::vec![false; block.ops.len()];
+            let mut demand = Self::terminator_demand(function, &block.terminator, &demand_in);
+            for (index, inst) in block.ops.iter().enumerate().rev() {
+                dead_hi_defs[block_index][index] =
+                    Self::inst_low32_can_ignore_hi(&inst.kind, &demand);
+                Self::transfer_inst_demand(&inst.kind, &mut demand);
+            }
+        }
+        dead_hi_defs
+    }
+
+    fn current_pair_hi_dead(&self) -> bool {
+        let Some(block) = self.core.current_block else {
+            return false;
+        };
+        let Some(index) = self.core.current_op_index else {
+            return false;
+        };
+        self.low32_dead_hi_defs
+            .get(block.0 as usize)
+            .and_then(|block| block.get(index))
+            .copied()
+            .unwrap_or(false)
+    }
+
+    fn inst_low32_can_ignore_hi(kind: &MachineInstKind, demand_after: &[bool]) -> bool {
+        match kind {
+            MachineInstKind::Int64PairBinary {
+                op,
+                dst_lo: _,
+                dst_hi,
+                ..
+            } if matches!(
+                op,
+                MachineIntBinaryOp::Add | MachineIntBinaryOp::Sub | MachineIntBinaryOp::And
+            ) =>
+            {
+                !Self::reg_demanded(demand_after, *dst_hi)
+            }
+            MachineInstKind::Int64PairUnary {
+                op: MachineIntUnaryOp::Extend32S,
+                dst_hi,
+                ..
+            } => !Self::reg_demanded(demand_after, *dst_hi),
+            MachineInstKind::Int64PairShift {
+                op,
+                dst_hi,
+                rhs: MachineValue::Imm64(count),
+                ..
+            } if matches!(op, MachineIntBinaryOp::ShrU | MachineIntBinaryOp::ShrS)
+                && (1..32).contains(&((*count as u32) & 63)) =>
+            {
+                !Self::reg_demanded(demand_after, *dst_hi)
+            }
+            _ => false,
+        }
+    }
+
+    fn terminator_demand(
+        function: &MachineFunction,
+        term: &MachineTerminator,
+        demand_in: &[collections::Vec<bool>],
+    ) -> collections::Vec<bool> {
+        let mut demand = collections::vec![false; abi::max_total_machine_regs()];
+        match term {
+            MachineTerminator::Jump(edge) => {
+                Self::demand_edge(function, edge, demand_in, &mut demand);
+            }
+            MachineTerminator::Branch {
+                cond,
+                then_edge,
+                else_edge,
+            } => {
+                Self::demand_branch_cond(cond, &mut demand);
+                Self::demand_edge(function, then_edge, demand_in, &mut demand);
+                Self::demand_edge(function, else_edge, demand_in, &mut demand);
+            }
+            MachineTerminator::JumpTable { index, entries } => {
+                Self::demand_value(&mut demand, index);
+                for edge in entries {
+                    Self::demand_edge(function, edge, demand_in, &mut demand);
+                }
+            }
+            MachineTerminator::Call {
+                target,
+                callee_frame_base,
+                caller_result_base,
+                continuation: _,
+            } => {
+                Self::demand_call_target(target, &mut demand);
+                Self::demand_reg(&mut demand, *callee_frame_base);
+                Self::demand_reg(&mut demand, *caller_result_base);
+            }
+            MachineTerminator::TailCall {
+                target,
+                callee_frame_base,
+            } => {
+                Self::demand_call_target(target, &mut demand);
+                Self::demand_reg(&mut demand, *callee_frame_base);
+            }
+            MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+        }
+        demand
+    }
+
+    fn demand_edge(
+        function: &MachineFunction,
+        edge: &crate::vm::machine::machine_ir::MachineEdge,
+        demand_in: &[collections::Vec<bool>],
+        demand: &mut [bool],
+    ) {
+        let Some(target) = function.program.blocks.get(edge.target.0 as usize) else {
+            return;
+        };
+        let Some(target_demand) = demand_in.get(edge.target.0 as usize) else {
+            return;
+        };
+        for (arg, param) in edge.args.iter().zip(&target.params) {
+            if Self::reg_demanded(target_demand, param.reg) {
+                Self::demand_value(demand, arg);
+            }
+        }
+    }
+
+    fn transfer_inst_demand(kind: &MachineInstKind, demand: &mut [bool]) {
+        match kind {
+            MachineInstKind::Move { dst, src, .. } => {
+                let needed = Self::take_reg_demand(demand, *dst);
+                if needed {
+                    Self::demand_value(demand, src);
+                }
+            }
+            MachineInstKind::Int64PairBinary {
+                op,
+                dst_lo,
+                dst_hi,
+                lhs_lo,
+                lhs_hi,
+                rhs_lo,
+                rhs_hi,
+            } => {
+                let lo_needed = Self::take_reg_demand(demand, *dst_lo);
+                let hi_needed = Self::take_reg_demand(demand, *dst_hi);
+                match op {
+                    MachineIntBinaryOp::Add | MachineIntBinaryOp::Sub => {
+                        if lo_needed || hi_needed {
+                            Self::demand_value(demand, lhs_lo);
+                            Self::demand_value(demand, rhs_lo);
+                        }
+                        if hi_needed {
+                            Self::demand_value(demand, lhs_hi);
+                            Self::demand_value(demand, rhs_hi);
+                        }
+                    }
+                    MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor => {
+                        if lo_needed {
+                            Self::demand_value(demand, lhs_lo);
+                            Self::demand_value(demand, rhs_lo);
+                        }
+                        if hi_needed {
+                            Self::demand_value(demand, lhs_hi);
+                            Self::demand_value(demand, rhs_hi);
+                        }
+                    }
+                    MachineIntBinaryOp::Mul => {
+                        if lo_needed || hi_needed {
+                            Self::demand_value(demand, lhs_lo);
+                            Self::demand_value(demand, rhs_lo);
+                        }
+                        if hi_needed {
+                            Self::demand_value(demand, lhs_hi);
+                            Self::demand_value(demand, rhs_hi);
+                        }
+                    }
+                    _ => {
+                        if lo_needed || hi_needed {
+                            Self::demand_value(demand, lhs_lo);
+                            Self::demand_value(demand, lhs_hi);
+                            Self::demand_value(demand, rhs_lo);
+                            Self::demand_value(demand, rhs_hi);
+                        }
+                    }
+                }
+            }
+            MachineInstKind::Int64PairUnary {
+                op: MachineIntUnaryOp::Extend32S,
+                dst_lo,
+                dst_hi,
+                src_lo,
+                ..
+            } => {
+                let lo_needed = Self::take_reg_demand(demand, *dst_lo);
+                let hi_needed = Self::take_reg_demand(demand, *dst_hi);
+                if lo_needed || hi_needed {
+                    Self::demand_value(demand, src_lo);
+                }
+            }
+            MachineInstKind::Int64MulFromSignExt32 {
+                dst_lo,
+                dst_hi,
+                lhs,
+                rhs,
+            } => {
+                let needed =
+                    Self::take_reg_demand(demand, *dst_lo) | Self::take_reg_demand(demand, *dst_hi);
+                if needed {
+                    Self::demand_value(demand, lhs);
+                    Self::demand_value(demand, rhs);
+                }
+            }
+            MachineInstKind::Int64PairShift {
+                op,
+                dst_lo,
+                dst_hi,
+                lhs_lo,
+                lhs_hi,
+                rhs,
+            } => {
+                let lo_needed = Self::take_reg_demand(demand, *dst_lo);
+                let hi_needed = Self::take_reg_demand(demand, *dst_hi);
+                if lo_needed || hi_needed {
+                    Self::demand_value(demand, rhs);
+                }
+                match (op, rhs) {
+                    (
+                        MachineIntBinaryOp::ShrU | MachineIntBinaryOp::ShrS,
+                        MachineValue::Imm64(count),
+                    ) if (1..32).contains(&((*count as u32) & 63)) => {
+                        if lo_needed {
+                            Self::demand_value(demand, lhs_lo);
+                            Self::demand_value(demand, lhs_hi);
+                        }
+                        if hi_needed {
+                            Self::demand_value(demand, lhs_hi);
+                        }
+                    }
+                    _ => {
+                        if lo_needed || hi_needed {
+                            Self::demand_value(demand, lhs_lo);
+                            Self::demand_value(demand, lhs_hi);
+                        }
+                    }
+                }
+            }
+            _ => {
+                let output_needed = Self::kill_defs_and_report_need(kind, demand);
+                if output_needed || !Self::has_register_defs(kind) {
+                    mir_helpers::visit_source_values(kind, |value| {
+                        Self::demand_value(demand, value);
+                    });
+                }
+            }
+        }
+    }
+
+    fn kill_defs_and_report_need(kind: &MachineInstKind, demand: &mut [bool]) -> bool {
+        let mut needed = false;
+        match kind {
+            MachineInstKind::FloatConst { dst, .. }
+            | MachineInstKind::Load { dst, .. }
+            | MachineInstKind::IntUnary { dst, .. }
+            | MachineInstKind::IntBinary { dst, .. }
+            | MachineInstKind::IntCompare { dst, .. }
+            | MachineInstKind::FloatUnary { dst, .. }
+            | MachineInstKind::FloatBinary { dst, .. }
+            | MachineInstKind::FloatCompare { dst, .. }
+            | MachineInstKind::Convert { dst, .. }
+            | MachineInstKind::Select { dst, .. }
+            | MachineInstKind::IndexedLoad { dst, .. }
+            | MachineInstKind::BitfieldExtractU { dst, .. }
+            | MachineInstKind::IntBinaryShifted { dst, .. }
+            | MachineInstKind::TestBits { dst, .. }
+            | MachineInstKind::MemoryGrow { dst, .. }
+            | MachineInstKind::TableGrow { dst, .. }
+            | MachineInstKind::EhAllocExnRef { dst, .. }
+            | MachineInstKind::RefFunc { dst, .. }
+            | MachineInstKind::RefAsNonNull { dst, .. }
+            | MachineInstKind::RefEq { dst, .. }
+            | MachineInstKind::RefI31 { dst, .. }
+            | MachineInstKind::I31GetS { dst, .. }
+            | MachineInstKind::I31GetU { dst, .. }
+            | MachineInstKind::AnyConvertExtern { dst, .. }
+            | MachineInstKind::ExternConvertAny { dst, .. }
+            | MachineInstKind::RefTest { dst, .. }
+            | MachineInstKind::RefCast { dst, .. }
+            | MachineInstKind::StructNew { dst, .. }
+            | MachineInstKind::StructNewDefault { dst, .. }
+            | MachineInstKind::ArrayNew { dst, .. }
+            | MachineInstKind::ArrayNewDefault { dst, .. }
+            | MachineInstKind::ArrayNewFixed { dst, .. }
+            | MachineInstKind::ArrayNewData { dst, .. }
+            | MachineInstKind::ArrayNewElem { dst, .. }
+            | MachineInstKind::ArrayLen { dst, .. } => {
+                needed |= Self::take_reg_demand(demand, *dst);
+            }
+            #[cfg(sf_has_simd)]
+            MachineInstKind::V128Const { dst, .. }
+            | MachineInstKind::V128FromRaw { dst, .. }
+            | MachineInstKind::V128ToRaw { dst, .. }
+            | MachineInstKind::SimdUnary { dst, .. }
+            | MachineInstKind::SimdBinary { dst, .. }
+            | MachineInstKind::SimdTernary { dst, .. }
+            | MachineInstKind::SimdShift { dst, .. }
+            | MachineInstKind::SimdExtractLane { dst, .. }
+            | MachineInstKind::SimdReplaceLane { dst, .. }
+            | MachineInstKind::SimdShuffle { dst, .. }
+            | MachineInstKind::SimdLoad { dst, .. }
+            | MachineInstKind::SimdLoadLane { dst, .. } => {
+                needed |= Self::take_reg_demand(demand, *dst);
+            }
+            MachineInstKind::StructGet { dst, dst_hi, .. }
+            | MachineInstKind::ArrayGet { dst, dst_hi, .. } => {
+                needed |= Self::take_reg_demand(demand, *dst);
+                if let Some(dst_hi) = dst_hi {
+                    needed |= Self::take_reg_demand(demand, *dst_hi);
+                }
+            }
+            MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. }
+            | MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
+            | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+                needed |= Self::take_reg_demand(demand, *dst_lo);
+                needed |= Self::take_reg_demand(demand, *dst_hi);
+            }
+            MachineInstKind::Int64PairCompare { dst, .. }
+            | MachineInstKind::ConvertI64PairToFloat { dst, .. }
+            | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => {
+                needed |= Self::take_reg_demand(demand, *dst);
+            }
+            MachineInstKind::Store { .. }
+            | MachineInstKind::IndexedStore { .. }
+            | MachineInstKind::TrapIf { .. }
+            | MachineInstKind::CallRuntime(_)
+            | MachineInstKind::MemoryFill { .. }
+            | MachineInstKind::MemoryCopy { .. }
+            | MachineInstKind::MemoryInit { .. }
+            | MachineInstKind::DataDrop { .. }
+            | MachineInstKind::TableFill { .. }
+            | MachineInstKind::TableCopy { .. }
+            | MachineInstKind::TableInit { .. }
+            | MachineInstKind::ElemDrop { .. }
+            | MachineInstKind::EhThrow { .. }
+            | MachineInstKind::EhThrowRef { .. }
+            | MachineInstKind::StructSet { .. }
+            | MachineInstKind::ArraySet { .. }
+            | MachineInstKind::ArrayFill { .. }
+            | MachineInstKind::ArrayCopy { .. }
+            | MachineInstKind::ArrayInitData { .. }
+            | MachineInstKind::ArrayInitElem { .. } => {}
+            #[cfg(sf_has_simd)]
+            MachineInstKind::SimdStore { .. } | MachineInstKind::SimdStoreLane { .. } => {}
+            MachineInstKind::Move { .. }
+            | MachineInstKind::Int64PairBinary { .. }
+            | MachineInstKind::Int64PairUnary { .. }
+            | MachineInstKind::Int64PairShift { .. }
+            | MachineInstKind::Int64MulFromSignExt32 { .. } => {}
+        }
+        needed
+    }
+
+    fn has_register_defs(kind: &MachineInstKind) -> bool {
+        match kind {
+            MachineInstKind::Store { .. }
+            | MachineInstKind::IndexedStore { .. }
+            | MachineInstKind::TrapIf { .. }
+            | MachineInstKind::CallRuntime(_)
+            | MachineInstKind::MemoryFill { .. }
+            | MachineInstKind::MemoryCopy { .. }
+            | MachineInstKind::MemoryInit { .. }
+            | MachineInstKind::DataDrop { .. }
+            | MachineInstKind::TableFill { .. }
+            | MachineInstKind::TableCopy { .. }
+            | MachineInstKind::TableInit { .. }
+            | MachineInstKind::ElemDrop { .. }
+            | MachineInstKind::EhThrow { .. }
+            | MachineInstKind::EhThrowRef { .. }
+            | MachineInstKind::StructSet { .. }
+            | MachineInstKind::ArraySet { .. }
+            | MachineInstKind::ArrayFill { .. }
+            | MachineInstKind::ArrayCopy { .. }
+            | MachineInstKind::ArrayInitData { .. }
+            | MachineInstKind::ArrayInitElem { .. } => false,
+            #[cfg(sf_has_simd)]
+            MachineInstKind::SimdStore { .. } | MachineInstKind::SimdStoreLane { .. } => false,
+            _ => true,
+        }
+    }
+
+    fn demand_branch_cond(cond: &MachineBranchCond, demand: &mut [bool]) {
+        match cond {
+            MachineBranchCond::Value(value) => Self::demand_value(demand, value),
+            MachineBranchCond::IntCompare { lhs, rhs, .. } => {
+                Self::demand_value(demand, lhs);
+                Self::demand_value(demand, rhs);
+            }
+            MachineBranchCond::TestBits { src, mask, .. } => {
+                Self::demand_value(demand, src);
+                Self::demand_value(demand, mask);
+            }
+        }
+    }
+
+    fn demand_call_target(target: &MachineCallTarget, demand: &mut [bool]) {
+        if let MachineCallTarget::Indirect {
+            callee_target,
+            callee_entry,
+        } = target
+        {
+            Self::demand_reg(demand, *callee_target);
+            Self::demand_reg(demand, *callee_entry);
+        }
+    }
+
+    fn demand_value(demand: &mut [bool], value: &MachineValue) {
+        if let MachineValue::Reg(reg) = value {
+            Self::demand_reg(demand, *reg);
+        }
+    }
+
+    fn demand_reg(demand: &mut [bool], reg: MachineReg) {
+        if let Some(slot) = demand.get_mut(reg.0 as usize) {
+            *slot = true;
+        }
+    }
+
+    fn reg_demanded(demand: &[bool], reg: MachineReg) -> bool {
+        demand.get(reg.0 as usize).copied().unwrap_or(false)
+    }
+
+    fn take_reg_demand(demand: &mut [bool], reg: MachineReg) -> bool {
+        let Some(slot) = demand.get_mut(reg.0 as usize) else {
+            return false;
+        };
+        let needed = *slot;
+        *slot = false;
+        needed
+    }
+
+    fn emit_mulh_mul_ordered_if_safe(
+        &mut self,
+        dst_lo: RiscvReg,
+        dst_hi: RiscvReg,
+        lhs: RiscvReg,
+        rhs: RiscvReg,
+    ) -> bool {
+        let lo_overlaps = dst_lo == lhs || dst_lo == rhs;
+        let hi_overlaps = dst_hi == lhs || dst_hi == rhs;
+        if lo_overlaps && hi_overlaps {
+            return false;
+        }
+        if lo_overlaps {
+            self.core.text.emit_u32(enc::mulh(dst_hi, lhs, rhs));
+            self.core.text.emit_u32(enc::mul(dst_lo, lhs, rhs));
+        } else {
+            self.core.text.emit_u32(enc::mul(dst_lo, lhs, rhs));
+            self.core.text.emit_u32(enc::mulh(dst_hi, lhs, rhs));
+        }
+        true
+    }
+
     pub(super) fn alloc_host_call_scratch(&self) -> DetachedScratch<RiscvReg, 6> {
         self.gp_scratch
             .scoped_alloc_excluding_any([abi::global_pointer_reg(), abi::thread_pointer_reg()])
@@ -2481,6 +2982,19 @@ impl<'a> Riscv32Backend<'a> {
         rhs_lo: MachineValue,
         rhs_hi: MachineValue,
     ) -> Result<(), WasmError> {
+        if self.current_pair_hi_dead()
+            && matches!(
+                op,
+                MachineIntBinaryOp::Add | MachineIntBinaryOp::Sub | MachineIntBinaryOp::And
+            )
+        {
+            self.lower_int_binary(MachineIntWidth::I32, op, dst_lo, lhs_lo, rhs_lo)?;
+            let _ = dst_hi;
+            let _ = lhs_hi;
+            let _ = rhs_hi;
+            return Ok(());
+        }
+
         let dst_lo = self.map_gp_reg(dst_lo)?;
         let dst_hi = self.map_gp_reg(dst_hi)?;
         let (lhs_lo_s, lhs_hi_s, rhs_lo_s, rhs_hi_s) =
@@ -2550,6 +3064,13 @@ impl<'a> Riscv32Backend<'a> {
     ) -> Result<(), WasmError> {
         let dst_lo = self.map_gp_reg(dst_lo)?;
         let dst_hi = self.map_gp_reg(dst_hi)?;
+        if let (MachineValue::Reg(lhs), MachineValue::Reg(rhs)) = (lhs, rhs) {
+            let lhs = self.map_gp_reg(lhs)?;
+            let rhs = self.map_gp_reg(rhs)?;
+            if self.emit_mulh_mul_ordered_if_safe(dst_lo, dst_hi, lhs, rhs) {
+                return Ok(());
+            }
+        }
         let lhs_s = self.gp_scratch.scoped_alloc().detach();
         let rhs_s = self.gp_scratch.scoped_alloc().detach();
         self.load_value_into(*lhs_s, lhs)?;
@@ -2569,9 +3090,9 @@ impl<'a> Riscv32Backend<'a> {
     ) -> Result<(), WasmError> {
         let dst_lo = self.map_gp_reg(dst_lo)?;
         let dst_hi = self.map_gp_reg(dst_hi)?;
-        let (src_lo_s, src_hi_s) = self.load_i64_pair_values(src_lo, src_hi)?;
         match op {
             MachineIntUnaryOp::Clz => {
+                let (src_lo_s, src_hi_s) = self.load_i64_pair_values(src_lo, src_hi)?;
                 let hi_nonzero = self.core.new_label();
                 let done = self.core.new_label();
                 self.emit_mv(dst_lo, *src_hi_s);
@@ -2586,6 +3107,7 @@ impl<'a> Riscv32Backend<'a> {
                 self.emit_addi(dst_hi, abi::zero_reg(), 0);
             }
             MachineIntUnaryOp::Ctz => {
+                let (src_lo_s, src_hi_s) = self.load_i64_pair_values(src_lo, src_hi)?;
                 let lo_zero = self.core.new_label();
                 let done = self.core.new_label();
                 self.emit_mv(dst_lo, *src_lo_s);
@@ -2600,6 +3122,7 @@ impl<'a> Riscv32Backend<'a> {
                 self.emit_addi(dst_hi, abi::zero_reg(), 0);
             }
             MachineIntUnaryOp::Popcnt => {
+                let (src_lo_s, src_hi_s) = self.load_i64_pair_values(src_lo, src_hi)?;
                 self.emit_mv(dst_lo, *src_lo_s);
                 self.emit_popcnt(MachineIntWidth::I32, dst_lo);
                 self.emit_mv(dst_hi, *src_hi_s);
@@ -2608,18 +3131,28 @@ impl<'a> Riscv32Backend<'a> {
                 self.emit_addi(dst_hi, abi::zero_reg(), 0);
             }
             MachineIntUnaryOp::Extend8S => {
+                let src_lo_s = self.gp_scratch.scoped_alloc().detach();
+                self.load_value_into(*src_lo_s, src_lo)?;
                 self.emit_mv(dst_lo, *src_lo_s);
                 self.core.text.emit_u32(enc::slli(dst_lo, dst_lo, 24));
                 self.core.text.emit_u32(enc::srai(dst_lo, dst_lo, 24));
                 self.core.text.emit_u32(enc::srai(dst_hi, dst_lo, 31));
             }
             MachineIntUnaryOp::Extend16S => {
+                let src_lo_s = self.gp_scratch.scoped_alloc().detach();
+                self.load_value_into(*src_lo_s, src_lo)?;
                 self.emit_mv(dst_lo, *src_lo_s);
                 self.core.text.emit_u32(enc::slli(dst_lo, dst_lo, 16));
                 self.core.text.emit_u32(enc::srai(dst_lo, dst_lo, 16));
                 self.core.text.emit_u32(enc::srai(dst_hi, dst_lo, 31));
             }
             MachineIntUnaryOp::Extend32S => {
+                let src_lo_s = self.gp_scratch.scoped_alloc().detach();
+                self.load_value_into(*src_lo_s, src_lo)?;
+                if self.current_pair_hi_dead() {
+                    self.emit_mv(dst_lo, *src_lo_s);
+                    return Ok(());
+                }
                 self.emit_mv(dst_lo, *src_lo_s);
                 self.core.text.emit_u32(enc::srai(dst_hi, dst_lo, 31));
             }
@@ -2777,6 +3310,19 @@ impl<'a> Riscv32Backend<'a> {
         lhs_hi: MachineValue,
         n: u32,
     ) -> Result<(), WasmError> {
+        if self.current_pair_hi_dead()
+            && matches!(op, MachineIntBinaryOp::ShrU | MachineIntBinaryOp::ShrS)
+            && (1..32).contains(&n)
+        {
+            let dst_lo = self.map_gp_reg(dst_lo)?;
+            let _ = dst_hi;
+            let (lo, hi) = self.load_i64_pair_values(lhs_lo, lhs_hi)?;
+            self.core.text.emit_u32(enc::srli(dst_lo, *lo, n));
+            self.core.text.emit_u32(enc::slli(*lo, *hi, 32 - n));
+            self.core.text.emit_u32(enc::or(dst_lo, dst_lo, *lo));
+            return Ok(());
+        }
+
         let dst_lo = self.map_gp_reg(dst_lo)?;
         let dst_hi = self.map_gp_reg(dst_hi)?;
         let (lo, hi) = self.load_i64_pair_values(lhs_lo, lhs_hi)?;
