@@ -320,104 +320,87 @@ impl<'a> Arm32Backend<'a> {
         // Step 6: dispatch the helper.
         self.emit_host_call(preserved_entry as *const () as usize);
 
-        // Step 7: stash status (R0) and optionally result into GP scratches.
-        // After this we commit to two diverging tails — success and error —
-        // that need to restore the JIT register file in different ways.
-        // Note that R0 itself is not yet clobbered: the success-path restore
-        // will overwrite it from the spill area, but the error-path restore
-        // skips R0 so the helper's status code propagates back to the C
-        // caller via the body-local error tail.
-        let status_s = self.gp_scratch.scoped_alloc().detach();
-        self.core.text.emit_u32(enc::mov_reg(*status_s, C_RET0));
-
-        // Step 8: read the result (if any) into a second GP scratch.
-        let result_lo_s = if !matches!(result, PreservedResultTarget::None) {
-            let s = self.gp_scratch.scoped_alloc().detach();
-            self.core.text.emit_u32(enc::ldr_imm(
-                *s,
-                Arm32Reg::SP,
-                (preserved_io::RET0 * 8) as i32,
-            ));
-            Some(s)
-        } else {
-            None
-        };
-        let result_hi_s = match result {
-            PreservedResultTarget::GpPair { .. }
-            | PreservedResultTarget::Float {
-                width: MachineFloatWidth::F64,
-                ..
-            } => {
-                let s = self.gp_scratch.scoped_alloc().detach();
-                self.core.text.emit_u32(enc::ldr_imm(
-                    *s,
-                    Arm32Reg::SP,
-                    (preserved_io::RET0 * 8 + 4) as i32,
-                ));
-                Some(s)
-            }
-            _ => None,
-        };
-
-        // Step 9: free the I/O area and payload. Both tails need this.
-        self.emit_adjust_sp_up(PRESERVED_IO_BYTES + payload_bytes);
-
-        // Step 10: branch on status. The two tails differ in how they pop the
-        // spill area: the success path runs `restore_caller_saved_gp_regs`
-        // (which restores R0..R3, R9 from the spill and pops 24 bytes), while
-        // the error path uses a bare `add sp, #24` so R0 retains the helper's
-        // status code while it propagates to `body_local_error_label`.
+        // Step 7: branch on status while C_RET0 still holds the helper result
+        // code. The success path may freely overwrite R0 afterward; the error
+        // path keeps R0 intact so the status propagates to the body-local
+        // error tail.
         let error_path = self.core.new_label();
-        self.core.text.emit_u32(enc::cmp_imm(*status_s, 0, 0));
+        self.core.text.emit_u32(enc::cmp_imm(C_RET0, 0, 0));
         self.emit_branch(BranchFixupKind::BCond(enc::Cond::Ne), error_path);
 
-        // Success tail.
-        self.restore_caller_saved_gp_regs(&[]);
-        match result {
-            PreservedResultTarget::None => {}
+        // Success tail. Move any result out of io[RET0] before freeing the
+        // I/O area. GP results go directly to their final mapped registers so
+        // a 64-bit result needs no third scratch register.
+        let mut preserved_gp_results = [Arm32Reg::R15; 2];
+        let preserved_gp_count = match result {
+            PreservedResultTarget::None => 0,
             PreservedResultTarget::GpWord(dst) => {
                 let dst_hw = map_reg(dst)?;
-                if let Some(ref rs) = result_lo_s {
-                    self.core.text.emit_u32(enc::mov_reg(dst_hw, **rs));
-                }
+                self.core.text.emit_u32(enc::ldr_imm(
+                    dst_hw,
+                    Arm32Reg::SP,
+                    (preserved_io::RET0 * 8) as i32,
+                ));
+                preserved_gp_results[0] = dst_hw;
+                1
             }
             PreservedResultTarget::GpPair { dst_lo, dst_hi } => {
                 let dst_lo_hw = map_reg(dst_lo)?;
                 let dst_hi_hw = map_reg(dst_hi)?;
-                if let Some(ref rs) = result_lo_s {
-                    self.core.text.emit_u32(enc::mov_reg(dst_lo_hw, **rs));
-                }
-                if let Some(ref rs) = result_hi_s {
-                    self.core.text.emit_u32(enc::mov_reg(dst_hi_hw, **rs));
-                }
+                self.core.text.emit_u32(enc::ldr_imm(
+                    dst_lo_hw,
+                    Arm32Reg::SP,
+                    (preserved_io::RET0 * 8) as i32,
+                ));
+                self.core.text.emit_u32(enc::ldr_imm(
+                    dst_hi_hw,
+                    Arm32Reg::SP,
+                    (preserved_io::RET0 * 8 + 4) as i32,
+                ));
+                preserved_gp_results[0] = dst_lo_hw;
+                preserved_gp_results[1] = dst_hi_hw;
+                2
             }
             PreservedResultTarget::Float { dst, width } => {
                 let dd = self.map_fp_dreg(dst)?;
                 match width {
                     MachineFloatWidth::F32 => {
-                        let lo = result_lo_s.as_ref().ok_or_else(|| {
-                            WasmError::internal("missing preserved helper float result")
-                        })?;
-                        self.core.text.emit_u32(enc::vmov_s_r(dd * 2, **lo));
+                        let lo = self.gp_scratch.scoped_alloc();
+                        self.core.text.emit_u32(enc::ldr_imm(
+                            *lo,
+                            Arm32Reg::SP,
+                            (preserved_io::RET0 * 8) as i32,
+                        ));
+                        self.core.text.emit_u32(enc::vmov_s_r(dd * 2, *lo));
                     }
                     MachineFloatWidth::F64 => {
-                        let lo = result_lo_s.as_ref().ok_or_else(|| {
-                            WasmError::internal("missing preserved helper float result")
-                        })?;
-                        let hi = result_hi_s.as_ref().ok_or_else(|| {
-                            WasmError::internal("missing preserved helper float high result")
-                        })?;
-                        self.core.text.emit_u32(enc::vmov_d_rr(dd, **lo, **hi));
+                        let lo = self.gp_scratch.scoped_alloc();
+                        let hi = self.gp_scratch.scoped_alloc();
+                        self.core.text.emit_u32(enc::ldr_imm(
+                            *lo,
+                            Arm32Reg::SP,
+                            (preserved_io::RET0 * 8) as i32,
+                        ));
+                        self.core.text.emit_u32(enc::ldr_imm(
+                            *hi,
+                            Arm32Reg::SP,
+                            (preserved_io::RET0 * 8 + 4) as i32,
+                        ));
+                        self.core.text.emit_u32(enc::vmov_d_rr(dd, *lo, *hi));
                     }
                 }
                 self.core.set_fp_reg_width(dst, width)?;
+                0
             }
-        }
+        };
+        self.emit_adjust_sp_up(PRESERVED_IO_BYTES + payload_bytes);
+        self.restore_caller_saved_gp_regs(&preserved_gp_results[..preserved_gp_count]);
         let after = self.core.new_label();
         self.emit_branch(BranchFixupKind::B, after);
 
         // Error tail.
         self.core.bind_label(error_path);
+        self.emit_adjust_sp_up(PRESERVED_IO_BYTES + payload_bytes);
         self.core.text.emit_u32(enc::add_imm(
             Arm32Reg::SP,
             Arm32Reg::SP,
