@@ -26,6 +26,10 @@ fn qmul(a: i32, b: i32) -> i32 {
 
 pub fn render(bytes: &mut [u8], frame: u32) {
     debug_assert_eq!(bytes.len(), FB_BYTES);
+    if bytes.len() < FB_BYTES {
+        return;
+    }
+    let ptr = bytes.as_mut_ptr();
 
     let dx = VIEW_WIDTH / WIDTH as i32;
     let dy = VIEW_HEIGHT / HEIGHT as i32;
@@ -42,8 +46,10 @@ pub fn render(bytes: &mut [u8], frame: u32) {
         for _ in 0..WIDTH {
             let iter = mandelbrot_iter(cx, cy);
             let rgb = palette(iter, frame);
-            bytes[idx] = (rgb >> 8) as u8;
-            bytes[idx + 1] = rgb as u8;
+            unsafe {
+                ptr.add(idx).write((rgb >> 8) as u8);
+                ptr.add(idx + 1).write(rgb as u8);
+            }
             idx += 2;
             cx = cx.wrapping_add(dx);
         }
@@ -53,8 +59,9 @@ pub fn render(bytes: &mut [u8], frame: u32) {
     for row in (HALF + 1)..HEIGHT {
         let src_off = (HEIGHT - row) * ROW_BYTES;
         let dst_off = row * ROW_BYTES;
-        let (head, tail) = bytes.split_at_mut(dst_off);
-        tail[..ROW_BYTES].copy_from_slice(&head[src_off..src_off + ROW_BYTES]);
+        unsafe {
+            core::ptr::copy_nonoverlapping(ptr.add(src_off), ptr.add(dst_off), ROW_BYTES);
+        }
     }
 }
 
