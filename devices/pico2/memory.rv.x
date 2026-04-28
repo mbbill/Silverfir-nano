@@ -30,8 +30,9 @@ PROVIDE(_stack_start = ORIGIN(RAM) + LENGTH(RAM));
 PROVIDE(_max_hart_id = 0);
 
 /* The native stack must coexist with the static Rust heap and the JIT code
- * arena. 32 KiB matched the earlier RV layout and leaves room for sf-nano. */
-PROVIDE(_hart_stack_size = 32K);
+ * arena. The current RV demo leaves a little over 30 KiB after static
+ * storage, code arena, and Wasm memory reservations. */
+PROVIDE(_hart_stack_size = 30K);
 PROVIDE(_heap_size = 0);
 
 PROVIDE(InstructionMisaligned = ExceptionHandler);
@@ -248,7 +249,7 @@ BUG(riscv-rt): start of .heap is not 4-byte aligned");
 ASSERT(_stext + SIZEOF(.text) < ORIGIN(FLASH) + LENGTH(FLASH), "
 ERROR(riscv-rt): .text must be placed inside FLASH");
 
-ASSERT(SIZEOF(.stack) > (_max_hart_id + 1) * _hart_stack_size, "
+ASSERT(SIZEOF(.stack) >= (_max_hart_id + 1) * _hart_stack_size, "
 ERROR(riscv-rt): .stack section is too small for all harts");
 
 ASSERT(SIZEOF(.got) == 0, "
