@@ -32,7 +32,7 @@ use hal::{
 use sf_nano_core as _;
 use sf_nano_pico2 as lib;
 
-use lib::board::XTAL_FREQ_HZ;
+use lib::board::{DISPLAY_SPI_TARGET_HZ, XTAL_FREQ_HZ};
 use lib::display::{self, st7735};
 #[cfg(feature = "demo-mandelbrot")]
 use lib::kernels::mandelbrot as demo;
@@ -91,10 +91,16 @@ fn main() -> ! {
     let mut spi_bus = spi_bus.init(
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
-        40u32.MHz(),
+        DISPLAY_SPI_TARGET_HZ.Hz(),
         MODE_0,
     );
-    defmt::info!("native_demo: SPI1 @ 40 MHz");
+    let actual_spi_hz =
+        spi_bus.set_baudrate(clocks.peripheral_clock.freq(), DISPLAY_SPI_TARGET_HZ.Hz());
+    defmt::info!(
+        "native_demo: SPI1 requested={} Hz actual={} Hz",
+        DISPLAY_SPI_TARGET_HZ,
+        actual_spi_hz.to_Hz()
+    );
 
     st7735::init(&mut spi_bus, &mut cs, &mut dc, &mut rst, &mut timer);
     defmt::info!("native_demo: ST7735s init complete");

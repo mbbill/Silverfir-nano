@@ -36,7 +36,7 @@ use hal::{
 use sf_nano_core::{HostFn, Import, Instance, Value, WasmError};
 use sf_nano_pico2 as lib;
 
-use lib::board::{CsPin, DcPin, DisplayCh, DisplaySpi, XTAL_FREQ_HZ};
+use lib::board::{CsPin, DcPin, DisplayCh, DisplaySpi, DISPLAY_SPI_TARGET_HZ, XTAL_FREQ_HZ};
 use lib::display::{self, st7735};
 
 #[unsafe(link_section = ".start_block")]
@@ -234,10 +234,16 @@ fn main() -> ! {
     let mut spi_bus = spi_bus.init(
         &mut pac.RESETS,
         clocks.peripheral_clock.freq(),
-        40u32.MHz(),
+        DISPLAY_SPI_TARGET_HZ.Hz(),
         MODE_0,
     );
-    defmt::info!("demo_host: SPI1 @ 40 MHz");
+    let actual_spi_hz =
+        spi_bus.set_baudrate(clocks.peripheral_clock.freq(), DISPLAY_SPI_TARGET_HZ.Hz());
+    defmt::info!(
+        "demo_host: SPI1 requested={} Hz actual={} Hz",
+        DISPLAY_SPI_TARGET_HZ,
+        actual_spi_hz.to_Hz()
+    );
 
     // ST7735s init needs the same CS/DC pins as `push_frame`, and we
     // can't share ownership — so initialize through locals and move

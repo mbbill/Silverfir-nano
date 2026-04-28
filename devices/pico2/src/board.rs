@@ -29,6 +29,10 @@ use hal::{
 /// Pico 2 / Pico 2 W external crystal.
 pub const XTAL_FREQ_HZ: u32 = 12_000_000;
 
+/// Requested LCD SPI clock. With the default 150 MHz peripheral clock, the
+/// PL022 divider can only realize 75 MHz; the binaries log the achieved rate.
+pub const DISPLAY_SPI_TARGET_HZ: u32 = 80_000_000;
+
 // ── Waveshare Pico-LCD-1.8 pin map ──────────────────────────────────
 //
 //   | LCD signal | Pico GPIO |
