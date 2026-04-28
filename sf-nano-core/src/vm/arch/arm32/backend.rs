@@ -93,7 +93,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
 
     fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
         Self {
-            core: CompilerCore::new(compiled, function, Self::max_fp_regs()),
+            core: CompilerCore::new(compiled, function),
             fixups: collections::Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),

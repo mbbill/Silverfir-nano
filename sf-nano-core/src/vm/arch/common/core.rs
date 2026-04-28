@@ -12,6 +12,8 @@ use crate::{
     },
 };
 
+#[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
+use crate::vm::machine::low32_liveness::Low32DeadHiDefs;
 use crate::vm::runtime::code::CodegenModuleView;
 
 use super::helpers::{trap_kind_index, MACHINE_TRAP_KIND_COUNT};
@@ -40,6 +42,8 @@ pub(crate) struct CompilerCore<'a> {
     pub direct_call_patches: collections::Vec<DirectCallPatch>,
     pub deferred_traps: collections::Vec<(usize, MachineTrapKind)>,
     pub fp_reg_widths: collections::Vec<Option<MachineFloatWidth>>,
+    #[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
+    pub low32_dead_hi_defs: Low32DeadHiDefs,
     pub current_block: Option<MachineBlockId>,
     pub current_op_index: Option<usize>,
     pub current_edge_target: Option<MachineBlockId>,
@@ -67,14 +71,8 @@ pub(crate) struct CompilerCore<'a> {
 
 impl<'a> CompilerCore<'a> {
     /// Create a new `CompilerCore`.
-    ///
-    /// `fp_capacity` is the maximum number of FP machine registers the backend
-    /// supports (e.g. `FP_MACHINE_REG_COUNT`).
-    pub(crate) fn new(
-        compiled: &'a dyn CodegenModuleView,
-        function: &'a MachineFunction,
-        fp_capacity: usize,
-    ) -> Self {
+    pub(crate) fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
+        let config = compiled.backend();
         let block_cap = function
             .program
             .blocks
@@ -100,7 +98,10 @@ impl<'a> CompilerCore<'a> {
         shared_trap_labels[trap_kind_index(MachineTrapKind::StackOverflow)] =
             Some(stack_overflow_label);
 
-        let fp_reg_widths = Self::init_fp_widths(function, compiled.backend(), fp_capacity);
+        let fp_reg_widths = Self::init_fp_widths(function, config);
+        #[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
+        let low32_dead_hi_defs =
+            Low32DeadHiDefs::compute(function, usize::from(config.total_reg_count()));
 
         Self {
             compiled,
@@ -114,6 +115,8 @@ impl<'a> CompilerCore<'a> {
             direct_call_patches: collections::Vec::new(),
             deferred_traps: collections::Vec::new(),
             fp_reg_widths,
+            #[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
+            low32_dead_hi_defs,
             current_block: None,
             current_op_index: None,
             current_edge_target: None,
@@ -124,12 +127,17 @@ impl<'a> CompilerCore<'a> {
         }
     }
 
+    #[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
+    pub(crate) fn current_pair_hi_dead(&self) -> bool {
+        self.low32_dead_hi_defs
+            .is_dead_at(self.current_block, self.current_op_index)
+    }
+
     fn init_fp_widths(
         function: &MachineFunction,
-        _config: BackendConfig,
-        fp_capacity: usize,
+        config: BackendConfig,
     ) -> collections::Vec<Option<MachineFloatWidth>> {
-        let mut widths = collections::vec![None; fp_capacity];
+        let mut widths = collections::vec![None; usize::from(config.fp_dynamic_budget)];
         if function.program.fp_reg_init_widths.is_empty() {
             // Unified dynamic FP banks no longer let us infer ownership or
             // width defaults from register number. Until the lowering path
@@ -143,7 +151,7 @@ impl<'a> CompilerCore<'a> {
                 .copied()
                 .enumerate()
             {
-                if i < fp_capacity {
+                if i < widths.len() {
                     widths[i] = width;
                 }
             }

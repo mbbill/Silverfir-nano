@@ -26,7 +26,7 @@ use crate::{
 use super::{
     abi::{
         self, fp_machine_reg, map_fixed_reg, map_reg, max_fp_machine_regs, max_total_machine_regs,
-        C_ARG0, C_ARG1, FP_MACHINE_REG_COUNT,
+        C_ARG0, C_ARG1,
     },
     callconv,
     enc::{self, Cc},
@@ -94,7 +94,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
 
     fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
         Self {
-            core: CompilerCore::new(compiled, function, FP_MACHINE_REG_COUNT),
+            core: CompilerCore::new(compiled, function),
             fixups: collections::Vec::new(),
             gp_scratch: GpScratchPool::new(abi::gp_backend_owned_regs()),
             fp_scratch: abi::new_fp_scratch_pool(),

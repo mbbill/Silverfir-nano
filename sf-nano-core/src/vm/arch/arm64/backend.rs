@@ -22,7 +22,7 @@ use crate::{
     },
 };
 
-use super::abi::{max_fp_machine_regs, max_total_machine_regs, FP_MACHINE_REG_COUNT};
+use super::abi::{max_fp_machine_regs, max_total_machine_regs};
 use super::{
     abi, enc,
     reg::{Arm64FpReg, Arm64Reg},
@@ -139,7 +139,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
 
     fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
         Self {
-            core: CompilerCore::new(compiled, function, FP_MACHINE_REG_COUNT),
+            core: CompilerCore::new(compiled, function),
             fixups: collections::Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),

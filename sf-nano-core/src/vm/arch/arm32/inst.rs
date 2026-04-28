@@ -2186,6 +2186,19 @@ impl<'a> Arm32Backend<'a> {
         rhs_lo: &MachineValue,
         rhs_hi: &MachineValue,
     ) -> Result<(), WasmError> {
+        if self.core.current_pair_hi_dead()
+            && matches!(
+                op,
+                MachineIntBinaryOp::Add | MachineIntBinaryOp::Sub | MachineIntBinaryOp::And
+            )
+        {
+            self.compile_int_binary(MachineIntWidth::I32, op, dst_lo, lhs_lo, rhs_lo)?;
+            let _ = dst_hi;
+            let _ = lhs_hi;
+            let _ = rhs_hi;
+            return Ok(());
+        }
+
         match op {
             MachineIntBinaryOp::Add => {
                 self.compile_i64_pair_addsub(dst_lo, dst_hi, lhs_lo, lhs_hi, rhs_lo, rhs_hi, true)
@@ -2460,6 +2473,9 @@ impl<'a> Arm32Backend<'a> {
                     prepare_gp(&mut self.core.text, &self.gp_scratch, *src_lo)?.detach();
                 if dst_lo_hw != *src_lo_hw {
                     self.core.text.emit_u32(enc::mov_reg(dst_lo_hw, *src_lo_hw));
+                }
+                if self.core.current_pair_hi_dead() {
+                    return Ok(());
                 }
                 self.core
                     .text
@@ -2887,6 +2903,30 @@ impl<'a> Arm32Backend<'a> {
         n: u32,
     ) -> Result<(), WasmError> {
         debug_assert!(n < 64, "shift count must be pre-masked to 0..64");
+        if self.core.current_pair_hi_dead()
+            && matches!(op, MachineIntBinaryOp::ShrU | MachineIntBinaryOp::ShrS)
+            && (1..32).contains(&n)
+        {
+            const SH_LSL: u32 = 0b00;
+            let lhs_lo_gp = prepare_gp(&mut self.core.text, &self.gp_scratch, *lhs_lo)?.detach();
+            let lhs_hi_gp = prepare_pair_bitop_rhs(
+                &mut self.core.text,
+                &self.gp_scratch,
+                *lhs_hi,
+                dst_lo,
+                dst_lo,
+            )?;
+            self.core.text.emit_u32(enc::lsr_imm(dst_lo, *lhs_lo_gp, n));
+            self.core.text.emit_u32(enc::orr_reg_shifted(
+                dst_lo,
+                dst_lo,
+                *lhs_hi_gp,
+                SH_LSL,
+                32 - n,
+            ));
+            return Ok(());
+        }
+
         // Snapshot each lhs half if it aliases either destination reg. The
         // shift sequences below read lhs_lo and lhs_hi after writing dst, so
         // an unsnapshotted alias would see the post-write value. Non-aliased

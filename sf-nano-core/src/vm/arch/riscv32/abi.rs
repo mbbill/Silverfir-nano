@@ -43,8 +43,6 @@ pub(super) fn new_fp_scratch_pool() -> ScratchPool<RiscvFpReg, 2> {
     common::new_fp_scratch_pool()
 }
 
-pub(super) const FP_MACHINE_REG_COUNT: usize = common::FP_MACHINE_REG_COUNT;
-
 #[inline]
 pub(super) const fn max_fp_machine_regs() -> usize {
     common::max_fp_machine_regs()

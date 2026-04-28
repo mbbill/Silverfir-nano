@@ -7,6 +7,8 @@
 //! - MachineIR transforms (peephole optimization, validation)
 
 mod gp32;
+#[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
+pub(crate) mod low32_liveness;
 mod lower_cache_layout;
 mod lower_cached;
 mod lower_call;
