@@ -117,7 +117,7 @@ pub(super) fn solve_public_cache_sets(
         let weight = block_weights[block_index];
         for score in &block_local_summaries[block_index].slot_scores {
             let slot_index = score.slot.0 as usize;
-            let access_count = f64::from(score.read_count.saturating_add(score.write_count));
+            let access_count = f64::from(score.access_count);
             if access_count > 0.0 {
                 benefit[region_id][slot_index] += weight * access_count;
             }

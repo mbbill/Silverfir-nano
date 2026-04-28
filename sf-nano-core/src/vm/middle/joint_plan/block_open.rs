@@ -29,23 +29,10 @@ pub(crate) fn target_entry_decision(
     plan: &FunctionPlan,
     semantic_index: usize,
 ) -> TargetEntryDecision {
-    if plan
-        .op_info
-        .get(semantic_index)
-        .map(|info| info.is_block_start)
-        .unwrap_or(false)
-    {
-        let entry = &plan.blocks[plan.op_info[semantic_index].block_index as usize].entry;
-        TargetEntryDecision {
-            stack_height: entry.stack_height,
-            spill_depth: entry.spill_depth,
-        }
-    } else {
-        let compact = &plan.compact_entries[semantic_index];
-        TargetEntryDecision {
-            stack_height: compact.stack_height,
-            spill_depth: compact.spill_depth,
-        }
+    let compact = &plan.compact_entries[semantic_index];
+    TargetEntryDecision {
+        stack_height: compact.stack_height,
+        spill_depth: compact.spill_depth,
     }
 }
 

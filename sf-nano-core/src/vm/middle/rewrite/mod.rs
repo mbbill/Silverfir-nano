@@ -8,4 +8,4 @@ mod edge;
 mod function;
 mod state;
 
-pub(crate) use function::rewrite_function;
+pub(crate) use function::{rewrite_function, RewriteCfg};

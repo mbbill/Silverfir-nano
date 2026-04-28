@@ -8,8 +8,6 @@
 use crate::collections;
 
 use tracked_alloc::collections::BTreeMap;
-#[cfg(test)]
-use tracked_alloc::collections::BTreeSet;
 
 use crate::{
     error::WasmError,
@@ -25,17 +23,11 @@ use crate::{
     },
 };
 
-#[cfg(test)]
-use super::facts::{BlockTransientRegion, FirstAccessKind};
 use super::{
-    entry_region::{analyze_block_entry_regions, analyze_block_transient_regions},
-    facts::{BlockPlan, CompactEntryPoint, EntryState, FunctionPlan, LocalOpKind, OpInfo},
+    entry_region::analyze_block_local_summaries,
+    facts::{BlockPlan, CompactEntryPoint, EntryState, FunctionPlan},
     region_solver::solve_public_cache_sets,
 };
-#[cfg(test)]
-use crate::vm::middle::budget::gp_value_budget_units;
-#[cfg(test)]
-use crate::vm::middle::{budget::count_live_bank_budget_units, frame::FrameSlot};
 
 pub(crate) fn build_plan(
     semantic: &SemanticProgram,
@@ -46,15 +38,11 @@ pub(crate) fn build_plan(
     let gp_dynamic_budget = config.allocatable_gp_dynamic_budget();
     let fp_dynamic_budget = config.fp_dynamic_budget;
 
-    let op_info = build_op_info(semantic, cfg, frame);
-    let semantic_entry_shapes = analyze_semantic_entry_shapes(semantic);
-    let (block_local_summaries, block_stack_regions) =
-        analyze_block_entry_regions(semantic, cfg, frame, &semantic_entry_shapes);
-    let block_transient_regions =
-        analyze_block_transient_regions(semantic, cfg, &semantic_entry_shapes);
-    // Lightweight plan provides compact_entries and block entry states + peak
-    // pressure for the region solver.
-    let lightweight = compute_lightweight_plan(semantic, cfg, &op_info, config.gp_unit_bytes);
+    // The lightweight pass is the only pass that needs to simulate every
+    // semantic op boundary. It keeps full EntryState only at CFG block entries,
+    // not at every semantic op.
+    let lightweight = compute_lightweight_plan(semantic, cfg, config.gp_unit_bytes);
+    let block_local_summaries = analyze_block_local_summaries(semantic, cfg, frame);
 
     let block_entry_cached_locals = solve_public_cache_sets(
         semantic,
@@ -66,16 +54,17 @@ pub(crate) fn build_plan(
         &lightweight.peak_fp,
         &block_local_summaries,
     );
-    let blocks = cfg
-        .blocks
-        .iter()
+    let LightweightPlanOutput {
+        compact_entries,
+        peak_gp: _,
+        peak_fp: _,
+        block_entries,
+    } = lightweight;
+    let blocks = block_entries
+        .into_iter()
         .enumerate()
-        .map(|(block_index, _block)| BlockPlan {
-            entry: lightweight
-                .block_entries
-                .get(block_index)
-                .cloned()
-                .unwrap_or_default(),
+        .map(|(block_index, entry)| BlockPlan {
+            entry,
             tentative_entry_cached_locals: block_entry_cached_locals
                 .get(block_index)
                 .cloned()
@@ -86,240 +75,11 @@ pub(crate) fn build_plan(
         gp_unit_bytes: config.gp_unit_bytes,
         gp_dynamic_budget,
         fp_dynamic_budget,
-        local_slot_types: semantic.local_types.clone(),
-        compact_entries: lightweight.compact_entries,
-        op_info,
-        block_local_summaries,
-        block_stack_regions,
-        block_transient_regions,
+        compact_entries,
         blocks,
     };
 
     Ok(plan)
-}
-
-fn build_op_info(
-    semantic: &SemanticProgram,
-    cfg: &SemanticCfg,
-    frame: FrameLayoutPlan,
-) -> collections::Vec<OpInfo> {
-    let mut out = collections::vec![OpInfo::default(); semantic.ops.len()];
-    for (block_index, block) in cfg.blocks.iter().enumerate() {
-        for (block_offset, semantic_index) in block.range.clone().enumerate() {
-            let local_op = match semantic.ops[semantic_index].kind {
-                SemanticOpKind::LocalGet { idx } => Some((frame.local_slot(idx), LocalOpKind::Get)),
-                SemanticOpKind::LocalSet { idx } => Some((frame.local_slot(idx), LocalOpKind::Set)),
-                SemanticOpKind::LocalTee { idx } => Some((frame.local_slot(idx), LocalOpKind::Tee)),
-                _ => None,
-            };
-            out[semantic_index] = OpInfo {
-                block_index: block_index as u32,
-                block_offset: block_offset as u16,
-                is_block_start: block_offset == 0,
-                local_op,
-            };
-        }
-    }
-    out
-}
-
-/// Compute the exact semantic stack shape at every op boundary without making
-/// any planner choices.
-///
-/// This pass is intentionally policy-free. It exists so the later block-local
-/// ranking passes can reason about entry-stack values and transient symbols
-/// using the full semantic stack shape, before any spill/cache decisions are
-/// introduced.
-fn analyze_semantic_entry_shapes(semantic: &SemanticProgram) -> collections::Vec<EntryState> {
-    let mut state = PrepareState::new(
-        semantic.results,
-        semantic.local_types.clone(),
-        semantic.result_types.clone(),
-        0,
-    );
-    let mut entries = collections::Vec::with_capacity(semantic.ops.len());
-
-    for (op_index, op) in semantic.ops.iter().enumerate() {
-        entries.push(snapshot_entry_state(
-            &state,
-            if state.unreachable { state.height } else { 0 },
-        ));
-        apply_semantic_effect(op, op_index, &semantic.op_result_types, &mut state);
-    }
-
-    entries
-}
-
-#[cfg(test)]
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
-struct TentativeBlockEntry {
-    transient: EntryState,
-    cached_locals: collections::Vec<FrameSlot>,
-}
-
-/// Snapshot the planner-visible stack boundary from the current prepare state.
-///
-/// Invariant:
-/// - `stack_types.len() == stack_height`
-/// - `live_types.len() == stack_height - spill_depth`
-///
-/// This must hold even in unreachable regions. Unreachable code can still carry
-/// a semantic stack shape through structured control; it is only the resident
-/// live suffix that collapses to empty when `spill_depth == stack_height`.
-fn snapshot_entry_state(state: &PrepareState, spill_depth: u16) -> EntryState {
-    let spill_depth = spill_depth.min(state.height);
-    let live_count = state.height.saturating_sub(spill_depth);
-    EntryState {
-        stack_height: state.height,
-        spill_depth,
-        stack_types: state.type_stack.clone(),
-        live_types: state.types_at(spill_depth, live_count),
-    }
-}
-
-#[cfg(test)]
-fn choose_tentative_block_entry(
-    cfg: &SemanticCfg,
-    block_index: usize,
-    carried: &[FrameSlot],
-    plan: &FunctionPlan,
-) -> TentativeBlockEntry {
-    let base_entry = &plan.blocks[block_index].entry;
-    let summary = &plan.block_local_summaries[block_index];
-    let successor_bonus = direct_successor_carry_bonus(cfg, block_index, plan);
-    let mut scored_locals = collections::Vec::<(FrameSlot, i32, bool, bool)>::new();
-    let mut seen = BTreeSet::new();
-
-    for &slot in &summary.ranked_slots {
-        if seen.insert(slot) {
-            let score = summary.slot_score(slot);
-            scored_locals.push((
-                slot,
-                score.map(|s| s.entry_hot_score).unwrap_or_default()
-                    + successor_bonus
-                        .get(slot.0 as usize)
-                        .copied()
-                        .unwrap_or_default(),
-                false,
-                matches!(
-                    score.and_then(|s| s.entry_first_access_kind),
-                    Some(FirstAccessKind::ReadFirst)
-                ),
-            ));
-        }
-    }
-    for (slot_index, bonus) in successor_bonus.iter().copied().enumerate() {
-        if bonus <= 0 {
-            continue;
-        }
-        let slot = FrameSlot(slot_index as u16);
-        if seen.insert(slot) {
-            let score = summary.slot_score(slot);
-            scored_locals.push((
-                slot,
-                score.map(|s| s.entry_hot_score).unwrap_or_default() + bonus,
-                false,
-                matches!(
-                    score.and_then(|s| s.entry_first_access_kind),
-                    Some(FirstAccessKind::ReadFirst)
-                ),
-            ));
-        }
-    }
-    for &slot in carried {
-        if seen.insert(slot) {
-            let score = summary.slot_score(slot);
-            scored_locals.push((
-                slot,
-                score.map(|s| s.entry_hot_score).unwrap_or_default()
-                    + successor_bonus
-                        .get(slot.0 as usize)
-                        .copied()
-                        .unwrap_or_default()
-                    + 1024,
-                true,
-                matches!(
-                    score.and_then(|s| s.entry_first_access_kind),
-                    Some(FirstAccessKind::ReadFirst)
-                ),
-            ));
-        }
-    }
-    scored_locals.sort_by_key(|(slot, score, carried, _)| {
-        (
-            core::cmp::Reverse(*score),
-            core::cmp::Reverse(*carried as u8),
-            slot.0,
-        )
-    });
-
-    let mut gp_used;
-    let mut fp_used;
-    (gp_used, fp_used) = count_live_bank_budget_units(&base_entry.live_types, plan.gp_unit_bytes);
-
-    let mut chosen = collections::Vec::new();
-    for (slot, score, carried_slot, _) in &scored_locals {
-        if *score <= 0 && !*carried_slot {
-            continue;
-        }
-        let ty = plan
-            .local_slot_types
-            .get(slot.0 as usize)
-            .copied()
-            .unwrap_or(ValueType::I64);
-        let cost = if ty.is_float() {
-            1
-        } else {
-            gp_value_budget_units(ty, plan.gp_unit_bytes)
-        };
-        let fits = if ty.is_float() {
-            fp_used + cost <= plan.fp_dynamic_budget as usize
-        } else {
-            gp_used + cost <= plan.gp_dynamic_budget as usize
-        };
-        if !fits {
-            continue;
-        }
-        if ty.is_float() {
-            fp_used += cost;
-        } else {
-            gp_used += cost;
-        }
-        chosen.push(*slot);
-    }
-
-    let transient = base_entry.clone();
-    let cached_locals = chosen;
-    TentativeBlockEntry {
-        transient,
-        cached_locals,
-    }
-}
-
-#[cfg(test)]
-fn direct_successor_carry_bonus(
-    cfg: &SemanticCfg,
-    block_index: usize,
-    plan: &FunctionPlan,
-) -> collections::Vec<i32> {
-    let mut bonus = collections::vec![0; plan.local_slot_types.len()];
-    let Some(block) = cfg.blocks.get(block_index) else {
-        return bonus;
-    };
-
-    for succ in &block.succs {
-        let succ_summary = &plan.block_local_summaries[succ.target.as_usize()];
-        for score in &succ_summary.slot_scores {
-            let entry_bonus = score.entry_hot_score;
-            if entry_bonus > 0 {
-                bonus[score.slot.0 as usize] += entry_bonus;
-            } else if score.used_anywhere {
-                bonus[score.slot.0 as usize] += 1;
-            }
-        }
-    }
-
-    bonus
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -346,14 +106,6 @@ struct PrepareState {
     unreachable: bool,
     control: collections::Vec<ControlFrame>,
     type_stack: collections::Vec<ValueType>,
-    /// Block-local transient symbol stack, from bottom to top.
-    ///
-    /// This resets at every CFG block entry. Symbol ids are block-local facts
-    /// only; they exist so the builder can compare "spill the bottom live
-    /// transient" against "drop the weakest cached local" using one ranking
-    /// model.
-    block_symbols: collections::Vec<u16>,
-    next_block_symbol: u16,
     local_types: collections::Vec<ValueType>,
 }
 
@@ -378,8 +130,6 @@ impl PrepareState {
                 result_types: normalized_result_types(results, Some(result_types.as_slice())),
             }],
             type_stack: collections::Vec::new(),
-            block_symbols: collections::Vec::new(),
-            next_block_symbol: 0,
             local_types,
         }
     }
@@ -390,7 +140,6 @@ impl PrepareState {
             self.spill_depth = self.height;
             self.type_stack.truncate(frame.start_height as usize);
             self.type_stack.extend_from_slice(&frame.result_types);
-            self.block_symbols.clear();
         }
         self.unreachable = true;
     }
@@ -420,11 +169,6 @@ impl PrepareState {
                 })
                 .collect()
         }
-    }
-
-    fn enter_cfg_block(&mut self) {
-        self.block_symbols = (0..self.height).collect();
-        self.next_block_symbol = self.height;
     }
 }
 
@@ -787,7 +531,6 @@ pub(crate) struct LightweightPlanOutput {
 pub(crate) fn compute_lightweight_plan(
     semantic: &SemanticProgram,
     cfg: &SemanticCfg,
-    op_info: &[OpInfo],
     gp_unit_bytes: u8,
 ) -> LightweightPlanOutput {
     use crate::vm::middle::budget::count_live_bank_budget_units;
@@ -805,13 +548,21 @@ pub(crate) fn compute_lightweight_plan(
     let mut block_entries = collections::vec![EntryState::default(); cfg.blocks.len()];
 
     for (op_index, semantic_op) in semantic.ops.iter().enumerate() {
-        let info = &op_info[op_index];
-        if info.is_block_start {
-            state.enter_cfg_block();
+        let block_index = cfg
+            .semantic_to_block
+            .get(op_index)
+            .map(|id| id.as_usize())
+            .unwrap_or(0);
+        let is_block_start = cfg
+            .blocks
+            .get(block_index)
+            .map(|block| block.range.start == op_index)
+            .unwrap_or(false);
+        if is_block_start {
             // Capture block entry state with full stack_types for spilled value fills.
             let spill = state.spill_depth.min(state.height);
             let live_count = state.height.saturating_sub(spill);
-            block_entries[info.block_index as usize] = EntryState {
+            block_entries[block_index] = EntryState {
                 stack_height: state.height,
                 spill_depth: spill,
                 stack_types: state.type_stack.clone(),
@@ -823,6 +574,7 @@ pub(crate) fn compute_lightweight_plan(
         compact_entries.push(CompactEntryPoint {
             stack_height: state.height,
             spill_depth: state.spill_depth,
+            block_index: block_index as u32,
         });
 
         // Apply structural prefix: fill operands, spill at control flow boundaries.
@@ -831,7 +583,6 @@ pub(crate) fn compute_lightweight_plan(
         apply_structural_prefix(semantic_op, &mut state);
 
         // Measure live-window pressure after prefix (= "before" the op executes).
-        let block_index = info.block_index as usize;
         let before_live = state.types_at(
             state.spill_depth,
             state.height.saturating_sub(state.spill_depth),
@@ -991,318 +742,5 @@ fn lightweight_spill_all_except_top(state: &mut PrepareState, keep_top: u16) {
     let count = live_count.saturating_sub(keep_top);
     if count > 0 {
         state.spill_depth += count;
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::vm::middle::cfg::{CfgBlock, CfgBlockFlags, CfgBlockId, CfgTerminator, SemanticCfg};
-    use crate::vm::middle::joint_plan::facts::{
-        BlockEntryStackRegion, BlockLocalSummary, BlockStackValueInfo, LocalSlotScore,
-    };
-
-    fn test_cfg() -> SemanticCfg {
-        SemanticCfg {
-            entry: CfgBlockId(0),
-            blocks: collections::vec![CfgBlock {
-                id: CfgBlockId(0),
-                range: 0..1,
-                preds: collections::Vec::new(),
-                succs: collections::Vec::new(),
-                terminator: CfgTerminator::Return { op_index: 0 },
-                flags: CfgBlockFlags {
-                    is_entry: true,
-                    ..CfgBlockFlags::default()
-                },
-            }],
-            semantic_to_block: collections::vec![CfgBlockId(0)],
-        }
-    }
-
-    fn test_plan() -> FunctionPlan {
-        FunctionPlan {
-            gp_unit_bytes: 8,
-            gp_dynamic_budget: 2,
-            fp_dynamic_budget: 2,
-            local_slot_types: collections::vec![ValueType::I32],
-            compact_entries: collections::vec![CompactEntryPoint {
-                stack_height: 2,
-                spill_depth: 0,
-            }],
-            op_info: collections::vec![OpInfo {
-                block_index: 0,
-                block_offset: 0,
-                is_block_start: true,
-                local_op: None,
-            }],
-            block_local_summaries: collections::vec![BlockLocalSummary {
-                ranked_slots: collections::vec![FrameSlot(0)],
-                slot_scores: collections::vec![LocalSlotScore {
-                    slot: FrameSlot(0),
-                    entry_hot_score: 300,
-                    entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
-                    used_anywhere: true,
-                    read_count: 2,
-                    write_count: 0,
-                }],
-            }],
-            block_stack_regions: collections::vec![BlockEntryStackRegion {
-                entry_stack_height: 2,
-                values: collections::vec![
-                    BlockStackValueInfo {
-                        stack_index: 0,
-                        ty: ValueType::I32,
-                        touched_before_barrier: false,
-                        first_touch_distance: None,
-                        touch_count: 0,
-                        hot_score: 0,
-                    },
-                    BlockStackValueInfo {
-                        stack_index: 1,
-                        ty: ValueType::I32,
-                        touched_before_barrier: true,
-                        first_touch_distance: Some(0),
-                        touch_count: 2,
-                        hot_score: 500,
-                    },
-                ],
-            }],
-            block_transient_regions: collections::vec![BlockTransientRegion::default()],
-            blocks: collections::vec![BlockPlan {
-                entry: EntryState {
-                    stack_height: 2,
-                    spill_depth: 0,
-                    stack_types: collections::Vec::new(),
-                    live_types: collections::vec![ValueType::I32, ValueType::I32],
-                },
-                ..Default::default()
-            }],
-        }
-    }
-
-    #[test]
-    fn tentative_entry_keeps_structural_stack_and_admits_hot_carried_local_when_budget_allows() {
-        let mut plan = test_plan();
-        plan.gp_dynamic_budget = 3;
-        let cfg = test_cfg();
-        let tentative = choose_tentative_block_entry(&cfg, 0, &[FrameSlot(0)], &plan);
-        assert_eq!(tentative.transient.spill_depth, 0);
-        assert_eq!(
-            tentative.transient.live_types,
-            collections::vec![ValueType::I32, ValueType::I32]
-        );
-        assert_eq!(tentative.cached_locals, collections::vec![FrameSlot(0)]);
-    }
-
-    #[test]
-    fn tentative_entry_breaks_full_tie_by_preferring_lower_cache_cost() {
-        // Candidate A:
-        // - keep one hot stack value (score 300)
-        // - cache one i32 local (score 500, cost 1)
-        // => total 800, ensures 1, cache_cost 1
-        //
-        // Candidate B:
-        // - spill the stack
-        // - cache one i64 local (score 800, cost 2)
-        // => total 800, ensures 1, cache_cost 2
-        //
-        // The planner should pick candidate A via the final cache-cost
-        // tie-break.
-        let plan = FunctionPlan {
-            gp_unit_bytes: 4,
-            gp_dynamic_budget: 2,
-            fp_dynamic_budget: 0,
-            local_slot_types: collections::vec![ValueType::I64, ValueType::I32],
-            compact_entries: collections::vec![CompactEntryPoint {
-                stack_height: 1,
-                spill_depth: 0,
-            }],
-            op_info: collections::vec![OpInfo {
-                block_index: 0,
-                block_offset: 0,
-                is_block_start: true,
-                local_op: None,
-            }],
-            block_local_summaries: collections::vec![BlockLocalSummary {
-                ranked_slots: collections::vec![FrameSlot(0), FrameSlot(1)],
-                slot_scores: collections::vec![
-                    LocalSlotScore {
-                        slot: FrameSlot(0),
-                        entry_hot_score: 800,
-                        entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
-                        used_anywhere: true,
-                        read_count: 1,
-                        write_count: 0,
-                    },
-                    LocalSlotScore {
-                        slot: FrameSlot(1),
-                        entry_hot_score: 500,
-                        entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
-                        used_anywhere: true,
-                        read_count: 1,
-                        write_count: 0,
-                    },
-                ],
-            }],
-            block_stack_regions: collections::vec![BlockEntryStackRegion {
-                entry_stack_height: 1,
-                values: collections::vec![BlockStackValueInfo {
-                    stack_index: 0,
-                    ty: ValueType::I32,
-                    touched_before_barrier: true,
-                    first_touch_distance: Some(0),
-                    touch_count: 1,
-                    hot_score: 300,
-                }],
-            }],
-            block_transient_regions: collections::vec![BlockTransientRegion::default()],
-            blocks: collections::vec![BlockPlan {
-                entry: EntryState {
-                    stack_height: 1,
-                    spill_depth: 0,
-                    stack_types: collections::Vec::new(),
-                    live_types: collections::vec![ValueType::I32],
-                },
-                ..Default::default()
-            }],
-        };
-
-        let cfg = test_cfg();
-        let tentative = choose_tentative_block_entry(&cfg, 0, &[], &plan);
-        assert_eq!(
-            tentative.transient.spill_depth, 0,
-            "the equal-score/equal-ensure tie should keep the hot stack value and prefer the cheaper i32 cache"
-        );
-        assert_eq!(tentative.cached_locals, collections::vec![FrameSlot(1)]);
-    }
-
-    #[test]
-    fn tentative_entry_breaks_equal_score_tie_by_avoiding_extra_entry_ensure() {
-        // Candidate A:
-        // - keep one hot entry-stack value (score 320)
-        // - no cached locals
-        // => total 320, ensures 0
-        //
-        // Candidate B:
-        // - spill the stack
-        // - cache one read-first local (score 320)
-        // => total 320, ensures 1
-        //
-        // The planner should keep the stack value and avoid the cold-edge
-        // entry ensure.
-        let plan = FunctionPlan {
-            gp_unit_bytes: 8,
-            gp_dynamic_budget: 1,
-            fp_dynamic_budget: 0,
-            local_slot_types: collections::vec![ValueType::I32],
-            compact_entries: collections::vec![CompactEntryPoint {
-                stack_height: 1,
-                spill_depth: 0,
-            }],
-            op_info: collections::vec![OpInfo {
-                block_index: 0,
-                block_offset: 0,
-                is_block_start: true,
-                local_op: None,
-            }],
-            block_local_summaries: collections::vec![BlockLocalSummary {
-                ranked_slots: collections::vec![FrameSlot(0)],
-                slot_scores: collections::vec![LocalSlotScore {
-                    slot: FrameSlot(0),
-                    entry_hot_score: 320,
-                    entry_first_access_kind: Some(FirstAccessKind::ReadFirst),
-                    used_anywhere: true,
-                    read_count: 1,
-                    write_count: 0,
-                }],
-            }],
-            block_stack_regions: collections::vec![BlockEntryStackRegion {
-                entry_stack_height: 1,
-                values: collections::vec![BlockStackValueInfo {
-                    stack_index: 0,
-                    ty: ValueType::I32,
-                    touched_before_barrier: true,
-                    first_touch_distance: Some(0),
-                    touch_count: 1,
-                    hot_score: 320,
-                }],
-            }],
-            block_transient_regions: collections::vec![BlockTransientRegion::default()],
-            blocks: collections::vec![BlockPlan {
-                entry: EntryState {
-                    stack_height: 1,
-                    spill_depth: 0,
-                    stack_types: collections::Vec::new(),
-                    live_types: collections::vec![ValueType::I32],
-                },
-                ..Default::default()
-            }],
-        };
-
-        let cfg = test_cfg();
-        let tentative = choose_tentative_block_entry(&cfg, 0, &[], &plan);
-        assert_eq!(tentative.transient.spill_depth, 0);
-        assert!(tentative.cached_locals.is_empty());
-    }
-
-    #[test]
-    fn tentative_entry_keeps_structural_stack_when_no_locals_are_admitted() {
-        let plan = FunctionPlan {
-            gp_unit_bytes: 8,
-            gp_dynamic_budget: 2,
-            fp_dynamic_budget: 0,
-            local_slot_types: collections::vec![],
-            compact_entries: collections::vec![CompactEntryPoint {
-                stack_height: 2,
-                spill_depth: 0,
-            }],
-            op_info: collections::vec![OpInfo {
-                block_index: 0,
-                block_offset: 0,
-                is_block_start: true,
-                local_op: None,
-            }],
-            block_local_summaries: collections::vec![BlockLocalSummary::default()],
-            block_stack_regions: collections::vec![BlockEntryStackRegion {
-                entry_stack_height: 2,
-                values: collections::vec![
-                    BlockStackValueInfo {
-                        stack_index: 0,
-                        ty: ValueType::I32,
-                        touched_before_barrier: false,
-                        first_touch_distance: None,
-                        touch_count: 0,
-                        hot_score: 0,
-                    },
-                    BlockStackValueInfo {
-                        stack_index: 1,
-                        ty: ValueType::I32,
-                        touched_before_barrier: false,
-                        first_touch_distance: None,
-                        touch_count: 0,
-                        hot_score: 0,
-                    },
-                ],
-            }],
-            block_transient_regions: collections::vec![BlockTransientRegion::default()],
-            blocks: collections::vec![BlockPlan {
-                entry: EntryState {
-                    stack_height: 2,
-                    spill_depth: 0,
-                    stack_types: collections::Vec::new(),
-                    live_types: collections::vec![ValueType::I32, ValueType::I32],
-                },
-                ..Default::default()
-            }],
-        };
-
-        let cfg = test_cfg();
-        let tentative = choose_tentative_block_entry(&cfg, 0, &[], &plan);
-        assert_eq!(
-            tentative.transient.spill_depth, 0,
-            "without local admission pressure, tentative entry must keep the structural transient contract unchanged"
-        );
-        assert!(tentative.cached_locals.is_empty());
     }
 }

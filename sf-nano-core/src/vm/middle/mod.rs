@@ -16,6 +16,7 @@ mod joint_plan;
 mod optimize;
 mod rewrite;
 mod sink_plan;
+#[cfg(test)]
 mod slot_ssa;
 
 #[cfg(test)]
@@ -72,15 +73,11 @@ pub(crate) fn prepare_function(
     let semantic_cfg = cfg::build_semantic_cfg(&semantic);
     drop(cfg_phase);
 
-    let slot_phase = phase_span_with_function("slot_lower", input.function_index);
-    let slot_program = slot_ssa::lower_slot_only_ssa(&semantic, &semantic_cfg, frame)?;
-    drop(slot_phase);
-
-    // slot_program is only used beyond slot_lower as a length sanity check
-    // inside the joint-plan validator, so capture that count and drop the full
-    // vector of blocks/ops before the biggest middle phase (joint_plan).
-    let slot_block_count = slot_program.blocks.len();
-    drop(slot_program);
+    // The old slot-only SSA pass was retained only as a block-count sanity
+    // check. The semantic CFG is the source of block structure for the current
+    // rewriter, so avoid materializing a second transient IR just to re-count
+    // the same blocks.
+    let slot_block_count = semantic_cfg.blocks.len();
 
     let joint_plan_phase = phase_span_with_function("joint_plan", input.function_index);
     let planner = JointPlanner::build(
@@ -92,13 +89,16 @@ pub(crate) fn prepare_function(
     )?;
     drop(joint_plan_phase);
 
+    let rewrite_cfg = rewrite::RewriteCfg::from_semantic_cfg(&semantic_cfg);
+    drop(semantic_cfg);
+
     let ssa_emit_phase = phase_span_with_function("ssa_emit", input.function_index);
-    let mut ssa = rewrite::rewrite_function(&semantic, &semantic_cfg, &planner, frame)?;
+    let mut ssa = rewrite::rewrite_function(&semantic, &rewrite_cfg, &planner, frame)?;
     drop(ssa_emit_phase);
     // Nothing past rewrite_function reads semantic / planner / semantic_cfg,
     // so release them before running cleanup / optimize / sink / validate.
     drop(planner);
-    drop(semantic_cfg);
+    drop(rewrite_cfg);
     drop(semantic);
 
     let ssa_cleanup_phase = phase_span_with_function("ssa_cleanup", input.function_index);
@@ -113,11 +113,37 @@ pub(crate) fn prepare_function(
     sink_plan::plan_sinks(&mut ssa);
     drop(ssa_sink_phase);
 
+    shrink_prepared_ssa_storage(&mut ssa);
+
     let ssa_validate_phase = phase_span_with_function("ssa_validate", input.function_index);
     validate_program(&ssa)?;
     drop(ssa_validate_phase);
 
     Ok(PreparedFunction { frame, ssa })
+}
+
+fn shrink_prepared_ssa_storage(ssa: &mut SsaProgram) {
+    ssa.blocks.shrink_to_fit();
+    for block in &mut ssa.blocks {
+        block.params.shrink_to_fit();
+        block.ops.shrink_to_fit();
+        block.extra_args.shrink_to_fit();
+    }
+    ssa.local_slot_types.shrink_to_fit();
+    ssa.local_slot_info.shrink_to_fit();
+    ssa.block_entry_cached_slots.shrink_to_fit();
+    for slots in &mut ssa.block_entry_cached_slots {
+        slots.shrink_to_fit();
+    }
+    ssa.block_cfg_origins.shrink_to_fit();
+    for origins in &mut ssa.block_cfg_origins {
+        origins.shrink_to_fit();
+    }
+    ssa.value_types.shrink_to_fit();
+    ssa.value_sink_local.shrink_to_fit();
+    ssa.const_pool.shrink_to_fit();
+    ssa.primitive_pool.shrink_to_fit();
+    ssa.call_ops.shrink_to_fit();
 }
 
 fn empty_program(semantic: &SemanticProgram) -> SsaProgram {

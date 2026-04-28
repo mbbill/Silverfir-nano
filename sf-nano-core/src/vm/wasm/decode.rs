@@ -105,12 +105,14 @@ impl SemanticBuilder {
         result_types: collections::Vec<ValueType>,
         op_result_types: BTreeMap<usize, collections::Vec<ValueType>>,
     ) -> SemanticProgram {
+        let mut ops = self.ops;
+        ops.shrink_to_fit();
         SemanticProgram {
             params,
             results,
             local_count,
             max_stack_height,
-            ops: self.ops,
+            ops,
             local_types,
             result_types,
             op_result_types,

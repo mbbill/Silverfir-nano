@@ -35,3 +35,7 @@ memprof = ["tracked_alloc/memprof"]
 # boundary. Real M-profile targets select enc_t2.rs via sf_backend_thumbm
 # instead, and don't need this feature.
 thumb2-test = ["jit"]
+
+[[example]]
+name = "invoke_export"
+required-features = ["wasi"]

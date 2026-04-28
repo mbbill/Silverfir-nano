@@ -16,7 +16,7 @@ use crate::{
     vm::{
         middle::{
             budget::{count_live_bank_budget_units, gp_value_budget_units},
-            cfg::SemanticCfg,
+            cfg::{CfgBlockId, SemanticCfg},
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
                 init_locals::locals_reads_before_write, JointPlanner, LocalAccessDecision,
@@ -42,6 +42,38 @@ use super::{
     edge::insert_boundary_repair_blocks,
     state::{make_block_params, BlockState, ValueAlloc},
 };
+
+pub(crate) struct RewriteCfg {
+    entry: CfgBlockId,
+    blocks: collections::Vec<RewriteCfgBlock>,
+    semantic_to_block: collections::Vec<CfgBlockId>,
+}
+
+struct RewriteCfgBlock {
+    id: CfgBlockId,
+    range: core::ops::Range<usize>,
+}
+
+impl RewriteCfg {
+    pub(crate) fn from_semantic_cfg(cfg: &SemanticCfg) -> Self {
+        let mut blocks = cfg
+            .blocks
+            .iter()
+            .map(|block| RewriteCfgBlock {
+                id: block.id,
+                range: block.range.clone(),
+            })
+            .collect::<collections::Vec<_>>();
+        blocks.shrink_to_fit();
+        let mut semantic_to_block = cfg.semantic_to_block.clone();
+        semantic_to_block.shrink_to_fit();
+        Self {
+            entry: cfg.entry,
+            blocks,
+            semantic_to_block,
+        }
+    }
+}
 
 /// Scratch accumulator for the program-level pools during rewrite.
 ///
@@ -90,7 +122,7 @@ impl ProgramBuilder {
 
 pub(crate) fn rewrite_function(
     semantic: &SemanticProgram,
-    cfg: &SemanticCfg,
+    cfg: &RewriteCfg,
     planner: &JointPlanner,
     frame: FrameLayoutPlan,
 ) -> Result<SsaProgram, WasmError> {
@@ -172,29 +204,42 @@ pub(crate) fn rewrite_function(
             &lowered.ops,
         );
         let actual_exit = simulate_materialized_cache_exit(&final_entry, &lowered.ops);
+        let mut final_entry = final_entry;
+        final_entry.shrink_to_fit();
+        let mut actual_exit = actual_exit;
+        actual_exit.shrink_to_fit();
         block_entry_cached_slots.push(final_entry);
         block_exit_cached_slots.push(actual_exit);
         if track_cfg_origins {
             block_cfg_origins.push(collections::vec![block_index as u32]);
         }
-        blocks.push(SsaBlock {
+        let mut block = SsaBlock {
             id: SsaTarget(block_index as u32),
             params,
             ops: lowered.ops,
             extra_args: lowered.extra_args,
             terminator: lowered.terminator,
-        });
+        };
+        shrink_ssa_block_storage(&mut block);
+        blocks.push(block);
         extra_block_cached_slots.extend(lowered.extra_block_cached_slots);
         extra_block_exit_cached_slots.extend(lowered.extra_block_exit_cached_slots);
         if track_cfg_origins {
             extra_block_cfg_origins.extend(lowered.extra_block_cfg_origins);
         }
-        extra_blocks.extend(lowered.extra_blocks);
+        for mut block in lowered.extra_blocks {
+            shrink_ssa_block_storage(&mut block);
+            extra_blocks.push(block);
+        }
     }
+    blocks.reserve_exact(extra_blocks.len());
     blocks.extend(extra_blocks);
+    block_entry_cached_slots.reserve_exact(extra_block_cached_slots.len());
     block_entry_cached_slots.extend(extra_block_cached_slots);
+    block_exit_cached_slots.reserve_exact(extra_block_exit_cached_slots.len());
     block_exit_cached_slots.extend(extra_block_exit_cached_slots);
     if track_cfg_origins {
+        block_cfg_origins.reserve_exact(extra_block_cfg_origins.len());
         block_cfg_origins.extend(extra_block_cfg_origins);
     }
 
@@ -226,6 +271,12 @@ pub(crate) fn rewrite_function(
 
     insert_boundary_repair_blocks(&mut program, &block_exit_cached_slots);
     Ok(program)
+}
+
+fn shrink_ssa_block_storage(block: &mut SsaBlock) {
+    block.params.shrink_to_fit();
+    block.ops.shrink_to_fit();
+    block.extra_args.shrink_to_fit();
 }
 
 fn filter_block_entry_cached_slots(

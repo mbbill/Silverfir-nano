@@ -19,7 +19,7 @@ pub(crate) fn decide_local_access(
         return LocalAccessDecision::Cache;
     }
 
-    let block_index = plan.op_info[query.semantic_index].block_index as usize;
+    let block_index = plan.compact_entries[query.semantic_index].block_index as usize;
     if plan.blocks[block_index]
         .tentative_entry_cached_locals
         .contains(&query.slot)

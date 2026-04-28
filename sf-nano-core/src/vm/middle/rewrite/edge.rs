@@ -45,6 +45,12 @@ pub(super) fn insert_boundary_repair_blocks(
     exit_cached_slots: &[collections::Vec<FrameSlot>],
 ) {
     let original_len = program.blocks.len();
+    let repair_count = count_boundary_repairs(program, exit_cached_slots, original_len);
+    program.blocks.reserve_exact(repair_count);
+    program.block_entry_cached_slots.reserve_exact(repair_count);
+    if !program.block_cfg_origins.is_empty() {
+        program.block_cfg_origins.reserve_exact(repair_count);
+    }
 
     // Scratch reused across blocks for edge enumeration; avoids allocating a
     // fresh Vec per block for the common 1- and 2-edge cases.
@@ -53,8 +59,8 @@ pub(super) fn insert_boundary_repair_blocks(
     for block_index in 0..original_len {
         let pred_exit = exit_cached_slots
             .get(block_index)
-            .cloned()
-            .unwrap_or_default();
+            .map(|slots| slots.as_slice())
+            .unwrap_or(&[]);
 
         edge_slots.clear();
         match &program.blocks[block_index].terminator {
@@ -92,6 +98,92 @@ pub(super) fn insert_boundary_repair_blocks(
     }
 
     maybe_repair_entry(program);
+}
+
+fn count_boundary_repairs(
+    program: &SsaProgram,
+    exit_cached_slots: &[collections::Vec<FrameSlot>],
+    original_len: usize,
+) -> usize {
+    let mut count = 0;
+    let mut edge_slots: collections::Vec<(EdgeSlot, SsaTarget)> = collections::Vec::new();
+
+    for block_index in 0..original_len {
+        let pred_exit = exit_cached_slots
+            .get(block_index)
+            .map(|slots| slots.as_slice())
+            .unwrap_or(&[]);
+
+        edge_slots.clear();
+        match &program.blocks[block_index].terminator {
+            SsaTerminator::Goto(edge) => {
+                edge_slots.push((EdgeSlot::Goto, edge.target));
+            }
+            SsaTerminator::Branch {
+                then_edge,
+                else_edge,
+                ..
+            } => {
+                edge_slots.push((EdgeSlot::BranchThen, then_edge.target));
+                edge_slots.push((EdgeSlot::BranchElse, else_edge.target));
+            }
+            SsaTerminator::BrTable { entries, .. } => {
+                for (idx, edge) in entries.iter().enumerate() {
+                    edge_slots.push((EdgeSlot::BrTable(idx), edge.target));
+                }
+            }
+            SsaTerminator::Return { .. }
+            | SsaTerminator::TailCallDirect { .. }
+            | SsaTerminator::TailCallIndirect { .. }
+            | SsaTerminator::TailCallRef { .. }
+            | SsaTerminator::TrapUnreachable
+            | SsaTerminator::EhThrow { .. }
+            | SsaTerminator::EhThrowRef { .. } => {}
+        }
+
+        for i in 0..edge_slots.len() {
+            let (_, original_target) = edge_slots[i];
+            if edge_repair_needed(program, pred_exit, original_target) {
+                count += 1;
+            }
+        }
+    }
+
+    if edge_repair_needed(program, &[], program.entry) {
+        count += 1;
+    }
+
+    count
+}
+
+fn edge_repair_needed(
+    program: &SsaProgram,
+    pred_exit: &[FrameSlot],
+    original_target: SsaTarget,
+) -> bool {
+    let target_id = original_target.as_usize();
+    let target_block = program.blocks.get(target_id);
+    let target_ops = target_block.map(|b| b.ops.as_slice()).unwrap_or(&[]);
+    let target_entry = program
+        .block_entry_cached_slots
+        .get(target_id)
+        .map(|s| s.as_slice())
+        .unwrap_or(&[]);
+
+    for &slot in pred_exit {
+        if !target_entry.contains(&slot) {
+            return true;
+        }
+    }
+    for &slot in target_entry {
+        if pred_exit.contains(&slot) {
+            continue;
+        }
+        if entry_cache_requirement(target_ops, slot, target_entry.contains(&slot)).is_some() {
+            return true;
+        }
+    }
+    false
 }
 
 /// Compute the repair for one outgoing edge (reads `program` immutably for

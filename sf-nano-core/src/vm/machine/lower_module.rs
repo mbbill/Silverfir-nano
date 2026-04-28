@@ -126,11 +126,11 @@ pub(crate) fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModu
     }
     #[cfg(sf_has_guard_pages)]
     let guard_pages = input.use_guard_pages;
-    for function in input.functions {
+    for mut function in input.functions {
         let mir_lower_function_phase = phase_span_with_function("mir_lower", Some(function.id.0));
-        let borrowed = function.borrowed();
-        functions[borrowed.id.0 as usize] = Some(lower_function(
-            borrowed,
+        let function_id = function.id.0 as usize;
+        functions[function_id] = Some(lower_function(
+            &mut function,
             input.backend,
             &max_regfile,
             &function_abis,
@@ -171,16 +171,20 @@ pub(crate) fn lower_single_function(
     const_pool: &mut ConstPoolBuilder,
     #[cfg(sf_has_guard_pages)] guard_pages: bool,
 ) -> Result<(MachineFunction, MachineFunctionAbi), WasmError> {
+    let mut function = function;
     let max_regfile = MachineRegFile::new(backend)?;
-    let borrowed = function.borrowed();
-    validate_program(borrowed.ssa)?;
-    let abi = lower_function_runtime(borrowed)?;
-    let runtime_slot = runtime
-        .get_mut(borrowed.id.0 as usize)
-        .ok_or_else(|| WasmError::internal("runtime metadata slot is out of range"))?;
-    *runtime_slot = abi.clone();
+    let abi = {
+        let borrowed = function.borrowed();
+        validate_program(borrowed.ssa)?;
+        let abi = lower_function_runtime(borrowed)?;
+        let runtime_slot = runtime
+            .get_mut(borrowed.id.0 as usize)
+            .ok_or_else(|| WasmError::internal("runtime metadata slot is out of range"))?;
+        *runtime_slot = abi.clone();
+        abi
+    };
     let machine = lower_function(
-        borrowed,
+        &mut function,
         backend,
         &max_regfile,
         runtime,
@@ -229,7 +233,7 @@ fn lower_function_runtime(
 }
 
 fn lower_function(
-    input: BorrowedLowerFunctionInput<'_>,
+    input: &mut LowerFunctionInput,
     config: BackendConfig,
     regfile: &MachineRegFile,
     runtime: &[MachineFunctionAbi],
@@ -247,18 +251,19 @@ fn lower_function(
     } else {
         &Gp64Lowering
     };
-    let explicit_cache = explicit_cached_locals(input.ssa);
+    let explicit_cache = explicit_cached_locals(&input.ssa);
     let entry_cache_params =
-        compute_block_entry_cache_params(regfile, input.ssa, &explicit_cache, gp_reg_width)?;
-    let block_entry_cache_dirty = compute_block_entry_cache_dirty(input.ssa, &explicit_cache);
-    for block in &input.ssa.blocks {
+        compute_block_entry_cache_params(regfile, &input.ssa, &explicit_cache, gp_reg_width)?;
+    let block_entry_cache_dirty = compute_block_entry_cache_dirty(&input.ssa, &explicit_cache);
+    for block_index in 0..original_block_count {
+        let block = take_block_for_lowering(&mut input.ssa.blocks[block_index]);
         let target = block.id;
         let mut lower = BlockLowerContext::new(
             regfile,
-            input.ssa,
+            &input.ssa,
             &explicit_cache,
             &entry_cache_params,
-            block,
+            &block,
             runtime,
             gp_reg_width,
             i64_ops,
@@ -279,7 +284,7 @@ fn lower_function(
         {
             current_params.extend(machine_block_params_for_value(
                 regs,
-                program_value_storage_type(input.ssa, value),
+                program_value_storage_type(&input.ssa, value),
             ));
         }
         if target != input.ssa.entry {
@@ -302,7 +307,7 @@ fn lower_function(
 
         for inst_idx in 0..block.ops.len() {
             let inst = block.ops[inst_idx];
-            match block.view(inst_idx, input.ssa) {
+            match block.view(inst_idx, &input.ssa) {
                 SsaInstView::Value { op, result, args } => {
                     // Flatten args into a Vec so helper lowerings that take
                     // `&[SsaOperand]` keep their existing slice-based API.
@@ -631,11 +636,14 @@ fn lower_function(
     }
 
     let mut blocks = original_blocks.finish()?;
-    blocks.reserve(extra_blocks.len());
+    blocks.reserve_exact(extra_blocks.len());
     blocks.extend(extra_blocks);
 
+    let entry = MachineBlockId(input.ssa.entry.as_u32());
+    release_prepared_ssa_storage(&mut input.ssa);
+
     let program = MachineProgram {
-        entry: MachineBlockId(input.ssa.entry.as_u32()),
+        entry,
         fp_reg_init_widths: fp_reg_init_widths(&regfile)?,
         blocks,
     };
@@ -645,6 +653,29 @@ fn lower_function(
         id: input.id,
         program,
     })
+}
+
+fn release_prepared_ssa_storage(ssa: &mut SsaProgram) {
+    drop(core::mem::take(&mut ssa.blocks));
+    drop(core::mem::take(&mut ssa.local_slot_types));
+    drop(core::mem::take(&mut ssa.local_slot_info));
+    drop(core::mem::take(&mut ssa.block_entry_cached_slots));
+    drop(core::mem::take(&mut ssa.block_cfg_origins));
+    drop(core::mem::take(&mut ssa.value_types));
+    drop(core::mem::take(&mut ssa.value_sink_local));
+    drop(core::mem::take(&mut ssa.const_pool));
+    drop(core::mem::take(&mut ssa.primitive_pool));
+    drop(core::mem::take(&mut ssa.call_ops));
+}
+
+fn take_block_for_lowering(block: &mut SsaBlock) -> SsaBlock {
+    SsaBlock {
+        id: block.id,
+        params: block.params.clone(),
+        ops: core::mem::take(&mut block.ops),
+        extra_args: core::mem::take(&mut block.extra_args),
+        terminator: core::mem::replace(&mut block.terminator, SsaTerminator::TrapUnreachable),
+    }
 }
 
 fn stub_machine_function(id: MachineFuncId) -> MachineFunction {
@@ -1170,10 +1201,12 @@ fn push_lowered_block(
     id: MachineBlockId,
     original_blocks: &mut OriginalBlocks,
     continuation_blocks: &mut collections::Vec<MachineBlock>,
-    params: collections::Vec<MachineBlockParam>,
-    ops: collections::Vec<MachineInst>,
+    mut params: collections::Vec<MachineBlockParam>,
+    mut ops: collections::Vec<MachineInst>,
     terminator: MachineTerminator,
 ) -> Result<(), WasmError> {
+    params.shrink_to_fit();
+    ops.shrink_to_fit();
     let block = MachineBlock {
         id,
         params,
