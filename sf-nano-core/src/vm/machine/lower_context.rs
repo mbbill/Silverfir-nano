@@ -685,25 +685,45 @@ impl<'a> BlockLowerContext<'a> {
             let vr = self.values[i].reg;
             let vv = self.values[i].value;
             if vr == cache_reg && !except.contains(&vv) {
-                let Some(t) = self.first_free_linear_value_reg(ty) else {
-                    return Err(WasmError::internal(
-                        "linear-value budget exhausted during cache alias materialization".into(),
-                    ));
-                };
-                self.emit_machine_inst(MachineInst {
-                    kind: MachineInstKind::Move {
-                        owner: MachineRegOwner::LinearValue,
-                        ty,
-                        dst: t,
-                        src: MachineValue::Reg(cache_reg),
-                    },
-                });
-                self.set_linear_value_reg(t, Some(vv), Some(ty))?;
+                if let Some(hi_reg) = self.values[i].hi_reg {
+                    let lo_tmp =
+                        self.materialize_cache_alias_reg(vr, vv, MachineStorageType::GpWord)?;
+                    let hi_tmp =
+                        self.materialize_cache_alias_reg(hi_reg, vv, MachineStorageType::GpWord)?;
+                    self.values[i].reg = lo_tmp;
+                    self.values[i].hi_reg = Some(hi_tmp);
+                    i += 1;
+                    continue;
+                }
+                let t = self.materialize_cache_alias_reg(cache_reg, vv, ty)?;
                 self.values[i].reg = t;
             }
             i += 1;
         }
         Ok(())
+    }
+
+    fn materialize_cache_alias_reg(
+        &mut self,
+        src: MachineReg,
+        value: SsaValue,
+        ty: MachineStorageType,
+    ) -> Result<MachineReg, WasmError> {
+        let Some(dst) = self.first_free_linear_value_reg(ty) else {
+            return Err(WasmError::internal(
+                "linear-value budget exhausted during cache alias materialization".into(),
+            ));
+        };
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Move {
+                owner: MachineRegOwner::LinearValue,
+                ty,
+                dst,
+                src: MachineValue::Reg(src),
+            },
+        });
+        self.set_linear_value_reg(dst, Some(value), Some(ty))?;
+        Ok(dst)
     }
 
     pub(super) fn cached_local_storage_type_for_reg(

@@ -1075,6 +1075,164 @@ fn gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate() {
 }
 
 #[test]
+fn gp32_i64_local_get_set_cache_same_slot_emits_no_self_moves() {
+    let backend = gp32_backend_config(1, 4, 0, 2);
+    let frame = plan_frame_layout(1, 1, 2);
+    let slot = frame.local_slot(0);
+    let ssa = {
+        let mut ssa = SsaProgram::default();
+        ssa.entry = SsaTarget(0);
+        ssa.local_slot_types = collections::vec![ValueType::I64];
+        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true,
+        }];
+        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_cfg_origins = collections::vec![];
+        ssa.value_types = collections::vec![ValueType::I64];
+        ssa.value_sink_local = collections::vec![];
+        let mut __blk0 = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        };
+        __blk0.ops.push(SsaInst::local_get_cache(slot, SsaValue(0)));
+        __blk0.ops.push(SsaInst::local_set_cache(slot, SsaValue(0)));
+        ssa.blocks.push(__blk0);
+        ssa
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa: ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit i64 cache identity set should lower without self moves");
+
+    assert_valid_32bit_gp_target(&lowered.module, backend);
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    assert!(!ops.iter().any(|inst| matches!(
+        inst.kind,
+        MachineInstKind::Move {
+            owner: MachineRegOwner::CachedLocal,
+            src: MachineValue::Reg(_),
+            ..
+        }
+    )), "i64 LocalGetCache -> LocalSetCache of the same slot should not emit cache self moves; ops={ops:?}");
+}
+
+#[test]
+fn gp32_i64_local_set_cache_materializes_live_pair_alias_before_overwrite() {
+    let backend = gp32_backend_config(1, 6, 0, 2);
+    let frame = plan_frame_layout(2, 2, 2);
+    let slot0 = frame.local_slot(0);
+    let slot1 = frame.local_slot(1);
+    let ssa = {
+        let mut ssa = SsaProgram::default();
+        ssa.entry = SsaTarget(0);
+        ssa.local_slot_types = collections::vec![ValueType::I64, ValueType::I64];
+        ssa.local_slot_info = collections::vec![
+            LocalSlotInfo {
+                is_param: true,
+                reads_before_write: true,
+            },
+            LocalSlotInfo {
+                is_param: false,
+                reads_before_write: false,
+            },
+        ];
+        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_cfg_origins = collections::vec![];
+        ssa.value_types = collections::vec![ValueType::I64, ValueType::I64];
+        ssa.value_sink_local = collections::vec![];
+        let mut __blk0 = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        };
+        __blk0
+            .ops
+            .push(SsaInst::local_get_cache(slot0, SsaValue(0)));
+        {
+            let __pidx = ssa
+                .intern_primitive(PrimitiveOpKind::I64Const { value: 7 })
+                .unwrap();
+            __blk0.ops.push(SsaInst::primitive(
+                __pidx,
+                SsaValue(1),
+                [SsaOperand::NONE, SsaOperand::NONE],
+                0u16,
+            ));
+        }
+        __blk0
+            .ops
+            .push(SsaInst::local_set_cache(slot0, SsaValue(1)));
+        __blk0.ops.push(SsaInst::local_set_slot(slot1, SsaValue(0)));
+        ssa.blocks.push(__blk0);
+        ssa
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa: ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit i64 cache overwrite should materialize live pair aliases");
+
+    assert_valid_32bit_gp_target(&lowered.module, backend);
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    let cached_regs: collections::Vec<_> = ops
+        .iter()
+        .filter_map(|inst| match inst.kind {
+            MachineInstKind::Load {
+                owner: MachineRegOwner::CachedLocal,
+                dst,
+                ..
+            } => Some(dst),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        cached_regs.len(),
+        2,
+        "expected cached i64 pair loads; ops={ops:?}"
+    );
+    let materialized_halves = ops
+        .iter()
+        .filter(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::Move {
+                    owner: MachineRegOwner::LinearValue,
+                    src: MachineValue::Reg(src),
+                    ..
+                } if cached_regs.contains(&src)
+            )
+        })
+        .count();
+    assert_eq!(
+        materialized_halves, 2,
+        "live i64 cache alias should be materialized as both halves before overwrite; ops={ops:?}"
+    );
+}
+
+#[test]
 fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
     let backend = gp32_backend_config(0, 4, 0, 2);
     let frame = plan_frame_layout(0, 1, 2);

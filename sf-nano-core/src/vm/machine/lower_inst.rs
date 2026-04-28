@@ -379,23 +379,7 @@ impl<'a> BlockLowerContext<'a> {
             let cached_hi = cached.hi_reg.ok_or_else(|| {
                 WasmError::internal("cached i64 local is missing a high-half register")
             })?;
-            let (dst_lo, dst_hi) = self.alloc_i64_value_pair(dst)?;
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    owner: MachineRegOwner::LinearValue,
-                    ty: MachineStorageType::GpWord,
-                    dst: dst_lo,
-                    src: MachineValue::Reg(cached.reg),
-                },
-            });
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Move {
-                    owner: MachineRegOwner::LinearValue,
-                    ty: MachineStorageType::GpWord,
-                    dst: dst_hi,
-                    src: MachineValue::Reg(cached_hi),
-                },
-            });
+            self.push_value_location(dst, cached.reg, Some(cached_hi));
             return Ok(());
         }
 
@@ -495,7 +479,12 @@ impl<'a> BlockLowerContext<'a> {
             let cached_hi = cached.hi_reg.ok_or_else(|| {
                 WasmError::internal("cached i64 local is missing a high-half register")
             })?;
+            self.materialize_cache_aliases(cached.reg, &[src])?;
             let (src_lo, src_hi) = self.use_i64_value_pair(src)?;
+            if src_lo == cached.reg && src_hi == cached_hi {
+                self.release_dead_values()?;
+                return Ok(());
+            }
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
                     owner: MachineRegOwner::CachedLocal,
