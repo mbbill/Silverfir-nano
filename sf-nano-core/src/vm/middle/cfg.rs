@@ -81,7 +81,24 @@ pub(crate) struct CfgBlock {
 pub(crate) struct SemanticCfg {
     pub entry: CfgBlockId,
     pub blocks: collections::Vec<CfgBlock>,
-    pub semantic_to_block: collections::Vec<CfgBlockId>,
+}
+
+impl SemanticCfg {
+    pub(crate) fn block_for_semantic_index(&self, semantic_index: usize) -> Option<CfgBlockId> {
+        let mut lo = 0usize;
+        let mut hi = self.blocks.len();
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.blocks[mid].range.end <= semantic_index {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        self.blocks
+            .get(lo)
+            .and_then(|block| block.range.contains(&semantic_index).then_some(block.id))
+    }
 }
 
 pub(crate) fn build_semantic_cfg(semantic: &SemanticProgram) -> SemanticCfg {
@@ -122,7 +139,6 @@ pub(crate) fn build_semantic_cfg(semantic: &SemanticProgram) -> SemanticCfg {
     SemanticCfg {
         entry: CfgBlockId(0),
         blocks,
-        semantic_to_block,
     }
 }
 

@@ -6,7 +6,10 @@
 
 use tracked_alloc::collections::BTreeSet;
 
-use crate::{value_type::ValueType, vm::middle::frame::FrameSlot};
+use crate::{
+    value_type::ValueType,
+    vm::middle::{cfg::CfgBlockId, frame::FrameSlot},
+};
 
 /// Function-wide setup facts needed by the rewriter.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,7 +57,7 @@ impl TargetEntryDecision {
 /// Query for slot-vs-cache lowering of a local op.
 #[derive(Clone, Debug)]
 pub(crate) struct LocalAccessQuery<'a> {
-    pub semantic_index: usize,
+    pub block: CfgBlockId,
     pub slot: FrameSlot,
     pub resident_cache: &'a BTreeSet<FrameSlot>,
 }

@@ -41,7 +41,6 @@ mod tests {
     fn empty_cfg(blocks: collections::Vec<CfgBlock>) -> SemanticCfg {
         SemanticCfg {
             entry: CfgBlockId(0),
-            semantic_to_block: collections::Vec::new(),
             blocks,
         }
     }

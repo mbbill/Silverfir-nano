@@ -255,6 +255,7 @@ fn lower_function(
     let entry_cache_params =
         compute_block_entry_cache_params(regfile, &input.ssa, &explicit_cache, gp_reg_width)?;
     let block_entry_cache_dirty = compute_block_entry_cache_dirty(&input.ssa, &explicit_cache);
+    release_cache_planning_only_ssa_storage(&mut input.ssa);
     for block_index in 0..original_block_count {
         let block = take_block_for_lowering(&mut input.ssa.blocks[block_index]);
         let target = block.id;
@@ -635,12 +636,16 @@ fn lower_function(
         )?;
     }
 
+    release_prepared_ssa_storage(&mut input.ssa);
+    drop(block_entry_cache_dirty);
+    drop(entry_cache_params);
+    drop(explicit_cache);
+
     let mut blocks = original_blocks.finish()?;
     blocks.reserve_exact(extra_blocks.len());
     blocks.extend(extra_blocks);
 
     let entry = MachineBlockId(input.ssa.entry.as_u32());
-    release_prepared_ssa_storage(&mut input.ssa);
 
     let program = MachineProgram {
         entry,
@@ -653,6 +658,13 @@ fn lower_function(
         id: input.id,
         program,
     })
+}
+
+fn release_cache_planning_only_ssa_storage(ssa: &mut SsaProgram) {
+    drop(core::mem::take(&mut ssa.local_slot_types));
+    drop(core::mem::take(&mut ssa.local_slot_info));
+    drop(core::mem::take(&mut ssa.block_entry_cached_slots));
+    drop(core::mem::take(&mut ssa.block_cfg_origins));
 }
 
 fn release_prepared_ssa_storage(ssa: &mut SsaProgram) {

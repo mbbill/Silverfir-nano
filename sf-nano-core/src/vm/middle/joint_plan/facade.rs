@@ -64,8 +64,8 @@ impl JointPlanner {
     }
 
     #[inline]
-    pub(crate) fn target_entry(&self, semantic_index: usize) -> TargetEntryDecision {
-        target_entry_decision(&self.plan, semantic_index)
+    pub(crate) fn target_entry(&self, block: CfgBlockId) -> TargetEntryDecision {
+        target_entry_decision(&self.plan, block)
     }
 
     #[inline]

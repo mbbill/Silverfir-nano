@@ -93,13 +93,11 @@ pub(crate) fn prepare_function(
     drop(semantic_cfg);
 
     let ssa_emit_phase = phase_span_with_function("ssa_emit", input.function_index);
-    let mut ssa = rewrite::rewrite_function(&semantic, &rewrite_cfg, &planner, frame)?;
+    let mut ssa = rewrite::rewrite_function(semantic, &rewrite_cfg, planner, frame)?;
     drop(ssa_emit_phase);
-    // Nothing past rewrite_function reads semantic / planner / semantic_cfg,
-    // so release them before running cleanup / optimize / sink / validate.
-    drop(planner);
+    // Nothing past rewrite_function reads semantic_cfg, so release the compact
+    // rewrite CFG before running cleanup / optimize / sink / validate.
     drop(rewrite_cfg);
-    drop(semantic);
 
     let ssa_cleanup_phase = phase_span_with_function("ssa_cleanup", input.function_index);
     cleanup::cleanup_program(&mut ssa);

@@ -46,7 +46,6 @@ use super::{
 pub(crate) struct RewriteCfg {
     entry: CfgBlockId,
     blocks: collections::Vec<RewriteCfgBlock>,
-    semantic_to_block: collections::Vec<CfgBlockId>,
 }
 
 struct RewriteCfgBlock {
@@ -65,13 +64,26 @@ impl RewriteCfg {
             })
             .collect::<collections::Vec<_>>();
         blocks.shrink_to_fit();
-        let mut semantic_to_block = cfg.semantic_to_block.clone();
-        semantic_to_block.shrink_to_fit();
         Self {
             entry: cfg.entry,
             blocks,
-            semantic_to_block,
         }
+    }
+
+    fn block_for_semantic_index(&self, semantic_index: usize) -> Option<CfgBlockId> {
+        let mut lo = 0usize;
+        let mut hi = self.blocks.len();
+        while lo < hi {
+            let mid = lo + (hi - lo) / 2;
+            if self.blocks[mid].range.end <= semantic_index {
+                lo = mid + 1;
+            } else {
+                hi = mid;
+            }
+        }
+        self.blocks
+            .get(lo)
+            .and_then(|block| block.range.contains(&semantic_index).then_some(block.id))
     }
 }
 
@@ -121,17 +133,20 @@ impl ProgramBuilder {
 }
 
 pub(crate) fn rewrite_function(
-    semantic: &SemanticProgram,
+    mut semantic: SemanticProgram,
     cfg: &RewriteCfg,
-    planner: &JointPlanner,
+    planner: JointPlanner,
     frame: FrameLayoutPlan,
 ) -> Result<SsaProgram, WasmError> {
     if semantic.ops.is_empty() {
+        let local_slot_info = collect_local_slot_info(&semantic);
+        let local_slot_types = core::mem::take(&mut semantic.local_types);
+        drop(semantic);
         return Ok(SsaProgram {
             entry: SsaTarget(0),
             blocks: collections::Vec::new(),
-            local_slot_types: semantic.local_types.clone(),
-            local_slot_info: collect_local_slot_info(semantic),
+            local_slot_types,
+            local_slot_info,
             block_entry_cached_slots: collections::Vec::new(),
             block_cfg_origins: collections::Vec::new(),
             value_types: collections::Vec::new(),
@@ -142,11 +157,6 @@ pub(crate) fn rewrite_function(
         });
     }
 
-    let semantic_to_block = cfg
-        .semantic_to_block
-        .iter()
-        .map(|id| SsaTarget(id.0))
-        .collect::<collections::Vec<_>>();
     let setup = planner.function_setup();
     let mut values = ValueAlloc::default();
     let block_params = cfg
@@ -185,12 +195,13 @@ pub(crate) fn rewrite_function(
             setup.fp_dynamic_budget,
         )?;
         let lowered = lower_block_range(
+            cfg_block.id,
             cfg_block.range.clone(),
             state,
-            semantic,
-            planner,
+            &semantic,
+            &planner,
             frame,
-            &semantic_to_block,
+            cfg,
             &block_params,
             block_entry.cached_locals,
             &mut values,
@@ -243,10 +254,16 @@ pub(crate) fn rewrite_function(
         block_cfg_origins.extend(extra_block_cfg_origins);
     }
 
+    drop(block_params);
+    drop(planner);
+    let local_slot_info = collect_local_slot_info(&semantic);
+    let local_slot_types = core::mem::take(&mut semantic.local_types);
+    drop(semantic);
+
     let mut program = SsaProgram {
         entry: SsaTarget(cfg.entry.0),
-        local_slot_types: semantic.local_types.clone(),
-        local_slot_info: collect_local_slot_info(semantic),
+        local_slot_types,
+        local_slot_info,
         block_entry_cached_slots,
         block_cfg_origins,
         blocks,
@@ -270,6 +287,7 @@ pub(crate) fn rewrite_function(
     }
 
     insert_boundary_repair_blocks(&mut program, &block_exit_cached_slots);
+    drop(block_exit_cached_slots);
     Ok(program)
 }
 
@@ -342,12 +360,13 @@ struct LoweredBlock {
 /// 3. observe the realized exit
 /// 4. later derive the finalized entry and trivial cached-local repair
 fn lower_block_range(
+    block_id: CfgBlockId,
     semantic_range: core::ops::Range<usize>,
     mut state: BlockState,
     semantic: &SemanticProgram,
     planner: &JointPlanner,
     frame: FrameLayoutPlan,
-    semantic_to_block: &[SsaTarget],
+    rewrite_cfg: &RewriteCfg,
     block_params: &[collections::Vec<SsaValue>],
     entry_cached_locals: &[FrameSlot],
     values: &mut ValueAlloc,
@@ -371,10 +390,18 @@ fn lower_block_range(
     for semantic_index in semantic_range.start..last_index {
         if matches!(semantic.ops[semantic_index].kind, SemanticOpKind::End) {
             let target = fallthrough_target(semantic_index, semantic.ops.len())?;
-            canonicalize_live_window_for_target(target, &mut state, frame, values, planner)?;
+            canonicalize_live_window_for_target(
+                target,
+                rewrite_cfg,
+                &mut state,
+                frame,
+                values,
+                planner,
+            )?;
         }
         lower_block_body_op(
             semantic,
+            block_id,
             semantic_index,
             planner,
             &mut state,
@@ -389,6 +416,7 @@ fn lower_block_range(
 
     let terminator = lower_block_terminator(
         semantic,
+        block_id,
         last_index,
         planner,
         &mut state,
@@ -396,7 +424,7 @@ fn lower_block_range(
         &semantic.local_types,
         &mut resident_cache,
         &mut materialized_cache,
-        semantic_to_block,
+        rewrite_cfg,
         block_params,
         values,
         builder,
@@ -774,6 +802,7 @@ fn inline_spill_all_except_top(
 
 fn lower_block_body_op(
     semantic: &SemanticProgram,
+    block_id: CfgBlockId,
     semantic_index: usize,
     planner: &JointPlanner,
     state: &mut BlockState,
@@ -811,7 +840,7 @@ fn lower_block_body_op(
             semantic,
             *idx,
             planner,
-            semantic_index,
+            block_id,
             state,
             frame,
             resident_cache,
@@ -821,7 +850,7 @@ fn lower_block_body_op(
         SemanticOpKind::LocalSet { idx } => lower_local_set(
             *idx,
             planner,
-            semantic_index,
+            block_id,
             state,
             frame,
             local_slot_types,
@@ -832,7 +861,7 @@ fn lower_block_body_op(
             semantic,
             *idx,
             planner,
-            semantic_index,
+            block_id,
             state,
             frame,
             resident_cache,
@@ -1035,7 +1064,7 @@ fn lower_local_get(
     semantic: &SemanticProgram,
     local_idx: u16,
     planner: &JointPlanner,
-    semantic_index: usize,
+    block_id: CfgBlockId,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     resident_cache: &mut BTreeSet<FrameSlot>,
@@ -1051,7 +1080,7 @@ fn lower_local_get(
         .unwrap_or(ValueType::I64);
     let slot = frame.local_slot(local_idx);
     let access = planner.local_access(LocalAccessQuery {
-        semantic_index,
+        block: block_id,
         slot,
         resident_cache,
     });
@@ -1075,7 +1104,7 @@ fn lower_local_get(
 fn lower_local_set(
     local_idx: u16,
     planner: &JointPlanner,
-    semantic_index: usize,
+    block_id: CfgBlockId,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     local_slot_types: &[ValueType],
@@ -1085,7 +1114,7 @@ fn lower_local_set(
     let src = state.pop_one()?;
     let slot = frame.local_slot(local_idx);
     let access = planner.local_access(LocalAccessQuery {
-        semantic_index,
+        block: block_id,
         slot,
         resident_cache,
     });
@@ -1105,7 +1134,7 @@ fn lower_local_tee(
     semantic: &SemanticProgram,
     local_idx: u16,
     planner: &JointPlanner,
-    semantic_index: usize,
+    block_id: CfgBlockId,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     resident_cache: &mut BTreeSet<FrameSlot>,
@@ -1123,7 +1152,7 @@ fn lower_local_tee(
         .copied()
         .unwrap_or(ValueType::I64);
     let access = planner.local_access(LocalAccessQuery {
-        semantic_index,
+        block: block_id,
         slot,
         resident_cache,
     });
@@ -1429,6 +1458,7 @@ impl LoweredTerminator {
 #[allow(clippy::too_many_arguments)]
 fn lower_block_terminator(
     semantic: &SemanticProgram,
+    block_id: CfgBlockId,
     semantic_index: usize,
     planner: &JointPlanner,
     state: &mut BlockState,
@@ -1436,7 +1466,7 @@ fn lower_block_terminator(
     local_slot_types: &[ValueType],
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
-    semantic_to_block: &[SsaTarget],
+    rewrite_cfg: &RewriteCfg,
     block_params: &[collections::Vec<SsaValue>],
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
@@ -1469,6 +1499,7 @@ fn lower_block_terminator(
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                rewrite_cfg,
                 state,
                 frame,
                 planner,
@@ -1479,7 +1510,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?))
@@ -1489,7 +1520,7 @@ fn lower_block_terminator(
                 semantic,
                 *idx,
                 planner,
-                semantic_index,
+                block_id,
                 state,
                 frame,
                 resident_cache,
@@ -1498,6 +1529,7 @@ fn lower_block_terminator(
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                rewrite_cfg,
                 state,
                 frame,
                 planner,
@@ -1508,7 +1540,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?))
@@ -1517,7 +1549,7 @@ fn lower_block_terminator(
             lower_local_set(
                 *idx,
                 planner,
-                semantic_index,
+                block_id,
                 state,
                 frame,
                 local_slot_types,
@@ -1526,6 +1558,7 @@ fn lower_block_terminator(
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                rewrite_cfg,
                 state,
                 frame,
                 planner,
@@ -1536,7 +1569,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?))
@@ -1546,7 +1579,7 @@ fn lower_block_terminator(
                 semantic,
                 *idx,
                 planner,
-                semantic_index,
+                block_id,
                 state,
                 frame,
                 resident_cache,
@@ -1555,6 +1588,7 @@ fn lower_block_terminator(
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                rewrite_cfg,
                 state,
                 frame,
                 planner,
@@ -1565,7 +1599,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?))
@@ -1584,6 +1618,7 @@ fn lower_block_terminator(
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                rewrite_cfg,
                 state,
                 frame,
                 planner,
@@ -1594,7 +1629,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?))
@@ -1604,6 +1639,7 @@ fn lower_block_terminator(
         | SemanticOpKind::TryTable { .. } => {
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                rewrite_cfg,
                 state,
                 frame,
                 planner,
@@ -1614,7 +1650,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?))
@@ -1641,6 +1677,7 @@ fn lower_block_terminator(
                     fallthrough_target(semantic_index, semantic.ops.len())?,
                     *else_target,
                 ],
+                rewrite_cfg,
                 state,
                 frame,
                 planner,
@@ -1651,7 +1688,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?;
@@ -1661,7 +1698,7 @@ fn lower_block_terminator(
                 EdgeMapping::Identity,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?;
@@ -1672,14 +1709,20 @@ fn lower_block_terminator(
             }))
         }
         SemanticOpKind::Else { end_target } => {
-            maybe_publish_live_window_for_targets(&[*end_target], state, frame, planner);
+            maybe_publish_live_window_for_targets(
+                &[*end_target],
+                rewrite_cfg,
+                state,
+                frame,
+                planner,
+            );
             Ok(LoweredTerminator::new(SsaTerminator::Goto(edge_to_target(
                 *end_target,
                 state,
                 EdgeMapping::Identity,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?)))
@@ -1687,6 +1730,7 @@ fn lower_block_terminator(
         SemanticOpKind::End => {
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                rewrite_cfg,
                 state,
                 frame,
                 planner,
@@ -1697,7 +1741,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?))
@@ -1707,7 +1751,8 @@ fn lower_block_terminator(
             arity,
             target,
         } => {
-            if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
+            if target_expects_canonical_payload(*target, *stack_drop, rewrite_cfg, state, planner)?
+            {
                 publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
             }
             Ok(LoweredTerminator::new(SsaTerminator::Goto(edge_to_target(
@@ -1719,7 +1764,7 @@ fn lower_block_terminator(
                 },
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?)))
@@ -1731,11 +1776,21 @@ fn lower_block_terminator(
         } => {
             let cond = state.pop_one()?;
             let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
-            let needs_then_bridge =
-                target_expects_canonical_payload(*target, *stack_drop, state, planner)?
-                    && *arity != 0;
+            let needs_then_bridge = target_expects_canonical_payload(
+                *target,
+                *stack_drop,
+                rewrite_cfg,
+                state,
+                planner,
+            )? && *arity != 0;
             if needs_then_bridge {
-                maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
+                maybe_publish_live_window_for_targets(
+                    &[fallthrough],
+                    rewrite_cfg,
+                    state,
+                    frame,
+                    planner,
+                );
                 let payload = state.top_values(*arity as usize)?;
                 let then_block_id = SsaTarget((original_block_count + extra_blocks_len) as u32);
                 let payload_types = payload
@@ -1749,7 +1804,9 @@ fn lower_block_terminator(
                             "taken br_if with payload must have payload span".into(),
                         )
                     })?;
-                let target_block = semantic_to_block[target.index().as_usize()];
+                let target_block = rewrite_cfg
+                    .block_for_semantic_index(target.index().as_usize())
+                    .ok_or_else(|| WasmError::invalid("edge target out of range"))?;
                 let target_params = &block_params[target_block.as_usize()];
                 if !target_params.is_empty() {
                     return Err(WasmError::internal(
@@ -1781,7 +1838,7 @@ fn lower_block_terminator(
                     },
                     frame,
                     values,
-                    semantic_to_block,
+                    rewrite_cfg,
                     block_params,
                     planner,
                 )?;
@@ -1791,7 +1848,7 @@ fn lower_block_terminator(
                     state,
                     frame,
                     values,
-                    semantic_to_block,
+                    rewrite_cfg,
                     block_params,
                     planner,
                 )?;
@@ -1824,10 +1881,22 @@ fn lower_block_terminator(
                     },
                 })
             } else {
-                if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
+                if target_expects_canonical_payload(
+                    *target,
+                    *stack_drop,
+                    rewrite_cfg,
+                    state,
+                    planner,
+                )? {
                     publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
                 }
-                maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
+                maybe_publish_live_window_for_targets(
+                    &[fallthrough],
+                    rewrite_cfg,
+                    state,
+                    frame,
+                    planner,
+                );
                 let then_edge = edge_to_target(
                     *target,
                     state,
@@ -1837,7 +1906,7 @@ fn lower_block_terminator(
                     },
                     frame,
                     values,
-                    semantic_to_block,
+                    rewrite_cfg,
                     block_params,
                     planner,
                 )?;
@@ -1847,7 +1916,7 @@ fn lower_block_terminator(
                     state,
                     frame,
                     values,
-                    semantic_to_block,
+                    rewrite_cfg,
                     block_params,
                     planner,
                 )?;
@@ -1875,7 +1944,8 @@ fn lower_block_terminator(
                 values,
             );
             let cond = emit_ref_is_null_condition(cond_ref, state, builder, values)?;
-            if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
+            if target_expects_canonical_payload(*target, *stack_drop, rewrite_cfg, state, planner)?
+            {
                 publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
             }
             let then_edge = edge_to_target(
@@ -1887,20 +1957,26 @@ fn lower_block_terminator(
                 },
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?;
             state.push_results(collections::vec![refined], collections::vec![*ref_type])?;
             let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
-            maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
+            maybe_publish_live_window_for_targets(
+                &[fallthrough],
+                rewrite_cfg,
+                state,
+                frame,
+                planner,
+            );
             let else_edge = next_edge(
                 semantic_index,
                 semantic.ops.len(),
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?;
@@ -1928,19 +2004,26 @@ fn lower_block_terminator(
             );
             let cond = emit_ref_is_null_condition(cond_ref, state, builder, values)?;
             let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
-            maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
+            maybe_publish_live_window_for_targets(
+                &[fallthrough],
+                rewrite_cfg,
+                state,
+                frame,
+                planner,
+            );
             let then_edge = next_edge(
                 semantic_index,
                 semantic.ops.len(),
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?;
             state.push_results(collections::vec![refined], collections::vec![*ref_type])?;
-            if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
+            if target_expects_canonical_payload(*target, *stack_drop, rewrite_cfg, state, planner)?
+            {
                 publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
             }
             let else_edge = edge_to_target(
@@ -1952,7 +2035,7 @@ fn lower_block_terminator(
                 },
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?;
@@ -1982,7 +2065,8 @@ fn lower_block_terminator(
             );
             let cond = emit_ref_test_condition(cond_ref, *cast_type, state, builder, values)?;
             state.push_results(collections::vec![cast_ref], collections::vec![*cast_type])?;
-            if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
+            if target_expects_canonical_payload(*target, *stack_drop, rewrite_cfg, state, planner)?
+            {
                 publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
             }
             let then_edge = edge_to_target(
@@ -1994,21 +2078,27 @@ fn lower_block_terminator(
                 },
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?;
             state.consume_top(1)?;
             state.push_results(collections::vec![source_ref], collections::vec![*fail_type])?;
             let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
-            maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
+            maybe_publish_live_window_for_targets(
+                &[fallthrough],
+                rewrite_cfg,
+                state,
+                frame,
+                planner,
+            );
             let else_edge = next_edge(
                 semantic_index,
                 semantic.ops.len(),
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?;
@@ -2039,20 +2129,27 @@ fn lower_block_terminator(
             let cond = emit_ref_test_condition(cond_ref, *cast_type, state, builder, values)?;
             state.push_results(collections::vec![cast_ref], collections::vec![*cast_type])?;
             let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
-            maybe_publish_live_window_for_targets(&[fallthrough], state, frame, planner);
+            maybe_publish_live_window_for_targets(
+                &[fallthrough],
+                rewrite_cfg,
+                state,
+                frame,
+                planner,
+            );
             let then_edge = next_edge(
                 semantic_index,
                 semantic.ops.len(),
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?;
             state.consume_top(1)?;
             state.push_results(collections::vec![source_ref], collections::vec![*fail_type])?;
-            if target_expects_canonical_payload(*target, *stack_drop, state, planner)? {
+            if target_expects_canonical_payload(*target, *stack_drop, rewrite_cfg, state, planner)?
+            {
                 publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
             }
             let else_edge = edge_to_target(
@@ -2064,7 +2161,7 @@ fn lower_block_terminator(
                 },
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?;
@@ -2076,7 +2173,7 @@ fn lower_block_terminator(
         }
         SemanticOpKind::BrTable { entries } => {
             let index = state.pop_one()?;
-            maybe_publish_taken_branch_payloads(entries, state, frame, planner)?;
+            maybe_publish_taken_branch_payloads(entries, rewrite_cfg, state, frame, planner)?;
             let entries = entries
                 .iter()
                 .map(|entry| {
@@ -2086,7 +2183,7 @@ fn lower_block_terminator(
                         state,
                         frame,
                         values,
-                        semantic_to_block,
+                        rewrite_cfg,
                         block_params,
                         planner,
                     )
@@ -2120,6 +2217,7 @@ fn lower_block_terminator(
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                rewrite_cfg,
                 state,
                 frame,
                 planner,
@@ -2130,7 +2228,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?))
@@ -2160,6 +2258,7 @@ fn lower_block_terminator(
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                rewrite_cfg,
                 state,
                 frame,
                 planner,
@@ -2170,7 +2269,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?))
@@ -2198,6 +2297,7 @@ fn lower_block_terminator(
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
+                rewrite_cfg,
                 state,
                 frame,
                 planner,
@@ -2208,7 +2308,7 @@ fn lower_block_terminator(
                 state,
                 frame,
                 values,
-                semantic_to_block,
+                rewrite_cfg,
                 block_params,
                 planner,
             )?))
@@ -2266,6 +2366,7 @@ fn fallthrough_target(
 
 fn maybe_publish_live_window_for_targets(
     targets: &[SemanticTarget],
+    rewrite_cfg: &RewriteCfg,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     planner: &JointPlanner,
@@ -2275,7 +2376,11 @@ fn maybe_publish_live_window_for_targets(
     }
     let max_target_spill_depth = targets
         .iter()
-        .map(|target| planner.target_entry(target.index().as_usize()))
+        .filter_map(|target| {
+            rewrite_cfg
+                .block_for_semantic_index(target.index().as_usize())
+                .map(|block| planner.target_entry(block))
+        })
         .filter(|entry| entry.stack_height == state.height())
         .map(|entry| entry.spill_depth)
         .max()
@@ -2295,12 +2400,16 @@ fn maybe_publish_live_window_for_targets(
 
 fn canonicalize_live_window_for_target(
     target: SemanticTarget,
+    rewrite_cfg: &RewriteCfg,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     values: &mut ValueAlloc,
     planner: &JointPlanner,
 ) -> Result<(), WasmError> {
-    let target_entry = planner.target_entry(target.index().as_usize());
+    let target_block = rewrite_cfg
+        .block_for_semantic_index(target.index().as_usize())
+        .ok_or_else(|| WasmError::invalid("edge target out of range"))?;
+    let target_entry = planner.target_entry(target_block);
     if target_entry.stack_height != state.height() {
         return Ok(());
     }
@@ -2332,7 +2441,7 @@ fn goto_next(
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     values: &mut ValueAlloc,
-    semantic_to_block: &[SsaTarget],
+    rewrite_cfg: &RewriteCfg,
     block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
 ) -> Result<SsaTerminator, WasmError> {
@@ -2342,7 +2451,7 @@ fn goto_next(
         state,
         frame,
         values,
-        semantic_to_block,
+        rewrite_cfg,
         block_params,
         planner,
     )?))
@@ -2354,7 +2463,7 @@ fn next_edge(
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     values: &mut ValueAlloc,
-    semantic_to_block: &[SsaTarget],
+    rewrite_cfg: &RewriteCfg,
     block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
 ) -> Result<SsaEdge, WasmError> {
@@ -2368,7 +2477,7 @@ fn next_edge(
         EdgeMapping::Identity,
         frame,
         values,
-        semantic_to_block,
+        rewrite_cfg,
         block_params,
         planner,
     )
@@ -2389,15 +2498,14 @@ fn edge_to_target(
     mapping: EdgeMapping,
     frame: FrameLayoutPlan,
     values: &mut ValueAlloc,
-    semantic_to_block: &[SsaTarget],
+    rewrite_cfg: &RewriteCfg,
     block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
 ) -> Result<SsaEdge, WasmError> {
-    let target_entry = planner.target_entry(target.index().as_usize());
-    let target_block = semantic_to_block
-        .get(target.index().as_usize())
-        .copied()
+    let target_block = rewrite_cfg
+        .block_for_semantic_index(target.index().as_usize())
         .ok_or_else(|| WasmError::invalid("edge target out of range"))?;
+    let target_entry = planner.target_entry(target_block);
     let target_params = block_params
         .get(target_block.as_usize())
         .ok_or_else(|| WasmError::invalid("edge target out of range"))?;
@@ -2447,7 +2555,7 @@ fn edge_to_target(
     };
 
     Ok(SsaEdge {
-        target: target_block,
+        target: SsaTarget(target_block.0),
         bindings,
     })
 }
@@ -2505,7 +2613,7 @@ fn br_table_edge(
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     values: &mut ValueAlloc,
-    semantic_to_block: &[SsaTarget],
+    rewrite_cfg: &RewriteCfg,
     block_params: &[collections::Vec<SsaValue>],
     planner: &JointPlanner,
 ) -> Result<SsaEdge, WasmError> {
@@ -2518,7 +2626,7 @@ fn br_table_edge(
         },
         frame,
         values,
-        semantic_to_block,
+        rewrite_cfg,
         block_params,
         planner,
     )
@@ -2544,10 +2652,14 @@ fn bind_values(
 fn target_expects_canonical_payload(
     target: SemanticTarget,
     stack_drop: u32,
+    rewrite_cfg: &RewriteCfg,
     state: &BlockState,
     planner: &JointPlanner,
 ) -> Result<bool, WasmError> {
-    let entry = planner.target_entry(target.index().as_usize());
+    let target_block = rewrite_cfg
+        .block_for_semantic_index(target.index().as_usize())
+        .ok_or_else(|| WasmError::invalid("edge target out of range"))?;
+    let entry = planner.target_entry(target_block);
     Ok(entry.live_value_count() == 0
         && entry.stack_height == state.height().saturating_sub(stack_drop as u16))
 }
@@ -2578,13 +2690,20 @@ fn publish_taken_branch_payload_at(
 
 fn maybe_publish_taken_branch_payloads(
     entries: &[BrTableEntry],
+    rewrite_cfg: &RewriteCfg,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     planner: &JointPlanner,
 ) -> Result<(), WasmError> {
     let mut published = collections::Vec::<u32>::new();
     for entry in entries {
-        if !target_expects_canonical_payload(entry.target, entry.stack_drop, state, planner)? {
+        if !target_expects_canonical_payload(
+            entry.target,
+            entry.stack_drop,
+            rewrite_cfg,
+            state,
+            planner,
+        )? {
             continue;
         }
         if published.contains(&entry.stack_drop) {

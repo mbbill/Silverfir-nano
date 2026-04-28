@@ -208,7 +208,8 @@ fn lower_terminator_kind(
             .checked_add(1)
             .filter(|next| *next < semantic.ops.len())
             .ok_or_else(|| WasmError::invalid("missing fallthrough target"))?;
-        Ok::<_, WasmError>(cfg.semantic_to_block[target])
+        cfg.block_for_semantic_index(target)
+            .ok_or_else(|| WasmError::invalid("semantic target out of range"))
     };
 
     Ok(match kind {
@@ -254,8 +255,6 @@ fn lower_terminator_kind(
 }
 
 fn target_block(cfg: &SemanticCfg, target: SemanticTarget) -> Result<CfgBlockId, WasmError> {
-    cfg.semantic_to_block
-        .get(target.index().as_usize())
-        .copied()
+    cfg.block_for_semantic_index(target.index().as_usize())
         .ok_or_else(|| WasmError::invalid("semantic target out of range"))
 }

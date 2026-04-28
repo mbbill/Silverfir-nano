@@ -25,7 +25,7 @@ use crate::{
 
 use super::{
     entry_region::analyze_block_local_summaries,
-    facts::{BlockPlan, CompactEntryPoint, EntryState, FunctionPlan},
+    facts::{BlockPlan, EntryState, FunctionPlan},
     region_solver::solve_public_cache_sets,
 };
 
@@ -55,7 +55,6 @@ pub(crate) fn build_plan(
         &block_local_summaries,
     );
     let LightweightPlanOutput {
-        compact_entries,
         peak_gp: _,
         peak_fp: _,
         block_entries,
@@ -75,7 +74,6 @@ pub(crate) fn build_plan(
         gp_unit_bytes: config.gp_unit_bytes,
         gp_dynamic_budget,
         fp_dynamic_budget,
-        compact_entries,
         blocks,
     };
 
@@ -510,8 +508,6 @@ fn apply_stack_effect_typed(state: &mut PrepareState, pop: u16, push: u16, resul
 /// Computes peak transient pressure per block and compact per-op entry points
 /// in a single pass, without storing full `EntryState` snapshots per op.
 pub(crate) struct LightweightPlanOutput {
-    /// Compact per-op entry point: `(stack_height, spill_depth)`.
-    pub compact_entries: collections::Vec<CompactEntryPoint>,
     /// Per-block peak GP transient pressure in budget units.
     pub peak_gp: collections::Vec<usize>,
     /// Per-block peak FP transient pressure in budget units.
@@ -542,15 +538,13 @@ pub(crate) fn compute_lightweight_plan(
         0, // no cache slots
     );
 
-    let mut compact_entries = collections::Vec::with_capacity(semantic.ops.len());
     let mut peak_gp = collections::vec![0usize; cfg.blocks.len()];
     let mut peak_fp = collections::vec![0usize; cfg.blocks.len()];
     let mut block_entries = collections::vec![EntryState::default(); cfg.blocks.len()];
 
     for (op_index, semantic_op) in semantic.ops.iter().enumerate() {
         let block_index = cfg
-            .semantic_to_block
-            .get(op_index)
+            .block_for_semantic_index(op_index)
             .map(|id| id.as_usize())
             .unwrap_or(0);
         let is_block_start = cfg
@@ -569,13 +563,6 @@ pub(crate) fn compute_lightweight_plan(
                 live_types: state.types_at(spill, live_count),
             };
         }
-
-        // Record compact entry state (before prefix).
-        compact_entries.push(CompactEntryPoint {
-            stack_height: state.height,
-            spill_depth: state.spill_depth,
-            block_index: block_index as u32,
-        });
 
         // Apply structural prefix: fill operands, spill at control flow boundaries.
         // Skip ensure_capacity — it depends on cache state and only further reduces
@@ -605,7 +592,6 @@ pub(crate) fn compute_lightweight_plan(
     }
 
     LightweightPlanOutput {
-        compact_entries,
         peak_gp,
         peak_fp,
         block_entries,

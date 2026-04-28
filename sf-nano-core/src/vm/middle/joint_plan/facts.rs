@@ -15,18 +15,6 @@ pub(crate) struct EntryState {
     pub live_types: collections::Vec<ValueType>,
 }
 
-/// Compact per-op entry state for target branch queries.
-///
-/// The rewriter only needs `stack_height` and `spill_depth` when checking
-/// branch target contracts. The full `EntryState` with heap-allocated
-/// `stack_types` and `live_types` vecs is not needed for this purpose.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct CompactEntryPoint {
-    pub stack_height: u16,
-    pub spill_depth: u16,
-    pub block_index: u32,
-}
-
 /// Compact per-block local summary retained for the public-cache solver.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockLocalSummary {
@@ -58,10 +46,5 @@ pub(crate) struct FunctionPlan {
     pub gp_unit_bytes: u8,
     pub gp_dynamic_budget: u8,
     pub fp_dynamic_budget: u8,
-    /// Compact per-op entry points for target branch queries.
-    ///
-    /// Only `stack_height` and `spill_depth` — the rewriter never reads
-    /// `live_types` or `stack_types` from these entries.
-    pub compact_entries: collections::Vec<CompactEntryPoint>,
     pub blocks: collections::Vec<BlockPlan>,
 }

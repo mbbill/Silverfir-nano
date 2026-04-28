@@ -225,8 +225,7 @@ pub(super) fn incoming_cache_repair_blocks(
 }
 
 pub(super) fn block_for_semantic_index(cfg: &SemanticCfg, semantic_index: usize) -> CfgBlockId {
-    *cfg.semantic_to_block
-        .get(semantic_index)
+    cfg.block_for_semantic_index(semantic_index)
         .unwrap_or_else(|| panic!("semantic index {semantic_index} should map to one CFG block"))
 }
 

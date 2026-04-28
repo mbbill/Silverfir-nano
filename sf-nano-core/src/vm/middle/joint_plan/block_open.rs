@@ -25,14 +25,11 @@ pub(crate) fn block_open_decision(plan: &FunctionPlan, block: CfgBlockId) -> Blo
 }
 
 #[inline]
-pub(crate) fn target_entry_decision(
-    plan: &FunctionPlan,
-    semantic_index: usize,
-) -> TargetEntryDecision {
-    let compact = &plan.compact_entries[semantic_index];
+pub(crate) fn target_entry_decision(plan: &FunctionPlan, block: CfgBlockId) -> TargetEntryDecision {
+    let entry = &plan.blocks[block.as_usize()].entry;
     TargetEntryDecision {
-        stack_height: compact.stack_height,
-        spill_depth: compact.spill_depth,
+        stack_height: entry.stack_height,
+        spill_depth: entry.spill_depth,
     }
 }
 

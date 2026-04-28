@@ -19,10 +19,5 @@ pub(crate) fn validate_plan(
             "slot-only SSA has blocks, but cfg has blocks",
         ));
     }
-    if plan.compact_entries.len() != cfg.semantic_to_block.len() {
-        return Err(WasmError::internal(
-            "joint plan has compact entries, but semantic length is",
-        ));
-    }
     Ok(())
 }
