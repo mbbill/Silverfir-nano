@@ -22,7 +22,7 @@
 //!
 //! 7. **SMULL sign-extension fusion** (`fuse_smull_sign_ext`): Replaces
 //!    `Int64PairBinary{Mul}` whose operands are both `i64.extend_i32_s`
-//!    with `Int64MulFromSignExt32` — a single signed 32×32→64 multiply.
+//!    with `Int64MulFromSignExt32`, a single signed 32x32 -> 64 multiply.
 //!    Only fires on 32-bit GP backends (where the pair form exists).
 
 mod copy_propagate;
@@ -75,6 +75,9 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
         copy_propagate::copy_propagate(block, config, &mut cp_scratch);
         fuse_isel::fuse_isel(block, config);
         fuse_smull_sign_ext::fuse_smull_sign_ext(block, total_reg_count);
+    }
+    if config.is_32bit_gp_target() {
+        fuse_smull_sign_ext::fuse_smull_sign_ext_across_edges(program, total_reg_count);
     }
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, gp_reg_width, config);
 }

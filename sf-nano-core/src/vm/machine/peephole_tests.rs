@@ -2693,6 +2693,216 @@ fn fuses_i64_mul_after_pair_extend32s_with_copied_halves() {
 }
 
 #[test]
+fn fuses_i64_mul_from_sign_ext_pair_across_edge() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: collections::Vec::new(),
+                ops: collections::vec![MachineInst {
+                    kind: MachineInstKind::Int64PairUnary {
+                        op: MachineIntUnaryOp::Extend32S,
+                        dst_lo: MachineReg(8),
+                        dst_hi: MachineReg(9),
+                        src_lo: MachineValue::Reg(MachineReg(4)),
+                        src_hi: MachineValue::Reg(MachineReg(5)),
+                    },
+                }],
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: collections::vec![
+                        MachineValue::Reg(MachineReg(8)),
+                        MachineValue::Reg(MachineReg(9)),
+                    ],
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: collections::vec![
+                    MachineBlockParam::gp_word(MachineReg(10)),
+                    MachineBlockParam::gp_word(MachineReg(11)),
+                ],
+                ops: collections::vec![MachineInst {
+                    kind: MachineInstKind::Int64PairBinary {
+                        op: MachineIntBinaryOp::Mul,
+                        dst_lo: MachineReg(12),
+                        dst_hi: MachineReg(13),
+                        lhs_lo: MachineValue::Reg(MachineReg(10)),
+                        lhs_hi: MachineValue::Reg(MachineReg(11)),
+                        rhs_lo: MachineValue::Reg(MachineReg(10)),
+                        rhs_hi: MachineValue::Reg(MachineReg(11)),
+                    },
+                }],
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    optimize(&mut program, test_config(7, 4, 24, 24, 0));
+
+    let block = &program.blocks[1];
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Int64MulFromSignExt32 {
+            dst_lo: MachineReg(12),
+            dst_hi: MachineReg(13),
+            lhs: MachineValue::Reg(MachineReg(10)),
+            rhs: MachineValue::Reg(MachineReg(10)),
+        }
+    ));
+}
+
+#[test]
+fn does_not_fuse_cross_block_sign_ext_fact_unless_all_predecessors_agree() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: collections::Vec::new(),
+                ops: collections::vec![MachineInst {
+                    kind: MachineInstKind::Int64PairUnary {
+                        op: MachineIntUnaryOp::Extend32S,
+                        dst_lo: MachineReg(8),
+                        dst_hi: MachineReg(9),
+                        src_lo: MachineValue::Reg(MachineReg(4)),
+                        src_hi: MachineValue::Reg(MachineReg(5)),
+                    },
+                }],
+                terminator: MachineTerminator::Branch {
+                    cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(4))),
+                    then_edge: MachineEdge {
+                        target: MachineBlockId(2),
+                        args: collections::vec![
+                            MachineValue::Reg(MachineReg(8)),
+                            MachineValue::Reg(MachineReg(9)),
+                        ],
+                    },
+                    else_edge: MachineEdge {
+                        target: MachineBlockId(1),
+                        args: collections::Vec::new(),
+                    },
+                },
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(2),
+                    args: collections::vec![
+                        MachineValue::Reg(MachineReg(6)),
+                        MachineValue::Reg(MachineReg(7)),
+                    ],
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(2),
+                params: collections::vec![
+                    MachineBlockParam::gp_word(MachineReg(10)),
+                    MachineBlockParam::gp_word(MachineReg(11)),
+                ],
+                ops: collections::vec![MachineInst {
+                    kind: MachineInstKind::Int64PairBinary {
+                        op: MachineIntBinaryOp::Mul,
+                        dst_lo: MachineReg(12),
+                        dst_hi: MachineReg(13),
+                        lhs_lo: MachineValue::Reg(MachineReg(10)),
+                        lhs_hi: MachineValue::Reg(MachineReg(11)),
+                        rhs_lo: MachineValue::Reg(MachineReg(10)),
+                        rhs_hi: MachineValue::Reg(MachineReg(11)),
+                    },
+                }],
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    optimize(&mut program, test_config(7, 4, 24, 24, 0));
+
+    let block = &program.blocks[2];
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Int64PairBinary {
+            op: MachineIntBinaryOp::Mul,
+            ..
+        }
+    ));
+}
+
+#[test]
+fn does_not_seed_cross_block_sign_ext_fact_from_self_loop_only() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: collections::vec![
+                        MachineValue::Reg(MachineReg(6)),
+                        MachineValue::Reg(MachineReg(7)),
+                    ],
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: collections::vec![
+                    MachineBlockParam::gp_word(MachineReg(10)),
+                    MachineBlockParam::gp_word(MachineReg(11)),
+                ],
+                ops: collections::vec![
+                    MachineInst {
+                        kind: MachineInstKind::Int64PairBinary {
+                            op: MachineIntBinaryOp::Mul,
+                            dst_lo: MachineReg(12),
+                            dst_hi: MachineReg(13),
+                            lhs_lo: MachineValue::Reg(MachineReg(10)),
+                            lhs_hi: MachineValue::Reg(MachineReg(11)),
+                            rhs_lo: MachineValue::Reg(MachineReg(10)),
+                            rhs_hi: MachineValue::Reg(MachineReg(11)),
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::Int64PairUnary {
+                            op: MachineIntUnaryOp::Extend32S,
+                            dst_lo: MachineReg(10),
+                            dst_hi: MachineReg(11),
+                            src_lo: MachineValue::Reg(MachineReg(4)),
+                            src_hi: MachineValue::Reg(MachineReg(5)),
+                        },
+                    },
+                ],
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: collections::vec![
+                        MachineValue::Reg(MachineReg(10)),
+                        MachineValue::Reg(MachineReg(11)),
+                    ],
+                }),
+            },
+        ],
+    };
+
+    optimize(&mut program, test_config(7, 4, 24, 24, 0));
+
+    let block = &program.blocks[1];
+    assert!(matches!(
+        block.ops[0].kind,
+        MachineInstKind::Int64PairBinary {
+            op: MachineIntBinaryOp::Mul,
+            ..
+        }
+    ));
+}
+
+#[test]
 fn optimize_preserves_block_ops_allocation() {
     let mut ops = collections::Vec::with_capacity(32);
     ops.push(MachineInst {
