@@ -40,6 +40,8 @@ use esp_hal::{
         Mode,
     },
     time::{Duration, Instant, Rate},
+    usb_serial_jtag::UsbSerialJtag,
+    Blocking,
 };
 use esp_println::println;
 #[cfg(feature = "mode-wasm")]
@@ -64,6 +66,10 @@ const DEMO_NAME: &str = "mandelbrot";
 
 #[cfg(feature = "mode-wasm")]
 const WASM_DEMO: &[u8] = include_bytes!(concat!(env!("OUT_DIR"), "/demo.wasm"));
+
+struct SerialConsole<'d> {
+    _usb: UsbSerialJtag<'d, Blocking>,
+}
 
 #[main]
 fn main() -> ! {
@@ -109,7 +115,7 @@ fn main() -> ! {
         board::TF_CARD_MISO_GPIO
     );
 
-    let mut display = init_display(peripherals);
+    let (mut display, _serial_console) = init_io(peripherals);
     display.init();
     println!("display initialized");
     display.clear(0x0000);
@@ -120,7 +126,16 @@ fn main() -> ! {
     run_wasm(display);
 }
 
-fn init_display(peripherals: Peripherals) -> Display<impl embedded_hal::spi::SpiBus<u8>> {
+fn init_io(
+    peripherals: Peripherals,
+) -> (
+    Display<impl embedded_hal::spi::SpiBus<u8>>,
+    SerialConsole<'static>,
+) {
+    let serial_console = SerialConsole {
+        _usb: UsbSerialJtag::new(peripherals.USB_DEVICE),
+    };
+
     let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) =
         esp_hal::dma_buffers!(4, DISPLAY_DMA_TX_BYTES);
     let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
@@ -143,7 +158,7 @@ fn init_display(peripherals: Peripherals) -> Display<impl embedded_hal::spi::Spi
     let rst = Output::new(peripherals.GPIO21, Level::High, OutputConfig::default());
     let bl = Output::new(peripherals.GPIO22, Level::High, OutputConfig::default());
 
-    Display::new(spi, cs, dc, rst, bl)
+    (Display::new(spi, cs, dc, rst, bl), serial_console)
 }
 
 #[cfg(feature = "mode-native")]
