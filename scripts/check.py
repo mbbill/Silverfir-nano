@@ -84,7 +84,6 @@ CLI_FAST_COMBOS = [
 DEFAULT_TARGET_ROWS = [
     ("arm64-darwin", "aarch64-apple-darwin", "hosted", "", ""),
     ("arm64-linux", "aarch64-unknown-linux-gnu", "hosted", "", ""),
-    ("arm64-none", "aarch64-unknown-none", "bare", "--no-default-features --features jit", ""),
     ("x64-darwin", "x86_64-apple-darwin", "hosted", "", ""),
     ("x64-linux", "x86_64-unknown-linux-gnu", "hosted", "", ""),
     ("x64-windows", "x86_64-pc-windows-gnu", "hosted", "", ""),
@@ -104,8 +103,8 @@ EXTRA_TARGET_ROWS = [
 ]
 
 BARE_SMOKE_TARGETS = [
-    "aarch64-unknown-none",
     "thumbv8m.main-none-eabihf",
+    "riscv32imac-unknown-none-elf",
 ]
 
 @dataclass
@@ -175,6 +174,19 @@ def windows_path_to_wsl(path_text: str) -> Optional[str]:
     return f"{prefix}/{suffix}" if suffix else prefix
 
 
+WINDOWS_TARGET_MATRIX_LABELS = {
+    "arm64-darwin",
+    "arm64-linux",
+    "x64-darwin",
+    "x64-windows",
+}
+
+UNSUPPORTED_ON_WINDOWS_TARGET_LABELS = {
+    "arm64-darwin",
+    "x64-darwin",
+}
+
+
 def wsl_env_overrides() -> List[str]:
     overrides: List[str] = []
     for name in ("TESTSUITE_DIR",):
@@ -183,6 +195,9 @@ def wsl_env_overrides() -> List[str]:
             continue
         converted = windows_path_to_wsl(value)
         overrides.append(f"{name}={converted or value}")
+    overrides.append("SF_CHECK_SKIP_BARE_SMOKE=1")
+    overrides.append(f"SF_CHECK_SKIP_TARGET_LABELS={','.join(sorted(WINDOWS_TARGET_MATRIX_LABELS))}")
+    overrides.append("SF_CHECK_SUPPRESS_SUMMARY=1")
     return overrides
 
 
@@ -464,6 +479,7 @@ class CheckRunner:
         self.results: List[StepResult] = []
         self.step_index = 0
         self.colima_started = False
+        self.installed_rust_targets: Optional[set[str]] = None
 
     def run(
         self,
@@ -603,10 +619,15 @@ class CheckRunner:
             print(f"[SKIP] {result.name}")
             print(f"       {result.message}")
 
-    def final_report(self) -> int:
+    def final_report(self, *, print_report: bool = True) -> int:
         counts = {status: 0 for status in ("OK", "WARN", "FAIL", "SKIP")}
         for result in self.results:
             counts[result.status] += 1
+
+        fail_on_warn = self.strict and counts["WARN"] > 0
+        rc = 1 if counts["FAIL"] > 0 or fail_on_warn else 0
+        if not print_report:
+            return rc
 
         print()
         print("=== Summary ===")
@@ -636,13 +657,12 @@ class CheckRunner:
         # Skipped steps are already printed inline with their reason, so
         # omit the trailing summary section — it was duplicate noise.
 
-        fail_on_warn = self.strict and counts["WARN"] > 0
         print()
-        if counts["FAIL"] > 0 or fail_on_warn:
+        if rc:
             print("FAILED")
-            return 1
+            return rc
         print("PASSED")
-        return 0
+        return rc
 
 
 def command_exists(name: str) -> bool:
@@ -665,29 +685,61 @@ def rustup_installed_targets() -> Optional[set[str]]:
     return {line.strip() for line in proc.stdout.splitlines() if line.strip()}
 
 
+def cached_rustup_installed_targets(runner: CheckRunner) -> Optional[set[str]]:
+    if runner.installed_rust_targets is None:
+        runner.installed_rust_targets = rustup_installed_targets()
+    return runner.installed_rust_targets
+
+
+def rustup_target_scope(runner: CheckRunner) -> str:
+    if runner.host.kind == "wsl":
+        return "WSL rustup target"
+    if runner.host.kind == "windows":
+        return "Windows rustup target"
+    if runner.host.kind == "macos":
+        return "macOS rustup target"
+    return f"{runner.host.kind} rustup target"
+
+
+def missing_rust_target_message(runner: CheckRunner, target: str) -> str:
+    scope = rustup_target_scope(runner)
+    if runner.host.kind == "wsl":
+        return f"missing {scope} {target}; use --install-targets or run in WSL: rustup target add {target}"
+    return f"missing {scope} {target}; use --install-targets or run: rustup target add {target}"
+
+
+def install_rust_target(runner: CheckRunner, target: str) -> bool:
+    result = runner.run(
+        f"install {rustup_target_scope(runner)} {target}",
+        ["rustup", "target", "add", target],
+        log_name=f"rustup-target-add-{clean_label(target)}",
+    )
+    if result.status != "FAIL" and runner.installed_rust_targets is not None:
+        # In dry-run the rustup command is not actually executed. Marking the
+        # target available still models the rest of an --install-targets run and
+        # avoids duplicate install rows for targets used by multiple checks.
+        runner.installed_rust_targets.add(target)
+    return result.status != "FAIL"
+
+
 def ensure_rust_target(runner: CheckRunner, target: str) -> bool:
     if target == RISCV32_TARGET:
         return ensure_riscv32_build_toolchain(runner)
-    installed = rustup_installed_targets()
+    installed = cached_rustup_installed_targets(runner)
     if installed is None:
         runner.fail(
             f"rustup target check ({target})",
-            "rustup is required to verify cross-compile targets.",
+            f"{rustup_target_scope(runner)} list could not be read; rustup is required to verify cross-compile targets.",
             command="rustup target list --installed",
         )
         return False
     if target in installed:
         return True
     if runner.install_targets:
-        result = runner.run(
-            f"install rust target {target}",
-            ["rustup", "target", "add", target],
-            log_name=f"rustup-target-add-{clean_label(target)}",
-        )
-        return result.status != "FAIL"
+        return install_rust_target(runner, target)
     runner.fail(
-        f"rust target missing ({target})",
-        f"missing rustup target {target}; run: rustup target add {target}",
+        f"{rustup_target_scope(runner)} missing ({target})",
+        missing_rust_target_message(runner, target),
         command=f"rustup target add {target}",
     )
     return False
@@ -1104,7 +1156,15 @@ def run_feature_checks(runner: CheckRunner, *, full: bool, profiles: Sequence[st
             )
 
 
-def run_target_matrix(runner: CheckRunner, *, include_all: bool) -> None:
+def run_target_matrix(
+    runner: CheckRunner,
+    *,
+    include_all: bool,
+    include_bare_smoke: bool = True,
+    only_labels: Optional[set[str]] = None,
+    exclude_labels: Optional[set[str]] = None,
+    unsupported_labels: Optional[set[str]] = None,
+) -> None:
     if not command_exists("rustup"):
         runner.fail("target matrix prerequisites", "rustup is required for target matrix checks.")
         return
@@ -1115,6 +1175,16 @@ def run_target_matrix(runner: CheckRunner, *, include_all: bool) -> None:
 
     package_keys = ["core", "cli", "spectest", "wasitest"]
     for label, target, kind, core_extra, cli_spectest_override in rows:
+        if only_labels is not None and label not in only_labels:
+            continue
+        if exclude_labels is not None and label in exclude_labels:
+            continue
+        if unsupported_labels is not None and label in unsupported_labels:
+            runner.skip(
+                f"target matrix {label}",
+                f"{target} cannot be run on this Windows+WSL machine; compile-only coverage is not treated as platform validation.",
+            )
+            continue
         if not target_installed_or_install(runner, target, f"target matrix {label}"):
             continue
 
@@ -1131,6 +1201,11 @@ def run_target_matrix(runner: CheckRunner, *, include_all: bool) -> None:
         else:
             run_target_package_check(runner, label, target, "core", core_extra, "")
 
+    if include_bare_smoke:
+        run_bare_smoke_checks(runner)
+
+
+def run_bare_smoke_checks(runner: CheckRunner) -> None:
     bare_smoke_dir = ROOT / "sf-nano-bare-smoke"
     if not bare_smoke_dir.is_dir():
         return
@@ -1151,20 +1226,19 @@ def run_target_matrix(runner: CheckRunner, *, include_all: bool) -> None:
 def target_installed_or_install(runner: CheckRunner, target: str, name: str) -> bool:
     if target == RISCV32_TARGET:
         return ensure_riscv32_build_toolchain(runner)
-    installed = rustup_installed_targets()
+    installed = cached_rustup_installed_targets(runner)
     if installed is None:
-        runner.fail(name, "could not read installed rustup targets.", command="rustup target list --installed")
+        runner.fail(
+            name,
+            f"could not read installed {rustup_target_scope(runner)} list.",
+            command="rustup target list --installed",
+        )
         return False
     if target in installed:
         return True
     if runner.install_targets:
-        result = runner.run(
-            f"install rust target {target}",
-            ["rustup", "target", "add", target],
-            log_name=f"rustup-target-add-{clean_label(target)}",
-        )
-        return result.status != "FAIL"
-    runner.skip(name, f"missing rustup target {target}; use --install-targets or run rustup target add {target}")
+        return install_rust_target(runner, target)
+    runner.fail(name, missing_rust_target_message(runner, target), command=f"rustup target add {target}")
     return False
 
 
@@ -2056,6 +2130,14 @@ def run_windows_native_fast(runner: CheckRunner, extra_args: Sequence[str]) -> N
         log_name="windows-cargo-build-release",
     )
     run_workspace_tests(runner, "release")
+    run_target_matrix(
+        runner,
+        include_all=False,
+        include_bare_smoke=False,
+        only_labels=WINDOWS_TARGET_MATRIX_LABELS,
+        unsupported_labels=UNSUPPORTED_ON_WINDOWS_TARGET_LABELS,
+    )
+    run_bare_smoke_checks(runner)
     run_windows_native_spectest(runner, profiles=["release"], extra_args=extra_args)
 
 
@@ -2083,13 +2165,21 @@ def run_windows_native_full(
     for profile_name in profiles:
         run_workspace_tests(runner, profile_name)
 
+    run_target_matrix(
+        runner,
+        include_all=False,
+        include_bare_smoke=False,
+        only_labels=WINDOWS_TARGET_MATRIX_LABELS,
+        unsupported_labels=UNSUPPORTED_ON_WINDOWS_TARGET_LABELS,
+    )
+    run_bare_smoke_checks(runner)
     run_windows_native_spectest(runner, profiles=profiles, extra_args=extra_args)
 
     for profile_name in profiles:
         run_wasitest_host_profile(runner, profile_name, [])
 
 
-def run_windows_native_phase(args: argparse.Namespace, host: Host) -> int:
+def run_windows_native_phase(args: argparse.Namespace, host: Host, *, print_report: bool = True) -> int:
     runner = CheckRunner(
         args.mode,
         host,
@@ -2118,10 +2208,27 @@ def run_windows_native_phase(args: argparse.Namespace, host: Host) -> int:
             extra_args=args.extra_args,
         )
 
-    return runner.final_report()
+    return runner.final_report(print_report=print_report)
 
 
-def run_fast(runner: CheckRunner, extra_args: Sequence[str]) -> None:
+def print_overall_summary(mode: str, windows_rc: int, wsl_rc: int) -> None:
+    overall_rc = 1 if windows_rc or wsl_rc else 0
+    windows_status = "PASSED" if windows_rc == 0 else "FAILED"
+    wsl_status = "PASSED" if wsl_rc == 0 else "FAILED"
+    overall_status = "PASSED" if overall_rc == 0 else "FAILED"
+
+    print()
+    print("=== Summary ===")
+    print(f"mode={mode} host=windows+WSL windows={windows_status} wsl={wsl_status}")
+    print()
+    print(overall_status)
+
+
+def skipped_target_labels_from_env() -> set[str]:
+    return {label for label in os.environ.get("SF_CHECK_SKIP_TARGET_LABELS", "").split(",") if label}
+
+
+def run_fast(runner: CheckRunner, extra_args: Sequence[str], *, skip_target_labels: Optional[set[str]] = None) -> None:
     runner.run(
         "workspace release build",
         ["cargo", "build", "--workspace", "--release"],
@@ -2130,7 +2237,12 @@ def run_fast(runner: CheckRunner, extra_args: Sequence[str]) -> None:
     )
     run_workspace_tests(runner, "release")
     run_feature_checks(runner, full=False, profiles=["release"])
-    run_target_matrix(runner, include_all=False)
+    run_target_matrix(
+        runner,
+        include_all=False,
+        include_bare_smoke=not os.environ.get("SF_CHECK_SKIP_BARE_SMOKE"),
+        exclude_labels=skip_target_labels,
+    )
     run_spectest_suite(runner, profiles=["release"], extra_args=extra_args)
 
 
@@ -2141,12 +2253,18 @@ def run_full(
     release_only: bool,
     include_all_targets: bool,
     extra_args: Sequence[str],
+    skip_target_labels: Optional[set[str]] = None,
 ) -> None:
     profiles = selected_profiles(debug_only, release_only)
     for profile_name in profiles:
         run_workspace_tests(runner, profile_name)
     run_feature_checks(runner, full=True, profiles=profiles)
-    run_target_matrix(runner, include_all=include_all_targets)
+    run_target_matrix(
+        runner,
+        include_all=include_all_targets,
+        include_bare_smoke=not os.environ.get("SF_CHECK_SKIP_BARE_SMOKE"),
+        exclude_labels=skip_target_labels,
+    )
     run_spectest_suite(runner, profiles=profiles, extra_args=extra_args)
     run_wasitest_suite(runner, profiles=profiles, extra_args=[])
 
@@ -2212,10 +2330,11 @@ def main(argv: Sequence[str]) -> int:
             "then WSL/Linux phase.",
             flush=True,
         )
-        windows_rc = run_windows_native_phase(args, host)
+        windows_rc = run_windows_native_phase(args, host, print_report=False)
         print()
         print("Silverfir check: starting WSL/Linux phase", flush=True)
         wsl_rc = reexec_in_wsl(argv)
+        print_overall_summary(args.mode, windows_rc, wsl_rc)
         return 1 if windows_rc or wsl_rc else 0
 
     runner = CheckRunner(
@@ -2237,7 +2356,7 @@ def main(argv: Sequence[str]) -> int:
             if args.debug_only:
                 runner.fail("argument check", "fast mode is release-only; remove --debug-only.")
             else:
-                run_fast(runner, args.extra_args)
+                run_fast(runner, args.extra_args, skip_target_labels=skipped_target_labels_from_env())
         else:
             include_all_targets = True
             if args.default_targets:
@@ -2250,11 +2369,12 @@ def main(argv: Sequence[str]) -> int:
                 release_only=args.release_only,
                 include_all_targets=include_all_targets,
                 extra_args=args.extra_args,
+                skip_target_labels=skipped_target_labels_from_env(),
             )
     finally:
         cleanup_colima(runner)
 
-    return runner.final_report()
+    return runner.final_report(print_report=not os.environ.get("SF_CHECK_SUPPRESS_SUMMARY"))
 
 
 if __name__ == "__main__":

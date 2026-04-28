@@ -1,11 +1,9 @@
 [build]
 # Pin a sensible default target so an ad-hoc `cargo check` inside this
 # crate always exercises the `target_os = "none"` code path in
-# sf-nano-core, not the host. CI (`scripts/check_targets.sh`) overrides
-# with `--target <t>` to also cover the 32-bit / arm32-Thumb-2 row:
+# sf-nano-core, not the host. The root validation runner overrides with
+# `--target <t>` to cover both embedded bare-metal rows:
 #
-#   aarch64-unknown-none        — 64-bit, arm64 backend × runtime/os/none.rs
-#                                 (Cortex-A bare-metal: hypervisors, RTOS, …)
-#   thumbv8m.main-none-eabihf   — 32-bit, arm32 (Thumb-2) backend × none.rs
-#                                 (Cortex-M33 / Pico 2 RP2350 and similar)
-target = "aarch64-unknown-none"
+#   thumbv8m.main-none-eabihf      - Cortex-M33 / Pico 2 RP2350
+#   riscv32imac-unknown-none-elf   - RV32IMAC / Pico 2 Hazard3, ESP32-C6 class
+target = "thumbv8m.main-none-eabihf"

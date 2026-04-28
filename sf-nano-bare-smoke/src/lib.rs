@@ -7,7 +7,7 @@
 //! sf-nano-core with `--no-default-features --features jit`.
 //!
 //! `cargo check` inside this crate compiles sf-nano-core against
-//! `aarch64-unknown-none` (see `.cargo/config.toml`) which activates
+//! the embedded bare-metal targets (see `.cargo/config.toml`) which activate
 //! `sf_os_none` and pulls in `runtime/os/none.rs`. If the extern symbol
 //! contract drifts on either side — Rust frontend signature, attribute,
 //! or visibility — this crate stops compiling.
