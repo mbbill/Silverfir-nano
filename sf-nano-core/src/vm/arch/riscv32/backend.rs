@@ -1068,6 +1068,22 @@ impl<'a> Riscv32Backend<'a> {
         Ok(())
     }
 
+    fn read_gp_value_reg(
+        &mut self,
+        value: MachineValue,
+    ) -> Result<(RiscvReg, Option<DetachedScratch<RiscvReg, 6>>), WasmError> {
+        match value {
+            MachineValue::Reg(reg) if !self.core.is_fp_reg(reg) => {
+                Ok((self.map_gp_reg(reg)?, None))
+            }
+            other => {
+                let scratch = self.gp_scratch.scoped_alloc().detach();
+                self.load_value_into(*scratch, other)?;
+                Ok((*scratch, Some(scratch)))
+            }
+        }
+    }
+
     fn load_fp_value_into(
         &mut self,
         dst: RiscvFpReg,
@@ -3147,13 +3163,12 @@ impl<'a> Riscv32Backend<'a> {
                 self.core.text.emit_u32(enc::srai(dst_hi, dst_lo, 31));
             }
             MachineIntUnaryOp::Extend32S => {
-                let src_lo_s = self.gp_scratch.scoped_alloc().detach();
-                self.load_value_into(*src_lo_s, src_lo)?;
+                let (src_lo, _src_lo_guard) = self.read_gp_value_reg(src_lo)?;
                 if self.current_pair_hi_dead() {
-                    self.emit_mv(dst_lo, *src_lo_s);
+                    self.emit_mv(dst_lo, src_lo);
                     return Ok(());
                 }
-                self.emit_mv(dst_lo, *src_lo_s);
+                self.emit_mv(dst_lo, src_lo);
                 self.core.text.emit_u32(enc::srai(dst_hi, dst_lo, 31));
             }
         }
@@ -3316,10 +3331,12 @@ impl<'a> Riscv32Backend<'a> {
         {
             let dst_lo = self.map_gp_reg(dst_lo)?;
             let _ = dst_hi;
-            let (lo, hi) = self.load_i64_pair_values(lhs_lo, lhs_hi)?;
-            self.core.text.emit_u32(enc::srli(dst_lo, *lo, n));
-            self.core.text.emit_u32(enc::slli(*lo, *hi, 32 - n));
-            self.core.text.emit_u32(enc::or(dst_lo, dst_lo, *lo));
+            let (lo, _lo_guard) = self.read_gp_value_reg(lhs_lo)?;
+            let (hi, _hi_guard) = self.read_gp_value_reg(lhs_hi)?;
+            let tmp = self.gp_scratch.scoped_alloc().detach();
+            self.core.text.emit_u32(enc::slli(*tmp, hi, 32 - n));
+            self.core.text.emit_u32(enc::srli(dst_lo, lo, n));
+            self.core.text.emit_u32(enc::or(dst_lo, dst_lo, *tmp));
             return Ok(());
         }
 
