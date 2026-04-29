@@ -270,25 +270,30 @@ fn compute_predecessors(program: &SsaProgram) -> collections::Vec<collections::V
 }
 
 fn compute_reverse_postorder(program: &SsaProgram) -> collections::Vec<usize> {
-    fn dfs(
-        block_index: usize,
-        program: &SsaProgram,
-        seen: &mut [bool],
-        order: &mut collections::Vec<usize>,
-    ) {
-        if block_index >= program.blocks.len() || seen[block_index] {
-            return;
-        }
-        seen[block_index] = true;
-        for succ in block_successors(&program.blocks[block_index].terminator) {
-            dfs(succ.as_usize(), program, seen, order);
-        }
-        order.push(block_index);
-    }
-
     let mut seen = collections::vec![false; program.blocks.len()];
     let mut order = collections::Vec::with_capacity(program.blocks.len());
-    dfs(program.entry.as_usize(), program, &mut seen, &mut order);
+    let mut stack = collections::vec![(program.entry.as_usize(), false)];
+    while let Some((block_index, expanded)) = stack.pop() {
+        if block_index >= program.blocks.len() {
+            continue;
+        }
+        if expanded {
+            order.push(block_index);
+            continue;
+        }
+        if seen[block_index] {
+            continue;
+        }
+        seen[block_index] = true;
+        stack.push((block_index, true));
+        let successors = block_successors(&program.blocks[block_index].terminator);
+        for succ in successors.iter().rev() {
+            let succ_index = succ.as_usize();
+            if succ_index < program.blocks.len() && !seen[succ_index] {
+                stack.push((succ_index, false));
+            }
+        }
+    }
     order.reverse();
     order
 }
@@ -373,12 +378,15 @@ fn build_idom_children(
 }
 
 fn mark_idom_reachable(block_index: usize, children: &[collections::Vec<usize>], out: &mut [bool]) {
-    if block_index >= out.len() || out[block_index] {
-        return;
-    }
-    out[block_index] = true;
-    for &child in &children[block_index] {
-        mark_idom_reachable(child, children, out);
+    let mut stack = collections::vec![block_index];
+    while let Some(block_index) = stack.pop() {
+        if block_index >= out.len() || out[block_index] {
+            continue;
+        }
+        out[block_index] = true;
+        for &child in children[block_index].iter().rev() {
+            stack.push(child);
+        }
     }
 }
 
@@ -426,50 +434,44 @@ fn assign_bank_layouts_from_root(
     lanes: usize,
     visited: &mut [bool],
 ) -> Result<(), WasmError> {
-    if block_index >= visited.len() || visited[block_index] {
-        return Ok(());
-    }
-    visited[block_index] = true;
-    let slots = match bank {
-        LayoutBank::Gp => &bank_slots[block_index][0],
-        LayoutBank::Fp => &bank_slots[block_index][1],
-    };
-    let prefix = match bank {
-        LayoutBank::Gp => param_usage[block_index].gp,
-        LayoutBank::Fp => param_usage[block_index].fp,
-    };
-    let row_base = block_index * lanes;
-    let entry_row =
-        build_block_bank_layout(slots, parent_layout, slot_meta, lane_count, prefix, bank)?;
-    layouts[row_base..row_base + lanes].copy_from_slice(&entry_row);
-    let exit_row = simulate_block_exit_layout(
-        &program.blocks[block_index],
-        &layouts[row_base..row_base + lanes],
-        slot_to_cached_index,
-        slot_meta,
-        bank,
-        lane_count,
-        prefix,
-    )?;
-    exit_layouts[row_base..row_base + lanes].copy_from_slice(&exit_row);
-    let current = exit_row;
-    for &child in &idom_children[block_index] {
-        assign_bank_layouts_from_root(
-            child,
-            Some(&current),
+    let mut stack = collections::Vec::new();
+    stack.push((block_index, parent_layout.map(collections::Vec::from)));
+    while let Some((block_index, parent_layout)) = stack.pop() {
+        if block_index >= visited.len() || visited[block_index] {
+            continue;
+        }
+        visited[block_index] = true;
+        let slots = match bank {
+            LayoutBank::Gp => &bank_slots[block_index][0],
+            LayoutBank::Fp => &bank_slots[block_index][1],
+        };
+        let prefix = match bank {
+            LayoutBank::Gp => param_usage[block_index].gp,
+            LayoutBank::Fp => param_usage[block_index].fp,
+        };
+        let row_base = block_index * lanes;
+        let entry_row = build_block_bank_layout(
+            slots,
+            parent_layout.as_deref(),
+            slot_meta,
+            lane_count,
+            prefix,
+            bank,
+        )?;
+        layouts[row_base..row_base + lanes].copy_from_slice(&entry_row);
+        let exit_row = simulate_block_exit_layout(
+            &program.blocks[block_index],
+            &layouts[row_base..row_base + lanes],
+            slot_to_cached_index,
+            slot_meta,
             bank,
             lane_count,
-            program,
-            slot_to_cached_index,
-            idom_children,
-            bank_slots,
-            slot_meta,
-            param_usage,
-            layouts,
-            exit_layouts,
-            lanes,
-            visited,
+            prefix,
         )?;
+        exit_layouts[row_base..row_base + lanes].copy_from_slice(&exit_row);
+        for &child in idom_children[block_index].iter().rev() {
+            stack.push((child, Some(exit_row.clone())));
+        }
     }
     Ok(())
 }
@@ -892,5 +894,90 @@ fn block_successors(terminator: &SsaTerminator) -> collections::Vec<SsaTarget> {
         | SsaTerminator::TrapUnreachable
         | SsaTerminator::EhThrow { .. }
         | SsaTerminator::EhThrowRef { .. } => collections::Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::middle::ssa_ir::ir::SsaEdge;
+
+    fn long_linear_program(block_count: usize) -> SsaProgram {
+        let blocks = (0..block_count)
+            .map(|index| {
+                let terminator = if index + 1 < block_count {
+                    SsaTerminator::Goto(SsaEdge {
+                        target: SsaTarget((index + 1) as u32),
+                        bindings: collections::Vec::new(),
+                    })
+                } else {
+                    SsaTerminator::Return { results: None }
+                };
+                SsaBlock {
+                    id: SsaTarget(index as u32),
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
+                    terminator,
+                }
+            })
+            .collect();
+
+        SsaProgram {
+            entry: SsaTarget(0),
+            blocks,
+            ..SsaProgram::default()
+        }
+    }
+
+    #[test]
+    fn reverse_postorder_handles_long_linear_cfg_without_recursion() {
+        let block_count = 12_000;
+        let program = long_linear_program(block_count);
+
+        let rpo = compute_reverse_postorder(&program);
+
+        assert_eq!(rpo.len(), block_count);
+        assert_eq!(rpo.first().copied(), Some(0));
+        assert_eq!(rpo.last().copied(), Some(block_count - 1));
+    }
+
+    #[test]
+    fn idom_layout_walk_handles_long_linear_tree_without_recursion() {
+        let block_count = 12_000;
+        let program = long_linear_program(block_count);
+        let mut idom_children = collections::vec![collections::Vec::new(); block_count];
+        for index in 0..block_count - 1 {
+            idom_children[index].push(index + 1);
+        }
+        let bank_slots = (0..block_count)
+            .map(|_| [collections::Vec::new(), collections::Vec::new()])
+            .collect::<collections::Vec<_>>();
+        let slot_to_cached_index = BTreeMap::new();
+        let slot_meta = collections::Vec::new();
+        let param_usage = collections::vec![ParamPrefixUsage::default(); block_count];
+        let mut layouts = collections::Vec::new();
+        let mut exit_layouts = collections::Vec::new();
+        let mut visited = collections::vec![false; block_count];
+
+        assign_bank_layouts_from_root(
+            0,
+            None,
+            LayoutBank::Gp,
+            1,
+            &program,
+            &slot_to_cached_index,
+            &idom_children,
+            &bank_slots,
+            &slot_meta,
+            &param_usage,
+            &mut layouts,
+            &mut exit_layouts,
+            0,
+            &mut visited,
+        )
+        .expect("long linear idom tree should not overflow the native stack");
+
+        assert!(visited.into_iter().all(|visited| visited));
     }
 }
