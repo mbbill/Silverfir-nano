@@ -15,11 +15,10 @@ use crate::{
             scratch_pool::ScratchPool, types::ParallelSource,
         },
         machine::machine_ir::{
-            fp_reg_index, MachineBlock, MachineBlockId, MachineBlockParam, MachineCallTarget,
-            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction,
-            MachineFunctionAbi, MachineInst, MachineReg, MachineTerminator, MachineTrapKind,
-            MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
-            MACHINE_MEM0_SIZE_REG,
+            fp_reg_index, MachineBlockId, MachineBlockParam, MachineCallTarget, MachineFloatWidth,
+            MachineFrameRegion, MachineFuncId, MachineFunction, MachineFunctionAbi, MachineInst,
+            MachineReg, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
             code::{CodegenModuleView, NativeRootEntry},
@@ -206,25 +205,13 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
         self.core.text.emit_u32(enc::bx(Arm32Reg::R14));
     }
 
-    fn lower_block(
-        &mut self,
-        block: &MachineBlock,
-        fallthrough: Option<MachineBlockId>,
-    ) -> Result<(), WasmError> {
-        self.core.current_block = Some(block.id);
-        self.core.current_edge_target = None;
-        self.core.reset_block_fp_state(block)?;
-        for (index, inst) in block.ops.iter().enumerate() {
-            self.core.current_op_index = Some(index);
-            self.lower_inst(inst)?;
-            // Catch scratch leaks between instructions.
-            self.gp_scratch.assert_all_free();
-            self.fp_scratch.assert_all_free();
-        }
-        self.core.current_op_index = None;
-        let result = self.lower_terminator(&block.terminator, fallthrough);
-        self.core.current_block = None;
-        result
+    fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
+        self.core.current_op_index = Some(index);
+        self.lower_inst(inst)?;
+        // Catch scratch leaks between instructions.
+        self.gp_scratch.assert_all_free();
+        self.fp_scratch.assert_all_free();
+        Ok(())
     }
 
     fn lower_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {

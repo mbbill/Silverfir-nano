@@ -37,7 +37,7 @@ mod reuse_loaded_values;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    MachineAddr, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
+    MachineAddr, MachineBlock, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
     MachineStorageType, MachineValue,
 };
 
@@ -57,27 +57,58 @@ struct TrackedLoad {
     reg: MachineReg,
 }
 
+/// Reusable context for running the block-local peepholes. Holds the immutable
+/// config plus the copy-propagation scratch buffer, which is sized by register
+/// count and amortised across blocks. Construct once per function (or once per
+/// streamed block sequence) and reuse with `optimize_block`.
+pub(crate) struct BlockOptCtx {
+    pub config: BackendConfig,
+    first_fp_reg: u16,
+    total_reg_count: usize,
+    cp_scratch: copy_propagate::CopyPropagateScratch,
+}
+
+impl BlockOptCtx {
+    pub(crate) fn new(config: BackendConfig) -> Self {
+        let total_reg_count = config.total_reg_count() as usize;
+        Self {
+            config,
+            first_fp_reg: config.first_fp_reg(),
+            total_reg_count,
+            cp_scratch: copy_propagate::CopyPropagateScratch::new(total_reg_count),
+        }
+    }
+}
+
+/// Run all block-local peepholes on a single block.
+///
+/// This is the unit that the streaming-mode pipeline can invoke per block as
+/// the producer streams blocks out, without materializing a full
+/// `MachineProgram`. Whole-program passes (`fuse_compare_branch`, the 32-bit
+/// `fuse_smull_sign_ext_across_edges`) are not run here; they live in
+/// `optimize` and execute after the per-block pass loop.
+pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
+    deduplicate_constants::deduplicate_constants(block, ctx.first_fp_reg);
+    forward_stored_values::forward_stored_values(block, ctx.config);
+    reuse_loaded_values::reuse_loaded_values(block, ctx.config);
+    fuse_indexed_memory::fuse_indexed_memory(block);
+    copy_propagate::copy_propagate(block, ctx.config, &mut ctx.cp_scratch);
+    fuse_isel::fuse_isel(block, ctx.config);
+    fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);
+}
+
 /// Run peephole optimizations on all blocks in a program.
 ///
 /// `config` still defines physical register banks and bank compatibility, but
 /// semantic linear-value versus cached-local ownership now comes from explicit
 /// MachineIR metadata, not from register-number layout.
 pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
-    let first_fp_reg = config.first_fp_reg();
-    let gp_reg_width = config.gp_unit_bytes;
-    let total_reg_count = config.total_reg_count() as usize;
-    let mut cp_scratch = copy_propagate::CopyPropagateScratch::new(total_reg_count);
+    let mut ctx = BlockOptCtx::new(config);
     for block in &mut program.blocks {
-        deduplicate_constants::deduplicate_constants(block, first_fp_reg);
-        forward_stored_values::forward_stored_values(block, config);
-        reuse_loaded_values::reuse_loaded_values(block, config);
-        fuse_indexed_memory::fuse_indexed_memory(block);
-        copy_propagate::copy_propagate(block, config, &mut cp_scratch);
-        fuse_isel::fuse_isel(block, config);
-        fuse_smull_sign_ext::fuse_smull_sign_ext(block, total_reg_count);
+        optimize_block(&mut ctx, block);
     }
     if config.is_32bit_gp_target() {
-        fuse_smull_sign_ext::fuse_smull_sign_ext_across_edges(program, total_reg_count);
+        fuse_smull_sign_ext::fuse_smull_sign_ext_across_edges(program, ctx.total_reg_count);
     }
-    fuse_compare_branch::fuse_compare_branch(&mut program.blocks, gp_reg_width, config);
+    fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
 }

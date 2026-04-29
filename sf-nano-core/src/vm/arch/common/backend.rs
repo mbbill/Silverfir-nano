@@ -101,27 +101,47 @@ pub(crate) trait ArchBackend<'a>: Sized {
         Ok(())
     }
 
-    // ── Block lowering ───────────────────────────────────────────────────
+    // ── Block lowering (streaming-shaped) ────────────────────────────────
+    //
+    // The pipeline drives lowering one instruction at a time:
+    //
+    //   begin_block(block)
+    //   for (i, inst) in block.ops.iter().enumerate():
+    //       emit_inst_at(inst, i)
+    //   end_block(terminator, fallthrough)
+    //
+    // The triplet replaces the older single-shot `lower_block`. Backends
+    // with a per-block lookahead window (e.g. arm64 pair fusion) override
+    // `emit_inst_at` and `end_block` to maintain a small instruction
+    // buffer; the default impls emit each instruction immediately.
 
-    /// Lower a single block's instructions and terminator.
-    ///
-    /// Default: iterate `block.ops` calling `lower_inst`, then `lower_terminator`.
-    /// Backends override this for peephole patterns (e.g. arm64 float-compare
-    /// fusion, zero-store pair fusion).
-    fn lower_block(
-        &mut self,
-        block: &MachineBlock,
-        fallthrough: Option<MachineBlockId>,
-    ) -> Result<(), WasmError> {
+    /// Begin a new block. Default sets `current_block`, clears
+    /// `current_edge_target`, and resets the block-entry FP state.
+    fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
         self.core_mut().current_block = Some(block.id);
         self.core_mut().current_edge_target = None;
         self.core_mut().reset_block_fp_state(block)?;
-        for (index, inst) in block.ops.iter().enumerate() {
-            self.core_mut().current_op_index = Some(index);
-            self.lower_inst(inst)?;
-        }
+        Ok(())
+    }
+
+    /// Emit one instruction. `index` is the block-local op index — used by
+    /// 32-bit GP backends to query `current_op_index`-keyed liveness facts.
+    /// Default sets `current_op_index` and dispatches to `lower_inst`.
+    fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
+        self.core_mut().current_op_index = Some(index);
+        self.lower_inst(inst)
+    }
+
+    /// End the current block: emit the terminator and clear block state.
+    /// Backends with a per-instruction lookahead buffer override this to
+    /// drain remaining buffered instructions before the terminator.
+    fn end_block(
+        &mut self,
+        term: &MachineTerminator,
+        fallthrough: Option<MachineBlockId>,
+    ) -> Result<(), WasmError> {
         self.core_mut().current_op_index = None;
-        let result = self.lower_terminator(&block.terminator, fallthrough);
+        let result = self.lower_terminator(term, fallthrough);
         self.core_mut().current_block = None;
         result
     }

@@ -123,6 +123,11 @@ pub(crate) struct Arm64Backend<'a> {
     /// `lower_function_literal_pool` (which the pipeline calls between
     /// edge stubs and the body-local error tail).
     pub(super) pending_call_literals: collections::Vec<PendingCallLiteral>,
+    /// 1-slot peephole lookahead buffer. Holds the previously seen op so
+    /// `emit_inst_at` can attempt a 2-op fusion (zero-store pair, FP
+    /// store/load pair) when the next op arrives. Drained on `end_block`.
+    /// `usize` is the block-local op index at the time it was buffered.
+    pending_op: Option<(&'a MachineInst, usize)>,
 }
 
 // ── ArchBackend trait implementation ─────────────────────────────────────────
@@ -144,6 +149,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),
             pending_call_literals: collections::Vec::new(),
+            pending_op: None,
         }
     }
 
@@ -363,85 +369,69 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.gp_scratch.free_index(scratch_idx);
     }
 
-    fn lower_block(
-        &mut self,
-        block: &MachineBlock,
-        fallthrough: Option<MachineBlockId>,
-    ) -> Result<(), WasmError> {
+    fn begin_block(&mut self, block: &MachineBlock) -> Result<(), WasmError> {
+        // Streaming entry: clear the lookahead and reset block state.
+        self.pending_op = None;
         self.core.current_block = Some(block.id);
         self.core.current_edge_target = None;
         self.core.reset_block_fp_state(block)?;
+        Ok(())
+    }
 
-        let mut index = 0;
-        while index < block.ops.len() {
-            self.core.current_op_index = Some(index);
-            if let Some((base, imm7)) = super::fusion::zero_store_pair_fusion(block, index) {
+    // Note on dropped burst fusion: a previous experiment grouped consecutive
+    // IndexedLoad/IndexedStore ops sharing (base, index, extend) into one
+    // shared `add Xs, Xb, Wi, UXTW` plus N immediate-offset loads/stores.
+    // It looks like an obvious win but is measurably slower on Apple Silicon
+    // (M-series) because that core macro-fuses `add x, x, #imm` with the
+    // following `ldr w, [base, x]` into a single AGU op, and `mov w, w` is a
+    // zero-latency rename. The 3-instruction sequence `mov + add + ldr-reg`
+    // effectively executes as a single load there; the burst form's
+    // `add x, base, w_idx, UXTW` is not AGU-fusable so its N dependent loads
+    // pay an extra cycle of critical-path latency. See `try_lower_indexed_burst`
+    // in inst.rs (kept under `#[allow(dead_code)]`) for the experiment and the
+    // measured numbers.
+    fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
+        // Try to fuse the previously buffered op with this incoming op. On a
+        // hit, both are consumed by a single emitted instruction. On a miss,
+        // emit the buffered op solo and buffer the new one for the next call.
+        if let Some((prev, prev_index)) = self.pending_op.take() {
+            self.core.current_op_index = Some(prev_index);
+            if let Some((base, imm7)) = super::fusion::zero_store_pair_fusion(prev, inst) {
                 let base_reg = self.map_gp_reg(base)?;
                 self.core.text.emit_u32(enc::stp_zero_64(base_reg, imm7));
                 self.gp_scratch.assert_all_free();
                 self.fp_scratch.assert_all_free();
-                index += 2;
-                continue;
+                return Ok(());
             }
-            // ── DO NOT re-enable a burst-fuse pass here that groups consecutive
-            // IndexedLoad/Store ops sharing (base, index, extend) into a single
-            // shared `add Xs, Xb, Wi, UXTW` followed by N immediate-offset
-            // loads/stores. It looks like an obvious win — N loads instead of N
-            // (mov + add + reg-indexed load) — but it is *measurably slower* on
-            // Apple Silicon (M-series) for the same reason described in the
-            // long comment in `lower_indexed_load_with_offset`.
-            //
-            // Measured (2026-04, M-series):
-            //
-            //   benchmark   burst on   burst off
-            //   coremark    32044      34048    (+6.3% with burst off)
-            //   c-ray       2820 ms    2789 ms  (−1.1%, lower=faster)
-            //   sha256      272 MB/s   272 MB/s (neutral)
-            //   bzip2       17.95 MB/s 17.94 MB/s (neutral)
-            //
-            // Why: M-series can macro-fuse `add x, x, #imm` with the following
-            // `ldr w, [base, x]` into a single AGU op, and `mov w, w` is a
-            // zero-latency rename. So the "old" 3-instruction sequence
-            // `mov + add + ldr-reg` effectively executes as a single load.
-            //
-            // The burst form emits `add x, base, w_idx, UXTW` (not fusable with
-            // the load AGU on M-series) followed by N `ldr [x, #imm]`. The N
-            // loads can issue in parallel after the add, but they all wait for
-            // it — adding 1 cycle of dependent latency to the whole group. The
-            // raw instruction count goes down but the per-group critical-path
-            // length goes up.
-            //
-            // The independent inner LDP/STP D pair fusion that lived inside
-            // try_emit_burst_pair is gone with this change. It was the only
-            // path that produced LDP/STP D for c-ray's hot loops, but the
-            // measured loss on c-ray (~30 ms) is smaller than the gain on
-            // coremark (~6%). For workloads that are FP-pair-heavy and not
-            // integer-load-bottlenecked, a future redesign that emits LDP/STP
-            // D *without* the shared add might recover that gain. Don't put it
-            // back as a "burst" pattern.
-            //
-            // try_lower_indexed_burst and try_emit_burst_pair are kept in
-            // inst.rs as dead code with `#[allow(dead_code)]` so the work is
-            // documented and easy to reanimate behind a `cfg` for
-            // microarchitectures where the tradeoff inverts (e.g. cores
-            // without macro-op fusion / move elimination).
-            // Pair-fuse consecutive Store/Load ops at adjacent offsets with
-            // consecutive d-registers into stp_d / ldp_d.
-            if let Some(pair_count) = self.try_lower_fp_pair(block, index)? {
+            if self.try_lower_fp_pair(prev, inst)? {
                 self.gp_scratch.assert_all_free();
                 self.fp_scratch.assert_all_free();
-                index += pair_count;
-                continue;
+                return Ok(());
             }
-            self.lower_inst(&block.ops[index])?;
-            // Catch scratch leaks between instructions.
+            // No fusion — emit prev solo before buffering the new op.
+            self.lower_inst(prev)?;
             self.gp_scratch.assert_all_free();
             self.fp_scratch.assert_all_free();
-            index += 1;
+        }
+        self.pending_op = Some((inst, index));
+        Ok(())
+    }
+
+    fn end_block(
+        &mut self,
+        term: &MachineTerminator,
+        fallthrough: Option<MachineBlockId>,
+    ) -> Result<(), WasmError> {
+        // Drain any final buffered op before the terminator; nothing else can
+        // arrive to fuse with it.
+        if let Some((prev, prev_index)) = self.pending_op.take() {
+            self.core.current_op_index = Some(prev_index);
+            self.lower_inst(prev)?;
+            self.gp_scratch.assert_all_free();
+            self.fp_scratch.assert_all_free();
         }
         self.core.current_op_index = None;
-
-        let result = self.lower_terminator(&block.terminator, fallthrough);
+        let result = self.lower_terminator(term, fallthrough);
         self.core.current_block = None;
         result
     }

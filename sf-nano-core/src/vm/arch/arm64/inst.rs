@@ -1939,16 +1939,13 @@ impl<'a> super::backend::Arm64Backend<'a> {
     /// - operand registers are physically consecutive d-registers
     /// - the offsets are u64 width and the resulting imm7 fits the encoding
     ///
-    /// Returns `Some(2)` when a pair was emitted, otherwise `None` for the
-    /// caller to fall back to single-op lowering.
+    /// Returns `Ok(true)` when a pair was emitted, otherwise `Ok(false)` for
+    /// the caller to fall back to single-op lowering.
     pub(super) fn try_lower_fp_pair(
         &mut self,
-        block: &MachineBlock,
-        start: usize,
-    ) -> Result<Option<usize>, WasmError> {
-        if start + 1 >= block.ops.len() {
-            return Ok(None);
-        }
+        a: &MachineInst,
+        b: &MachineInst,
+    ) -> Result<bool, WasmError> {
         // --- Two consecutive `Store` ops sharing the same base ---
         if let (
             MachineInstKind::Store {
@@ -1963,7 +1960,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 src: MachineValue::Reg(s1),
                 ..
             },
-        ) = (&block.ops[start].kind, &block.ops[start + 1].kind)
+        ) = (&a.kind, &b.kind)
         {
             if *w0 == MachineMemWidth::U64
                 && *w1 == MachineMemWidth::U64
@@ -1981,7 +1978,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                         self.core
                             .text
                             .emit_u32(enc::stp_d(r0, r1_reg, base_arm, (off / 8) as i32));
-                        return Ok(Some(2));
+                        return Ok(true);
                     }
                 }
             }
@@ -2002,7 +1999,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 extension: e1,
                 ..
             },
-        ) = (&block.ops[start].kind, &block.ops[start + 1].kind)
+        ) = (&a.kind, &b.kind)
         {
             if *w0 == MachineMemWidth::U64
                 && *w1 == MachineMemWidth::U64
@@ -2027,12 +2024,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                             .emit_u32(enc::ldp_d(r0, r1_reg, base_arm, (off / 8) as i32));
                         self.core.set_fp_reg_width(*d0, MachineFloatWidth::F64)?;
                         self.core.set_fp_reg_width(*d1, MachineFloatWidth::F64)?;
-                        return Ok(Some(2));
+                        return Ok(true);
                     }
                 }
             }
         }
-        Ok(None)
+        Ok(false)
     }
 
     /// Indexed load with a non-zero offset.
