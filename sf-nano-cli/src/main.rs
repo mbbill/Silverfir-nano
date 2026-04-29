@@ -35,6 +35,7 @@ fn run_cli(args: &[String]) -> i32 {
 
     let mut preopens: Vec<(String, PathBuf)> = Vec::new();
     let mut backend_mode = BackendMode::Native;
+    let mut compile_only = false;
     let mut remaining_args: Vec<String> = Vec::new();
     #[cfg(feature = "memprof")]
     let mut memprof_enabled = false;
@@ -104,6 +105,8 @@ fn run_cli(args: &[String]) -> i32 {
                 return 1;
             };
             backend_mode = parsed;
+        } else if args[i] == "--compile-only" || args[i] == "--no-run" {
+            compile_only = true;
         } else {
             remaining_args.push(args[i].clone());
         }
@@ -187,6 +190,11 @@ fn run_cli(args: &[String]) -> i32 {
             }
         };
 
+        if compile_only {
+            print_native_stats();
+            return 0;
+        }
+
         let entry = if instance.has_function_export("_start") {
             "_start"
         } else {
@@ -194,29 +202,7 @@ fn run_cli(args: &[String]) -> i32 {
         };
         let result = instance.invoke(entry, &[]);
 
-        #[cfg(feature = "jit")]
-        {
-            let s = native_stats_snapshot();
-            if s.groups > 0 {
-                let arch = if cfg!(target_arch = "aarch64") {
-                    "arm64"
-                } else if cfg!(target_arch = "x86_64") {
-                    "x86_64"
-                } else if cfg!(target_arch = "arm") {
-                    "armv7a"
-                } else if cfg!(target_arch = "riscv32") {
-                    "riscv32"
-                } else if cfg!(target_arch = "riscv64") {
-                    "riscv64"
-                } else {
-                    "unknown"
-                };
-                eprintln!(
-                    "[{arch}] (func:{}, ssa:{}, mir:{}, code:{})",
-                    s.groups, s.ssa_ops, s.mir_ops, s.bytes_emitted
-                );
-            }
-        }
+        print_native_stats();
 
         match result {
             Ok(_) => 0,
@@ -251,13 +237,14 @@ fn print_usage(program_name: &str) {
     eprintln!();
     eprintln!("USAGE:");
     eprintln!(
-        "  {program_name} [--backend <auto|native>] [--dir <guest::host|path>] [--memprof] [--memprof-report <html>] <wasm-file> [args...]"
+        "  {program_name} [--backend <auto|native>] [--compile-only] [--dir <guest::host|path>] [--memprof] [--memprof-report <html>] <wasm-file> [args...]"
     );
     eprintln!();
     eprintln!("Run a WebAssembly module with WASI support.");
     eprintln!();
     eprintln!("OPTIONS:");
     eprintln!("  --backend <auto|native>   Select the execution backend.");
+    eprintln!("  --compile-only, --no-run  Compile/instantiate the module without invoking it.");
     eprintln!("  --dir <guest::host|path>  Preopen a host directory (repeatable).");
     #[cfg(feature = "memprof")]
     {
@@ -291,6 +278,32 @@ fn print_usage(program_name: &str) {
         eprintln!(
             "  --memprof-report <html>   Requires building sf-nano-cli with --features memprof."
         );
+    }
+}
+
+fn print_native_stats() {
+    #[cfg(feature = "jit")]
+    {
+        let s = native_stats_snapshot();
+        if s.groups > 0 {
+            let arch = if cfg!(target_arch = "aarch64") {
+                "arm64"
+            } else if cfg!(target_arch = "x86_64") {
+                "x86_64"
+            } else if cfg!(target_arch = "arm") {
+                "armv7a"
+            } else if cfg!(target_arch = "riscv32") {
+                "riscv32"
+            } else if cfg!(target_arch = "riscv64") {
+                "riscv64"
+            } else {
+                "unknown"
+            };
+            eprintln!(
+                "[{arch}] (func:{}, ssa:{}, mir:{}, code:{})",
+                s.groups, s.ssa_ops, s.mir_ops, s.bytes_emitted
+            );
+        }
     }
 }
 

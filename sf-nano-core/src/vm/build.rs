@@ -485,6 +485,7 @@ fn finish_native_compile_streaming(
             &mut executable,
         )?;
         drop(arch_lower_function_phase);
+        drop(machine);
 
         let text_len = artifact.text.len();
         let function_base = page_align_function(stream_base, text_len);

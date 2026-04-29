@@ -50,7 +50,7 @@ use core::any::type_name;
 #[cfg(feature = "memprof")]
 use core::panic::Location;
 #[cfg(feature = "memprof")]
-use core::sync::atomic::{AtomicBool, AtomicU64, Ordering as AtomicOrdering};
+use core::sync::atomic::{AtomicBool, AtomicUsize, Ordering as AtomicOrdering};
 #[cfg(feature = "memprof")]
 use std::collections::HashMap as StdHashMap;
 #[cfg(feature = "memprof")]
@@ -850,7 +850,7 @@ impl ProfilerState {
 }
 
 #[cfg(feature = "memprof")]
-static NEXT_ID: AtomicU64 = AtomicU64::new(1);
+static NEXT_ID: AtomicUsize = AtomicUsize::new(1);
 #[cfg(feature = "memprof")]
 static TRACKING_ENABLED: AtomicBool = AtomicBool::new(false);
 #[cfg(feature = "memprof")]
@@ -1253,7 +1253,7 @@ impl AllocationHandle {
             return;
         }
         with_tracking_internal(|| {
-            let id = NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed);
+            let id = NEXT_ID.fetch_add(1, AtomicOrdering::Relaxed) as u64;
             let create_stack = self
                 .create_stack
                 .or_else(capture_stack_id)
