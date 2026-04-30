@@ -80,8 +80,14 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
 /// hint that lets the arch backend elide trailing branches when the
 /// next physical block is the natural successor.
 ///
-/// **Producer invariants:**
-/// - The first block handed to the sink MUST be the entry block.
+/// **Producer protocol:**
+/// - The driver lands control at the entry block by either having the
+///   producer emit the entry block first (no extra branch) or by
+///   emitting `b entry_label` after `body_prelude` when the first
+///   produced block has a non-entry id (one branch overhead per
+///   function). Middleware mode does the former and matches the
+///   buffered baseline byte-for-byte; tight-budget streaming pays
+///   the branch.
 /// - When a downstream pass requires whole-function context (e.g.
 ///   `fuse_compare_branch`, the 32-bit `fuse_smull_sign_ext_across_edges`,
 ///   any future cross-block analysis), insert a buffering middleware
@@ -91,9 +97,8 @@ pub(crate) fn compile_function<'a, A: ArchBackend<'a>>(
 ///   driver doesn't know or care which mode upstream chose — it just
 ///   consumes the stream.
 /// - The producer that doesn't install a middleware (the tight-budget
-///   path) MUST still emit blocks in an order that matches its desired
-///   physical layout, since this driver only honors the supplied
-///   stream and does not reorder.
+///   path) emits blocks in an order that matches its desired physical
+///   layout; this driver does not reorder.
 pub(crate) fn compile_function_streaming<'a, A, F>(
     compiled: &'a dyn CodegenModuleView,
     function_id: MachineFuncId,
