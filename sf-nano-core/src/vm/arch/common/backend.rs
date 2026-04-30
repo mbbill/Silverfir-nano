@@ -38,7 +38,7 @@ pub(crate) trait ArchBackend<'a>: Sized {
 
     // ── Construction ─────────────────────────────────────────────────────
 
-    fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self;
+    fn new(compiled: &'a dyn CodegenModuleView, function: MachineFunction) -> Self;
 
     /// Access the shared CompilerCore.
     fn core(&self) -> &CompilerCore<'a>;
@@ -127,7 +127,13 @@ pub(crate) trait ArchBackend<'a>: Sized {
     /// Emit one instruction. `index` is the block-local op index — used by
     /// 32-bit GP backends to query `current_op_index`-keyed liveness facts.
     /// Default sets `current_op_index` and dispatches to `lower_inst`.
-    fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
+    ///
+    /// The `inst` reference is call-scoped (no `'a` constraint): the
+    /// pipeline driver owns the block being emitted (via `mem::replace`)
+    /// and lends the inst to the backend for the duration of this call.
+    /// Backends that need to buffer the inst across calls (e.g. arm64 for
+    /// pair fusion) must clone it.
+    fn emit_inst_at(&mut self, inst: &MachineInst, index: usize) -> Result<(), WasmError> {
         self.core_mut().current_op_index = Some(index);
         self.lower_inst(inst)
     }

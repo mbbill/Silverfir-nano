@@ -48,6 +48,20 @@ pub struct RuntimeConfig {
     /// indexed in u64 slots). Hosted default is 2 MiB; MCU targets
     /// should set this to single-digit KiB for simple modules.
     pub wasm_stack_bytes: usize,
+
+    /// Per-function compiler-time RAM budget in bytes. The compiler
+    /// estimates each function's peak working memory from its Wasm
+    /// bytecode size and uses this budget to decide between the full
+    /// optimization pipeline and the block-by-block streaming pipeline.
+    /// Functions whose estimate fits get jump threading, cross-block
+    /// sink planning, and whole-program MIR fusion; functions that
+    /// exceed it fall back to block-local passes only — still correct,
+    /// just lower codegen quality.
+    ///
+    /// Hosted default is `u32::MAX` (no cap; every function takes the
+    /// full pipeline). Tight targets (ESP32, RP2350, etc.) should set
+    /// this to their actual SRAM ceiling for compile state.
+    pub compiler_ram_budget_bytes: u32,
 }
 
 impl RuntimeConfig {
@@ -63,6 +77,10 @@ impl RuntimeConfig {
             wasm_memory_max_pages: 65536,
             // 2 MiB matches the former `constants::MAX_STACK_SIZE`.
             wasm_stack_bytes: 2 * 1024 * 1024,
+            // Hosted default: no compile-time RAM cap. Every function
+            // takes the full optimization pipeline, matching pre-budget
+            // behavior byte-for-byte.
+            compiler_ram_budget_bytes: u32::MAX,
         }
     };
 
@@ -74,6 +92,10 @@ impl RuntimeConfig {
         code_arena_bytes: 0,
         wasm_memory_max_pages: 0,
         wasm_stack_bytes: 0,
+        // Bare-metal default: zero budget → every function falls back
+        // to block-by-block. Embedder must override via
+        // `set_runtime_config` with a real budget for full-opt to fire.
+        compiler_ram_budget_bytes: 0,
     };
 }
 

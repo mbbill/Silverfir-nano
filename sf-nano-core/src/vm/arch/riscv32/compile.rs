@@ -32,8 +32,11 @@ pub(crate) fn compile_module(
     let mut artifacts: collections::Vec<FunctionArtifact> =
         collections::Vec::with_capacity(compiled.module().functions.len());
     for function in &compiled.module().functions {
+        // Clone before passing to the draining streaming pipeline; see
+        // `shared_64.rs::compile_module_64`. Debug-only path.
         artifacts.push(pipeline::compile_function::<Riscv32Backend>(
-            compiled, function,
+            compiled,
+            function.clone(),
         )?);
     }
 

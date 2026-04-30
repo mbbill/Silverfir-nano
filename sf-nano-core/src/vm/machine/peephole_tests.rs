@@ -75,7 +75,7 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(
@@ -152,7 +152,7 @@ fn copy_propagate_drops_self_move_and_advances() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 1);
@@ -211,7 +211,7 @@ fn does_not_copy_propagate_move_from_cached_local_block_param() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 8, 12, 12, 0));
+    optimize(&mut program, test_config(7, 8, 12, 12, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(
@@ -298,7 +298,7 @@ fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 8, 12, 14, 0));
+    optimize(&mut program, test_config(7, 8, 12, 14, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(
@@ -384,7 +384,7 @@ fn does_not_copy_propagate_cached_local_load_defs() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 8, 12, 12, 0));
+    optimize(&mut program, test_config(7, 8, 12, 12, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(
@@ -471,7 +471,7 @@ fn constant_folding_keeps_live_constant_when_later_select_reads_and_writes_same_
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 8, 8, 0));
+    optimize(&mut program, test_config(7, 8, 8, 8, 0), true);
 
     let block = &program.blocks[0];
     let const_idx = block
@@ -564,7 +564,7 @@ fn deduplicate_constants_kills_tracked_constant_when_i64_pair_instruction_redefi
         }],
     };
 
-    optimize(&mut program, test_config(7, 4, 12, 12, 0));
+    optimize(&mut program, test_config(7, 4, 12, 12, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -646,7 +646,7 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 5);
@@ -747,7 +747,7 @@ fn forwards_u32_pair_self_store_reload_from_gp32_i64_slot() {
         }],
     };
 
-    optimize(&mut program, test_config(4, 4, 8, 8, 0));
+    optimize(&mut program, test_config(4, 4, 8, 8, 0), true);
 
     let block = &program.blocks[0];
     // Both stores remain (they're needed — the wasm local still has to be
@@ -829,7 +829,7 @@ fn does_not_forward_u32_load_when_stored_reg_was_clobbered() {
         }],
     };
 
-    optimize(&mut program, test_config(4, 4, 8, 8, 0));
+    optimize(&mut program, test_config(4, 4, 8, 8, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 3);
@@ -884,7 +884,7 @@ fn does_not_forward_u32_store_into_u64_load_same_address() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 8, 8, 0));
+    optimize(&mut program, test_config(7, 8, 8, 8, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -951,7 +951,7 @@ fn u64_store_invalidates_tracked_u32_store_on_overlap() {
         }],
     };
 
-    optimize(&mut program, test_config(4, 4, 8, 8, 0));
+    optimize(&mut program, test_config(4, 4, 8, 8, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 3);
@@ -1018,7 +1018,7 @@ fn forwards_fp_spill_reload_into_gp_move() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 11, 12, 0));
+    optimize(&mut program, test_config(7, 8, 11, 12, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1080,7 +1080,7 @@ fn does_not_forward_when_i64_pair_instruction_redefines_stored_source_reg() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 4, 12, 12, 0));
+    optimize(&mut program, test_config(7, 4, 12, 12, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1142,7 +1142,7 @@ fn does_not_forward_when_stored_source_reg_is_redefined() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 8, 8, 0));
+    optimize(&mut program, test_config(7, 8, 8, 8, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1207,7 +1207,7 @@ fn does_not_forward_across_overlapping_store() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 8, 8, 0));
+    optimize(&mut program, test_config(7, 8, 8, 8, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1283,7 +1283,7 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 10, 10, 0));
+    optimize(&mut program, test_config(7, 8, 10, 10, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 3);
@@ -1340,7 +1340,7 @@ fn does_not_reuse_identical_loads_across_distinct_storage_types() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 11, 12, 0));
+    optimize(&mut program, test_config(7, 8, 11, 12, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1404,7 +1404,7 @@ fn does_not_reuse_load_after_loaded_reg_is_redefined() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1471,7 +1471,7 @@ fn does_not_reuse_load_after_i64_pair_instruction_redefines_loaded_reg() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 4, 12, 12, 0));
+    optimize(&mut program, test_config(7, 4, 12, 12, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1528,7 +1528,7 @@ fn copy_propagate_kills_alias_when_i64_pair_instruction_redefines_reg() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 4, 12, 12, 0));
+    optimize(&mut program, test_config(7, 4, 12, 12, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1573,7 +1573,7 @@ fn preserves_linear_value_move_when_linear_source_reg_is_redefined_before_termin
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 10, 10, 0));
+    optimize(&mut program, test_config(7, 8, 10, 10, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1642,7 +1642,7 @@ fn copy_propagates_linear_copies_of_cached_local_snapshots() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -1705,7 +1705,7 @@ fn preserves_linear_value_move_live_across_helper_barrier() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 3);
@@ -1768,7 +1768,7 @@ fn does_not_copy_propagate_cached_local_snapshots_into_integer_uses_or_edges() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -1827,7 +1827,7 @@ fn rewrites_float_uses_of_gp_aliases_back_to_fp_regs() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 10, 12, 0));
+    optimize(&mut program, test_config(7, 8, 10, 12, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1872,7 +1872,7 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 10, 11, 0));
+    optimize(&mut program, test_config(7, 8, 10, 11, 0), true);
 
     let block = &program.blocks[0];
     assert!(matches!(
@@ -1922,7 +1922,7 @@ fn preserves_moves_into_fp_cached_locals() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 11, 15, 2));
+    optimize(&mut program, test_config(7, 8, 11, 15, 2), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -1989,7 +1989,7 @@ fn does_not_fuse_i64_compare_branch_on_32_bit_targets() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 4, 9, 9, 0));
+    optimize(&mut program, test_config(7, 4, 9, 9, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 1);
@@ -2056,7 +2056,7 @@ fn still_fuses_i32_compare_branch_on_32_bit_targets() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 4, 9, 9, 0));
+    optimize(&mut program, test_config(7, 4, 9, 9, 0), true);
 
     let block = &program.blocks[0];
     assert!(block.ops.is_empty());
@@ -2119,7 +2119,7 @@ fn fuses_compare_branch_for_high_dynamic_result_reg() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 8, 12, 14, 0));
+    optimize(&mut program, test_config(7, 8, 12, 14, 0), true);
 
     let block = &program.blocks[0];
     assert!(
@@ -2172,7 +2172,7 @@ fn fuses_test_bits_for_high_dynamic_result_reg() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 12, 16, 0));
+    optimize(&mut program, test_config(7, 8, 12, 16, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 1);
@@ -2227,7 +2227,7 @@ fn does_not_fold_constant_past_non_adjacent_instruction() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 4, 9, 10, 1));
+    optimize(&mut program, test_config(7, 4, 9, 10, 1), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 3);
@@ -2287,7 +2287,7 @@ fn does_not_fold_constant_used_as_non_replaceable_address_base() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 4, 8, 8, 0));
+    optimize(&mut program, test_config(7, 4, 8, 8, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(block.ops.len(), 2);
@@ -2344,7 +2344,7 @@ fn fuses_shru_and_into_bitfield_extract() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 8, 9, 9, 0));
+    optimize(&mut program, test_config(7, 8, 9, 9, 0), true);
 
     let block = &program.blocks[0];
     assert_eq!(
@@ -2473,7 +2473,7 @@ fn fuses_i64_mul_with_move_alias_then_sign_ext() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 4, 10, 16, 0));
+    optimize(&mut program, test_config(7, 4, 10, 16, 0), true);
 
     let block = &program.blocks[0];
     let mul_inst = block.ops.last().expect("block must have a final inst");
@@ -2588,7 +2588,7 @@ fn fuses_i64_mul_with_self_spill_reload_sign_ext() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 4, 8, 16, 0));
+    optimize(&mut program, test_config(7, 4, 8, 16, 0), true);
 
     let block = &program.blocks[0];
     let mul_inst = block.ops.last().expect("block must have a final inst");
@@ -2673,7 +2673,7 @@ fn fuses_i64_mul_after_pair_extend32s_with_copied_halves() {
         }],
     };
 
-    optimize(&mut program, test_config(7, 4, 22, 24, 0));
+    optimize(&mut program, test_config(7, 4, 22, 24, 0), true);
 
     let block = &program.blocks[0];
     let mul_inst = block.ops.last().expect("block must have a final inst");
@@ -2740,7 +2740,7 @@ fn fuses_i64_mul_from_sign_ext_pair_across_edge() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 4, 24, 24, 0));
+    optimize(&mut program, test_config(7, 4, 24, 24, 0), true);
 
     let block = &program.blocks[1];
     assert!(matches!(
@@ -2821,7 +2821,7 @@ fn does_not_fuse_cross_block_sign_ext_fact_unless_all_predecessors_agree() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 4, 24, 24, 0));
+    optimize(&mut program, test_config(7, 4, 24, 24, 0), true);
 
     let block = &program.blocks[2];
     assert!(matches!(
@@ -2890,7 +2890,7 @@ fn does_not_seed_cross_block_sign_ext_fact_from_self_loop_only() {
         ],
     };
 
-    optimize(&mut program, test_config(7, 4, 24, 24, 0));
+    optimize(&mut program, test_config(7, 4, 24, 24, 0), true);
 
     let block = &program.blocks[1];
     assert!(matches!(
@@ -2978,7 +2978,7 @@ fn optimize_preserves_block_ops_allocation() {
     let ops_ptr = program.blocks[0].ops.as_ptr();
     let ops_capacity = program.blocks[0].ops.capacity();
 
-    optimize(&mut program, test_config(7, 8, 12, 12, 0));
+    optimize(&mut program, test_config(7, 8, 12, 12, 0), true);
 
     assert_eq!(program.blocks[0].ops.as_ptr(), ops_ptr);
     assert_eq!(program.blocks[0].ops.capacity(), ops_capacity);

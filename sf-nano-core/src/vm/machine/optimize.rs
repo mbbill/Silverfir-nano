@@ -6,18 +6,31 @@ use crate::vm::{
     },
 };
 
-pub(crate) fn optimize_function(function: &mut MachineFunction, config: BackendConfig) {
-    peephole::optimize(&mut function.program, config);
+pub(crate) fn optimize_function(
+    function: &mut MachineFunction,
+    config: BackendConfig,
+    full_optimization: bool,
+) {
+    peephole::optimize(&mut function.program, config, full_optimization);
     shrink_machine_function_storage(function);
 }
 
 /// Run ISA-agnostic MachineIR optimization passes on every function in a
-/// module. This lives in the outer machine layer so `machine_ir/` remains a
-/// passive definition package for backend-facing data structures.
-pub(crate) fn optimize_module(module: &mut MachineModule) {
+/// module. Per-function `full_optimization` flags are supplied by the
+/// caller so each function can take its own pipeline (full vs block-by-
+/// block) based on the platform's RAM budget. The slice must be at least
+/// as long as `module.functions`.
+pub(crate) fn optimize_module(module: &mut MachineModule, full_optimization: &[bool]) {
+    debug_assert!(
+        full_optimization.len() >= module.functions.len(),
+        "optimize_module: full_optimization slice ({} entries) is shorter than module.functions ({} entries)",
+        full_optimization.len(),
+        module.functions.len(),
+    );
     let config = module.config;
-    for func in &mut module.functions {
-        optimize_function(func, config);
+    for (i, func) in module.functions.iter_mut().enumerate() {
+        let full_opt = full_optimization.get(i).copied().unwrap_or(true);
+        optimize_function(func, config, full_opt);
     }
     module.functions.shrink_to_fit();
     module.consts.shrink_to_fit();

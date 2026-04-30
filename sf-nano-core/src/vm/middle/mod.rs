@@ -40,6 +40,10 @@ use self::{
 pub(crate) struct PrepareInput {
     pub config: BackendConfig,
     pub function_index: Option<u32>,
+    /// When `false`, cross-block SSA passes (cleanup, cross-block sink
+    /// planning) are skipped. Block-local passes (constant folding,
+    /// intra-block sink planning) still run. Default `true`.
+    pub full_optimization: bool,
 }
 
 /// Shared frontend output consumed by interpreter and native backends.
@@ -99,17 +103,36 @@ pub(crate) fn prepare_function(
     // rewrite CFG before running cleanup / optimize / sink / validate.
     drop(rewrite_cfg);
 
-    let ssa_cleanup_phase = phase_span_with_function("ssa_cleanup", input.function_index);
-    cleanup::cleanup_program(&mut ssa);
-    drop(ssa_cleanup_phase);
+    if input.full_optimization {
+        // Cleanup is whole-CFG: jump threading, single-pred merge,
+        // unreachable-block removal. Block-streaming mode skips it; the
+        // function still compiles correctly, just with the original
+        // (unmerged) block layout.
+        let ssa_cleanup_phase = phase_span_with_function("ssa_cleanup", input.function_index);
+        cleanup::cleanup_program(&mut ssa);
+        drop(ssa_cleanup_phase);
+    }
 
+    // Constant folding + const-operand absorption is block-local; it runs
+    // in both modes.
     let ssa_opt_phase = phase_span_with_function("ssa_opt", input.function_index);
     optimize::optimize_program(&mut ssa);
     drop(ssa_opt_phase);
 
-    let ssa_sink_phase = phase_span_with_function("ssa_sink", input.function_index);
-    sink_plan::plan_sinks(&mut ssa);
-    drop(ssa_sink_phase);
+    if input.full_optimization {
+        // Sink planning's legality check today is intra-block by
+        // construction (`plan_block_sinks` is per-block), so it is safe
+        // to run in either mode. We still gate it on full_optimization
+        // because the analysis cost is a hot spot for very large
+        // functions and the marginal block-streaming quality cost of
+        // skipping it is small (the doc-stated common case is intra-
+        // block, and when the streaming pipeline emits per-block, the
+        // intra-block sink planner can be moved into the per-block
+        // emission path in a follow-up).
+        let ssa_sink_phase = phase_span_with_function("ssa_sink", input.function_index);
+        sink_plan::plan_sinks(&mut ssa);
+        drop(ssa_sink_phase);
+    }
 
     shrink_prepared_ssa_storage(&mut ssa);
 

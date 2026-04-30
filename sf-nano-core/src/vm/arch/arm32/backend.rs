@@ -90,7 +90,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
         abi::max_fp_machine_regs()
     }
 
-    fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
+    fn new(compiled: &'a dyn CodegenModuleView, function: MachineFunction) -> Self {
         Self {
             core: CompilerCore::new(compiled, function),
             fixups: collections::Vec::new(),
@@ -205,7 +205,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
         self.core.text.emit_u32(enc::bx(Arm32Reg::R14));
     }
 
-    fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
+    fn emit_inst_at(&mut self, inst: &MachineInst, index: usize) -> Result<(), WasmError> {
         self.core.current_op_index = Some(index);
         self.lower_inst(inst)?;
         // Catch scratch leaks between instructions.

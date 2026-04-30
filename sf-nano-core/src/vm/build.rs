@@ -67,10 +67,15 @@ use crate::{
         arch,
         arch::common::helpers::page_align_function,
         machine::{
-            lower_module, lower_single_function,
-            machine_ir::{MachineFrameRegion, MachineFuncId, MachineFunctionAbi, MachineModuleAbi},
-            optimize_function, optimize_module, ConstPoolBuilder, LowerFunctionInput,
-            LowerModuleInput, LoweredMachineModule,
+            derive_streaming_function_abi, lower_function_streaming, lower_module,
+            machine_ir::{
+                MachineBlock, MachineBlockId, MachineFrameRegion, MachineFuncId,
+                MachineFunctionAbi, MachineModuleAbi,
+            },
+            optimize_module,
+            peephole::BlockOptCtx,
+            streaming_fp_reg_init_widths, ConstPoolBuilder, LowerFunctionInput, LowerModuleInput,
+            LoweredMachineModule, MirBlockSink,
         },
         middle::{
             frame::{plan_frame_layout, FrameLayoutPlan, FrameSpan},
@@ -88,6 +93,53 @@ use crate::{
         wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
     },
 };
+
+// ── Compile-time RAM-budget driven optimization mode ───────────────────────
+//
+// Per-function decision: does this function's estimated compile-time peak
+// memory fit the platform's compile-time RAM budget? If yes, take the full
+// pipeline (jump threading, cross-block sink planning, whole-program MIR
+// fusion). If no, fall back to block-by-block mode (block-local passes
+// only) — still correct, just lower codegen quality.
+//
+// The budget itself lives in `RuntimeConfig::compiler_ram_budget_bytes` and
+// is set by the embedder via `set_runtime_config` (hosted default is
+// `u32::MAX` so behavior is byte-identical to pre-budget code).
+//
+// Estimate: peak compile memory ≈ bytecode_size × COMPILE_EXPANSION_FACTOR.
+// The factor accounts for the SemanticProgram, the SsaProgram, and the
+// MachineProgram all being live concurrently during the pipeline, plus
+// each stage's per-pass scratch.
+//
+// 160× is a deliberately conservative upper-bound guess — NOT a measured
+// figure. Rough composition behind the number:
+//   - SemanticOp ≈ 16–32 bytes per Wasm op
+//   - SsaInst + per-value tables ≈ 30–50 bytes per Wasm op
+//   - MachineInst + register-file state ≈ 30–50 bytes per Wasm op
+//   - Per-pass scratch (CFG build, joint plan, peephole) adds margin
+// Summing the high ends lands around ~100–150×; 160× picks a safe ceiling
+// so tight-target users won't OOM in the rare worst case.
+//
+// The trade-off is that some functions that would have fit are pushed to
+// block-level mode. That's the right side to err on. Refine when we have
+// memtrace data from real workloads on tight targets.
+
+const COMPILE_EXPANSION_FACTOR: u32 = 160;
+
+/// Decide whether a function of the given Wasm-bytecode size can take the
+/// full optimization pipeline under the active platform RAM budget.
+/// `budget == u32::MAX` short-circuits to `true` (the hosted default — no
+/// cap, every function takes the full pipeline).
+#[inline]
+fn full_optimization_for_bytecode_size(bytecode_size: usize) -> bool {
+    let budget = crate::config::runtime_config().compiler_ram_budget_bytes;
+    if budget == u32::MAX {
+        return true;
+    }
+    let estimated_peak = (bytecode_size as u64).saturating_mul(COMPILE_EXPANSION_FACTOR as u64);
+    estimated_peak <= u64::from(budget)
+}
+
 fn decode_function_semantic(
     module: &ModuleInst,
     store: &Store,
@@ -169,11 +221,24 @@ struct PendingPatch {
     encoding: PendingPatchEncoding,
 }
 
+/// Build-time compiled-module view consumed by both the buffered and
+/// streaming arch-emit drivers.
+///
+/// `aligned_consts` is held behind a `RefCell` because the streaming
+/// driver needs to sync new const-pool records *during* arch emit
+/// (between the front-end producing a block and the arch backend
+/// consuming it via `const_ptr`). The arch backend retains a
+/// `&dyn CodegenModuleView` borrow for the duration of one function
+/// compile, so we cannot get `&mut` access to the underlying Vec —
+/// interior mutability via `RefCell` resolves the conflict. The
+/// buffered driver (which finishes adding consts before arch emit
+/// starts) borrows `aligned_consts` mutably exactly once per function
+/// via `sync_consts`, so the RefCell add is non-load-bearing there.
 #[derive(Debug)]
 struct StreamingCompiledModule {
     backend: BackendConfig,
     abi: MachineModuleAbi,
-    aligned_consts: collections::Vec<AlignedConstData>,
+    aligned_consts: core::cell::RefCell<collections::Vec<AlignedConstData>>,
 }
 
 impl StreamingCompiledModule {
@@ -181,17 +246,18 @@ impl StreamingCompiledModule {
         Self {
             backend,
             abi,
-            aligned_consts: collections::Vec::new(),
+            aligned_consts: core::cell::RefCell::new(collections::Vec::new()),
         }
     }
 
-    fn sync_consts(&mut self, const_pool: &ConstPoolBuilder) -> Result<(), WasmError> {
-        while self.aligned_consts.len() < const_pool.records().len() {
+    fn sync_consts(&self, const_pool: &ConstPoolBuilder) -> Result<(), WasmError> {
+        let mut aligned = self.aligned_consts.borrow_mut();
+        while aligned.len() < const_pool.records().len() {
             let record = const_pool
                 .records()
-                .get(self.aligned_consts.len())
+                .get(aligned.len())
                 .ok_or_else(|| WasmError::internal("const pool record is out of range"))?;
-            self.aligned_consts.push(AlignedConstData::new(record)?);
+            aligned.push(AlignedConstData::new(record)?);
         }
         Ok(())
     }
@@ -201,7 +267,7 @@ impl StreamingCompiledModule {
             active_backend,
             self.backend,
             self.abi,
-            self.aligned_consts,
+            self.aligned_consts.into_inner(),
         )
     }
 }
@@ -216,7 +282,13 @@ impl CodegenModuleView for StreamingCompiledModule {
     }
 
     fn const_ptr(&self, id: crate::vm::machine::machine_ir::MachineConstId) -> Option<*const u8> {
+        // Each `AlignedConstData` owns a `Box<[u64]>` whose heap address
+        // is independent of the outer `Vec`'s allocation, so the pointer
+        // returned here remains valid even if a concurrent `sync_consts`
+        // grows the Vec (via `RefCell::borrow_mut`) while the arch
+        // backend has previously cached a pointer.
         self.aligned_consts
+            .borrow()
             .get(id.0 as usize)
             .map(AlignedConstData::as_ptr)
     }
@@ -415,6 +487,12 @@ fn finish_native_compile_streaming(
             continue;
         };
 
+        // Per-function decision: do we have enough RAM to run the full
+        // pipeline on this function, or fall back to block-by-block? The
+        // estimate is based on Wasm-bytecode size; the actual RAM budget
+        // is set by the platform via `set_compiler_ram_budget`.
+        let full_opt = full_optimization_for_bytecode_size(spec.code().len());
+
         let sem_decode_function_phase =
             phase_span_with_function("sem_decode", Some(func_idx as u32));
         let semantic = decode_function_semantic(module, store, spec)?;
@@ -425,6 +503,7 @@ fn finish_native_compile_streaming(
             PrepareInput {
                 config: backend,
                 function_index: Some(func_idx as u32),
+                full_optimization: full_opt,
             },
             semantic,
         )?;
@@ -440,34 +519,13 @@ fn finish_native_compile_streaming(
 
         let func_id = MachineFuncId(func_idx as u32);
         let result_count = spec.func_type().results().len() as u16;
-        let (mut machine, _abi) = lower_single_function(
-            backend,
-            LowerFunctionInput {
-                id: func_id,
-                frame: prepared.frame,
-                ssa: prepared.ssa,
-                result_count,
-            },
-            &mut compiled_view.abi.functions,
-            &is_local_func,
-            &mut const_pool,
-            #[cfg(sf_has_guard_pages)]
-            use_guard_pages,
-        )?;
-        optimize_function(&mut machine, backend);
-        if backend.is_32bit_gp_target() {
-            machine
-                .program
-                .validate_32bit_gp_target(backend.first_fp_reg(), backend)?;
-        }
-        mir_ops += machine
-            .program
-            .blocks
-            .iter()
-            .map(|block| block.ops.len())
-            .sum::<usize>();
-
-        compiled_view.sync_consts(&const_pool)?;
+        let entry_block = MachineBlockId(prepared.ssa.entry.as_u32());
+        let lower_input = LowerFunctionInput {
+            id: func_id,
+            frame: prepared.frame,
+            ssa: prepared.ssa,
+            result_count,
+        };
 
         let stream_base = executable.len();
         let scratch_base = page_align_function(stream_base, 0);
@@ -478,14 +536,175 @@ fn finish_native_compile_streaming(
 
         let arch_lower_function_phase =
             phase_span_with_function("arch_lower_func", Some(func_idx as u32));
-        let artifact = arch::dispatch_compile_function_into_buffer(
-            active_backend,
-            &compiled_view,
-            &machine,
-            &mut executable,
-        )?;
+
+        // Single arch driver (`dispatch_compile_function_streaming`),
+        // single producer (`lower_function_streaming`). The only choice
+        // is whether to insert a buffer-and-rewrite middleware between
+        // them.
+        //
+        // - `full_opt`: middleware collects all blocks, runs cross-block
+        //   MIR passes (`fuse_compare_branch`, on 32-bit also
+        //   `fuse_smull_sign_ext_across_edges`), reorders in
+        //   `block_layout()` order, and feeds to the arch driver with
+        //   pre-registered (id, params) so forward-reference identity
+        //   edges and adjacent-block fallthroughs are detected. Output
+        //   is byte-identical to the historical buffered baseline.
+        //
+        // - `!full_opt`: producer streams blocks straight to the arch
+        //   driver. Block-local peephole passes still run via
+        //   `optimize_block`; cross-block passes and forward-ref
+        //   fallthrough elision are skipped — codegen-quality cost of
+        //   compiling under a tight RAM budget.
+        let abi = derive_streaming_function_abi(&lower_input)?;
+        compiled_view
+            .abi
+            .functions
+            .get_mut(func_id.0 as usize)
+            .ok_or_else(|| WasmError::internal("runtime metadata slot is out of range"))?
+            .clone_from(&abi);
+        let fp_widths = streaming_fp_reg_init_widths(backend)?;
+        let mut input = lower_input;
+        let abi_slice_borrow = &compiled_view.abi.functions[..];
+        let is_local_slice: &[bool] = &is_local_func;
+        #[cfg(sf_has_guard_pages)]
+        let guard_pages_local = use_guard_pages;
+
+        let artifact = if full_opt {
+            // Collect-optimize-drain middleware.
+            let mut buffered_blocks: collections::Vec<MachineBlock> = collections::Vec::new();
+            {
+                let mut collect = |block: MachineBlock,
+                                   _const_pool: &ConstPoolBuilder|
+                 -> Result<(), WasmError> {
+                    buffered_blocks.push(block);
+                    Ok(())
+                };
+                let collect_sink: &mut MirBlockSink<'_> = &mut collect;
+                lower_function_streaming(
+                    &mut input,
+                    backend,
+                    abi_slice_borrow,
+                    is_local_slice,
+                    &mut const_pool,
+                    collect_sink,
+                    #[cfg(sf_has_guard_pages)]
+                    guard_pages_local,
+                )?;
+            }
+            // Const pool is fully populated now; sync into the view
+            // once before arch emit reads any const_ptr.
+            compiled_view.sync_consts(&const_pool)?;
+
+            // The producer hands blocks to the sink in
+            // emit-suitable order ("entry first, then id-order"). The
+            // peephole passes (and several other consumers — e.g.
+            // `fuse_smull_sign_ext_across_edges` via
+            // `block_index_for_id`) assume `blocks[id_as_usize]` is the
+            // block with that id. Sort by id here so that invariant
+            // holds during the cross-block passes; `block_layout` will
+            // reorder for emission afterwards.
+            buffered_blocks.sort_by_key(|b| b.id.0);
+
+            let mut program = crate::vm::machine::machine_ir::MachineProgram {
+                entry: entry_block,
+                fp_reg_init_widths: fp_widths.clone(),
+                blocks: buffered_blocks,
+            };
+            crate::vm::machine::peephole::optimize(&mut program, backend, true);
+            if backend.is_32bit_gp_target() {
+                program.validate_32bit_gp_target(backend.first_fp_reg(), backend)?;
+            }
+            mir_ops += program.blocks.iter().map(|b| b.ops.len()).sum::<usize>();
+
+            let layout = crate::vm::arch::common::pipeline::block_layout(&program);
+            let mut blocks_in_order: collections::Vec<MachineBlock> =
+                collections::Vec::with_capacity(layout.len());
+            for &id in &layout {
+                let idx = id.as_usize();
+                let slot = program.blocks.get_mut(idx).ok_or_else(|| {
+                    WasmError::internal("block_layout references missing block at drain time")
+                })?;
+                let placeholder = MachineBlock {
+                    id: slot.id,
+                    params: slot.params.clone(),
+                    ops: collections::Vec::new(),
+                    terminator: crate::vm::machine::machine_ir::MachineTerminator::Return,
+                };
+                blocks_in_order.push(core::mem::replace(slot, placeholder));
+            }
+            let pre_registered: collections::Vec<(
+                MachineBlockId,
+                collections::Vec<crate::vm::machine::machine_ir::MachineBlockParam>,
+            )> = blocks_in_order
+                .iter()
+                .map(|b| (b.id, b.params.clone()))
+                .collect();
+            let dummy_pool = ConstPoolBuilder::new();
+            let mut iter = blocks_in_order.drain(..);
+            let text_for_arch =
+                crate::vm::arch::common::text_emitter::TextEmitter::new_in_code_buffer(
+                    &mut executable,
+                );
+            arch::dispatch_compile_function_streaming(
+                active_backend,
+                &compiled_view,
+                func_id,
+                entry_block,
+                fp_widths,
+                text_for_arch,
+                &pre_registered,
+                |sink: &mut MirBlockSink<'_>| {
+                    for block in iter.by_ref() {
+                        sink(block, &dummy_pool)?;
+                    }
+                    Ok(())
+                },
+            )?
+        } else {
+            // Pure streaming: lower→optimize_block→arch.
+            let mut block_ctx = BlockOptCtx::new(backend);
+            let mut streamed_mir_ops: usize = 0;
+            let const_pool_ref = &mut const_pool;
+            let compiled_view_ref = &compiled_view;
+            let text_for_arch =
+                crate::vm::arch::common::text_emitter::TextEmitter::new_in_code_buffer(
+                    &mut executable,
+                );
+            let artifact = arch::dispatch_compile_function_streaming(
+                active_backend,
+                compiled_view_ref,
+                func_id,
+                entry_block,
+                fp_widths,
+                text_for_arch,
+                &[],
+                |arch_sink: &mut MirBlockSink<'_>| {
+                    let mut wrapped = |mut block: MachineBlock,
+                                       const_pool: &ConstPoolBuilder|
+                     -> Result<(), WasmError> {
+                        crate::vm::machine::peephole::optimize_block(&mut block_ctx, &mut block);
+                        compiled_view_ref.sync_consts(const_pool)?;
+                        streamed_mir_ops = streamed_mir_ops.saturating_add(block.ops.len());
+                        arch_sink(block, const_pool)
+                    };
+                    let wrapped_sink: &mut MirBlockSink<'_> = &mut wrapped;
+                    lower_function_streaming(
+                        &mut input,
+                        backend,
+                        abi_slice_borrow,
+                        is_local_slice,
+                        const_pool_ref,
+                        wrapped_sink,
+                        #[cfg(sf_has_guard_pages)]
+                        guard_pages_local,
+                    )?;
+                    Ok(())
+                },
+            )?;
+            mir_ops += streamed_mir_ops;
+            artifact
+        };
         drop(arch_lower_function_phase);
-        drop(machine);
 
         let text_len = artifact.text.len();
         let function_base = page_align_function(stream_base, text_len);
@@ -806,10 +1025,12 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     let mut groups = 0usize;
     let mut ssa_ops = 0usize;
     let mut prepared_functions: collections::Vec<LowerFunctionInput> = collections::Vec::new();
+    let mut function_full_opt: collections::Vec<bool> = collections::Vec::new();
     for (func_idx, func) in module.functions.iter().enumerate() {
         let Some(spec) = func.spec() else {
             continue;
         };
+        let full_opt = full_optimization_for_bytecode_size(spec.code().len());
         let sem_decode_function_phase =
             phase_span_with_function("sem_decode", Some(func_idx as u32));
         let semantic = decode_function_semantic(module, store, spec)?;
@@ -820,9 +1041,11 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             PrepareInput {
                 config: backend,
                 function_index: Some(func_idx as u32),
+                full_optimization: full_opt,
             },
             semantic,
         )?;
+        function_full_opt.push(full_opt);
         drop(ssa_lower_function_phase);
         groups += 1;
         ssa_ops += prepared
@@ -871,7 +1094,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         use_guard_pages,
     })?;
     let module_opt_phase = phase_span("module_opt");
-    optimize_module(&mut lowered.module);
+    optimize_module(&mut lowered.module, &function_full_opt);
     if backend.is_32bit_gp_target() {
         lowered
             .module

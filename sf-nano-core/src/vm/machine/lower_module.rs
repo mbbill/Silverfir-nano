@@ -163,39 +163,6 @@ pub(crate) fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModu
     Ok(LoweredMachineModule { module, abi })
 }
 
-pub(crate) fn lower_single_function(
-    backend: BackendConfig,
-    function: LowerFunctionInput,
-    runtime: &mut [MachineFunctionAbi],
-    is_local_func: &[bool],
-    const_pool: &mut ConstPoolBuilder,
-    #[cfg(sf_has_guard_pages)] guard_pages: bool,
-) -> Result<(MachineFunction, MachineFunctionAbi), WasmError> {
-    let mut function = function;
-    let max_regfile = MachineRegFile::new(backend)?;
-    let abi = {
-        let borrowed = function.borrowed();
-        validate_program(borrowed.ssa)?;
-        let abi = lower_function_runtime(borrowed)?;
-        let runtime_slot = runtime
-            .get_mut(borrowed.id.0 as usize)
-            .ok_or_else(|| WasmError::internal("runtime metadata slot is out of range"))?;
-        *runtime_slot = abi.clone();
-        abi
-    };
-    let machine = lower_function(
-        &mut function,
-        backend,
-        &max_regfile,
-        runtime,
-        is_local_func,
-        const_pool,
-        #[cfg(sf_has_guard_pages)]
-        guard_pages,
-    )?;
-    Ok((machine, abi))
-}
-
 fn lower_function_runtime(
     input: BorrowedLowerFunctionInput<'_>,
 ) -> Result<MachineFunctionAbi, WasmError> {
@@ -241,10 +208,126 @@ fn lower_function(
     const_pool: &mut ConstPoolBuilder,
     #[cfg(sf_has_guard_pages)] guard_pages: bool,
 ) -> Result<MachineFunction, WasmError> {
-    let gp_reg_width = config.gp_unit_bytes;
     let original_block_count = input.ssa.blocks.len();
     let mut original_blocks = OriginalBlocks::new(original_block_count);
     let mut extra_blocks = collections::Vec::new();
+
+    {
+        let mut accumulator = AccumulatingMirSink::new(&mut original_blocks, &mut extra_blocks);
+        let mut closure =
+            |block: MachineBlock, _const_pool: &ConstPoolBuilder| accumulator.push(block);
+        let sink: &mut MirBlockSink<'_> = &mut closure;
+        lower_function_into_sink(
+            input,
+            config,
+            regfile,
+            runtime,
+            is_local_func,
+            const_pool,
+            sink,
+            #[cfg(sf_has_guard_pages)]
+            guard_pages,
+        )?;
+    }
+
+    let mut blocks = original_blocks.finish()?;
+    blocks.reserve_exact(extra_blocks.len());
+    blocks.extend(extra_blocks);
+
+    let entry = MachineBlockId(input.ssa.entry.as_u32());
+
+    let program = MachineProgram {
+        entry,
+        fp_reg_init_widths: fp_reg_init_widths(regfile)?,
+        blocks,
+    };
+    program.validate(config)?;
+
+    Ok(MachineFunction {
+        id: input.id,
+        program,
+    })
+}
+
+/// Streaming entry point for SSA→MIR lowering: the caller supplies a
+/// `MirBlockSink` callback that receives each MIR block in production
+/// order. Used by the block-by-block compile pipeline (`!full_opt`)
+/// where blocks are optimized + arch-emitted + dropped one at a time
+/// instead of being accumulated into a `MachineFunction`.
+///
+/// The sink call order matches the order MIR blocks are produced: each
+/// SSA block emits one MIR block plus zero or more continuation /
+/// trap blocks for splits and indirect-dispatch clusters. By design,
+/// **forward references** (a terminator naming a not-yet-arrived
+/// continuation) are common and the sink is responsible for tolerating
+/// them — the streaming arch-emit driver handles this via lazy block
+/// label allocation (`CompilerCore::ensure_block_label`) and deferred
+/// edge-stub params lookup (`EdgeStub::params` was removed; params are
+/// read from the function's `blocks` vec at drain time, by which point
+/// every target has arrived via `add_streaming_block`).
+pub(crate) fn lower_function_streaming(
+    input: &mut LowerFunctionInput,
+    config: BackendConfig,
+    runtime: &[MachineFunctionAbi],
+    is_local_func: &[bool],
+    const_pool: &mut ConstPoolBuilder,
+    sink: &mut MirBlockSink<'_>,
+    #[cfg(sf_has_guard_pages)] guard_pages: bool,
+) -> Result<(), WasmError> {
+    let regfile = MachineRegFile::new(config)?;
+    lower_function_into_sink(
+        input,
+        config,
+        &regfile,
+        runtime,
+        is_local_func,
+        const_pool,
+        sink,
+        #[cfg(sf_has_guard_pages)]
+        guard_pages,
+    )
+}
+
+/// Per-function FP-init width vector that the streaming arch-emit driver
+/// embeds in the skeleton `MachineFunction`. Equivalent to the value the
+/// buffered path computes in `lower_function`'s
+/// `MachineProgram { fp_reg_init_widths, .. }` initialization.
+pub(crate) fn streaming_fp_reg_init_widths(
+    config: BackendConfig,
+) -> Result<collections::Vec<Option<MachineFloatWidth>>, WasmError> {
+    let regfile = MachineRegFile::new(config)?;
+    fp_reg_init_widths(&regfile)
+}
+
+/// Validate prepared SSA and derive the runtime ABI for a single
+/// function. Used by the streaming pipeline so the function's ABI is
+/// installed into `MachineModuleAbi` *before* arch emit begins (the
+/// arch backend reads `runtime_for(callee)` during local-call lowering
+/// and would otherwise see a default-empty record).
+pub(crate) fn derive_streaming_function_abi(
+    function: &LowerFunctionInput,
+) -> Result<MachineFunctionAbi, WasmError> {
+    let borrowed = function.borrowed();
+    validate_program(borrowed.ssa)?;
+    lower_function_runtime(borrowed)
+}
+
+/// Shared lowering loop body. Called by both `lower_function` (which
+/// wraps it with a buffering accumulator sink and finalizes a
+/// `MachineFunction` from the captured blocks) and `lower_function_streaming`
+/// (which forwards the caller's sink unchanged).
+fn lower_function_into_sink(
+    input: &mut LowerFunctionInput,
+    config: BackendConfig,
+    regfile: &MachineRegFile,
+    runtime: &[MachineFunctionAbi],
+    is_local_func: &[bool],
+    const_pool: &mut ConstPoolBuilder,
+    sink: &mut MirBlockSink<'_>,
+    #[cfg(sf_has_guard_pages)] guard_pages: bool,
+) -> Result<(), WasmError> {
+    let gp_reg_width = config.gp_unit_bytes;
+    let original_block_count = input.ssa.blocks.len();
     let mut extra_block_ids = ExtraBlockAllocator::new(original_block_count as u32);
     let i64_ops: &'static dyn I64Lowering = if gp_reg_width == 4 {
         &Gp32Lowering
@@ -256,6 +339,14 @@ fn lower_function(
         compute_block_entry_cache_params(regfile, &input.ssa, &explicit_cache, gp_reg_width)?;
     let block_entry_cache_dirty = compute_block_entry_cache_dirty(&input.ssa, &explicit_cache);
     release_cache_planning_only_ssa_storage(&mut input.ssa);
+
+    // Emit order: id order. Continuations created during a block's
+    // lowering are appended with their freshly-allocated ids inline.
+    // The streaming arch consumer doesn't depend on this order — it
+    // accepts blocks in arrival order and either uses pre-registered
+    // metadata (middleware mode) or emits an entry-jump on demand
+    // (pure-streaming mode). Keeping iteration in id order matches the
+    // historical baseline so continuation-id assignment is identical.
     for block_index in 0..original_block_count {
         let block = take_block_for_lowering(&mut input.ssa.blocks[block_index]);
         let target = block.id;
@@ -348,18 +439,20 @@ fn lower_function(
                                 extra_block_ids.reserve(2);
                                 push_lowered_block(
                                     current_block,
-                                    &mut original_blocks,
-                                    &mut extra_blocks,
+                                    sink,
+                                    const_pool,
                                     current_params,
                                     lower.take_ops(),
                                     terminator,
                                 )?;
-                                extra_blocks.push(MachineBlock {
-                                    id: trap,
-                                    params: collections::Vec::new(),
-                                    ops: collections::Vec::new(),
-                                    terminator: MachineTerminator::Trap { kind: trap_kind },
-                                });
+                                push_lowered_block(
+                                    trap,
+                                    sink,
+                                    const_pool,
+                                    collections::Vec::new(),
+                                    collections::Vec::new(),
+                                    MachineTerminator::Trap { kind: trap_kind },
+                                )?;
                                 current_block = continuation;
                                 current_params = continuation_params;
                                 lower.emit_machine_ops(continuation_ops);
@@ -391,8 +484,8 @@ fn lower_function(
                             lower.lower_call_internal(*callee, *args, *results, continuation)?;
                         push_lowered_block(
                             current_block,
-                            &mut original_blocks,
-                            &mut extra_blocks,
+                            sink,
+                            const_pool,
                             current_params,
                             lower.take_ops(),
                             terminator,
@@ -431,8 +524,7 @@ fn lower_function(
                             IndirectTransfer::Call { args, results },
                             current_block,
                             current_params,
-                            &mut original_blocks,
-                            &mut extra_blocks,
+                            sink,
                             &mut extra_block_ids,
                             const_pool,
                         )?
@@ -469,8 +561,7 @@ fn lower_function(
                             IndirectTransfer::Call { args, results },
                             current_block,
                             current_params,
-                            &mut original_blocks,
-                            &mut extra_blocks,
+                            sink,
                             &mut extra_block_ids,
                             const_pool,
                         )?
@@ -506,8 +597,8 @@ fn lower_function(
                 };
                 push_lowered_block(
                     current_block,
-                    &mut original_blocks,
-                    &mut extra_blocks,
+                    sink,
+                    const_pool,
                     current_params,
                     lower.take_ops(),
                     terminator,
@@ -542,8 +633,7 @@ fn lower_function(
                     },
                     current_block,
                     current_params,
-                    &mut original_blocks,
-                    &mut extra_blocks,
+                    sink,
                     &mut extra_block_ids,
                     const_pool,
                 )?;
@@ -572,8 +662,7 @@ fn lower_function(
                     },
                     current_block,
                     current_params,
-                    &mut original_blocks,
-                    &mut extra_blocks,
+                    sink,
                     &mut extra_block_ids,
                     const_pool,
                 )?;
@@ -593,8 +682,8 @@ fn lower_function(
                 };
                 push_lowered_block(
                     current_block,
-                    &mut original_blocks,
-                    &mut extra_blocks,
+                    sink,
+                    const_pool,
                     current_params,
                     lower.take_ops(),
                     terminator,
@@ -614,8 +703,8 @@ fn lower_function(
                 };
                 push_lowered_block(
                     current_block,
-                    &mut original_blocks,
-                    &mut extra_blocks,
+                    sink,
+                    const_pool,
                     current_params,
                     lower.take_ops(),
                     terminator,
@@ -628,8 +717,8 @@ fn lower_function(
         let terminator = lower.lower_terminator()?;
         push_lowered_block(
             current_block,
-            &mut original_blocks,
-            &mut extra_blocks,
+            sink,
+            const_pool,
             current_params,
             lower.take_ops(),
             terminator,
@@ -640,24 +729,7 @@ fn lower_function(
     drop(block_entry_cache_dirty);
     drop(entry_cache_params);
     drop(explicit_cache);
-
-    let mut blocks = original_blocks.finish()?;
-    blocks.reserve_exact(extra_blocks.len());
-    blocks.extend(extra_blocks);
-
-    let entry = MachineBlockId(input.ssa.entry.as_u32());
-
-    let program = MachineProgram {
-        entry,
-        fp_reg_init_widths: fp_reg_init_widths(&regfile)?,
-        blocks,
-    };
-    program.validate(config)?;
-
-    Ok(MachineFunction {
-        id: input.id,
-        program,
-    })
+    Ok(())
 }
 
 fn release_cache_planning_only_ssa_storage(ssa: &mut SsaProgram) {
@@ -849,8 +921,7 @@ fn lower_indirect_dispatch_cluster(
     transfer: IndirectTransfer,
     current_block: MachineBlockId,
     current_params: collections::Vec<MachineBlockParam>,
-    original_blocks: &mut OriginalBlocks,
-    extra_blocks: &mut collections::Vec<MachineBlock>,
+    sink: &mut MirBlockSink<'_>,
     extra_block_ids: &mut ExtraBlockAllocator,
     const_pool: &mut ConstPoolBuilder,
 ) -> Result<Option<MachineBlockId>, WasmError> {
@@ -895,8 +966,8 @@ fn lower_indirect_dispatch_cluster(
             emit_call_indirect_bounds_check_setup(lower, table_idx, func_idx_slot)?;
             push_lowered_block(
                 current_block,
-                original_blocks,
-                extra_blocks,
+                sink,
+                const_pool,
                 current_params,
                 lower.take_ops(),
                 MachineTerminator::Branch {
@@ -919,8 +990,8 @@ fn lower_indirect_dispatch_cluster(
             )?;
             push_lowered_block(
                 checked.expect("table indirect dispatch should allocate checked"),
-                original_blocks,
-                extra_blocks,
+                sink,
+                const_pool,
                 collections::Vec::new(),
                 build_call_indirect_checked_block(lower, table_idx, func_idx_slot)?,
                 MachineTerminator::Branch {
@@ -943,8 +1014,8 @@ fn lower_indirect_dispatch_cluster(
             )?;
             push_lowered_block(
                 trap_oob.expect("table indirect dispatch should allocate trap_oob"),
-                original_blocks,
-                extra_blocks,
+                sink,
+                const_pool,
                 collections::Vec::new(),
                 collections::Vec::new(),
                 MachineTerminator::Trap {
@@ -953,8 +1024,8 @@ fn lower_indirect_dispatch_cluster(
             )?;
             push_lowered_block(
                 type_check,
-                original_blocks,
-                extra_blocks,
+                sink,
+                const_pool,
                 collections::Vec::new(),
                 build_call_indirect_type_check_block(lower, type_idx, source.frame_slot())?,
                 MachineTerminator::Branch {
@@ -977,8 +1048,8 @@ fn lower_indirect_dispatch_cluster(
             )?;
             push_lowered_block(
                 trap_invalid_ref,
-                original_blocks,
-                extra_blocks,
+                sink,
+                const_pool,
                 collections::Vec::new(),
                 collections::Vec::new(),
                 MachineTerminator::Trap {
@@ -987,8 +1058,8 @@ fn lower_indirect_dispatch_cluster(
             )?;
             push_lowered_block(
                 dispatch,
-                original_blocks,
-                extra_blocks,
+                sink,
+                const_pool,
                 collections::Vec::new(),
                 build_call_indirect_dispatch_block(lower, source.frame_slot())?,
                 MachineTerminator::Branch {
@@ -1014,8 +1085,8 @@ fn lower_indirect_dispatch_cluster(
             lower.emit_machine_ops(build_call_ref_validate_block(lower, ref_slot)?);
             push_lowered_block(
                 current_block,
-                original_blocks,
-                extra_blocks,
+                sink,
+                const_pool,
                 current_params,
                 lower.take_ops(),
                 MachineTerminator::Branch {
@@ -1038,8 +1109,8 @@ fn lower_indirect_dispatch_cluster(
             )?;
             push_lowered_block(
                 trap_invalid_ref,
-                original_blocks,
-                extra_blocks,
+                sink,
+                const_pool,
                 collections::Vec::new(),
                 collections::Vec::new(),
                 MachineTerminator::Trap {
@@ -1048,8 +1119,8 @@ fn lower_indirect_dispatch_cluster(
             )?;
             push_lowered_block(
                 type_check,
-                original_blocks,
-                extra_blocks,
+                sink,
+                const_pool,
                 collections::Vec::new(),
                 build_call_indirect_type_check_block(lower, type_idx, source.frame_slot())?,
                 MachineTerminator::Branch {
@@ -1072,8 +1143,8 @@ fn lower_indirect_dispatch_cluster(
             )?;
             push_lowered_block(
                 dispatch,
-                original_blocks,
-                extra_blocks,
+                sink,
+                const_pool,
                 collections::Vec::new(),
                 build_call_indirect_dispatch_block(lower, source.frame_slot())?,
                 MachineTerminator::Branch {
@@ -1106,8 +1177,8 @@ fn lower_indirect_dispatch_cluster(
     };
     push_lowered_block(
         local_prepare,
-        original_blocks,
-        extra_blocks,
+        sink,
+        const_pool,
         collections::vec![MachineBlockParam::gp_word(local_call_target_param)],
         local_prepare_ops,
         MachineTerminator::Branch {
@@ -1130,8 +1201,8 @@ fn lower_indirect_dispatch_cluster(
     )?;
     push_lowered_block(
         local_zero_loop,
-        original_blocks,
-        extra_blocks,
+        sink,
+        const_pool,
         collections::Vec::new(),
         build_call_indirect_local_zero_loop_block(lower)?,
         MachineTerminator::Branch {
@@ -1178,8 +1249,8 @@ fn lower_indirect_dispatch_cluster(
     };
     push_lowered_block(
         local_transfer,
-        original_blocks,
-        extra_blocks,
+        sink,
+        const_pool,
         collections::Vec::new(),
         local_transfer_ops,
         local_transfer_term,
@@ -1200,8 +1271,8 @@ fn lower_indirect_dispatch_cluster(
     };
     push_lowered_block(
         runtime_call,
-        original_blocks,
-        extra_blocks,
+        sink,
+        const_pool,
         collections::Vec::new(),
         lower.build_runtime_call_ops(metadata),
         runtime_term,
@@ -1209,35 +1280,82 @@ fn lower_indirect_dispatch_cluster(
     Ok(continuation)
 }
 
+/// Type-erased sink for emitted MIR blocks. The lowering loop hands each
+/// finished block to this callback in production order. The buffering
+/// middleware in `vm/build.rs` uses a sink that just collects blocks
+/// into a Vec; the tight-budget path uses one that runs
+/// `optimize_block` and forwards to the arch driver. Either way the
+/// downstream consumer is responsible for dropping the block once the
+/// `Result` returns.
+///
+/// The sink receives the active `ConstPoolBuilder` as a shared
+/// reference so the streaming arch consumer can sync just-appended
+/// runtime metadata records before the arch backend reads them via
+/// `compiled_view.const_ptr(...)`. Sinks that don't need to sync (e.g.
+/// the collecting sink in the middleware) ignore the const-pool
+/// argument.
+pub(crate) type MirBlockSink<'a> =
+    dyn FnMut(MachineBlock, &ConstPoolBuilder) -> Result<(), WasmError> + 'a;
+
+/// Accumulating sink: routes each emitted block into either an
+/// `OriginalBlocks` slot (when its id matches the SSA-block-id space) or
+/// the trailing continuation list (for ids freshly allocated by
+/// `ExtraBlockAllocator`). Used by the full-opt path; the streaming path
+/// replaces this with a sink that runs `optimize_block` and feeds the
+/// arch emitter directly.
+struct AccumulatingMirSink<'a> {
+    original_blocks: &'a mut OriginalBlocks,
+    extra_blocks: &'a mut collections::Vec<MachineBlock>,
+}
+
+impl<'a> AccumulatingMirSink<'a> {
+    fn new(
+        original_blocks: &'a mut OriginalBlocks,
+        extra_blocks: &'a mut collections::Vec<MachineBlock>,
+    ) -> Self {
+        Self {
+            original_blocks,
+            extra_blocks,
+        }
+    }
+
+    fn push(&mut self, block: MachineBlock) -> Result<(), WasmError> {
+        let id = block.id;
+        let original_len = self.original_blocks.expected();
+        if id.as_usize() < original_len {
+            self.original_blocks.push(id, block)?;
+        } else {
+            let expected = original_len + self.extra_blocks.len();
+            if id.as_usize() != expected {
+                return Err(WasmError::internal(
+                    "machine continuation blocks must be appended in id order",
+                ));
+            }
+            self.extra_blocks.push(block);
+        }
+        Ok(())
+    }
+}
+
 fn push_lowered_block(
     id: MachineBlockId,
-    original_blocks: &mut OriginalBlocks,
-    continuation_blocks: &mut collections::Vec<MachineBlock>,
+    sink: &mut MirBlockSink<'_>,
+    const_pool: &ConstPoolBuilder,
     mut params: collections::Vec<MachineBlockParam>,
     mut ops: collections::Vec<MachineInst>,
     terminator: MachineTerminator,
 ) -> Result<(), WasmError> {
     params.shrink_to_fit();
     ops.shrink_to_fit();
-    let block = MachineBlock {
-        id,
-        params,
-        ops,
-        terminator,
-    };
-    let original_len = original_blocks.expected();
-    if id.as_usize() < original_len {
-        original_blocks.push(id, block)?;
-    } else {
-        let expected = original_len + continuation_blocks.len();
-        if id.as_usize() != expected {
-            return Err(WasmError::internal(
-                "machine continuation blocks must be appended in id order".into(),
-            ));
-        }
-        continuation_blocks.push(block);
-    }
-    Ok(())
+    sink(
+        MachineBlock {
+            id,
+            params,
+            ops,
+            terminator,
+        },
+        const_pool,
+    )
 }
 
 fn attach_continuation_args(

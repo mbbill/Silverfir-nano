@@ -2,7 +2,10 @@
 use sf_nano_core::native_stats_snapshot;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::Instance;
-use sf_nano_core::{active_runtime_engine, set_backend_mode, BackendMode};
+use sf_nano_core::{
+    active_runtime_engine, runtime_config, set_backend_mode, set_runtime_config, BackendMode,
+    RuntimeConfig,
+};
 
 use std::path::PathBuf;
 use std::{env, fs, process};
@@ -36,6 +39,7 @@ fn run_cli(args: &[String]) -> i32 {
     let mut preopens: Vec<(String, PathBuf)> = Vec::new();
     let mut backend_mode = BackendMode::Native;
     let mut compile_only = false;
+    let mut compiler_ram_budget: Option<u32> = None;
     let mut remaining_args: Vec<String> = Vec::new();
     #[cfg(feature = "memprof")]
     let mut memprof_enabled = false;
@@ -107,6 +111,24 @@ fn run_cli(args: &[String]) -> i32 {
             backend_mode = parsed;
         } else if args[i] == "--compile-only" || args[i] == "--no-run" {
             compile_only = true;
+        } else if args[i] == "--compiler-ram-budget" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!(
+                    "Error: --compiler-ram-budget requires a byte count (e.g. 400K, 2M, or a raw number)"
+                );
+                return 1;
+            }
+            match parse_byte_size(&args[i]) {
+                Some(bytes) => compiler_ram_budget = Some(bytes),
+                None => {
+                    eprintln!(
+                        "Error: --compiler-ram-budget value '{}' is not a valid byte size",
+                        args[i]
+                    );
+                    return 1;
+                }
+            }
         } else {
             remaining_args.push(args[i].clone());
         }
@@ -127,6 +149,19 @@ fn run_cli(args: &[String]) -> i32 {
         }
 
         set_backend_mode(backend_mode);
+        if let Some(bytes) = compiler_ram_budget {
+            // Inherit other defaults from the active runtime config and
+            // override only the compile-time budget.
+            let mut cfg: RuntimeConfig = *runtime_config();
+            cfg.compiler_ram_budget_bytes = bytes;
+            if let Err(err) = set_runtime_config(cfg) {
+                eprintln!(
+                    "Error: --compiler-ram-budget could not install runtime config: {:?}",
+                    err
+                );
+                return 1;
+            }
+        }
         let runtime_engine = match active_runtime_engine() {
             Ok(engine) => engine,
             Err(err) => {
@@ -232,6 +267,45 @@ fn run_cli(args: &[String]) -> i32 {
     exit_code
 }
 
+/// Parse a byte-size value with optional `K`/`M`/`G` suffix.
+/// `400K` → 409600, `2M` → 2097152, `1024` → 1024.
+fn parse_byte_size(s: &str) -> Option<u32> {
+    let trimmed = s.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (digits, multiplier): (&str, u64) = match trimmed.as_bytes().last() {
+        Some(b'K') | Some(b'k') => (&trimmed[..trimmed.len() - 1], 1024),
+        Some(b'M') | Some(b'm') => (&trimmed[..trimmed.len() - 1], 1024 * 1024),
+        Some(b'G') | Some(b'g') => (&trimmed[..trimmed.len() - 1], 1024 * 1024 * 1024),
+        _ => (trimmed, 1),
+    };
+    let n: u64 = digits.parse().ok()?;
+    let total = n.checked_mul(multiplier)?;
+    if total > u32::MAX as u64 {
+        return None;
+    }
+    Some(total as u32)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::parse_byte_size;
+
+    #[test]
+    fn parses_byte_sizes() {
+        assert_eq!(parse_byte_size("0"), Some(0));
+        assert_eq!(parse_byte_size("1024"), Some(1024));
+        assert_eq!(parse_byte_size("400K"), Some(400 * 1024));
+        assert_eq!(parse_byte_size("400k"), Some(400 * 1024));
+        assert_eq!(parse_byte_size("2M"), Some(2 * 1024 * 1024));
+        assert_eq!(parse_byte_size("1G"), Some(1024 * 1024 * 1024));
+        assert!(parse_byte_size("").is_none());
+        assert!(parse_byte_size("abc").is_none());
+        assert!(parse_byte_size("8G").is_none()); // overflows u32
+    }
+}
+
 fn print_usage(program_name: &str) {
     eprintln!("Silverfir-nano — WebAssembly interpreter");
     eprintln!();
@@ -246,6 +320,16 @@ fn print_usage(program_name: &str) {
     eprintln!("  --backend <auto|native>   Select the execution backend.");
     eprintln!("  --compile-only, --no-run  Compile/instantiate the module without invoking it.");
     eprintln!("  --dir <guest::host|path>  Preopen a host directory (repeatable).");
+    eprintln!(
+        "  --compiler-ram-budget <N> Cap compile-time peak memory. Functions whose estimated"
+    );
+    eprintln!(
+        "                              compile peak exceeds the budget fall back to block-by-"
+    );
+    eprintln!(
+        "                              block mode (cross-block optimizations skipped). Accepts"
+    );
+    eprintln!("                              raw bytes or K/M/G suffixes. Default: unlimited.");
     #[cfg(feature = "memprof")]
     {
         eprintln!("  --memprof                 Record allocation events and emit an HTML report.");

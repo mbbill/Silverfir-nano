@@ -92,7 +92,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         max_fp_machine_regs()
     }
 
-    fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
+    fn new(compiled: &'a dyn CodegenModuleView, function: MachineFunction) -> Self {
         Self {
             core: CompilerCore::new(compiled, function),
             fixups: collections::Vec::new(),
@@ -216,7 +216,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         self.lower_inst_dispatch(inst)
     }
 
-    fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
+    fn emit_inst_at(&mut self, inst: &MachineInst, index: usize) -> Result<(), WasmError> {
         self.core.current_op_index = Some(index);
         self.lower_inst(inst)?;
         self.gp_scratch.assert_all_free();

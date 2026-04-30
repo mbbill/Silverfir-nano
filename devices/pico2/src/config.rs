@@ -27,6 +27,15 @@ pub const WASM_MEMORY_MAX_PAGES: u32 = 3;
 /// demos while leaving more heap headroom; hosted default is 2 MiB.
 pub const WASM_STACK_BYTES: usize = 16 * 1024;
 
+/// Per-function compiler-time RAM budget. Functions whose Wasm bytecode
+/// estimates above this fall back to block-by-block compilation (still
+/// correct, slightly lower codegen quality). 500 KiB sits within the
+/// 520 KiB total SRAM on RP2350 and matches the design point shared
+/// with the ESP32 port; in practice the compiler peak is much smaller
+/// for typical demo functions, so this just gates the rare large
+/// function down to block-level mode.
+pub const COMPILER_RAM_BUDGET_BYTES: u32 = 500 * 1024;
+
 /// Install the runtime configuration. Panics if called more than once
 /// — `sf_nano_core::set_runtime_config` is write-once by design.
 pub fn init() {
@@ -34,6 +43,7 @@ pub fn init() {
         code_arena_bytes: CODE_ARENA_BYTES,
         wasm_memory_max_pages: WASM_MEMORY_MAX_PAGES,
         wasm_stack_bytes: WASM_STACK_BYTES,
+        compiler_ram_budget_bytes: COMPILER_RAM_BUDGET_BYTES,
     })
     .expect("sf-nano-pico2 config already initialized");
 }

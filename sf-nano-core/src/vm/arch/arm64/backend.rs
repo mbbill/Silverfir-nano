@@ -126,8 +126,11 @@ pub(crate) struct Arm64Backend<'a> {
     /// 1-slot peephole lookahead buffer. Holds the previously seen op so
     /// `emit_inst_at` can attempt a 2-op fusion (zero-store pair, FP
     /// store/load pair) when the next op arrives. Drained on `end_block`.
+    /// The inst is owned (cloned) because the pipeline driver moves the
+    /// source block out of the function via `mem::replace` and frees it
+    /// after `end_block` returns — references would dangle.
     /// `usize` is the block-local op index at the time it was buffered.
-    pending_op: Option<(&'a MachineInst, usize)>,
+    pending_op: Option<(MachineInst, usize)>,
 }
 
 // ── ArchBackend trait implementation ─────────────────────────────────────────
@@ -142,7 +145,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         max_fp_machine_regs()
     }
 
-    fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
+    fn new(compiled: &'a dyn CodegenModuleView, function: MachineFunction) -> Self {
         Self {
             core: CompilerCore::new(compiled, function),
             fixups: collections::Vec::new(),
@@ -390,30 +393,30 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     // pay an extra cycle of critical-path latency. See `try_lower_indexed_burst`
     // in inst.rs (kept under `#[allow(dead_code)]`) for the experiment and the
     // measured numbers.
-    fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
+    fn emit_inst_at(&mut self, inst: &MachineInst, index: usize) -> Result<(), WasmError> {
         // Try to fuse the previously buffered op with this incoming op. On a
         // hit, both are consumed by a single emitted instruction. On a miss,
         // emit the buffered op solo and buffer the new one for the next call.
         if let Some((prev, prev_index)) = self.pending_op.take() {
             self.core.current_op_index = Some(prev_index);
-            if let Some((base, imm7)) = super::fusion::zero_store_pair_fusion(prev, inst) {
+            if let Some((base, imm7)) = super::fusion::zero_store_pair_fusion(&prev, inst) {
                 let base_reg = self.map_gp_reg(base)?;
                 self.core.text.emit_u32(enc::stp_zero_64(base_reg, imm7));
                 self.gp_scratch.assert_all_free();
                 self.fp_scratch.assert_all_free();
                 return Ok(());
             }
-            if self.try_lower_fp_pair(prev, inst)? {
+            if self.try_lower_fp_pair(&prev, inst)? {
                 self.gp_scratch.assert_all_free();
                 self.fp_scratch.assert_all_free();
                 return Ok(());
             }
             // No fusion — emit prev solo before buffering the new op.
-            self.lower_inst(prev)?;
+            self.lower_inst(&prev)?;
             self.gp_scratch.assert_all_free();
             self.fp_scratch.assert_all_free();
         }
-        self.pending_op = Some((inst, index));
+        self.pending_op = Some((inst.clone(), index));
         Ok(())
     }
 
@@ -426,7 +429,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         // arrive to fuse with it.
         if let Some((prev, prev_index)) = self.pending_op.take() {
             self.core.current_op_index = Some(prev_index);
-            self.lower_inst(prev)?;
+            self.lower_inst(&prev)?;
             self.gp_scratch.assert_all_free();
             self.fp_scratch.assert_all_free();
         }

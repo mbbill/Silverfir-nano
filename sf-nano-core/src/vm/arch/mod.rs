@@ -7,7 +7,10 @@ use crate::{
     vm::{
         backend::BackendConfig,
         entities::ModuleInst,
-        machine::machine_ir::MachineFunction,
+        machine::{
+            machine_ir::{MachineBlockId, MachineFloatWidth, MachineFuncId},
+            MirBlockSink,
+        },
         result_buffer::ResultBuffer,
         runtime::{
             code::{CodegenModuleView, CompiledNativeModule, NativeCode, NativeRootEntry},
@@ -311,39 +314,124 @@ pub(crate) fn dispatch_compile_module(
     }
 }
 
-pub(crate) fn dispatch_compile_function_into_buffer(
+/// The single per-function arch dispatch entry. Constructs an
+/// empty-blocks skeleton inside the arch backend and runs the
+/// caller-supplied `produce_blocks` callback to feed MIR blocks one at
+/// a time through a `MirBlockSink`. Each block's native code is emitted
+/// inline; per-block heap content is dropped as soon as the next block
+/// arrives (1-block lookahead lets the previous block's terminator
+/// receive a fallthrough hint).
+///
+/// The producer decides codegen quality:
+/// - When the producer installs a buffer-and-rewrite middleware
+///   upstream, it accumulates blocks, runs cross-block MIR passes
+///   (`fuse_compare_branch`, `fuse_smull_sign_ext_across_edges`,
+///   future analyses), and re-streams in `block_layout()` order.
+///   Output matches the byte-identical buffered baseline.
+/// - When the producer streams directly without a middleware, this
+///   driver still works correctly, but cross-block MIR passes don't
+///   run and identity-edge fallthrough between forward references
+///   isn't elided. That is the codegen-quality cost of tight-budget
+///   streaming.
+pub(crate) fn dispatch_compile_function_streaming<F>(
     active_backend: NativeBackend,
     compiled: &dyn CodegenModuleView,
-    function: &MachineFunction,
-    executable: &mut CodeBuffer,
-) -> Result<FunctionArtifact, WasmError> {
+    function_id: MachineFuncId,
+    entry: MachineBlockId,
+    fp_reg_init_widths: collections::Vec<Option<MachineFloatWidth>>,
+    text: common::text_emitter::TextEmitter,
+    pre_registered_blocks: &[(
+        MachineBlockId,
+        collections::Vec<crate::vm::machine::machine_ir::MachineBlockParam>,
+    )],
+    produce_blocks: F,
+) -> Result<FunctionArtifact, WasmError>
+where
+    F: FnOnce(&mut MirBlockSink<'_>) -> Result<(), WasmError>,
+{
     #[cfg(any(sf_backend_emu64, sf_backend_emu32))]
-    let _ = (compiled, function, executable);
+    let _ = (
+        compiled,
+        function_id,
+        entry,
+        fp_reg_init_widths,
+        text,
+        pre_registered_blocks,
+        produce_blocks,
+    );
     match active_backend {
         #[cfg(sf_backend_arm64)]
-        NativeBackend::Arm64 => common::pipeline::compile_function_into_buffer::<
-            arm64::backend::Arm64Backend,
-        >(compiled, function, executable),
+        NativeBackend::Arm64 => {
+            common::pipeline::compile_function_streaming::<arm64::backend::Arm64Backend, _>(
+                compiled,
+                function_id,
+                entry,
+                fp_reg_init_widths,
+                text,
+                pre_registered_blocks,
+                produce_blocks,
+            )
+        }
         #[cfg(sf_backend_armv7a)]
-        NativeBackend::Armv7a => common::pipeline::compile_function_into_buffer::<
-            arm32::backend::Arm32Backend,
-        >(compiled, function, executable),
+        NativeBackend::Armv7a => {
+            common::pipeline::compile_function_streaming::<arm32::backend::Arm32Backend, _>(
+                compiled,
+                function_id,
+                entry,
+                fp_reg_init_widths,
+                text,
+                pre_registered_blocks,
+                produce_blocks,
+            )
+        }
         #[cfg(sf_backend_thumbm)]
-        NativeBackend::ThumbM => common::pipeline::compile_function_into_buffer::<
-            arm32::backend::Arm32Backend,
-        >(compiled, function, executable),
+        NativeBackend::ThumbM => {
+            common::pipeline::compile_function_streaming::<arm32::backend::Arm32Backend, _>(
+                compiled,
+                function_id,
+                entry,
+                fp_reg_init_widths,
+                text,
+                pre_registered_blocks,
+                produce_blocks,
+            )
+        }
         #[cfg(sf_backend_x64)]
-        NativeBackend::X86_64 => common::pipeline::compile_function_into_buffer::<
-            x86_64::backend::X86_64Backend,
-        >(compiled, function, executable),
+        NativeBackend::X86_64 => {
+            common::pipeline::compile_function_streaming::<x86_64::backend::X86_64Backend, _>(
+                compiled,
+                function_id,
+                entry,
+                fp_reg_init_widths,
+                text,
+                pre_registered_blocks,
+                produce_blocks,
+            )
+        }
         #[cfg(sf_backend_riscv32)]
-        NativeBackend::Riscv32 => common::pipeline::compile_function_into_buffer::<
-            riscv32::backend::Riscv32Backend,
-        >(compiled, function, executable),
+        NativeBackend::Riscv32 => {
+            common::pipeline::compile_function_streaming::<riscv32::backend::Riscv32Backend, _>(
+                compiled,
+                function_id,
+                entry,
+                fp_reg_init_widths,
+                text,
+                pre_registered_blocks,
+                produce_blocks,
+            )
+        }
         #[cfg(sf_backend_riscv64)]
-        NativeBackend::Riscv64 => common::pipeline::compile_function_into_buffer::<
-            riscv64::backend::Riscv64Backend,
-        >(compiled, function, executable),
+        NativeBackend::Riscv64 => {
+            common::pipeline::compile_function_streaming::<riscv64::backend::Riscv64Backend, _>(
+                compiled,
+                function_id,
+                entry,
+                fp_reg_init_widths,
+                text,
+                pre_registered_blocks,
+                produce_blocks,
+            )
+        }
         #[cfg(sf_backend_emu64)]
         NativeBackend::Emu64 => Err(WasmError::invalid(
             "emu64 backend does not emit native code artifacts",

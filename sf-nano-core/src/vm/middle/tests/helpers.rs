@@ -114,6 +114,7 @@ pub(super) fn prepare_program(
         PrepareInput {
             config: host_config(gp_dynamic_budget, fp_dynamic_budget),
             function_index: None,
+            full_optimization: true,
         },
         semantic.clone(),
     )

@@ -4,7 +4,7 @@ use crate::collections;
 use tracked_alloc::string::String;
 
 use crate::vm::machine::machine_ir::{
-    MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId, MachineReg, MachineValue,
+    MachineBlockId, MachineFloatWidth, MachineFuncId, MachineReg, MachineValue,
 };
 
 use super::text_emitter::TextEmitter;
@@ -29,11 +29,19 @@ pub(crate) struct DebugRegion {
 
 // ── Edge stubs ───────────────────────────────────────────────────────────────
 
+/// One outgoing block-edge whose moves are emitted out-of-line at the end
+/// of a function (after the body, before the literal pool / tail).
+///
+/// Per-edge target params are looked up at drain time from
+/// `function.program.blocks[target.as_usize()].params`, not snapshotted
+/// here. That deferral is what lets the streaming arch-emit driver issue
+/// edges to forward-target blocks that have not yet been added to the
+/// owned function — by the time edges drain, every block (and therefore
+/// every target params slot) has been populated.
 #[derive(Clone, Debug)]
 pub(crate) struct EdgeStub {
     pub label: usize,
     pub target: MachineBlockId,
-    pub params: collections::Vec<MachineBlockParam>,
     pub args: collections::Vec<MachineValue>,
     pub arg_float_widths: collections::Vec<Option<MachineFloatWidth>>,
 }

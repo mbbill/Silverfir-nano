@@ -48,7 +48,13 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
 ) -> Result<collections::Vec<Option<A::CompiledEntry>>, WasmError> {
     let mut artifacts = collections::Vec::with_capacity(compiled.module().functions.len());
     for function in &compiled.module().functions {
-        artifacts.push(compile_function::<A>(compiled, function)?);
+        // The streaming compile path drains blocks out of the function as
+        // it emits them. The static-link path here keeps the compiled
+        // module immutable, so we clone each function before handing it
+        // to the draining pipeline. This is debug-only overhead — the
+        // batch pipeline runs in emulator builds and IR-dump builds, not
+        // in release.
+        artifacts.push(compile_function::<A>(compiled, function.clone())?);
     }
 
     let mut base_offsets = collections::Vec::with_capacity(artifacts.len());

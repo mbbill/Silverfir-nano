@@ -32,7 +32,7 @@ use super::types::{
 #[derive(Debug)]
 pub(crate) struct CompilerCore<'a> {
     pub compiled: &'a dyn CodegenModuleView,
-    pub function: &'a MachineFunction,
+    pub function: MachineFunction,
     pub text: TextEmitter,
     pub labels: collections::Vec<Option<usize>>,
     pub block_labels: collections::Vec<usize>,
@@ -71,7 +71,7 @@ pub(crate) struct CompilerCore<'a> {
 
 impl<'a> CompilerCore<'a> {
     /// Create a new `CompilerCore`.
-    pub(crate) fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
+    pub(crate) fn new(compiled: &'a dyn CodegenModuleView, function: MachineFunction) -> Self {
         let config = compiled.backend();
         let block_cap = function
             .program
@@ -98,10 +98,10 @@ impl<'a> CompilerCore<'a> {
         shared_trap_labels[trap_kind_index(MachineTrapKind::StackOverflow)] =
             Some(stack_overflow_label);
 
-        let fp_reg_widths = Self::init_fp_widths(function, config);
+        let fp_reg_widths = Self::init_fp_widths(&function, config);
         #[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
         let low32_dead_hi_defs =
-            Low32DeadHiDefs::compute(function, usize::from(config.total_reg_count()));
+            Low32DeadHiDefs::compute(&function, usize::from(config.total_reg_count()));
 
         Self {
             compiled,
@@ -125,6 +125,76 @@ impl<'a> CompilerCore<'a> {
             internal_entry_label,
             shared_trap_labels,
         }
+    }
+
+    /// Streaming-mode block intake: register an arriving MIR block by
+    /// (1) inserting a params-only placeholder at `function.program.blocks[id]`
+    /// so later edge-stub drains can read `target.params`, and
+    /// (2) ensuring a label exists for the block id so callers can bind
+    /// it before lowering ops.
+    ///
+    /// Forward references — earlier blocks whose terminators name a
+    /// not-yet-arrived target id — are handled via `ensure_block_label`,
+    /// which lazily allocates labels for ids beyond the current high-water
+    /// mark. When the target finally arrives, `add_streaming_block`
+    /// replaces the placeholder and `bind_label` resolves the prior
+    /// allocation against the current text offset.
+    pub(crate) fn add_streaming_block(
+        &mut self,
+        id: MachineBlockId,
+        params: collections::Vec<crate::vm::machine::machine_ir::MachineBlockParam>,
+    ) -> Result<usize, WasmError> {
+        let id_idx = id.as_usize();
+        let blocks = &mut self.function.program.blocks;
+        if id_idx >= blocks.len() {
+            // Forward-reference padding: any ids in the gap are filled
+            // with empty placeholders. They will be replaced when those
+            // blocks themselves arrive via add_streaming_block.
+            while blocks.len() < id_idx {
+                let pad_id = MachineBlockId(blocks.len() as u32);
+                blocks.push(MachineBlock {
+                    id: pad_id,
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
+                    terminator: MachineTerminator::Return,
+                });
+            }
+            blocks.push(MachineBlock {
+                id,
+                params,
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Return,
+            });
+        } else {
+            // Slot already present — either a forward-padded placeholder
+            // or the streaming front-end re-emitted with the same id (a
+            // bug). Replace with the real params; ops/terminator stay
+            // empty since the caller drives begin/emit/end against the
+            // block they hand to the emitter, not against this slot.
+            blocks[id_idx] = MachineBlock {
+                id,
+                params,
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Return,
+            };
+        }
+        self.ensure_block_label(id)
+    }
+
+    /// Streaming-mode label allocation. Returns the existing label if
+    /// one was already allocated (e.g. by an earlier forward reference),
+    /// otherwise allocates a fresh one and stores it in `block_labels[id]`.
+    pub(crate) fn ensure_block_label(&mut self, id: MachineBlockId) -> Result<usize, WasmError> {
+        let id_idx = id.as_usize();
+        if id_idx >= self.block_labels.len() {
+            self.block_labels.resize(id_idx + 1, usize::MAX);
+        }
+        if self.block_labels[id_idx] == usize::MAX {
+            let label = self.labels.len();
+            self.labels.push(None);
+            self.block_labels[id_idx] = label;
+        }
+        Ok(self.block_labels[id_idx])
     }
 
     #[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
@@ -161,6 +231,9 @@ impl<'a> CompilerCore<'a> {
 
     // ── Label management ─────────────────────────────────────────────────
 
+    /// Move block `block_idx` out of the owned function and replace the
+    /// slot with a stripped placeholder. Used by the streaming pipeline
+    /// to drive begin/emit/end against an owned local block, then drop
     pub(crate) fn new_label(&mut self) -> usize {
         let label = self.labels.len();
         self.labels.push(None);
@@ -171,12 +244,16 @@ impl<'a> CompilerCore<'a> {
         self.labels[label] = Some(self.text.len());
     }
 
-    pub(crate) fn block_label(&self, target: MachineBlockId) -> Result<usize, WasmError> {
-        self.block_labels
-            .get(target.0 as usize)
-            .copied()
-            .filter(|label| *label != usize::MAX)
-            .ok_or_else(|| WasmError::internal("block label is out of range"))
+    /// Resolve a target block id to its label. Allocates lazily on first
+    /// reference: this lets callers issue branches to forward-reference
+    /// blocks (whose `add_streaming_block` call has not yet happened) and
+    /// still get back a valid label that the eventual `add_streaming_block`
+    /// + `bind_label` resolves at emission time.
+    ///
+    /// In the buffered (full-opt) pipeline, every block label is
+    /// pre-allocated by the constructor, so the lazy path is a no-op.
+    pub(crate) fn block_label(&mut self, target: MachineBlockId) -> Result<usize, WasmError> {
+        self.ensure_block_label(target)
     }
 
     // ── Trap label management ────────────────────────────────────────────
@@ -252,87 +329,6 @@ impl<'a> CompilerCore<'a> {
         Ok(())
     }
 
-    // ── Block layout ─────────────────────────────────────────────────────
-
-    pub(crate) fn block_layout(&self) -> collections::Vec<MachineBlockId> {
-        let mut order = collections::Vec::with_capacity(self.function.program.blocks.len());
-        let mut seen = collections::vec![false; self.function.program.blocks.len()];
-        let mut worklist = collections::vec![self.function.program.entry];
-
-        while let Some(start) = worklist.pop() {
-            self.extend_block_trace(start, &mut seen, &mut order, &mut worklist);
-        }
-
-        for block in &self.function.program.blocks {
-            if seen[block.id.as_usize()] {
-                continue;
-            }
-            worklist.push(block.id);
-            while let Some(start) = worklist.pop() {
-                self.extend_block_trace(start, &mut seen, &mut order, &mut worklist);
-            }
-        }
-
-        order
-    }
-
-    fn extend_block_trace(
-        &self,
-        start: MachineBlockId,
-        seen: &mut [bool],
-        order: &mut collections::Vec<MachineBlockId>,
-        worklist: &mut collections::Vec<MachineBlockId>,
-    ) {
-        let mut current = Some(start);
-        while let Some(block_id) = current {
-            let Some(block) = self.function.program.blocks.get(block_id.as_usize()) else {
-                break;
-            };
-            if seen[block_id.as_usize()] {
-                break;
-            }
-            seen[block_id.as_usize()] = true;
-            order.push(block_id);
-
-            let mut fallthrough = None;
-            match &block.terminator {
-                MachineTerminator::Jump(edge) => {
-                    if self.is_identity_edge(edge.target, &edge.args) {
-                        fallthrough = Some(edge.target);
-                    } else {
-                        worklist.push(edge.target);
-                    }
-                }
-                MachineTerminator::Branch {
-                    then_edge,
-                    else_edge,
-                    ..
-                } => {
-                    if self.is_identity_edge(else_edge.target, &else_edge.args) {
-                        fallthrough = Some(else_edge.target);
-                        worklist.push(then_edge.target);
-                    } else {
-                        worklist.push(else_edge.target);
-                        worklist.push(then_edge.target);
-                    }
-                }
-                MachineTerminator::JumpTable { entries, .. } => {
-                    for edge in entries.iter().rev() {
-                        worklist.push(edge.target);
-                    }
-                }
-                MachineTerminator::Call { continuation, .. } => {
-                    fallthrough = Some(*continuation);
-                }
-                MachineTerminator::TailCall { .. }
-                | MachineTerminator::Return
-                | MachineTerminator::Trap { .. } => {}
-            }
-
-            current = fallthrough.filter(|target| !seen[target.as_usize()]);
-        }
-    }
-
     // ── Edge management ──────────────────────────────────────────────────
 
     pub(crate) fn is_identity_edge(&self, target: MachineBlockId, args: &[MachineValue]) -> bool {
@@ -371,12 +367,9 @@ impl<'a> CompilerCore<'a> {
         target: MachineBlockId,
         args: &[MachineValue],
     ) -> Result<usize, WasmError> {
-        let block = self
-            .function
-            .program
-            .blocks
-            .get(target.as_usize())
-            .ok_or_else(|| WasmError::internal("edge target block is out of range"))?;
+        // Target params are looked up at drain time, not here. That lets
+        // the streaming arch-emit driver issue edges to forward-target
+        // blocks that have not yet been added to the owned function.
         let label = self.new_label();
         let arg_float_widths = args
             .iter()
@@ -390,7 +383,6 @@ impl<'a> CompilerCore<'a> {
         self.edge_stubs.push(EdgeStub {
             label,
             target,
-            params: block.params.clone(),
             args: args.to_vec().into(),
             arg_float_widths,
         });

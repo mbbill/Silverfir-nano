@@ -40,6 +40,7 @@ mod validate_tests;
 pub(crate) use lower_const_pool::ConstPoolBuilder;
 pub(crate) use lower_module::LoweredMachineModule;
 pub(crate) use lower_module::{
-    lower_module, lower_single_function, LowerFunctionInput, LowerModuleInput,
+    derive_streaming_function_abi, lower_function_streaming, lower_module,
+    streaming_fp_reg_init_widths, LowerFunctionInput, LowerModuleInput, MirBlockSink,
 };
-pub(crate) use optimize::{optimize_function, optimize_module};
+pub(crate) use optimize::optimize_module;

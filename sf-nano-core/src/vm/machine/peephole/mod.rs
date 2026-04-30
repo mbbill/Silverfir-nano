@@ -102,13 +102,23 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
 /// `config` still defines physical register banks and bank compatibility, but
 /// semantic linear-value versus cached-local ownership now comes from explicit
 /// MachineIR metadata, not from register-number layout.
-pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
+///
+/// `full_optimization` controls whether whole-program passes
+/// (`fuse_compare_branch`, the 32-bit `fuse_smull_sign_ext_across_edges`)
+/// run after the per-block sweep. Block-local passes always run.
+pub(crate) fn optimize(
+    program: &mut MachineProgram,
+    config: BackendConfig,
+    full_optimization: bool,
+) {
     let mut ctx = BlockOptCtx::new(config);
     for block in &mut program.blocks {
         optimize_block(&mut ctx, block);
     }
-    if config.is_32bit_gp_target() {
-        fuse_smull_sign_ext::fuse_smull_sign_ext_across_edges(program, ctx.total_reg_count);
+    if full_optimization {
+        if config.is_32bit_gp_target() {
+            fuse_smull_sign_ext::fuse_smull_sign_ext_across_edges(program, ctx.total_reg_count);
+        }
+        fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
     }
-    fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
 }
