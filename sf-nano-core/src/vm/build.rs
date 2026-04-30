@@ -503,7 +503,11 @@ fn finish_native_compile_streaming(
             PrepareInput {
                 config: backend,
                 function_index: Some(func_idx as u32),
-                full_optimization: full_opt,
+                mode: if full_opt {
+                    crate::vm::middle::PrepareMode::Full
+                } else {
+                    crate::vm::middle::PrepareMode::UniformBoundaryStreaming
+                },
             },
             semantic,
         )?;
@@ -1041,7 +1045,11 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             PrepareInput {
                 config: backend,
                 function_index: Some(func_idx as u32),
-                full_optimization: full_opt,
+                mode: if full_opt {
+                    crate::vm::middle::PrepareMode::Full
+                } else {
+                    crate::vm::middle::PrepareMode::UniformBoundaryStreaming
+                },
             },
             semantic,
         )?;

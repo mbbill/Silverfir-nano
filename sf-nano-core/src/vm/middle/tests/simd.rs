@@ -31,7 +31,7 @@ fn prepare_accepts_v128_locals() {
         PrepareInput {
             config: BackendConfig::new(8, 8, 8, 3),
             function_index: None,
-            full_optimization: true,
+            mode: crate::vm::middle::PrepareMode::Full,
         },
         semantic,
     )
@@ -67,7 +67,7 @@ fn prepare_accepts_v128_primitives() {
         PrepareInput {
             config: BackendConfig::new(8, 8, 8, 3),
             function_index: None,
-            full_optimization: true,
+            mode: crate::vm::middle::PrepareMode::Full,
         },
         semantic,
     )

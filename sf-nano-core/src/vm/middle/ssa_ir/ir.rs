@@ -575,6 +575,12 @@ pub(crate) struct SsaProgram {
     pub primitive_pool: collections::Vec<PrimitiveOpKind>,
     /// Backing store for `Call` variants; `SsaInst.meta` is the index.
     pub call_ops: collections::Vec<SsaCallOp>,
+    /// True when this program was prepared under
+    /// `PrepareMode::UniformBoundaryStreaming`. Tells the MachineIR lowerer
+    /// it can skip the dominator-based whole-program cache layout (and the
+    /// cross-block dirty-flag fixpoint) and use a uniform per-block layout
+    /// derived from `block_entry_cached_slots[entry]` instead.
+    pub uniform_boundary: bool,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

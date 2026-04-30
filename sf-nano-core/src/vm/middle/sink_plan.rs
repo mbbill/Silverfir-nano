@@ -181,6 +181,7 @@ mod tests {
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
+            uniform_boundary: false,
         }
     }
 

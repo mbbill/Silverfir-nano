@@ -132,23 +132,123 @@ impl ProgramBuilder {
     }
 }
 
+/// Per-block emission yielded by `rewrite_function_streaming` to its
+/// sink. Carries the lowered `SsaBlock` and the per-block cache-tracking
+/// metadata that the SSA program needs (entry/exit cached slots, CFG
+/// origin tracking when enabled in debug builds).
+///
+/// `exit_cached_slots` is consumed only by `insert_boundary_repair_blocks`
+/// in `Full` mode — the streaming consumer in `UniformBoundaryStreaming`
+/// mode discards it.
+pub(crate) struct SsaBlockEmit {
+    pub block: SsaBlock,
+    pub entry_cached_slots: collections::Vec<FrameSlot>,
+    pub exit_cached_slots: collections::Vec<FrameSlot>,
+    pub cfg_origins: collections::Vec<u32>,
+}
+
+pub(crate) type SsaBlockSink<'a> = dyn FnMut(SsaBlockEmit) -> Result<(), WasmError> + 'a;
+
+/// Function-wide state finalized at the end of rewrite.
+///
+/// The streaming variant returns this so callers can assemble an
+/// `SsaProgram` shell around the streamed blocks. The hosted accumulating
+/// wrapper does this in one step; future streaming consumers (M2b) build
+/// per-block lowering state from it directly.
+pub(crate) struct SsaProgramTail {
+    pub entry: SsaTarget,
+    pub local_slot_types: collections::Vec<crate::value_type::ValueType>,
+    pub local_slot_info: collections::Vec<LocalSlotInfo>,
+    pub value_types: collections::Vec<crate::value_type::ValueType>,
+    pub value_sink_local: collections::Vec<Option<FrameSlot>>,
+    pub const_pool: collections::Vec<u64>,
+    pub primitive_pool: collections::Vec<primitive_op::PrimitiveOpKind>,
+    pub call_ops: collections::Vec<SsaCallOp>,
+}
+
 pub(crate) fn rewrite_function(
+    semantic: SemanticProgram,
+    cfg: &RewriteCfg,
+    planner: JointPlanner,
+    frame: FrameLayoutPlan,
+    mode: crate::vm::middle::PrepareMode,
+) -> Result<SsaProgram, WasmError> {
+    let mut blocks = collections::Vec::new();
+    let mut entry_slots = collections::Vec::new();
+    let mut exit_slots = collections::Vec::new();
+    let mut origins = collections::Vec::new();
+    let tail = {
+        let mut sink = |emit: SsaBlockEmit| -> Result<(), WasmError> {
+            blocks.push(emit.block);
+            entry_slots.push(emit.entry_cached_slots);
+            exit_slots.push(emit.exit_cached_slots);
+            origins.push(emit.cfg_origins);
+            Ok(())
+        };
+        rewrite_function_streaming(semantic, cfg, planner, frame, mode, &mut sink)?
+    };
+    let mut program = SsaProgram {
+        entry: tail.entry,
+        blocks,
+        local_slot_types: tail.local_slot_types,
+        local_slot_info: tail.local_slot_info,
+        block_entry_cached_slots: entry_slots,
+        block_cfg_origins: origins,
+        value_types: tail.value_types,
+        value_sink_local: tail.value_sink_local,
+        const_pool: tail.const_pool,
+        primitive_pool: tail.primitive_pool,
+        call_ops: tail.call_ops,
+        uniform_boundary: matches!(
+            mode,
+            crate::vm::middle::PrepareMode::UniformBoundaryStreaming
+        ),
+    };
+    if let Some(entry_block) = program
+        .blocks
+        .iter()
+        .find(|block| block.id == program.entry)
+    {
+        if !entry_block.params.is_empty() {
+            return Err(WasmError::internal(
+                "entry block unexpectedly has SSA params after middle rewrite",
+            ));
+        }
+    }
+    // Uniform-boundary streaming mode skips the post-pass: every block
+    // is already supposed to enter and exit with the same cache state
+    // (enforced by `ensure_uniform_cache_boundary` in `lower_block_range`),
+    // so there is no per-edge repair work to do.
+    if matches!(mode, crate::vm::middle::PrepareMode::Full) {
+        insert_boundary_repair_blocks(&mut program, &exit_slots);
+    }
+    drop(exit_slots);
+    Ok(program)
+}
+
+/// Streaming form of `rewrite_function`. Emits one `SsaBlockEmit` per
+/// block via `sink` (mains in CFG order first, then extras), and returns
+/// the function-wide tail metadata. Future consumers (M2b) wire this
+/// directly to the SSA→MIR streaming consumer to drop SSA blocks as
+/// they're produced. The current accumulating wrapper above buffers
+/// the blocks back into an `SsaProgram` for the Full-mode passes.
+pub(crate) fn rewrite_function_streaming(
     mut semantic: SemanticProgram,
     cfg: &RewriteCfg,
     planner: JointPlanner,
     frame: FrameLayoutPlan,
-) -> Result<SsaProgram, WasmError> {
+    mode: crate::vm::middle::PrepareMode,
+    sink: &mut SsaBlockSink<'_>,
+) -> Result<SsaProgramTail, WasmError> {
+    let _ = mode; // mode is implied via planner.is_uniform_boundary()
     if semantic.ops.is_empty() {
         let local_slot_info = collect_local_slot_info(&semantic);
         let local_slot_types = core::mem::take(&mut semantic.local_types);
         drop(semantic);
-        return Ok(SsaProgram {
+        return Ok(SsaProgramTail {
             entry: SsaTarget(0),
-            blocks: collections::Vec::new(),
             local_slot_types,
             local_slot_info,
-            block_entry_cached_slots: collections::Vec::new(),
-            block_cfg_origins: collections::Vec::new(),
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
             const_pool: collections::Vec::new(),
@@ -171,18 +271,11 @@ pub(crate) fn rewrite_function(
     let original_block_count = cfg.blocks.len();
     let track_cfg_origins = track_block_cfg_origins();
     let mut builder = ProgramBuilder::default();
-    let mut blocks = collections::Vec::with_capacity(original_block_count);
-    let mut block_entry_cached_slots = collections::Vec::with_capacity(original_block_count);
-    let mut block_exit_cached_slots = collections::Vec::with_capacity(original_block_count);
-    let mut block_cfg_origins = if track_cfg_origins {
-        collections::Vec::with_capacity(original_block_count)
-    } else {
-        collections::Vec::new()
-    };
-    let mut extra_blocks = collections::Vec::new();
-    let mut extra_block_cached_slots = collections::Vec::new();
-    let mut extra_block_exit_cached_slots = collections::Vec::new();
-    let mut extra_block_cfg_origins = collections::Vec::new();
+    // Extras must be sunk AFTER all main blocks so the resulting
+    // `SsaProgram.blocks` Vec stays indexed by id (mains 0..N-1, then
+    // extras N..N+E-1). Buffer them across iterations and flush below.
+    let mut extras_pending: collections::Vec<SsaBlockEmit> = collections::Vec::new();
+    let mut extras_so_far: usize = 0;
     for (block_index, cfg_block) in cfg.blocks.iter().enumerate() {
         let block_entry = planner.block_open(cfg_block.id);
         let params = block_params[block_index].clone();
@@ -207,23 +300,32 @@ pub(crate) fn rewrite_function(
             &mut values,
             &mut builder,
             original_block_count,
-            extra_blocks.len(),
+            extras_so_far,
         )?;
-        let final_entry = filter_block_entry_cached_slots(
-            &planner.finalize_block_entry(cfg_block.id, &lowered.actual_exit_cached_slots),
-            &lowered.actual_exit_cached_slots,
-            &lowered.ops,
-        );
+        // Uniform-boundary streaming mode keeps every block's entry
+        // cached-local set identical (the planner's tentative set).
+        // Filtering would re-introduce per-block divergence — the
+        // exact mismatch the post-pass repair was inserting blocks
+        // to fix. So in uniform mode we trust the planner output.
+        let final_entry = if planner.is_uniform_boundary() {
+            planner.finalize_block_entry(cfg_block.id, &lowered.actual_exit_cached_slots)
+        } else {
+            filter_block_entry_cached_slots(
+                &planner.finalize_block_entry(cfg_block.id, &lowered.actual_exit_cached_slots),
+                &lowered.actual_exit_cached_slots,
+                &lowered.ops,
+            )
+        };
         let actual_exit = simulate_materialized_cache_exit(&final_entry, &lowered.ops);
         let mut final_entry = final_entry;
         final_entry.shrink_to_fit();
         let mut actual_exit = actual_exit;
         actual_exit.shrink_to_fit();
-        block_entry_cached_slots.push(final_entry);
-        block_exit_cached_slots.push(actual_exit);
-        if track_cfg_origins {
-            block_cfg_origins.push(collections::vec![block_index as u32]);
-        }
+        let main_origins = if track_cfg_origins {
+            collections::vec![block_index as u32]
+        } else {
+            collections::Vec::new()
+        };
         let mut block = SsaBlock {
             id: SsaTarget(block_index as u32),
             params,
@@ -232,26 +334,63 @@ pub(crate) fn rewrite_function(
             terminator: lowered.terminator,
         };
         shrink_ssa_block_storage(&mut block);
-        blocks.push(block);
-        extra_block_cached_slots.extend(lowered.extra_block_cached_slots);
-        extra_block_exit_cached_slots.extend(lowered.extra_block_exit_cached_slots);
-        if track_cfg_origins {
-            extra_block_cfg_origins.extend(lowered.extra_block_cfg_origins);
+        sink(SsaBlockEmit {
+            block,
+            entry_cached_slots: final_entry,
+            exit_cached_slots: actual_exit,
+            cfg_origins: main_origins,
+        })?;
+
+        // Buffer extras for emission after all mains, preserving the
+        // historical `blocks` Vec layout (mains in id order then extras).
+        let extras_count = lowered.extra_blocks.len();
+        let uniform = planner.is_uniform_boundary();
+        let uniform_set: collections::Vec<FrameSlot> = if uniform {
+            block_entry.cached_locals.iter().copied().collect()
+        } else {
+            collections::Vec::new()
+        };
+        let mut extra_iter = lowered.extra_blocks.into_iter();
+        let mut entry_cached_iter = lowered.extra_block_cached_slots.into_iter();
+        let mut exit_cached_iter = lowered.extra_block_exit_cached_slots.into_iter();
+        let mut cfg_origins_iter = lowered.extra_block_cfg_origins.into_iter();
+        for _ in 0..extras_count {
+            let mut extra = extra_iter
+                .next()
+                .ok_or_else(|| WasmError::internal("extra_blocks count mismatch"))?;
+            if uniform && terminator_has_outgoing_edge(&extra.terminator) {
+                for &slot in &uniform_set {
+                    extra.ops.push(SsaInst::local_ensure_cache(slot));
+                }
+            }
+            shrink_ssa_block_storage(&mut extra);
+            let entry_cached = if uniform {
+                uniform_set.clone()
+            } else {
+                entry_cached_iter.next().unwrap_or_default().into()
+            };
+            let exit_cached = if uniform {
+                uniform_set.clone()
+            } else {
+                exit_cached_iter.next().unwrap_or_default().into()
+            };
+            let cfg_origins = if track_cfg_origins {
+                cfg_origins_iter.next().unwrap_or_default().into()
+            } else {
+                collections::Vec::new()
+            };
+            extras_pending.push(SsaBlockEmit {
+                block: extra,
+                entry_cached_slots: entry_cached,
+                exit_cached_slots: exit_cached,
+                cfg_origins,
+            });
         }
-        for mut block in lowered.extra_blocks {
-            shrink_ssa_block_storage(&mut block);
-            extra_blocks.push(block);
-        }
+        extras_so_far += extras_count;
     }
-    blocks.reserve_exact(extra_blocks.len());
-    blocks.extend(extra_blocks);
-    block_entry_cached_slots.reserve_exact(extra_block_cached_slots.len());
-    block_entry_cached_slots.extend(extra_block_cached_slots);
-    block_exit_cached_slots.reserve_exact(extra_block_exit_cached_slots.len());
-    block_exit_cached_slots.extend(extra_block_exit_cached_slots);
-    if track_cfg_origins {
-        block_cfg_origins.reserve_exact(extra_block_cfg_origins.len());
-        block_cfg_origins.extend(extra_block_cfg_origins);
+
+    for emit in extras_pending {
+        sink(emit)?;
     }
 
     drop(block_params);
@@ -260,35 +399,16 @@ pub(crate) fn rewrite_function(
     let local_slot_types = core::mem::take(&mut semantic.local_types);
     drop(semantic);
 
-    let mut program = SsaProgram {
+    Ok(SsaProgramTail {
         entry: SsaTarget(cfg.entry.0),
         local_slot_types,
         local_slot_info,
-        block_entry_cached_slots,
-        block_cfg_origins,
-        blocks,
         value_types: values.take_types(),
         value_sink_local: collections::Vec::new(),
         const_pool: collections::Vec::new(),
         primitive_pool: builder.primitive_pool,
         call_ops: builder.call_ops,
-    };
-
-    if let Some(entry_block) = program
-        .blocks
-        .iter()
-        .find(|block| block.id == program.entry)
-    {
-        if !entry_block.params.is_empty() {
-            return Err(WasmError::internal(
-                "entry block unexpectedly has SSA params after middle rewrite",
-            ));
-        }
-    }
-
-    insert_boundary_repair_blocks(&mut program, &block_exit_cached_slots);
-    drop(block_exit_cached_slots);
-    Ok(program)
+    })
 }
 
 fn shrink_ssa_block_storage(block: &mut SsaBlock) {
@@ -432,6 +552,27 @@ fn lower_block_range(
         extra_blocks_len,
     )?;
 
+    // Uniform-boundary streaming mode: after the terminator's lowering
+    // has emitted any operand-publishing ops (spills, fills, calls,
+    // etc.) and updated `resident_cache` / `materialized_cache`, append
+    // ops that restore the function-wide cached-local set. The
+    // resulting state.ops shape is:
+    //   [..body ops..] [..terminator-emitted ops..] [..ensure ops..]
+    // and the terminator (returned separately) reads from the post-
+    // ensure cache state when generating outgoing edges.
+    //
+    // Skipped for terminators with no outgoing block edges (Return,
+    // TailCall*, Trap, Throw) since there's no successor that requires
+    // the cache to be restored.
+    if planner.is_uniform_boundary() && terminator_has_outgoing_edge(&terminator.terminator) {
+        ensure_uniform_cache_boundary(
+            entry_cached_locals,
+            &mut resident_cache,
+            &mut materialized_cache,
+            &mut state.ops,
+        );
+    }
+
     Ok(LoweredBlock {
         ops: state.ops,
         extra_args: state.extra_args,
@@ -476,6 +617,51 @@ fn ensure_state_fits_with_cache(
         ));
     }
     Ok(())
+}
+
+fn terminator_has_outgoing_edge(term: &SsaTerminator) -> bool {
+    matches!(
+        term,
+        SsaTerminator::Goto(_) | SsaTerminator::Branch { .. } | SsaTerminator::BrTable { .. }
+    )
+}
+
+/// Restore the uniform cached-local boundary contract at block exit.
+///
+/// In `UniformBoundaryStreaming` mode every block must exit with the
+/// same materialized cached-local set that successors expect at entry.
+/// We emit:
+/// - `LOCAL_DROP_CACHE` for any slot currently resident that the
+///   uniform set doesn't include (defensive — uniform-mode lowering
+///   shouldn't introduce these, but kept for safety).
+/// - `LOCAL_ENSURE_CACHE` for every slot in the uniform set, per the
+///   bring-up policy in `STREAMING_MIDDLE.md` §3 ("use Ensure for all
+///   global cached locals" — simple, less optimal after calls but
+///   correct).
+fn ensure_uniform_cache_boundary(
+    uniform_set: &[FrameSlot],
+    resident_cache: &mut BTreeSet<FrameSlot>,
+    materialized_cache: &mut BTreeSet<FrameSlot>,
+    ops: &mut collections::Vec<SsaInst>,
+) {
+    let uniform_btree: BTreeSet<FrameSlot> = uniform_set.iter().copied().collect();
+
+    let stale_residents: collections::Vec<FrameSlot> = resident_cache
+        .iter()
+        .copied()
+        .filter(|slot| !uniform_btree.contains(slot))
+        .collect();
+    for slot in stale_residents {
+        ops.push(SsaInst::local_drop_cache(slot));
+        resident_cache.remove(&slot);
+        materialized_cache.remove(&slot);
+    }
+
+    for &slot in uniform_set {
+        ops.push(SsaInst::local_ensure_cache(slot));
+        resident_cache.insert(slot);
+        materialized_cache.insert(slot);
+    }
 }
 
 fn count_cached_local_budget_units(

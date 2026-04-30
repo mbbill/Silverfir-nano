@@ -20,7 +20,7 @@ use crate::{
 
 use super::{
     block_open::{block_open_decision, finalize_block_entry_cached_locals, target_entry_decision},
-    build,
+    build, build_uniform,
     facts::FunctionPlan,
     interface::{
         BlockOpenDecision, FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery,
@@ -47,6 +47,26 @@ impl JointPlanner {
         let plan = build::build_plan(semantic, cfg, frame, config)?;
         validate::validate_plan(cfg, slot_block_count, &plan)?;
         Ok(Self { plan })
+    }
+
+    /// Build a uniform-boundary plan: every block has the same cached-local
+    /// set and the same dynamic-register split between transient and cache.
+    /// See `STREAMING_MIDDLE.md` for the full contract.
+    pub(crate) fn build_uniform_boundary(
+        semantic: &SemanticProgram,
+        cfg: &SemanticCfg,
+        slot_block_count: usize,
+        frame: FrameLayoutPlan,
+        config: BackendConfig,
+    ) -> Result<Self, WasmError> {
+        let plan = build_uniform::build_uniform_plan(semantic, cfg, frame, config)?;
+        validate::validate_plan(cfg, slot_block_count, &plan)?;
+        Ok(Self { plan })
+    }
+
+    #[inline]
+    pub(crate) fn is_uniform_boundary(&self) -> bool {
+        self.plan.uniform_boundary
     }
 
     #[inline]

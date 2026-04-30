@@ -47,4 +47,9 @@ pub(crate) struct FunctionPlan {
     pub gp_dynamic_budget: u8,
     pub fp_dynamic_budget: u8,
     pub blocks: collections::Vec<BlockPlan>,
+    /// True when this plan was built by `build_uniform_boundary`. The
+    /// rewriter uses this to skip per-block entry filtering and to
+    /// emit cache-restore ops at every block exit so the post-pass
+    /// boundary repair can be omitted.
+    pub uniform_boundary: bool,
 }

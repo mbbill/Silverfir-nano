@@ -45,7 +45,7 @@ use super::{
     lower_i64::I64Lowering,
     lower_i64_gp64::Gp64Lowering,
     lower_inst::LeafLowering,
-    lower_regalloc::{machine_block_params_for_value, MachineRegFile},
+    lower_regalloc::{machine_block_params_for_value, value_type_storage_type, MachineRegFile},
 };
 
 /// One prepared function borrowed for internal lowering helpers.
@@ -334,10 +334,20 @@ fn lower_function_into_sink(
     } else {
         &Gp64Lowering
     };
-    let explicit_cache = explicit_cached_locals(&input.ssa);
-    let entry_cache_params =
-        compute_block_entry_cache_params(regfile, &input.ssa, &explicit_cache, gp_reg_width)?;
-    let block_entry_cache_dirty = compute_block_entry_cache_dirty(&input.ssa, &explicit_cache);
+    let (explicit_cache, entry_cache_params, block_entry_cache_dirty) =
+        if input.ssa.uniform_boundary {
+            // Uniform-boundary streaming mode: every block enters and exits
+            // with the identical cached-local set chosen by the planner.
+            // Skip the dominator-based cache layout and the cross-block
+            // dirty-flag fixpoint; both reduce to a constant per-block view.
+            uniform_cache_metadata(&input.ssa, regfile, gp_reg_width)?
+        } else {
+            let cached = explicit_cached_locals(&input.ssa);
+            let params =
+                compute_block_entry_cache_params(regfile, &input.ssa, &cached, gp_reg_width)?;
+            let dirty = compute_block_entry_cache_dirty(&input.ssa, &cached);
+            (cached, params, dirty)
+        };
     release_cache_planning_only_ssa_storage(&mut input.ssa);
 
     // Emit order: id order. Continuations created during a block's
@@ -730,6 +740,122 @@ fn lower_function_into_sink(
     drop(entry_cache_params);
     drop(explicit_cache);
     Ok(())
+}
+
+/// Build the uniform-boundary cache layout directly from the planner's
+/// chosen cached-local set, bypassing the whole-program dominator analysis.
+///
+/// In uniform mode every block has the same `block_entry_cached_slots`
+/// vec, so we read the entry block's slots as the function-wide cache
+/// set. Cache lanes are placed at the top of each register bank — block
+/// transient params live at the low end, and the planner guarantees the
+/// transient pressure never reaches into the cache region (the chosen
+/// set fits in `total - max_peak`).
+///
+/// Outputs match the shape of the buffered/Full path so the rest of
+/// `lower_function_into_sink` is identical: per-block `entry_cache_params`
+/// and per-block `block_entry_cache_dirty` (every entry conservatively
+/// dirty so block-entry binding paths preserve the value-flow contract).
+fn uniform_cache_metadata(
+    program: &SsaProgram,
+    regfile: &MachineRegFile,
+    gp_reg_width: u8,
+) -> Result<
+    (
+        collections::Vec<CachedLocal>,
+        collections::Vec<collections::Vec<EntryCacheParam>>,
+        collections::Vec<collections::Vec<bool>>,
+    ),
+    WasmError,
+> {
+    let block_count = program.blocks.len();
+    let entry_idx = program.entry.as_usize();
+    let cached_slots: &[FrameSlot] = program
+        .block_entry_cached_slots
+        .get(entry_idx)
+        .map(|v| v.as_slice())
+        .unwrap_or(&[]);
+
+    if cached_slots.is_empty() {
+        let empty_params = collections::vec![collections::Vec::new(); block_count];
+        let empty_dirty = collections::vec![collections::Vec::new(); block_count];
+        return Ok((collections::Vec::new(), empty_params, empty_dirty));
+    }
+
+    let local_slot_types: &[ValueType] = program.local_slot_types.as_slice();
+    let local_slot_info = program.local_slot_info.as_slice();
+    let mut cached_locals: collections::Vec<CachedLocal> =
+        collections::Vec::with_capacity(cached_slots.len());
+    let mut gp_units: usize = 0;
+    let mut fp_units: usize = 0;
+    for &slot in cached_slots {
+        let slot_index = slot.0 as usize;
+        let ty = local_slot_types
+            .get(slot_index)
+            .copied()
+            .unwrap_or(ValueType::I32);
+        let info = local_slot_info.get(slot_index).copied().unwrap_or_default();
+        let storage = value_type_storage_type(ty);
+        cached_locals.push(CachedLocal {
+            slot,
+            ty: storage,
+            info,
+        });
+        if storage.is_fp() {
+            fp_units += 1;
+        } else if gp_reg_width == 4 && matches!(storage, MachineStorageType::GpI64) {
+            gp_units += 2;
+        } else {
+            gp_units += 1;
+        }
+    }
+
+    let gp_total = regfile.gp_allocatable_count();
+    let fp_total = regfile.fp_dynamic_count();
+    if gp_units > gp_total || fp_units > fp_total {
+        return Err(WasmError::internal(
+            "uniform-boundary cache plan exceeds backend dynamic-register budget",
+        ));
+    }
+    let mut gp_off = gp_total - gp_units;
+    let mut fp_off = fp_total - fp_units;
+
+    let mut template: collections::Vec<EntryCacheParam> =
+        collections::Vec::with_capacity(cached_locals.len());
+    for (idx, cached) in cached_locals.iter().enumerate() {
+        let regs = if cached.ty.is_fp() {
+            let lo = preferred_fp_dynamic_reg(regfile, fp_off).ok_or_else(|| {
+                WasmError::internal("uniform-boundary FP cache lane out of range")
+            })?;
+            fp_off += 1;
+            ValueRegs { lo, hi: None }
+        } else if gp_reg_width == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
+            let lo = preferred_gp_dynamic_reg(regfile, gp_off).ok_or_else(|| {
+                WasmError::internal("uniform-boundary GP cache lane out of range (i64 lo)")
+            })?;
+            let hi = preferred_gp_dynamic_reg(regfile, gp_off + 1).ok_or_else(|| {
+                WasmError::internal("uniform-boundary GP cache lane out of range (i64 hi)")
+            })?;
+            gp_off += 2;
+            ValueRegs { lo, hi: Some(hi) }
+        } else {
+            let lo = preferred_gp_dynamic_reg(regfile, gp_off).ok_or_else(|| {
+                WasmError::internal("uniform-boundary GP cache lane out of range")
+            })?;
+            gp_off += 1;
+            ValueRegs { lo, hi: None }
+        };
+        template.push(EntryCacheParam {
+            cached_index: idx as u16,
+            regs,
+            needs_value: true,
+        });
+    }
+
+    let entry_cache_params = collections::vec![template; block_count];
+    let block_entry_cache_dirty =
+        collections::vec![collections::vec![true; cached_locals.len()]; block_count];
+    Ok((cached_locals, entry_cache_params, block_entry_cache_dirty))
 }
 
 fn release_cache_planning_only_ssa_storage(ssa: &mut SsaProgram) {

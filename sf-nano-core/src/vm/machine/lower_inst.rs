@@ -1589,7 +1589,6 @@ impl<'a> BlockLowerContext<'a> {
         for entry in cache_entries.iter().copied() {
             let cached_index = usize::from(entry.cached_index);
             let cached = self.bound_cached_local(cached_index).ok_or_else(|| {
-                let _slot = self.cached_locals()[cached_index].slot;
                 WasmError::internal("edge to b expects cached local slot to stay resident, but source block b has no binding")
             })?;
             let _slot = cached.slot;

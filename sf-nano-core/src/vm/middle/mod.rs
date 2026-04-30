@@ -35,15 +35,34 @@ use self::{
     ssa_ir::{ir::SsaProgram, target::SsaTarget, validate::validate_program},
 };
 
+/// How the middle should prepare a function.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum PrepareMode {
+    /// ALGORITHM4 per-region cached-locals planning, all SSA passes
+    /// (cleanup, sink_plan, boundary repair). Highest codegen quality;
+    /// requires whole-function buffering.
+    Full,
+    /// Uniform-boundary contract: a single function-wide cached-local
+    /// set chosen by local index, transient/cache budget split per
+    /// `STREAMING_MIDDLE.md`. No region tree, no cross-block SSA
+    /// passes, no boundary repair. Lower codegen quality but enables
+    /// block-by-block streaming downstream.
+    UniformBoundaryStreaming,
+}
+
+impl PrepareMode {
+    #[inline]
+    pub(crate) fn full_optimization(self) -> bool {
+        matches!(self, Self::Full)
+    }
+}
+
 /// Preparation input bundle.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PrepareInput {
     pub config: BackendConfig,
     pub function_index: Option<u32>,
-    /// When `false`, cross-block SSA passes (cleanup, cross-block sink
-    /// planning) are skipped. Block-local passes (constant folding,
-    /// intra-block sink planning) still run. Default `true`.
-    pub full_optimization: bool,
+    pub mode: PrepareMode,
 }
 
 /// Shared frontend output consumed by interpreter and native backends.
@@ -84,26 +103,35 @@ pub(crate) fn prepare_function(
     let slot_block_count = semantic_cfg.blocks.len();
 
     let joint_plan_phase = phase_span_with_function("joint_plan", input.function_index);
-    let planner = JointPlanner::build(
-        &semantic,
-        &semantic_cfg,
-        slot_block_count,
-        frame,
-        input.config,
-    )?;
+    let planner = match input.mode {
+        PrepareMode::Full => JointPlanner::build(
+            &semantic,
+            &semantic_cfg,
+            slot_block_count,
+            frame,
+            input.config,
+        )?,
+        PrepareMode::UniformBoundaryStreaming => JointPlanner::build_uniform_boundary(
+            &semantic,
+            &semantic_cfg,
+            slot_block_count,
+            frame,
+            input.config,
+        )?,
+    };
     drop(joint_plan_phase);
 
     let rewrite_cfg = rewrite::RewriteCfg::from_semantic_cfg(&semantic_cfg);
     drop(semantic_cfg);
 
     let ssa_emit_phase = phase_span_with_function("ssa_emit", input.function_index);
-    let mut ssa = rewrite::rewrite_function(semantic, &rewrite_cfg, planner, frame)?;
+    let mut ssa = rewrite::rewrite_function(semantic, &rewrite_cfg, planner, frame, input.mode)?;
     drop(ssa_emit_phase);
     // Nothing past rewrite_function reads semantic_cfg, so release the compact
     // rewrite CFG before running cleanup / optimize / sink / validate.
     drop(rewrite_cfg);
 
-    if input.full_optimization {
+    if input.mode.full_optimization() {
         // Cleanup is whole-CFG: jump threading, single-pred merge,
         // unreachable-block removal. Block-streaming mode skips it; the
         // function still compiles correctly, just with the original
@@ -119,7 +147,7 @@ pub(crate) fn prepare_function(
     optimize::optimize_program(&mut ssa);
     drop(ssa_opt_phase);
 
-    if input.full_optimization {
+    if input.mode.full_optimization() {
         // Sink planning's legality check today is intra-block by
         // construction (`plan_block_sinks` is per-block), so it is safe
         // to run in either mode. We still gate it on full_optimization
@@ -180,5 +208,6 @@ fn empty_program(semantic: &SemanticProgram) -> SsaProgram {
         const_pool: collections::Vec::new(),
         primitive_pool: collections::Vec::new(),
         call_ops: collections::Vec::new(),
+        uniform_boundary: false,
     }
 }

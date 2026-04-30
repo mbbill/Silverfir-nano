@@ -75,6 +75,7 @@ pub(crate) fn build_plan(
         gp_dynamic_budget,
         fp_dynamic_budget,
         blocks,
+        uniform_boundary: false,
     };
 
     Ok(plan)

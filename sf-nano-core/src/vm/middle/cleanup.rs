@@ -992,6 +992,7 @@ mod tests {
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
+            uniform_boundary: false,
         };
 
         assert!(thread_one_empty_goto_block(&mut program));
@@ -1028,6 +1029,7 @@ mod tests {
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
+            uniform_boundary: false,
         };
         let vi = value_inst(&mut program, 0);
         program.blocks = collections::vec![
@@ -1109,6 +1111,7 @@ mod tests {
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
+            uniform_boundary: false,
         };
 
         assert!(remove_unreachable_blocks(&mut program));
@@ -1133,6 +1136,7 @@ mod tests {
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
+            uniform_boundary: false,
         };
         let vi0 = value_inst(&mut program, 0);
         let vi1 = value_inst(&mut program, 1);
@@ -1227,6 +1231,7 @@ mod tests {
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
+            uniform_boundary: false,
         };
 
         remove_blocks(&mut program, &[1]);
