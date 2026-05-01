@@ -70,6 +70,10 @@ struct Cli {
     #[structopt(long = "backend")]
     backend: Option<String>,
 
+    /// Override per-function compiler RAM budget passed to sf-nano-cli, e.g. 0, 400K, 2M.
+    #[structopt(long = "compiler-ram-budget")]
+    compiler_ram_budget: Option<String>,
+
     /// Skip RV32 qemu-user timestamp-setting tests whose syscalls are not implemented.
     #[structopt(long = "skip-rv32-qemu-timestamp-tests")]
     skip_rv32_qemu_timestamp_tests: bool,
@@ -430,6 +434,9 @@ fn run_wasm_test_with_subprocess(
     if let Some(ref backend) = cli.backend {
         cmd.arg("--backend").arg(backend);
     }
+    if let Some(budget) = compiler_ram_budget_setting(cli) {
+        cmd.arg("--compiler-ram-budget").arg(budget);
+    }
 
     let fixture_root = fixture_dir
         .map(|path| path.join("fs-tests.dir"))
@@ -552,6 +559,12 @@ fn run_wasm_test_with_subprocess(
     let _ = fs::remove_dir_all(&temp_root);
 
     output.map(|out| (out, command_line))
+}
+
+fn compiler_ram_budget_setting(cli: &Cli) -> Option<String> {
+    cli.compiler_ram_budget
+        .clone()
+        .or_else(|| std::env::var("SF_NANO_COMPILER_RAM_BUDGET").ok())
 }
 
 fn validate_test_output(config: &TestConfig, output: &TestOutput) -> Vec<TestFailure> {

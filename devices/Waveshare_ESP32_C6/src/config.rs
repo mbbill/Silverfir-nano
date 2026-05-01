@@ -9,6 +9,7 @@ pub fn init() {
         code_arena_bytes: CODE_ARENA_BYTES,
         wasm_memory_max_pages: WASM_MEMORY_MAX_PAGES,
         wasm_stack_bytes: WASM_STACK_BYTES,
+        compiler_ram_budget_bytes: u32::MAX,
     })
     .expect("waveshare-esp32-c6 runtime config already initialized");
 }

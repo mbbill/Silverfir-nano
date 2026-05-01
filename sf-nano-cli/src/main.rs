@@ -2,7 +2,10 @@
 use sf_nano_core::native_stats_snapshot;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::Instance;
-use sf_nano_core::{active_runtime_engine, set_backend_mode, BackendMode};
+use sf_nano_core::{
+    active_runtime_engine, runtime_config, set_backend_mode, set_runtime_config, BackendMode,
+    RuntimeConfig,
+};
 
 use std::path::PathBuf;
 use std::{env, fs, process};
@@ -36,6 +39,7 @@ fn run_cli(args: &[String]) -> i32 {
     let mut preopens: Vec<(String, PathBuf)> = Vec::new();
     let mut backend_mode = BackendMode::Native;
     let mut compile_only = false;
+    let mut compiler_ram_budget: Option<u32> = None;
     let mut remaining_args: Vec<String> = Vec::new();
     #[cfg(feature = "memprof")]
     let mut memprof_enabled = false;
@@ -107,6 +111,24 @@ fn run_cli(args: &[String]) -> i32 {
             backend_mode = parsed;
         } else if args[i] == "--compile-only" || args[i] == "--no-run" {
             compile_only = true;
+        } else if args[i] == "--compiler-ram-budget" {
+            i += 1;
+            if i >= args.len() {
+                eprintln!(
+                    "Error: --compiler-ram-budget requires a byte count (for example 400K, 2M, or a raw number)"
+                );
+                return 1;
+            }
+            match parse_byte_size(&args[i]) {
+                Some(bytes) => compiler_ram_budget = Some(bytes),
+                None => {
+                    eprintln!(
+                        "Error: --compiler-ram-budget value '{}' is not a valid byte size",
+                        args[i]
+                    );
+                    return 1;
+                }
+            }
         } else {
             remaining_args.push(args[i].clone());
         }
@@ -127,6 +149,36 @@ fn run_cli(args: &[String]) -> i32 {
         }
 
         set_backend_mode(backend_mode);
+        if compiler_ram_budget.is_none() {
+            match env::var("SF_NANO_COMPILER_RAM_BUDGET") {
+                Ok(value) => match parse_byte_size(&value) {
+                    Some(bytes) => compiler_ram_budget = Some(bytes),
+                    None => {
+                        eprintln!(
+                            "Error: SF_NANO_COMPILER_RAM_BUDGET value '{}' is not a valid byte size",
+                            value
+                        );
+                        return 1;
+                    }
+                },
+                Err(env::VarError::NotPresent) => {}
+                Err(err) => {
+                    eprintln!("Error: could not read SF_NANO_COMPILER_RAM_BUDGET: {}", err);
+                    return 1;
+                }
+            }
+        }
+        if let Some(bytes) = compiler_ram_budget {
+            let mut cfg: RuntimeConfig = *runtime_config();
+            cfg.compiler_ram_budget_bytes = bytes;
+            if let Err(err) = set_runtime_config(cfg) {
+                eprintln!(
+                    "Error: --compiler-ram-budget could not install runtime config: {:?}",
+                    err
+                );
+                return 1;
+            }
+        }
         let runtime_engine = match active_runtime_engine() {
             Ok(engine) => engine,
             Err(err) => {
@@ -245,6 +297,7 @@ fn print_usage(program_name: &str) {
     eprintln!("OPTIONS:");
     eprintln!("  --backend <auto|native>   Select the execution backend.");
     eprintln!("  --compile-only, --no-run  Compile/instantiate the module without invoking it.");
+    eprintln!("  --compiler-ram-budget <n> Override the per-function compiler RAM budget.");
     eprintln!("  --dir <guest::host|path>  Preopen a host directory (repeatable).");
     #[cfg(feature = "memprof")]
     {
@@ -279,6 +332,29 @@ fn print_usage(program_name: &str) {
             "  --memprof-report <html>   Requires building sf-nano-cli with --features memprof."
         );
     }
+}
+
+fn parse_byte_size(text: &str) -> Option<u32> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (digits, suffix) = trimmed.split_at(
+        trimmed
+            .find(|ch: char| !ch.is_ascii_digit())
+            .unwrap_or(trimmed.len()),
+    );
+    if digits.is_empty() {
+        return None;
+    }
+    let value = digits.parse::<u64>().ok()?;
+    let multiplier = match suffix.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kb" | "kib" => 1024,
+        "m" | "mb" | "mib" => 1024 * 1024,
+        _ => return None,
+    };
+    value.checked_mul(multiplier)?.try_into().ok()
 }
 
 fn print_native_stats() {

@@ -17,6 +17,7 @@ mod operands;
 mod preserved;
 mod reg;
 mod select;
+mod template;
 
 /// Mark a code address as a Thumb-mode function entry for ARM/Thumb
 /// interworking. On Thumb-2 builds (`sf_arm32_isa_thumb`), any address that

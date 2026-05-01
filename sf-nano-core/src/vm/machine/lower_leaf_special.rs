@@ -786,26 +786,39 @@ impl<'a> BlockLowerContext<'a> {
         continuation: MachineBlockId,
         trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
-        let index = self.use_value(single_arg(args)?.unwrap_value())?;
+        let index_value = single_arg(args)?.unwrap_value();
+        let index = self.use_value(index_value)?;
         let dst = self.alloc_result_value(single_result(results)?)?;
-        let index64 = dst;
-        let table_len = self.borrow_free_gp_dynamic_regs(1)?[0];
-        let continuation_ops = self.lower_table_access_continuation(
-            table_idx,
-            index,
-            index64,
-            table_len,
-            Some(dst),
-            None,
-        )?;
-        let terminator = self.lower_table_bounds_check(
-            table_idx,
-            index,
-            index64,
-            table_len,
-            continuation,
-            trap,
-        )?;
+        let (continuation_ops, terminator) = if self.remaining_use_count(index_value) == 0
+            && dst != index
+            && self.is_linear_value_reg(index)
+        {
+            let continuation_ops =
+                self.lower_table_access_continuation_from_index64(table_idx, dst, index, dst)?;
+            let terminator =
+                self.lower_table_bounds_check(table_idx, index, dst, index, continuation, trap)?;
+            (continuation_ops, terminator)
+        } else {
+            let index64 = dst;
+            let table_len = self.borrow_free_gp_dynamic_regs(1)?[0];
+            let continuation_ops = self.lower_table_access_continuation(
+                table_idx,
+                index,
+                index64,
+                table_len,
+                Some(dst),
+                None,
+            )?;
+            let terminator = self.lower_table_bounds_check(
+                table_idx,
+                index,
+                index64,
+                table_len,
+                continuation,
+                trap,
+            )?;
+            (continuation_ops, terminator)
+        };
         Ok(LeafLowering::Split {
             continuation,
             trap,
@@ -2242,6 +2255,74 @@ impl<'a> BlockLowerContext<'a> {
                 },
             });
         }
+        Ok(ops)
+    }
+
+    fn lower_table_access_continuation_from_index64(
+        &self,
+        table_idx: u32,
+        index64: MachineReg,
+        scratch: MachineReg,
+        load_dst: MachineReg,
+    ) -> Result<collections::Vec<MachineInst>, WasmError> {
+        let mut ops = collections::Vec::new();
+        let runtime_layout = self.runtime_abi_layout();
+        ops.push(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: scratch,
+                addr: self.runtime_addr(runtime_layout.context.table_views_base_offset),
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        ops.push(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: scratch,
+                addr: self.indexed_addr(
+                    scratch,
+                    table_idx,
+                    runtime_layout.pointer_len_view.stride as usize,
+                    runtime_layout.pointer_len_view.base_offset,
+                )?,
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
+        ops.push(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: self.gp_word_int_width(),
+                op: MachineIntBinaryOp::Mul,
+                dst: index64,
+                lhs: MachineValue::Reg(index64),
+                rhs: MachineValue::Imm64(u64::from(runtime_layout.ref_handle_stride)),
+            },
+        });
+        ops.push(MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: self.gp_word_int_width(),
+                op: MachineIntBinaryOp::Add,
+                dst: scratch,
+                lhs: MachineValue::Reg(scratch),
+                rhs: MachineValue::Reg(index64),
+            },
+        });
+        ops.push(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: load_dst,
+                addr: MachineAddr {
+                    base: scratch,
+                    offset: 0,
+                },
+                width: self.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        });
         Ok(ops)
     }
 

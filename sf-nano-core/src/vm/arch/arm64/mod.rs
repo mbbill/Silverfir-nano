@@ -8,3 +8,4 @@ mod operands;
 mod preserved;
 pub(crate) mod reg;
 mod simd;
+mod template;

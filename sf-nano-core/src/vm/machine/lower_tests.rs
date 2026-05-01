@@ -5151,17 +5151,18 @@ fn threads_live_linear_values_through_split_continuation_params() {
 
     assert_eq!(else_edge.target, continuation.id);
     assert_eq!(else_edge.args, expected_args);
-    assert!(continuation
-        .params
-        .iter()
-        .any(|param| param.reg == MachineReg(5)));
-    assert!(matches!(
-        continuation.ops[0].kind,
-        MachineInstKind::Convert {
-            op: MachineConvertOp::I64ExtendI32U,
-            ..
-        }
-    ));
+    assert!(continuation.params.iter().any(|param| {
+        continuation.ops.iter().any(|op| {
+            matches!(
+                op.kind,
+                MachineInstKind::IntBinary {
+                    op: MachineIntBinaryOp::Mul,
+                    lhs: MachineValue::Reg(reg),
+                    ..
+                } if reg == param.reg
+            )
+        })
+    }));
 }
 
 #[test]

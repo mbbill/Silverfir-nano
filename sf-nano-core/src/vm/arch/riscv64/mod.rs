@@ -7,3 +7,4 @@
 pub(super) mod abi;
 pub(crate) mod backend;
 mod preserved;
+mod template;

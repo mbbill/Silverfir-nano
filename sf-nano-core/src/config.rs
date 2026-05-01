@@ -48,6 +48,12 @@ pub struct RuntimeConfig {
     /// indexed in u64 slots). Hosted default is 2 MiB; MCU targets
     /// should set this to single-digit KiB for simple modules.
     pub wasm_stack_bytes: usize,
+
+    /// Per-function compiler-time RAM budget in bytes. Hosted builds
+    /// default this to `u32::MAX`, which preserves the existing full
+    /// optimization path. Embedded targets use this to keep oversized
+    /// functions out of the full compiler pipeline.
+    pub compiler_ram_budget_bytes: u32,
 }
 
 impl RuntimeConfig {
@@ -63,6 +69,7 @@ impl RuntimeConfig {
             wasm_memory_max_pages: 65536,
             // 2 MiB matches the former `constants::MAX_STACK_SIZE`.
             wasm_stack_bytes: 2 * 1024 * 1024,
+            compiler_ram_budget_bytes: u32::MAX,
         }
     };
 
@@ -74,6 +81,7 @@ impl RuntimeConfig {
         code_arena_bytes: 0,
         wasm_memory_max_pages: 0,
         wasm_stack_bytes: 0,
+        compiler_ram_budget_bytes: 0,
     };
 }
 

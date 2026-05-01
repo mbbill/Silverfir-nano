@@ -225,6 +225,17 @@ impl TextEmitter {
         }
     }
 
+    #[inline]
+    pub(crate) fn read_u32(&self, offset: usize) -> u32 {
+        let bytes = [
+            self.byte(offset),
+            self.byte(offset + 1),
+            self.byte(offset + 2),
+            self.byte(offset + 3),
+        ];
+        u32::from_le_bytes(bytes)
+    }
+
     // ── Finish ───────────────────────────────────────────────────────────
 
     #[inline]

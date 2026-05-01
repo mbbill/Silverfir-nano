@@ -19,6 +19,9 @@ use super::{
 
 use crate::vm::arch::common::helpers::is_fallthrough_edge;
 use crate::vm::arch::common::helpers::trap_code;
+use crate::vm::arch::common::template::{
+    decode_template_chain_next, encode_template_chain_next, TemplateBranchSense,
+};
 use crate::vm::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
 use crate::vm::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
 
@@ -238,6 +241,130 @@ impl<'a> X86_64Backend<'a> {
                 self.emit_jcc(cc, trap_label);
             }
         }
+        Ok(())
+    }
+
+    pub(crate) fn emit_template_skip_unless(
+        &mut self,
+        cond: &MachineBranchCond,
+        jump_when: TemplateBranchSense,
+        skip_bytes: usize,
+    ) -> Result<(), WasmError> {
+        match *cond {
+            MachineBranchCond::Value(value) => match value {
+                MachineValue::Imm64(value) => {
+                    let cond_true = value != 0;
+                    let jump_on_true = jump_when == TemplateBranchSense::IfTrue;
+                    if cond_true != jump_on_true {
+                        self.emit_template_skip_jump(skip_bytes)?;
+                    }
+                }
+                MachineValue::Reg(reg) => {
+                    let reg = self.map_gp_reg(reg)?;
+                    enc::test_rr_32(&mut self.core.text, reg, reg);
+                    let cc = match jump_when {
+                        TemplateBranchSense::IfTrue => Cc::E,
+                        TemplateBranchSense::IfFalse => Cc::NE,
+                    };
+                    self.emit_template_skip_jcc(cc, skip_bytes)?;
+                }
+                MachineValue::ReservedReg(_) => {
+                    return Err(WasmError::internal(
+                        "x86_64 template branch cannot read reserved cache register",
+                    ));
+                }
+            },
+            MachineBranchCond::IntCompare {
+                width,
+                kind,
+                sign,
+                lhs,
+                rhs,
+            } => {
+                self.lower_cmp_values(width, lhs, rhs)?;
+                let cc = match jump_when {
+                    TemplateBranchSense::IfTrue => map_int_cond(kind, sign).invert(),
+                    TemplateBranchSense::IfFalse => map_int_cond(kind, sign),
+                };
+                self.emit_template_skip_jcc(cc, skip_bytes)?;
+            }
+            MachineBranchCond::TestBits {
+                width,
+                kind,
+                src,
+                mask,
+            } => {
+                self.lower_tst_values(width, src, mask)?;
+                let cc = match kind {
+                    MachineCompareKind::Eq => Cc::E,
+                    MachineCompareKind::Ne => Cc::NE,
+                    _ => {
+                        return Err(WasmError::internal(
+                            "x86_64 template TestBits branch uses unsupported compare kind",
+                        ))
+                    }
+                };
+                let cc = match jump_when {
+                    TemplateBranchSense::IfTrue => cc.invert(),
+                    TemplateBranchSense::IfFalse => cc,
+                };
+                self.emit_template_skip_jcc(cc, skip_bytes)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_template_skip_jump(&mut self, skip_bytes: usize) -> Result<(), WasmError> {
+        let rel32_offset = enc::jmp_rel32(&mut self.core.text);
+        let target = self
+            .core
+            .text
+            .len()
+            .checked_add(skip_bytes)
+            .ok_or_else(|| WasmError::internal("x86_64 template skip offset overflow"))?;
+        enc::patch_rel32(&mut self.core.text, rel32_offset, target);
+        Ok(())
+    }
+
+    fn emit_template_skip_jcc(&mut self, cc: Cc, skip_bytes: usize) -> Result<(), WasmError> {
+        let rel32_offset = enc::jcc_rel32(&mut self.core.text, cc);
+        let target = self
+            .core
+            .text
+            .len()
+            .checked_add(skip_bytes)
+            .ok_or_else(|| WasmError::internal("x86_64 template skip offset overflow"))?;
+        enc::patch_rel32(&mut self.core.text, rel32_offset, target);
+        Ok(())
+    }
+
+    pub(crate) fn emit_template_jump_placeholder(
+        &mut self,
+        next: usize,
+    ) -> Result<usize, WasmError> {
+        let site = self.core.text.emit_u8(0xE9);
+        self.core.text.emit_u32(encode_template_chain_next(next)?);
+        Ok(site)
+    }
+
+    pub(crate) fn read_template_jump_next(&self, site: usize) -> Result<usize, WasmError> {
+        Ok(decode_template_chain_next(
+            self.core.text.read_u32(site + 1),
+        ))
+    }
+
+    pub(crate) fn patch_template_jump(
+        &mut self,
+        site: usize,
+        target: usize,
+    ) -> Result<(), WasmError> {
+        enc::patch_rel32(&mut self.core.text, site + 1, target);
+        Ok(())
+    }
+
+    pub(crate) fn emit_template_jump_to_offset(&mut self, target: usize) -> Result<(), WasmError> {
+        let rel32_offset = enc::jmp_rel32(&mut self.core.text);
+        enc::patch_rel32(&mut self.core.text, rel32_offset, target);
         Ok(())
     }
 

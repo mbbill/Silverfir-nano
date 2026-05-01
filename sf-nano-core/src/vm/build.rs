@@ -85,9 +85,35 @@ use crate::{
             dispatch_view::{NativeLocalCallInfo32, NativeLocalCallInfo64},
         },
         store::Store,
+        template,
         wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
     },
 };
+
+const COMPILE_EXPANSION_FACTOR: u32 = 160;
+const OVER_BUDGET_TEMPLATE_UNSUPPORTED: &str =
+    "function exceeds compiler RAM budget and is not supported by template jit";
+
+#[inline]
+fn full_optimization_for_bytecode_size(bytecode_size: usize) -> bool {
+    let budget = crate::runtime_config().compiler_ram_budget_bytes;
+    if budget == u32::MAX {
+        return true;
+    }
+    let Ok(bytecode_size) = u32::try_from(bytecode_size) else {
+        return false;
+    };
+    bytecode_size
+        .checked_mul(COMPILE_EXPANSION_FACTOR)
+        .map(|estimated| estimated <= budget)
+        .unwrap_or(false)
+}
+
+#[inline]
+fn over_budget_template_unsupported() -> WasmError {
+    WasmError::exhaustion(OVER_BUDGET_TEMPLATE_UNSUPPORTED)
+}
+
 fn decode_function_semantic(
     module: &ModuleInst,
     store: &Store,
@@ -311,6 +337,33 @@ fn build_static_summaries(
         let Some(spec) = func.spec() else {
             continue;
         };
+        let template_requested = !full_optimization_for_bytecode_size(spec.code().len());
+        if template_requested {
+            let template_scan_phase =
+                phase_span_with_function("template_scan", Some(func_idx as u32));
+            match template::scan_function(backend, spec, !module.memories.is_empty()) {
+                Ok(scan) => {
+                    let summary = FunctionStaticSummary {
+                        id: MachineFuncId(func_idx as u32),
+                        frame: plan_frame_layout(
+                            scan.local_count,
+                            scan.max_stack_height,
+                            backend.call_scratch_slots,
+                        ),
+                        result_count: scan.result_count,
+                    };
+                    abi.functions[func_idx] = summary.abi();
+                    is_local_func[func_idx] = true;
+                    drop(template_scan_phase);
+                    continue;
+                }
+                Err(err) if template::is_template_unsupported(&err) => {
+                    drop(template_scan_phase);
+                    return Err(over_budget_template_unsupported());
+                }
+                Err(err) => return Err(err),
+            }
+        }
         let sem_scan_function_phase = phase_span_with_function("sem_scan", Some(func_idx as u32));
         let semantic = decode_function_semantic(module, store, spec)?;
         let summary = FunctionStaticSummary {
@@ -379,6 +432,87 @@ fn emit_function_info_bytes(
     bytes
 }
 
+fn compile_full_streaming_function(
+    active_backend: arch::NativeBackend,
+    backend: BackendConfig,
+    module: &ModuleInst,
+    store: &Store,
+    spec: &FunctionSpec,
+    func_idx: usize,
+    func_id: MachineFuncId,
+    compiled_view: &mut StreamingCompiledModule,
+    const_pool: &mut ConstPoolBuilder,
+    is_local_func: &[bool],
+    groups: &mut usize,
+    ssa_ops: &mut usize,
+    mir_ops: &mut usize,
+    executable: &mut CodeBuffer,
+    #[cfg(sf_has_guard_pages)] use_guard_pages: bool,
+) -> Result<arch::common::types::FunctionArtifact, WasmError> {
+    let sem_decode_function_phase = phase_span_with_function("sem_decode", Some(func_idx as u32));
+    let semantic = decode_function_semantic(module, store, spec)?;
+    drop(sem_decode_function_phase);
+
+    let ssa_lower_function_phase = phase_span_with_function("ssa_lower", Some(func_idx as u32));
+    let prepared = prepare_function(
+        PrepareInput {
+            config: backend,
+            function_index: Some(func_idx as u32),
+        },
+        semantic,
+    )?;
+    drop(ssa_lower_function_phase);
+
+    *groups += 1;
+    *ssa_ops += prepared
+        .ssa
+        .blocks
+        .iter()
+        .map(|block| block.ops.len())
+        .sum::<usize>();
+
+    let result_count = spec.func_type().results().len() as u16;
+    let (mut machine, _abi) = lower_single_function(
+        backend,
+        LowerFunctionInput {
+            id: func_id,
+            frame: prepared.frame,
+            ssa: prepared.ssa,
+            result_count,
+        },
+        &mut compiled_view.abi.functions,
+        is_local_func,
+        const_pool,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages,
+    )?;
+    optimize_function(&mut machine, backend);
+    if backend.is_32bit_gp_target() {
+        machine
+            .program
+            .validate_32bit_gp_target(backend.first_fp_reg(), backend)?;
+    }
+    *mir_ops += machine
+        .program
+        .blocks
+        .iter()
+        .map(|block| block.ops.len())
+        .sum::<usize>();
+
+    compiled_view.sync_consts(const_pool)?;
+
+    let arch_lower_function_phase =
+        phase_span_with_function("arch_lower_func", Some(func_idx as u32));
+    let artifact = arch::dispatch_compile_function_into_buffer(
+        active_backend,
+        compiled_view,
+        &machine,
+        executable,
+    )?;
+    drop(arch_lower_function_phase);
+    Ok(artifact)
+}
+
 fn finish_native_compile_streaming(
     active_backend: arch::NativeBackend,
     backend: BackendConfig,
@@ -415,60 +549,7 @@ fn finish_native_compile_streaming(
             continue;
         };
 
-        let sem_decode_function_phase =
-            phase_span_with_function("sem_decode", Some(func_idx as u32));
-        let semantic = decode_function_semantic(module, store, spec)?;
-        drop(sem_decode_function_phase);
-
-        let ssa_lower_function_phase = phase_span_with_function("ssa_lower", Some(func_idx as u32));
-        let prepared = prepare_function(
-            PrepareInput {
-                config: backend,
-                function_index: Some(func_idx as u32),
-            },
-            semantic,
-        )?;
-        drop(ssa_lower_function_phase);
-
-        groups += 1;
-        ssa_ops += prepared
-            .ssa
-            .blocks
-            .iter()
-            .map(|block| block.ops.len())
-            .sum::<usize>();
-
         let func_id = MachineFuncId(func_idx as u32);
-        let result_count = spec.func_type().results().len() as u16;
-        let (mut machine, _abi) = lower_single_function(
-            backend,
-            LowerFunctionInput {
-                id: func_id,
-                frame: prepared.frame,
-                ssa: prepared.ssa,
-                result_count,
-            },
-            &mut compiled_view.abi.functions,
-            &is_local_func,
-            &mut const_pool,
-            #[cfg(sf_has_guard_pages)]
-            use_guard_pages,
-        )?;
-        optimize_function(&mut machine, backend);
-        if backend.is_32bit_gp_target() {
-            machine
-                .program
-                .validate_32bit_gp_target(backend.first_fp_reg(), backend)?;
-        }
-        mir_ops += machine
-            .program
-            .blocks
-            .iter()
-            .map(|block| block.ops.len())
-            .sum::<usize>();
-
-        compiled_view.sync_consts(&const_pool)?;
-
         let stream_base = executable.len();
         let scratch_base = page_align_function(stream_base, 0);
         let initial_padding = scratch_base.saturating_sub(stream_base);
@@ -476,16 +557,49 @@ fn finish_native_compile_streaming(
             arch::dispatch_emit_nop_padding(active_backend, &mut executable, initial_padding);
         }
 
-        let arch_lower_function_phase =
-            phase_span_with_function("arch_lower_func", Some(func_idx as u32));
-        let artifact = arch::dispatch_compile_function_into_buffer(
-            active_backend,
-            &compiled_view,
-            &machine,
-            &mut executable,
-        )?;
-        drop(arch_lower_function_phase);
-        drop(machine);
+        let template_requested = !full_optimization_for_bytecode_size(spec.code().len());
+        let artifact = if template_requested {
+            let template_phase = phase_span_with_function("template_jit", Some(func_idx as u32));
+            match template::compile_function_into_buffer(
+                active_backend,
+                &compiled_view,
+                spec,
+                func_id,
+                &mut executable,
+                !module.memories.is_empty(),
+            ) {
+                Ok(artifact) => {
+                    groups += 1;
+                    drop(template_phase);
+                    artifact
+                }
+                Err(err) if template::is_template_unsupported(&err) => {
+                    executable.set_len(scratch_base);
+                    drop(template_phase);
+                    return Err(over_budget_template_unsupported());
+                }
+                Err(err) => return Err(err),
+            }
+        } else {
+            compile_full_streaming_function(
+                active_backend,
+                backend,
+                module,
+                store,
+                spec,
+                func_idx,
+                func_id,
+                &mut compiled_view,
+                &mut const_pool,
+                &is_local_func,
+                &mut groups,
+                &mut ssa_ops,
+                &mut mir_ops,
+                &mut executable,
+                #[cfg(sf_has_guard_pages)]
+                use_guard_pages,
+            )?
+        };
 
         let text_len = artifact.text.len();
         let function_base = page_align_function(stream_base, text_len);

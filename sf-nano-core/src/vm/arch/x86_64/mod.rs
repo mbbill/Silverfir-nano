@@ -10,3 +10,4 @@ mod inst;
 mod preserved;
 mod reg;
 mod simd;
+mod template;

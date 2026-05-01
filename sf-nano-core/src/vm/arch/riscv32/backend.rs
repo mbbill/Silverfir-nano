@@ -9,6 +9,10 @@ use crate::{
             backend::ArchBackend,
             core::CompilerCore,
             scratch_pool::{DetachedScratch, ScratchPool},
+            template::{
+                decode_template_chain_next, encode_template_chain_next, template_i32_delta,
+                TemplateBranchSense,
+            },
             types::ParallelSource,
         },
         machine::machine_ir::{
@@ -1042,6 +1046,224 @@ impl<'a> Riscv32Backend<'a> {
                 self.emit_branch_to(branch, *src_s, abi::zero_reg(), label);
             }
         }
+        Ok(())
+    }
+
+    pub(crate) fn emit_template_skip_unless(
+        &mut self,
+        cond: &MachineBranchCond,
+        jump_when: TemplateBranchSense,
+        skip_bytes: usize,
+    ) -> Result<(), WasmError> {
+        let skip_when_true = jump_when == TemplateBranchSense::IfFalse;
+        match *cond {
+            MachineBranchCond::Value(value) => match value {
+                MachineValue::Imm64(value) => {
+                    let cond_true = value != 0;
+                    if cond_true == skip_when_true {
+                        let skip_target = self.template_skip_target(skip_bytes)?;
+                        let delta = template_i32_delta(self.core.text.len(), skip_target)?;
+                        self.core.text.emit_u32(enc::jal(abi::zero_reg(), delta));
+                    }
+                }
+                MachineValue::Reg(reg) => {
+                    let cond_s = self.map_gp_reg(reg)?;
+                    let branch = if skip_when_true {
+                        enc::Cond::Ne
+                    } else {
+                        enc::Cond::Eq
+                    };
+                    let skip_target = self.template_skip_target(skip_bytes)?;
+                    self.emit_template_cond_branch_to_offset(
+                        branch,
+                        cond_s,
+                        abi::zero_reg(),
+                        skip_target,
+                    )?;
+                }
+                MachineValue::ReservedReg(_) => {
+                    return Err(WasmError::internal(
+                        "riscv32 template branch cannot read reserved cache register",
+                    ))
+                }
+            },
+            MachineBranchCond::IntCompare {
+                width,
+                kind,
+                sign,
+                lhs,
+                rhs,
+            } => {
+                if width == MachineIntWidth::I32 {
+                    let direct_lhs = match lhs {
+                        MachineValue::Reg(reg) => Some(self.map_gp_reg(reg)?),
+                        _ => None,
+                    };
+                    let direct_rhs = match rhs {
+                        MachineValue::Reg(reg) => Some(self.map_gp_reg(reg)?),
+                        _ => None,
+                    };
+                    if direct_lhs.is_some() || direct_rhs.is_some() {
+                        let lhs_s = self.gp_scratch.scoped_alloc().detach();
+                        let rhs_s = self.gp_scratch.scoped_alloc().detach();
+                        let lhs_reg = if let Some(reg) = direct_lhs {
+                            reg
+                        } else {
+                            self.load_value_into(*lhs_s, lhs)?;
+                            *lhs_s
+                        };
+                        let rhs_reg = if let Some(reg) = direct_rhs {
+                            reg
+                        } else {
+                            self.load_value_into(*rhs_s, rhs)?;
+                            *rhs_s
+                        };
+                        let (mut branch, swap) = Self::branch_cond_for_compare(kind, sign);
+                        if !skip_when_true {
+                            branch = branch.invert();
+                        }
+                        let (lhs_reg, rhs_reg) = if swap {
+                            (rhs_reg, lhs_reg)
+                        } else {
+                            (lhs_reg, rhs_reg)
+                        };
+                        let skip_target = self.template_skip_target(skip_bytes)?;
+                        self.emit_template_cond_branch_to_offset(
+                            branch,
+                            lhs_reg,
+                            rhs_reg,
+                            skip_target,
+                        )?;
+                        return Ok(());
+                    }
+                }
+                let lhs_s = self.gp_scratch.scoped_alloc().detach();
+                let rhs_s = self.gp_scratch.scoped_alloc().detach();
+                self.load_value_into(*lhs_s, lhs)?;
+                self.load_value_into(*rhs_s, rhs)?;
+                self.canonicalize_compare_operand(*lhs_s, width, sign);
+                self.canonicalize_compare_operand(*rhs_s, width, sign);
+                let (mut branch, swap) = Self::branch_cond_for_compare(kind, sign);
+                if !skip_when_true {
+                    branch = branch.invert();
+                }
+                let (lhs, rhs) = if swap {
+                    (*rhs_s, *lhs_s)
+                } else {
+                    (*lhs_s, *rhs_s)
+                };
+                let skip_target = self.template_skip_target(skip_bytes)?;
+                self.emit_template_cond_branch_to_offset(branch, lhs, rhs, skip_target)?;
+            }
+            MachineBranchCond::TestBits {
+                width,
+                kind,
+                src,
+                mask,
+            } => {
+                let src_s = self.gp_scratch.scoped_alloc().detach();
+                let mask_s = self.gp_scratch.scoped_alloc().detach();
+                self.load_value_into(*src_s, src)?;
+                self.load_value_into(*mask_s, mask)?;
+                if width == MachineIntWidth::I32 {
+                    self.zext_w(*src_s, *src_s);
+                    self.zext_w(*mask_s, *mask_s);
+                }
+                self.core.text.emit_u32(enc::and(*src_s, *src_s, *mask_s));
+                let mut branch = match kind {
+                    MachineCompareKind::Eq => enc::Cond::Eq,
+                    MachineCompareKind::Ne => enc::Cond::Ne,
+                    _ => {
+                        return Err(WasmError::internal(
+                            "riscv32 template TestBits branch uses unsupported compare kind",
+                        ))
+                    }
+                };
+                if !skip_when_true {
+                    branch = branch.invert();
+                }
+                let skip_target = self.template_skip_target(skip_bytes)?;
+                self.emit_template_cond_branch_to_offset(
+                    branch,
+                    *src_s,
+                    abi::zero_reg(),
+                    skip_target,
+                )?;
+            }
+        }
+        Ok(())
+    }
+
+    fn template_skip_target(&self, skip_bytes: usize) -> Result<usize, WasmError> {
+        self.core
+            .text
+            .len()
+            .checked_add(4)
+            .and_then(|offset| offset.checked_add(skip_bytes))
+            .ok_or_else(|| WasmError::internal("riscv32 template skip offset overflow"))
+    }
+
+    fn emit_template_cond_branch_to_offset(
+        &mut self,
+        cond: enc::Cond,
+        lhs: RiscvReg,
+        rhs: RiscvReg,
+        target: usize,
+    ) -> Result<(), WasmError> {
+        let site = self.core.text.len();
+        let delta = template_i32_delta(site, target)?;
+        if !(-4096..=4094).contains(&delta) || delta & 1 != 0 {
+            return Err(WasmError::internal(
+                "riscv32 template conditional branch out of range",
+            ));
+        }
+        self.core.text.emit_u32(enc::b_type(cond, lhs, rhs, delta));
+        Ok(())
+    }
+
+    pub(crate) fn emit_template_jump_placeholder(
+        &mut self,
+        next: usize,
+    ) -> Result<usize, WasmError> {
+        let site = self.core.text.emit_u32(encode_template_chain_next(next)?);
+        self.core.text.emit_u32(0);
+        Ok(site)
+    }
+
+    pub(crate) fn read_template_jump_next(&self, site: usize) -> Result<usize, WasmError> {
+        Ok(decode_template_chain_next(self.core.text.read_u32(site)))
+    }
+
+    pub(crate) fn patch_template_jump(
+        &mut self,
+        site: usize,
+        target: usize,
+    ) -> Result<(), WasmError> {
+        self.patch_template_long_jump(site, target)
+    }
+
+    pub(crate) fn emit_template_jump_to_offset(&mut self, target: usize) -> Result<(), WasmError> {
+        let site = self.core.text.emit_u32(0);
+        self.core.text.emit_u32(0);
+        self.patch_template_long_jump(site, target)
+    }
+
+    fn patch_template_long_jump(&mut self, site: usize, target: usize) -> Result<(), WasmError> {
+        let delta = target as isize - site as isize;
+        let hi = (delta + 0x800) >> 12;
+        let lo = delta - (hi << 12);
+        if !(-524_288..=524_287).contains(&hi) || !(-2048..=2047).contains(&lo) {
+            return Err(WasmError::internal(
+                "riscv32 template jump out of pc-relative range",
+            ));
+        }
+        let scratch = RiscvReg::X5;
+        self.core
+            .text
+            .patch_u32(site, enc::auipc(scratch, (hi as u32) & 0x000f_ffff));
+        self.core
+            .text
+            .patch_u32(site + 4, enc::jalr(abi::zero_reg(), scratch, lo as i32));
         Ok(())
     }
 

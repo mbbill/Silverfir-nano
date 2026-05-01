@@ -16,6 +16,9 @@ use super::{
     enc::{self, Cond},
     inst::{emit_load_u32_into, prepare_gp},
 };
+use crate::vm::arch::common::template::{
+    decode_template_chain_next, encode_template_chain_next, template_i32_delta, TemplateBranchSense,
+};
 
 // Only the A32 br_table dispatch path references `Arm32Reg` directly (for
 // the `ADD PC, PC, Rm, LSL #2` PC-relative jump). On Thumb-2 builds that
@@ -23,6 +26,23 @@ use super::{
 // would be unused.
 #[cfg(not(sf_arm32_isa_thumb))]
 use super::reg::Arm32Reg;
+
+fn checked_arm32_template_branch_delta(
+    delta: i32,
+    context: &'static str,
+) -> Result<i32, WasmError> {
+    if delta & 0b11 != 0 {
+        return Err(WasmError::internal(context));
+    }
+    #[cfg(sf_arm32_isa_thumb)]
+    let in_range = (-16_777_216..=16_777_214).contains(&delta);
+    #[cfg(not(sf_arm32_isa_thumb))]
+    let in_range = (-16_777_216..=16_777_214).contains(&delta);
+    if !in_range {
+        return Err(WasmError::internal(context));
+    }
+    Ok(delta)
+}
 
 // ─── Terminator compilation ─────────────────────────────────────────────────
 
@@ -274,5 +294,65 @@ impl<'a> Arm32Backend<'a> {
                 })
             }
         }
+    }
+
+    pub(crate) fn emit_template_skip_unless(
+        &mut self,
+        cond: &MachineBranchCond,
+        jump_when: TemplateBranchSense,
+        skip_bytes: usize,
+    ) -> Result<(), WasmError> {
+        let arm_cond = self.compile_branch_condition(cond)?;
+        let skip_cond = match jump_when {
+            TemplateBranchSense::IfTrue => arm_cond.invert(),
+            TemplateBranchSense::IfFalse => arm_cond,
+        };
+        let target = self
+            .core
+            .text
+            .len()
+            .checked_add(4)
+            .and_then(|offset| offset.checked_add(skip_bytes))
+            .ok_or_else(|| WasmError::internal("arm32 template skip offset overflow"))?;
+        let delta = checked_arm32_template_branch_delta(
+            template_i32_delta(self.core.text.len(), target)?,
+            "arm32 template skip branch out of range",
+        )?;
+        self.core.text.emit_u32(enc::b_cond(skip_cond, delta));
+        Ok(())
+    }
+
+    pub(crate) fn emit_template_jump_placeholder(
+        &mut self,
+        next: usize,
+    ) -> Result<usize, WasmError> {
+        Ok(self.core.text.emit_u32(encode_template_chain_next(next)?))
+    }
+
+    pub(crate) fn read_template_jump_next(&self, site: usize) -> Result<usize, WasmError> {
+        Ok(decode_template_chain_next(self.core.text.read_u32(site)))
+    }
+
+    pub(crate) fn patch_template_jump(
+        &mut self,
+        site: usize,
+        target: usize,
+    ) -> Result<(), WasmError> {
+        let delta = checked_arm32_template_branch_delta(
+            template_i32_delta(site, target)?,
+            "arm32 template jump branch out of range",
+        )?;
+        self.core.text.patch_u32(site, enc::b(delta));
+        Ok(())
+    }
+
+    pub(crate) fn emit_template_jump_to_offset(&mut self, target: usize) -> Result<(), WasmError> {
+        let site = self.core.text.len();
+        let delta = checked_arm32_template_branch_delta(
+            template_i32_delta(site, target)?,
+            "arm32 template jump branch out of range",
+        )?;
+        self.core.text.emit_u32(enc::b(delta));
+        Ok(())
     }
 }

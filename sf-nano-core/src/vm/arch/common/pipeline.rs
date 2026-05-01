@@ -7,17 +7,18 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineBlockParam, MachineFloatWidth, MachineFunction, MachineTrapKind, MachineValue,
+            MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId, MachineFunction,
+            MachineProgram, MachineTrapKind, MachineValue,
         },
         runtime::code::CodegenModuleView,
         runtime::code_buf::CodeBuffer,
     },
 };
 
-use super::backend::ArchBackend;
 #[cfg(sf_has_debug_regions)]
 use super::types::DebugRegion;
 use super::types::{FunctionArtifact, ParallelSource};
+use super::{backend::ArchBackend, template::TemplateBackend};
 
 // ── compile_function ─────────────────────────────────────────────────────────
 
@@ -228,6 +229,122 @@ pub(crate) fn compile_function_into_buffer<'a, A: ArchBackend<'a>>(
         compiled,
         function,
         super::text_emitter::TextEmitter::new_in_code_buffer(executable),
+    )
+}
+
+pub(crate) fn compile_template_function_into_buffer<'a, A, F>(
+    compiled: &'a dyn CodegenModuleView,
+    func_id: MachineFuncId,
+    executable: &mut CodeBuffer,
+    emit_body: F,
+) -> Result<FunctionArtifact, WasmError>
+where
+    A: TemplateBackend<'a>,
+    F: FnOnce(&mut A) -> Result<(), WasmError>,
+{
+    let function = MachineFunction {
+        id: func_id,
+        program: MachineProgram {
+            entry: MachineBlockId(0),
+            fp_reg_init_widths: collections::Vec::new(),
+            blocks: collections::Vec::new(),
+        },
+    };
+
+    // ArchBackend ties the compiled-module and function borrows to one
+    // lifetime. The template driver owns this tiny placeholder function and
+    // drops the backend before `function` goes out of scope, so the widened
+    // lifetime cannot escape this function.
+    let function_ref: &'a MachineFunction = unsafe { core::mem::transmute(&function) };
+    let mut b = A::new(compiled, function_ref);
+    b.core_mut().text = super::text_emitter::TextEmitter::new_in_code_buffer(executable);
+    #[cfg(sf_has_debug_regions)]
+    let mut debug_regions = collections::Vec::new();
+
+    #[cfg(sf_has_debug_regions)]
+    let public_entry_start = b.core().text.len();
+    b.lower_prologue();
+    b.lower_root_caller_stub();
+    b.lower_epilogue();
+    #[cfg(sf_has_debug_regions)]
+    debug_regions.push(DebugRegion {
+        offset: public_entry_start,
+        len: b.core().text.len() - public_entry_start,
+        label: String::from("public_entry"),
+    });
+
+    let internal_entry_label = b.core().internal_entry_label;
+    b.core_mut().bind_label(internal_entry_label);
+    let internal_entry_offset = b.core().text.len();
+    #[cfg(sf_has_debug_regions)]
+    let body_start = internal_entry_offset;
+    b.lower_body_prelude();
+    emit_body(&mut b)?;
+    #[cfg(sf_has_debug_regions)]
+    debug_regions.push(DebugRegion {
+        offset: body_start,
+        len: b.core().text.len() - body_start,
+        label: String::from("template_body"),
+    });
+
+    #[cfg(sf_has_debug_regions)]
+    let pool_start = b.core().text.len();
+    b.lower_function_literal_pool()?;
+    #[cfg(sf_has_debug_regions)]
+    {
+        let pool_end = b.core().text.len();
+        if pool_end > pool_start {
+            debug_regions.push(DebugRegion {
+                offset: pool_start,
+                len: pool_end - pool_start,
+                label: String::from("literal_pool"),
+            });
+        }
+    }
+
+    #[cfg(sf_has_debug_regions)]
+    let tail_start = b.core().text.len();
+    let body_local_error_label = b.core().body_local_error_label;
+    b.core_mut().bind_label(body_local_error_label);
+    b.lower_body_local_error_tail();
+
+    let stack_overflow_label = b.core().stack_overflow_label;
+    b.core_mut().bind_label(stack_overflow_label);
+    b.lower_trap(MachineTrapKind::StackOverflow);
+
+    let deferred = core::mem::take(&mut b.core_mut().deferred_traps);
+    for (label, kind) in deferred {
+        b.core_mut().bind_label(label);
+        b.lower_trap(kind);
+    }
+    #[cfg(sf_has_debug_regions)]
+    {
+        let tail_end = b.core().text.len();
+        if tail_end > tail_start {
+            debug_regions.push(DebugRegion {
+                offset: tail_start,
+                len: tail_end - tail_start,
+                label: String::from("tail"),
+            });
+        }
+    }
+
+    b.patch_fixups()?;
+
+    #[cfg(sf_has_guard_pages)]
+    let body_local_error_offset = b
+        .core()
+        .labels
+        .get(b.core().body_local_error_label)
+        .and_then(|offset| *offset)
+        .ok_or_else(|| WasmError::internal("body_local_error label is unresolved"))?;
+
+    b.into_core().finish_artifact(
+        internal_entry_offset,
+        #[cfg(sf_has_guard_pages)]
+        body_local_error_offset,
+        #[cfg(sf_has_debug_regions)]
+        debug_regions,
     )
 }
 

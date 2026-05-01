@@ -26,6 +26,8 @@ pub(crate) mod result_buffer;
 pub(crate) mod runtime;
 pub(crate) mod store;
 pub(crate) mod tag;
+#[cfg(sf_jit)]
+pub(crate) mod template;
 pub(crate) mod value;
 pub(crate) mod value_encoding;
 pub(crate) mod wasm;

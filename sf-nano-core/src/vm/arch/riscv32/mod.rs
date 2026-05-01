@@ -8,6 +8,7 @@ pub(super) mod abi;
 pub(crate) mod backend;
 pub(crate) mod compile;
 mod preserved;
+mod template;
 
 use crate::{
     error::WasmError,

@@ -13,8 +13,41 @@ use super::inst::{materialize_u64_into, prepare_gp};
 use super::{abi, enc};
 use crate::vm::arch::common::helpers::is_fallthrough_edge;
 use crate::vm::arch::common::helpers::trap_code;
+use crate::vm::arch::common::template::{
+    decode_template_chain_next, encode_template_chain_next, template_i32_delta, TemplateBranchSense,
+};
 use crate::vm::arch::common::types::{LocalPtrPatch, PendingLocalPtrPatch};
 use crate::vm::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
+
+fn checked_arm64_template_words(
+    delta: i32,
+    min_words: i32,
+    max_words: i32,
+    context: &'static str,
+) -> Result<i32, WasmError> {
+    if delta & 0b11 != 0 {
+        return Err(WasmError::internal(context));
+    }
+    let words = delta / 4;
+    if !(min_words..=max_words).contains(&words) {
+        return Err(WasmError::internal(context));
+    }
+    Ok(words)
+}
+
+fn arm64_template_skip_words(current: usize, skip_bytes: usize) -> Result<i32, WasmError> {
+    let target = current
+        .checked_add(4)
+        .and_then(|offset| offset.checked_add(skip_bytes))
+        .ok_or_else(|| WasmError::internal("arm64 template skip offset overflow"))?;
+    let delta = template_i32_delta(current, target)?;
+    checked_arm64_template_words(
+        delta,
+        -(1 << 18),
+        (1 << 18) - 1,
+        "arm64 template skip branch out of range",
+    )
+}
 
 impl<'a> super::backend::Arm64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────────
@@ -234,7 +267,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.lower_branch_if(cond, trap_label)
     }
 
-    pub(super) fn lower_branch_if(
+    pub(crate) fn lower_branch_if(
         &mut self,
         cond: &MachineBranchCond,
         trap_label: usize,
@@ -282,6 +315,120 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 self.lower_b_cond(cond, trap_label);
             }
         }
+        Ok(())
+    }
+
+    pub(crate) fn emit_template_skip_unless(
+        &mut self,
+        cond: &MachineBranchCond,
+        jump_when: TemplateBranchSense,
+        skip_bytes: usize,
+    ) -> Result<(), WasmError> {
+        match *cond {
+            MachineBranchCond::Value(value) => match value {
+                MachineValue::Imm64(value) => {
+                    let cond_true = value != 0;
+                    let jump_on_true = jump_when == TemplateBranchSense::IfTrue;
+                    if cond_true != jump_on_true {
+                        let skip_words =
+                            arm64_template_skip_words(self.core.text.len(), skip_bytes)?;
+                        self.core.text.emit_u32(enc::b(skip_words));
+                    }
+                }
+                MachineValue::Reg(reg) => {
+                    let reg = self.map_gp_reg(reg)?;
+                    let skip_words = arm64_template_skip_words(self.core.text.len(), skip_bytes)?;
+                    let inst = match jump_when {
+                        TemplateBranchSense::IfTrue => enc::cbz_64(reg, skip_words),
+                        TemplateBranchSense::IfFalse => enc::cbnz_64(reg, skip_words),
+                    };
+                    self.core.text.emit_u32(inst);
+                }
+                MachineValue::ReservedReg(_) => {
+                    return Err(WasmError::internal(
+                        "arm64 template branch cannot read reserved cache register",
+                    ));
+                }
+            },
+            MachineBranchCond::IntCompare {
+                width,
+                kind,
+                sign,
+                lhs,
+                rhs,
+            } => {
+                self.lower_cmp_values(width, lhs, rhs)?;
+                let skip_words = arm64_template_skip_words(self.core.text.len(), skip_bytes)?;
+                let cond = match jump_when {
+                    TemplateBranchSense::IfTrue => map_int_cond(kind, sign).invert(),
+                    TemplateBranchSense::IfFalse => map_int_cond(kind, sign),
+                };
+                self.core.text.emit_u32(enc::b_cond(cond, skip_words));
+            }
+            MachineBranchCond::TestBits {
+                width,
+                kind,
+                src,
+                mask,
+            } => {
+                self.lower_tst_values(width, src, mask)?;
+                let skip_words = arm64_template_skip_words(self.core.text.len(), skip_bytes)?;
+                let cond = match kind {
+                    MachineCompareKind::Eq => enc::Cond::Eq,
+                    MachineCompareKind::Ne => enc::Cond::Ne,
+                    _ => {
+                        return Err(WasmError::internal(
+                            "arm64 template TestBits branch uses unsupported compare kind",
+                        ))
+                    }
+                };
+                let cond = match jump_when {
+                    TemplateBranchSense::IfTrue => cond.invert(),
+                    TemplateBranchSense::IfFalse => cond,
+                };
+                self.core.text.emit_u32(enc::b_cond(cond, skip_words));
+            }
+        }
+        Ok(())
+    }
+
+    pub(crate) fn emit_template_jump_placeholder(
+        &mut self,
+        next: usize,
+    ) -> Result<usize, WasmError> {
+        Ok(self.core.text.emit_u32(encode_template_chain_next(next)?))
+    }
+
+    pub(crate) fn read_template_jump_next(&self, site: usize) -> Result<usize, WasmError> {
+        Ok(decode_template_chain_next(self.core.text.read_u32(site)))
+    }
+
+    pub(crate) fn patch_template_jump(
+        &mut self,
+        site: usize,
+        target: usize,
+    ) -> Result<(), WasmError> {
+        let delta = template_i32_delta(site, target)?;
+        let words = checked_arm64_template_words(
+            delta,
+            -(1 << 25),
+            (1 << 25) - 1,
+            "arm64 template jump branch out of range",
+        )?;
+        self.core.text.patch_u32(site, enc::b(words));
+        Ok(())
+    }
+
+    pub(crate) fn emit_template_jump_to_offset(&mut self, target: usize) -> Result<(), WasmError> {
+        let site = self.core.text.len();
+        let delta = template_i32_delta(site, target)?;
+        let words = checked_arm64_template_words(
+            delta,
+            -(1 << 25),
+            (1 << 25) - 1,
+            "arm64 template jump branch out of range",
+        )?;
+        self.core.text.emit_u32(enc::b(words));
         Ok(())
     }
 

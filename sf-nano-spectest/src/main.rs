@@ -7,7 +7,7 @@ use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
 use sf_nano_core::{
     active_runtime_engine, reset_native_runtime_state, runtime_config, set_backend_mode,
-    target_has_simd, BackendMode,
+    set_runtime_config, target_has_simd, BackendMode, RuntimeConfig,
 };
 use std::{
     env,
@@ -41,6 +41,10 @@ struct Cli {
     /// Backend to use for execution (auto, native, fusion, base)
     #[structopt(long = "backend")]
     backend: Option<String>,
+
+    /// Override per-function compiler RAM budget, e.g. 0, 400K, 2M.
+    #[structopt(long = "compiler-ram-budget")]
+    compiler_ram_budget: Option<String>,
 }
 
 fn main() {
@@ -55,6 +59,10 @@ fn main() {
             std::process::exit(1);
         });
         set_backend_mode(mode);
+    }
+    if let Err(err) = apply_compiler_ram_budget(args.compiler_ram_budget.as_deref()) {
+        eprintln!("{}", err);
+        std::process::exit(1);
     }
     let runtime_engine = active_runtime_engine().unwrap_or_else(|err| {
         let requested = args
@@ -157,6 +165,54 @@ fn recommended_worker_stack_size() -> usize {
     // JIT might push. 4× headroom over the Wasm stack, with an 8 MiB
     // floor for deep-recursion spec tests.
     std::cmp::max(runtime_config().wasm_stack_bytes * 4, 8 * 1024 * 1024)
+}
+
+fn apply_compiler_ram_budget(arg: Option<&str>) -> Result<(), String> {
+    let value = match arg {
+        Some(value) => Some(value.to_string()),
+        None => match env::var("SF_NANO_COMPILER_RAM_BUDGET") {
+            Ok(value) => Some(value),
+            Err(env::VarError::NotPresent) => None,
+            Err(err) => {
+                return Err(format!(
+                    "could not read SF_NANO_COMPILER_RAM_BUDGET: {}",
+                    err
+                ))
+            }
+        },
+    };
+    let Some(value) = value else {
+        return Ok(());
+    };
+    let bytes = parse_byte_size(&value)
+        .ok_or_else(|| format!("invalid compiler RAM budget '{}'", value))?;
+    let mut cfg: RuntimeConfig = *runtime_config();
+    cfg.compiler_ram_budget_bytes = bytes;
+    set_runtime_config(cfg)
+        .map_err(|err| format!("could not install compiler RAM budget: {:?}", err))
+}
+
+fn parse_byte_size(text: &str) -> Option<u32> {
+    let trimmed = text.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let (digits, suffix) = trimmed.split_at(
+        trimmed
+            .find(|ch: char| !ch.is_ascii_digit())
+            .unwrap_or(trimmed.len()),
+    );
+    if digits.is_empty() {
+        return None;
+    }
+    let value = digits.parse::<u64>().ok()?;
+    let multiplier = match suffix.trim().to_ascii_lowercase().as_str() {
+        "" | "b" => 1,
+        "k" | "kb" | "kib" => 1024,
+        "m" | "mb" | "mib" => 1024 * 1024,
+        _ => return None,
+    };
+    value.checked_mul(multiplier)?.try_into().ok()
 }
 
 fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {
