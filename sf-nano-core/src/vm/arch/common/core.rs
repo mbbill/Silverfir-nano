@@ -24,15 +24,44 @@ use super::types::{
     DirectCallPatch, EdgeStub, FunctionArtifact, LocalPtrPatch, PendingLocalPtrPatch,
 };
 
+/// Function body source for a backend emission pass.
+///
+/// The optimized compiler owns a full `MachineFunction`; the template JIT
+/// streams directly from wasm and only needs the function id for ABI metadata,
+/// patches, and runtime lookups.
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum FunctionBody<'a> {
+    Mir(&'a MachineFunction),
+    Template { func_id: MachineFuncId },
+}
+
+impl<'a> FunctionBody<'a> {
+    pub(crate) fn func_id(self) -> MachineFuncId {
+        match self {
+            Self::Mir(function) => function.id,
+            Self::Template { func_id } => func_id,
+        }
+    }
+
+    fn mir_function(self) -> Option<&'a MachineFunction> {
+        match self {
+            Self::Mir(function) => Some(function),
+            Self::Template { .. } => None,
+        }
+    }
+}
+
 /// Shared compilation state for all arch backends.
 ///
 /// Owns all mutable bookkeeping (text buffer, labels, edges, patches).
-/// Borrows the immutable inputs (`compiled`, `function`).
+/// Borrows immutable module metadata and records where the function body
+/// events come from.
 /// Each arch backend embeds this as `pub core: CompilerCore<'a>`.
 #[derive(Debug)]
 pub(crate) struct CompilerCore<'a> {
     pub compiled: &'a dyn CodegenModuleView,
-    pub function: &'a MachineFunction,
+    pub body: FunctionBody<'a>,
+    pub func_id: MachineFuncId,
     pub text: TextEmitter,
     pub labels: collections::Vec<Option<usize>>,
     pub block_labels: collections::Vec<usize>,
@@ -71,22 +100,30 @@ pub(crate) struct CompilerCore<'a> {
 
 impl<'a> CompilerCore<'a> {
     /// Create a new `CompilerCore`.
-    pub(crate) fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
+    pub(crate) fn new(compiled: &'a dyn CodegenModuleView, body: FunctionBody<'a>) -> Self {
         let config = compiled.backend();
-        let block_cap = function
-            .program
-            .blocks
-            .iter()
-            .map(|block| block.id.0 as usize)
-            .max()
-            .unwrap_or(0)
-            + 1;
+        let func_id = body.func_id();
+        let block_cap = body
+            .mir_function()
+            .map(|function| {
+                function
+                    .program
+                    .blocks
+                    .iter()
+                    .map(|block| block.id.0 as usize)
+                    .max()
+                    .unwrap_or(0)
+                    + 1
+            })
+            .unwrap_or(0);
         let mut labels = collections::Vec::new();
         let mut block_labels = collections::vec![usize::MAX; block_cap];
-        for block in &function.program.blocks {
-            let label = labels.len();
-            labels.push(None);
-            block_labels[block.id.0 as usize] = label;
+        if let Some(function) = body.mir_function() {
+            for block in &function.program.blocks {
+                let label = labels.len();
+                labels.push(None);
+                block_labels[block.id.0 as usize] = label;
+            }
         }
         let stack_overflow_label = labels.len();
         labels.push(None);
@@ -98,14 +135,22 @@ impl<'a> CompilerCore<'a> {
         shared_trap_labels[trap_kind_index(MachineTrapKind::StackOverflow)] =
             Some(stack_overflow_label);
 
-        let fp_reg_widths = Self::init_fp_widths(function, config);
+        let fp_reg_widths = body
+            .mir_function()
+            .map(|function| Self::init_fp_widths(function, config))
+            .unwrap_or_else(|| collections::vec![None; usize::from(config.fp_dynamic_budget)]);
         #[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
-        let low32_dead_hi_defs =
-            Low32DeadHiDefs::compute(function, usize::from(config.total_reg_count()));
+        let low32_dead_hi_defs = body
+            .mir_function()
+            .map(|function| {
+                Low32DeadHiDefs::compute(function, usize::from(config.total_reg_count()))
+            })
+            .unwrap_or_default();
 
         Self {
             compiled,
-            function,
+            body,
+            func_id,
             text: TextEmitter::new(),
             labels,
             block_labels,
@@ -125,6 +170,16 @@ impl<'a> CompilerCore<'a> {
             internal_entry_label,
             shared_trap_labels,
         }
+    }
+
+    pub(crate) fn mir_function(&self) -> Result<&'a MachineFunction, WasmError> {
+        self.body
+            .mir_function()
+            .ok_or_else(|| WasmError::internal("template emission does not have a MachineFunction"))
+    }
+
+    pub(crate) fn mir_blocks(&self) -> Result<&'a [MachineBlock], WasmError> {
+        Ok(&self.mir_function()?.program.blocks)
     }
 
     #[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
@@ -254,38 +309,41 @@ impl<'a> CompilerCore<'a> {
 
     // ── Block layout ─────────────────────────────────────────────────────
 
-    pub(crate) fn block_layout(&self) -> collections::Vec<MachineBlockId> {
-        let mut order = collections::Vec::with_capacity(self.function.program.blocks.len());
-        let mut seen = collections::vec![false; self.function.program.blocks.len()];
-        let mut worklist = collections::vec![self.function.program.entry];
+    pub(crate) fn block_layout(&self) -> Result<collections::Vec<MachineBlockId>, WasmError> {
+        let function = self.mir_function()?;
+        let blocks = &function.program.blocks;
+        let mut order = collections::Vec::with_capacity(blocks.len());
+        let mut seen = collections::vec![false; blocks.len()];
+        let mut worklist = collections::vec![function.program.entry];
 
         while let Some(start) = worklist.pop() {
-            self.extend_block_trace(start, &mut seen, &mut order, &mut worklist);
+            self.extend_block_trace(start, blocks, &mut seen, &mut order, &mut worklist);
         }
 
-        for block in &self.function.program.blocks {
+        for block in blocks {
             if seen[block.id.as_usize()] {
                 continue;
             }
             worklist.push(block.id);
             while let Some(start) = worklist.pop() {
-                self.extend_block_trace(start, &mut seen, &mut order, &mut worklist);
+                self.extend_block_trace(start, blocks, &mut seen, &mut order, &mut worklist);
             }
         }
 
-        order
+        Ok(order)
     }
 
     fn extend_block_trace(
         &self,
         start: MachineBlockId,
+        blocks: &[MachineBlock],
         seen: &mut [bool],
         order: &mut collections::Vec<MachineBlockId>,
         worklist: &mut collections::Vec<MachineBlockId>,
     ) {
         let mut current = Some(start);
         while let Some(block_id) = current {
-            let Some(block) = self.function.program.blocks.get(block_id.as_usize()) else {
+            let Some(block) = blocks.get(block_id.as_usize()) else {
                 break;
             };
             if seen[block_id.as_usize()] {
@@ -297,7 +355,7 @@ impl<'a> CompilerCore<'a> {
             let mut fallthrough = None;
             match &block.terminator {
                 MachineTerminator::Jump(edge) => {
-                    if self.is_identity_edge(edge.target, &edge.args) {
+                    if self.is_identity_edge(blocks, edge.target, &edge.args) {
                         fallthrough = Some(edge.target);
                     } else {
                         worklist.push(edge.target);
@@ -308,7 +366,7 @@ impl<'a> CompilerCore<'a> {
                     else_edge,
                     ..
                 } => {
-                    if self.is_identity_edge(else_edge.target, &else_edge.args) {
+                    if self.is_identity_edge(blocks, else_edge.target, &else_edge.args) {
                         fallthrough = Some(else_edge.target);
                         worklist.push(then_edge.target);
                     } else {
@@ -335,8 +393,13 @@ impl<'a> CompilerCore<'a> {
 
     // ── Edge management ──────────────────────────────────────────────────
 
-    pub(crate) fn is_identity_edge(&self, target: MachineBlockId, args: &[MachineValue]) -> bool {
-        let Some(block) = self.function.program.blocks.get(target.as_usize()) else {
+    fn is_identity_edge(
+        &self,
+        blocks: &[MachineBlock],
+        target: MachineBlockId,
+        args: &[MachineValue],
+    ) -> bool {
+        let Some(block) = blocks.get(target.as_usize()) else {
             return false;
         };
         if block.params.len() != args.len() {
@@ -360,7 +423,8 @@ impl<'a> CompilerCore<'a> {
         target: MachineBlockId,
         args: &[MachineValue],
     ) -> Result<usize, WasmError> {
-        if self.is_identity_edge(target, args) {
+        let blocks = self.mir_blocks()?;
+        if self.is_identity_edge(blocks, target, args) {
             return self.block_label(target);
         }
         self.add_edge_stub(target, args)
@@ -372,9 +436,7 @@ impl<'a> CompilerCore<'a> {
         args: &[MachineValue],
     ) -> Result<usize, WasmError> {
         let block = self
-            .function
-            .program
-            .blocks
+            .mir_blocks()?
             .get(target.as_usize())
             .ok_or_else(|| WasmError::internal("edge target block is out of range"))?;
         let label = self.new_label();

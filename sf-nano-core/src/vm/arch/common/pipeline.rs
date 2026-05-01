@@ -7,14 +7,15 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId, MachineFunction,
-            MachineProgram, MachineTrapKind, MachineValue,
+            MachineBlockParam, MachineFloatWidth, MachineFuncId, MachineFunction, MachineTrapKind,
+            MachineValue,
         },
         runtime::code::CodegenModuleView,
         runtime::code_buf::CodeBuffer,
     },
 };
 
+use super::core::{CompilerCore, FunctionBody};
 #[cfg(sf_has_debug_regions)]
 use super::types::DebugRegion;
 use super::types::{FunctionArtifact, ParallelSource};
@@ -35,8 +36,9 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
         A::max_fp_regs(),
     )?;
 
-    let mut b = A::new(compiled, function);
-    b.core_mut().text = text;
+    let mut core = CompilerCore::new(compiled, FunctionBody::Mir(function));
+    core.text = text;
+    let mut b = A::new(core);
     #[cfg(sf_has_debug_regions)]
     let mut debug_regions = collections::Vec::new();
 
@@ -86,13 +88,11 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
     }
 
     // Blocks
-    let block_layout = b.core().block_layout();
+    let block_layout = b.core().block_layout()?;
     for (index, block_id) in block_layout.iter().copied().enumerate() {
         let block = b
             .core()
-            .function
-            .program
-            .blocks
+            .mir_blocks()?
             .get(block_id.as_usize())
             .ok_or_else(|| WasmError::internal("block layout references missing block"))?;
         let label = b.core().block_label(block.id)?;
@@ -242,22 +242,9 @@ where
     A: TemplateBackend<'a>,
     F: FnOnce(&mut A) -> Result<(), WasmError>,
 {
-    let function = MachineFunction {
-        id: func_id,
-        program: MachineProgram {
-            entry: MachineBlockId(0),
-            fp_reg_init_widths: collections::Vec::new(),
-            blocks: collections::Vec::new(),
-        },
-    };
-
-    // ArchBackend ties the compiled-module and function borrows to one
-    // lifetime. The template driver owns this tiny placeholder function and
-    // drops the backend before `function` goes out of scope, so the widened
-    // lifetime cannot escape this function.
-    let function_ref: &'a MachineFunction = unsafe { core::mem::transmute(&function) };
-    let mut b = A::new(compiled, function_ref);
-    b.core_mut().text = super::text_emitter::TextEmitter::new_in_code_buffer(executable);
+    let mut core = CompilerCore::new(compiled, FunctionBody::Template { func_id });
+    core.text = super::text_emitter::TextEmitter::new_in_code_buffer(executable);
+    let mut b = A::new(core);
     #[cfg(sf_has_debug_regions)]
     let mut debug_regions = collections::Vec::new();
 

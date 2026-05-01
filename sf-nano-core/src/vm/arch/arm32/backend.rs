@@ -16,16 +16,11 @@ use crate::{
         },
         machine::machine_ir::{
             fp_reg_index, MachineBlock, MachineBlockId, MachineBlockParam, MachineCallTarget,
-            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction,
-            MachineFunctionAbi, MachineInst, MachineReg, MachineTerminator, MachineTrapKind,
-            MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
-            MACHINE_MEM0_SIZE_REG,
+            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunctionAbi, MachineInst,
+            MachineReg, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
-        runtime::{
-            code::{CodegenModuleView, NativeRootEntry},
-            code_buf::CodeBuffer,
-            context::ctx_offset,
-        },
+        runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
 };
 
@@ -91,9 +86,9 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
         abi::max_fp_machine_regs()
     }
 
-    fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
+    fn new(core: CompilerCore<'a>) -> Self {
         Self {
-            core: CompilerCore::new(compiled, function),
+            core,
             fixups: collections::Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),
@@ -408,7 +403,7 @@ impl<'a> Arm32Backend<'a> {
         let helper_scratch = self
             .core
             .compiled
-            .runtime_for(self.core.function.id)
+            .runtime_for(self.core.func_id)
             .and_then(|runtime| runtime.helper_scratch);
         if let Some(helper_scratch) = helper_scratch {
             debug_assert!(
@@ -1156,7 +1151,7 @@ impl<'a> Arm32Backend<'a> {
     /// LR for the final `bx lr`. We bypass the scratch pool here and pin
     /// the two physical registers directly so the ordering is explicit.
     pub(super) fn emit_return_sequence(&mut self) -> Result<(), WasmError> {
-        let runtime = self.runtime_for(self.core.function.id)?.clone();
+        let runtime = self.runtime_for(self.core.func_id)?.clone();
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         // Allocate both GP scratches for the return sequence. They are
         // free at function-tail boundaries because every preceding insn

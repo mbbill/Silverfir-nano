@@ -39,7 +39,7 @@ impl<'a> X86_64Backend<'a> {
                     edge.target,
                     &edge.args,
                     fallthrough,
-                    &self.core.function.program.blocks,
+                    self.core.mir_blocks()?,
                 ) {
                     return Ok(());
                 }
@@ -88,7 +88,7 @@ impl<'a> X86_64Backend<'a> {
         else_edge: &MachineEdge,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        let blocks = &self.core.function.program.blocks;
+        let blocks = self.core.mir_blocks()?;
         let then_fallthrough =
             is_fallthrough_edge(then_edge.target, &then_edge.args, fallthrough, blocks);
         let else_fallthrough =
@@ -406,7 +406,7 @@ impl<'a> X86_64Backend<'a> {
     /// The matching error path is `body_local_error_label` (see
     /// `lower_body_local_error_tail` in `x86_64/backend.rs`).
     fn lower_return_sequence(&mut self) -> Result<(), WasmError> {
-        let runtime = self.core.runtime_for(self.core.function.id)?.clone();
+        let runtime = self.core.runtime_for(self.core.func_id)?.clone();
         let fp = map_fixed_reg(MACHINE_FP_REG);
         let result_base = self.gp_scratch.scoped_alloc().detach();
         let temp = self.gp_scratch.scoped_alloc().detach();

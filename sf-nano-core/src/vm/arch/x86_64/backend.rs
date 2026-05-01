@@ -10,16 +10,12 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFunction,
-            MachineInst, MachineIntWidth, MachineReg, MachineStorageType, MachineTerminator,
-            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
+            MachineIntWidth, MachineReg, MachineStorageType, MachineTerminator, MachineTrapKind,
+            MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
             MACHINE_MEM0_SIZE_REG,
         },
-        runtime::{
-            code::{CodegenModuleView, NativeRootEntry},
-            code_buf::CodeBuffer,
-            context::ctx_offset,
-        },
+        runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
 };
 
@@ -92,9 +88,9 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         max_fp_machine_regs()
     }
 
-    fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
+    fn new(core: CompilerCore<'a>) -> Self {
         Self {
-            core: CompilerCore::new(compiled, function),
+            core,
             fixups: collections::Vec::new(),
             gp_scratch: GpScratchPool::new(abi::gp_backend_owned_regs()),
             fp_scratch: abi::new_fp_scratch_pool(),

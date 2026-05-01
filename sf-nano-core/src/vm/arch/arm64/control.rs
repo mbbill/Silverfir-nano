@@ -64,7 +64,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     edge.target,
                     &edge.args,
                     fallthrough,
-                    &self.core.function.program.blocks,
+                    self.core.mir_blocks()?,
                 ) {
                     return Ok(());
                 }
@@ -113,7 +113,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         else_edge: &MachineEdge,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        let blocks = &self.core.function.program.blocks;
+        let blocks = self.core.mir_blocks()?;
         let then_fallthrough =
             is_fallthrough_edge(then_edge.target, &then_edge.args, fallthrough, blocks);
         let else_fallthrough =
@@ -643,7 +643,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
     /// The matching error path is `body_local_error_label` (see
     /// `lower_body_local_error_tail` in `arm64/backend.rs`).
     fn lower_return_sequence(&mut self) -> Result<(), WasmError> {
-        let runtime = self.runtime_for(self.core.function.id)?.clone();
+        let runtime = self.runtime_for(self.core.func_id)?.clone();
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let x29 = abi::host_fp_reg();
         let x30 = abi::host_lr_reg();

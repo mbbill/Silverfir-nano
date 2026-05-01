@@ -1,15 +1,14 @@
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFunction,
-        MachineInst, MachineReg, MachineTerminator, MachineTrapKind,
+        MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
+        MachineReg, MachineTerminator, MachineTrapKind,
     },
 };
 
 use super::core::CompilerCore;
 use super::types::ParallelSource;
 
-use crate::vm::runtime::code::CodegenModuleView;
 use crate::vm::runtime::code_buf::CodeBuffer;
 
 /// Trait that each architecture backend implements.
@@ -38,7 +37,7 @@ pub(crate) trait ArchBackend<'a>: Sized {
 
     // ── Construction ─────────────────────────────────────────────────────
 
-    fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self;
+    fn new(core: CompilerCore<'a>) -> Self;
 
     /// Access the shared CompilerCore.
     fn core(&self) -> &CompilerCore<'a>;

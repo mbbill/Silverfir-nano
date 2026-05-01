@@ -21,18 +21,15 @@ use crate::{
         machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
             MachineCallTarget, MachineCompareKind, MachineConstId, MachineConvertOp,
-            MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineFunction,
-            MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
+            MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineInst,
+            MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
             MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp, MachineSign,
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
             MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
-            code::{CodegenModuleView, NativeRootEntry},
-            code_buf::CodeBuffer,
-            context::ctx_offset,
-            runtime_call::call_runtime_entry_ptr,
-            trap::raise_trap,
+            code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset,
+            runtime_call::call_runtime_entry_ptr, trap::raise_trap,
         },
     },
 };
@@ -161,9 +158,9 @@ impl<'a> ArchBackend<'a> for Riscv64Backend<'a> {
         abi::max_fp_machine_regs()
     }
 
-    fn new(compiled: &'a dyn CodegenModuleView, function: &'a MachineFunction) -> Self {
+    fn new(core: CompilerCore<'a>) -> Self {
         Self {
-            core: CompilerCore::new(compiled, function),
+            core,
             fixups: collections::Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),
@@ -3466,7 +3463,7 @@ impl<'a> Riscv64Backend<'a> {
                     edge.target,
                     &edge.args,
                     fallthrough,
-                    &self.core.function.program.blocks,
+                    self.core.mir_blocks()?,
                 ) {
                     return Ok(());
                 }
@@ -3513,7 +3510,7 @@ impl<'a> Riscv64Backend<'a> {
         else_edge: &crate::vm::machine::machine_ir::MachineEdge,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        let blocks = &self.core.function.program.blocks;
+        let blocks = self.core.mir_blocks()?;
         let then_fallthrough =
             is_fallthrough_edge(then_edge.target, &then_edge.args, fallthrough, blocks);
         let else_fallthrough =
@@ -3541,7 +3538,7 @@ impl<'a> Riscv64Backend<'a> {
     }
 
     fn lower_return_sequence(&mut self) -> Result<(), WasmError> {
-        let runtime = self.core.runtime_for(self.core.function.id)?.clone();
+        let runtime = self.core.runtime_for(self.core.func_id)?.clone();
         let fp = abi::map_fixed_reg(MACHINE_FP_REG);
         let result_base = self.gp_scratch.scoped_alloc().detach();
         let temp = self.gp_scratch.scoped_alloc().detach();
