@@ -1,7 +1,20 @@
 {
   "permissions": {
-    "allow": []
+    "allow": [],
+    "deny": [],
+    "ask": []
   },
   "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 \"$CLAUDE_PROJECT_DIR/.claude/hooks/pre-tool-use.py\""
+          }
+        ]
+      }
+    ]
   }
 }
+
