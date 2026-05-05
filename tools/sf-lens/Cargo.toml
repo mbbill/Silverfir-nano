@@ -1,5 +1,5 @@
 [package]
-name = "sf-nano-code-facts"
+name = "sf-lens"
 version = "0.1.0"
 edition = "2021"
 authors = ["Bill Ming <mbbill@gmail.com>"]
@@ -7,7 +7,7 @@ description = "Codebase fact extractor for Silverfir-nano (per-type ownership fa
 license = "MIT/Apache-2.0"
 
 [[bin]]
-name = "code-facts"
+name = "sf-lens"
 path = "src/main.rs"
 
 [dependencies]

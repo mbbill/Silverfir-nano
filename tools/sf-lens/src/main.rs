@@ -19,7 +19,7 @@ use clap::{Parser, Subcommand};
 
 #[derive(Parser, Debug)]
 #[command(
-    name = "code-facts",
+    name = "sf-lens",
     version,
     about = "Extract ownership facts from a Rust workspace"
 )]

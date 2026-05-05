@@ -28,7 +28,7 @@ pub fn digest(ws: &WorkspaceFacts, module_filter: &str) {
         fp.contains(prefix)
     };
 
-    println!("# code-facts digest");
+    println!("# sf-lens digest");
     if !prefix.is_empty() {
         println!("filter: {prefix}");
     }

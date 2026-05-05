@@ -141,7 +141,7 @@ fn module_line(crate_name: &str, m: &ModuleFacts) -> ModuleLine {
 }
 
 fn print_header(crates: &[&crate::model::CrateFacts]) {
-    println!("== code-facts survey");
+    println!("== sf-lens survey");
     print!("crates: {} [", crates.len());
     let names: Vec<&str> = crates.iter().map(|c| c.name.as_str()).collect();
     print!("{}", names.join(", "));

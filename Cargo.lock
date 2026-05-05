@@ -459,16 +459,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "sf-nano-cli"
-version = "0.1.0"
-dependencies = [
- "sf-nano-core",
- "sf-nano-memprof-report",
- "sf-nano-tracked-alloc",
-]
-
-[[package]]
-name = "sf-nano-code-facts"
+name = "sf-lens"
 version = "0.1.0"
 dependencies = [
  "anyhow",
@@ -479,6 +470,15 @@ dependencies = [
  "serde_json",
  "syn 2.0.117",
  "walkdir",
+]
+
+[[package]]
+name = "sf-nano-cli"
+version = "0.1.0"
+dependencies = [
+ "sf-nano-core",
+ "sf-nano-memprof-report",
+ "sf-nano-tracked-alloc",
 ]
 
 [[package]]
