@@ -457,23 +457,15 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
         let scratch_idx = match target {
             MachineCallTarget::Direct(callee) => {
-                // Load the callee's internal entry address from a patchable literal
-                // and BLR to it. The literal itself is deferred to the per-function
-                // literal pool (flushed by `lower_function_literal_pool`); the LDR
-                // here is emitted with a placeholder offset and patched at flush
-                // time. Deferring the literal lets us elide the trailing
-                // `b continuation` when the continuation block is the next emitted
-                // block — without that deferral, falling through would land in
-                // the inline literal bytes.
                 let scratch_idx = self.gp_scratch.alloc();
                 let scratch = self.gp_scratch.reg(scratch_idx);
-                let callee_load = self.core.text.emit_u32(enc::ldr_lit_64(scratch, 0));
-                self.emit_body_returning_blr(scratch)?;
-                self.pending_call_literals
-                    .push(super::backend::PendingCallLiteral {
-                        ldr_offset: callee_load,
-                        scratch_reg: scratch,
+                let inst_offset = self.core.text.emit_u32(enc::bl(0));
+                self.pending_direct_calls
+                    .push(super::backend::PendingDirectCall {
+                        inst_offset,
+                        fallback_scratch_reg: scratch,
                         callee: *callee,
+                        link: true,
                     });
                 Some(scratch_idx)
             }
@@ -519,22 +511,6 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
         emit_call_arg_lanes::<Self>(self, args)?;
 
-        let scratch_idx = match target {
-            MachineCallTarget::Direct(callee) => {
-                let scratch_idx = self.gp_scratch.alloc();
-                let scratch = self.gp_scratch.reg(scratch_idx);
-                let callee_load = self.core.text.emit_u32(enc::ldr_lit_64(scratch, 0));
-                self.pending_call_literals
-                    .push(super::backend::PendingCallLiteral {
-                        ldr_offset: callee_load,
-                        scratch_reg: scratch,
-                        callee: *callee,
-                    });
-                Some(scratch_idx)
-            }
-            MachineCallTarget::Indirect { .. } => None,
-        };
-
         if self.has_body_host_frame() {
             self.lower_preserved_dynamic_body_restore();
             self.core
@@ -546,20 +522,23 @@ impl<'a> super::backend::Arm64Backend<'a> {
         let _ = fp_reg;
 
         match target {
-            MachineCallTarget::Direct(_) => {
-                let scratch = self
-                    .gp_scratch
-                    .reg(scratch_idx.expect("direct tail-call scratch"));
-                self.core.text.emit_u32(enc::br(scratch));
+            MachineCallTarget::Direct(callee) => {
+                let scratch_idx = self.gp_scratch.alloc();
+                let scratch = self.gp_scratch.reg(scratch_idx);
+                let inst_offset = self.core.text.emit_u32(enc::b(0));
+                self.pending_direct_calls
+                    .push(super::backend::PendingDirectCall {
+                        inst_offset,
+                        fallback_scratch_reg: scratch,
+                        callee: *callee,
+                        link: false,
+                    });
+                self.gp_scratch.free_index(scratch_idx);
             }
             MachineCallTarget::Indirect { callee_entry, .. } => {
                 let callee_entry = self.map_gp_reg(*callee_entry)?;
                 self.core.text.emit_u32(enc::br(callee_entry));
             }
-        }
-
-        if let Some(scratch_idx) = scratch_idx {
-            self.gp_scratch.free_index(scratch_idx);
         }
         Ok(())
     }

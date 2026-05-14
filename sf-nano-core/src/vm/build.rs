@@ -65,7 +65,10 @@ use crate::{
     error::WasmError,
     vm::{
         arch,
-        arch::common::helpers::page_align_function,
+        arch::common::{
+            helpers::page_align_function,
+            types::{DirectCallPatch, DirectCallPatchSite},
+        },
         machine::{
             derive_param_locs_from_types, derive_return_abi, lower_module, lower_single_function,
             machine_ir::{
@@ -207,9 +210,8 @@ enum PendingPatchEncoding {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PendingPatch {
-    code_offset: usize,
-    callee: MachineFuncId,
-    encoding: PendingPatchEncoding,
+    function_base: usize,
+    patch: DirectCallPatch,
 }
 
 #[derive(Debug)]
@@ -307,6 +309,109 @@ fn patch_code_buffer_word(
             }
         }
     }
+}
+
+fn patch_direct_call_code_buffer(
+    active_backend: arch::NativeBackend,
+    executable: &mut crate::vm::runtime::code_buf::CodeBuffer,
+    function_base: usize,
+    patch: &DirectCallPatch,
+    callee_addr: usize,
+) -> Result<(), WasmError> {
+    match patch.site {
+        DirectCallPatchSite::AddressLiteral { offset } => {
+            let code_offset = function_base
+                .checked_add(offset)
+                .ok_or_else(|| WasmError::internal("direct-call patch offset overflow"))?;
+            patch_code_buffer_word(active_backend, executable, code_offset, callee_addr);
+            Ok(())
+        }
+        #[cfg(sf_backend_arm64)]
+        DirectCallPatchSite::Arm64Bl {
+            inst_offset,
+            fallback_veneer_offset,
+            fallback_literal_offset,
+        } => patch_arm64_direct_branch_code_buffer(
+            executable,
+            function_base,
+            inst_offset,
+            fallback_veneer_offset,
+            fallback_literal_offset,
+            callee_addr,
+            true,
+        ),
+        #[cfg(sf_backend_arm64)]
+        DirectCallPatchSite::Arm64B {
+            inst_offset,
+            fallback_veneer_offset,
+            fallback_literal_offset,
+        } => patch_arm64_direct_branch_code_buffer(
+            executable,
+            function_base,
+            inst_offset,
+            fallback_veneer_offset,
+            fallback_literal_offset,
+            callee_addr,
+            false,
+        ),
+    }
+}
+
+#[cfg(sf_backend_arm64)]
+fn patch_arm64_direct_branch_code_buffer(
+    executable: &mut crate::vm::runtime::code_buf::CodeBuffer,
+    function_base: usize,
+    inst_offset: usize,
+    fallback_veneer_offset: usize,
+    fallback_literal_offset: usize,
+    callee_addr: usize,
+    link: bool,
+) -> Result<(), WasmError> {
+    let fallback_literal_code_offset = function_base
+        .checked_add(fallback_literal_offset)
+        .ok_or_else(|| WasmError::internal("arm64 fallback literal offset overflow"))?;
+    executable.patch_u64(fallback_literal_code_offset, callee_addr as u64);
+
+    let inst_code_offset = function_base
+        .checked_add(inst_offset)
+        .ok_or_else(|| WasmError::internal("arm64 direct branch offset overflow"))?;
+    let inst_addr = unsafe { executable.as_ptr().add(inst_code_offset) } as usize;
+    let fallback_code_offset = function_base
+        .checked_add(fallback_veneer_offset)
+        .ok_or_else(|| WasmError::internal("arm64 fallback veneer offset overflow"))?;
+    let fallback_addr = unsafe { executable.as_ptr().add(fallback_code_offset) } as usize;
+    let target = if arm64_branch_delta_words(inst_addr, callee_addr).is_ok() {
+        callee_addr
+    } else {
+        fallback_addr
+    };
+    let delta_words = arm64_branch_delta_words(inst_addr, target)?;
+    let encoded = if link {
+        arch::arm64::enc::bl(delta_words)
+    } else {
+        arch::arm64::enc::b(delta_words)
+    };
+    executable.patch_u32(inst_code_offset, encoded);
+    Ok(())
+}
+
+#[cfg(sf_backend_arm64)]
+fn arm64_branch_delta_words(from_addr: usize, to_addr: usize) -> Result<i32, WasmError> {
+    let delta_bytes = to_addr as isize - from_addr as isize;
+    if delta_bytes & 0b11 != 0 {
+        return Err(WasmError::internal(
+            "arm64 direct branch target is unaligned",
+        ));
+    }
+    let delta_words = delta_bytes / 4;
+    const IMM26_WORD_MIN: isize = -(1 << 25);
+    const IMM26_WORD_MAX: isize = (1 << 25) - 1;
+    if !(IMM26_WORD_MIN..=IMM26_WORD_MAX).contains(&delta_words) {
+        return Err(WasmError::internal(
+            "arm64 direct-call veneer is out of range",
+        ));
+    }
+    Ok(delta_words as i32)
 }
 
 #[inline]
@@ -665,29 +770,30 @@ fn finish_native_compile_streaming(
         for patch in &artifact.direct_call_patches {
             let callee_idx = patch.callee.0 as usize;
             if callee_idx == func_idx {
-                patch_code_buffer_word(
+                patch_direct_call_code_buffer(
                     active_backend,
                     &mut executable,
-                    function_base + patch.literal_offset,
+                    function_base,
+                    patch,
                     internal_entry_addr,
-                );
+                )?;
                 continue;
             }
             if let Some(summary) = emitted.get(callee_idx).and_then(|slot| slot.as_ref()) {
-                patch_code_buffer_word(
+                patch_direct_call_code_buffer(
                     active_backend,
                     &mut executable,
-                    function_base + patch.literal_offset,
+                    function_base,
+                    patch,
                     summary.internal_entry_addr,
-                );
+                )?;
             } else {
                 let pending = pending_direct_patches.get_mut(callee_idx).ok_or_else(|| {
                     WasmError::internal("direct callee patch list is out of range")
                 })?;
                 pending.push(PendingPatch {
-                    code_offset: function_base + patch.literal_offset,
-                    callee: patch.callee,
-                    encoding: patch_encoding(active_backend),
+                    function_base,
+                    patch: *patch,
                 });
             }
         }
@@ -724,13 +830,13 @@ fn finish_native_compile_streaming(
                 .get(func_idx)
                 .and_then(|slot| slot.as_ref().map(|summary| summary.internal_entry_addr))
                 .ok_or_else(|| WasmError::internal("pending direct callee address is missing"))?;
-            let _ = patch.encoding;
-            patch_code_buffer_word(
+            patch_direct_call_code_buffer(
                 active_backend,
                 &mut executable,
-                patch.code_offset,
+                patch.function_base,
+                &patch.patch,
                 callee_addr,
-            );
+            )?;
         }
     }
 

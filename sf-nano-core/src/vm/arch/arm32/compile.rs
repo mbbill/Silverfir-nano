@@ -27,6 +27,7 @@ use super::enc;
 use super::reg::Arm32Reg;
 use super::thumb_interworking_bit;
 use crate::vm::arch::common::backend::ArchBackend;
+use crate::vm::arch::common::types::DirectCallPatchSite;
 #[cfg(sf_has_guard_pages)]
 use crate::vm::runtime::trap_signal;
 
@@ -167,7 +168,17 @@ pub(crate) fn compile_module(
                 .get(patch.callee.0 as usize)
                 .ok_or_else(|| WasmError::internal("arm32 direct callee address is out of range"))?
                 as u32;
-            patch_movw_movt(&mut artifact.text, patch.literal_offset, callee_addr);
+            match patch.site {
+                DirectCallPatchSite::AddressLiteral { offset } => {
+                    patch_movw_movt(&mut artifact.text, offset, callee_addr);
+                }
+                #[cfg(sf_backend_arm64)]
+                _ => {
+                    return Err(WasmError::internal(
+                        "arm32 linker received non-literal direct-call patch",
+                    ));
+                }
+            }
         }
     }
 

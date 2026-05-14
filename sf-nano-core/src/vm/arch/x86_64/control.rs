@@ -501,10 +501,9 @@ impl<'a> X86_64Backend<'a> {
                 // Load the callee's internal entry address via patchable movabs.
                 enc::movabs_ri_64(&mut self.core.text, *call_scratch, 0);
                 let callee_imm_offset = self.core.text.len() - 8;
-                self.core.direct_call_patches.push(DirectCallPatch {
-                    literal_offset: callee_imm_offset,
-                    callee: *callee,
-                });
+                self.core
+                    .direct_call_patches
+                    .push(DirectCallPatch::address_literal(callee_imm_offset, *callee));
                 // CALL scratch — pushes the return address (= this call site's
                 // fall-through) onto the host stack.
                 enc::call_reg(&mut self.core.text, *call_scratch);
@@ -543,10 +542,9 @@ impl<'a> X86_64Backend<'a> {
                 let scratch = self.gp_scratch.reg(scratch_idx);
                 enc::movabs_ri_64(&mut self.core.text, scratch, 0);
                 let callee_imm_offset = self.core.text.len() - 8;
-                self.core.direct_call_patches.push(DirectCallPatch {
-                    literal_offset: callee_imm_offset,
-                    callee: *callee,
-                });
+                self.core
+                    .direct_call_patches
+                    .push(DirectCallPatch::address_literal(callee_imm_offset, *callee));
                 Some(scratch_idx)
             }
             MachineCallTarget::Indirect { .. } => None,

@@ -21,6 +21,7 @@ use crate::{
 };
 
 use super::backend::{CompiledRiscv32Entry, Riscv32Backend};
+use crate::vm::arch::common::types::DirectCallPatchSite;
 
 type Riscv32FunctionInfo = NativeLocalCallInfo32;
 const RISCV32_FUNCTION_INFO_SIZE: usize = core::mem::size_of::<Riscv32FunctionInfo>();
@@ -71,7 +72,17 @@ pub(crate) fn compile_module(
                 .get(patch.callee.0 as usize)
                 .ok_or_else(|| WasmError::internal("rv32 direct callee address is out of range"))?
                 as u32;
-            artifact.text.patch_u32(patch.literal_offset, callee_addr);
+            match patch.site {
+                DirectCallPatchSite::AddressLiteral { offset } => {
+                    artifact.text.patch_u32(offset, callee_addr);
+                }
+                #[cfg(sf_backend_arm64)]
+                _ => {
+                    return Err(WasmError::internal(
+                        "rv32 linker received non-literal direct-call patch",
+                    ));
+                }
+            }
         }
     }
 

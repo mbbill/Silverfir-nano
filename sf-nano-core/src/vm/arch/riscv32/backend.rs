@@ -893,19 +893,17 @@ impl<'a> Riscv32Backend<'a> {
             let literal_offset = self.core.text.emit_u32(0);
             self.core.bind_label(after_literal);
             self.patch_pcrel_literal_load(auipc_offset, load_offset, dst, literal_offset)?;
-            self.core.direct_call_patches.push(DirectCallPatch {
-                literal_offset,
-                callee,
-            });
+            self.core
+                .direct_call_patches
+                .push(DirectCallPatch::address_literal(literal_offset, callee));
         } else {
             self.core.text.emit_u32(enc::jalr(abi::zero_reg(), dst, 0));
             self.align_inline_literal();
             let literal_offset = self.core.text.emit_u32(0);
             self.patch_pcrel_literal_load(auipc_offset, load_offset, dst, literal_offset)?;
-            self.core.direct_call_patches.push(DirectCallPatch {
-                literal_offset,
-                callee,
-            });
+            self.core
+                .direct_call_patches
+                .push(DirectCallPatch::address_literal(literal_offset, callee));
         }
         Ok(())
     }

@@ -1096,10 +1096,10 @@ impl<'a> Arm32Backend<'a> {
                 // Record the direct-call patch so module-link patching writes the
                 // resolved internal-entry address into the MOVW/MOVT pair.
                 self.core.direct_call_patches.push(
-                    crate::vm::arch::common::types::DirectCallPatch {
-                        literal_offset: callee_patch,
-                        callee: *callee,
-                    },
+                    crate::vm::arch::common::types::DirectCallPatch::address_literal(
+                        callee_patch,
+                        *callee,
+                    ),
                 );
             }
             MachineCallTarget::Indirect { callee_entry, .. } => {
@@ -1146,10 +1146,10 @@ impl<'a> Arm32Backend<'a> {
                 // temp here, so materialize the direct entry in IP explicitly.
                 let callee_patch = emit_patchable_addr_into(&mut self.core.text, Arm32Reg::R12);
                 self.core.direct_call_patches.push(
-                    crate::vm::arch::common::types::DirectCallPatch {
-                        literal_offset: callee_patch,
-                        callee: *callee,
-                    },
+                    crate::vm::arch::common::types::DirectCallPatch::address_literal(
+                        callee_patch,
+                        *callee,
+                    ),
                 );
                 self.core.text.emit_u32(enc::bx(Arm32Reg::R12));
             }

@@ -97,24 +97,16 @@ pub(crate) struct CompiledArm64Entry {
 
 // ── Arm64Backend ─────────────────────────────────────────────────────────────
 
-/// Per-call deferred literal: the patchable callee-address word for one
-/// `lower_call_direct` site, queued so the literal lives in the
-/// end-of-body literal pool instead of inline after the BLR. Lets the
-/// caller elide its trailing `b continuation` when the next emitted block
-/// is the continuation block.
+/// Deferred direct-call patch site. The hot path is a single `bl` patched at
+/// module link time. A local veneer is emitted in the end-of-body pool as a
+/// correctness fallback for modules whose callee lands outside arm64's ±128MiB
+/// branch range.
 #[derive(Clone, Copy, Debug)]
-pub(super) struct PendingCallLiteral {
-    /// Offset of the `ldr_lit_64` instruction inside `core.text`. Patched
-    /// during literal-pool flush so its pc-relative offset points at the
-    /// emitted literal.
-    pub ldr_offset: usize,
-    /// Scratch register the LDR loads into. Re-encoded as part of the
-    /// patched LDR instruction.
-    pub scratch_reg: Arm64Reg,
-    /// Local callee id; recorded into `direct_call_patches` once the
-    /// literal slot has a real offset, so module-link patching can write
-    /// the resolved address into the literal word.
+pub(super) struct PendingDirectCall {
+    pub inst_offset: usize,
+    pub fallback_scratch_reg: Arm64Reg,
     pub callee: MachineFuncId,
+    pub link: bool,
 }
 
 #[derive(Debug)]
@@ -123,10 +115,10 @@ pub(crate) struct Arm64Backend<'a> {
     pub(super) fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<Arm64Reg, 2>,
     pub(super) fp_scratch: ScratchPool<Arm64FpReg, 2>,
-    /// Deferred per-call patchable literals. Flushed by
+    /// Deferred direct-call veneers. Flushed by
     /// `lower_function_literal_pool` (which the pipeline calls between
     /// edge stubs and the body-local error tail).
-    pub(super) pending_call_literals: collections::Vec<PendingCallLiteral>,
+    pub(super) pending_direct_calls: collections::Vec<PendingDirectCall>,
 }
 
 impl<'a> Arm64Backend<'a> {
@@ -425,7 +417,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             fixups: collections::Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),
-            pending_call_literals: collections::Vec::new(),
+            pending_direct_calls: collections::Vec::new(),
         }
     }
 
@@ -559,31 +551,23 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.lower_preserved_dynamic_body_save();
     }
 
-    /// Body-local error tail (`body_local_error_label`). Reached from trap
-    /// stubs and post-BL status checks. Pops the body prelude link save and
-    /// `ret`s without touching `C_RET0` (which already holds the trap kind set
-    /// by the trap stub or inherited from a trapped descendant's BL).
-    /// Flush deferred per-call literals into a pool at end-of-body. Each
-    /// literal is an 8-byte zero word (patched at module-link time via the
-    /// `direct_call_patches` entry we push here) and the corresponding
-    /// `ldr_lit_64` instruction back in the body block is patched to point
-    /// at it. This is what makes the trailing-`b`-elision in
-    /// `lower_call_direct` correct: by the time the call site falls
-    /// through to the next emitted block, no inline literal sits in the
-    /// fall-through path because every literal lives in this pool.
-    ///
-    /// `ldr_lit_64`'s pc-relative immediate is a 19-bit signed
-    /// instruction-word offset (±1 MiB byte reach). The pool is placed at
-    /// the end of the body region so the LDR-to-literal distance is
-    /// `(pool_offset - call_site_offset)` — bounded by body+edges size.
-    /// We validate the delta here and fail compilation if it ever exceeds
-    /// range, rather than letting `enc::ldr_lit_64`'s `& 0x0007_FFFF`
-    /// silently truncate the immediate and produce a wrong call target.
+    /// Flush direct-call fallback veneers into the end-of-body pool. The
+    /// normal direct-call patch rewrites the call-site instruction to
+    /// `bl callee`; when the module linker finds that target out of range, it
+    /// patches the same call-site instruction to `bl veneer` instead. The
+    /// veneer loads the absolute callee address and tail-branches to it,
+    /// preserving the LR produced by the original `bl`.
     fn lower_function_literal_pool(&mut self) -> Result<(), WasmError> {
-        let pending = core::mem::take(&mut self.pending_call_literals);
-        for literal in pending {
+        let pending = core::mem::take(&mut self.pending_direct_calls);
+        for call in pending {
+            let veneer_offset = self.core.text.len();
+            let ldr_offset = self
+                .core
+                .text
+                .emit_u32(enc::ldr_lit_64(call.fallback_scratch_reg, 0));
+            self.core.text.emit_u32(enc::br(call.fallback_scratch_reg));
             let literal_offset = self.core.text.emit_u64(0);
-            let delta_bytes = literal_offset as isize - literal.ldr_offset as isize;
+            let delta_bytes = literal_offset as isize - ldr_offset as isize;
             // ldr_lit_64 encodes a signed 19-bit instruction-word offset.
             // Word range: [-2^18, 2^18 - 1]. Byte range: ±1 MiB.
             // The literal pool always sits *after* the LDR (delta is
@@ -601,15 +585,25 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             }
             let delta_words = (delta_bytes / 4) as i32;
             self.core.text.patch_u32(
-                literal.ldr_offset,
-                enc::ldr_lit_64(literal.scratch_reg, delta_words),
+                ldr_offset,
+                enc::ldr_lit_64(call.fallback_scratch_reg, delta_words),
             );
-            self.core
-                .direct_call_patches
-                .push(crate::vm::arch::common::types::DirectCallPatch {
+            let patch = if call.link {
+                crate::vm::arch::common::types::DirectCallPatch::arm64_bl(
+                    call.inst_offset,
+                    veneer_offset,
                     literal_offset,
-                    callee: literal.callee,
-                });
+                    call.callee,
+                )
+            } else {
+                crate::vm::arch::common::types::DirectCallPatch::arm64_b(
+                    call.inst_offset,
+                    veneer_offset,
+                    literal_offset,
+                    call.callee,
+                )
+            };
+            self.core.direct_call_patches.push(patch);
         }
         Ok(())
     }

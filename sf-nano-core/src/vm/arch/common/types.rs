@@ -54,8 +54,72 @@ pub(crate) struct PendingLocalPtrPatch {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DirectCallPatch {
-    pub literal_offset: usize,
     pub callee: MachineFuncId,
+    pub site: DirectCallPatchSite,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum DirectCallPatchSite {
+    AddressLiteral {
+        offset: usize,
+    },
+    #[cfg(sf_backend_arm64)]
+    Arm64Bl {
+        inst_offset: usize,
+        fallback_veneer_offset: usize,
+        fallback_literal_offset: usize,
+    },
+    #[cfg(sf_backend_arm64)]
+    Arm64B {
+        inst_offset: usize,
+        fallback_veneer_offset: usize,
+        fallback_literal_offset: usize,
+    },
+}
+
+impl DirectCallPatch {
+    #[allow(dead_code)]
+    pub(crate) const fn address_literal(offset: usize, callee: MachineFuncId) -> Self {
+        Self {
+            callee,
+            site: DirectCallPatchSite::AddressLiteral { offset },
+        }
+    }
+
+    #[cfg(sf_backend_arm64)]
+    pub(crate) const fn arm64_bl(
+        inst_offset: usize,
+        fallback_veneer_offset: usize,
+        fallback_literal_offset: usize,
+        callee: MachineFuncId,
+    ) -> Self {
+        Self {
+            callee,
+            site: DirectCallPatchSite::Arm64Bl {
+                inst_offset,
+                fallback_veneer_offset,
+                fallback_literal_offset,
+            },
+        }
+    }
+
+    #[cfg(sf_backend_arm64)]
+    pub(crate) const fn arm64_b(
+        inst_offset: usize,
+        fallback_veneer_offset: usize,
+        fallback_literal_offset: usize,
+        callee: MachineFuncId,
+    ) -> Self {
+        Self {
+            callee,
+            site: DirectCallPatchSite::Arm64B {
+                inst_offset,
+                fallback_veneer_offset,
+                fallback_literal_offset,
+            },
+        }
+    }
 }
 
 // ── Function artifact ────────────────────────────────────────────────────────

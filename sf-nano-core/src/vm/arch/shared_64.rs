@@ -15,6 +15,7 @@ use crate::{
 
 #[cfg(sf_has_debug_regions)]
 use crate::vm::arch::common::types::DebugRegion;
+use crate::vm::arch::common::types::{DirectCallPatch, DirectCallPatchSite};
 #[cfg(sf_has_guard_pages)]
 use crate::vm::runtime::trap_signal;
 
@@ -83,8 +84,11 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
             let callee_addr = *internal_entry_addrs
                 .get(patch.callee.0 as usize)
                 .ok_or_else(|| WasmError::internal("direct callee address is out of range"))?
-                as u64;
-            artifact.text.patch_u64(patch.literal_offset, callee_addr);
+                as usize;
+            let function_addr_base = (base_ptr as usize)
+                .checked_add(function_base)
+                .ok_or_else(|| WasmError::internal("direct-call function base overflow"))?;
+            patch_direct_call(&mut artifact.text, function_addr_base, patch, callee_addr)?;
         }
     }
 
@@ -181,4 +185,97 @@ pub(crate) fn compile_module_64<'a, A: ModuleLinkBackend64<'a>>(
     }
 
     Ok(entries)
+}
+
+fn patch_direct_call(
+    text: &mut crate::vm::arch::common::text_emitter::TextEmitter,
+    _function_base: usize,
+    patch: &DirectCallPatch,
+    callee_addr: usize,
+) -> Result<(), WasmError> {
+    match patch.site {
+        DirectCallPatchSite::AddressLiteral { offset } => {
+            text.patch_u64(offset, callee_addr as u64);
+            Ok(())
+        }
+        #[cfg(sf_backend_arm64)]
+        DirectCallPatchSite::Arm64Bl {
+            inst_offset,
+            fallback_veneer_offset,
+            fallback_literal_offset,
+        } => patch_arm64_direct_branch(
+            text,
+            _function_base,
+            inst_offset,
+            fallback_veneer_offset,
+            fallback_literal_offset,
+            callee_addr,
+            true,
+        ),
+        #[cfg(sf_backend_arm64)]
+        DirectCallPatchSite::Arm64B {
+            inst_offset,
+            fallback_veneer_offset,
+            fallback_literal_offset,
+        } => patch_arm64_direct_branch(
+            text,
+            _function_base,
+            inst_offset,
+            fallback_veneer_offset,
+            fallback_literal_offset,
+            callee_addr,
+            false,
+        ),
+    }
+}
+
+#[cfg(sf_backend_arm64)]
+fn patch_arm64_direct_branch(
+    text: &mut crate::vm::arch::common::text_emitter::TextEmitter,
+    function_base: usize,
+    inst_offset: usize,
+    fallback_veneer_offset: usize,
+    fallback_literal_offset: usize,
+    callee_addr: usize,
+    link: bool,
+) -> Result<(), WasmError> {
+    text.patch_u64(fallback_literal_offset, callee_addr as u64);
+    let inst_addr = function_base
+        .checked_add(inst_offset)
+        .ok_or_else(|| WasmError::internal("arm64 direct-call patch address overflow"))?;
+    let fallback_addr = function_base
+        .checked_add(fallback_veneer_offset)
+        .ok_or_else(|| WasmError::internal("arm64 direct-call veneer address overflow"))?;
+    let target = if arm64_branch_delta_words(inst_addr, callee_addr).is_ok() {
+        callee_addr
+    } else {
+        fallback_addr
+    };
+    let delta_words = arm64_branch_delta_words(inst_addr, target)?;
+    let encoded = if link {
+        crate::vm::arch::arm64::enc::bl(delta_words)
+    } else {
+        crate::vm::arch::arm64::enc::b(delta_words)
+    };
+    text.patch_u32(inst_offset, encoded);
+    Ok(())
+}
+
+#[cfg(sf_backend_arm64)]
+fn arm64_branch_delta_words(from_addr: usize, to_addr: usize) -> Result<i32, WasmError> {
+    let delta_bytes = to_addr as isize - from_addr as isize;
+    if delta_bytes & 0b11 != 0 {
+        return Err(WasmError::internal(
+            "arm64 direct branch target is unaligned",
+        ));
+    }
+    let delta_words = delta_bytes / 4;
+    const IMM26_WORD_MIN: isize = -(1 << 25);
+    const IMM26_WORD_MAX: isize = (1 << 25) - 1;
+    if !(IMM26_WORD_MIN..=IMM26_WORD_MAX).contains(&delta_words) {
+        return Err(WasmError::internal(
+            "arm64 direct-call veneer is out of range",
+        ));
+    }
+    Ok(delta_words as i32)
 }
