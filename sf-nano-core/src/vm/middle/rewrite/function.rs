@@ -14,6 +14,7 @@ use crate::{
     error::WasmError,
     value_type::ValueType,
     vm::{
+        backend::BackendConfig,
         middle::{
             budget::{count_live_bank_budget_units, gp_value_budget_units},
             cfg::{CfgBlockId, SemanticCfg},
@@ -138,6 +139,7 @@ pub(crate) fn rewrite_function(
     cfg: &RewriteCfg,
     planner: JointPlanner,
     frame: FrameLayoutPlan,
+    config: BackendConfig,
 ) -> Result<SsaProgram, WasmError> {
     if semantic.ops.is_empty() {
         let local_slot_info = collect_local_slot_info(&semantic);
@@ -211,6 +213,7 @@ pub(crate) fn rewrite_function(
             &mut builder,
             original_block_count,
             extra_blocks.len(),
+            config,
         )?;
         let final_entry = filter_block_entry_cached_slots(
             &planner.finalize_block_entry(cfg_block.id, &lowered.actual_exit_cached_slots),
@@ -378,6 +381,7 @@ fn lower_block_range(
     builder: &mut ProgramBuilder,
     original_block_count: usize,
     extra_blocks_len: usize,
+    config: BackendConfig,
 ) -> Result<LoweredBlock, WasmError> {
     let mut resident_cache = entry_cached_locals.iter().copied().collect::<BTreeSet<_>>();
     let mut materialized_cache = resident_cache.clone();
@@ -416,6 +420,7 @@ fn lower_block_range(
             &mut materialized_cache,
             values,
             builder,
+            config,
         )?;
     }
 
@@ -435,6 +440,7 @@ fn lower_block_range(
         builder,
         original_block_count,
         extra_blocks_len,
+        config,
     )?;
 
     Ok(LoweredBlock {
@@ -847,6 +853,7 @@ fn lower_block_body_op(
     materialized_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
+    config: BackendConfig,
 ) -> Result<(), WasmError> {
     apply_inline_prefix(
         &semantic.ops[semantic_index].kind,
@@ -922,7 +929,9 @@ fn lower_block_body_op(
                 state,
                 resident_cache,
                 materialized_cache,
+                values,
                 builder,
+                config,
             )
         }
         SemanticOpKind::CallIndirect {
@@ -947,6 +956,7 @@ fn lower_block_body_op(
                 resident_cache,
                 materialized_cache,
                 builder,
+                config,
             )
         }
         SemanticOpKind::CallRef {
@@ -969,6 +979,7 @@ fn lower_block_body_op(
                 resident_cache,
                 materialized_cache,
                 builder,
+                config,
             )
         }
         SemanticOpKind::AllocExnRef { tag_idx } => lower_alloc_exn_ref(
@@ -1226,19 +1237,30 @@ fn lower_call_direct(
     state: &mut BlockState,
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
+    values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
+    config: BackendConfig,
 ) -> Result<(), WasmError> {
     let stack_base = state.height().saturating_sub(params);
     let call_base = frame.operand_slot(stack_base);
     let args = capture_call_args(state, stack_base, call_base, params)?;
+    let live_result = live_scalar_call_result(config, results, result_types, values);
     let call_idx = builder.push_call_op(SsaCallOp::CallDirect {
         callee,
         args,
         results: FrameSpan::new(call_base, results),
         result_types: result_types.to_vec().into(),
     })?;
-    state.ops.push(SsaInst::call(call_idx));
-    state.finish_call(params, results, result_types);
+    match live_result {
+        Some((value, ty)) => {
+            state.ops.push(SsaInst::call_result(call_idx, value));
+            state.finish_call_with_live_scalar(params, value, ty)?;
+        }
+        None => {
+            state.ops.push(SsaInst::call(call_idx));
+            state.finish_call(params, results, result_types);
+        }
+    }
     resident_cache.clear();
     materialized_cache.clear();
     Ok(())
@@ -1255,6 +1277,7 @@ fn lower_call_indirect(
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
     builder: &mut ProgramBuilder,
+    _config: BackendConfig,
 ) -> Result<(), WasmError> {
     let consumed = params.saturating_add(1);
     let stack_base = state.height().saturating_sub(consumed);
@@ -1290,6 +1313,7 @@ fn lower_call_ref(
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
     builder: &mut ProgramBuilder,
+    _config: BackendConfig,
 ) -> Result<(), WasmError> {
     let consumed = params.saturating_add(1);
     let stack_base = state.height().saturating_sub(consumed);
@@ -1312,6 +1336,19 @@ fn lower_call_ref(
     resident_cache.clear();
     materialized_cache.clear();
     Ok(())
+}
+
+fn live_scalar_call_result(
+    config: BackendConfig,
+    results: u16,
+    result_types: &[ValueType],
+    values: &mut ValueAlloc,
+) -> Option<(SsaValue, ValueType)> {
+    if !config.scalar_return_lanes || results != 1 || result_types.len() != 1 {
+        return None;
+    }
+    let ty = result_types[0];
+    scalar_return_supported(ty).then(|| (values.fresh_typed(ty), ty))
 }
 
 fn lower_alloc_exn_ref(
@@ -1604,6 +1641,7 @@ fn lower_block_terminator(
     builder: &mut ProgramBuilder,
     original_block_count: usize,
     extra_blocks_len: usize,
+    config: BackendConfig,
 ) -> Result<LoweredTerminator, WasmError> {
     apply_inline_prefix(
         &semantic.ops[semantic_index].kind,
@@ -2345,7 +2383,9 @@ fn lower_block_terminator(
                 state,
                 resident_cache,
                 materialized_cache,
+                values,
                 builder,
+                config,
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
@@ -2387,6 +2427,7 @@ fn lower_block_terminator(
                 resident_cache,
                 materialized_cache,
                 builder,
+                config,
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],
@@ -2426,6 +2467,7 @@ fn lower_block_terminator(
                 resident_cache,
                 materialized_cache,
                 builder,
+                config,
             )?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough_target(semantic_index, semantic.ops.len())?],

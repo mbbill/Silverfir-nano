@@ -526,9 +526,15 @@ fn lower_function(
                         .copied()
                         .unwrap_or(false) =>
                     {
+                        let live_result = inst.result.is_some().then_some(inst.result);
                         let continuation = extra_block_ids.alloc();
-                        let terminator =
-                            lower.lower_call_internal(*callee, args, *results, continuation)?;
+                        let (terminator, continuation_params) = lower.lower_call_internal(
+                            *callee,
+                            args,
+                            *results,
+                            live_result,
+                            continuation,
+                        )?;
                         push_lowered_block(
                             current_block,
                             &mut original_blocks,
@@ -538,7 +544,7 @@ fn lower_function(
                             terminator,
                         )?;
                         current_block = continuation;
-                        current_params = collections::Vec::new();
+                        current_params = continuation_params;
                         lower.begin_continuation_block_selective()?;
                     }
                     // Runtime-dispatch targets stay in the current block as
@@ -550,7 +556,14 @@ fn lower_function(
                         results,
                         ..
                     } => {
-                        lower.lower_call_runtime(*callee, args, *results, const_pool)?;
+                        let live_result = inst.result.is_some().then_some(inst.result);
+                        lower.lower_call_runtime(
+                            *callee,
+                            args,
+                            *results,
+                            live_result,
+                            const_pool,
+                        )?;
                     }
                     SsaCallOp::CallRef {
                         type_idx,
@@ -659,6 +672,7 @@ fn lower_function(
                         *callee,
                         args,
                         runtime_tail_results_span(*return_results),
+                        None,
                         const_pool,
                     )?;
                     return_terminator_from_frame(&current_abi.return_abi)

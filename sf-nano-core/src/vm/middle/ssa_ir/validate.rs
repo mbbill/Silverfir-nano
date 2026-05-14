@@ -132,10 +132,15 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
                 | SsaInstView::Spill { src, .. } => {
                     check(src)?;
                 }
+                SsaInstView::Call(_) => {
+                    let inst = &block.ops[inst_idx];
+                    if inst.result.is_some() {
+                        check(inst.result)?;
+                    }
+                }
                 SsaInstView::LocalEnsureCache { .. }
                 | SsaInstView::LocalReserveCache { .. }
-                | SsaInstView::LocalDropCache { .. }
-                | SsaInstView::Call(_) => {}
+                | SsaInstView::LocalDropCache { .. } => {}
             }
         }
         match &block.terminator {

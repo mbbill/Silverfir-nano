@@ -325,6 +325,21 @@ impl SsaInst {
         }
     }
 
+    /// Build a Call instruction that defines one live scalar result.
+    #[inline]
+    pub(crate) fn call_result(call_idx: u32, result: SsaValue) -> Self {
+        debug_assert!(
+            call_idx <= u16::MAX as u32,
+            "call_ops index exceeds SsaInst.meta (u16) capacity"
+        );
+        Self {
+            op: SsaOp::CALL,
+            meta: call_idx as u16,
+            result,
+            args: [SsaOperand::NONE, SsaOperand::NONE],
+        }
+    }
+
     /// Build a primitive op instruction.
     ///
     /// `args` must contain the inline operands. Any operands beyond the first

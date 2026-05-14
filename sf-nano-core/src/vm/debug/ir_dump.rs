@@ -384,7 +384,14 @@ fn render_lir_inst(inst: &SsaInst, block: &SsaBlock, program: &SsaProgram) -> St
         SsaInstView::Spill { slot, src } => {
             format!("spill fp[{}] <- v{}", slot.0, src.0)
         }
-        SsaInstView::Call(bop) => render_call(bop),
+        SsaInstView::Call(bop) => {
+            let rendered = render_call(bop);
+            if inst.result.is_some() {
+                format!("{rendered} -> v{}", inst.result.0)
+            } else {
+                rendered
+            }
+        }
     }
 }
 

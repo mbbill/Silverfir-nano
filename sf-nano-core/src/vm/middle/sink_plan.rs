@@ -7,8 +7,8 @@
 //! `apply_sink_premap` to place results directly into cache registers.
 //!
 //! The sink is legal when:
-//! - `src` is produced by a single-result `Value` instruction in the same block
-//! - The producer is not a call
+//! - `src` is produced by a single-result `Value` or scalar-result `Call`
+//!   instruction in the same block
 //! - No barrier (Call) exists between the producer and the LocalSetCache
 //! - No `LocalGetCache` or `LocalGetSlot` of the same slot exists between
 //!   the producer and the set (i.e., the old cached value is not read)
@@ -43,7 +43,7 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
         return;
     }
 
-    // Step 1: Record producer positions for single-result Value ops.
+    // Step 1: Record producer positions for single-result Value/Call ops.
     let mut producer_pos: collections::Vec<Option<u32>> = collections::Vec::new();
     let mut max_val: u32 = 0;
 
@@ -55,6 +55,12 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
         } else {
             match inst.op {
                 SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_GET_SLOT | SsaOp::FILL => {
+                    let dst = inst.result;
+                    if dst.is_some() && dst.0 >= max_val {
+                        max_val = dst.0 + 1;
+                    }
+                }
+                SsaOp::CALL => {
                     let dst = inst.result;
                     if dst.is_some() && dst.0 >= max_val {
                         max_val = dst.0 + 1;
@@ -73,11 +79,12 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
         // IR (tri-arg ops still have a single `result` slot), so treating
         // any primitive with a non-NONE result as single-result matches the
         // old `results.len() == 1` predicate.
-        let produced = if inst.op.is_primitive() && inst.result.is_some() {
-            Some(inst.result)
-        } else {
-            None
-        };
+        let produced =
+            if (inst.op.is_primitive() || inst.op == SsaOp::CALL) && inst.result.is_some() {
+                Some(inst.result)
+            } else {
+                None
+            };
         if let Some(r) = produced {
             if (r.0 as usize) < producer_pos.len() {
                 producer_pos[r.0 as usize] = Some(pos as u32);
@@ -208,6 +215,32 @@ mod tests {
         );
         let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));
         program.blocks[0].ops = collections::vec![i32_const, set_cache];
+
+        plan_sinks(&mut program);
+        assert_eq!(program.value_sink_local[0], Some(FrameSlot(0)));
+    }
+
+    #[test]
+    fn sinks_scalar_call_result_into_local_set_cache() {
+        let mut program = make_program(collections::Vec::new(), 1);
+        let call_idx = program.push_call_op(SsaCallOp::CallDirect {
+            callee: 1,
+            args: SsaCallArgs {
+                frame_base: FrameSlot(0),
+                total_params: 0,
+                param_types: collections::Vec::new(),
+                stack_prefix_count: 0,
+                live_suffix: collections::Vec::new(),
+            },
+            results: FrameSpan {
+                start: FrameSlot(0),
+                count: 1,
+            },
+            result_types: collections::vec![ValueType::I32],
+        });
+        let call = SsaInst::call_result(call_idx, SsaValue(0));
+        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));
+        program.blocks[0].ops = collections::vec![call, set_cache];
 
         plan_sinks(&mut program);
         assert_eq!(program.value_sink_local[0], Some(FrameSlot(0)));

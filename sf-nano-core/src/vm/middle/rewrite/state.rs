@@ -292,6 +292,26 @@ impl BlockState {
         self.live_aliases.clear();
     }
 
+    pub(super) fn finish_call_with_live_scalar(
+        &mut self,
+        consumed: u16,
+        result: SsaValue,
+        result_ty: ValueType,
+    ) -> Result<(), WasmError> {
+        let base = self.stack_height.saturating_sub(consumed);
+        self.type_stack.truncate(base as usize);
+        self.type_stack.push(result_ty);
+        self.stack_height = base.saturating_add(1);
+        self.spill_depth = base;
+        self.live.clear();
+        self.live_types.clear();
+        self.live_aliases.clear();
+        self.live.push(result);
+        self.live_types.push(result_ty);
+        self.live_aliases.push(None);
+        self.ensure_live_fit("scalar call result")
+    }
+
     pub(super) fn live_aliases(&self) -> &[Option<FrameSlot>] {
         &self.live_aliases
     }

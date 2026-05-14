@@ -1094,6 +1094,9 @@ fn max_value_index_parts(
                 | SsaOp::LOCAL_RESERVE_CACHE
                 | SsaOp::LOCAL_DROP_CACHE => {}
                 SsaOp::CALL => {
+                    if inst.result.is_some() {
+                        max_value = max_value.max(Some(inst.result));
+                    }
                     if let Some(call) = program.call_ops.get(inst.meta as usize) {
                         max_value = max_value.max(max_call_op_value(call));
                     }

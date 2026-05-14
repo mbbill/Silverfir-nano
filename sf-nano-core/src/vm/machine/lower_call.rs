@@ -2,13 +2,13 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineBlockId, MachineBranchCond,
-            MachineCallArgs, MachineCallLaneArg, MachineCallResults, MachineCallRuntime,
-            MachineCallTarget, MachineCompareKind, MachineConstId, MachineFrameRegion,
-            MachineFuncId, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineLoadExtension,
-            MachineMemWidth, MachineParamLoc, MachineReg, MachineRegOwner, MachineResultDst,
-            MachineReturnAbi, MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,
-            MachineValue,
+            MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineBlockId, MachineBlockParam,
+            MachineBranchCond, MachineCallArgs, MachineCallLaneArg, MachineCallResults,
+            MachineCallRuntime, MachineCallTarget, MachineCompareKind, MachineConstId,
+            MachineFrameRegion, MachineFuncId, MachineInst, MachineInstKind, MachineIntBinaryOp,
+            MachineLoadExtension, MachineMemWidth, MachineParamLoc, MachineReg, MachineRegOwner,
+            MachineResultDst, MachineReturnAbi, MachineSign, MachineStorageType, MachineTerminator,
+            MachineTrapKind, MachineValue,
         },
         middle::{
             frame::{FrameSlot, FrameSpan},
@@ -25,8 +25,9 @@ use crate::collections;
 
 use super::{
     lower_const_pool::ConstPoolBuilder,
-    lower_context::BlockLowerContext,
+    lower_context::{BlockLowerContext, ValueRegs},
     lower_module::slot_offset_bytes,
+    lower_regalloc::machine_block_params_for_value,
     lower_regalloc::{canonical_value_mem_width_for_value, lir_value_storage_type},
 };
 
@@ -36,8 +37,9 @@ impl<'a> BlockLowerContext<'a> {
         callee: u32,
         args: &SsaCallArgs,
         results: FrameSpan,
+        live_result: Option<SsaValue>,
         continuation: MachineBlockId,
-    ) -> Result<MachineTerminator, WasmError> {
+    ) -> Result<(MachineTerminator, collections::Vec<MachineBlockParam>), WasmError> {
         self.publish_register_params_to_frame()?;
         let arg_span = args.frame_span();
         let callee_id = MachineFuncId(callee);
@@ -121,16 +123,22 @@ impl<'a> BlockLowerContext<'a> {
         // SsaProgram's `local_slot_info.reads_before_write` analysis. Locals
         // that are guaranteed to be written before any read need no init.
 
-        Ok(MachineTerminator::Call {
-            target: MachineCallTarget::Direct(callee_id),
-            frame_delta: slot_offset_bytes(arg_span.start)? as u32,
-            args: machine_args,
-            results: call_results(&return_abi, results),
-            success: crate::vm::machine::machine_ir::MachineEdge {
-                target: continuation,
-                args: collections::Vec::new(),
+        let (results, success_args, continuation_params) =
+            self.call_result_placement(&return_abi, results, live_result)?;
+
+        Ok((
+            MachineTerminator::Call {
+                target: MachineCallTarget::Direct(callee_id),
+                frame_delta: slot_offset_bytes(arg_span.start)? as u32,
+                args: machine_args,
+                results,
+                success: crate::vm::machine::machine_ir::MachineEdge {
+                    target: continuation,
+                    args: success_args,
+                },
             },
-        })
+            continuation_params,
+        ))
     }
 
     pub(super) fn lower_tail_call_internal(
@@ -291,6 +299,7 @@ impl<'a> BlockLowerContext<'a> {
         func_idx: u32,
         args: &SsaCallArgs,
         results: FrameSpan,
+        live_result: Option<SsaValue>,
         const_pool: &mut ConstPoolBuilder,
     ) -> Result<(), WasmError> {
         self.publish_call_args_to_frame(args)?;
@@ -309,7 +318,149 @@ impl<'a> BlockLowerContext<'a> {
         // runtime-call instruction sequence.
         let metadata =
             self.build_call_runtime_meta_direct(func_idx, args.frame_span(), results, const_pool);
-        self.emit_call_runtime(metadata)
+        self.emit_call_runtime(metadata)?;
+        if let Some(value) = live_result {
+            self.materialize_runtime_call_result(value, results.start)?;
+        }
+        Ok(())
+    }
+
+    fn call_result_placement(
+        &mut self,
+        return_abi: &MachineReturnAbi,
+        caller_results: FrameSpan,
+        live_result: Option<SsaValue>,
+    ) -> Result<
+        (
+            MachineCallResults,
+            collections::Vec<MachineValue>,
+            collections::Vec<MachineBlockParam>,
+        ),
+        WasmError,
+    > {
+        let Some(value) = live_result else {
+            return Ok((
+                call_results(return_abi, caller_results),
+                collections::Vec::new(),
+                collections::Vec::new(),
+            ));
+        };
+        if self.remaining_use_count(value) == 0 {
+            return Ok((
+                MachineCallResults::None,
+                collections::Vec::new(),
+                collections::Vec::new(),
+            ));
+        }
+        self.apply_sink_premap(&[], &[value])?;
+        if caller_results.count == 0 {
+            return Err(WasmError::internal(
+                "live scalar call result requested for zero-result call".into(),
+            ));
+        }
+        if caller_results.count != 1 {
+            return Err(WasmError::internal(
+                "live scalar call result requested for multi-result call".into(),
+            ));
+        }
+
+        match return_abi {
+            MachineReturnAbi::ScalarGp { ty } => {
+                let value_ty = lir_value_storage_type(self.program(), value);
+                if value_ty != *ty {
+                    return Err(WasmError::internal(
+                        "live GP scalar call result type does not match callee return ABI".into(),
+                    ));
+                }
+                let reg = self.alloc_value_in_bank(value, *ty)?;
+                Ok((
+                    MachineCallResults::ScalarGp {
+                        dst: MachineResultDst::Reg(reg),
+                        ty: *ty,
+                    },
+                    collections::vec![MachineValue::Reg(reg)],
+                    machine_block_params_for_value(ValueRegs { lo: reg, hi: None }, *ty),
+                ))
+            }
+            MachineReturnAbi::ScalarGpPair => {
+                let value_ty = lir_value_storage_type(self.program(), value);
+                if value_ty != MachineStorageType::GpI64 {
+                    return Err(WasmError::internal(
+                        "live GP-pair call result type does not match callee return ABI".into(),
+                    ));
+                }
+                let (lo, hi) = self.alloc_i64_value_pair(value)?;
+                Ok((
+                    MachineCallResults::ScalarGpPair {
+                        lo: MachineResultDst::Reg(lo),
+                        hi: MachineResultDst::Reg(hi),
+                    },
+                    collections::vec![MachineValue::Reg(lo), MachineValue::Reg(hi)],
+                    machine_block_params_for_value(
+                        ValueRegs { lo, hi: Some(hi) },
+                        MachineStorageType::GpI64,
+                    ),
+                ))
+            }
+            MachineReturnAbi::ScalarFp { ty } => {
+                let value_ty = lir_value_storage_type(self.program(), value);
+                if value_ty != *ty {
+                    return Err(WasmError::internal(
+                        "live FP scalar call result type does not match callee return ABI".into(),
+                    ));
+                }
+                let reg = self.alloc_value_in_bank(value, *ty)?;
+                Ok((
+                    MachineCallResults::ScalarFp {
+                        dst: MachineResultDst::Reg(reg),
+                        ty: *ty,
+                    },
+                    collections::vec![MachineValue::Reg(reg)],
+                    machine_block_params_for_value(ValueRegs { lo: reg, hi: None }, *ty),
+                ))
+            }
+            MachineReturnAbi::None | MachineReturnAbi::FrameFallback { .. } => Err(
+                WasmError::internal("live scalar call result requires a scalar return ABI".into()),
+            ),
+        }
+    }
+
+    fn materialize_runtime_call_result(
+        &mut self,
+        value: SsaValue,
+        slot: FrameSlot,
+    ) -> Result<(), WasmError> {
+        if self.remaining_use_count(value) == 0 {
+            return Ok(());
+        }
+        self.apply_sink_premap(&[], &[value])?;
+        let ty = lir_value_storage_type(self.program(), value);
+        if matches!(ty, MachineStorageType::GpI64) {
+            let ops = self.i64_ops();
+            ops.emit_load_slot_i64(self, slot, value)?;
+            return Ok(());
+        }
+
+        #[cfg(sf_has_simd)]
+        if matches!(ty, MachineStorageType::V128) {
+            return Err(WasmError::internal(
+                "runtime call scalar result cannot materialize v128 through scalar ABI".into(),
+            ));
+        }
+
+        let dst = self.alloc_value_in_bank(value, ty)?;
+        let width = canonical_value_mem_width_for_value(self.program(), value);
+        self.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty,
+                dst,
+                addr: self.frame_addr(slot)?,
+                width,
+                extension: MachineLoadExtension::None,
+            },
+        });
+        Ok(())
     }
 
     pub(super) fn build_call_runtime_meta_direct(
