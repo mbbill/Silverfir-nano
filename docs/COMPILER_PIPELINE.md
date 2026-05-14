@@ -298,6 +298,20 @@ Why it belongs here:
 - later machine lowering only knows slots and registers, not the semantic read
   vs write intent
 
+MachineIR may further avoid the save/reload pair for compiled direct local
+calls. `lower_cache_layout` scans each block for non-ref cached locals that are
+clean and needed after a direct local call. `lower_call_internal()` carries only
+those selected caches that already reside in preserved dynamic lanes as explicit
+`Call.success` edge arguments. The allocator does not move a cache into a
+preserved lane solely to create this carry; preserved-lane use should be caused
+by real register pressure. Dirty caches are frame-published before the call
+because the canonical frame slot is not authoritative. The continuation block
+receives each survivor as a cached-local parameter.
+
+This is deliberately not a middle-end policy decision: the middle-end does not
+know which abstract lanes are preserved, and runtime/indirect/ref calls still
+require frame-publication semantics.
+
 ### Optimization-enabling structure: explicit spill/fill planning
 
 `rewrite::rewrite_function` constrains the live transient window to the
@@ -529,17 +543,19 @@ Fixed registers include:
 - `mem0_base`
 - `mem0_size`
 
-The GP and FP dynamic banks are single ordered pools; cached-local residency
-and linear-value ownership are tracked in `BlockLowerContext` state rather
-than by register number. The bank order is a backend preference — it still
-gives cached locals and transients mostly-disjoint preferred registers in
-practice, but ownership is authoritative.
+The GP and FP dynamic banks are ordered pools with an abstract volatility split
+supplied by `BackendConfig`: volatile lanes first, then preserved lanes (plus
+any backend-only scratch tail for GP). Cached-local residency and linear-value
+ownership are tracked in `BlockLowerContext` state rather than by register
+number. The bank order is an ABI preference, but ownership is authoritative.
 
 Why that matters:
 
 - no later pass has to rediscover ABI roles
 - cached locals and transient temps share one pool under explicit metadata,
   so sink-pinning and alias tracking stay exact instead of implicit
+- MachineIR can carry selected clean non-ref cached locals when they already
+  reside in preserved lanes, without naming physical registers
 - one-pass allocation becomes possible
 
 ### Optimization: entry cached-local initialization
@@ -663,13 +679,17 @@ Because `Call` ops were already made explicit in SSA, this stage can use a
 simple rule:
 
 - no live transient values may cross a call
-- cached locals are saved before calls and runtime helpers
+- runtime helpers publish dirty cached locals before the helper boundary
+- compiled direct local calls publish/drop non-selected cached locals and every
+  dirty cached local, but may carry selected clean non-ref cached locals already
+  in preserved dynamic regs through the explicit `Call.success` edge
 - cached locals are selectively reloaded after calls based on the successor
-  block's entry-cache requirement (reloads the continuation does not need
-  are never emitted)
+  block's entry-cache requirement (reloads the continuation does not need are
+  never emitted)
 
-The pipeline turns calls from "hard global allocation problem" into "publish to
-slots, call, reload what is still needed".
+The pipeline turns calls from "hard global allocation problem" into "make the
+boundary state explicit: frame-publish what must be frame-visible, carry only
+MIR-declared preserved-register survivors, reload what is still needed".
 
 ### Optimization: mem0 fixed-register fast path and guard-page-aware bounds checks
 
@@ -977,8 +997,8 @@ Frame slots are the source of truth for:
 - call arguments and results
 - local call-link records
 
-Registers are only execution caches over that frame state. This is what makes
-the boundary rules safe:
+Registers are normally execution caches over that frame state. This is what
+makes the boundary rules safe:
 
 - MachineIR can publish cached locals before a boundary
 - local calls can reuse the caller operand region as callee frame prefix
@@ -986,8 +1006,11 @@ the boundary rules safe:
 - preserved helpers can save caller-clobbered JIT state and then operate on a
   native-stack I/O window
 
-If a backend ever relies on a cached local or transient being the only copy of
-some value at a boundary, the design has already been violated.
+The one intentional exception is a compiled local-call success edge that names a
+non-ref cached local in a preserved dynamic register. That is still explicit
+MachineIR state, not hidden backend preservation. Ref-typed cached locals must
+be frame-visible before any boundary where a callee/runtime helper could need
+root visibility.
 
 #### 3. Scratch registers must come from the scratch pool
 

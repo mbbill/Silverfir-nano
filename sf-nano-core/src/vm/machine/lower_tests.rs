@@ -64,6 +64,25 @@ fn host_backend_config(
     )
 }
 
+fn host_backend_config_with_preserved(
+    gp_volatile_dynamic: u8,
+    gp_preserved_dynamic: u8,
+    gp_internal_scratch: u8,
+) -> BackendConfig {
+    BackendConfig::with_volatility(
+        HOST_GP_UNIT_BYTES,
+        gp_volatile_dynamic,
+        gp_preserved_dynamic,
+        gp_internal_scratch,
+        0,
+        0,
+        gp_volatile_dynamic.min(4),
+        0,
+        false,
+        HOST_CALL_SCRATCH_SLOTS,
+    )
+}
+
 fn gp32_backend_config(
     gp_cache_budget: u8,
     gp_linear_budget: u8,
@@ -2469,6 +2488,497 @@ fn flushes_cached_local_before_second_direct_call() {
             ..
         }
     ));
+}
+
+#[test]
+fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
+    let caller_frame = plan_frame_layout(1, 1, 4);
+    let callee_frame = plan_frame_layout(0, 0, 4);
+    let slot = caller_frame.local_slot(0);
+
+    let caller = {
+        let mut caller = SsaProgram::default();
+        caller.entry = SsaTarget(0);
+        caller.local_slot_types = collections::vec![ValueType::I32];
+        caller.local_slot_info = collections::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true,
+        }];
+        caller.block_entry_cached_slots = collections::vec![];
+        caller.block_cfg_origins = collections::vec![];
+        caller.value_types = collections::vec![ValueType::I32, ValueType::I32];
+        caller.value_sink_local = collections::vec![];
+        let mut block = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        };
+        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(0)));
+        let drop_idx = caller.intern_primitive(PrimitiveOpKind::Drop).unwrap();
+        block.ops.push(SsaInst::primitive(
+            drop_idx,
+            SsaValue::NONE,
+            [SsaOperand::value(SsaValue(0)), SsaOperand::NONE],
+            0,
+        ));
+        let call_idx = caller.push_call_op(SsaCallOp::CallDirect {
+            callee: 1,
+            args: test_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0), &[]),
+            results: FrameSpan::new(caller_frame.operand_slot(0), 0),
+            result_types: collections::Vec::new(),
+        });
+        block.ops.push(SsaInst::call(call_idx));
+        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
+        block.ops.push(SsaInst::primitive(
+            drop_idx,
+            SsaValue::NONE,
+            [SsaOperand::value(SsaValue(1)), SsaOperand::NONE],
+            0,
+        ));
+        caller.blocks.push(block);
+        caller
+    };
+    let callee = {
+        let mut callee = SsaProgram::default();
+        callee.entry = SsaTarget(0);
+        callee.local_slot_types = collections::vec![];
+        callee.local_slot_info = collections::vec![];
+        callee.block_entry_cached_slots = collections::vec![];
+        callee.block_cfg_origins = collections::vec![];
+        callee.value_types = collections::vec![];
+        callee.value_sink_local = collections::vec![];
+        callee.blocks.push(SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        });
+        callee
+    };
+
+    let backend = host_backend_config_with_preserved(0, 3, 2);
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![
+            LowerFunctionInput {
+                id: MachineFuncId(0),
+                frame: caller_frame,
+                ssa: caller,
+                result_count: 0,
+            },
+            LowerFunctionInput {
+                id: MachineFuncId(1),
+                frame: callee_frame,
+                ssa: callee,
+                result_count: 0,
+            },
+        ],
+    })
+    .expect("direct local call should carry preserved cached local");
+
+    let caller_program = &lowered.module.functions[0].program;
+    assert_eq!(caller_program.blocks.len(), 2);
+    let call_block = &caller_program.blocks[0];
+    let continuation = &caller_program.blocks[1];
+    let MachineTerminator::Call {
+        ref success,
+        target: MachineCallTarget::Direct(MachineFuncId(1)),
+        ..
+    } = call_block.terminator
+    else {
+        panic!(
+            "expected direct local call terminator, got {:?}",
+            call_block.terminator
+        );
+    };
+    assert_eq!(success.args.len(), 1);
+    assert!(
+        matches!(success.args[0], MachineValue::Reg(reg) if backend.gp_preserved_dynamic > 0 && reg.0 == MACHINE_FIXED_REG_COUNT)
+    );
+    assert_eq!(continuation.params.len(), 1);
+    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedLocal);
+    assert!(
+        call_block
+            .ops
+            .iter()
+            .chain(continuation.ops.iter())
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Store { .. })),
+        "clean non-ref cache in a preserved reg should not be stored around the local call; call_ops={:?}, cont_ops={:?}",
+        call_block.ops,
+        continuation.ops
+    );
+    assert!(
+        continuation
+            .ops
+            .iter()
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Load { .. })),
+        "continued local.get_cache should use the carried cache register, not reload; ops={:?}",
+        continuation.ops
+    );
+}
+
+#[test]
+fn direct_local_call_does_not_force_clean_cache_into_preserved_reg_when_volatile_available() {
+    let caller_frame = plan_frame_layout(1, 0, 4);
+    let callee_frame = plan_frame_layout(0, 0, 4);
+    let slot = caller_frame.local_slot(0);
+
+    let caller = {
+        let mut caller = SsaProgram::default();
+        caller.entry = SsaTarget(0);
+        caller.local_slot_types = collections::vec![ValueType::I32];
+        caller.local_slot_info = collections::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true,
+        }];
+        caller.block_entry_cached_slots = collections::vec![];
+        caller.block_cfg_origins = collections::vec![];
+        caller.value_types = collections::vec![ValueType::I32, ValueType::I32];
+        caller.value_sink_local = collections::vec![];
+        let mut block = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        };
+        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(0)));
+        let drop_idx = caller.intern_primitive(PrimitiveOpKind::Drop).unwrap();
+        block.ops.push(SsaInst::primitive(
+            drop_idx,
+            SsaValue::NONE,
+            [SsaOperand::value(SsaValue(0)), SsaOperand::NONE],
+            0,
+        ));
+        let call_idx = caller.push_call_op(SsaCallOp::CallDirect {
+            callee: 1,
+            args: test_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0), &[]),
+            results: FrameSpan::new(caller_frame.operand_slot(0), 0),
+            result_types: collections::Vec::new(),
+        });
+        block.ops.push(SsaInst::call(call_idx));
+        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
+        block.ops.push(SsaInst::primitive(
+            drop_idx,
+            SsaValue::NONE,
+            [SsaOperand::value(SsaValue(1)), SsaOperand::NONE],
+            0,
+        ));
+        caller.blocks.push(block);
+        caller
+    };
+    let callee = {
+        let mut callee = SsaProgram::default();
+        callee.entry = SsaTarget(0);
+        callee.local_slot_types = collections::vec![];
+        callee.local_slot_info = collections::vec![];
+        callee.block_entry_cached_slots = collections::vec![];
+        callee.block_cfg_origins = collections::vec![];
+        callee.value_types = collections::vec![];
+        callee.value_sink_local = collections::vec![];
+        callee.blocks.push(SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::Vec::new(),
+            extra_args: collections::Vec::new(),
+            terminator: SsaTerminator::Return { results: None },
+        });
+        callee
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config_with_preserved(3, 3, 0),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![
+            LowerFunctionInput {
+                id: MachineFuncId(0),
+                frame: caller_frame,
+                ssa: caller,
+                result_count: 0,
+            },
+            LowerFunctionInput {
+                id: MachineFuncId(1),
+                frame: callee_frame,
+                ssa: callee,
+                result_count: 0,
+            },
+        ],
+    })
+    .expect("direct local call should lower without forcing preserved cache");
+
+    let caller_function = &lowered.module.functions[0];
+    assert!(
+        caller_function.preserved_clobbers.is_empty(),
+        "clean cache carry should not introduce a preserved clobber when volatile lanes are available: {:?}",
+        caller_function.preserved_clobbers
+    );
+    let caller_program = &caller_function.program;
+    assert_eq!(caller_program.blocks.len(), 2);
+    let call_block = &caller_program.blocks[0];
+    let continuation = &caller_program.blocks[1];
+    let MachineTerminator::Call { ref success, .. } = call_block.terminator else {
+        panic!(
+            "expected direct local call terminator, got {:?}",
+            call_block.terminator
+        );
+    };
+    assert!(
+        success.args.is_empty(),
+        "volatile clean cache should not be carried through the local-call success edge"
+    );
+    assert!(
+        continuation
+            .ops
+            .iter()
+            .any(|inst| matches!(inst.kind, MachineInstKind::Load { .. })),
+        "continued local.get_cache should reload when no preserved lane was naturally used"
+    );
+}
+
+#[test]
+fn direct_local_call_publishes_dirty_non_ref_cache_even_in_preserved_reg() {
+    let caller_frame = plan_frame_layout(1, 1, 4);
+    let callee_frame = plan_frame_layout(0, 0, 4);
+    let slot = caller_frame.local_slot(0);
+
+    let caller = {
+        let mut caller = SsaProgram::default();
+        caller.entry = SsaTarget(0);
+        caller.local_slot_types = collections::vec![ValueType::I32];
+        caller.local_slot_info = collections::vec![LocalSlotInfo {
+            is_param: false,
+            reads_before_write: false,
+        }];
+        caller.block_entry_cached_slots = collections::vec![];
+        caller.block_cfg_origins = collections::vec![];
+        caller.value_types = collections::vec![ValueType::I32, ValueType::I32];
+        caller.value_sink_local = collections::vec![];
+        let mut block = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        };
+        let const_idx = caller
+            .intern_primitive(PrimitiveOpKind::I32Const { value: 7 })
+            .unwrap();
+        block.ops.push(SsaInst::primitive(
+            const_idx,
+            SsaValue(0),
+            [SsaOperand::NONE, SsaOperand::NONE],
+            0,
+        ));
+        block.ops.push(SsaInst::local_set_cache(slot, SsaValue(0)));
+        let call_idx = caller.push_call_op(SsaCallOp::CallDirect {
+            callee: 1,
+            args: test_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0), &[]),
+            results: FrameSpan::new(caller_frame.operand_slot(0), 0),
+            result_types: collections::Vec::new(),
+        });
+        block.ops.push(SsaInst::call(call_idx));
+        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
+        let drop_idx = caller.intern_primitive(PrimitiveOpKind::Drop).unwrap();
+        block.ops.push(SsaInst::primitive(
+            drop_idx,
+            SsaValue::NONE,
+            [SsaOperand::value(SsaValue(1)), SsaOperand::NONE],
+            0,
+        ));
+        caller.blocks.push(block);
+        caller
+    };
+    let callee = {
+        let mut callee = SsaProgram::default();
+        callee.entry = SsaTarget(0);
+        callee.local_slot_types = collections::vec![];
+        callee.local_slot_info = collections::vec![];
+        callee.block_entry_cached_slots = collections::vec![];
+        callee.block_cfg_origins = collections::vec![];
+        callee.value_types = collections::vec![];
+        callee.value_sink_local = collections::vec![];
+        callee.blocks.push(SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        });
+        callee
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config_with_preserved(1, 3, 2),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![
+            LowerFunctionInput {
+                id: MachineFuncId(0),
+                frame: caller_frame,
+                ssa: caller,
+                result_count: 0,
+            },
+            LowerFunctionInput {
+                id: MachineFuncId(1),
+                frame: callee_frame,
+                ssa: callee,
+                result_count: 0,
+            },
+        ],
+    })
+    .expect("direct local call should publish dirty non-ref cache");
+
+    let caller_program = &lowered.module.functions[0].program;
+    assert_eq!(caller_program.blocks.len(), 2);
+    let call_block = &caller_program.blocks[0];
+    let continuation = &caller_program.blocks[1];
+    let MachineTerminator::Call { ref success, .. } = call_block.terminator else {
+        panic!(
+            "expected direct local call terminator, got {:?}",
+            call_block.terminator
+        );
+    };
+    assert!(
+        success.args.is_empty(),
+        "dirty non-ref caches must not be carried through the local-call success edge"
+    );
+    assert!(
+        call_block
+            .ops
+            .iter()
+            .any(|inst| matches!(inst.kind, MachineInstKind::Store { .. })),
+        "dirty non-ref cache must be frame-published before the local call; ops={:?}",
+        call_block.ops
+    );
+    assert!(
+        continuation
+            .ops
+            .iter()
+            .any(|inst| matches!(inst.kind, MachineInstKind::Load { .. })),
+        "continued local.get_cache should reload after publishing a dirty cache; ops={:?}",
+        continuation.ops
+    );
+}
+
+#[test]
+fn direct_local_call_publishes_dirty_ref_cache_even_in_preserved_reg() {
+    let caller_frame = plan_frame_layout(1, 1, 4);
+    let callee_frame = plan_frame_layout(0, 0, 4);
+    let slot = caller_frame.local_slot(0);
+
+    let caller = {
+        let mut caller = SsaProgram::default();
+        caller.entry = SsaTarget(0);
+        caller.local_slot_types = collections::vec![ValueType::funcref()];
+        caller.local_slot_info = collections::vec![LocalSlotInfo {
+            is_param: false,
+            reads_before_write: false,
+        }];
+        caller.block_entry_cached_slots = collections::vec![];
+        caller.block_cfg_origins = collections::vec![];
+        caller.value_types = collections::vec![ValueType::funcref()];
+        caller.value_sink_local = collections::vec![];
+        let mut block = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        };
+        let ref_idx = caller
+            .intern_primitive(PrimitiveOpKind::RefFunc { func_idx: 1 })
+            .unwrap();
+        block.ops.push(SsaInst::primitive(
+            ref_idx,
+            SsaValue(0),
+            [SsaOperand::NONE, SsaOperand::NONE],
+            0,
+        ));
+        block.ops.push(SsaInst::local_set_cache(slot, SsaValue(0)));
+        let call_idx = caller.push_call_op(SsaCallOp::CallDirect {
+            callee: 1,
+            args: test_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0), &[]),
+            results: FrameSpan::new(caller_frame.operand_slot(0), 0),
+            result_types: collections::Vec::new(),
+        });
+        block.ops.push(SsaInst::call(call_idx));
+        caller.blocks.push(block);
+        caller
+    };
+    let callee = {
+        let mut callee = SsaProgram::default();
+        callee.entry = SsaTarget(0);
+        callee.local_slot_types = collections::vec![];
+        callee.local_slot_info = collections::vec![];
+        callee.block_entry_cached_slots = collections::vec![];
+        callee.block_cfg_origins = collections::vec![];
+        callee.value_types = collections::vec![];
+        callee.value_sink_local = collections::vec![];
+        callee.blocks.push(SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        });
+        callee
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config_with_preserved(0, 3, 2),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![
+            LowerFunctionInput {
+                id: MachineFuncId(0),
+                frame: caller_frame,
+                ssa: caller,
+                result_count: 0,
+            },
+            LowerFunctionInput {
+                id: MachineFuncId(1),
+                frame: callee_frame,
+                ssa: callee,
+                result_count: 0,
+            },
+        ],
+    })
+    .expect("direct local call should publish dirty ref cache");
+
+    let caller_program = &lowered.module.functions[0].program;
+    let call_block = &caller_program.blocks[0];
+    let MachineTerminator::Call { ref success, .. } = call_block.terminator else {
+        panic!(
+            "expected direct local call terminator, got {:?}",
+            call_block.terminator
+        );
+    };
+    assert!(
+        success.args.is_empty(),
+        "ref caches must not be carried through the local-call success edge"
+    );
+    assert!(
+        call_block
+            .ops
+            .iter()
+            .any(|inst| matches!(inst.kind, MachineInstKind::Store { .. })),
+        "dirty ref cache must be frame-published before the local call; ops={:?}",
+        call_block.ops
+    );
 }
 
 #[test]

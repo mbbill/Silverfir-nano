@@ -44,6 +44,10 @@ pub(super) struct MachineRegFile {
     fp_dynamic: collections::Vec<MachineReg>,
     gp_allocatable_count: usize,
     fp_allocatable_count: usize,
+    gp_volatile_count: usize,
+    gp_preserved_count: usize,
+    fp_volatile_count: usize,
+    fp_preserved_count: usize,
     gp_arg_lane_count: usize,
     first_fp_reg: u16,
     reg_count: u16,
@@ -72,6 +76,10 @@ impl MachineRegFile {
             fp_dynamic,
             gp_allocatable_count,
             fp_allocatable_count,
+            gp_volatile_count: usize::from(config.gp_volatile_dynamic),
+            gp_preserved_count: usize::from(config.gp_preserved_dynamic),
+            fp_volatile_count: usize::from(config.fp_volatile_dynamic),
+            fp_preserved_count: usize::from(config.fp_preserved_dynamic),
             gp_arg_lane_count,
             first_fp_reg,
             reg_count: next,
@@ -153,6 +161,47 @@ impl MachineRegFile {
     }
 
     #[inline]
+    pub(super) fn is_preserved_dynamic_reg(&self, reg: MachineReg) -> bool {
+        if let Some(index) = self.gp_dynamic_index(reg) {
+            return index >= self.gp_volatile_count
+                && index
+                    < self
+                        .gp_volatile_count
+                        .saturating_add(self.gp_preserved_count);
+        }
+        if let Some(index) = self.fp_dynamic_index(reg) {
+            return index >= self.fp_volatile_count
+                && index
+                    < self
+                        .fp_volatile_count
+                        .saturating_add(self.fp_preserved_count);
+        }
+        false
+    }
+
+    #[inline]
+    pub(super) fn gp_allocatable_preserved_lanes(&self) -> collections::Vec<bool> {
+        (0..self.gp_allocatable_count)
+            .map(|index| {
+                self.ordered_gp_allocatable(index)
+                    .map(|reg| self.is_preserved_dynamic_reg(reg))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    #[inline]
+    pub(super) fn fp_allocatable_preserved_lanes(&self) -> collections::Vec<bool> {
+        (0..self.fp_allocatable_count)
+            .map(|index| {
+                self.ordered_fp_allocatable(index)
+                    .map(|reg| self.is_preserved_dynamic_reg(reg))
+                    .unwrap_or(false)
+            })
+            .collect()
+    }
+
+    #[inline]
     pub(super) fn first_fp_reg(&self) -> u16 {
         self.first_fp_reg
     }
@@ -160,6 +209,18 @@ impl MachineRegFile {
     #[inline]
     pub(super) fn reg_count(&self) -> u16 {
         self.reg_count
+    }
+
+    #[inline]
+    fn gp_dynamic_index(&self, reg: MachineReg) -> Option<usize> {
+        let start = MACHINE_FIXED_REG_COUNT;
+        (reg.0 >= start && reg.0 < self.first_fp_reg).then_some((reg.0 - start) as usize)
+    }
+
+    #[inline]
+    fn fp_dynamic_index(&self, reg: MachineReg) -> Option<usize> {
+        (reg.0 >= self.first_fp_reg && reg.0 < self.reg_count)
+            .then_some((reg.0 - self.first_fp_reg) as usize)
     }
 }
 
@@ -1558,6 +1619,7 @@ mod tests {
                 program,
                 explicit_cache,
                 4,
+                &[],
             )
             .expect("entry cache layouts"),
         ));
@@ -1573,6 +1635,7 @@ mod tests {
             4,
             &super::super::gp32::Gp32Lowering,
             true,
+            None,
             None,
             #[cfg(sf_has_guard_pages)]
             false,

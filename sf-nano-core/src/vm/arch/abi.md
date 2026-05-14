@@ -188,8 +188,16 @@ Important properties:
 Therefore cached locals and SSA values may both use either volatility class:
 
 - use volatile regs for values that need not survive a call
-- use preserved regs for values worth keeping across calls
+- use preserved regs when register pressure naturally reaches the preserved
+  suffix, and carry call-live clean caches from there explicitly
 - spill/publish to frame when neither bank is sufficient
+
+For a compiled direct local call, a preserved dynamic register survives only
+when MachineIR names it as a successor value, for example as a clean
+cached-local `Call.success` edge argument. MachineIR chooses those survivors
+with abstract lane metadata; it must not name target physical registers. The
+backend must not infer additional hidden survivors from the physical register
+class.
 
 The backend must preserve the physical registers that implement the preserved
 abstract regs. The middle and MachineIR layers must never name target physical
@@ -280,8 +288,9 @@ At helper boundaries and local-call boundaries, shared lowering already defines
 how dynamic state becomes safe:
 
 - transients are dead before the boundary
-- cached locals are published back to their canonical frame slots before the
-  boundary
+- cached locals are either published back to their canonical frame slots, or
+  for compiled local calls only, carried as explicit non-ref success-edge
+  survivors in preserved dynamic regs
 - fixed registers remain live across the boundary because the backend preserves
   them there
 
@@ -396,10 +405,13 @@ For local calls:
 
 - SSA values are not required to survive the call unless they are explicit
   `lane_args` consumed by the call.
-- Cached locals are publishable state; MachineIR may keep clean/dead caches in
-  caller-clobbered registers and must publish dirty caches before a boundary
-  that needs frame-authoritative state.
-- Fixed registers are the only always-live machine state across local calls.
+- Cached locals are publishable state. Non-selected cached locals and every
+  dirty cached local must be published/dropped before the call. Clean non-ref
+  cached locals selected by MachineIR's call-cache analysis and resident in
+  preserved dynamic regs may survive only when the `Call.success` edge carries
+  them to the continuation as cached-local block params.
+- Fixed registers are the only implicit always-live machine state across local
+  calls; preserved dynamic values are live only when MachineIR names them.
 
 The local-call ABI must preserve the fixed registers. The preferred strategy is
 to keep them in host registers that the callee does not clobber. If a target

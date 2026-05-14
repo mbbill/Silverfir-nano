@@ -35,6 +35,7 @@ use super::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct CachedLocal {
     pub slot: FrameSlot,
+    pub value_ty: ValueType,
     pub ty: MachineStorageType,
     pub info: LocalSlotInfo,
 }
@@ -48,6 +49,7 @@ pub(super) struct CachedLocalBinding {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) struct BoundCachedLocal {
     pub slot: FrameSlot,
+    pub value_ty: ValueType,
     pub reg: MachineReg,
     pub hi_reg: Option<MachineReg>,
     pub ty: MachineStorageType,
@@ -118,6 +120,7 @@ pub(super) struct BlockLowerContext<'a> {
     /// a real incoming edge value.
     cache_has_value: collections::Vec<bool>,
     cache_dirty: collections::Vec<bool>,
+    call_preserved_cache_candidates: collections::Vec<bool>,
     values: collections::Vec<ValueLocation>,
     remaining_uses: tracked_alloc::collections::BTreeMap<SsaValue, u32>,
     /// Dynamic-register occupancy for linear SSA-like values.
@@ -228,6 +231,7 @@ impl<'a> BlockLowerContext<'a> {
         i64_ops: &'static dyn I64Lowering,
         is_entry: bool,
         initial_cache_dirty: Option<&[bool]>,
+        call_preserved_cache_candidates: Option<&[bool]>,
         #[cfg(sf_has_guard_pages)] guard_pages: bool,
         #[cfg(sf_has_guard_pages)] stack_guard_pages: bool,
     ) -> Result<Self, WasmError> {
@@ -256,6 +260,9 @@ impl<'a> BlockLowerContext<'a> {
             cache_live,
             cache_has_value,
             cache_dirty,
+            call_preserved_cache_candidates: call_preserved_cache_candidates
+                .map(collections::Vec::from)
+                .unwrap_or_else(|| collections::vec![false; cached_locals.len()]),
             values: collections::Vec::new(),
             remaining_uses: compute_remaining_uses(block, program),
             linear_value_state: collections::vec![
@@ -629,6 +636,7 @@ impl<'a> BlockLowerContext<'a> {
         let binding = self.cache_bindings.get(index).copied().flatten()?;
         Some(BoundCachedLocal {
             slot: cached.slot,
+            value_ty: cached.value_ty,
             reg: binding.reg,
             hi_reg: binding.hi_reg,
             ty: cached.ty,
@@ -725,6 +733,13 @@ impl<'a> BlockLowerContext<'a> {
     /// Check if a cached local is dirty.
     pub(super) fn is_cache_dirty(&self, index: usize) -> bool {
         self.cache_dirty.get(index).copied().unwrap_or(true)
+    }
+
+    pub(super) fn prefers_preserved_cache_binding(&self, index: usize) -> bool {
+        self.call_preserved_cache_candidates
+            .get(index)
+            .copied()
+            .unwrap_or(false)
     }
 
     /// Clear all dirty flags (called after saving all dirty locals).
@@ -1309,13 +1324,15 @@ fn record_explicit_cached_local(
         info: LocalSlotInfo::default(),
     });
     let typed = ty.is_some();
-    let ty = value_type_storage_type(ty.unwrap_or(pref.ty));
+    let value_ty = ty.unwrap_or(pref.ty);
+    let storage_ty = value_type_storage_type(value_ty);
 
     explicit
         .entry(slot)
         .and_modify(|entry| {
             if typed && !entry.typed {
-                entry.cached.ty = ty;
+                entry.cached.value_ty = value_ty;
+                entry.cached.ty = storage_ty;
                 entry.typed = true;
             }
         })
@@ -1324,7 +1341,8 @@ fn record_explicit_cached_local(
                 order: *order,
                 cached: CachedLocal {
                     slot,
-                    ty,
+                    value_ty,
+                    ty: storage_ty,
                     info: pref.info,
                 },
                 typed,

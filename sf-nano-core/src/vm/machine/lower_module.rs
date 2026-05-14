@@ -40,7 +40,7 @@ use crate::{
 use super::{
     call_abi::{collect_preserved_clobbers, INDIRECT_DISPATCH_CONTROL_GP_LANES},
     gp32::Gp32Lowering,
-    lower_cache_layout::compute_block_entry_cache_params,
+    lower_cache_layout::{compute_block_entry_cache_params, compute_local_call_cache_preferences},
     lower_const_pool::ConstPoolBuilder,
     lower_context::{
         explicit_cached_locals, BlockLowerContext, CachedLocal, EntryCacheParam, ValueRegs,
@@ -383,13 +383,22 @@ fn lower_function(
     let current_abi = runtime
         .get(input.id.0 as usize)
         .ok_or_else(|| WasmError::internal("runtime metadata missing for current function"))?;
-    let entry_cache_params =
-        compute_block_entry_cache_params(regfile, &input.ssa, &explicit_cache, gp_reg_width)?;
+    let call_preserved_cache_candidates =
+        compute_local_call_cache_preferences(&input.ssa, &explicit_cache, is_local_func);
+    let entry_cache_params = compute_block_entry_cache_params(
+        regfile,
+        &input.ssa,
+        &explicit_cache,
+        gp_reg_width,
+        is_local_func,
+    )?;
     let block_entry_cache_dirty = compute_block_entry_cache_dirty(
         &input.ssa,
         &explicit_cache,
         current_abi,
         &entry_cache_params,
+        is_local_func,
+        &call_preserved_cache_candidates,
     );
     release_cache_planning_only_ssa_storage(&mut input.ssa);
     for block_index in 0..original_block_count {
@@ -409,6 +418,9 @@ fn lower_function(
             block_entry_cache_dirty
                 .get(target.as_usize())
                 .map(|dirty| dirty.as_slice()),
+            call_preserved_cache_candidates
+                .get(target.as_usize())
+                .map(|bits| bits.as_slice()),
             #[cfg(sf_has_guard_pages)]
             guard_pages,
             #[cfg(sf_has_guard_pages)]
@@ -545,7 +557,10 @@ fn lower_function(
                         )?;
                         current_block = continuation;
                         current_params = continuation_params;
-                        lower.begin_continuation_block_selective()?;
+                        // `lower_call_internal` has already split cached-local
+                        // state: volatile caches were saved/dropped, while
+                        // non-ref caches resident in preserved regs are carried
+                        // as identity edge params into this continuation.
                     }
                     // Runtime-dispatch targets stay in the current block as
                     // inline runtime-call instructions. They cross the runtime
@@ -2469,6 +2484,8 @@ fn compute_block_entry_cache_dirty(
     cached_locals: &[CachedLocal],
     abi: &MachineFunctionAbi,
     entry_cache_params: &[collections::Vec<EntryCacheParam>],
+    is_local_func: &[bool],
+    call_preserved_cache_candidates: &[collections::Vec<bool>],
 ) -> collections::Vec<collections::Vec<bool>> {
     if program.blocks.is_empty() || cached_locals.is_empty() {
         return collections::vec![collections::Vec::new(); program.blocks.len()];
@@ -2525,6 +2542,11 @@ fn compute_block_entry_cache_dirty(
                     &entry_dirty[pred_index],
                     &slot_to_index,
                     &register_param_slots,
+                    is_local_func,
+                    call_preserved_cache_candidates
+                        .get(pred_index)
+                        .map(|bits| bits.as_slice())
+                        .unwrap_or(&[]),
                 );
                 for &slot in entry_slots {
                     if let Some(&cached_index) = slot_to_index.get(&slot) {
@@ -2615,6 +2637,8 @@ fn simulate_block_cache_exit_state(
     entry_dirty: &[bool],
     slot_to_index: &BTreeMap<FrameSlot, usize>,
     register_param_slots: &[FrameSlot],
+    is_local_func: &[bool],
+    call_preserved_cache_candidates: &[bool],
 ) -> (collections::Vec<bool>, collections::Vec<bool>) {
     let mut resident = collections::vec![false; slot_to_index.len()];
     let mut dirty = collections::vec![false; slot_to_index.len()];
@@ -2664,12 +2688,37 @@ fn simulate_block_cache_exit_state(
                 }
             }
             SsaOp::CALL => {
-                resident.fill(false);
-                dirty.fill(false);
+                if !is_direct_local_ssa_call(program, is_local_func, inst.meta) {
+                    resident.fill(false);
+                    dirty.fill(false);
+                    continue;
+                }
+                for cached_index in 0..resident.len() {
+                    if call_preserved_cache_candidates
+                        .get(cached_index)
+                        .copied()
+                        .unwrap_or(false)
+                        && !dirty[cached_index]
+                    {
+                        continue;
+                    }
+                    resident[cached_index] = false;
+                    dirty[cached_index] = false;
+                }
             }
             _ => {}
         }
     }
 
     (resident, dirty)
+}
+
+fn is_direct_local_ssa_call(program: &SsaProgram, is_local_func: &[bool], call_index: u16) -> bool {
+    match program.call_ops.get(call_index as usize) {
+        Some(SsaCallOp::CallDirect { callee, .. }) => is_local_func
+            .get(*callee as usize)
+            .copied()
+            .unwrap_or(false),
+        Some(SsaCallOp::CallIndirect { .. } | SsaCallOp::CallRef { .. }) | None => false,
+    }
 }

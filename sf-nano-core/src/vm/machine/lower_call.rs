@@ -108,7 +108,6 @@ impl<'a> BlockLowerContext<'a> {
                 callee_total_frame_slots,
             )?;
         }
-        self.emit_save_dirty_cached_locals()?;
         let machine_args = if load_args_from_frame {
             self.prepare_internal_call_args_from_frame(args, &param_locs, args.frame_base)?
         } else {
@@ -117,14 +116,18 @@ impl<'a> BlockLowerContext<'a> {
         self.ensure_no_live_values(
             "prepared SSA-IR call reached native lowering with live linear SSA values; values must be published before the call",
         )?;
+        let (cache_success_args, cache_continuation_params) =
+            self.prepare_cached_locals_for_local_call()?;
 
         // Note: zero-init of the callee's non-param locals is performed by
         // the callee itself at function entry, only for slots flagged by the
         // SsaProgram's `local_slot_info.reads_before_write` analysis. Locals
         // that are guaranteed to be written before any read need no init.
 
-        let (results, success_args, continuation_params) =
+        let (results, mut success_args, mut continuation_params) =
             self.call_result_placement(&return_abi, results, live_result)?;
+        success_args.extend(cache_success_args);
+        continuation_params.extend(cache_continuation_params);
 
         Ok((
             MachineTerminator::Call {
