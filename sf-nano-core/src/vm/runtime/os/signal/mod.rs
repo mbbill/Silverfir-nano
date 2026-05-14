@@ -13,7 +13,9 @@
 //! [`crate::vm::runtime::trap_signal`] through two small accessors:
 //!
 //! - `trap_signal::signal_count_inc_and_check()` — abort-on-storm guard
-//! - `trap_signal::try_resolve_trap(pc)` — returns `(error_ret, trap_kind_offset)`
+//! - `trap_signal::try_resolve_trap(pc)` — returns the JIT error-return
+//!   target plus the `NativeContext` offsets needed to record and classify the
+//!   trap kind
 //!
 //! The platform module owns the ucontext layout and the register
 //! surgery; `trap_signal.rs` owns the trap table, the install

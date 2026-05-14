@@ -582,6 +582,7 @@ fn compile_full_streaming_function(
     mir_ops: &mut usize,
     executable: &mut CodeBuffer,
     #[cfg(sf_has_guard_pages)] use_guard_pages: bool,
+    #[cfg(sf_has_guard_pages)] use_stack_guard_pages: bool,
 ) -> Result<arch::common::types::FunctionArtifact, WasmError> {
     let sem_decode_function_phase = phase_span_with_function("sem_decode", Some(func_idx as u32));
     let semantic = decode_function_semantic(module, store, spec)?;
@@ -619,6 +620,8 @@ fn compile_full_streaming_function(
         const_pool,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages,
     )?;
     optimize_function(&mut machine, backend);
     if backend.is_32bit_gp_target() {
@@ -671,6 +674,8 @@ fn finish_native_compile_streaming(
         .map(|m| m.has_guard_pages())
         .unwrap_or(false)
         && backend.gp_unit_bytes == 8;
+    #[cfg(sf_has_guard_pages)]
+    let use_stack_guard_pages = backend.gp_unit_bytes == 8;
 
     let arch_lower_phase = phase_span("arch_lower");
     let mut executable = CodeBuffer::new().map_err(WasmError::internal)?;
@@ -732,6 +737,8 @@ fn finish_native_compile_streaming(
                 &mut executable,
                 #[cfg(sf_has_guard_pages)]
                 use_guard_pages,
+                #[cfg(sf_has_guard_pages)]
+                use_stack_guard_pages,
             )?
         };
 
@@ -1113,11 +1120,15 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         .unwrap_or(false);
     #[cfg(sf_has_guard_pages)]
     let use_guard_pages = use_guard_pages && backend.gp_unit_bytes == 8;
+    #[cfg(sf_has_guard_pages)]
+    let use_stack_guard_pages = backend.gp_unit_bytes == 8;
     let mut lowered = lower_module(LowerModuleInput {
         backend,
         functions: prepared_functions,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages,
     })?;
     let module_opt_phase = phase_span("module_opt");
     optimize_module(&mut lowered.module);

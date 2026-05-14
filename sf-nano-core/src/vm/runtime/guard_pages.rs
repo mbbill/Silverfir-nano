@@ -26,6 +26,18 @@ const WASM_PAGE_SIZE: usize = crate::constants::WASM_PAGE_SIZE;
 /// fits within this range. No OOB access can escape the guard region.
 const GUARD_RESERVATION: usize = 8 * 1024 * 1024 * 1024 + 64 * 1024;
 
+/// Minimum guard range after the usable wasm stack.
+///
+/// The stack guard is also expanded by the module's largest frame footprint
+/// so a single overflowing callee-frame probe cannot jump beyond the protected
+/// reservation.
+const STACK_GUARD_MIN_BYTES: usize = WASM_PAGE_SIZE;
+
+#[inline]
+const fn align_up(value: usize, align: usize) -> usize {
+    value.div_ceil(align) * align
+}
+
 /// A wasm linear memory backed by an OS reservation with guard pages.
 ///
 /// The base pointer is stable for the lifetime of the allocation (no
@@ -131,6 +143,85 @@ impl core::fmt::Debug for GuardPageMemory {
         f.debug_struct("GuardPageMemory")
             .field("base", &self.base)
             .field("committed", &self.committed)
+            .finish()
+    }
+}
+
+/// Native wasm-value stack backed by an OS reservation with a guard range
+/// immediately above the usable stack bytes.
+pub(crate) struct GuardPageStack {
+    base: *mut u8,
+    usable: usize,
+    guard: usize,
+    #[cfg(feature = "memprof")]
+    trace: AllocationHandle,
+}
+
+// SAFETY: The reserved region is process-private and not aliased.
+unsafe impl Send for GuardPageStack {}
+
+impl GuardPageStack {
+    pub(crate) fn new(requested_bytes: usize, max_frame_bytes: usize) -> Result<Self, WasmError> {
+        let usable = align_up(
+            requested_bytes.max(core::mem::size_of::<u64>()),
+            WASM_PAGE_SIZE,
+        );
+        let guard = align_up(max_frame_bytes.max(STACK_GUARD_MIN_BYTES), WASM_PAGE_SIZE);
+        let total = usable
+            .checked_add(guard)
+            .ok_or_else(|| WasmError::internal("guard-page stack: reservation overflow"))?;
+
+        let base = os::reserve_guarded(total).map_err(|msg| WasmError::internal(msg))?;
+        if let Err(msg) = os::commit_guarded(base, 0, usable) {
+            os::release_guarded(base, total);
+            return Err(WasmError::internal(msg));
+        }
+
+        Ok(Self {
+            base,
+            usable,
+            guard,
+            #[cfg(feature = "memprof")]
+            trace: AllocationHandle::new(
+                AllocationDescriptor::new(RUNTIME_MEMORY_OWNER, "GuardPageStack"),
+                AllocationState::new(usable)
+                    .with_len(usable)
+                    .with_capacity(total)
+                    .with_ptr(base as usize),
+            ),
+        })
+    }
+
+    #[inline]
+    pub(crate) fn base(&self) -> *mut u64 {
+        self.base.cast()
+    }
+
+    #[inline]
+    pub(crate) fn end(&self) -> *mut u64 {
+        unsafe { self.base.add(self.usable).cast() }
+    }
+
+    #[inline]
+    pub(crate) fn guard_end(&self) -> *mut u8 {
+        unsafe { self.base.add(self.usable + self.guard) }
+    }
+}
+
+impl Drop for GuardPageStack {
+    fn drop(&mut self) {
+        #[cfg(feature = "memprof")]
+        self.trace.remove();
+        os::release_guarded(self.base, self.usable + self.guard);
+    }
+}
+
+impl core::fmt::Debug for GuardPageStack {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("GuardPageStack")
+            .field("base", &self.base)
+            .field("usable", &self.usable)
+            .field("guard", &self.guard)
             .finish()
     }
 }

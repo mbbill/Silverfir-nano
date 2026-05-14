@@ -161,6 +161,8 @@ fn lowers_simple_slot_and_add_block() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -298,6 +300,8 @@ fn lowers_select_with_wasm_operand_order() {
         backend: host_backend_config(0, 3, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -375,6 +379,8 @@ fn lowers_v128_binary_and_publishes_raw_slot_handle() {
         backend: host_backend_config(0, 4, 0, 6),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -459,6 +465,8 @@ fn lowers_v128_local_get_slot_through_raw_handle_boundary() {
         backend: host_backend_config(0, 4, 0, 6),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -531,6 +539,8 @@ fn native_backend_requires_at_least_one_gp_linear_value_register() {
         backend: host_backend_config(0, 0, 0, 0),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -576,6 +586,8 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -644,6 +656,8 @@ fn rejects_inconsistent_return_result_spans() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -693,6 +707,8 @@ fn rejects_mixed_void_and_value_returns() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -751,6 +767,8 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
@@ -810,6 +828,8 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame: plan_frame_layout(0, 2, 2),
@@ -932,6 +952,8 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -991,6 +1013,8 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -1068,6 +1092,8 @@ fn gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate() {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -1125,6 +1151,8 @@ fn gp32_i64_local_get_set_cache_same_slot_emits_no_self_moves() {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -1203,6 +1231,8 @@ fn gp32_i64_local_set_cache_materializes_live_pair_alias_before_overwrite() {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -1310,6 +1340,8 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -1421,6 +1453,8 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -1493,6 +1527,8 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![
             LowerFunctionInput {
                 id: MachineFuncId(0),
@@ -1569,6 +1605,8 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -1653,6 +1691,8 @@ fn local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free() 
         backend: host_backend_config(0, 1, 0, 0),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -1718,6 +1758,8 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
         backend,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -1777,6 +1819,8 @@ fn lowers_call_runtime_through_frame_metadata_without_helper_scratch() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -1842,6 +1886,8 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -1919,6 +1965,8 @@ fn flushes_and_reloads_cached_locals_around_call_runtime() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -2003,6 +2051,8 @@ fn skips_dead_cached_local_reload_after_direct_runtime_call() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -2077,6 +2127,8 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -2164,6 +2216,8 @@ fn lowers_direct_local_call_with_continuation_block() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![
             LowerFunctionInput {
                 id: MachineFuncId(0),
@@ -2324,6 +2378,8 @@ fn flushes_cached_local_before_second_direct_call() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![
             LowerFunctionInput {
                 id: MachineFuncId(0),
@@ -2479,6 +2535,8 @@ fn preserves_cached_locals_across_block_edges() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -2606,6 +2664,8 @@ fn threads_cached_locals_through_block_edge_params() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -2742,6 +2802,8 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
         backend: host_backend_config(2, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -2815,6 +2877,8 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -2919,6 +2983,8 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -3062,6 +3128,8 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
         backend: host_backend_config(3, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -3121,6 +3189,8 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -3203,6 +3273,8 @@ fn does_not_save_clean_carried_cache_before_runtime_call() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -3307,6 +3379,8 @@ fn preserved_call_keeps_carried_cache_live_across_edge() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -3421,6 +3495,8 @@ fn saves_only_dirty_cached_locals_before_runtime_call() {
         backend: host_backend_config(2, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -3478,6 +3554,8 @@ fn entry_block_cached_locals_are_loaded_in_prologue_not_passed_as_params() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -3549,6 +3627,8 @@ fn register_passed_entry_param_cache_stays_dirty_across_edges() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -3625,6 +3705,8 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
         backend: gp32_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -3702,6 +3784,8 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![
             LowerFunctionInput {
                 id: MachineFuncId(0),
@@ -3774,6 +3858,8 @@ fn lowers_memory_size_without_helper_boundary() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -3835,6 +3921,8 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -3912,6 +4000,8 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         backend: host_backend_config(0, 8, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -4126,6 +4216,8 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
         backend: host_backend_config(0, 8, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -4245,6 +4337,8 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
         backend: gp32_backend_config(0, 8, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -4346,6 +4440,8 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -4431,6 +4527,8 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![
             LowerFunctionInput {
                 id: MachineFuncId(0),
@@ -4527,6 +4625,8 @@ fn lowers_global_get_and_set_without_helpers() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -4606,6 +4706,8 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -4689,6 +4791,8 @@ fn lowers_i32_load_with_inline_trap_if() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -4788,6 +4892,8 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -4877,6 +4983,8 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -4982,6 +5090,8 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         use_guard_pages: true,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5074,6 +5184,8 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5155,6 +5267,8 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5252,6 +5366,8 @@ fn threads_live_linear_values_through_split_continuation_params() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5363,6 +5479,8 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5443,6 +5561,8 @@ fn lowers_f32_const_to_fp_machine_const() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5510,6 +5630,8 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5571,6 +5693,8 @@ fn untyped_slot_load_stays_in_gp_bank() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5642,6 +5766,8 @@ fn f32_block_params_keep_f32_width() {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5694,6 +5820,8 @@ fn f32_cached_locals_use_f32_slot_widths() {
         backend: host_backend_config(0, 4, 1, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5775,6 +5903,8 @@ fn local_get_cache_source_aliases_without_move() {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5860,6 +5990,8 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
         backend: host_backend_config(2, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,
@@ -5939,6 +6071,8 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
         backend: host_backend_config(2, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
             id: MachineFuncId(0),
             frame,

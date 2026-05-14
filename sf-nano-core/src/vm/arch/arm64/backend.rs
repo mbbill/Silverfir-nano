@@ -6,6 +6,8 @@
 
 use crate::collections;
 
+#[cfg(sf_has_guard_pages)]
+use crate::vm::machine::machine_ir::MachineAddr;
 use crate::{
     error::WasmError,
     vm::{
@@ -650,6 +652,11 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             .emit_u32(enc::ldp_64_post_index(x29, x30, abi::stack_reg(), 16));
         // C_RET0 untouched — preserves the error code.
         self.core.text.emit_u32(enc::ret());
+    }
+
+    #[cfg(sf_has_guard_pages)]
+    fn lower_stack_probe(&mut self, addr: MachineAddr) -> Result<(), WasmError> {
+        self.emit_stack_probe(addr)
     }
 
     fn lower_block(

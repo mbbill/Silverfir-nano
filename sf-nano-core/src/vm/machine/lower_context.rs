@@ -132,6 +132,8 @@ pub(super) struct BlockLowerContext<'a> {
     param_slot_state: collections::Vec<ParamSlotState>,
     #[cfg(sf_has_guard_pages)]
     guard_pages: bool,
+    #[cfg(sf_has_guard_pages)]
+    stack_guard_pages: bool,
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -227,6 +229,7 @@ impl<'a> BlockLowerContext<'a> {
         is_entry: bool,
         initial_cache_dirty: Option<&[bool]>,
         #[cfg(sf_has_guard_pages)] guard_pages: bool,
+        #[cfg(sf_has_guard_pages)] stack_guard_pages: bool,
     ) -> Result<Self, WasmError> {
         let machine_params = target_param_regs(&block.params, program, regfile, gp_reg_width)?;
         let entry_cache_params = all_entry_cache_params
@@ -272,6 +275,8 @@ impl<'a> BlockLowerContext<'a> {
             },
             #[cfg(sf_has_guard_pages)]
             guard_pages,
+            #[cfg(sf_has_guard_pages)]
+            stack_guard_pages,
         };
 
         let machine_params = lower.machine_params.clone();
@@ -526,6 +531,22 @@ impl<'a> BlockLowerContext<'a> {
     #[cfg(sf_has_guard_pages)]
     pub(super) fn use_guard_pages(&self) -> bool {
         self.guard_pages
+    }
+
+    #[cfg(sf_has_guard_pages)]
+    pub(super) fn use_stack_guard_pages(&self) -> bool {
+        self.stack_guard_pages
+    }
+
+    pub(super) fn use_explicit_stack_prechecks(&self) -> bool {
+        #[cfg(sf_has_guard_pages)]
+        {
+            !self.use_stack_guard_pages()
+        }
+        #[cfg(not(sf_has_guard_pages))]
+        {
+            true
+        }
     }
 
     pub(super) fn frame_base_reg(&self) -> MachineReg {

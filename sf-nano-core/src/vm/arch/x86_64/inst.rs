@@ -811,6 +811,12 @@ impl<'a> X86_64Backend<'a> {
         self.lower_load_from(dst, base, addr.offset, width, extension)
     }
 
+    pub(super) fn emit_stack_probe(&mut self, addr: MachineAddr) -> Result<(), WasmError> {
+        let base = self.map_gp_reg(addr.base)?;
+        enc::load_64(&mut self.core.text, X86Reg::RAX, base, addr.offset);
+        Ok(())
+    }
+
     /// Load from a physical base register + displacement.
     fn lower_load_from(
         &mut self,

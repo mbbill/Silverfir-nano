@@ -6,6 +6,8 @@
 
 use crate::collections;
 
+#[cfg(sf_has_guard_pages)]
+use crate::vm::machine::machine_ir::MachineAddr;
 use crate::{
     error::WasmError,
     vm::{
@@ -207,6 +209,11 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         // ret 16 — pops return address, then releases the 16-byte call
         // record. C_RET0 untouched — preserves the error code.
         enc::ret_imm16(&mut self.core.text, 16);
+    }
+
+    #[cfg(sf_has_guard_pages)]
+    fn lower_stack_probe(&mut self, addr: MachineAddr) -> Result<(), WasmError> {
+        self.emit_stack_probe(addr)
     }
 
     fn lower_inst(&mut self, inst: &MachineInst) -> Result<(), WasmError> {

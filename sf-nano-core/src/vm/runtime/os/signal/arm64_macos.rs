@@ -5,6 +5,7 @@ use crate::vm::runtime::trap_signal;
 const SIGSEGV: i32 = 11;
 const SIGBUS: i32 = 10;
 const SA_SIGINFO: i32 = 0x0040;
+const SIGINFO_SI_ADDR_OFFSET: usize = 24;
 
 #[repr(C)]
 struct sigaction {
@@ -46,7 +47,11 @@ unsafe fn thread_state(ucontext: *mut u8) -> *mut Arm64ThreadState {
     unsafe { mctx_ptr.add(MCONTEXT_SS_OFFSET) as *mut Arm64ThreadState }
 }
 
-unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8) {
+unsafe fn siginfo_fault_addr(info: *mut u8) -> usize {
+    unsafe { *(info.add(SIGINFO_SI_ADDR_OFFSET) as *const usize) }
+}
+
+unsafe extern "C" fn signal_handler(_sig: i32, info: *mut u8, ucontext: *mut u8) {
     if trap_signal::signal_count_inc_and_check() {
         std::process::abort();
     }
@@ -54,7 +59,7 @@ unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8
     let ts = unsafe { thread_state(ucontext) };
     let pc = unsafe { (*ts).pc as usize };
 
-    let Some((error_ret, trap_kind_offset)) = (unsafe { trap_signal::try_resolve_trap(pc) }) else {
+    let Some(resolution) = (unsafe { trap_signal::try_resolve_trap(pc) }) else {
         // Not in JIT code — abort (we can't chain easily without libc).
         std::process::abort();
     };
@@ -62,17 +67,18 @@ unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8
     // Read X19 (NativeContext pointer) from the faulting thread state.
     let ctx_ptr = unsafe { (*ts).x[19] } as *mut u8;
 
-    // Set ctx.trap_kind = 1 (MemoryOutOfBounds).
-    if trap_kind_offset > 0 {
-        let trap_kind_ptr = unsafe { ctx_ptr.add(trap_kind_offset) as *mut u32 };
-        unsafe { *trap_kind_ptr = 1 };
+    if resolution.trap_kind_offset > 0 {
+        let fault_addr = unsafe { siginfo_fault_addr(info) };
+        let trap_kind = unsafe { trap_signal::classify_trap_kind(ctx_ptr, fault_addr, resolution) };
+        let trap_kind_ptr = unsafe { ctx_ptr.add(resolution.trap_kind_offset) as *mut u32 };
+        unsafe { *trap_kind_ptr = trap_kind };
     }
 
     // Set X0 = 1 (error status for eval())
     unsafe { (*ts).x[0] = 1 };
 
     // Redirect PC to the function's return_error_label
-    unsafe { (*ts).pc = error_ret as u64 };
+    unsafe { (*ts).pc = resolution.error_ret as u64 };
 }
 
 pub(in crate::vm::runtime) unsafe fn install_platform_handler() {

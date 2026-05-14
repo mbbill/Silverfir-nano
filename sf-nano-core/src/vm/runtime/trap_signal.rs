@@ -5,8 +5,8 @@
 //!
 //! - the registry of JIT code ranges → error-return addresses,
 //! - the signal-storm debug counter,
-//! - the `TRAP_KIND_OFFSET` that tells the platform handler where to
-//!   record the trap kind on the active [`NativeContext`],
+//! - the context offsets that tell the platform handler where to record the
+//!   trap kind and how to classify stack-guard faults,
 //! - the one-shot install latch for the OS-specific signal handler.
 //!
 //! The per-(arch × os) ucontext parsing, register surgery, and sigaction
@@ -18,12 +18,12 @@
 //! - [`signal_count_inc_and_check`] — bumps the storm counter, returns
 //!   `true` if the caller should abort.
 //! - [`try_resolve_trap`] — looks up a faulting PC in the trap table and
-//!   returns `(error_ret, trap_kind_offset)` when the PC lies in JIT code.
+//!   returns the handler metadata when the PC lies in JIT code.
 //!
 //! The handler is async-signal-safe: it does not allocate. It sets a
 //! `trap_kind` flag in `NativeContext` (reachable via the architecture's
 //! context register) and rewrites the signal frame's PC to the function's
-//! `return_error_label`. The Rust caller (`eval()`) reads `trap_kind` after
+//! `body_local_error_label`. The Rust caller (`eval()`) reads `trap_kind` after
 //! JIT returns and creates the `WasmError`.
 //!
 //! This module is gated on `#[cfg(sf_has_guard_pages)]`.
@@ -54,6 +54,19 @@ static HANDLER_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 /// Offset of the `trap_kind` field within `NativeContext`, set once at init.
 static TRAP_KIND_OFFSET: AtomicUsize = AtomicUsize::new(0);
+static STACK_END_OFFSET: AtomicUsize = AtomicUsize::new(0);
+static STACK_GUARD_END_OFFSET: AtomicUsize = AtomicUsize::new(0);
+
+pub(crate) const TRAP_MEMORY_OUT_OF_BOUNDS: u32 = 1;
+pub(crate) const TRAP_STACK_OVERFLOW: u32 = 8;
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::vm::runtime) struct TrapResolution {
+    pub error_ret: usize,
+    pub trap_kind_offset: usize,
+    pub stack_end_offset: usize,
+    pub stack_guard_end_offset: usize,
+}
 
 fn lock_trap_table() {
     while TRAP_TABLE_LOCK
@@ -136,10 +149,11 @@ pub(in crate::vm::runtime) fn signal_count_inc_and_check() -> bool {
 
 /// Resolve a faulting PC to its trap-handling parameters.
 ///
-/// Returns `(error_ret, trap_kind_offset)` when `pc` lies inside a
-/// registered JIT code range. The caller (a platform-specific signal
-/// handler) uses `error_ret` as the new PC and `trap_kind_offset` to
-/// locate the `trap_kind` field inside `NativeContext`.
+/// Returns handler metadata when `pc` lies inside a registered JIT code range.
+/// The caller (a platform-specific signal handler) uses `error_ret` as the new
+/// PC, `trap_kind_offset` to locate the `trap_kind` field inside
+/// `NativeContext`, and the stack offsets to distinguish guarded-stack faults
+/// from guarded-linear-memory faults.
 ///
 /// Returns `None` when the fault did not happen in JIT code; the caller
 /// should abort because we cannot chain to another handler safely.
@@ -151,10 +165,40 @@ pub(in crate::vm::runtime) fn signal_count_inc_and_check() -> bool {
 /// append-only during compilation and stable during execution, so this
 /// holds as long as signals only fire during `eval()`.
 #[inline]
-pub(in crate::vm::runtime) unsafe fn try_resolve_trap(pc: usize) -> Option<(usize, usize)> {
+pub(in crate::vm::runtime) unsafe fn try_resolve_trap(pc: usize) -> Option<TrapResolution> {
     let error_ret = unsafe { lookup_return_error(pc) }?;
     let trap_kind_offset = TRAP_KIND_OFFSET.load(Ordering::Relaxed);
-    Some((error_ret, trap_kind_offset))
+    let stack_end_offset = STACK_END_OFFSET.load(Ordering::Relaxed);
+    let stack_guard_end_offset = STACK_GUARD_END_OFFSET.load(Ordering::Relaxed);
+    Some(TrapResolution {
+        error_ret,
+        trap_kind_offset,
+        stack_end_offset,
+        stack_guard_end_offset,
+    })
+}
+
+/// Classify one JIT-attributed guard-page fault.
+///
+/// The platform handler already knows the fault came from JIT code. If the
+/// faulting address lands in the wasm-stack guard range, report stack
+/// overflow; otherwise keep the historical guarded-memory classification.
+#[inline]
+pub(in crate::vm::runtime) unsafe fn classify_trap_kind(
+    ctx_ptr: *mut u8,
+    fault_addr: usize,
+    resolution: TrapResolution,
+) -> u32 {
+    let stack_end = unsafe { *(ctx_ptr.add(resolution.stack_end_offset) as *const *mut u8) };
+    let stack_guard_end =
+        unsafe { *(ctx_ptr.add(resolution.stack_guard_end_offset) as *const *mut u8) };
+    let stack_end = stack_end as usize;
+    let stack_guard_end = stack_guard_end as usize;
+    if fault_addr >= stack_end && fault_addr < stack_guard_end {
+        TRAP_STACK_OVERFLOW
+    } else {
+        TRAP_MEMORY_OUT_OF_BOUNDS
+    }
 }
 
 /// Install the signal handler (idempotent).
@@ -201,8 +245,14 @@ pub(crate) fn clear_registered_jit_ranges() {
 
 /// Set the byte offset of `NativeContext::trap_kind` so the signal handler
 /// can write it without knowing the struct layout at compile time.
-pub(crate) fn set_trap_kind_offset(offset: usize) {
-    TRAP_KIND_OFFSET.store(offset, Ordering::Relaxed);
+pub(crate) fn set_context_offsets(
+    trap_kind_offset: usize,
+    stack_end_offset: usize,
+    stack_guard_end_offset: usize,
+) {
+    TRAP_KIND_OFFSET.store(trap_kind_offset, Ordering::Relaxed);
+    STACK_END_OFFSET.store(stack_end_offset, Ordering::Relaxed);
+    STACK_GUARD_END_OFFSET.store(stack_guard_end_offset, Ordering::Relaxed);
 }
 
 #[cfg(test)]

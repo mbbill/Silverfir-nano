@@ -81,6 +81,8 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
     #[cfg(sf_has_debug_regions)]
     let body_prelude_start = internal_entry_offset;
     b.lower_body_prelude();
+    #[cfg(sf_has_guard_pages)]
+    emit_body_stack_probe(&mut b)?;
     #[cfg(sf_has_debug_regions)]
     if b.core().text.len() > body_prelude_start {
         debug_regions.push(DebugRegion {
@@ -269,6 +271,8 @@ where
     #[cfg(sf_has_debug_regions)]
     let body_start = internal_entry_offset;
     b.lower_body_prelude();
+    #[cfg(sf_has_guard_pages)]
+    emit_body_stack_probe(&mut b)?;
     emit_body(&mut b)?;
     #[cfg(sf_has_debug_regions)]
     debug_regions.push(DebugRegion {
@@ -336,6 +340,22 @@ where
         #[cfg(sf_has_debug_regions)]
         debug_regions,
     )
+}
+
+#[cfg(sf_has_guard_pages)]
+fn emit_body_stack_probe<'a, A: ArchBackend<'a>>(b: &mut A) -> Result<(), WasmError> {
+    let Some(runtime) = b.core().current_runtime() else {
+        return Ok(());
+    };
+    let total_slots = runtime.total_frame_slots;
+    if total_slots == 0 {
+        return Ok(());
+    }
+    let offset = frame_slot_byte_offset(FrameSlot(total_slots - 1), 0)?;
+    b.lower_stack_probe(MachineAddr {
+        base: MACHINE_FP_REG,
+        offset,
+    })
 }
 
 // ── emit_parallel_moves ──────────────────────────────────────────────────────

@@ -1576,6 +1576,8 @@ mod tests {
             None,
             #[cfg(sf_has_guard_pages)]
             false,
+            #[cfg(sf_has_guard_pages)]
+            false,
         )
         .expect("lower context")
     }

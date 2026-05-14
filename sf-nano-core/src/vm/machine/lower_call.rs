@@ -74,48 +74,38 @@ impl<'a> BlockLowerContext<'a> {
             ));
         }
 
-        // Two scratch registers:
-        // - `callee_frame_base` is the absolute address of the callee's frame
-        //   base. It is alive at the terminator: the backend reads it to set
-        //   `MACHINE_FP_REG` before the native call.
-        // - `stack_limit` is used by the per-call stack-overflow precheck and
-        //   then reused after the precheck as `caller_result_base` (the
-        //   absolute address of the caller's result-receive region). The
-        //   backend reads `caller_result_base` at the terminator to push it
-        //   into the backend-private call record so the callee's `Return`
-        //   can copy results into it.
         let mut load_args_from_frame = false;
-        let call_regs = match self.borrow_free_gp_dynamic_regs(2) {
-            Ok(regs) => regs,
-            Err(_) => {
-                self.publish_call_args_to_frame(args)?;
-                self.ensure_no_live_values(
-                    "prepared SSA-IR call fallback reached native lowering with live linear SSA values; values must be published before the call",
-                )?;
-                load_args_from_frame = true;
-                self.borrow_free_gp_dynamic_regs(2)?
-            }
-        };
-        let callee_frame_base = call_regs[0];
-        let stack_limit = call_regs[1];
+        if self.use_explicit_stack_prechecks() {
+            let call_regs = match self.borrow_free_gp_dynamic_regs(2) {
+                Ok(regs) => regs,
+                Err(_) => {
+                    self.publish_call_args_to_frame(args)?;
+                    self.ensure_no_live_values(
+                        "prepared SSA-IR call fallback reached native lowering with live linear SSA values; values must be published before the call",
+                    )?;
+                    load_args_from_frame = true;
+                    self.borrow_free_gp_dynamic_regs(2)?
+                }
+            };
+            let callee_frame_base = call_regs[0];
+            let stack_limit = call_regs[1];
 
-        // Native local calls reuse the caller operand span as the callee frame
-        // prefix, so arguments are already in place when control transfers.
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::IntBinary {
-                width: self.gp_word_int_width(),
-                op: MachineIntBinaryOp::Add,
-                dst: callee_frame_base,
-                lhs: MachineValue::Reg(self.frame_base_reg()),
-                rhs: MachineValue::Imm64(slot_offset_bytes(arg_span.start)? as u64),
-            },
-        });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: self.gp_word_int_width(),
+                    op: MachineIntBinaryOp::Add,
+                    dst: callee_frame_base,
+                    lhs: MachineValue::Reg(self.frame_base_reg()),
+                    rhs: MachineValue::Imm64(slot_offset_bytes(arg_span.start)? as u64),
+                },
+            });
 
-        self.emit_direct_call_stack_precheck(
-            callee_frame_base,
-            stack_limit,
-            callee_total_frame_slots,
-        )?;
+            self.emit_direct_call_stack_precheck(
+                callee_frame_base,
+                stack_limit,
+                callee_total_frame_slots,
+            )?;
+        }
         self.emit_save_dirty_cached_locals()?;
         let machine_args = if load_args_from_frame {
             self.prepare_internal_call_args_from_frame(args, &param_locs, args.frame_base)?
@@ -185,25 +175,27 @@ impl<'a> BlockLowerContext<'a> {
 
         self.emit_save_dirty_cached_locals()?;
 
-        let call_regs = self.borrow_free_gp_dynamic_regs(2)?;
-        let callee_frame_base = call_regs[0];
-        let stack_limit = call_regs[1];
         self.emit_repack_tail_call_args_to_frame_prefix(arg_span)?;
         let param_locs = self.runtime_for_func(callee_id)?.param_locs.clone();
-        self.emit_machine_inst(MachineInst {
-            kind: MachineInstKind::Move {
-                owner: MachineRegOwner::LinearValue,
-                ty: MachineStorageType::GpWord,
-                dst: callee_frame_base,
-                src: MachineValue::Reg(self.frame_base_reg()),
-            },
-        });
+        if self.use_explicit_stack_prechecks() {
+            let call_regs = self.borrow_free_gp_dynamic_regs(2)?;
+            let callee_frame_base = call_regs[0];
+            let stack_limit = call_regs[1];
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Move {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpWord,
+                    dst: callee_frame_base,
+                    src: MachineValue::Reg(self.frame_base_reg()),
+                },
+            });
 
-        self.emit_direct_call_stack_precheck(
-            callee_frame_base,
-            stack_limit,
-            callee_total_frame_slots,
-        )?;
+            self.emit_direct_call_stack_precheck(
+                callee_frame_base,
+                stack_limit,
+                callee_total_frame_slots,
+            )?;
+        }
         let machine_args =
             self.prepare_internal_call_args_from_frame(args, &param_locs, FrameSlot(0))?;
 
@@ -689,6 +681,10 @@ impl<'a> BlockLowerContext<'a> {
         stack_limit: MachineReg,
         callee_total_frame_slots: u16,
     ) -> Result<(), WasmError> {
+        if !self.use_explicit_stack_prechecks() {
+            return Ok(());
+        }
+
         // Stack growth is downward. Load the stack-end guard, subtract the
         // callee frame footprint, and trap if the proposed callee frame base
         // would cross below that limit.
@@ -734,6 +730,10 @@ impl<'a> BlockLowerContext<'a> {
         stack_limit: MachineReg,
         callee_total_frame_bytes: MachineReg,
     ) -> Result<(), WasmError> {
+        if !self.use_explicit_stack_prechecks() {
+            return Ok(());
+        }
+
         // Same check as the direct path, except the callee frame size has been
         // loaded dynamically from the runtime-published local-call-info table.
         let stack_end_offset = self.runtime_abi_layout().context.stack_end_offset;

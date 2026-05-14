@@ -18,8 +18,12 @@ const EXCEPTION_CONTINUE_EXECUTION: i32 = -1;
 #[repr(C)]
 struct ExceptionRecord {
     exception_code: u32,
-    // Remaining fields (flags, nested record, address, params) are unused
-    // here and intentionally omitted; we only ever read `exception_code`.
+    exception_flags: u32,
+    exception_record: *mut ExceptionRecord,
+    exception_address: *mut u8,
+    number_parameters: u32,
+    _align: u32,
+    exception_information: [usize; 15],
 }
 
 #[repr(C)]
@@ -51,7 +55,7 @@ unsafe extern "system" fn veh(info: *mut ExceptionPointers) -> i32 {
     let ctx = unsafe { (*info).context_record };
     let pc = unsafe { *(ctx.add(CTX_RIP) as *const u64) } as usize;
 
-    let Some((error_ret, trap_kind_offset)) = (unsafe { trap_signal::try_resolve_trap(pc) }) else {
+    let Some(resolution) = (unsafe { trap_signal::try_resolve_trap(pc) }) else {
         // Not a JIT fault — let other handlers / the OS deal with it.
         return EXCEPTION_CONTINUE_SEARCH;
     };
@@ -64,15 +68,17 @@ unsafe extern "system" fn veh(info: *mut ExceptionPointers) -> i32 {
 
     // RBX = MACHINE_CTX_REG (NativeContext pointer) in our x86_64 mapping.
     let ctx_ptr = unsafe { *(ctx.add(CTX_RBX) as *const u64) } as *mut u8;
-    if trap_kind_offset > 0 {
-        let trap_kind_ptr = unsafe { ctx_ptr.add(trap_kind_offset) as *mut u32 };
-        unsafe { *trap_kind_ptr = 1 };
+    if resolution.trap_kind_offset > 0 {
+        let fault_addr = unsafe { (*er).exception_information[1] };
+        let trap_kind = unsafe { trap_signal::classify_trap_kind(ctx_ptr, fault_addr, resolution) };
+        let trap_kind_ptr = unsafe { ctx_ptr.add(resolution.trap_kind_offset) as *mut u32 };
+        unsafe { *trap_kind_ptr = trap_kind };
     }
 
     // RAX = 1 (error status for eval()), RIP = function's return_error_label.
     unsafe {
         *(ctx.add(CTX_RAX) as *mut u64) = 1;
-        *(ctx.add(CTX_RIP) as *mut u64) = error_ret as u64;
+        *(ctx.add(CTX_RIP) as *mut u64) = resolution.error_ret as u64;
     }
 
     EXCEPTION_CONTINUE_EXECUTION

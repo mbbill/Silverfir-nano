@@ -85,6 +85,12 @@ pub(crate) trait ArchBackend<'a>: Sized {
     fn lower_body_prelude(&mut self);
     fn lower_body_local_error_tail(&mut self);
 
+    /// Faulting read of one frame address used to validate a guarded wasm
+    /// stack frame at body entry. Emitted only when `sf_has_guard_pages` is
+    /// active and the runtime stack allocation has a protected guard range.
+    #[cfg(sf_has_guard_pages)]
+    fn lower_stack_probe(&mut self, addr: MachineAddr) -> Result<(), WasmError>;
+
     /// Populate the abstract internal-call argument lanes from the public
     /// entry frame before the root stub calls the same internal body entry
     /// used by wasm-to-wasm calls.

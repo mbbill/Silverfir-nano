@@ -1212,6 +1212,24 @@ impl<'a> super::backend::Arm64Backend<'a> {
         Ok(())
     }
 
+    pub(super) fn emit_stack_probe(&mut self, addr: MachineAddr) -> Result<(), WasmError> {
+        let base = self.map_gp_reg(addr.base)?;
+        let offset = addr.offset as i64;
+        if offset >= 0 && (offset % 8) == 0 && (offset / 8) < 4096 {
+            self.core
+                .text
+                .emit_u32(enc::ldr_64(abi::zero_reg(), base, (offset / 8) as u32));
+            return Ok(());
+        }
+
+        let addr_scratch = *self.gp_scratch.scoped_alloc();
+        self.lower_addr_into(addr_scratch, addr)?;
+        self.core
+            .text
+            .emit_u32(enc::ldr_64(abi::zero_reg(), addr_scratch, 0));
+        Ok(())
+    }
+
     /// Compute `dst = src + off` in as few instructions as possible.
     /// Always operates in 64-bit: callers requiring uxtw must zero-extend
     /// the source first via [`lower_zext_w_to_x`] or use the extended-register

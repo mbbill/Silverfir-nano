@@ -110,8 +110,12 @@ pub(crate) struct NativeContext {
     /// Pending wasm exception / trap in transit between runtime-call entry
     /// and the catch-dispatcher block (or the function escape path).
     pub(crate) pending_escape: PendingEscape,
+    /// End of the guarded wasm-stack reservation. Only used by the
+    /// guard-page signal handler to classify stack overflow faults.
+    #[cfg(sf_has_guard_pages)]
+    pub(crate) stack_guard_end: *mut u8,
     /// Trap kind set by the guard-page signal handler (no allocation needed).
-    /// 0 = no trap, 1 = memory out of bounds.
+    /// 0 = no trap, otherwise a `MachineTrapKind` trap code.
     #[cfg(sf_has_guard_pages)]
     pub(crate) trap_kind: u32,
     memory_views: collections::Vec<NativeMemoryView>,
@@ -521,6 +525,8 @@ impl NativeContextBox {
                 error: None,
                 pending_escape: PendingEscape::None,
                 #[cfg(sf_has_guard_pages)]
+                stack_guard_end: stack_end.cast(),
+                #[cfg(sf_has_guard_pages)]
                 trap_kind: 0,
                 memory_views: collections::Vec::new(),
                 table_views: collections::Vec::new(),
@@ -594,10 +600,13 @@ const _GLOBALS_TAIL_IS_LAST: () = {
 pub(crate) mod ctx_offset {
     use super::NativeContext;
 
-    #[cfg(test)]
+    #[cfg(any(test, sf_has_guard_pages))]
     pub(crate) const STACK_END: u32 = core::mem::offset_of!(NativeContext, stack_end) as u32;
     pub(crate) const MEM0_BASE: u32 = core::mem::offset_of!(NativeContext, mem0_base) as u32;
     pub(crate) const MEM0_SIZE: u32 = core::mem::offset_of!(NativeContext, mem0_size) as u32;
+    #[cfg(sf_has_guard_pages)]
+    pub(crate) const STACK_GUARD_END: u32 =
+        core::mem::offset_of!(NativeContext, stack_guard_end) as u32;
     #[cfg(sf_has_guard_pages)]
     pub(crate) const TRAP_KIND: u32 = core::mem::offset_of!(NativeContext, trap_kind) as u32;
 

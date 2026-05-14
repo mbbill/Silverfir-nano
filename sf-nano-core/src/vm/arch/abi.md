@@ -362,6 +362,14 @@ parameter lanes, frame switching, result copying, and trap propagation are
 MachineIR contracts that each native backend lowers to the target's real call
 and return instructions.
 
+Backends must use the target's native call/return pairing for local calls:
+direct calls use the target's linked direct-call instruction where the target
+range permits (`bl` on arm64, `call` on x86_64), indirect calls use the
+target's linked register-call instruction (`blr`/`call *reg`), and returns use
+the target's native `ret`/link-register return. The ABI must not emulate
+local calls with an explicit software return stack or an unlinked branch
+sequence, because that loses the CPU's normal call/return prediction path.
+
 The shared call argument contract is split:
 
 - A leading frame prefix is already present in the callee's frame region.
@@ -526,23 +534,46 @@ host callbacks).
 
 ### Body prelude and terminal sequences
 
-Today, native backends emit a backend-specific **body prelude** between
+Native backends may emit a backend-specific **body prelude** between
 `internal_entry_label` and the first body block. This prelude is what makes
-nested native calls safe in the body; leaf bodies may eventually skip it as an
-optimization, but that gating is not part of the current ABI metadata yet.
+nested native calls safe in the body; a backend may skip it only when its
+per-function metadata proves the body does not need it.
 
 | Backend  | Body prelude                                |
 |----------|---------------------------------------------|
-| arm64    | `stp x29, x30, [sp, #-16]!` — link save     |
+| arm64    | `stp x29, x30, [sp, #-16]!` plus preserved dynamic saves, only when needed |
 | armv7a   | link save                                   |
 | x86_64   | `sub rsp, 8` — alignment shim               |
 | emulator | none                                        |
 
-The current implementation always emits the prelude on native backends and
-never emits one in the emulator. If we later add a per-function
-`body_emits_native_call` bit, it should mean "this body actually needs the
-native-call prelude"; until then, readers should treat the prelude as
-unconditional on native backends.
+On arm64, `has_body_host_frame()` is true when the function clobbers preserved
+dynamic registers or contains a body-returning native call. A leaf MIR body
+with no preserved clobbers can return directly through the incoming LR. On
+x86_64 the body alignment shim is still unconditional.
+
+### Stack overflow protection
+
+Stack protection has two legal implementations:
+
+- **Guarded stack pages** on native 64-bit guard-page targets. The runtime
+  allocates the wasm frame stack from the same OS guard-page infrastructure
+  used by guarded linear memory. The usable stack is followed by an inaccessible
+  guard range whose size is at least the largest static function frame in the
+  module, rounded to a wasm page. Every body entry emits one stack probe at the
+  highest byte that the current function frame may touch. If the probe faults
+  in `[stack_end, stack_guard_end)`, the signal handler classifies the trap as
+  `StackOverflow`; otherwise a JIT-attributed guard fault remains a memory OOB
+  trap. Local call sites emit no explicit stack-limit precheck in this mode.
+- **Explicit stack prechecks** on targets without guarded stack pages. Direct
+  local calls compare the proposed callee frame against `NativeContext.stack_end`
+  before the native call. Dynamic local calls load the callee frame size from
+  local-call metadata and perform the same check before transfer.
+
+This is selected by shared lowering through `use_explicit_stack_prechecks()`.
+Call lowering must not compute a callee-frame-base temporary only for a disabled
+precheck. On guarded-stack builds, the local-call hot path is just argument
+lane setup, `MACHINE_FP_REG` adjustment, the real native call, caller FP
+restore, status check, and result placement.
 
 The body has exactly two terminal sequences:
 
@@ -620,8 +651,7 @@ and enters the callee with the target's real native call instruction:
 ; call-lane shuffle, if lane sources are not already in-place
 mov/mov/ldr ...                                ; backend-specific
 add fp_reg, fp_reg, #frame_delta              ; switch to callee frame
-ldr s0, =callee_literal                       ; deferred literal pool
-blr s0                                        ; native call
+bl callee_entry                                ; native direct call
 sub fp_reg, fp_reg, #frame_delta              ; restore caller frame
 cbnz w0, body_local_error_label               ; status check on C_RET0
 ; optional FrameFallback result copy happens here
@@ -632,7 +662,12 @@ cbnz w0, body_local_error_label               ; status check on C_RET0
 ```
 
 An indirect-target `Call` is identical except it uses the runtime
-register `callee_entry` directly instead of a deferred literal.
+register `callee_entry` directly with the target's linked register-call
+instruction (`blr callee_entry` on arm64).
+
+On arm64, out-of-range direct calls are patched to a local veneer. The call
+site remains a real `bl`: the veneer loads the absolute target and tail-branches
+to it, preserving the LR created by the original call-site instruction.
 
 ### Trap propagation via C_RET0
 
@@ -663,16 +698,13 @@ pass succeeds in placing the continuation block immediately after the
 call site, the backend's compiled-call lowering elides the trailing
 `b continuation_label` (or `jmp` / `b` on other architectures).
 
-For backends that emit per-call inline literals (arm64 uses an
-`ldr_lit_64` to load the patchable callee address), the literal must
-not sit in the fall-through path between the call and the continuation
-block, or it would be executed as garbage instructions. The arm64
-backend handles this by **deferring** each call's literal to a
-per-function literal pool flushed after edge stubs and before the body
-tail labels — see `Arm64Backend::lower_function_literal_pool` and the
-`lower_function_literal_pool` hook on `ArchBackend`. The default impl is
-a no-op; backends without inline-literal call sequences (x86_64,
-emulator) do not need it.
+Arm64 direct-call veneers and their address literals must not sit in the
+fall-through path between the call and the continuation block, or they would be
+executed as garbage instructions. The arm64 backend handles this by deferring
+veneers/literals to a per-function pool flushed after edge stubs and before the
+body tail labels — see `Arm64Backend::lower_function_literal_pool` and the
+`lower_function_literal_pool` hook on `ArchBackend`. The default impl is a
+no-op; backends without direct-call veneers or inline literals do not need it.
 
 ### Public-entry caller stub
 
@@ -709,10 +741,11 @@ depth: each active native body pays its backend-specific body prelude cost
 The caller-restored local-call ABI does not add a separate per-call link record.
 
 `vm/runtime/context.rs` does **not** maintain a `native_call_depth`
-guard today. The current assumption is that the wasm-side stack
-overflow check (still emitted on indirect/SCC-internal calls and at
-function entry) bounds nesting to whatever fits in the wasm stack. If
-a future embedding ships with a small thread stack or runs untrusted
-deeply recursive modules, the right fix is a separate host-stack-depth
-counter on `NativeContext`, decremented at the body-entry prelude and
-checked against a configurable cap.
+guard today. The current assumption is that wasm stack overflow protection
+guards nesting to whatever fits in the wasm frame stack: guarded-stack builds
+use body-entry probes and signal classification, while non-guard builds keep
+explicit call-site prechecks. This does not directly protect the host thread
+stack. If a future embedding ships with a small thread stack or runs untrusted
+deeply recursive modules, the right fix is a separate host-stack-depth counter
+on `NativeContext`, decremented at the body-entry prelude and checked against a
+configurable cap.

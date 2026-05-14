@@ -3,6 +3,7 @@
 //! This is identical across all architectures since the entry signature
 //! and call convention are the same.
 
+#[cfg(not(sf_has_guard_pages))]
 use crate::collections;
 
 use crate::{
@@ -16,6 +17,13 @@ use crate::{
         value_encoding::value_to_machine_raw_in_store,
     },
 };
+
+#[cfg(sf_has_guard_pages)]
+use super::helpers::trap_error;
+#[cfg(sf_has_guard_pages)]
+use crate::vm::machine::machine_ir::MachineTrapKind;
+#[cfg(sf_has_guard_pages)]
+use crate::vm::runtime::trap_signal;
 
 #[cfg(sf_call_trace)]
 use crate::vm::debug::function_trace;
@@ -47,13 +55,36 @@ pub(crate) fn eval(
     // Sized by runtime config. Hosted default matches the former
     // 2-MiB `constants::MAX_STACK_SIZE`; MCU embedders override via
     // `set_runtime_config(.. wasm_stack_bytes: N ..)`.
-    let stack_slots = crate::runtime_config().wasm_stack_bytes / core::mem::size_of::<u64>();
-    if stack_slots == 0 {
+    let stack_bytes = crate::runtime_config().wasm_stack_bytes;
+    if stack_bytes < core::mem::size_of::<u64>() {
         return Err(WasmError::runtime_not_configured());
     }
-    let mut stack = collections::vec![0u64; stack_slots];
+    #[cfg(sf_has_guard_pages)]
+    let max_frame_bytes = compiled
+        .abi()
+        .functions
+        .iter()
+        .map(|abi| usize::from(abi.total_frame_slots) * core::mem::size_of::<u64>())
+        .max()
+        .unwrap_or(0);
+    #[cfg(sf_has_guard_pages)]
+    let stack = crate::vm::runtime::guard_pages::GuardPageStack::new(stack_bytes, max_frame_bytes)?;
+    #[cfg(sf_has_guard_pages)]
+    let stack_base = stack.base();
+    #[cfg(sf_has_guard_pages)]
+    let stack_end = stack.end();
+    #[cfg(sf_has_guard_pages)]
+    let stack_guard_end = stack.guard_end();
+
+    #[cfg(not(sf_has_guard_pages))]
+    let mut stack = {
+        let stack_slots = stack_bytes / core::mem::size_of::<u64>();
+        collections::vec![0u64; stack_slots]
+    };
+    #[cfg(not(sf_has_guard_pages))]
     let stack_base = stack.as_mut_ptr();
-    let stack_end = unsafe { stack_base.add(stack_slots) };
+    #[cfg(not(sf_has_guard_pages))]
+    let stack_end = unsafe { stack_base.add(stack.len()) };
 
     unsafe {
         for (index, arg) in args.iter().enumerate() {
@@ -69,6 +100,10 @@ pub(crate) fn eval(
 
     let n_globals = store.module().globals.len();
     let mut ctx = NativeContext::new(store as *mut Store, stack_end, n_globals);
+    #[cfg(sf_has_guard_pages)]
+    {
+        ctx.stack_guard_end = stack_guard_end;
+    }
     ctx.seed_local_call_infos(compiled);
     // Under the caller-restored local-call ABI, no software call-link record
     // is needed at the root. The public-entry caller stub calls the internal
@@ -82,9 +117,13 @@ pub(crate) fn eval(
 
     #[cfg(sf_has_guard_pages)]
     {
-        use crate::vm::runtime::{context::ctx_offset, trap_signal};
+        use crate::vm::runtime::context::ctx_offset;
         trap_signal::install_signal_handler();
-        trap_signal::set_trap_kind_offset(ctx_offset::TRAP_KIND as usize);
+        trap_signal::set_context_offsets(
+            ctx_offset::TRAP_KIND as usize,
+            ctx_offset::STACK_END as usize,
+            ctx_offset::STACK_GUARD_END as usize,
+        );
         trap_signal::reset_debug_state();
         ctx.trap_kind = 0;
     }
@@ -93,7 +132,10 @@ pub(crate) fn eval(
 
     #[cfg(sf_has_guard_pages)]
     if ctx.trap_kind != 0 {
-        let error = WasmError::trap("out of bounds memory access");
+        let error = match ctx.trap_kind {
+            trap_signal::TRAP_STACK_OVERFLOW => trap_error(MachineTrapKind::StackOverflow),
+            _ => trap_error(MachineTrapKind::MemoryOutOfBounds),
+        };
         #[cfg(sf_call_trace)]
         function_trace::native_trap_current(&mut ctx, &error);
         return Err(error);

@@ -5,6 +5,7 @@ use crate::vm::runtime::trap_signal;
 const SIGSEGV: i32 = 11;
 const SIGBUS: i32 = 10;
 const SA_SIGINFO: i32 = 0x0040;
+const SIGINFO_SI_ADDR_OFFSET: usize = 24;
 
 #[repr(C)]
 struct sigaction {
@@ -55,7 +56,11 @@ unsafe fn thread_state(ucontext: *mut u8) -> *mut X86ThreadState64 {
     unsafe { mctx_ptr.add(MCONTEXT_SS_OFFSET) as *mut X86ThreadState64 }
 }
 
-unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8) {
+unsafe fn siginfo_fault_addr(info: *mut u8) -> usize {
+    unsafe { *(info.add(SIGINFO_SI_ADDR_OFFSET) as *const usize) }
+}
+
+unsafe extern "C" fn signal_handler(_sig: i32, info: *mut u8, ucontext: *mut u8) {
     if trap_signal::signal_count_inc_and_check() {
         std::process::abort();
     }
@@ -63,23 +68,25 @@ unsafe extern "C" fn signal_handler(_sig: i32, _info: *mut u8, ucontext: *mut u8
     let ts = unsafe { thread_state(ucontext) };
     let pc = unsafe { (*ts).rip as usize };
 
-    let Some((error_ret, trap_kind_offset)) = (unsafe { trap_signal::try_resolve_trap(pc) }) else {
+    let Some(resolution) = (unsafe { trap_signal::try_resolve_trap(pc) }) else {
         std::process::abort();
     };
 
     // RBX = MACHINE_CTX_REG (NativeContext pointer) in our x86_64 mapping.
     let ctx_ptr = unsafe { (*ts).rbx } as *mut u8;
 
-    if trap_kind_offset > 0 {
-        let trap_kind_ptr = unsafe { ctx_ptr.add(trap_kind_offset) as *mut u32 };
-        unsafe { *trap_kind_ptr = 1 };
+    if resolution.trap_kind_offset > 0 {
+        let fault_addr = unsafe { siginfo_fault_addr(info) };
+        let trap_kind = unsafe { trap_signal::classify_trap_kind(ctx_ptr, fault_addr, resolution) };
+        let trap_kind_ptr = unsafe { ctx_ptr.add(resolution.trap_kind_offset) as *mut u32 };
+        unsafe { *trap_kind_ptr = trap_kind };
     }
 
     // Set RAX = 1 (error status for eval())
     unsafe { (*ts).rax = 1 };
 
     // Redirect RIP to the function's return_error_label
-    unsafe { (*ts).rip = error_ret as u64 };
+    unsafe { (*ts).rip = resolution.error_ret as u64 };
 }
 
 pub(in crate::vm::runtime) unsafe fn install_platform_handler() {

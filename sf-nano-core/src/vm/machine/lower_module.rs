@@ -92,6 +92,8 @@ pub(crate) struct LowerModuleInput {
     pub functions: collections::Vec<LowerFunctionInput>,
     #[cfg(sf_has_guard_pages)]
     pub use_guard_pages: bool,
+    #[cfg(sf_has_guard_pages)]
+    pub use_stack_guard_pages: bool,
 }
 
 /// Result of lowering prepared SSA-IR into MachineIR plus backend-facing ABI
@@ -129,6 +131,8 @@ pub(crate) fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModu
     }
     #[cfg(sf_has_guard_pages)]
     let guard_pages = input.use_guard_pages;
+    #[cfg(sf_has_guard_pages)]
+    let stack_guard_pages = input.use_stack_guard_pages;
     for mut function in input.functions {
         let mir_lower_function_phase = phase_span_with_function("mir_lower", Some(function.id.0));
         let function_id = function.id.0 as usize;
@@ -141,6 +145,8 @@ pub(crate) fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModu
             &mut const_pool,
             #[cfg(sf_has_guard_pages)]
             guard_pages,
+            #[cfg(sf_has_guard_pages)]
+            stack_guard_pages,
         )?);
         drop(mir_lower_function_phase);
     }
@@ -173,6 +179,7 @@ pub(crate) fn lower_single_function(
     is_local_func: &[bool],
     const_pool: &mut ConstPoolBuilder,
     #[cfg(sf_has_guard_pages)] guard_pages: bool,
+    #[cfg(sf_has_guard_pages)] stack_guard_pages: bool,
 ) -> Result<(MachineFunction, MachineFunctionAbi), WasmError> {
     let mut function = function;
     let max_regfile = MachineRegFile::new(backend)?;
@@ -195,6 +202,8 @@ pub(crate) fn lower_single_function(
         const_pool,
         #[cfg(sf_has_guard_pages)]
         guard_pages,
+        #[cfg(sf_has_guard_pages)]
+        stack_guard_pages,
     )?;
     Ok((machine, abi))
 }
@@ -358,6 +367,7 @@ fn lower_function(
     is_local_func: &[bool],
     const_pool: &mut ConstPoolBuilder,
     #[cfg(sf_has_guard_pages)] guard_pages: bool,
+    #[cfg(sf_has_guard_pages)] stack_guard_pages: bool,
 ) -> Result<MachineFunction, WasmError> {
     let gp_reg_width = config.gp_unit_bytes;
     let original_block_count = input.ssa.blocks.len();
@@ -401,6 +411,8 @@ fn lower_function(
                 .map(|dirty| dirty.as_slice()),
             #[cfg(sf_has_guard_pages)]
             guard_pages,
+            #[cfg(sf_has_guard_pages)]
+            stack_guard_pages,
         )?;
         let mut current_block = MachineBlockId(block.id.as_u32());
         let mut current_params = collections::Vec::new();
@@ -2054,7 +2066,8 @@ fn build_call_indirect_local_prepare_block(
     let prefix_current = temps.lane3;
 
     // The local callee reuses the caller operand span as its frame prefix, so
-    // the only dynamic work left is per-callee stack/prefix/call-link setup.
+    // the dynamic work left is per-callee prefix/call-link setup plus an
+    // explicit stack check on platforms without guarded wasm stack pages.
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::IntBinary {
             width: lower.gp_word_int_width(),
@@ -2065,21 +2078,23 @@ fn build_call_indirect_local_prepare_block(
         },
     });
 
-    emit_local_call_info_entry_addr(lower, callee_target, prefix_end, prefix_current)?;
-    lower.emit_machine_inst(MachineInst {
-        kind: MachineInstKind::Load {
-            owner: MachineRegOwner::LinearValue,
-            ty: MachineStorageType::GpWord,
-            dst: prefix_current,
-            addr: MachineAddr {
-                base: prefix_end,
-                offset: call_info.total_frame_bytes_offset as i32,
+    if lower.use_explicit_stack_prechecks() {
+        emit_local_call_info_entry_addr(lower, callee_target, prefix_end, prefix_current)?;
+        lower.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: prefix_current,
+                addr: MachineAddr {
+                    base: prefix_end,
+                    offset: call_info.total_frame_bytes_offset as i32,
+                },
+                width: lower.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
             },
-            width: lower.gp_word_mem_width(),
-            extension: MachineLoadExtension::None,
-        },
-    });
-    lower.emit_dynamic_call_stack_precheck(callee_frame_base, prefix_end, prefix_current)?;
+        });
+        lower.emit_dynamic_call_stack_precheck(callee_frame_base, prefix_end, prefix_current)?;
+    }
 
     emit_local_call_info_entry_addr(lower, callee_target, prefix_end, prefix_current)?;
     lower.emit_machine_inst(MachineInst {
@@ -2146,21 +2161,23 @@ fn build_tail_call_indirect_local_prepare_block(
         },
     });
 
-    emit_local_call_info_entry_addr(lower, callee_target, prefix_end, prefix_current)?;
-    lower.emit_machine_inst(MachineInst {
-        kind: MachineInstKind::Load {
-            owner: MachineRegOwner::LinearValue,
-            ty: MachineStorageType::GpWord,
-            dst: prefix_current,
-            addr: MachineAddr {
-                base: prefix_end,
-                offset: call_info.total_frame_bytes_offset as i32,
+    if lower.use_explicit_stack_prechecks() {
+        emit_local_call_info_entry_addr(lower, callee_target, prefix_end, prefix_current)?;
+        lower.emit_machine_inst(MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: prefix_current,
+                addr: MachineAddr {
+                    base: prefix_end,
+                    offset: call_info.total_frame_bytes_offset as i32,
+                },
+                width: lower.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
             },
-            width: lower.gp_word_mem_width(),
-            extension: MachineLoadExtension::None,
-        },
-    });
-    lower.emit_dynamic_call_stack_precheck(callee_frame_base, prefix_end, prefix_current)?;
+        });
+        lower.emit_dynamic_call_stack_precheck(callee_frame_base, prefix_end, prefix_current)?;
+    }
 
     emit_local_call_info_entry_addr(lower, callee_target, prefix_end, prefix_current)?;
     lower.emit_machine_inst(MachineInst {
@@ -2234,7 +2251,7 @@ fn build_call_indirect_local_transfer_block(
     let call_info = runtime_layout.local_call_info;
     let temps = call_indirect_gp_temps(lower)?;
     let callee_target = temps.lane0;
-    // lane1 is `callee_frame_base`, populated by the earlier checks block.
+    // lane1 is `callee_frame_base`, populated by the earlier prepare block.
     let callee_entry = temps.lane2;
     let info_base = temps.lane3;
 
