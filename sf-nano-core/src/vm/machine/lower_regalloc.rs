@@ -8,11 +8,13 @@ use crate::{
     vm::{
         backend::BackendConfig,
         machine::machine_ir::{
-            machine_ptr_width, machine_word_int_width, MachineAddr, MachineBlockParam,
-            MachineBranchCond, MachineCallTarget, MachineConvertOp, MachineEdge, MachineFloatWidth,
-            MachineInst, MachineInstKind, MachineIntWidth, MachineMemWidth, MachineReg,
-            MachineRegOwner, MachineStorageType, MachineTerminator, MachineValue, MACHINE_CTX_REG,
-            MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            machine_ptr_width, machine_word_int_width, MachineAddr, MachineArgSrc,
+            MachineArgSrcPair, MachineBlockParam, MachineBranchCond, MachineCallArgs,
+            MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineConvertOp,
+            MachineEdge, MachineFloatWidth, MachineInst, MachineInstKind, MachineIntWidth,
+            MachineMemWidth, MachineReg, MachineRegOwner, MachineResultDst, MachineStorageType,
+            MachineTerminator, MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         middle::ssa_ir::ir::{DecodedOperand, SsaOperand, SsaProgram, SsaValue},
     },
@@ -27,9 +29,9 @@ use super::lower_context::BlockLowerContext;
 /// Fixed machine-register layout used by lowering.
 ///
 /// `ctx`, `fp`, and the pinned `mem0` view regs are fixed MachineIR roles.
-/// The remaining GP/FP registers form two ordered dynamic banks. The order is
-/// a backend preference only: semantic linear-value ownership is tracked by
-/// live lowering state in `BlockLowerContext`, not by register number.
+/// The remaining GP/FP registers form ordered dynamic banks. The front of each
+/// bank is volatile under the internal JIT ABI; the preserved suffix is used
+/// only when the function can preserve those lanes around its body.
 ///
 /// Some lowering helpers still borrow free GP dynamic regs for short-lived
 /// control plumbing. Those helpers must be explicit at the callsite because
@@ -40,6 +42,8 @@ pub(super) struct MachineRegFile {
     gp_dynamic: collections::Vec<MachineReg>,
     fp_dynamic: collections::Vec<MachineReg>,
     gp_allocatable_count: usize,
+    fp_allocatable_count: usize,
+    gp_arg_lane_count: usize,
     first_fp_reg: u16,
     reg_count: u16,
 }
@@ -55,14 +59,19 @@ impl MachineRegFile {
         let mut next = MACHINE_FIXED_REG_COUNT;
         let gp_dynamic = collect_regs(&mut next, config.gp_dynamic_budget);
         let gp_allocatable_count = usize::from(config.allocatable_gp_dynamic_budget());
+        let gp_arg_lane_count = usize::from(config.gp_arg_lanes);
         let first_fp_reg = next;
         let fp_dynamic = collect_regs(&mut next, config.fp_dynamic_budget);
+        let fp_allocatable_count = usize::from(config.allocatable_fp_dynamic_budget());
 
-        // Layout: [fixed | gp_dynamic | fp_dynamic]
+        // Layout: [fixed | gp_volatile | gp_preserved | gp_internal_scratch
+        //          | fp_volatile | fp_preserved]
         Ok(Self {
             gp_dynamic,
             fp_dynamic,
             gp_allocatable_count,
+            fp_allocatable_count,
+            gp_arg_lane_count,
             first_fp_reg,
             reg_count: next,
         })
@@ -116,6 +125,11 @@ impl MachineRegFile {
     }
 
     #[inline]
+    pub(super) fn gp_arg_lane_count(&self) -> usize {
+        self.gp_arg_lane_count
+    }
+
+    #[inline]
     pub(super) fn fp_dynamic(&self, index: usize) -> Option<MachineReg> {
         self.fp_dynamic.get(index).copied()
     }
@@ -126,8 +140,15 @@ impl MachineRegFile {
     }
 
     #[inline]
-    pub(super) fn ordered_fp_dynamic(&self, index: usize) -> Option<MachineReg> {
-        self.fp_dynamic.get(index).copied()
+    pub(super) fn fp_allocatable_count(&self) -> usize {
+        self.fp_allocatable_count
+    }
+
+    #[inline]
+    pub(super) fn ordered_fp_allocatable(&self, index: usize) -> Option<MachineReg> {
+        (index < self.fp_allocatable_count)
+            .then(|| self.fp_dynamic.get(index).copied())
+            .flatten()
     }
 
     #[inline]
@@ -440,8 +461,13 @@ impl<'a> BlockLowerContext<'a> {
         if let Some(reg) = self.try_value_reg(value) {
             return Ok(reg);
         }
-        let Some(reg) = self.first_free_linear_value_reg(ty) else {
-            return Err(WasmError::internal("prepared SSA-IR exceeded dynamic register budget during native lowering in block b for value"));
+        let reg = match self.first_free_linear_value_reg(ty) {
+            Some(reg) => reg,
+            None => {
+                self.publish_register_params_to_frame()?;
+                self.first_free_linear_value_reg(ty)
+                    .ok_or_else(|| WasmError::internal("prepared SSA-IR exceeded dynamic register budget during native lowering in block b for value"))?
+            }
         };
         self.push_value_location(value, reg, None);
         self.set_linear_value_reg(reg, Some(value), Some(ty))?;
@@ -459,8 +485,13 @@ impl<'a> BlockLowerContext<'a> {
             return Err(WasmError::internal("SSA-IR value already has a scalar machine-register mapping; cannot also allocate a pair"));
         }
 
-        let Some((lo, hi)) = self.first_free_gp_linear_value_pair() else {
-            return Err(WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value"));
+        let (lo, hi) = match self.first_free_gp_linear_value_pair() {
+            Some(regs) => regs,
+            None => {
+                self.publish_register_params_to_frame()?;
+                self.first_free_gp_linear_value_pair()
+                    .ok_or_else(|| WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value"))?
+            }
         };
         self.push_value_location(value, lo, Some(hi));
         // Pair-aware 32-bit lowering treats both halves as GP-word registers.
@@ -524,7 +555,7 @@ impl<'a> BlockLowerContext<'a> {
     pub(super) fn first_free_linear_value_reg(&self, ty: MachineStorageType) -> Option<MachineReg> {
         let regfile = self.regfile();
         let count = if ty.is_fp() {
-            regfile.fp_dynamic_count()
+            regfile.fp_allocatable_count()
         } else {
             regfile.gp_allocatable_count()
         };
@@ -572,7 +603,9 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn is_linear_value_reg(&self, reg: MachineReg) -> bool {
-        self.dynamic_index(reg).is_ok() && !self.is_bound_cache_reg(reg)
+        self.dynamic_index(reg).is_ok()
+            && !self.is_bound_cache_reg(reg)
+            && !self.incoming_param_owns_reg(reg)
     }
 
     pub(super) fn is_fp_reg(&self, reg: MachineReg) -> bool {
@@ -628,9 +661,22 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn borrow_free_gp_dynamic_regs(
-        &self,
+        &mut self,
         count: usize,
     ) -> Result<collections::Vec<MachineReg>, WasmError> {
+        if let Some(regs) = self.try_borrow_free_gp_dynamic_regs(count) {
+            return Ok(regs);
+        }
+        self.publish_register_params_to_frame()?;
+        self.try_borrow_free_gp_dynamic_regs(count).ok_or_else(|| {
+            WasmError::internal("native lowering requires free GP dynamic registers")
+        })
+    }
+
+    fn try_borrow_free_gp_dynamic_regs(
+        &self,
+        count: usize,
+    ) -> Option<collections::Vec<MachineReg>> {
         let regfile = self.regfile();
         let mut regs = collections::Vec::with_capacity(count);
         for ordinal in 0..regfile.gp_dynamic_count() {
@@ -640,13 +686,11 @@ impl<'a> BlockLowerContext<'a> {
             if self.dynamic_reg_available(reg) {
                 regs.push(reg);
                 if regs.len() == count {
-                    return Ok(regs);
+                    return Some(regs);
                 }
             }
         }
-        Err(WasmError::internal(
-            "native lowering requires free GP dynamic registers",
-        ))
+        None
     }
 
     /// Try to fold a dead constant-producing instruction directly into an
@@ -708,7 +752,12 @@ impl<'a> BlockLowerContext<'a> {
     fn dynamic_reg_available(&self, reg: MachineReg) -> bool {
         self.dynamic_index(reg)
             .ok()
-            .map(|index| !self.linear_value_occupied(index) && !self.is_bound_cache_reg(reg))
+            .map(|index| {
+                !self.linear_value_occupied(index)
+                    && !self.value_location_owns_reg(reg)
+                    && !self.is_bound_cache_reg(reg)
+                    && !self.incoming_param_owns_reg(reg)
+            })
             .unwrap_or(false)
     }
 }
@@ -732,7 +781,7 @@ fn preferred_gp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<
 }
 
 fn preferred_fp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<MachineReg> {
-    regfile.ordered_fp_dynamic(ordinal)
+    regfile.ordered_fp_allocatable(ordinal)
 }
 
 pub(super) fn canonical_cached_local_mem_width(ty: MachineStorageType) -> MachineMemWidth {
@@ -1274,37 +1323,86 @@ fn visit_term_source_regs(term: &MachineTerminator, mut visit: impl FnMut(Machin
         }
         MachineTerminator::Call {
             target,
-            callee_frame_base,
-            caller_result_base,
+            args,
+            results,
+            success,
             ..
         } => {
-            if let MachineCallTarget::Indirect {
-                callee_target,
-                callee_entry,
-            } = target
-            {
-                visit(*callee_target);
-                visit(*callee_entry);
-            }
-            visit(*callee_frame_base);
-            visit(*caller_result_base);
+            visit_call_target_regs(target, &mut visit);
+            visit_call_arg_regs(args, &mut visit);
+            visit_call_success_source_regs(success, results, &mut visit);
         }
-        MachineTerminator::TailCall {
-            target,
-            callee_frame_base,
-        } => {
-            if let MachineCallTarget::Indirect {
-                callee_target,
-                callee_entry,
-            } = target
-            {
-                visit(*callee_target);
-                visit(*callee_entry);
-            }
-            visit(*callee_frame_base);
+        MachineTerminator::TailCall { target, args } => {
+            visit_call_target_regs(target, &mut visit);
+            visit_call_arg_regs(args, &mut visit);
         }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
     }
+}
+
+fn visit_call_target_regs(target: &MachineCallTarget, visit: &mut impl FnMut(MachineReg)) {
+    if let MachineCallTarget::Indirect {
+        callee_target,
+        callee_entry,
+    } = target
+    {
+        visit(*callee_target);
+        visit(*callee_entry);
+    }
+}
+
+fn visit_call_arg_regs(args: &MachineCallArgs, visit: &mut impl FnMut(MachineReg)) {
+    for arg in &args.lane_args {
+        match arg {
+            MachineCallLaneArg::Gp { src, .. } | MachineCallLaneArg::Fp { src, .. } => {
+                visit_arg_src_reg(src, visit);
+            }
+            MachineCallLaneArg::GpPair { src, .. } => {
+                visit_arg_src_pair_regs(src, visit);
+            }
+        }
+    }
+}
+
+fn visit_arg_src_pair_regs(src: &MachineArgSrcPair, visit: &mut impl FnMut(MachineReg)) {
+    visit_arg_src_reg(&src.lo, visit);
+    visit_arg_src_reg(&src.hi, visit);
+}
+
+fn visit_arg_src_reg(src: &MachineArgSrc, visit: &mut impl FnMut(MachineReg)) {
+    if let MachineArgSrc::Reg(reg) = src {
+        visit(*reg);
+    }
+}
+
+fn visit_call_success_source_regs(
+    success: &MachineEdge,
+    results: &MachineCallResults,
+    visit: &mut impl FnMut(MachineReg),
+) {
+    for arg in &success.args {
+        if let MachineValue::Reg(reg) = arg {
+            if !call_results_define_reg(results, *reg) {
+                visit(*reg);
+            }
+        }
+    }
+}
+
+fn call_results_define_reg(results: &MachineCallResults, reg: MachineReg) -> bool {
+    match results {
+        MachineCallResults::None | MachineCallResults::FrameFallback { .. } => false,
+        MachineCallResults::ScalarGp { dst } | MachineCallResults::ScalarFp { dst } => {
+            result_dst_is_reg(*dst, reg)
+        }
+        MachineCallResults::ScalarGpPair { lo, hi } => {
+            result_dst_is_reg(*lo, reg) || result_dst_is_reg(*hi, reg)
+        }
+    }
+}
+
+fn result_dst_is_reg(dst: MachineResultDst, reg: MachineReg) -> bool {
+    matches!(dst, MachineResultDst::Reg(dst) if dst == reg)
 }
 
 fn visit_edge_regs(edge: &MachineEdge, visit: &mut impl FnMut(MachineReg)) {
@@ -1447,6 +1545,7 @@ mod tests {
             explicit_cache,
             entry_cache_params,
             &program.blocks[0],
+            &all_runtime[0],
             all_runtime,
             4,
             &super::super::gp32::Gp32Lowering,

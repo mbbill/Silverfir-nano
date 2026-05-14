@@ -146,8 +146,8 @@ mod tests {
         frame::{FrameSlot, FrameSpan},
         ssa_ir::{
             ir::{
-                LocalSlotInfo, SsaBlock, SsaCallOp, SsaInst, SsaOperand, SsaProgram, SsaTerminator,
-                SsaValue,
+                LocalSlotInfo, SsaBlock, SsaCallArgs, SsaCallOp, SsaInst, SsaOperand, SsaProgram,
+                SsaTerminator, SsaValue,
             },
             target::SsaTarget,
         },
@@ -241,9 +241,12 @@ mod tests {
         );
         let call_idx = program.push_call_op(SsaCallOp::CallDirect {
             callee: 1,
-            args: FrameSpan {
-                start: FrameSlot(0),
-                count: 0,
+            args: SsaCallArgs {
+                frame_base: FrameSlot(0),
+                total_params: 0,
+                param_types: collections::Vec::new(),
+                stack_prefix_count: 0,
+                live_suffix: collections::Vec::new(),
             },
             results: FrameSpan {
                 start: FrameSlot(0),

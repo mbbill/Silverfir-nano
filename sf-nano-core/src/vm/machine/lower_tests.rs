@@ -9,11 +9,11 @@ use crate::vm::{
         lower_module,
         machine_ir::{
             is_fp_reg, is_gp_reg, MachineAddr, MachineBlockId, MachineBlockParam,
-            MachineBranchCond, MachineCallTarget, MachineCompareKind, MachineConvertOp,
-            MachineEdge, MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction,
-            MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension,
-            MachineMemWidth, MachineModule, MachineReg, MachineRegOwner, MachineSign,
-            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MachineBranchCond, MachineCallResults, MachineCallTarget, MachineCompareKind,
+            MachineConvertOp, MachineEdge, MachineFloatWidth, MachineFrameRegion, MachineFuncId,
+            MachineFunction, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
+            MachineLoadExtension, MachineMemWidth, MachineModule, MachineReg, MachineRegOwner,
+            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
             MACHINE_FIXED_REG_COUNT,
         },
         LowerFunctionInput, LowerModuleInput,
@@ -22,8 +22,8 @@ use crate::vm::{
         frame::{plan_frame_layout, FrameSpan},
         ssa_ir::{
             ir::{
-                LocalSlotInfo, SsaBinding, SsaBlock, SsaCallOp, SsaEdge, SsaInst, SsaOperand,
-                SsaProgram, SsaTerminator, SsaValue,
+                LocalSlotInfo, SsaBinding, SsaBlock, SsaCallArgs, SsaCallOp, SsaCallOperandLoc,
+                SsaEdge, SsaInst, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
             },
             target::SsaTarget,
         },
@@ -85,6 +85,24 @@ fn assert_valid_32bit_gp_target(module: &MachineModule, backend: BackendConfig) 
     module
         .validate_32bit_gp_target(max_gp_regs)
         .unwrap_or_else(|err| panic!("32-bit lowered module must already validate: {err}"));
+}
+
+fn test_call_args(span: FrameSpan, param_types: &[ValueType]) -> SsaCallArgs {
+    let mut types = collections::Vec::new();
+    for idx in 0..span.count as usize {
+        types.push(param_types.get(idx).copied().unwrap_or(ValueType::I64));
+    }
+    SsaCallArgs {
+        frame_base: span.start,
+        total_params: span.count,
+        param_types: types,
+        stack_prefix_count: span.count,
+        live_suffix: collections::Vec::new(),
+    }
+}
+
+fn test_i64_call_args(span: FrameSpan) -> SsaCallArgs {
+    test_call_args(span, &[])
 }
 
 #[test]
@@ -946,7 +964,7 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
         ssa.entry = SsaTarget(0);
         ssa.local_slot_types = collections::vec![ValueType::I64];
         ssa.local_slot_info = collections::vec![LocalSlotInfo {
-            is_param: true,
+            is_param: false,
             reads_before_write: true,
         }];
         ssa.block_entry_cached_slots = collections::vec![collections::vec![]];
@@ -984,24 +1002,23 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
 
     assert_valid_32bit_gp_target(&lowered.module, backend);
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    assert!(matches!(
-        ops[0].kind,
-        MachineInstKind::Load {
-            owner: MachineRegOwner::LinearValue,
-            ty: MachineStorageType::GpWord,
-            width: MachineMemWidth::U32,
-            ..
-        }
-    ));
-    assert!(matches!(
-        ops[1].kind,
-        MachineInstKind::Load {
-            owner: MachineRegOwner::LinearValue,
-            ty: MachineStorageType::GpWord,
-            width: MachineMemWidth::U32,
-            ..
-        }
-    ));
+    assert_eq!(
+        ops.iter()
+            .filter(|inst| {
+                matches!(
+                    inst.kind,
+                    MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        width: MachineMemWidth::U32,
+                        ..
+                    }
+                )
+            })
+            .count(),
+        2,
+        "32-bit i64 local.get should load its two frame lanes directly"
+    );
 }
 
 #[test]
@@ -1141,7 +1158,7 @@ fn gp32_i64_local_set_cache_materializes_live_pair_alias_before_overwrite() {
         ssa.local_slot_types = collections::vec![ValueType::I64, ValueType::I64];
         ssa.local_slot_info = collections::vec![
             LocalSlotInfo {
-                is_param: true,
+                is_param: false,
                 reads_before_write: true,
             },
             LocalSlotInfo {
@@ -1441,7 +1458,7 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 1,
-                args: FrameSpan::new(caller_frame.operand_slot(1), 2),
+                args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(1), 2)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -1503,8 +1520,8 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
         ssa.entry = SsaTarget(0);
         ssa.local_slot_types = collections::vec![ValueType::I32];
         ssa.local_slot_info = collections::vec![LocalSlotInfo {
-            is_param: true,
-            reads_before_write: true
+            is_param: false,
+            reads_before_write: false
         }];
         ssa.block_entry_cached_slots = collections::vec![];
         ssa.block_cfg_origins = collections::vec![];
@@ -1745,7 +1762,7 @@ fn lowers_call_runtime_through_frame_metadata_without_helper_scratch() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: FrameSpan::new(frame.operand_slot(0), 2),
+                args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 2)),
                 results: FrameSpan::new(frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -1852,8 +1869,8 @@ fn flushes_and_reloads_cached_locals_around_call_runtime() {
         ssa.entry = SsaTarget(0);
         ssa.local_slot_types = collections::vec![ValueType::I32];
         ssa.local_slot_info = collections::vec![LocalSlotInfo {
-            is_param: true,
-            reads_before_write: true
+            is_param: false,
+            reads_before_write: false
         }];
         ssa.block_entry_cached_slots = collections::vec![];
         ssa.block_cfg_origins = collections::vec![];
@@ -1886,7 +1903,7 @@ fn flushes_and_reloads_cached_locals_around_call_runtime() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: FrameSpan::new(frame.operand_slot(0), 1),
+                args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 1)),
                 results: FrameSpan::new(frame.operand_slot(0), 0),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -1969,7 +1986,7 @@ fn skips_dead_cached_local_reload_after_direct_runtime_call() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: FrameSpan::new(frame.operand_slot(0), 1),
+                args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 1)),
                 results: FrameSpan::new(frame.operand_slot(0), 0),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -2042,7 +2059,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: FrameSpan::new(frame.operand_slot(0), 1),
+                args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 1)),
                 results: FrameSpan::new(frame.operand_slot(0), 0),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -2107,7 +2124,7 @@ fn lowers_direct_local_call_with_continuation_block() {
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 1,
-                args: FrameSpan::new(caller_frame.operand_slot(1), 2),
+                args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(1), 2)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -2161,27 +2178,43 @@ fn lowers_direct_local_call_with_continuation_block() {
     let caller_program = &lowered.module.functions[0].program;
     assert_eq!(caller_program.blocks.len(), 2);
     let call_block = &caller_program.blocks[0];
-    let (callee_frame_base, caller_result_base) = match call_block.terminator {
+    match call_block.terminator {
         MachineTerminator::Call {
             target: MachineCallTarget::Direct(callee),
-            callee_frame_base,
-            caller_result_base,
-            continuation,
+            frame_delta,
+            ref args,
+            ref results,
+            ref success,
         } => {
             assert_eq!(callee, MachineFuncId(1));
-            assert_eq!(continuation, MachineBlockId(1));
-            (callee_frame_base, caller_result_base)
+            assert_eq!(frame_delta, u32::from(caller_frame.operand_slot(1).0) * 8);
+            assert_eq!(args.frame_params.base_slot, caller_frame.operand_slot(1).0);
+            assert_eq!(args.frame_params.slots, 2);
+            assert!(matches!(
+                results,
+                MachineCallResults::FrameFallback {
+                    callee_results,
+                    caller_results,
+                } if *callee_results == (MachineFrameRegion {
+                    base_slot: callee_frame.operand_slot(0).0,
+                    slots: 1,
+                }) && *caller_results == (MachineFrameRegion {
+                    base_slot: caller_frame.operand_slot(0).0,
+                    slots: 1,
+                })
+            ));
+            assert_eq!(success.target, MachineBlockId(1));
+            assert!(success.args.is_empty());
         }
         ref other => panic!("expected direct call terminator, got {other:?}"),
     };
     assert!(matches!(
         call_block.ops[0].kind,
         MachineInstKind::IntBinary {
-            dst,
             lhs: MachineValue::Reg(MachineReg(1)),
             rhs: MachineValue::Imm64(offset),
             ..
-        } if dst == callee_frame_base && offset == u64::from(caller_frame.operand_slot(1).0) * 8
+        } if offset == u64::from(caller_frame.operand_slot(1).0) * 8
     ));
     assert!(
         call_block.ops.iter().any(|inst| matches!(
@@ -2193,21 +2226,6 @@ fn lowers_direct_local_call_with_continuation_block() {
         )),
         "direct-call lowering should emit a stack-overflow precheck"
     );
-    // One op computes `caller_result_base = caller_fp + results_offset`
-    // and is consumed by the `Call` terminator below.
-    assert!(matches!(
-        call_block.ops.iter().find(|inst| matches!(
-            inst.kind,
-            MachineInstKind::IntBinary {
-                op: MachineIntBinaryOp::Add,
-                dst,
-                lhs: MachineValue::Reg(MachineReg(1)),
-                ..
-            } if dst == caller_result_base
-        )),
-        Some(_)
-    ));
-
     let continuation = &caller_program.blocks[1];
     assert!(continuation.params.is_empty());
     assert!(continuation.ops.is_empty());
@@ -2246,7 +2264,7 @@ fn flushes_cached_local_before_second_direct_call() {
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 1,
-                args: FrameSpan::new(caller_frame.operand_slot(0), 0),
+                args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -2264,7 +2282,7 @@ fn flushes_cached_local_before_second_direct_call() {
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 1,
-                args: FrameSpan::new(caller_frame.operand_slot(0), 0),
+                args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -2380,7 +2398,10 @@ fn flushes_cached_local_before_second_direct_call() {
         second_call_block.terminator,
         MachineTerminator::Call {
             target: MachineCallTarget::Direct(MachineFuncId(1)),
-            continuation: MachineBlockId(2),
+            success: MachineEdge {
+                target: MachineBlockId(2),
+                ..
+            },
             ..
         }
     ));
@@ -3068,7 +3089,7 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
         ssa.entry = SsaTarget(0);
         ssa.local_slot_types = collections::vec![ValueType::I32];
         ssa.local_slot_info = collections::vec![LocalSlotInfo {
-            is_param: true,
+            is_param: false,
             reads_before_write: true,
         }];
         ssa.block_entry_cached_slots = collections::vec![collections::vec![]];
@@ -3110,8 +3131,13 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
         "LocalEnsureCache should materialize one frame load"
     );
     assert!(
-        ops.iter()
-            .all(|inst| !matches!(inst.kind, MachineInstKind::Store { .. })),
+        ops.iter().all(|inst| !matches!(
+            inst.kind,
+            MachineInstKind::Store {
+                src: MachineValue::Reg(_),
+                ..
+            }
+        )),
         "dropping a clean cached local should not write its frame slot back"
     );
 }
@@ -3125,7 +3151,7 @@ fn does_not_save_clean_carried_cache_before_runtime_call() {
         ssa.entry = SsaTarget(0);
         ssa.local_slot_types = collections::vec![ValueType::I32];
         ssa.local_slot_info = collections::vec![LocalSlotInfo {
-            is_param: true,
+            is_param: false,
             reads_before_write: true
         }];
         ssa.block_entry_cached_slots =
@@ -3155,7 +3181,7 @@ fn does_not_save_clean_carried_cache_before_runtime_call() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: FrameSpan::new(frame.operand_slot(0), 0),
+                args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 0)),
                 results: FrameSpan::new(frame.operand_slot(0), 0),
             });
             __blk1.ops.push(SsaInst::call(__idx));
@@ -3372,7 +3398,7 @@ fn saves_only_dirty_cached_locals_before_runtime_call() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
-                args: FrameSpan::new(frame.operand_slot(0), 0),
+                args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 0)),
                 results: FrameSpan::new(frame.operand_slot(0), 0),
             });
             __blk1.ops.push(SsaInst::call(__idx));
@@ -3457,16 +3483,85 @@ fn entry_block_cached_locals_are_loaded_in_prologue_not_passed_as_params() {
         "entry block must not gain hidden cache params"
     );
     assert!(
-        matches!(block.ops[0].kind, MachineInstKind::Load { .. }),
-        "entry cached local should be materialized with an explicit frame load"
+        block.ops.is_empty(),
+        "entry cached parameter should alias its incoming argument lane without a frame load"
+    );
+}
+
+#[test]
+fn register_passed_entry_param_cache_stays_dirty_across_edges() {
+    let frame = plan_frame_layout(1, 1, 4);
+    let slot = frame.local_slot(0);
+    let ssa = {
+        let mut ssa = SsaProgram::default();
+        ssa.entry = SsaTarget(0);
+        ssa.local_slot_types = collections::vec![ValueType::I32];
+        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true,
+        }];
+        ssa.block_entry_cached_slots =
+            collections::vec![collections::vec![slot], collections::vec![slot]];
+        ssa.block_cfg_origins = collections::vec![];
+        ssa.value_types = collections::vec![];
+        ssa.value_sink_local = collections::vec![];
+        let mut entry = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Goto(SsaEdge {
+                target: SsaTarget(1),
+                bindings: collections::vec![],
+            }),
+        };
+        entry.ops.push(SsaInst::local_ensure_cache(slot));
+        ssa.blocks.push(entry);
+        let mut call_block = SsaBlock {
+            id: SsaTarget(1),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::TrapUnreachable,
+        };
+        let call_idx = ssa.push_call_op(SsaCallOp::CallDirect {
+            callee: 7,
+            args: test_call_args(FrameSpan::new(frame.operand_slot(0), 0), &[]),
+            results: FrameSpan::new(frame.operand_slot(0), 0),
+        });
+        call_block.ops.push(SsaInst::call(call_idx));
+        ssa.blocks.push(call_block);
+        ssa
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(1, 4, 0, 2),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("register-passed cached param should save before runtime call");
+
+    let ops = &lowered.module.functions[0].program.blocks[1].ops;
+    assert!(
+        ops.iter().any(|inst| matches!(
+            inst.kind,
+            MachineInstKind::Store {
+                addr: MachineAddr { offset: 0, .. },
+                ..
+            }
+        )),
+        "register-passed param cache must be saved before the runtime call; ops={ops:?}"
     );
     assert!(
-        block
-            .ops
-            .iter()
-            .skip(1)
-            .all(|inst| !matches!(inst.kind, MachineInstKind::Load { .. })),
-        "LocalEnsureCache should not reload the same cached local again"
+        ops.iter()
+            .any(|inst| matches!(inst.kind, MachineInstKind::CallRuntime(_))),
+        "expected runtime call in successor block"
     );
 }
 
@@ -3561,7 +3656,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 2,
-                args: FrameSpan::new(caller_frame.operand_slot(1), 2),
+                args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(1), 2)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -3788,8 +3883,10 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
             let __idx = ssa.push_call_op(SsaCallOp::CallIndirect {
                 type_idx: 3,
                 table_idx: 0,
-                index_slot: call_base.advance(2),
-                args: FrameSpan::new(call_base, 2),
+                index: SsaCallOperandLoc::Stack {
+                    slot: call_base.advance(2),
+                },
+                args: test_i64_call_args(FrameSpan::new(call_base, 2)),
                 results: FrameSpan::new(call_base, 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -3799,7 +3896,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: host_backend_config(0, 4, 0, 2),
+        backend: host_backend_config(0, 8, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
@@ -3855,7 +3952,10 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         program.blocks[8].terminator,
         MachineTerminator::Call {
             target: MachineCallTarget::Indirect { .. },
-            continuation: MachineBlockId(10),
+            success: MachineEdge {
+                target: MachineBlockId(10),
+                ..
+            },
             ..
         }
     ));
@@ -3996,8 +4096,10 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallRef {
                 type_idx: 3,
-                ref_slot: call_base.advance(2),
-                args: FrameSpan::new(call_base, 2),
+                callee_ref: SsaCallOperandLoc::Stack {
+                    slot: call_base.advance(2),
+                },
+                args: test_i64_call_args(FrameSpan::new(call_base, 2)),
                 results: FrameSpan::new(call_base, 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -4007,7 +4109,7 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: host_backend_config(0, 4, 0, 2),
+        backend: host_backend_config(0, 8, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
@@ -4062,7 +4164,10 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
         program.blocks[6].terminator,
         MachineTerminator::Call {
             target: MachineCallTarget::Indirect { .. },
-            continuation: MachineBlockId(8),
+            success: MachineEdge {
+                target: MachineBlockId(8),
+                ..
+            },
             ..
         }
     ));
@@ -4109,8 +4214,10 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
             let __idx = ssa.push_call_op(SsaCallOp::CallIndirect {
                 type_idx: 3,
                 table_idx: 0,
-                index_slot: call_base.advance(2),
-                args: FrameSpan::new(call_base, 2),
+                index: SsaCallOperandLoc::Stack {
+                    slot: call_base.advance(2),
+                },
+                args: test_i64_call_args(FrameSpan::new(call_base, 2)),
                 results: FrameSpan::new(call_base, 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -4120,7 +4227,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     };
 
     let lowered = lower_module(LowerModuleInput {
-        backend: gp32_backend_config(0, 4, 0, 2),
+        backend: gp32_backend_config(0, 8, 0, 2),
         #[cfg(sf_has_guard_pages)]
         use_guard_pages: false,
         functions: collections::vec![LowerFunctionInput {
@@ -4274,7 +4381,7 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 1,
-                args: FrameSpan::new(caller_frame.operand_slot(1), 2),
+                args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(1), 2)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
             });
             __blk0.ops.push(SsaInst::call(__idx));
@@ -5543,7 +5650,7 @@ fn f32_cached_locals_use_f32_slot_widths() {
         ssa.entry = SsaTarget(0);
         ssa.local_slot_types = collections::vec![ValueType::F32];
         ssa.local_slot_info = collections::vec![LocalSlotInfo {
-            is_param: true,
+            is_param: false,
             reads_before_write: true
         }];
         ssa.block_entry_cached_slots = collections::vec![];
@@ -5587,13 +5694,22 @@ fn f32_cached_locals_use_f32_slot_widths() {
     );
 
     let ops = &program.blocks[0].ops;
-    assert!(matches!(
-        ops[0].kind,
+    assert!(ops.iter().any(|inst| matches!(
+        inst.kind,
         MachineInstKind::Load {
+            ty: MachineStorageType::Fp32,
             width: MachineMemWidth::U32,
             ..
         }
-    ));
+    )));
+    assert!(ops.iter().any(|inst| matches!(
+        inst.kind,
+        MachineInstKind::Store {
+            ty: MachineStorageType::Fp32,
+            width: MachineMemWidth::U32,
+            ..
+        }
+    )));
 }
 
 // --- Source-aliasing regression tests ---

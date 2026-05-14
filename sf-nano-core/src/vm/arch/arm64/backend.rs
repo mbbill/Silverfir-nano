@@ -32,6 +32,10 @@ use crate::vm::arch::common::{
 // ── Frame layout constants ───────────────────────────────────────────────────
 
 const STACK_SLOT_BYTES: u32 = core::mem::size_of::<u64>() as u32;
+#[cfg(sf_has_simd)]
+const PRESERVED_DYNAMIC_FP_SLOT_BYTES: u32 = 16;
+#[cfg(not(sf_has_simd))]
+const PRESERVED_DYNAMIC_FP_SLOT_BYTES: u32 = STACK_SLOT_BYTES;
 const CALLEE_SAVED_GP_FRAME_SIZE: u32 =
     abi::callee_saved_gp_pair_count() as u32 * (2 * STACK_SLOT_BYTES);
 const CALLEE_SAVED_FP_FRAME_OFFSET: u32 = CALLEE_SAVED_GP_FRAME_SIZE;
@@ -119,6 +123,143 @@ pub(crate) struct Arm64Backend<'a> {
     /// `lower_function_literal_pool` (which the pipeline calls between
     /// edge stubs and the body-local error tail).
     pub(super) pending_call_literals: collections::Vec<PendingCallLiteral>,
+}
+
+impl<'a> Arm64Backend<'a> {
+    fn preserved_dynamic_body_regs(
+        &self,
+    ) -> (collections::Vec<Arm64Reg>, collections::Vec<Arm64FpReg>) {
+        let mut gp_regs = collections::Vec::new();
+        let mut fp_regs = collections::Vec::new();
+        for reg in self.core.preserved_clobbers() {
+            if self.core.is_fp_reg(*reg) {
+                fp_regs.push(
+                    self.map_fp_reg(*reg)
+                        .expect("validated arm64 preserved FP clobber must map"),
+                );
+            } else {
+                gp_regs.push(
+                    abi::map_reg(*reg).expect("validated arm64 preserved GP clobber must map"),
+                );
+            }
+        }
+        (gp_regs, fp_regs)
+    }
+
+    fn lower_root_result_copy_to_public_slots(&mut self) {
+        let Some(results) = self
+            .core
+            .current_runtime()
+            .and_then(|runtime| runtime.return_results)
+        else {
+            return;
+        };
+        if results.slots == 0 || results.base_slot == 0 {
+            return;
+        }
+
+        let fp_reg = abi::map_fixed_reg(MACHINE_FP_REG);
+        let value_idx = self.gp_scratch.alloc();
+        let value = self.gp_scratch.reg(value_idx);
+        for index in 0..u32::from(results.slots) {
+            let src_slot = u32::from(results.base_slot).saturating_add(index);
+            self.emit_root_frame_load_slot(value, fp_reg, src_slot);
+            self.emit_root_frame_store_slot(value, fp_reg, index);
+        }
+        self.gp_scratch.free_index(value_idx);
+    }
+
+    fn emit_root_frame_load_slot(&mut self, dst: Arm64Reg, base: Arm64Reg, slot: u32) {
+        if slot < 4096 {
+            self.core.text.emit_u32(enc::ldr_64(dst, base, slot));
+            return;
+        }
+        let addr_idx = self.gp_scratch.alloc();
+        let addr = self.gp_scratch.reg(addr_idx);
+        self.materialize_u64(addr, u64::from(slot) * u64::from(STACK_SLOT_BYTES));
+        self.core.text.emit_u32(enc::add_reg_64(addr, base, addr));
+        self.core.text.emit_u32(enc::ldr_64(dst, addr, 0));
+        self.gp_scratch.free_index(addr_idx);
+    }
+
+    fn emit_root_frame_store_slot(&mut self, src: Arm64Reg, base: Arm64Reg, slot: u32) {
+        if slot < 4096 {
+            self.core.text.emit_u32(enc::str_64(src, base, slot));
+            return;
+        }
+        let addr_idx = self.gp_scratch.alloc();
+        let addr = self.gp_scratch.reg(addr_idx);
+        self.materialize_u64(addr, u64::from(slot) * u64::from(STACK_SLOT_BYTES));
+        self.core.text.emit_u32(enc::add_reg_64(addr, base, addr));
+        self.core.text.emit_u32(enc::str_64(src, addr, 0));
+        self.gp_scratch.free_index(addr_idx);
+    }
+
+    fn lower_preserved_dynamic_body_save(&mut self) {
+        let (gp_regs, fp_regs) = self.preserved_dynamic_body_regs();
+        let gp_bytes = gp_regs.len() as u32 * STACK_SLOT_BYTES;
+        let fp_offset =
+            gp_bytes.div_ceil(PRESERVED_DYNAMIC_FP_SLOT_BYTES) * PRESERVED_DYNAMIC_FP_SLOT_BYTES;
+        let used = fp_offset + fp_regs.len() as u32 * PRESERVED_DYNAMIC_FP_SLOT_BYTES;
+        let total = used.div_ceil(abi::stack_alignment_bytes()) * abi::stack_alignment_bytes();
+        if total == 0 {
+            return;
+        }
+        self.core
+            .text
+            .emit_u32(enc::sub_imm_64(abi::stack_reg(), abi::stack_reg(), total));
+        for (index, reg) in gp_regs.iter().copied().enumerate() {
+            self.core
+                .text
+                .emit_u32(enc::str_64(reg, abi::stack_reg(), index as u32));
+        }
+        for (index, reg) in fp_regs.iter().copied().enumerate() {
+            let byte_offset = fp_offset + index as u32 * PRESERVED_DYNAMIC_FP_SLOT_BYTES;
+            #[cfg(sf_has_simd)]
+            self.core
+                .text
+                .emit_u32(enc::str_q(reg, abi::stack_reg(), byte_offset / 16));
+            #[cfg(not(sf_has_simd))]
+            self.core.text.emit_u32(enc::str_d(
+                reg,
+                abi::stack_reg(),
+                byte_offset / STACK_SLOT_BYTES,
+            ));
+        }
+    }
+
+    pub(super) fn lower_preserved_dynamic_body_restore(&mut self) {
+        let (gp_regs, fp_regs) = self.preserved_dynamic_body_regs();
+        let gp_bytes = gp_regs.len() as u32 * STACK_SLOT_BYTES;
+        let fp_offset =
+            gp_bytes.div_ceil(PRESERVED_DYNAMIC_FP_SLOT_BYTES) * PRESERVED_DYNAMIC_FP_SLOT_BYTES;
+        let used = fp_offset + fp_regs.len() as u32 * PRESERVED_DYNAMIC_FP_SLOT_BYTES;
+        let total = used.div_ceil(abi::stack_alignment_bytes()) * abi::stack_alignment_bytes();
+        if total == 0 {
+            return;
+        }
+        for (index, reg) in gp_regs.iter().copied().enumerate() {
+            self.core
+                .text
+                .emit_u32(enc::ldr_64(reg, abi::stack_reg(), index as u32));
+        }
+        for (index, reg) in fp_regs.iter().copied().enumerate() {
+            let byte_offset = fp_offset + index as u32 * PRESERVED_DYNAMIC_FP_SLOT_BYTES;
+            #[cfg(sf_has_simd)]
+            self.core
+                .text
+                .emit_u32(enc::ldr_q(reg, abi::stack_reg(), byte_offset / 16));
+            #[cfg(not(sf_has_simd))]
+            self.core.text.emit_u32(enc::ldr_d(
+                reg,
+                abi::stack_reg(),
+                byte_offset / STACK_SLOT_BYTES,
+            ));
+        }
+        self.core
+            .text
+            .emit_u32(enc::add_imm_64(abi::stack_reg(), abi::stack_reg(), total));
+    }
 }
 
 // ── ArchBackend trait implementation ─────────────────────────────────────────
@@ -240,25 +381,21 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.core.text.emit_u32(enc::ret());
     }
 
-    /// Public-entry caller stub. Pushes a root call record onto the host
-    /// stack (caller_result_base = stack_base, caller_fp = stack_base) and
-    /// `bl`s the internal entry. After the body's unified Return rets, the
-    /// stack pointer is back to the post-prologue value (the body's Return
-    /// pops the call record we pushed here), and `C_RET0` already holds 0
-    /// or a trap kind. Falls through to `lower_epilogue`.
+    /// Public-entry caller stub. Loads root register parameters and `bl`s the
+    /// internal entry. The root function uses the root wasm frame directly, so
+    /// successful root returns copy their return-result frame region into the
+    /// public result slots at `stack_base[0..]`. `C_RET0` holds 0 or a trap
+    /// kind on return.
     fn lower_root_caller_stub(&mut self) {
-        // x20 = MACHINE_FP_REG = the root frame base after the prologue.
-        // For the root call, both caller_fp and caller_result_base point at
-        // the root frame so the unified Return copies results into the
-        // bytes that `eval.rs::collect_native_results_from_stack` reads.
-        let fp_reg = abi::map_fixed_reg(MACHINE_FP_REG);
-        // stp fp_reg, fp_reg, [sp, #-16]!
-        self.core
-            .text
-            .emit_u32(enc::stp_64_pre_index(fp_reg, fp_reg, abi::stack_reg(), -16));
+        self.lower_root_param_lanes_from_frame();
         // bl internal_entry_label  (resolved by patch_fixups)
         let internal_entry_label = self.core.internal_entry_label;
         self.lower_bl(internal_entry_label);
+
+        let done = self.core.new_label();
+        self.lower_cbnz(abi::C_RET0, done);
+        self.lower_root_result_copy_to_public_slots();
+        self.core.bind_label(done);
     }
 
     /// Body entry prelude. Push x29/x30 onto the host stack so the body can
@@ -275,13 +412,13 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.core
             .text
             .emit_u32(enc::stp_64_pre_index(x29, x30, abi::stack_reg(), -16));
+        self.lower_preserved_dynamic_body_save();
     }
 
     /// Body-local error tail (`body_local_error_label`). Reached from trap
-    /// stubs and post-BL status checks. Pops the body prelude link save
-    /// and the caller's call record, restores `fp_reg`, and `ret`s without
-    /// touching `C_RET0` (which already holds the trap kind set by the
-    /// trap stub or inherited from a trapped descendant's BL).
+    /// stubs and post-BL status checks. Pops the body prelude link save and
+    /// `ret`s without touching `C_RET0` (which already holds the trap kind set
+    /// by the trap stub or inherited from a trapped descendant's BL).
     /// Flush deferred per-call literals into a pool at end-of-body. Each
     /// literal is an 8-byte zero word (patched at module-link time via the
     /// `direct_call_patches` entry we push here) and the corresponding
@@ -334,29 +471,15 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     }
 
     fn lower_body_local_error_tail(&mut self) {
+        self.lower_preserved_dynamic_body_restore();
         let x29 = abi::host_fp_reg();
         let x30 = abi::host_lr_reg();
         // ldp x29, x30, [sp], #16    ; pop body prelude link save
         self.core
             .text
             .emit_u32(enc::ldp_64_post_index(x29, x30, abi::stack_reg(), 16));
-        // Pop the call record. The error path does not copy results, so
-        // we only need to pull caller_fp out (slot 1) and discard
-        // caller_result_base (slot 0).
-        let scratch_idx = self.gp_scratch.alloc();
-        let scratch_fp = self.gp_scratch.reg(scratch_idx);
-        self.core
-            .text
-            .emit_u32(enc::ldr_64(scratch_fp, abi::stack_reg(), 1));
-        self.core
-            .text
-            .emit_u32(enc::add_imm_64(abi::stack_reg(), abi::stack_reg(), 16));
-        // Restore caller fp_reg.
-        let fp_reg = abi::map_fixed_reg(MACHINE_FP_REG);
-        self.core.text.emit_u32(enc::mov_reg_64(fp_reg, scratch_fp));
         // C_RET0 untouched — preserves the error code.
         self.core.text.emit_u32(enc::ret());
-        self.gp_scratch.free_index(scratch_idx);
     }
 
     fn lower_block(

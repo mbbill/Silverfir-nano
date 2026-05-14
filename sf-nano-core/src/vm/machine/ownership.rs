@@ -70,7 +70,7 @@ impl DynamicOwnershipTracker {
     }
 }
 
-fn for_each_defined_reg(kind: &MachineInstKind, mut f: impl FnMut(MachineReg)) {
+pub(super) fn for_each_defined_reg(kind: &MachineInstKind, mut f: impl FnMut(MachineReg)) {
     if let Some(dst) = defined_reg(kind) {
         f(dst);
     }

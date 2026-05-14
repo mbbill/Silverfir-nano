@@ -2,7 +2,7 @@ use super::types::MachineFloatWidth;
 
 use crate::collections;
 
-use super::types::{MachineBlockId, MachineConstId, MachineFuncId};
+use super::types::{MachineBlockId, MachineConstId, MachineFuncId, MachineReg};
 use crate::vm::backend::BackendConfig;
 
 /// One read-only constant-pool record referenced from machine IR.
@@ -29,6 +29,10 @@ pub(crate) struct MachineProgram {
 pub(crate) struct MachineFunction {
     pub id: MachineFuncId,
     pub program: MachineProgram,
+    /// Abstract dynamic registers in the preserved JIT-ABI class that this
+    /// function body defines. Backends map these to physical registers and
+    /// save/restore exactly this set in the body host-stack frame.
+    pub preserved_clobbers: collections::Vec<MachineReg>,
 }
 
 /// One full machine module.

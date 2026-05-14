@@ -208,9 +208,14 @@ pub(crate) fn set_trap_kind_offset(offset: usize) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::sync::Mutex;
+
+    static TEST_TRAP_TABLE_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn clear_registered_jit_ranges_drops_stale_entries() {
+        let _guard = TEST_TRAP_TABLE_LOCK.lock().unwrap();
+
         clear_registered_jit_ranges();
         register_jit_ranges(&[(0x1000, 0x1100, 0x2000)]);
 
@@ -227,6 +232,8 @@ mod tests {
 
     #[test]
     fn unregister_jit_ranges_in_drops_only_overlapping_entries() {
+        let _guard = TEST_TRAP_TABLE_LOCK.lock().unwrap();
+
         clear_registered_jit_ranges();
         register_jit_ranges(&[
             (0x1000, 0x1100, 0x2000),

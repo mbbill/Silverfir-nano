@@ -6,8 +6,8 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             fp_reg_index, is_fp_reg, MachineBlock, MachineBlockId, MachineFloatWidth,
-            MachineFuncId, MachineFunction, MachineFunctionAbi, MachineReg, MachineTerminator,
-            MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
+            MachineFuncId, MachineFunction, MachineFunctionAbi, MachineParamLoc, MachineReg,
+            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
         },
     },
 };
@@ -172,10 +172,37 @@ impl<'a> CompilerCore<'a> {
         }
     }
 
+    #[inline]
+    pub(crate) fn current_runtime(&self) -> Option<&MachineFunctionAbi> {
+        self.compiled.runtime_for(self.func_id)
+    }
+
+    #[inline]
+    pub(crate) fn gp_arg_lane_reg(&self, lane: u8) -> MachineReg {
+        MachineReg(MACHINE_FIXED_REG_COUNT + u16::from(lane))
+    }
+
+    #[inline]
+    pub(crate) fn fp_arg_lane_reg(&self, lane: u8) -> MachineReg {
+        MachineReg(
+            MACHINE_FIXED_REG_COUNT
+                + u16::from(self.compiled.backend().gp_dynamic_budget)
+                + u16::from(lane),
+        )
+    }
+
     pub(crate) fn mir_function(&self) -> Result<&'a MachineFunction, WasmError> {
         self.body
             .mir_function()
             .ok_or_else(|| WasmError::internal("template emission does not have a MachineFunction"))
+    }
+
+    #[inline]
+    pub(crate) fn preserved_clobbers(&self) -> &[MachineReg] {
+        self.body
+            .mir_function()
+            .map(|function| function.preserved_clobbers.as_slice())
+            .unwrap_or(&[])
     }
 
     pub(crate) fn mir_blocks(&self) -> Result<&'a [MachineBlock], WasmError> {
@@ -249,6 +276,7 @@ impl<'a> CompilerCore<'a> {
 
     // ── Runtime metadata ─────────────────────────────────────────────────
 
+    #[allow(dead_code)]
     pub(crate) fn runtime_for(
         &self,
         func_id: MachineFuncId,
@@ -302,6 +330,24 @@ impl<'a> CompilerCore<'a> {
         for param in &block.params {
             if let Some(width) = param.ty.float_width() {
                 self.set_fp_reg_width(param.reg, width)?;
+            }
+        }
+        if self
+            .body
+            .mir_function()
+            .map(|function| function.program.entry == block.id)
+            .unwrap_or(false)
+        {
+            let param_locs = self
+                .current_runtime()
+                .map(|runtime| runtime.param_locs.clone())
+                .unwrap_or_default();
+            for loc in param_locs {
+                if let MachineParamLoc::FpArg { lane, ty, .. } = loc {
+                    if let Some(width) = ty.float_width() {
+                        self.set_fp_reg_width(self.fp_arg_lane_reg(lane), width)?;
+                    }
+                }
             }
         }
         Ok(())
@@ -379,8 +425,8 @@ impl<'a> CompilerCore<'a> {
                         worklist.push(edge.target);
                     }
                 }
-                MachineTerminator::Call { continuation, .. } => {
-                    fallthrough = Some(*continuation);
+                MachineTerminator::Call { success, .. } => {
+                    fallthrough = Some(success.target);
                 }
                 MachineTerminator::TailCall { .. }
                 | MachineTerminator::Return

@@ -70,12 +70,10 @@ pub(crate) fn eval(
     let n_globals = store.module().globals.len();
     let mut ctx = NativeContext::new(store as *mut Store, stack_end, n_globals);
     ctx.seed_local_call_infos(compiled);
-    // Under the new local-call ABI, no software call-link record is needed
-    // at the root. The public-entry caller stub builds a backend-private
-    // call record on the host stack itself, calls the internal entry, and
-    // the body's unified Return copies results into the bytes at
-    // `stack_base` (the root frame), which is exactly what
-    // `collect_native_results_from_stack` reads from below.
+    // Under the caller-restored local-call ABI, no software call-link record
+    // is needed at the root. The public-entry caller stub calls the internal
+    // entry, and fallback returns are published in the root frame slots that
+    // `collect_native_results_from_stack` reads below.
     #[cfg(sf_call_trace)]
     {
         function_trace::init_from_env();

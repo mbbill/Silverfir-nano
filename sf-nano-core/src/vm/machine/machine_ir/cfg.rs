@@ -1,6 +1,7 @@
 use super::inst::MachineInst;
 use crate::collections;
 
+use super::abi::{MachineCallArgs, MachineCallResults};
 use super::types::{
     MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFuncId, MachineIntWidth,
     MachineReg, MachineRegOwner, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
@@ -126,52 +127,22 @@ pub(crate) enum MachineTerminator {
     },
     /// Compiled call transfer into another MachineIR function.
     ///
-    /// MachineIR has already emitted everything except the final control
-    /// transfer:
-    /// - dirty cached-local flushes
-    /// - `callee_frame_base` computation
-    /// - `caller_result_base` computation (the absolute pointer at which the
-    ///   callee's `Return` will copy its results)
-    /// - zero-fill of the callee frame prefix beyond the argument span
-    ///
-    /// The arch/backend contract for this terminator is:
-    /// - perform the stack overflow precheck for `callee_frame_base` using the
-    ///   callee's runtime frame-size metadata
-    /// - save the caller frame pointer and `caller_result_base` in a
-    ///   backend-private call record (typically pushed onto the host stack
-    ///   so the unified `Return` can recover them — the *exact* layout is
-    ///   backend-private, not part of the abstract MIR contract)
-    /// - move the machine frame pointer register to `callee_frame_base`
-    /// - issue a native call (`bl`/`call`) to the compiled callee entry
-    ///   described by `target`
-    /// - after the call returns, check `C_RET0` for the trap-propagation
-    ///   status: zero means success and control falls through to
-    ///   `continuation`; non-zero means a descendant trapped and the
-    ///   backend must branch to the function's `body_local_error_label`
-    ///
-    /// `continuation` stays in the MIR as the abstract CFG successor edge.
-    /// The emulator and any future non-native backend uses it directly. On
-    /// native backends it is preferred-fall-through; if the block layout
-    /// pass cannot achieve adjacency, the backend emits one
-    /// `b/jmp continuation_label` after the call.
-    ///
-    /// The backend must not redo any other frame setup or arrange any call
-    /// record at MIR-visible offsets.
+    /// MachineIR has already published frame-passed arguments and describes
+    /// every register-passed argument through `args`. The backend prepares
+    /// argument lanes from pre-switch sources, advances the machine frame
+    /// pointer by `frame_delta`, performs a native call, restores the caller
+    /// frame pointer, checks status, and then transfers to `success`.
     Call {
         /// Compiled callee description.
         target: MachineCallTarget,
-        /// GP register containing the absolute address of the callee frame
-        /// base.
-        ///
-        /// MachineIR has already computed and validated this address. The
-        /// backend should treat it as the new frame pointer value for the
-        /// transfer.
-        callee_frame_base: MachineReg,
-        /// GP register containing the absolute address of the caller's
-        /// result-receive region.
-        caller_result_base: MachineReg,
-        /// Caller CFG block to resume after a successful return.
-        continuation: MachineBlockId,
+        /// Byte delta from the current frame pointer to the callee frame.
+        frame_delta: u32,
+        args: MachineCallArgs,
+        results: MachineCallResults,
+        /// Caller CFG edge to resume after a successful return. Edge args are
+        /// post-call values: result regs are produced by the call, and any
+        /// non-result args must be preserved survivors.
+        success: MachineEdge,
     },
     /// Tail call transfer into another compiled MachineIR function.
     ///
@@ -179,7 +150,8 @@ pub(crate) enum MachineTerminator {
     /// backend-private call record and it does not return to the current
     /// function. The backend:
     /// - reuses the current caller's call record
-    /// - switches `MACHINE_FP_REG` to `callee_frame_base`
+    /// - publishes/repackages arguments into the current frame prefix and
+    ///   argument lanes
     /// - undoes the current function's body-entry shim/link save so the host
     ///   stack matches the callee body's expected entry shape
     /// - jumps to the callee internal entry described by `target`
@@ -187,7 +159,7 @@ pub(crate) enum MachineTerminator {
     /// The callee then returns or traps directly to this function's caller.
     TailCall {
         target: MachineCallTarget,
-        callee_frame_base: MachineReg,
+        args: MachineCallArgs,
     },
     /// Return from the function. The backend's `Return` lowering pops the
     /// backend-private call record left behind by the caller's `Call`,

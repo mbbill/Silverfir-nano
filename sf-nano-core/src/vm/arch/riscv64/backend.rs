@@ -9,6 +9,7 @@ use crate::{
             common::{
                 backend::ArchBackend,
                 core::CompilerCore,
+                pipeline::emit_call_arg_lanes,
                 scratch_pool::ScratchPool,
                 template::{
                     decode_template_chain_next, encode_template_chain_next, template_i32_delta,
@@ -20,12 +21,12 @@ use crate::{
         },
         machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-            MachineCallTarget, MachineCompareKind, MachineConstId, MachineConvertOp,
-            MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineInst,
-            MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
-            MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp, MachineSign,
-            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
-            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineCallArgs, MachineCallResults, MachineCallTarget, MachineCompareKind,
+            MachineConstId, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
+            MachineFloatWidth, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
+            MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp,
+            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
             code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset,
@@ -55,6 +56,18 @@ const CALLEE_SAVED_FRAME_SIZE: i32 =
 const BODY_LINK_RA_OFFSET: i32 = 0;
 const BODY_LINK_FRAME_SIZE: i32 = 16;
 const CALL_RECORD_SIZE: i32 = 16;
+
+fn caller_results_base_delta(results: &MachineCallResults) -> u32 {
+    match results {
+        MachineCallResults::FrameFallback { caller_results, .. } => {
+            u32::from(caller_results.base_slot) * 8
+        }
+        MachineCallResults::None
+        | MachineCallResults::ScalarGp { .. }
+        | MachineCallResults::ScalarGpPair { .. }
+        | MachineCallResults::ScalarFp { .. } => 0,
+    }
+}
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(super) enum BranchFixupKind {
@@ -211,6 +224,7 @@ impl<'a> ArchBackend<'a> for Riscv64Backend<'a> {
         self.emit_addi(abi::stack_reg(), abi::stack_reg(), -CALL_RECORD_SIZE);
         self.emit_sd(fp, abi::stack_reg(), 0);
         self.emit_sd(fp, abi::stack_reg(), 8);
+        self.lower_root_param_lanes_from_frame();
         let internal_entry_label = self.core.internal_entry_label;
         self.emit_jal(abi::link_reg(), internal_entry_label);
     }
@@ -3486,20 +3500,12 @@ impl<'a> Riscv64Backend<'a> {
             }
             MachineTerminator::Call {
                 target,
-                callee_frame_base,
-                caller_result_base,
-                continuation,
-            } => self.lower_call(
-                target,
-                *callee_frame_base,
-                *caller_result_base,
-                *continuation,
-                fallthrough,
-            ),
-            MachineTerminator::TailCall {
-                target,
-                callee_frame_base,
-            } => self.lower_tail_call(target, *callee_frame_base),
+                frame_delta,
+                args,
+                results,
+                success,
+            } => self.lower_call(target, *frame_delta, args, results, success, fallthrough),
+            MachineTerminator::TailCall { target, args } => self.lower_tail_call(target, args),
         }
     }
 
@@ -3572,22 +3578,32 @@ impl<'a> Riscv64Backend<'a> {
     fn lower_call(
         &mut self,
         target: &MachineCallTarget,
-        callee_frame_base: MachineReg,
-        caller_result_base: MachineReg,
-        continuation: MachineBlockId,
+        frame_delta: u32,
+        args: &MachineCallArgs,
+        results: &MachineCallResults,
+        success: &crate::vm::machine::machine_ir::MachineEdge,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        let callee_fp = self.map_gp_reg(callee_frame_base)?;
-        let caller_result_base = self.map_gp_reg(caller_result_base)?;
         let fp = abi::map_fixed_reg(MACHINE_FP_REG);
         let body_local_error_label = self.core.body_local_error_label;
-        let continuation_label = self.core.block_label(continuation)?;
-        let continuation_is_fallthrough = fallthrough == Some(continuation);
+        let continuation_label = self.core.block_label(success.target)?;
+        let continuation_is_fallthrough = fallthrough == Some(success.target);
+
+        emit_call_arg_lanes::<Self>(self, args)?;
+
+        let callee_fp_idx = self.gp_scratch.alloc();
+        let callee_fp = self.gp_scratch.reg(callee_fp_idx);
+        self.materialize_frame_addr(callee_fp, fp, frame_delta);
+        let caller_result_base_idx = self.gp_scratch.alloc();
+        let caller_result_base = self.gp_scratch.reg(caller_result_base_idx);
+        self.materialize_frame_addr(caller_result_base, fp, caller_results_base_delta(results));
 
         self.emit_addi(abi::stack_reg(), abi::stack_reg(), -CALL_RECORD_SIZE);
         self.emit_sd(caller_result_base, abi::stack_reg(), 0);
         self.emit_sd(fp, abi::stack_reg(), 8);
+        self.gp_scratch.free_index(caller_result_base_idx);
         self.emit_mv(fp, callee_fp);
+        self.gp_scratch.free_index(callee_fp_idx);
 
         match target {
             MachineCallTarget::Direct(callee) => {
@@ -3621,10 +3637,11 @@ impl<'a> Riscv64Backend<'a> {
     fn lower_tail_call(
         &mut self,
         target: &MachineCallTarget,
-        callee_frame_base: MachineReg,
+        args: &MachineCallArgs,
     ) -> Result<(), WasmError> {
-        let callee_fp = self.map_gp_reg(callee_frame_base)?;
         let fp = abi::map_fixed_reg(MACHINE_FP_REG);
+
+        emit_call_arg_lanes::<Self>(self, args)?;
 
         match target {
             MachineCallTarget::Direct(callee) => {
@@ -3632,7 +3649,7 @@ impl<'a> Riscv64Backend<'a> {
                     .gp_scratch
                     .scoped_alloc_excluding(abi::link_reg())
                     .detach();
-                self.emit_mv(fp, callee_fp);
+                let _ = fp;
                 self.emit_ld(abi::link_reg(), abi::stack_reg(), BODY_LINK_RA_OFFSET);
                 self.emit_restore_host_platform_regs(0);
                 self.emit_addi(abi::stack_reg(), abi::stack_reg(), BODY_LINK_FRAME_SIZE);
@@ -3645,7 +3662,7 @@ impl<'a> Riscv64Backend<'a> {
                     .scoped_alloc_excluding(abi::link_reg())
                     .detach();
                 self.emit_mv(*target, callee_entry);
-                self.emit_mv(fp, callee_fp);
+                let _ = fp;
                 self.emit_ld(abi::link_reg(), abi::stack_reg(), BODY_LINK_RA_OFFSET);
                 self.emit_restore_host_platform_regs(0);
                 self.emit_addi(abi::stack_reg(), abi::stack_reg(), BODY_LINK_FRAME_SIZE);
@@ -3692,6 +3709,17 @@ impl<'a> Riscv64Backend<'a> {
             body_local_error_label,
         );
         Ok(())
+    }
+
+    fn materialize_frame_addr(&mut self, dst: RiscvReg, base: RiscvReg, delta: u32) {
+        if delta == 0 {
+            self.emit_mv(dst, base);
+        } else if delta <= i32::MAX as u32 && Self::fits_i12(delta as i32) {
+            self.emit_addi(dst, base, delta as i32);
+        } else {
+            self.materialize_u64(dst, u64::from(delta));
+            self.core.text.emit_u32(enc::add(dst, base, dst));
+        }
     }
 
     fn lower_jump_table(

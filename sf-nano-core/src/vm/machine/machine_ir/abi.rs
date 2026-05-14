@@ -7,7 +7,8 @@
 
 use crate::collections;
 
-use super::types::MachineFuncId;
+use super::types::{MachineFuncId, MachineReg, MachineStorageType};
+use crate::vm::middle::frame::FrameSlot;
 
 /// One frame-relative region in the machine module ABI.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
@@ -16,17 +17,119 @@ pub(crate) struct MachineFrameRegion {
     pub slots: u16,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+pub(crate) enum MachineParamLoc {
+    Frame {
+        param_index: u16,
+        slot: FrameSlot,
+    },
+    GpArg {
+        param_index: u16,
+        lane: u8,
+        ty: MachineStorageType,
+    },
+    GpArgPair {
+        param_index: u16,
+        lo_lane: u8,
+        hi_lane: u8,
+    },
+    FpArg {
+        param_index: u16,
+        lane: u8,
+        ty: MachineStorageType,
+    },
+}
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+pub(crate) struct InternalCallArgBudget {
+    pub gp_units: u8,
+    pub fp_units: u8,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct MachineCallArgs {
+    pub frame_params: MachineFrameRegion,
+    pub lane_args: collections::Vec<MachineCallLaneArg>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum MachineCallLaneArg {
+    Gp {
+        param_index: u16,
+        lane: u8,
+        src: MachineArgSrc,
+        ty: MachineStorageType,
+    },
+    GpPair {
+        param_index: u16,
+        lo_lane: u8,
+        hi_lane: u8,
+        src: MachineArgSrcPair,
+    },
+    Fp {
+        param_index: u16,
+        lane: u8,
+        src: MachineArgSrc,
+        ty: MachineStorageType,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+pub(crate) enum MachineArgSrc {
+    Reg(MachineReg),
+    FrameSlot(FrameSlot),
+    FrameSlotOffset { slot: FrameSlot, byte_offset: i8 },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+pub(crate) struct MachineArgSrcPair {
+    pub lo: MachineArgSrc,
+    pub hi: MachineArgSrc,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
+pub(crate) enum MachineCallResults {
+    None,
+    ScalarGp {
+        dst: MachineResultDst,
+    },
+    ScalarGpPair {
+        lo: MachineResultDst,
+        hi: MachineResultDst,
+    },
+    ScalarFp {
+        dst: MachineResultDst,
+    },
+    FrameFallback {
+        callee_results: MachineFrameRegion,
+        caller_results: MachineFrameRegion,
+    },
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[allow(dead_code)]
+pub(crate) enum MachineResultDst {
+    FrameSlot(FrameSlot),
+    Reg(MachineReg),
+}
+
 /// One per-function ABI record derived from the shared frame plan.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Hash)]
 pub(crate) struct MachineFunctionAbi {
     pub id: MachineFuncId,
+    pub param_locs: collections::Vec<MachineParamLoc>,
     pub frame_prefix_slots: u16,
     pub total_frame_slots: u16,
     /// Helper-scratch frame region: scratch slots reserved for runtime
-    /// helpers that take a frame-relative scratch base. Distinct from the
-    /// (now-deleted) call-link record, which the new local-call ABI no
-    /// longer needs — caller/callee state travels via a backend-private
-    /// host-stack call record instead. See `docs/ABI_PLAN.md` §6.
+    /// helpers that take a frame-relative scratch base. Local wasm-to-wasm
+    /// calls do not reserve a software call-link record; caller/callee state is
+    /// carried by the MachineIR call ABI and the native call/return pair.
     pub helper_scratch: Option<MachineFrameRegion>,
     pub return_results: Option<MachineFrameRegion>,
     /// Non-param local slot indices that may be read before being written.

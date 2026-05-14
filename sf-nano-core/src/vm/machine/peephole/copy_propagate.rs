@@ -11,8 +11,9 @@ use crate::collections;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    self, MachineAddr, MachineBlock, MachineBranchCond, MachineCallTarget, MachineConvertOp,
-    MachineEdge, MachineInst, MachineInstKind, MachineMemWidth, MachineReg, MachineRegOwner,
+    self, MachineAddr, MachineArgSrc, MachineBlock, MachineBranchCond, MachineCallArgs,
+    MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineConvertOp, MachineEdge,
+    MachineInst, MachineInstKind, MachineMemWidth, MachineReg, MachineRegOwner, MachineResultDst,
     MachineTerminator, MachineValue,
 };
 use crate::vm::machine::ownership::DynamicOwnershipTracker;
@@ -209,7 +210,34 @@ fn can_elide_reg_move(
         }
     }
 
+    if terminator_call_args_use_reg(terminator, dst) {
+        return false;
+    }
     source_stable || !terminator_uses_reg(terminator, dst)
+}
+
+fn terminator_call_args_use_reg(terminator: &MachineTerminator, reg: MachineReg) -> bool {
+    match terminator {
+        MachineTerminator::Call { args, .. } | MachineTerminator::TailCall { args, .. } => {
+            call_args_use_reg(args, reg)
+        }
+        _ => false,
+    }
+}
+
+fn call_args_use_reg(args: &MachineCallArgs, reg: MachineReg) -> bool {
+    args.lane_args.iter().any(|arg| match arg {
+        MachineCallLaneArg::Gp { src, .. } | MachineCallLaneArg::Fp { src, .. } => {
+            arg_src_uses_reg(src, reg)
+        }
+        MachineCallLaneArg::GpPair { src, .. } => {
+            arg_src_uses_reg(&src.lo, reg) || arg_src_uses_reg(&src.hi, reg)
+        }
+    })
+}
+
+fn arg_src_uses_reg(src: &MachineArgSrc, reg: MachineReg) -> bool {
+    matches!(src, MachineArgSrc::Reg(src_reg) if *src_reg == reg)
 }
 
 // --- Alias rewriting ---
@@ -564,37 +592,62 @@ fn rewrite_terminator_sources(term: &mut MachineTerminator, aliases: &[Option<Ma
         }
         MachineTerminator::Call {
             target,
-            callee_frame_base,
-            caller_result_base,
+            args,
+            results,
+            success,
             ..
         } => {
-            if let MachineCallTarget::Indirect {
-                callee_target,
-                callee_entry,
-            } = target
-            {
-                *callee_target = resolve_alias(*callee_target, aliases);
-                *callee_entry = resolve_alias(*callee_entry, aliases);
-            }
-            *callee_frame_base = resolve_alias(*callee_frame_base, aliases);
-            *caller_result_base = resolve_alias(*caller_result_base, aliases);
+            rewrite_call_target(target, aliases);
+            let _ = args;
+            rewrite_call_success_sources(success, results, aliases);
         }
-        MachineTerminator::TailCall {
-            target,
-            callee_frame_base,
-        } => {
-            if let MachineCallTarget::Indirect {
-                callee_target,
-                callee_entry,
-            } = target
-            {
-                *callee_target = resolve_alias(*callee_target, aliases);
-                *callee_entry = resolve_alias(*callee_entry, aliases);
-            }
-            *callee_frame_base = resolve_alias(*callee_frame_base, aliases);
+        MachineTerminator::TailCall { target, args } => {
+            rewrite_call_target(target, aliases);
+            let _ = args;
         }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
     }
+}
+
+fn rewrite_call_target(target: &mut MachineCallTarget, aliases: &[Option<MachineReg>]) {
+    if let MachineCallTarget::Indirect {
+        callee_target,
+        callee_entry,
+    } = target
+    {
+        *callee_target = resolve_alias(*callee_target, aliases);
+        *callee_entry = resolve_alias(*callee_entry, aliases);
+    }
+}
+
+fn rewrite_call_success_sources(
+    success: &mut MachineEdge,
+    results: &MachineCallResults,
+    aliases: &[Option<MachineReg>],
+) {
+    for arg in &mut success.args {
+        if let MachineValue::Reg(reg) = arg {
+            if !call_results_define_reg(results, *reg) {
+                *reg = resolve_alias(*reg, aliases);
+            }
+        }
+    }
+}
+
+fn call_results_define_reg(results: &MachineCallResults, reg: MachineReg) -> bool {
+    match results {
+        MachineCallResults::None | MachineCallResults::FrameFallback { .. } => false,
+        MachineCallResults::ScalarGp { dst } | MachineCallResults::ScalarFp { dst } => {
+            result_dst_is_reg(*dst, reg)
+        }
+        MachineCallResults::ScalarGpPair { lo, hi } => {
+            result_dst_is_reg(*lo, reg) || result_dst_is_reg(*hi, reg)
+        }
+    }
+}
+
+fn result_dst_is_reg(dst: MachineResultDst, reg: MachineReg) -> bool {
+    matches!(dst, MachineResultDst::Reg(dst) if dst == reg)
 }
 
 fn rewrite_float_alias_terminator_sources(

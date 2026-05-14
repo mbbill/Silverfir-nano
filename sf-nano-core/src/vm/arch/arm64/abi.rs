@@ -143,18 +143,18 @@ const REG_PLAN: RegPlan = RegPlan {
         gp(0),
         gp(1),
         gp(2),
-        gp(23),
-        gp(24),
-        gp(25),
-        gp(26),
-        gp(27),
-        gp(28),
         gp(9),
         gp(10),
         gp(11),
         gp(12),
         gp(13),
         gp(14),
+        gp(23),
+        gp(24),
+        gp(25),
+        gp(26),
+        gp(27),
+        gp(28),
         gp(15),
     ],
     gp_dynamic_caller_saved: &[
@@ -189,14 +189,6 @@ const REG_PLAN: RegPlan = RegPlan {
         fp(18),
         fp(19),
         fp(20),
-        fp(8),
-        fp(9),
-        fp(10),
-        fp(11),
-        fp(12),
-        fp(13),
-        fp(14),
-        fp(15),
         fp(21),
         fp(22),
         fp(23),
@@ -208,6 +200,14 @@ const REG_PLAN: RegPlan = RegPlan {
         fp(29),
         fp(30),
         fp(31),
+        fp(8),
+        fp(9),
+        fp(10),
+        fp(11),
+        fp(12),
+        fp(13),
+        fp(14),
+        fp(15),
     ],
     fp_dynamic_caller_saved: FP_DYNAMIC_CALLER_SAVED,
     fp_scratch: &[fp(0), fp(1)],
@@ -229,6 +229,15 @@ const REG_PLAN: RegPlan = RegPlan {
 const _: () = assert!(
     REG_PLAN.fp_dynamic.len() + REG_PLAN.fp_scratch.len() == 32,
     "FP register plan must account for all 32 D-registers"
+);
+const _: () = assert!(
+    GP_VOLATILE_DYNAMIC as usize + GP_PRESERVED_DYNAMIC as usize + GP_INTERNAL_SCRATCH as usize
+        == REG_PLAN.gp_dynamic.len(),
+    "arm64 GP volatility counts must match gp_dynamic"
+);
+const _: () = assert!(
+    FP_VOLATILE_DYNAMIC as usize + FP_PRESERVED_DYNAMIC as usize == REG_PLAN.fp_dynamic.len(),
+    "arm64 FP volatility counts must match fp_dynamic"
 );
 
 #[inline]
@@ -307,13 +316,25 @@ pub(super) const fn fp_zero_reg() -> Arm64FpReg {
 // ── Derived config ───────────────────────────────────────────────────────────
 
 const SCALAR_CALL_SCRATCH_SLOTS: u16 = 3;
+const GP_VOLATILE_DYNAMIC: u8 = 15;
+const GP_PRESERVED_DYNAMIC: u8 = 6;
+const GP_INTERNAL_SCRATCH: u8 = 1;
+const FP_VOLATILE_DYNAMIC: u8 = 22;
+const FP_PRESERVED_DYNAMIC: u8 = 8;
+const GP_ARG_LANES: u8 = 4;
+const FP_ARG_LANES: u8 = 4;
 
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
-    BackendConfig::new(
+    BackendConfig::with_volatility(
         REG_PLAN.gp_unit_bytes,
-        REG_PLAN.gp_dynamic.len() as u8,
-        REG_PLAN.fp_dynamic.len() as u8,
+        GP_VOLATILE_DYNAMIC,
+        GP_PRESERVED_DYNAMIC,
+        GP_INTERNAL_SCRATCH,
+        FP_VOLATILE_DYNAMIC,
+        FP_PRESERVED_DYNAMIC,
+        GP_ARG_LANES,
+        FP_ARG_LANES,
         SCALAR_CALL_SCRATCH_SLOTS,
     )
 }

@@ -2,17 +2,19 @@
 
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
-    MachineBlockId, MachineBranchCond, MachineCallTarget, MachineCompareKind, MachineConstId,
-    MachineEdge, MachineReg, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
-    MACHINE_FP_REG,
+    MachineBlockId, MachineBranchCond, MachineCallArgs, MachineCallResults, MachineCallTarget,
+    MachineCompareKind, MachineConstId, MachineEdge, MachineTerminator, MachineTrapKind,
+    MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
 };
 
 use super::abi::map_fixed_reg;
 use super::fusion::map_int_cond;
 use super::inst::{materialize_u64_into, prepare_gp};
+use super::reg::Arm64Reg;
 use super::{abi, enc};
 use crate::vm::arch::common::helpers::is_fallthrough_edge;
 use crate::vm::arch::common::helpers::trap_code;
+use crate::vm::arch::common::pipeline::emit_call_arg_lanes;
 use crate::vm::arch::common::template::{
     decode_template_chain_next, encode_template_chain_next, template_i32_delta, TemplateBranchSense,
 };
@@ -87,20 +89,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
             }
             MachineTerminator::Call {
                 target,
-                callee_frame_base,
-                caller_result_base,
-                continuation,
-            } => self.lower_call(
-                target,
-                *callee_frame_base,
-                *caller_result_base,
-                *continuation,
-                fallthrough,
-            ),
-            MachineTerminator::TailCall {
-                target,
-                callee_frame_base,
-            } => self.lower_tail_call(target, *callee_frame_base),
+                frame_delta,
+                args,
+                results,
+                success,
+            } => self.lower_call(target, *frame_delta, args, results, success, fallthrough),
+            MachineTerminator::TailCall { target, args } => self.lower_tail_call(target, args),
         }
     }
 
@@ -437,32 +431,22 @@ impl<'a> super::backend::Arm64Backend<'a> {
     fn lower_call(
         &mut self,
         target: &MachineCallTarget,
-        callee_frame_base: MachineReg,
-        caller_result_base: MachineReg,
-        continuation: MachineBlockId,
+        frame_delta: u32,
+        args: &MachineCallArgs,
+        results: &MachineCallResults,
+        success: &MachineEdge,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        let callee_fp = self.map_gp_reg(callee_frame_base)?;
-        let caller_result_base = self.map_gp_reg(caller_result_base)?;
-        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let body_local_error_label = self.core.body_local_error_label;
-        let continuation_label = self.core.block_label(continuation)?;
-        let continuation_is_fallthrough = fallthrough == Some(continuation);
+        let continuation_label = self.core.block_label(success.target)?;
+        let continuation_is_fallthrough = fallthrough == Some(success.target);
 
-        // Push the backend-private call record onto the host stack:
-        //   stp caller_result_base, fp_reg, [sp, #-16]!
-        // — order: low slot = caller_result_base, high slot = caller fp.
-        // The body's unified Return / body_local_error_label pop in the
-        // matching order: ldp scratch_rb, scratch_fp, [sp], #16.
-        self.core.text.emit_u32(enc::stp_64_pre_index(
-            caller_result_base,
-            fp_reg,
-            abi::stack_reg(),
-            -16,
-        ));
+        emit_call_arg_lanes::<Self>(self, args)?;
 
-        // Switch fp_reg to the callee's frame base.
-        self.core.text.emit_u32(enc::mov_reg_64(fp_reg, callee_fp));
+        // Switch MACHINE_FP_REG to the callee frame. The callee returns with
+        // fp still pointing at its own frame; the caller restores it below
+        // before observing status or fallback results.
+        self.adjust_frame_pointer_by_delta(frame_delta, true);
 
         let scratch_idx = match target {
             MachineCallTarget::Direct(callee) => {
@@ -493,9 +477,18 @@ impl<'a> super::backend::Arm64Backend<'a> {
             }
         };
 
-        // --- callee returns here. C_RET0 holds 0 (success) or trap kind
-        // (error). Status check propagates to body_local_error_label.
+        if let Some(scratch_idx) = scratch_idx {
+            self.gp_scratch.free_index(scratch_idx);
+        }
+
+        // --- callee returns here. Restore the caller frame before status
+        // propagation; the caller's error tail expects its own frame.
+        self.adjust_frame_pointer_by_delta(frame_delta, false);
+
+        // C_RET0 holds 0 (success) or trap kind (error). Status check
+        // propagates to body_local_error_label.
         self.lower_cbnz(abi::C_RET0, body_local_error_label);
+        self.lower_call_result_placement(frame_delta, results)?;
 
         // Continuation: branch only if the next emitted block is not the
         // continuation block. The block layout pass already prefers placing
@@ -505,22 +498,19 @@ impl<'a> super::backend::Arm64Backend<'a> {
         if !continuation_is_fallthrough {
             self.lower_b(continuation_label);
         }
-
-        if let Some(scratch_idx) = scratch_idx {
-            self.gp_scratch.free_index(scratch_idx);
-        }
         Ok(())
     }
 
     fn lower_tail_call(
         &mut self,
         target: &MachineCallTarget,
-        callee_frame_base: MachineReg,
+        args: &MachineCallArgs,
     ) -> Result<(), WasmError> {
-        let callee_fp = self.map_gp_reg(callee_frame_base)?;
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let x29 = abi::host_fp_reg();
         let x30 = abi::host_lr_reg();
+
+        emit_call_arg_lanes::<Self>(self, args)?;
 
         let scratch_idx = match target {
             MachineCallTarget::Direct(callee) => {
@@ -538,10 +528,13 @@ impl<'a> super::backend::Arm64Backend<'a> {
             MachineCallTarget::Indirect { .. } => None,
         };
 
+        self.lower_preserved_dynamic_body_restore();
         self.core
             .text
             .emit_u32(enc::ldp_64_post_index(x29, x30, abi::stack_reg(), 16));
-        self.core.text.emit_u32(enc::mov_reg_64(fp_reg, callee_fp));
+        // Tail-call arguments have already been repacked to the current frame
+        // prefix, so the callee reuses the current MACHINE_FP_REG value.
+        let _ = fp_reg;
 
         match target {
             MachineCallTarget::Direct(_) => {
@@ -560,6 +553,113 @@ impl<'a> super::backend::Arm64Backend<'a> {
             self.gp_scratch.free_index(scratch_idx);
         }
         Ok(())
+    }
+
+    fn materialize_frame_addr(&mut self, dst: Arm64Reg, base: Arm64Reg, delta: u32) {
+        if delta == 0 {
+            if dst != base {
+                self.core.text.emit_u32(enc::mov_reg_64(dst, base));
+            }
+        } else if delta < 4096 {
+            self.core.text.emit_u32(enc::add_imm_64(dst, base, delta));
+        } else {
+            materialize_u64_into(&mut self.core.text, dst, u64::from(delta));
+            self.core.text.emit_u32(enc::add_reg_64(dst, base, dst));
+        }
+    }
+
+    fn adjust_frame_pointer_by_delta(&mut self, delta: u32, add: bool) {
+        if delta == 0 {
+            return;
+        }
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        if delta < 4096 {
+            let inst = if add {
+                enc::add_imm_64(fp_reg, fp_reg, delta)
+            } else {
+                enc::sub_imm_64(fp_reg, fp_reg, delta)
+            };
+            self.core.text.emit_u32(inst);
+            return;
+        }
+
+        let scratch_idx = self.gp_scratch.alloc();
+        let scratch = self.gp_scratch.reg(scratch_idx);
+        materialize_u64_into(&mut self.core.text, scratch, u64::from(delta));
+        let inst = if add {
+            enc::add_reg_64(fp_reg, fp_reg, scratch)
+        } else {
+            enc::sub_reg_64(fp_reg, fp_reg, scratch)
+        };
+        self.core.text.emit_u32(inst);
+        self.gp_scratch.free_index(scratch_idx);
+    }
+
+    fn lower_call_result_placement(
+        &mut self,
+        frame_delta: u32,
+        results: &MachineCallResults,
+    ) -> Result<(), WasmError> {
+        let MachineCallResults::FrameFallback {
+            callee_results,
+            caller_results,
+        } = results
+        else {
+            return Ok(());
+        };
+        if callee_results.slots != caller_results.slots {
+            return Err(WasmError::internal(
+                "arm64 frame-fallback result slot count mismatch",
+            ));
+        }
+
+        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+        let value_idx = self.gp_scratch.alloc();
+        let value = self.gp_scratch.reg(value_idx);
+        for index in 0..callee_results.slots as u32 {
+            let src_offset = frame_delta
+                .checked_add(u32::from(callee_results.base_slot).saturating_mul(8))
+                .and_then(|base| base.checked_add(index.saturating_mul(8)))
+                .ok_or_else(|| WasmError::internal("arm64 result source offset overflow"))?;
+            let dst_offset = u32::from(caller_results.base_slot)
+                .saturating_mul(8)
+                .checked_add(index.saturating_mul(8))
+                .ok_or_else(|| WasmError::internal("arm64 result destination offset overflow"))?;
+            self.emit_frame_load_by_byte_offset(value, fp_reg, src_offset);
+            self.emit_frame_store_by_byte_offset(value, fp_reg, dst_offset);
+        }
+        self.gp_scratch.free_index(value_idx);
+        Ok(())
+    }
+
+    fn emit_frame_load_by_byte_offset(&mut self, dst: Arm64Reg, base: Arm64Reg, offset: u32) {
+        if offset % 8 == 0 {
+            let slot = offset / 8;
+            if slot < 4096 {
+                self.core.text.emit_u32(enc::ldr_64(dst, base, slot));
+                return;
+            }
+        }
+        let addr_idx = self.gp_scratch.alloc();
+        let addr = self.gp_scratch.reg(addr_idx);
+        self.materialize_frame_addr(addr, base, offset);
+        self.core.text.emit_u32(enc::ldr_64(dst, addr, 0));
+        self.gp_scratch.free_index(addr_idx);
+    }
+
+    fn emit_frame_store_by_byte_offset(&mut self, src: Arm64Reg, base: Arm64Reg, offset: u32) {
+        if offset % 8 == 0 {
+            let slot = offset / 8;
+            if slot < 4096 {
+                self.core.text.emit_u32(enc::str_64(src, base, slot));
+                return;
+            }
+        }
+        let addr_idx = self.gp_scratch.alloc();
+        let addr = self.gp_scratch.reg(addr_idx);
+        self.materialize_frame_addr(addr, base, offset);
+        self.core.text.emit_u32(enc::str_64(src, addr, 0));
+        self.gp_scratch.free_index(addr_idx);
     }
 
     // ── Jump table (br_table) ────────────────────────────────────────────────────
@@ -628,84 +728,26 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
     // ── Return sequence ──────────────────────────────────────────────────────────
 
-    /// Unified Return lowering. Pops the body prelude link save and the
-    /// caller's call record from the host stack, copies the function's
-    /// `return_results` region into `*caller_result_base`, restores
-    /// `MACHINE_FP_REG` to the caller's frame pointer, sets `C_RET0 = 0`
-    /// (the success status), and executes the platform `ret`.
-    ///
-    /// Uses only the 2-wide arm64 GP scratch pool by reading the call
-    /// record fields with `ldr` (instead of popping with `ldp`) so that
-    /// `caller_result_base` and the per-iteration data temp can coexist.
-    /// The call record is freed with a single `add sp, #16` after the
-    /// copy loop.
-    ///
-    /// The matching error path is `body_local_error_label` (see
-    /// `lower_body_local_error_tail` in `arm64/backend.rs`).
+    /// Unified Return lowering. Pops the body prelude link save, sets
+    /// `C_RET0 = 0` (the success status), and executes the platform `ret`.
+    /// The callee leaves `MACHINE_FP_REG` pointing at its own frame; a
+    /// returning caller restores its frame after the native call.
     fn lower_return_sequence(&mut self) -> Result<(), WasmError> {
-        let runtime = self.runtime_for(self.core.func_id)?.clone();
-        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let x29 = abi::host_fp_reg();
         let x30 = abi::host_lr_reg();
 
-        // 1. Pop the body prelude link save (matches the prelude's
-        //    `stp x29, x30, [sp, #-16]!`). After this, sp points at the
-        //    caller's call record:
-        //      [sp + 0] = caller_result_base
-        //      [sp + 8] = caller_fp
+        // Restore any JIT-ABI preserved dynamic regs, then pop the body
+        // prelude link save.
+        self.lower_preserved_dynamic_body_restore();
         self.core
             .text
             .emit_u32(enc::ldp_64_post_index(x29, x30, abi::stack_reg(), 16));
 
-        // 2. Allocate two scratches.
-        let scratch_a_idx = self.gp_scratch.alloc();
-        let scratch_b_idx = self.gp_scratch.alloc();
-        let scratch_a = self.gp_scratch.reg(scratch_a_idx);
-        let scratch_b = self.gp_scratch.reg(scratch_b_idx);
-
-        // 3. Load caller_result_base into scratch_a. We hold it across the
-        //    copy loop and release scratch_b for use as the per-iteration
-        //    data temp.
-        self.core
-            .text
-            .emit_u32(enc::ldr_64(scratch_a, abi::stack_reg(), 0));
-
-        // 4. Copy each return slot from the callee frame to *scratch_a.
-        if let Some(results) = runtime.return_results {
-            for index in 0..results.slots as u32 {
-                self.core.text.emit_u32(enc::ldr_64(
-                    scratch_b,
-                    fp_reg,
-                    results.base_slot as u32 + index,
-                ));
-                self.core
-                    .text
-                    .emit_u32(enc::str_64(scratch_b, scratch_a, index));
-            }
-        }
-
-        // 5. Load caller_fp into scratch_b.
-        self.core
-            .text
-            .emit_u32(enc::ldr_64(scratch_b, abi::stack_reg(), 1));
-
-        // 6. Pop the call record from the host stack.
-        self.core
-            .text
-            .emit_u32(enc::add_imm_64(abi::stack_reg(), abi::stack_reg(), 16));
-
-        // 7. Restore MACHINE_FP_REG to the caller's frame pointer.
-        self.core.text.emit_u32(enc::mov_reg_64(fp_reg, scratch_b));
-
-        // 8. Success status: C_RET0 = 0.
+        // Success status: C_RET0 = 0.
         self.core.text.emit_u32(enc::mov_zero_64(abi::C_RET0));
 
-        // 9. Native return (uses LR, which the body prelude's ldp restored
-        //    above).
+        // Native return (uses LR, which the body prelude's ldp restored).
         self.core.text.emit_u32(enc::ret());
-
-        self.gp_scratch.free_index(scratch_b_idx);
-        self.gp_scratch.free_index(scratch_a_idx);
         Ok(())
     }
 

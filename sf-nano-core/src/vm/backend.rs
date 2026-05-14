@@ -13,21 +13,18 @@ pub enum BackendKind {
 
 /// Planning-time backend configuration.
 ///
-/// This carries only the flexible register budget that the backend chooses to
-/// spend above the fixed machine ABI roles (`ctx`, `fp`, and the pinned mem0
-/// view regs).
+/// This carries the abstract MachineIR register ABI chosen by the backend.
+/// It deliberately does not expose physical registers. The shared compiler
+/// sees only counts and the abstract layout:
 ///
-/// Different layers interpret this budget differently:
-/// - `middle/` treats it as one unified dynamic bank per register class
-/// - native lowering maps that bank onto concrete machine registers
-/// - the frontend frame planner reserves `call_scratch_slots` in the native
-///   frame prefix for helper scratch state
-/// - backend-only temporaries must be modeled explicitly through scratch pools
-///   or lowering helpers rather than by ad hoc reach-through into these
-///   dynamic banks
+/// ```text
+/// [fixed | gp_volatile | gp_preserved | gp_internal_scratch | fp_volatile | fp_preserved]
+/// ```
 ///
-/// It is *not* the place to describe fixed machine roles or runtime stack
-/// state.
+/// The backend's `abi.rs` owns the mapping from these abstract dynamic lanes to
+/// concrete target registers. Middle and MachineIR may use the volatility
+/// counts to decide which values can die at a local call and which values may
+/// rely on callee preservation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BackendConfig {
     /// Size in bytes of one GP budget unit on the target backend.
@@ -40,23 +37,73 @@ pub(crate) struct BackendConfig {
     /// across the currently supported backends, both `f32` and `f64` consume
     /// exactly one FP register budget unit.
     pub gp_unit_bytes: u8,
+    pub gp_volatile_dynamic: u8,
+    pub gp_preserved_dynamic: u8,
+    pub gp_internal_scratch: u8,
     pub gp_dynamic_budget: u8,
+    pub fp_volatile_dynamic: u8,
+    pub fp_preserved_dynamic: u8,
     pub fp_dynamic_budget: u8,
+    pub gp_arg_lanes: u8,
+    pub fp_arg_lanes: u8,
     pub call_scratch_slots: u16,
 }
 
 impl BackendConfig {
+    /// Compatibility constructor for tests and emulator-style configurations
+    /// that do not yet split their dynamic bank by volatility. All allocatable
+    /// lanes are volatile; the historical internal GP scratch tail remains
+    /// reserved.
     #[inline]
+    #[allow(dead_code)]
     pub(crate) const fn new(
         gp_unit_bytes: u8,
         gp_dynamic_budget: u8,
         fp_dynamic_budget: u8,
         call_scratch_slots: u16,
     ) -> Self {
+        let gp_internal_scratch = default_gp_internal_scratch(gp_unit_bytes, gp_dynamic_budget);
+        let gp_volatile_dynamic = gp_dynamic_budget.saturating_sub(gp_internal_scratch);
+        Self::with_volatility(
+            gp_unit_bytes,
+            gp_volatile_dynamic,
+            0,
+            gp_internal_scratch,
+            fp_dynamic_budget,
+            0,
+            default_gp_arg_lanes(gp_volatile_dynamic),
+            default_fp_arg_lanes(fp_dynamic_budget),
+            call_scratch_slots,
+        )
+    }
+
+    #[inline]
+    pub(crate) const fn with_volatility(
+        gp_unit_bytes: u8,
+        gp_volatile_dynamic: u8,
+        gp_preserved_dynamic: u8,
+        gp_internal_scratch: u8,
+        fp_volatile_dynamic: u8,
+        fp_preserved_dynamic: u8,
+        gp_arg_lanes: u8,
+        fp_arg_lanes: u8,
+        call_scratch_slots: u16,
+    ) -> Self {
+        let gp_dynamic_budget = gp_volatile_dynamic
+            .saturating_add(gp_preserved_dynamic)
+            .saturating_add(gp_internal_scratch);
+        let fp_dynamic_budget = fp_volatile_dynamic.saturating_add(fp_preserved_dynamic);
         Self {
             gp_unit_bytes,
+            gp_volatile_dynamic,
+            gp_preserved_dynamic,
+            gp_internal_scratch,
             gp_dynamic_budget,
+            fp_volatile_dynamic,
+            fp_preserved_dynamic,
             fp_dynamic_budget,
+            gp_arg_lanes: min_u8(gp_arg_lanes, gp_volatile_dynamic),
+            fp_arg_lanes: min_u8(fp_arg_lanes, fp_volatile_dynamic),
             call_scratch_slots,
         }
     }
@@ -66,27 +113,19 @@ impl BackendConfig {
         self.gp_unit_bytes == 4
     }
 
-    /// GP dynamic lanes kept out of normal value/cache placement so machine
-    /// lowering still has a small internal scratch tail when a helper needs an
-    /// extra temporary beyond the semantic live set.
-    #[inline]
-    pub(crate) const fn gp_internal_scratch_reserve(self) -> u8 {
-        let preferred = if self.is_32bit_gp_target() { 2 } else { 1 };
-        let max_reserve = self.gp_dynamic_budget.saturating_sub(1);
-        if preferred > max_reserve {
-            max_reserve
-        } else {
-            preferred
-        }
-    }
-
     /// GP dynamic budget exposed to the middle-end and normal native
     /// allocation. The remaining tail, if any, is reserved for lowering-only
     /// scratch borrowing.
     #[inline]
     pub(crate) const fn allocatable_gp_dynamic_budget(self) -> u8 {
-        self.gp_dynamic_budget
-            .saturating_sub(self.gp_internal_scratch_reserve())
+        self.gp_volatile_dynamic
+            .saturating_add(self.gp_preserved_dynamic)
+    }
+
+    #[inline]
+    pub(crate) const fn allocatable_fp_dynamic_budget(self) -> u8 {
+        self.fp_volatile_dynamic
+            .saturating_add(self.fp_preserved_dynamic)
     }
 
     // ── Register layout helpers ──────────────────────────────────────────
@@ -112,6 +151,39 @@ impl BackendConfig {
     }
 }
 
+#[inline]
+const fn min_u8(lhs: u8, rhs: u8) -> u8 {
+    if lhs < rhs {
+        lhs
+    } else {
+        rhs
+    }
+}
+
+#[inline]
+#[allow(dead_code)]
+const fn default_gp_internal_scratch(gp_unit_bytes: u8, gp_dynamic_budget: u8) -> u8 {
+    let preferred = if gp_unit_bytes == 4 { 2 } else { 1 };
+    let max_reserve = gp_dynamic_budget.saturating_sub(1);
+    if preferred > max_reserve {
+        max_reserve
+    } else {
+        preferred
+    }
+}
+
+#[inline]
+#[allow(dead_code)]
+const fn default_gp_arg_lanes(gp_volatile_dynamic: u8) -> u8 {
+    min_u8(gp_volatile_dynamic, 4)
+}
+
+#[inline]
+#[allow(dead_code)]
+const fn default_fp_arg_lanes(fp_volatile_dynamic: u8) -> u8 {
+    min_u8(fp_volatile_dynamic, 4)
+}
+
 #[cfg(test)]
 mod tests {
     use super::BackendConfig;
@@ -121,6 +193,9 @@ mod tests {
         let config = BackendConfig::new(4, 3, 7, 8);
         assert_eq!(config.gp_unit_bytes, 4);
         assert_eq!(config.call_scratch_slots, 8);
+        assert_eq!(config.gp_internal_scratch, 2);
+        assert_eq!(config.gp_volatile_dynamic, 1);
+        assert_eq!(config.gp_preserved_dynamic, 0);
     }
 
     #[test]
@@ -133,6 +208,17 @@ mod tests {
     fn backend_config_allows_explicit_call_scratch_slots() {
         let config = BackendConfig::new(8, 3, 7, 9);
         assert_eq!(config.call_scratch_slots, 9);
+    }
+
+    #[test]
+    fn backend_config_publishes_dynamic_volatility_layout() {
+        let config = BackendConfig::with_volatility(8, 6, 4, 1, 5, 3, 4, 2, 3);
+        assert_eq!(config.gp_dynamic_budget, 11);
+        assert_eq!(config.fp_dynamic_budget, 8);
+        assert_eq!(config.allocatable_gp_dynamic_budget(), 10);
+        assert_eq!(config.allocatable_fp_dynamic_budget(), 8);
+        assert_eq!(config.gp_arg_lanes, 4);
+        assert_eq!(config.fp_arg_lanes, 2);
     }
 }
 

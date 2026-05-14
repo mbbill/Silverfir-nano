@@ -288,11 +288,26 @@ impl<'a> BlockLowerContext<'a> {
 
     fn ensure_cached_local_loaded(
         &mut self,
-        _slot: FrameSlot,
+        slot: FrameSlot,
         cached_index: usize,
         ty: MachineStorageType,
     ) -> Result<(), WasmError> {
         if self.is_cache_live(cached_index) && self.cache_has_value(cached_index) {
+            return Ok(());
+        }
+        if let Some((lo, hi, param_ty)) = self.register_param_state(slot) {
+            if param_ty != ty {
+                return Err(WasmError::internal(
+                    "register-passed parameter type does not match cached local type",
+                ));
+            }
+            self.bind_cached_local_to_regs(cached_index, lo, hi)?;
+            self.set_cache_live(cached_index, true);
+            self.set_cache_has_value(cached_index, true);
+            // The frame slot is not authoritative yet. Mark dirty so any
+            // boundary/drop that needs a frame view publishes the incoming arg.
+            self.set_cache_dirty(cached_index, true);
+            self.mark_param_frame_authoritative(slot);
             return Ok(());
         }
         let cached = self.ensure_bound_cached_local(cached_index)?;
@@ -340,6 +355,12 @@ impl<'a> BlockLowerContext<'a> {
 
     fn lower_local_get_slot(&mut self, slot: FrameSlot, dst: SsaValue) -> Result<(), WasmError> {
         let ty = lir_value_storage_type(self.program(), dst);
+        if let Some((lo, hi, param_ty)) = self.register_param_state(slot) {
+            if param_ty == ty {
+                self.push_value_location(dst, lo, hi);
+                return Ok(());
+            }
+        }
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let ops = self.i64_ops();
             ops.emit_load_slot_i64(self, slot, dst)?;
@@ -372,8 +393,7 @@ impl<'a> BlockLowerContext<'a> {
                 "LocalGetCache on non-cached local slot",
             ));
         };
-        self.ensure_cached_local_loaded(slot, cached_index, ty)
-            .map_err(|_err| WasmError::internal("LocalGetCache(slot=, dst=) in block b failed"))?;
+        self.ensure_cached_local_loaded(slot, cached_index, ty)?;
         let cached = self.ensure_bound_cached_local(cached_index)?;
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let cached_hi = cached.hi_reg.ok_or_else(|| {
@@ -401,7 +421,6 @@ impl<'a> BlockLowerContext<'a> {
             .map(|cached| cached.ty)
             .unwrap_or_else(|| self.cached_locals()[cached_index].ty);
         self.ensure_cached_local_loaded(slot, cached_index, ty)
-            .map_err(|_err| WasmError::internal("LocalEnsureCache(slot=) in block b failed"))
     }
 
     fn lower_local_reserve_cache(&mut self, slot: FrameSlot) -> Result<(), WasmError> {
@@ -410,8 +429,8 @@ impl<'a> BlockLowerContext<'a> {
                 "LocalReserveCache on non-cached local slot",
             ));
         };
-        self.ensure_bound_cached_local(cached_index)
-            .map_err(|_err| WasmError::internal("LocalReserveCache(slot=) in block b failed"))?;
+        self.ensure_bound_cached_local(cached_index)?;
+        self.mark_param_frame_authoritative(slot);
         self.set_cache_live(cached_index, true);
         self.set_cache_has_value(cached_index, false);
         self.set_cache_dirty(cached_index, false);
@@ -423,6 +442,7 @@ impl<'a> BlockLowerContext<'a> {
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let ops = self.i64_ops();
             ops.emit_store_slot_i64(self, slot, src)?;
+            self.mark_param_frame_authoritative(slot);
             return Ok(());
         }
         #[cfg(sf_has_simd)]
@@ -430,6 +450,7 @@ impl<'a> BlockLowerContext<'a> {
             let src_reg = self.use_value(src)?;
             self.emit_store_frame_v128(slot, src_reg)?;
             self.release_dead_values()?;
+            self.mark_param_frame_authoritative(slot);
             return Ok(());
         }
         let src_reg = self.use_value(src)?;
@@ -446,6 +467,7 @@ impl<'a> BlockLowerContext<'a> {
             });
         }
         self.release_dead_values()?;
+        self.mark_param_frame_authoritative(slot);
         Ok(())
     }
 
@@ -474,6 +496,7 @@ impl<'a> BlockLowerContext<'a> {
         self.set_cache_live(cached_index, true);
         self.set_cache_has_value(cached_index, true);
         self.mark_cache_dirty(cached_index);
+        self.mark_param_frame_authoritative(slot);
 
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let cached_hi = cached.hi_reg.ok_or_else(|| {

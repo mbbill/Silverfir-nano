@@ -9,8 +9,8 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineAddr, MachineFuncId, MachineFunctionAbi, MachineInst, MachineInstKind,
-            MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner,
-            MachineStorageType, MachineValue,
+            MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineParamLoc, MachineReg,
+            MachineRegOwner, MachineStorageType, MachineValue,
         },
         middle::{
             frame::FrameSlot,
@@ -83,6 +83,16 @@ struct LinearValueState {
     ty: Option<MachineStorageType>,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum ParamSlotState {
+    FrameAuthoritative,
+    RegisterOnly {
+        lo: MachineReg,
+        hi: Option<MachineReg>,
+        ty: MachineStorageType,
+    },
+}
+
 pub(super) struct BlockLowerContext<'a> {
     regfile: &'a MachineRegFile,
     program: &'a SsaProgram,
@@ -118,6 +128,7 @@ pub(super) struct BlockLowerContext<'a> {
     /// - occupied by one linear value
     /// - bound to one cached local
     linear_value_state: collections::Vec<LinearValueState>,
+    param_slot_state: collections::Vec<ParamSlotState>,
     #[cfg(sf_has_guard_pages)]
     guard_pages: bool,
 }
@@ -135,6 +146,72 @@ struct ExplicitCachedLocalEntry {
     typed: bool,
 }
 
+fn initial_param_slot_state(
+    abi: &MachineFunctionAbi,
+    regfile: &MachineRegFile,
+    program: &SsaProgram,
+) -> Result<collections::Vec<ParamSlotState>, WasmError> {
+    let state_len = program
+        .local_slot_types
+        .len()
+        .max(usize::from(abi.frame_prefix_slots));
+    let mut states = collections::vec![ParamSlotState::FrameAuthoritative; state_len];
+    for loc in &abi.param_locs {
+        let (param_index, lo, hi, ty) = match *loc {
+            MachineParamLoc::Frame { .. } => continue,
+            MachineParamLoc::GpArg {
+                param_index,
+                lane,
+                ty,
+            } => {
+                let lo = regfile
+                    .ordered_gp_allocatable(lane as usize)
+                    .ok_or_else(|| {
+                        WasmError::internal(
+                            "internal GP argument lane exceeds dynamic register budget",
+                        )
+                    })?;
+                (param_index, lo, None, ty)
+            }
+            MachineParamLoc::GpArgPair {
+                param_index,
+                lo_lane,
+                hi_lane,
+            } => {
+                let lo = regfile
+                    .ordered_gp_allocatable(lo_lane as usize)
+                    .ok_or_else(|| {
+                        WasmError::internal(
+                            "internal GP argument lo lane exceeds dynamic register budget",
+                        )
+                    })?;
+                let hi = regfile
+                    .ordered_gp_allocatable(hi_lane as usize)
+                    .ok_or_else(|| {
+                        WasmError::internal(
+                            "internal GP argument hi lane exceeds dynamic register budget",
+                        )
+                    })?;
+                (param_index, lo, Some(hi), MachineStorageType::GpI64)
+            }
+            MachineParamLoc::FpArg {
+                param_index,
+                lane,
+                ty,
+            } => {
+                let lo = regfile.fp_dynamic(lane as usize).ok_or_else(|| {
+                    WasmError::internal("internal FP argument lane exceeds dynamic register budget")
+                })?;
+                (param_index, lo, None, ty)
+            }
+        };
+        if let Some(state) = states.get_mut(param_index as usize) {
+            *state = ParamSlotState::RegisterOnly { lo, hi, ty };
+        }
+    }
+    Ok(states)
+}
+
 impl<'a> BlockLowerContext<'a> {
     pub(super) fn new(
         regfile: &'a MachineRegFile,
@@ -142,6 +219,7 @@ impl<'a> BlockLowerContext<'a> {
         cached_locals: &'a [CachedLocal],
         all_entry_cache_params: &'a [collections::Vec<EntryCacheParam>],
         block: &'a SsaBlock,
+        current_abi: &'a MachineFunctionAbi,
         all_runtime: &'a [MachineFunctionAbi],
         gp_reg_width: u8,
         i64_ops: &'static dyn I64Lowering,
@@ -179,6 +257,17 @@ impl<'a> BlockLowerContext<'a> {
                 LinearValueState::default();
                 regfile.gp_dynamic_count() + regfile.fp_dynamic_count()
             ],
+            param_slot_state: if is_entry {
+                initial_param_slot_state(current_abi, regfile, program)?
+            } else {
+                collections::vec![
+                    ParamSlotState::FrameAuthoritative;
+                    program
+                        .local_slot_types
+                        .len()
+                        .max(usize::from(current_abi.frame_prefix_slots))
+                ]
+            },
             #[cfg(sf_has_guard_pages)]
             guard_pages,
         };
@@ -272,6 +361,77 @@ impl<'a> BlockLowerContext<'a> {
         self.cached_locals
             .iter()
             .position(|cached| cached.slot == slot)
+    }
+
+    pub(super) fn register_param_state(
+        &self,
+        slot: FrameSlot,
+    ) -> Option<(MachineReg, Option<MachineReg>, MachineStorageType)> {
+        match self.param_slot_state.get(slot.0 as usize).copied() {
+            Some(ParamSlotState::RegisterOnly { lo, hi, ty }) => Some((lo, hi, ty)),
+            _ => None,
+        }
+    }
+
+    pub(super) fn mark_param_frame_authoritative(&mut self, slot: FrameSlot) {
+        if let Some(state) = self.param_slot_state.get_mut(slot.0 as usize) {
+            *state = ParamSlotState::FrameAuthoritative;
+        }
+    }
+
+    pub(super) fn publish_register_params_to_frame(&mut self) -> Result<(), WasmError> {
+        let mut params = collections::Vec::new();
+        for (slot_index, state) in self.param_slot_state.iter().copied().enumerate() {
+            if let ParamSlotState::RegisterOnly { lo, hi, ty } = state {
+                params.push((FrameSlot(slot_index as u16), lo, hi, ty));
+            }
+        }
+
+        for (slot, lo, hi, ty) in params {
+            if let Some(hi) = hi {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: self.frame_addr_offset(slot, 0)?,
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(lo),
+                    },
+                });
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: self.frame_addr_offset(slot, 4)?,
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(hi),
+                    },
+                });
+            } else {
+                #[cfg(sf_has_simd)]
+                if matches!(ty, MachineStorageType::V128) {
+                    self.emit_store_frame_v128(slot, lo)?;
+                    self.mark_param_frame_authoritative(slot);
+                    continue;
+                }
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty,
+                        addr: self.frame_addr(slot)?,
+                        width: canonical_cached_local_mem_width(ty),
+                        src: MachineValue::Reg(lo),
+                    },
+                });
+            }
+            self.mark_param_frame_authoritative(slot);
+        }
+
+        Ok(())
+    }
+
+    pub(super) fn incoming_param_owns_reg(&self, reg: MachineReg) -> bool {
+        self.param_slot_state.iter().any(|state| match *state {
+            ParamSlotState::RegisterOnly { lo, hi, .. } => lo == reg || hi == Some(reg),
+            ParamSlotState::FrameAuthoritative => false,
+        })
     }
 
     pub(super) fn frame_addr(&self, slot: FrameSlot) -> Result<MachineAddr, WasmError> {
@@ -549,6 +709,12 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn values_iter(&self) -> core::slice::Iter<'_, ValueLocation> {
         self.values.iter()
+    }
+
+    pub(super) fn value_location_owns_reg(&self, reg: MachineReg) -> bool {
+        self.values
+            .iter()
+            .any(|value| value.reg == reg || value.hi_reg == Some(reg))
     }
 
     pub(super) fn remaining_use_count(&self, value: SsaValue) -> u32 {
@@ -883,6 +1049,8 @@ impl<'a> BlockLowerContext<'a> {
 
     fn dynamic_reg_unavailable(&self, reg: MachineReg) -> bool {
         self.is_bound_cache_reg(reg)
+            || self.incoming_param_owns_reg(reg)
+            || self.value_location_owns_reg(reg)
             || self
                 .dynamic_index(reg)
                 .ok()
@@ -991,11 +1159,39 @@ impl<'a> BlockLowerContext<'a> {
         // Function entry has no predecessor edge to carry cached locals. If the
         // planner wants them resident immediately, materialize them here from
         // their frame slots instead of faking extra entry block params.
+        if let Some(cached) = self.cached_locals.get(cached_index).copied() {
+            if let Some((lo, hi, ty)) = self.register_param_state(cached.slot) {
+                if ty == cached.ty {
+                    self.bind_cached_local_to_regs(cached_index, lo, hi)?;
+                    self.set_cache_live(cached_index, true);
+                    self.set_cache_has_value(cached_index, true);
+                    self.set_cache_dirty(cached_index, true);
+                    self.mark_param_frame_authoritative(cached.slot);
+                    return Ok(());
+                }
+            }
+        }
         let cached = self.bind_cached_local_to_regs(cached_index, regs.lo, regs.hi)?;
         if matches!(cached.ty, MachineStorageType::GpI64) {
             let ops = self.i64_ops();
             ops.emit_reload_cached_i64(self, &cached)?;
         } else {
+            #[cfg(sf_has_simd)]
+            if matches!(cached.ty, MachineStorageType::V128) {
+                self.emit_load_frame_v128(cached.slot, cached.reg, MachineRegOwner::CachedLocal)?;
+            } else {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::CachedLocal,
+                        ty: cached.ty,
+                        dst: cached.reg,
+                        addr: self.frame_addr(cached.slot)?,
+                        width: canonical_cached_local_mem_width(cached.ty),
+                        extension: MachineLoadExtension::None,
+                    },
+                });
+            }
+            #[cfg(not(sf_has_simd))]
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
                     owner: MachineRegOwner::CachedLocal,

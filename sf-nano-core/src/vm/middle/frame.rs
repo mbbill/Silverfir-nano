@@ -63,7 +63,8 @@ impl FrameLayoutPlan {
 
     #[inline]
     pub(crate) const fn return_results(self, count: u16) -> FrameSpan {
-        FrameSpan::new(self.operand_slot(0), count)
+        let _ = self;
+        FrameSpan::new(FrameSlot(0), count)
     }
 }
 

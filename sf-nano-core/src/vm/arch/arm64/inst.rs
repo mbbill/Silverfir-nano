@@ -3,10 +3,10 @@
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockParam, MachineCompareKind, MachineConvertOp,
-    MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineFuncId,
-    MachineFunctionAbi, MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp,
-    MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
-    MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind, MachineValue, MACHINE_FP_REG,
+    MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend, MachineInst,
+    MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
+    MachineMemWidth, MachineReg, MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind,
+    MachineValue, MACHINE_FP_REG,
 };
 
 use super::abi::{fp_machine_reg, map_reg};
@@ -329,14 +329,6 @@ impl<'a> super::backend::Arm64Backend<'a> {
             }
         }
         Ok(())
-    }
-
-    /// Look up runtime metadata for a machine function.
-    pub(super) fn runtime_for(
-        &self,
-        func_id: MachineFuncId,
-    ) -> Result<&MachineFunctionAbi, WasmError> {
-        self.core.runtime_for(func_id)
     }
 
     // ── Instruction dispatch ─────────────────────────────────────────────

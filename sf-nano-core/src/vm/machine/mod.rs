@@ -6,6 +6,7 @@
 //! - `lower_*` modules — the lowering passes that transform SSA-IR into MachineIR
 //! - MachineIR transforms (peephole optimization, validation)
 
+mod call_abi;
 mod gp32;
 #[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
 pub(crate) mod low32_liveness;
@@ -40,6 +41,7 @@ mod validate_tests;
 pub(crate) use lower_const_pool::ConstPoolBuilder;
 pub(crate) use lower_module::LoweredMachineModule;
 pub(crate) use lower_module::{
-    lower_module, lower_single_function, LowerFunctionInput, LowerModuleInput,
+    derive_param_locs_from_types, lower_module, lower_single_function, LowerFunctionInput,
+    LowerModuleInput,
 };
 pub(crate) use optimize::{optimize_function, optimize_module};

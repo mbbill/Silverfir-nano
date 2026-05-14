@@ -6,7 +6,6 @@ members = [
     "sf-nano-wasitest",
     "tools/tracked-alloc",
     "tools/memprof-report",
-    "tools/sf-lens",
 ]
 exclude = [
     "sf-nano-cli-minimal",

@@ -17,7 +17,10 @@ use crate::collections;
 use crate::{
     value_type::ValueType,
     vm::{
-        middle::ssa_ir::ir::{SsaInst, SsaOp, SsaOperand, SsaProgram, SsaTerminator, SsaValue},
+        middle::ssa_ir::ir::{
+            SsaCallArgs, SsaCallOp, SsaCallOperandLoc, SsaInst, SsaOp, SsaOperand, SsaProgram,
+            SsaTerminator, SsaValue,
+        },
         wasm::primitive_op::{self, PrimitiveOpKind},
     },
 };
@@ -80,6 +83,13 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
         }
     }
     mark_terminator_uses(&terminator, &mut used_in_terminator);
+    for inst in &ops {
+        if inst.op == SsaOp::CALL {
+            if let Some(call) = program.call_ops.get(inst.meta as usize) {
+                mark_call_op_uses(call, &mut used_in_terminator);
+            }
+        }
+    }
 
     // Pass 2: try to fold fully-constant ops and absorb const operands.
     for inst in ops.iter_mut() {
@@ -183,6 +193,11 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
                 SsaOp::SPILL | SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE => {
                     if let Some(value) = inst.args[0].as_value() {
                         still_used[value.0 as usize] = true;
+                    }
+                }
+                SsaOp::CALL => {
+                    if let Some(call) = program.call_ops.get(inst.meta as usize) {
+                        mark_call_op_uses(call, &mut still_used);
                     }
                 }
                 _ => {}
@@ -979,12 +994,54 @@ fn mark_terminator_uses(term: &SsaTerminator, used: &mut [bool]) {
             }
         }
         SsaTerminator::Return { .. }
-        | SsaTerminator::TailCallDirect { .. }
-        | SsaTerminator::TailCallIndirect { .. }
-        | SsaTerminator::TailCallRef { .. }
         | SsaTerminator::TrapUnreachable
         | SsaTerminator::EhThrow { .. }
         | SsaTerminator::EhThrowRef { .. } => {}
+        SsaTerminator::TailCallDirect { args, .. } => {
+            mark_call_args_uses(args, used);
+        }
+        SsaTerminator::TailCallIndirect { index, args, .. } => {
+            mark_call_operand_uses(index, used);
+            mark_call_args_uses(args, used);
+        }
+        SsaTerminator::TailCallRef {
+            callee_ref, args, ..
+        } => {
+            mark_call_operand_uses(callee_ref, used);
+            mark_call_args_uses(args, used);
+        }
+    }
+}
+
+fn mark_call_op_uses(call: &SsaCallOp, used: &mut [bool]) {
+    match call {
+        SsaCallOp::CallDirect { args, .. } => mark_call_args_uses(args, used),
+        SsaCallOp::CallIndirect { index, args, .. } => {
+            mark_call_operand_uses(index, used);
+            mark_call_args_uses(args, used);
+        }
+        SsaCallOp::CallRef {
+            callee_ref, args, ..
+        } => {
+            mark_call_operand_uses(callee_ref, used);
+            mark_call_args_uses(args, used);
+        }
+    }
+}
+
+fn mark_call_args_uses(args: &SsaCallArgs, used: &mut [bool]) {
+    for arg in &args.live_suffix {
+        if let Some(slot) = used.get_mut(arg.value.0 as usize) {
+            *slot = true;
+        }
+    }
+}
+
+fn mark_call_operand_uses(loc: &SsaCallOperandLoc, used: &mut [bool]) {
+    if let SsaCallOperandLoc::Live { value, .. } = loc {
+        if let Some(slot) = used.get_mut(value.0 as usize) {
+            *slot = true;
+        }
     }
 }
 
@@ -1024,8 +1081,12 @@ fn max_value_index_parts(
                 }
                 SsaOp::LOCAL_ENSURE_CACHE
                 | SsaOp::LOCAL_RESERVE_CACHE
-                | SsaOp::LOCAL_DROP_CACHE
-                | SsaOp::CALL => {}
+                | SsaOp::LOCAL_DROP_CACHE => {}
+                SsaOp::CALL => {
+                    if let Some(call) = program.call_ops.get(inst.meta as usize) {
+                        max_value = max_value.max(max_call_op_value(call));
+                    }
+                }
                 _ => {}
             }
         }
@@ -1057,15 +1118,48 @@ fn max_value_index_parts(
             }
         }
         SsaTerminator::Return { .. }
-        | SsaTerminator::TailCallDirect { .. }
-        | SsaTerminator::TailCallIndirect { .. }
-        | SsaTerminator::TailCallRef { .. }
         | SsaTerminator::TrapUnreachable
         | SsaTerminator::EhThrow { .. }
         | SsaTerminator::EhThrowRef { .. } => {}
+        SsaTerminator::TailCallDirect { args, .. } => {
+            max_value = max_value.max(max_call_args_value(args));
+        }
+        SsaTerminator::TailCallIndirect { index, args, .. } => {
+            max_value = max_value.max(max_call_operand_value(index));
+            max_value = max_value.max(max_call_args_value(args));
+        }
+        SsaTerminator::TailCallRef {
+            callee_ref, args, ..
+        } => {
+            max_value = max_value.max(max_call_operand_value(callee_ref));
+            max_value = max_value.max(max_call_args_value(args));
+        }
     }
 
     max_value
+}
+
+fn max_call_op_value(call: &SsaCallOp) -> Option<SsaValue> {
+    match call {
+        SsaCallOp::CallDirect { args, .. } => max_call_args_value(args),
+        SsaCallOp::CallIndirect { index, args, .. } => {
+            max_call_operand_value(index).max(max_call_args_value(args))
+        }
+        SsaCallOp::CallRef {
+            callee_ref, args, ..
+        } => max_call_operand_value(callee_ref).max(max_call_args_value(args)),
+    }
+}
+
+fn max_call_args_value(args: &SsaCallArgs) -> Option<SsaValue> {
+    args.live_suffix.iter().map(|arg| arg.value).max()
+}
+
+fn max_call_operand_value(loc: &SsaCallOperandLoc) -> Option<SsaValue> {
+    match loc {
+        SsaCallOperandLoc::Stack { .. } => None,
+        SsaCallOperandLoc::Live { value, .. } => Some(*value),
+    }
 }
 
 #[cfg(test)]
@@ -1074,8 +1168,12 @@ mod tests {
 
     use super::{fold_constants_into_operands, SsaProgram};
     use crate::vm::{
+        middle::frame::{FrameSlot, FrameSpan},
         middle::ssa_ir::{
-            ir::{SsaBlock, SsaEdge, SsaInst, SsaOp, SsaOperand, SsaTerminator, SsaValue},
+            ir::{
+                SsaBlock, SsaCallArgs, SsaCallLiveArg, SsaCallOp, SsaEdge, SsaInst, SsaOp,
+                SsaOperand, SsaTerminator, SsaValue,
+            },
             target::SsaTarget,
         },
         wasm::primitive_op::PrimitiveOpKind,
@@ -1203,5 +1301,59 @@ mod tests {
             program.primitive_pool[const_pool_idx as usize],
             PrimitiveOpKind::I32Const { value: 1 }
         ));
+    }
+
+    #[test]
+    fn keeps_const_producer_when_value_is_used_by_call_args() {
+        let mut program = empty_program();
+        let const_pool_idx = program
+            .intern_primitive(PrimitiveOpKind::I32Const { value: 2 })
+            .unwrap();
+        program.call_ops.push(SsaCallOp::CallDirect {
+            callee: 1,
+            args: SsaCallArgs {
+                frame_base: FrameSlot(0),
+                total_params: 1,
+                param_types: collections::vec![crate::value_type::ValueType::I32],
+                stack_prefix_count: 0,
+                live_suffix: collections::vec![SsaCallLiveArg {
+                    param_index: 0,
+                    value: SsaValue(0),
+                    ty: crate::value_type::ValueType::I32,
+                    frame_slot: FrameSlot(0),
+                }],
+            },
+            results: FrameSpan::new(FrameSlot(0), 0),
+        });
+        program.blocks.push(SsaBlock {
+            id: SsaTarget(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                SsaInst::primitive(
+                    const_pool_idx,
+                    SsaValue(0),
+                    [SsaOperand::NONE, SsaOperand::NONE],
+                    0,
+                ),
+                SsaInst::call(0),
+            ],
+            extra_args: collections::Vec::new(),
+            terminator: SsaTerminator::Return { results: None },
+        });
+        program
+            .block_entry_cached_slots
+            .push(collections::Vec::new());
+
+        fold_constants_into_operands(&mut program, 0);
+
+        let block = &program.blocks[0];
+        assert_eq!(
+            block.ops.len(),
+            2,
+            "call live arguments must keep their const producers live"
+        );
+        assert_eq!(block.ops[0].op, SsaOp::primitive(const_pool_idx));
+        assert_eq!(block.ops[0].result, SsaValue(0));
+        assert_eq!(block.ops[1].op, SsaOp::CALL);
     }
 }

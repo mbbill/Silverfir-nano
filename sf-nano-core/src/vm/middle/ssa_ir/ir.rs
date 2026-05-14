@@ -739,25 +739,75 @@ pub(crate) struct SsaEdge {
     pub bindings: collections::Vec<SsaBinding>,
 }
 
-/// Prepared slot-based call operations.
+/// Prepared call operand split.
+///
+/// The middle end does not choose ABI registers. It records the operand-stack
+/// shape that already exists at the call boundary: an older frame-published
+/// prefix plus a bounded live SSA suffix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SsaCallArgs {
+    /// Caller-frame slot corresponding to callee local 0.
+    pub frame_base: FrameSlot,
+    /// Total formal parameter count consumed by this call.
+    pub total_params: u16,
+    /// Formal parameter types in wasm order. This lets MachineIR derive the
+    /// same abstract register-lane split for direct and indirect transfers
+    /// without asking `middle/` to know physical registers.
+    pub param_types: collections::Vec<ValueType>,
+    /// Parameters `[0, stack_prefix_count)` are already authoritative in
+    /// canonical frame slots starting at `frame_base`.
+    pub stack_prefix_count: u16,
+    /// Parameters `[stack_prefix_count, total_params)` that are still in the
+    /// bounded live SSA suffix.
+    pub live_suffix: collections::Vec<SsaCallLiveArg>,
+}
+
+impl SsaCallArgs {
+    #[inline]
+    pub(crate) fn frame_span(&self) -> FrameSpan {
+        FrameSpan::new(self.frame_base, self.total_params)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SsaCallLiveArg {
+    pub param_index: u16,
+    pub value: SsaValue,
+    pub ty: ValueType,
+    pub frame_slot: FrameSlot,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SsaCallOperandLoc {
+    Stack {
+        slot: FrameSlot,
+    },
+    Live {
+        value: SsaValue,
+        ty: ValueType,
+        slot: FrameSlot,
+    },
+}
+
+/// Prepared call operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SsaCallOp {
     CallDirect {
         callee: u32,
-        args: FrameSpan,
+        args: SsaCallArgs,
         results: FrameSpan,
     },
     CallIndirect {
         type_idx: u32,
         table_idx: u32,
-        index_slot: FrameSlot,
-        args: FrameSpan,
+        index: SsaCallOperandLoc,
+        args: SsaCallArgs,
         results: FrameSpan,
     },
     CallRef {
         type_idx: u32,
-        ref_slot: FrameSlot,
-        args: FrameSpan,
+        callee_ref: SsaCallOperandLoc,
+        args: SsaCallArgs,
         results: FrameSpan,
     },
 }
@@ -780,20 +830,20 @@ pub(crate) enum SsaTerminator {
     },
     TailCallDirect {
         callee: u32,
-        args: FrameSpan,
+        args: SsaCallArgs,
         return_results: Option<FrameSpan>,
     },
     TailCallIndirect {
         type_idx: u32,
         table_idx: u32,
-        index_slot: FrameSlot,
-        args: FrameSpan,
+        index: SsaCallOperandLoc,
+        args: SsaCallArgs,
         return_results: Option<FrameSpan>,
     },
     TailCallRef {
         type_idx: u32,
-        ref_slot: FrameSlot,
-        args: FrameSpan,
+        callee_ref: SsaCallOperandLoc,
+        args: SsaCallArgs,
         return_results: Option<FrameSpan>,
     },
     TrapUnreachable,

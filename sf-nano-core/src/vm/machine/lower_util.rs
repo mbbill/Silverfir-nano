@@ -3,8 +3,8 @@ use tracked_alloc::collections::BTreeMap;
 use crate::{
     error::WasmError,
     vm::middle::ssa_ir::ir::{
-        DecodedOperand, SsaBlock, SsaEdge, SsaInstView, SsaOperand, SsaProgram, SsaTerminator,
-        SsaValue,
+        DecodedOperand, SsaBlock, SsaCallArgs, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInstView,
+        SsaOperand, SsaProgram, SsaTerminator, SsaValue,
     },
 };
 
@@ -37,8 +37,8 @@ pub(super) fn compute_remaining_uses(
             | SsaInstView::LocalGetCache { .. }
             | SsaInstView::LocalEnsureCache { .. }
             | SsaInstView::LocalReserveCache { .. }
-            | SsaInstView::LocalDropCache { .. }
-            | SsaInstView::Call(_) => {}
+            | SsaInstView::LocalDropCache { .. } => {}
+            SsaInstView::Call(call) => count_call_uses(call, &mut uses),
         }
     }
 
@@ -60,12 +60,20 @@ pub(super) fn compute_remaining_uses(
             }
         }
         SsaTerminator::Return { .. }
-        | SsaTerminator::TailCallDirect { .. }
-        | SsaTerminator::TailCallIndirect { .. }
-        | SsaTerminator::TailCallRef { .. }
         | SsaTerminator::TrapUnreachable
         | SsaTerminator::EhThrow { .. }
         | SsaTerminator::EhThrowRef { .. } => {}
+        SsaTerminator::TailCallDirect { args, .. } => count_call_args_uses(args, &mut uses),
+        SsaTerminator::TailCallIndirect { args, index, .. } => {
+            count_call_args_uses(args, &mut uses);
+            count_call_operand_loc_use(index, &mut uses);
+        }
+        SsaTerminator::TailCallRef {
+            args, callee_ref, ..
+        } => {
+            count_call_args_uses(args, &mut uses);
+            count_call_operand_loc_use(callee_ref, &mut uses);
+        }
     }
 
     // Linear-SSA invariant: within the op stream, every SsaValue operand is
@@ -89,6 +97,7 @@ pub(super) fn compute_remaining_uses(
                         }
                     }
                 }
+                SsaInstView::Call(call) => count_call_uses(call, &mut op_uses),
                 _ => {}
             }
         }
@@ -107,6 +116,34 @@ pub(super) fn compute_remaining_uses(
 fn count_edge_uses(edge: &SsaEdge, uses: &mut BTreeMap<SsaValue, u32>) {
     for binding in &edge.bindings {
         *uses.entry(binding.value).or_insert(0) += 1;
+    }
+}
+
+fn count_call_uses(call: &SsaCallOp, uses: &mut BTreeMap<SsaValue, u32>) {
+    match call {
+        SsaCallOp::CallDirect { args, .. } => count_call_args_uses(args, uses),
+        SsaCallOp::CallIndirect { args, index, .. } => {
+            count_call_args_uses(args, uses);
+            count_call_operand_loc_use(index, uses);
+        }
+        SsaCallOp::CallRef {
+            args, callee_ref, ..
+        } => {
+            count_call_args_uses(args, uses);
+            count_call_operand_loc_use(callee_ref, uses);
+        }
+    }
+}
+
+fn count_call_args_uses(args: &SsaCallArgs, uses: &mut BTreeMap<SsaValue, u32>) {
+    for arg in &args.live_suffix {
+        *uses.entry(arg.value).or_insert(0) += 1;
+    }
+}
+
+fn count_call_operand_loc_use(loc: &SsaCallOperandLoc, uses: &mut BTreeMap<SsaValue, u32>) {
+    if let SsaCallOperandLoc::Live { value, .. } = loc {
+        *uses.entry(*value).or_insert(0) += 1;
     }
 }
 

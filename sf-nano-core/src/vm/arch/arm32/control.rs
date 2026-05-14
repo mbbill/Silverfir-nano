@@ -82,23 +82,16 @@ impl<'a> Arm32Backend<'a> {
 
             MachineTerminator::Call {
                 target,
-                callee_frame_base,
-                caller_result_base,
-                continuation,
+                frame_delta,
+                args,
+                results,
+                success,
             } => {
-                self.emit_call(
-                    target,
-                    *callee_frame_base,
-                    *caller_result_base,
-                    *continuation,
-                )?;
+                self.emit_call(target, *frame_delta, args, results, success)?;
             }
 
-            MachineTerminator::TailCall {
-                target,
-                callee_frame_base,
-            } => {
-                self.emit_tail_call(target, *callee_frame_base)?;
+            MachineTerminator::TailCall { target, args } => {
+                self.emit_tail_call(target, args)?;
             }
 
             MachineTerminator::JumpTable { index, entries } => {

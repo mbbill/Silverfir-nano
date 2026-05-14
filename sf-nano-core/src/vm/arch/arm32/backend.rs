@@ -12,13 +12,14 @@ use crate::{
     vm::{
         arch::common::{
             backend::ArchBackend, core::CompilerCore, helpers::trap_code,
-            scratch_pool::ScratchPool, types::ParallelSource,
+            pipeline::emit_call_arg_lanes, scratch_pool::ScratchPool, types::ParallelSource,
         },
         machine::machine_ir::{
-            fp_reg_index, MachineBlock, MachineBlockId, MachineBlockParam, MachineCallTarget,
-            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunctionAbi, MachineInst,
-            MachineReg, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
-            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            fp_reg_index, MachineBlock, MachineBlockId, MachineBlockParam, MachineCallArgs,
+            MachineCallResults, MachineCallTarget, MachineEdge, MachineFloatWidth,
+            MachineFrameRegion, MachineFuncId, MachineFunctionAbi, MachineInst, MachineReg,
+            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
+            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
@@ -72,6 +73,18 @@ pub(crate) struct Arm32Backend<'a> {
     pub(super) fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<Arm32Reg, 2>,
     pub(super) fp_scratch: ScratchPool<u32, 3>,
+}
+
+fn caller_results_base_delta(results: &MachineCallResults) -> u32 {
+    match results {
+        MachineCallResults::FrameFallback { caller_results, .. } => {
+            u32::from(caller_results.base_slot) * 8
+        }
+        MachineCallResults::None
+        | MachineCallResults::ScalarGp { .. }
+        | MachineCallResults::ScalarGpPair { .. }
+        | MachineCallResults::ScalarFp { .. } => 0,
+    }
 }
 
 // ── ArchBackend trait implementation ─────────────────────────────────────────
@@ -149,6 +162,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
         self.core
             .text
             .emit_u32(enc::str_imm(fp_reg, Arm32Reg::SP, 4));
+        self.lower_root_param_lanes_from_frame();
         // bl internal_entry_label  (resolved by patch_fixups)
         let internal_entry_label = self.core.internal_entry_label;
         self.emit_branch(BranchFixupKind::Bl, internal_entry_label);
@@ -1030,14 +1044,25 @@ impl<'a> Arm32Backend<'a> {
     pub(super) fn emit_call(
         &mut self,
         target: &MachineCallTarget,
-        callee_frame_base: MachineReg,
-        caller_result_base: MachineReg,
-        continuation: MachineBlockId,
+        frame_delta: u32,
+        args: &MachineCallArgs,
+        results: &MachineCallResults,
+        success: &MachineEdge,
     ) -> Result<(), WasmError> {
-        let callee_fp = map_reg(callee_frame_base)?;
-        let caller_result_base = map_reg(caller_result_base)?;
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let body_local_error_label = self.core.body_local_error_label;
+        emit_call_arg_lanes::<Self>(self, args)?;
+
+        let callee_fp_idx = self.gp_scratch.alloc();
+        let callee_fp = self.gp_scratch.reg(callee_fp_idx);
+        self.materialize_helper_base(callee_fp, fp_reg, frame_delta as i32);
+        let caller_result_base_idx = self.gp_scratch.alloc();
+        let caller_result_base = self.gp_scratch.reg(caller_result_base_idx);
+        self.materialize_helper_base(
+            caller_result_base,
+            fp_reg,
+            caller_results_base_delta(results) as i32,
+        );
 
         // Push the backend-private call record onto the host stack:
         //   [sp + 0] = caller_result_base
@@ -1056,6 +1081,8 @@ impl<'a> Arm32Backend<'a> {
 
         // Switch MACHINE_FP_REG to the callee frame.
         self.core.text.emit_u32(enc::mov_reg(fp_reg, callee_fp));
+        self.gp_scratch.free_index(caller_result_base_idx);
+        self.gp_scratch.free_index(callee_fp_idx);
 
         match target {
             MachineCallTarget::Direct(callee) => {
@@ -1089,7 +1116,7 @@ impl<'a> Arm32Backend<'a> {
         // pass already prefers placing the continuation immediately after
         // the call site, so this branch is often elidable when the
         // continuation is the next emitted block.
-        let continuation_label = self.core.block_label(continuation)?;
+        let continuation_label = self.core.block_label(success.target)?;
         self.emit_branch(BranchFixupKind::B, continuation_label);
         Ok(())
     }
@@ -1097,10 +1124,11 @@ impl<'a> Arm32Backend<'a> {
     pub(super) fn emit_tail_call(
         &mut self,
         target: &MachineCallTarget,
-        callee_frame_base: MachineReg,
+        args: &MachineCallArgs,
     ) -> Result<(), WasmError> {
-        let callee_fp = map_reg(callee_frame_base)?;
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+
+        emit_call_arg_lanes::<Self>(self, args)?;
 
         self.core
             .text
@@ -1108,7 +1136,7 @@ impl<'a> Arm32Backend<'a> {
         self.core
             .text
             .emit_u32(enc::add_imm(Arm32Reg::SP, Arm32Reg::SP, 8, 0));
-        self.core.text.emit_u32(enc::mov_reg(fp_reg, callee_fp));
+        let _ = fp_reg;
 
         match target {
             MachineCallTarget::Direct(callee) => {

@@ -1,8 +1,11 @@
+use crate::collections;
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
-        MachineReg, MachineTerminator, MachineTrapKind,
+        MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth,
+        MachineInst, MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineParamLoc,
+        MachineReg, MachineRegOwner, MachineStorageType, MachineTerminator, MachineTrapKind,
+        MACHINE_FP_REG,
     },
 };
 
@@ -52,10 +55,10 @@ pub(crate) trait ArchBackend<'a>: Sized {
     //   1. `lower_prologue`           — C-ABI public entry: save C
     //                                    callee-saved regs, set up MachineIR
     //                                    fixed registers from C arg regs.
-    //   2. `lower_root_caller_stub`   — public-entry caller stub: build the
-    //                                    root call record on the host stack
-    //                                    and `bl/call internal_entry_label`.
-    //                                    After the call returns, falls
+    //   2. `lower_root_caller_stub`   — public-entry caller stub: load root
+    //                                    register params, `bl/call`
+    //                                    internal_entry_label, publish public
+    //                                    result slots if needed, then fall
     //                                    through to `lower_epilogue`.
     //   3. `lower_epilogue`           — C-ABI epilogue: restore C
     //                                    callee-saved regs, native return
@@ -71,9 +74,9 @@ pub(crate) trait ArchBackend<'a>: Sized {
     //                                    optimization may gate it.
     //   6. (body blocks + edge stubs)
     //   7. `lower_body_local_error_tail` — bound at `body_local_error_label`,
-    //                                    pops link save + call record,
-    //                                    restores `fp_reg`, native return
-    //                                    without touching `C_RET0`.
+    //                                    restores preserved dynamic clobbers,
+    //                                    pops body prelude state, native
+    //                                    return without touching `C_RET0`.
     //
     // The pipeline tail also binds the per-trap-kind labels (stack overflow
     // and deferred). Their lowerings call `raise_trap` and then branch to
@@ -83,6 +86,23 @@ pub(crate) trait ArchBackend<'a>: Sized {
     fn lower_epilogue(&mut self);
     fn lower_body_prelude(&mut self);
     fn lower_body_local_error_tail(&mut self);
+
+    /// Populate the abstract internal-call argument lanes from the public
+    /// entry frame before the root stub calls the same internal body entry
+    /// used by wasm-to-wasm calls.
+    fn lower_root_param_lanes_from_frame(&mut self) {
+        let param_locs = self
+            .core()
+            .current_runtime()
+            .map(|runtime| runtime.param_locs.clone())
+            .unwrap_or_default();
+        for loc in param_locs {
+            for inst in root_param_lane_loads(self.core(), loc) {
+                self.lower_inst(&inst)
+                    .expect("root parameter lane load must lower");
+            }
+        }
+    }
 
     /// Flush any per-function literal pool the backend has accumulated
     /// while lowering blocks. Called by the pipeline after edge stubs and
@@ -176,4 +196,89 @@ pub(crate) trait ArchBackend<'a>: Sized {
 
     /// Write NOP/INT3 padding into the executable code buffer (true emission).
     fn emit_nop_padding(buf: &mut CodeBuffer, bytes: usize);
+}
+
+fn root_param_lane_loads(
+    core: &CompilerCore<'_>,
+    loc: MachineParamLoc,
+) -> collections::Vec<MachineInst> {
+    match loc {
+        MachineParamLoc::Frame { .. } => collections::Vec::new(),
+        MachineParamLoc::GpArg {
+            param_index,
+            lane,
+            ty,
+        } => collections::vec![root_param_load(
+            core.gp_arg_lane_reg(lane),
+            ty,
+            param_index,
+            0,
+            root_gp_lane_width(core),
+        )],
+        MachineParamLoc::GpArgPair {
+            param_index,
+            lo_lane,
+            hi_lane,
+        } => collections::vec![
+            root_param_load(
+                core.gp_arg_lane_reg(lo_lane),
+                MachineStorageType::GpWord,
+                param_index,
+                0,
+                MachineMemWidth::U32,
+            ),
+            root_param_load(
+                core.gp_arg_lane_reg(hi_lane),
+                MachineStorageType::GpWord,
+                param_index,
+                4,
+                MachineMemWidth::U32,
+            ),
+        ],
+        MachineParamLoc::FpArg {
+            param_index,
+            lane,
+            ty,
+        } => collections::vec![root_param_load(
+            core.fp_arg_lane_reg(lane),
+            ty,
+            param_index,
+            0,
+            match ty {
+                MachineStorageType::Fp32 => MachineMemWidth::U32,
+                MachineStorageType::Fp64 => MachineMemWidth::U64,
+                _ => MachineMemWidth::U64,
+            },
+        )],
+    }
+}
+
+fn root_param_load(
+    dst: MachineReg,
+    ty: MachineStorageType,
+    param_index: u16,
+    extra_offset: i32,
+    width: MachineMemWidth,
+) -> MachineInst {
+    MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty,
+            dst,
+            addr: MachineAddr {
+                base: MACHINE_FP_REG,
+                offset: i32::from(param_index) * 8 + extra_offset,
+            },
+            width,
+            extension: MachineLoadExtension::None,
+        },
+    }
+}
+
+fn root_gp_lane_width(core: &CompilerCore<'_>) -> MachineMemWidth {
+    if core.compiled.backend().gp_unit_bytes == 4 {
+        MachineMemWidth::U32
+    } else {
+        MachineMemWidth::U64
+    }
 }

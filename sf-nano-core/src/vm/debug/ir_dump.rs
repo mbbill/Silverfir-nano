@@ -15,10 +15,11 @@ use crate::{
     vm::{
         arch::common::types::DebugRegion,
         machine::machine_ir::{
-            MachineAddr, MachineBranchCond, MachineCallTarget, MachineFloatWidth, MachineFunction,
+            MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineBranchCond, MachineCallArgs,
+            MachineCallLaneArg, MachineCallTarget, MachineFloatWidth, MachineFunction,
             MachineInstKind, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineModule,
-            MachineModuleAbi, MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator,
-            MachineValue,
+            MachineModuleAbi, MachineParamLoc, MachineRegOwner, MachineSign, MachineStorageType,
+            MachineTerminator, MachineValue,
         },
         middle::frame::{FrameSlot, FrameSpan},
         middle::ssa_ir::ir::{
@@ -185,6 +186,11 @@ fn write_dump_impl(
         if let Some(rt) = runtime.functions.get(func_idx as usize) {
             let _ = writeln!(index, "frame_prefix_slots={}", rt.frame_prefix_slots);
             let _ = writeln!(index, "total_frame_slots={}", rt.total_frame_slots);
+            if !rt.param_locs.is_empty() {
+                let _ = write!(index, "param_locs=");
+                render_param_locs(&mut index, &rt.param_locs);
+                let _ = writeln!(index);
+            }
             if let Some(hs) = rt.helper_scratch {
                 let _ = writeln!(
                     index,
@@ -251,6 +257,42 @@ fn render_lir_program(out: &mut String, program: &SsaProgram) {
             .unwrap_or_default();
         render_lir_block(out, block, &cached, program);
     }
+}
+
+fn render_param_locs(out: &mut String, locs: &[MachineParamLoc]) {
+    let _ = write!(out, "[");
+    for (index, loc) in locs.iter().enumerate() {
+        if index > 0 {
+            let _ = write!(out, ", ");
+        }
+        match *loc {
+            MachineParamLoc::Frame { param_index, slot } => {
+                let _ = write!(out, "p{param_index}=fp[{}]", slot.0);
+            }
+            MachineParamLoc::GpArg {
+                param_index,
+                lane,
+                ty,
+            } => {
+                let _ = write!(out, "p{param_index}=gp{lane}:{ty:?}");
+            }
+            MachineParamLoc::GpArgPair {
+                param_index,
+                lo_lane,
+                hi_lane,
+            } => {
+                let _ = write!(out, "p{param_index}=gp{lo_lane}/gp{hi_lane}:i64");
+            }
+            MachineParamLoc::FpArg {
+                param_index,
+                lane,
+                ty,
+            } => {
+                let _ = write!(out, "p{param_index}=fpreg{lane}:{ty:?}");
+            }
+        }
+    }
+    let _ = write!(out, "]");
 }
 
 fn render_lir_block(
@@ -353,36 +395,33 @@ fn render_call(bop: &SsaCallOp) -> String {
             args,
             results,
         } => format!(
-            "call_direct f{callee} args=fp[{}..{}) results=fp[{}..{})",
-            args.start.0,
-            args.start.0 + args.count,
+            "call_direct f{callee} args={} results=fp[{}..{})",
+            render_ssa_call_args(args),
             results.start.0,
             results.start.0 + results.count,
         ),
         SsaCallOp::CallIndirect {
             type_idx,
             table_idx,
-            index_slot,
+            index,
             args,
             results,
         } => format!(
-            "call_indirect type={type_idx} table={table_idx} index=fp[{}] args=fp[{}..{}) results=fp[{}..{})",
-            index_slot.0,
-            args.start.0,
-            args.start.0 + args.count,
+            "call_indirect type={type_idx} table={table_idx} index={} args={} results=fp[{}..{})",
+            render_ssa_call_operand_loc(index),
+            render_ssa_call_args(args),
             results.start.0,
             results.start.0 + results.count,
         ),
         SsaCallOp::CallRef {
             type_idx,
-            ref_slot,
+            callee_ref,
             args,
             results,
         } => format!(
-            "call_ref type={type_idx} ref=fp[{}] args=fp[{}..{}) results=fp[{}..{})",
-            ref_slot.0,
-            args.start.0,
-            args.start.0 + args.count,
+            "call_ref type={type_idx} ref={} args={} results=fp[{}..{})",
+            render_ssa_call_operand_loc(callee_ref),
+            render_ssa_call_args(args),
             results.start.0,
             results.start.0 + results.count,
         ),
@@ -424,34 +463,31 @@ fn render_lir_terminator(term: &SsaTerminator) -> String {
             args,
             return_results,
         } => format!(
-            "tail_call f{callee} args=fp[{}..{}) results={}",
-            args.start.0,
-            args.start.0 + args.count,
+            "tail_call f{callee} args={} results={}",
+            render_ssa_call_args(args),
             render_frame_span_or_void(*return_results),
         ),
         SsaTerminator::TailCallIndirect {
             type_idx,
             table_idx,
-            index_slot,
+            index,
             args,
             return_results,
         } => format!(
-            "tail_call_indirect type={type_idx} table={table_idx} index=fp[{}] args=fp[{}..{}) results={}",
-            index_slot.0,
-            args.start.0,
-            args.start.0 + args.count,
+            "tail_call_indirect type={type_idx} table={table_idx} index={} args={} results={}",
+            render_ssa_call_operand_loc(index),
+            render_ssa_call_args(args),
             render_frame_span_or_void(*return_results),
         ),
         SsaTerminator::TailCallRef {
             type_idx,
-            ref_slot,
+            callee_ref,
             args,
             return_results,
         } => format!(
-            "tail_call_ref type={type_idx} ref=fp[{}] args=fp[{}..{}) results={}",
-            ref_slot.0,
-            args.start.0,
-            args.start.0 + args.count,
+            "tail_call_ref type={type_idx} ref={} args={} results={}",
+            render_ssa_call_operand_loc(callee_ref),
+            render_ssa_call_args(args),
             render_frame_span_or_void(*return_results),
         ),
         SsaTerminator::TrapUnreachable => "trap_unreachable".into(),
@@ -463,6 +499,38 @@ fn render_lir_terminator(term: &SsaTerminator) -> String {
         ),
         SsaTerminator::EhThrowRef { exnref_slot } => {
             format!("eh_throw_ref exnref=s{}", exnref_slot.0)
+        }
+    }
+}
+
+fn render_ssa_call_args(args: &crate::vm::middle::ssa_ir::ir::SsaCallArgs) -> String {
+    let suffix = args
+        .live_suffix
+        .iter()
+        .map(|arg| {
+            format!(
+                "p{}=v{}@fp[{}]",
+                arg.param_index, arg.value.0, arg.frame_slot.0
+            )
+        })
+        .collect::<collections::Vec<_>>()
+        .join(",");
+    format!(
+        "fp[{}..{}) prefix={} live=[{}]",
+        args.frame_base.0,
+        args.frame_base.0 + args.total_params,
+        args.stack_prefix_count,
+        suffix
+    )
+}
+
+fn render_ssa_call_operand_loc(loc: &crate::vm::middle::ssa_ir::ir::SsaCallOperandLoc) -> String {
+    match loc {
+        crate::vm::middle::ssa_ir::ir::SsaCallOperandLoc::Stack { slot } => {
+            format!("fp[{}]", slot.0)
+        }
+        crate::vm::middle::ssa_ir::ir::SsaCallOperandLoc::Live { value, slot, .. } => {
+            format!("v{}@fp[{}]", value.0, slot.0)
         }
     }
 }
@@ -1567,46 +1635,104 @@ fn render_machine_term(term: &MachineTerminator) -> String {
         }
         MachineTerminator::Call {
             target,
-            callee_frame_base,
-            caller_result_base,
-            continuation,
+            frame_delta,
+            args,
+            success,
+            ..
         } => match target {
             MachineCallTarget::Direct(callee) => format!(
-                "call f{} frame_base=r{} caller_result_base=r{} cont=b{}",
-                callee.0, callee_frame_base.0, caller_result_base.0, continuation.0
+                "call f{} frame_delta={} frame_params={} lane_args=[{}] success=b{} [{}]",
+                callee.0,
+                frame_delta,
+                args.frame_params.slots,
+                render_machine_call_args(args),
+                success.target.0,
+                medge_args(&success.args)
             ),
             MachineCallTarget::Indirect {
                 callee_target,
                 callee_entry,
             } => format!(
-                "call target=r{} entry=r{} frame_base=r{} caller_result_base=r{} cont=b{}",
+                "call target=r{} entry=r{} frame_delta={} frame_params={} lane_args=[{}] success=b{} [{}]",
                 callee_target.0,
                 callee_entry.0,
-                callee_frame_base.0,
-                caller_result_base.0,
-                continuation.0
+                frame_delta,
+                args.frame_params.slots,
+                render_machine_call_args(args),
+                success.target.0,
+                medge_args(&success.args)
             ),
         },
-        MachineTerminator::TailCall {
-            target,
-            callee_frame_base,
-        } => match target {
+        MachineTerminator::TailCall { target, args } => match target {
             MachineCallTarget::Direct(callee) => {
                 format!(
-                    "tail_call f{} frame_base=r{}",
-                    callee.0, callee_frame_base.0
+                    "tail_call f{} frame_params={} lane_args=[{}]",
+                    callee.0,
+                    args.frame_params.slots,
+                    render_machine_call_args(args)
                 )
             }
             MachineCallTarget::Indirect {
                 callee_target,
                 callee_entry,
             } => format!(
-                "tail_call target=r{} entry=r{} frame_base=r{}",
-                callee_target.0, callee_entry.0, callee_frame_base.0
+                "tail_call target=r{} entry=r{} frame_params={} lane_args=[{}]",
+                callee_target.0,
+                callee_entry.0,
+                args.frame_params.slots,
+                render_machine_call_args(args)
             ),
         },
         MachineTerminator::Return => "return".into(),
         MachineTerminator::Trap { kind } => format!("trap {:?}", kind),
+    }
+}
+
+fn render_machine_call_args(args: &MachineCallArgs) -> String {
+    args.lane_args
+        .iter()
+        .map(|arg| match arg {
+            MachineCallLaneArg::Gp {
+                param_index,
+                lane,
+                src,
+                ..
+            } => format!("p{}=gp{}:{}", param_index, lane, render_arg_src(src)),
+            MachineCallLaneArg::GpPair {
+                param_index,
+                lo_lane,
+                hi_lane,
+                src,
+            } => format!(
+                "p{}=gp{}+gp{}:{}",
+                param_index,
+                lo_lane,
+                hi_lane,
+                render_arg_src_pair(src)
+            ),
+            MachineCallLaneArg::Fp {
+                param_index,
+                lane,
+                src,
+                ..
+            } => format!("p{}=fp{}:{}", param_index, lane, render_arg_src(src)),
+        })
+        .collect::<collections::Vec<_>>()
+        .join(", ")
+        .into()
+}
+
+fn render_arg_src_pair(src: &MachineArgSrcPair) -> String {
+    format!("{}+{}", render_arg_src(&src.lo), render_arg_src(&src.hi))
+}
+
+fn render_arg_src(src: &MachineArgSrc) -> String {
+    match src {
+        MachineArgSrc::Reg(reg) => format!("r{}", reg.0),
+        MachineArgSrc::FrameSlot(slot) => format!("fp[{}]", slot.0),
+        MachineArgSrc::FrameSlotOffset { slot, byte_offset } => {
+            format!("fp[{}+{}]", slot.0, byte_offset)
+        }
     }
 }
 

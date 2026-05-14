@@ -5,8 +5,10 @@ use crate::vm::backend::BackendConfig;
 use super::machine_ir::is_fp_reg;
 #[cfg(any(debug_assertions, test))]
 use super::machine_ir::{
-    is_dynamic_reg, MachineAddr, MachineCallTarget, MachineConstId, MachineEdge, MachineFloatWidth,
-    MachineFuncId, MachineInst, MachineReg, MachineRegOwner, MachineValue,
+    is_dynamic_reg, MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineCallArgs,
+    MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineConstId, MachineEdge,
+    MachineFloatWidth, MachineFuncId, MachineInst, MachineReg, MachineRegOwner, MachineResultDst,
+    MachineValue,
 };
 use super::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineBranchCond, MachineConvertOp, MachineInstKind,
@@ -844,40 +846,107 @@ impl MachineProgram {
             }
             MachineTerminator::Call {
                 target,
-                callee_frame_base,
-                caller_result_base,
-                continuation,
+                args,
+                results,
+                success,
                 ..
             } => {
-                if let MachineCallTarget::Indirect {
-                    callee_target,
-                    callee_entry,
-                } = target
-                {
-                    self.validate_reg(*callee_target, config)?;
-                    self.validate_reg(*callee_entry, config)?;
-                }
-                self.validate_reg(*callee_frame_base, config)?;
-                self.validate_reg(*caller_result_base, config)?;
-                self.validate_block_id(*continuation, source_block, "continuation")
+                self.validate_call_target(target, config)?;
+                self.validate_call_args(args, config)?;
+                self.validate_call_results(results, config)?;
+                self.validate_edge(success, source_block, config)
             }
-            MachineTerminator::TailCall {
-                target,
-                callee_frame_base,
-            } => {
-                if let MachineCallTarget::Indirect {
-                    callee_target,
-                    callee_entry,
-                } = target
-                {
-                    self.validate_reg(*callee_target, config)?;
-                    self.validate_reg(*callee_entry, config)?;
-                }
-                self.validate_reg(*callee_frame_base, config)
+            MachineTerminator::TailCall { target, args } => {
+                self.validate_call_target(target, config)?;
+                self.validate_call_args(args, config)
             }
             MachineTerminator::Return => Ok(()),
             MachineTerminator::Trap { .. } => Ok(()),
         }
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_call_target(
+        &self,
+        target: &MachineCallTarget,
+        config: BackendConfig,
+    ) -> Result<(), WasmError> {
+        if let MachineCallTarget::Indirect {
+            callee_target,
+            callee_entry,
+        } = target
+        {
+            self.validate_reg(*callee_target, config)?;
+            self.validate_reg(*callee_entry, config)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_call_args(
+        &self,
+        args: &MachineCallArgs,
+        config: BackendConfig,
+    ) -> Result<(), WasmError> {
+        for arg in &args.lane_args {
+            match arg {
+                MachineCallLaneArg::Gp { src, .. } | MachineCallLaneArg::Fp { src, .. } => {
+                    self.validate_arg_src(*src, config)?;
+                }
+                MachineCallLaneArg::GpPair { src, .. } => {
+                    self.validate_arg_src_pair(*src, config)?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_arg_src_pair(
+        &self,
+        src: MachineArgSrcPair,
+        config: BackendConfig,
+    ) -> Result<(), WasmError> {
+        self.validate_arg_src(src.lo, config)?;
+        self.validate_arg_src(src.hi, config)
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_arg_src(&self, src: MachineArgSrc, config: BackendConfig) -> Result<(), WasmError> {
+        if let MachineArgSrc::Reg(reg) = src {
+            self.validate_reg(reg, config)?;
+        }
+        Ok(())
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_call_results(
+        &self,
+        results: &MachineCallResults,
+        config: BackendConfig,
+    ) -> Result<(), WasmError> {
+        match results {
+            MachineCallResults::None | MachineCallResults::FrameFallback { .. } => Ok(()),
+            MachineCallResults::ScalarGp { dst } | MachineCallResults::ScalarFp { dst } => {
+                self.validate_result_dst(*dst, config)
+            }
+            MachineCallResults::ScalarGpPair { lo, hi } => {
+                self.validate_result_dst(*lo, config)?;
+                self.validate_result_dst(*hi, config)
+            }
+        }
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_result_dst(
+        &self,
+        dst: MachineResultDst,
+        config: BackendConfig,
+    ) -> Result<(), WasmError> {
+        if let MachineResultDst::Reg(reg) = dst {
+            self.validate_reg(reg, config)?;
+        }
+        Ok(())
     }
 
     #[cfg(any(debug_assertions, test))]

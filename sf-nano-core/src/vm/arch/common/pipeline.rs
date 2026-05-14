@@ -7,9 +7,12 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineBlockParam, MachineFloatWidth, MachineFuncId, MachineFunction, MachineTrapKind,
-            MachineValue,
+            MachineAddr, MachineArgSrc, MachineBlockParam, MachineCallArgs, MachineCallLaneArg,
+            MachineFloatWidth, MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
+            MachineLoadExtension, MachineMemWidth, MachineReg, MachineRegOwner, MachineStorageType,
+            MachineTrapKind, MachineValue, MACHINE_FP_REG,
         },
+        middle::frame::FrameSlot,
         runtime::code::CodegenModuleView,
         runtime::code_buf::CodeBuffer,
     },
@@ -429,4 +432,173 @@ pub(crate) fn emit_parallel_moves<'a, A: ArchBackend<'a>>(
         }
     }
     Ok(())
+}
+
+// ── emit_call_arg_lanes ─────────────────────────────────────────────────────
+
+/// Populate abstract internal-call lanes immediately before a native
+/// wasm-to-wasm call. Register sources are handled as a true parallel move so
+/// swaps do not bounce through the wasm frame; frame sources are loaded after
+/// the register shuffle so a frame load cannot clobber a source register that
+/// another lane still needs.
+pub(crate) fn emit_call_arg_lanes<'a, A: ArchBackend<'a>>(
+    backend: &mut A,
+    args: &MachineCallArgs,
+) -> Result<(), WasmError> {
+    let mut params = collections::Vec::new();
+    let mut values = collections::Vec::new();
+    let mut float_widths = collections::Vec::new();
+    let mut frame_loads = collections::Vec::new();
+
+    for arg in &args.lane_args {
+        match arg {
+            MachineCallLaneArg::Gp { lane, src, ty, .. } => {
+                let dst = backend.core().gp_arg_lane_reg(*lane);
+                enqueue_call_arg_source(
+                    dst,
+                    *ty,
+                    None,
+                    *src,
+                    &mut params,
+                    &mut values,
+                    &mut float_widths,
+                    &mut frame_loads,
+                );
+            }
+            MachineCallLaneArg::GpPair {
+                lo_lane,
+                hi_lane,
+                src,
+                ..
+            } => {
+                let lo = backend.core().gp_arg_lane_reg(*lo_lane);
+                let hi = backend.core().gp_arg_lane_reg(*hi_lane);
+                enqueue_call_arg_source(
+                    lo,
+                    MachineStorageType::GpWord,
+                    None,
+                    src.lo,
+                    &mut params,
+                    &mut values,
+                    &mut float_widths,
+                    &mut frame_loads,
+                );
+                enqueue_call_arg_source(
+                    hi,
+                    MachineStorageType::GpWord,
+                    None,
+                    src.hi,
+                    &mut params,
+                    &mut values,
+                    &mut float_widths,
+                    &mut frame_loads,
+                );
+            }
+            MachineCallLaneArg::Fp { lane, src, ty, .. } => {
+                let dst = backend.core().fp_arg_lane_reg(*lane);
+                enqueue_call_arg_source(
+                    dst,
+                    *ty,
+                    ty.float_width(),
+                    *src,
+                    &mut params,
+                    &mut values,
+                    &mut float_widths,
+                    &mut frame_loads,
+                );
+            }
+        }
+    }
+
+    emit_parallel_moves::<A>(backend, &params, &values, &float_widths)?;
+    for load in frame_loads {
+        emit_call_arg_frame_load::<A>(backend, load)?;
+    }
+    Ok(())
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CallArgFrameLoad {
+    dst: MachineReg,
+    ty: MachineStorageType,
+    slot: FrameSlot,
+    byte_offset: i8,
+}
+
+fn enqueue_call_arg_source(
+    dst: MachineReg,
+    ty: MachineStorageType,
+    float_width: Option<MachineFloatWidth>,
+    src: MachineArgSrc,
+    params: &mut collections::Vec<MachineBlockParam>,
+    values: &mut collections::Vec<MachineValue>,
+    float_widths: &mut collections::Vec<Option<MachineFloatWidth>>,
+    frame_loads: &mut collections::Vec<CallArgFrameLoad>,
+) {
+    match src {
+        MachineArgSrc::Reg(reg) => {
+            if reg == dst {
+                return;
+            }
+            params.push(MachineBlockParam {
+                reg: dst,
+                ty,
+                owner: MachineRegOwner::LinearValue,
+            });
+            values.push(MachineValue::Reg(reg));
+            float_widths.push(float_width);
+        }
+        MachineArgSrc::FrameSlot(slot) => frame_loads.push(CallArgFrameLoad {
+            dst,
+            ty,
+            slot,
+            byte_offset: 0,
+        }),
+        MachineArgSrc::FrameSlotOffset { slot, byte_offset } => {
+            frame_loads.push(CallArgFrameLoad {
+                dst,
+                ty,
+                slot,
+                byte_offset,
+            });
+        }
+    }
+}
+
+fn emit_call_arg_frame_load<'a, A: ArchBackend<'a>>(
+    backend: &mut A,
+    load: CallArgFrameLoad,
+) -> Result<(), WasmError> {
+    let width = match load.ty {
+        MachineStorageType::GpWord => {
+            if backend.core().compiled.backend().gp_unit_bytes == 4 {
+                MachineMemWidth::U32
+            } else {
+                MachineMemWidth::U64
+            }
+        }
+        MachineStorageType::GpI64 | MachineStorageType::Fp64 => MachineMemWidth::U64,
+        MachineStorageType::Fp32 => MachineMemWidth::U32,
+        MachineStorageType::V128 => MachineMemWidth::U64,
+    };
+    backend.lower_inst(&MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty: load.ty,
+            dst: load.dst,
+            addr: MachineAddr {
+                base: MACHINE_FP_REG,
+                offset: frame_slot_byte_offset(load.slot, load.byte_offset)?,
+            },
+            width,
+            extension: MachineLoadExtension::None,
+        },
+    })
+}
+
+fn frame_slot_byte_offset(slot: FrameSlot, byte_offset: i8) -> Result<i32, WasmError> {
+    i32::from(slot.0)
+        .checked_mul(8)
+        .and_then(|base| base.checked_add(i32::from(byte_offset)))
+        .ok_or_else(|| WasmError::internal("call argument frame slot offset overflow"))
 }

@@ -40,6 +40,33 @@ pub(crate) fn is_dynamic_reg(reg: MachineReg, config: BackendConfig) -> bool {
     reg.0 >= MACHINE_FIXED_REG_COUNT && reg.0 < config.total_reg_count()
 }
 
+/// Returns `true` if `reg` belongs to the local-call preserved dynamic class.
+///
+/// This is an abstract JIT-ABI property, not a host-ABI property. Backends map
+/// this MachineIR region onto physical registers in `arch/*/abi.rs`.
+#[inline]
+pub(crate) fn is_preserved_dynamic_reg(reg: MachineReg, config: BackendConfig) -> bool {
+    if let Some(index) = gp_dynamic_index(reg, config) {
+        return index >= usize::from(config.gp_volatile_dynamic)
+            && index
+                < usize::from(
+                    config
+                        .gp_volatile_dynamic
+                        .saturating_add(config.gp_preserved_dynamic),
+                );
+    }
+    if let Some(index) = fp_reg_index(reg, config) {
+        return index >= usize::from(config.fp_volatile_dynamic)
+            && index
+                < usize::from(
+                    config
+                        .fp_volatile_dynamic
+                        .saturating_add(config.fp_preserved_dynamic),
+                );
+    }
+    false
+}
+
 /// Returns `true` if both regs are in the same bank (both GP or both FP).
 #[inline]
 pub(crate) fn same_reg_bank(lhs: MachineReg, rhs: MachineReg, config: BackendConfig) -> bool {

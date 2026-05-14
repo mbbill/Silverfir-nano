@@ -12,11 +12,12 @@ use crate::{
         backend::BackendConfig,
         machine::machine_ir::{
             MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-            MachineCallTarget, MachineCompareKind, MachineConstId, MachineEdge, MachineFloatWidth,
-            MachineFrameRegion, MachineFuncId, MachineFunction, MachineFunctionAbi, MachineInst,
-            MachineInstKind, MachineIntBinaryOp, MachineLoadExtension, MachineMemWidth,
-            MachineModule, MachineModuleAbi, MachineProgram, MachineReg, MachineRegOwner,
-            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MachineCallResults, MachineCallTarget, MachineCompareKind, MachineConstId, MachineEdge,
+            MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction,
+            MachineFunctionAbi, MachineInst, MachineInstKind, MachineIntBinaryOp,
+            MachineLoadExtension, MachineMemWidth, MachineModule, MachineModuleAbi,
+            MachineParamLoc, MachineProgram, MachineReg, MachineRegOwner, MachineSign,
+            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::{
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
@@ -36,6 +37,7 @@ use crate::{
 };
 
 use super::{
+    call_abi::{collect_preserved_clobbers, INDIRECT_DISPATCH_CONTROL_GP_LANES},
     gp32::Gp32Lowering,
     lower_cache_layout::compute_block_entry_cache_params,
     lower_const_pool::ConstPoolBuilder,
@@ -45,7 +47,7 @@ use super::{
     lower_i64::I64Lowering,
     lower_i64_gp64::Gp64Lowering,
     lower_inst::LeafLowering,
-    lower_regalloc::{machine_block_params_for_value, MachineRegFile},
+    lower_regalloc::{machine_block_params_for_value, value_type_storage_type, MachineRegFile},
 };
 
 /// One prepared function borrowed for internal lowering helpers.
@@ -122,7 +124,7 @@ pub(crate) fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModu
         let borrowed = function.borrowed();
         validate_program(borrowed.ssa)?;
         is_local_func[borrowed.id.0 as usize] = true;
-        function_abis[borrowed.id.0 as usize] = lower_function_runtime(borrowed)?;
+        function_abis[borrowed.id.0 as usize] = lower_function_runtime(borrowed, input.backend)?;
     }
     #[cfg(sf_has_guard_pages)]
     let guard_pages = input.use_guard_pages;
@@ -176,7 +178,7 @@ pub(crate) fn lower_single_function(
     let abi = {
         let borrowed = function.borrowed();
         validate_program(borrowed.ssa)?;
-        let abi = lower_function_runtime(borrowed)?;
+        let abi = lower_function_runtime(borrowed, backend)?;
         let runtime_slot = runtime
             .get_mut(borrowed.id.0 as usize)
             .ok_or_else(|| WasmError::internal("runtime metadata slot is out of range"))?;
@@ -198,6 +200,7 @@ pub(crate) fn lower_single_function(
 
 fn lower_function_runtime(
     input: BorrowedLowerFunctionInput<'_>,
+    config: BackendConfig,
 ) -> Result<MachineFunctionAbi, WasmError> {
     // Under the new local-call ABI, the dead "call_link" half of
     // `call_scratch` is gone — `FrameLayoutPlan::call_scratch` now only
@@ -224,12 +227,124 @@ fn lower_function_runtime(
 
     Ok(MachineFunctionAbi {
         id: input.id,
+        param_locs: derive_param_locs(input.ssa, config),
         frame_prefix_slots: input.frame.frame_prefix_size,
         total_frame_slots: input.frame.total_slots(),
         helper_scratch,
         return_results,
         init_locals,
     })
+}
+
+fn derive_param_locs(
+    program: &SsaProgram,
+    config: BackendConfig,
+) -> collections::Vec<MachineParamLoc> {
+    let param_count = program
+        .local_slot_info
+        .iter()
+        .take_while(|info| info.is_param)
+        .count()
+        .min(u16::MAX as usize) as u16;
+    let param_types = (0..param_count)
+        .map(|param_index| {
+            program
+                .local_slot_types
+                .get(param_index as usize)
+                .copied()
+                .unwrap_or(ValueType::I64)
+        })
+        .collect::<collections::Vec<_>>();
+    derive_param_locs_from_types(&param_types, config)
+}
+
+pub(crate) fn derive_param_locs_from_types(
+    param_types: &[ValueType],
+    config: BackendConfig,
+) -> collections::Vec<MachineParamLoc> {
+    let param_count = param_types.len().min(u16::MAX as usize) as u16;
+    let mut locs = (0..param_count)
+        .map(|param_index| MachineParamLoc::Frame {
+            param_index,
+            slot: FrameSlot(param_index),
+        })
+        .collect::<collections::Vec<_>>();
+    let budget = internal_call_arg_budget(config);
+    let mut selected = collections::Vec::new();
+    let mut gp_used = 0u8;
+    let mut fp_used = 0u8;
+    for param_index in (0..param_count).rev() {
+        let ty = param_types
+            .get(param_index as usize)
+            .copied()
+            .unwrap_or(ValueType::I64);
+        let storage = value_type_storage_type(ty);
+        if matches!(storage, MachineStorageType::V128) {
+            break;
+        }
+        if storage.is_fp() {
+            if fp_used >= budget.fp_units {
+                break;
+            }
+            selected.push((param_index, storage));
+            fp_used = fp_used.saturating_add(1);
+            continue;
+        }
+        let units = if config.gp_unit_bytes == 4 && matches!(storage, MachineStorageType::GpI64) {
+            2
+        } else {
+            1
+        };
+        if gp_used.saturating_add(units) > budget.gp_units {
+            break;
+        }
+        selected.push((param_index, storage));
+        gp_used = gp_used.saturating_add(units);
+    }
+    selected.reverse();
+    let mut gp_lane = 0u8;
+    let mut fp_lane = 0u8;
+    for (param_index, storage) in selected {
+        let loc = if storage.is_fp() {
+            let lane = fp_lane;
+            fp_lane = fp_lane.saturating_add(1);
+            MachineParamLoc::FpArg {
+                param_index,
+                lane,
+                ty: storage,
+            }
+        } else if config.gp_unit_bytes == 4 && matches!(storage, MachineStorageType::GpI64) {
+            let lo_lane = gp_lane;
+            let hi_lane = gp_lane.saturating_add(1);
+            gp_lane = gp_lane.saturating_add(2);
+            MachineParamLoc::GpArgPair {
+                param_index,
+                lo_lane,
+                hi_lane,
+            }
+        } else {
+            let lane = gp_lane;
+            gp_lane = gp_lane.saturating_add(1);
+            MachineParamLoc::GpArg {
+                param_index,
+                lane,
+                ty: storage,
+            }
+        };
+        if let Some(slot) = locs.get_mut(param_index as usize) {
+            *slot = loc;
+        }
+    }
+    locs
+}
+
+fn internal_call_arg_budget(
+    config: BackendConfig,
+) -> crate::vm::machine::machine_ir::InternalCallArgBudget {
+    crate::vm::machine::machine_ir::InternalCallArgBudget {
+        gp_units: config.gp_arg_lanes,
+        fp_units: config.fp_arg_lanes,
+    }
 }
 
 fn lower_function(
@@ -252,9 +367,17 @@ fn lower_function(
         &Gp64Lowering
     };
     let explicit_cache = explicit_cached_locals(&input.ssa);
+    let current_abi = runtime
+        .get(input.id.0 as usize)
+        .ok_or_else(|| WasmError::internal("runtime metadata missing for current function"))?;
     let entry_cache_params =
         compute_block_entry_cache_params(regfile, &input.ssa, &explicit_cache, gp_reg_width)?;
-    let block_entry_cache_dirty = compute_block_entry_cache_dirty(&input.ssa, &explicit_cache);
+    let block_entry_cache_dirty = compute_block_entry_cache_dirty(
+        &input.ssa,
+        &explicit_cache,
+        current_abi,
+        &entry_cache_params,
+    );
     release_cache_planning_only_ssa_storage(&mut input.ssa);
     for block_index in 0..original_block_count {
         let block = take_block_for_lowering(&mut input.ssa.blocks[block_index]);
@@ -265,6 +388,7 @@ fn lower_function(
             &explicit_cache,
             &entry_cache_params,
             &block,
+            current_abi,
             runtime,
             gp_reg_width,
             i64_ops,
@@ -388,7 +512,7 @@ fn lower_function(
                     {
                         let continuation = extra_block_ids.alloc();
                         let terminator =
-                            lower.lower_call_internal(*callee, *args, *results, continuation)?;
+                            lower.lower_call_internal(*callee, args, *results, continuation)?;
                         push_lowered_block(
                             current_block,
                             &mut original_blocks,
@@ -409,17 +533,20 @@ fn lower_function(
                         args,
                         results,
                     } => {
-                        lower.lower_call_runtime(*callee, *args, *results, const_pool)?;
+                        lower.lower_call_runtime(*callee, args, *results, const_pool)?;
                     }
                     SsaCallOp::CallRef {
                         type_idx,
-                        ref_slot,
+                        callee_ref,
                         args,
                         results,
                     } => {
                         let type_idx = *type_idx;
-                        let ref_slot = *ref_slot;
-                        let args = *args;
+                        let param_locs = derive_param_locs_from_types(&args.param_types, config);
+                        lower.publish_call_args_to_frame(args)?;
+                        let ref_slot = lower.publish_call_operand_to_frame(callee_ref)?;
+                        lower.publish_register_params_to_frame()?;
+                        let args = args.frame_span();
                         let results = *results;
                         lower.ensure_no_live_values(
                             "prepared SSA-IR call_ref reached native lowering with live linear SSA values; values must be published before the call",
@@ -429,6 +556,7 @@ fn lower_function(
                             IndirectCallSource::Ref { ref_slot },
                             type_idx,
                             IndirectTransfer::Call { args, results },
+                            param_locs,
                             current_block,
                             current_params,
                             &mut original_blocks,
@@ -444,7 +572,7 @@ fn lower_function(
                         let SsaCallOp::CallIndirect {
                             type_idx,
                             table_idx,
-                            index_slot,
+                            index,
                             args,
                             results,
                         } = call
@@ -453,8 +581,11 @@ fn lower_function(
                         };
                         let type_idx = *type_idx;
                         let table_idx = *table_idx;
-                        let index_slot = *index_slot;
-                        let args = *args;
+                        let param_locs = derive_param_locs_from_types(&args.param_types, config);
+                        lower.publish_call_args_to_frame(args)?;
+                        let index_slot = lower.publish_call_operand_to_frame(index)?;
+                        lower.publish_register_params_to_frame()?;
+                        let args = args.frame_span();
                         let results = *results;
                         lower.ensure_no_live_values(
                             "prepared SSA-IR call_indirect reached native lowering with live linear SSA values; values must be published before the call",
@@ -467,6 +598,7 @@ fn lower_function(
                             },
                             type_idx,
                             IndirectTransfer::Call { args, results },
+                            param_locs,
                             current_block,
                             current_params,
                             &mut original_blocks,
@@ -483,6 +615,10 @@ fn lower_function(
             }
         }
 
+        if target == input.ssa.entry && entry_terminator_may_leave_block(&block.terminator) {
+            lower.publish_register_params_to_frame()?;
+        }
+
         match &block.terminator {
             SsaTerminator::TailCallDirect {
                 callee,
@@ -494,11 +630,11 @@ fn lower_function(
                     .copied()
                     .unwrap_or(false)
                 {
-                    lower.lower_tail_call_internal(*callee, *args, *return_results)?
+                    lower.lower_tail_call_internal(*callee, args, *return_results)?
                 } else {
                     lower.lower_call_runtime(
                         *callee,
-                        *args,
+                        args,
                         runtime_tail_results_span(*return_results),
                         const_pool,
                     )?;
@@ -517,17 +653,20 @@ fn lower_function(
             SsaTerminator::TailCallIndirect {
                 type_idx,
                 table_idx,
-                index_slot,
+                index,
                 args,
                 return_results,
             } => {
+                let param_locs = derive_param_locs_from_types(&args.param_types, config);
+                lower.publish_call_args_to_frame(args)?;
+                let index_slot = lower.publish_call_operand_to_frame(index)?;
+                lower.publish_register_params_to_frame()?;
                 lower.ensure_no_live_values(
                     "prepared SSA-IR tail call_indirect reached native lowering with live linear SSA values; values must be published before the tail transfer",
                 )?;
                 let type_idx = *type_idx;
                 let table_idx = *table_idx;
-                let index_slot = *index_slot;
-                let args = *args;
+                let args = args.frame_span();
                 let return_results = *return_results;
                 let _ = lower_indirect_dispatch_cluster(
                     &mut lower,
@@ -540,6 +679,7 @@ fn lower_function(
                         args,
                         return_results,
                     },
+                    param_locs,
                     current_block,
                     current_params,
                     &mut original_blocks,
@@ -551,16 +691,19 @@ fn lower_function(
             }
             SsaTerminator::TailCallRef {
                 type_idx,
-                ref_slot,
+                callee_ref,
                 args,
                 return_results,
             } => {
+                let param_locs = derive_param_locs_from_types(&args.param_types, config);
+                lower.publish_call_args_to_frame(args)?;
+                let ref_slot = lower.publish_call_operand_to_frame(callee_ref)?;
+                lower.publish_register_params_to_frame()?;
                 lower.ensure_no_live_values(
                     "prepared SSA-IR tail call_ref reached native lowering with live linear SSA values; values must be published before the tail transfer",
                 )?;
                 let type_idx = *type_idx;
-                let ref_slot = *ref_slot;
-                let args = *args;
+                let args = args.frame_span();
                 let return_results = *return_results;
                 let _ = lower_indirect_dispatch_cluster(
                     &mut lower,
@@ -570,6 +713,7 @@ fn lower_function(
                         args,
                         return_results,
                     },
+                    param_locs,
                     current_block,
                     current_params,
                     &mut original_blocks,
@@ -653,10 +797,12 @@ fn lower_function(
         blocks,
     };
     program.validate(config)?;
+    let preserved_clobbers = collect_preserved_clobbers(&program, config);
 
     Ok(MachineFunction {
         id: input.id,
         program,
+        preserved_clobbers,
     })
 }
 
@@ -705,6 +851,7 @@ fn stub_machine_function(id: MachineFuncId) -> MachineFunction {
                 },
             }],
         },
+        preserved_clobbers: collections::Vec::new(),
     }
 }
 
@@ -749,8 +896,45 @@ fn frame_span_region(span: FrameSpan) -> MachineFrameRegion {
 }
 
 #[inline]
+fn frame_fallback_results(
+    callee_results: MachineFrameRegion,
+    caller_results: FrameSpan,
+) -> MachineCallResults {
+    if caller_results.count == 0 {
+        MachineCallResults::None
+    } else {
+        MachineCallResults::FrameFallback {
+            callee_results,
+            caller_results: frame_span_region(caller_results),
+        }
+    }
+}
+
+#[inline]
+fn fixed_callee_return_results(slots: u16) -> MachineFrameRegion {
+    MachineFrameRegion {
+        base_slot: 0,
+        slots,
+    }
+}
+
+#[inline]
 fn runtime_tail_results_span(results: Option<FrameSpan>) -> FrameSpan {
     results.unwrap_or_else(|| FrameSpan::new(FrameSlot(0), 0))
+}
+
+fn entry_terminator_may_leave_block(term: &SsaTerminator) -> bool {
+    matches!(
+        term,
+        SsaTerminator::Goto(_)
+            | SsaTerminator::Branch { .. }
+            | SsaTerminator::BrTable { .. }
+            | SsaTerminator::TailCallDirect { .. }
+            | SsaTerminator::TailCallIndirect { .. }
+            | SsaTerminator::TailCallRef { .. }
+            | SsaTerminator::EhThrow { .. }
+            | SsaTerminator::EhThrowRef { .. }
+    )
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -847,6 +1031,7 @@ fn lower_indirect_dispatch_cluster(
     source: IndirectCallSource,
     type_idx: u32,
     transfer: IndirectTransfer,
+    param_locs: collections::Vec<MachineParamLoc>,
     current_block: MachineBlockId,
     current_params: collections::Vec<MachineBlockParam>,
     original_blocks: &mut OriginalBlocks,
@@ -1152,28 +1337,38 @@ fn lower_indirect_dispatch_cluster(
             },
         },
     )?;
-    let local_transfer_ops = match transfer {
+    let mut local_transfer_ops = match transfer {
         IndirectTransfer::Call { results, .. } => {
             build_call_indirect_local_transfer_block(lower, results)?
         }
         IndirectTransfer::Tail { .. } => build_call_indirect_local_tail_transfer_block(lower)?,
     };
+    let machine_call_args =
+        lower.prepare_internal_call_args_from_frame_span(transfer.callee_args(), &param_locs)?;
+    local_transfer_ops.extend(lower.take_ops());
     let local_transfer_term = match continuation {
         Some(continuation) => MachineTerminator::Call {
             target: MachineCallTarget::Indirect {
                 callee_target: indirect_temps.lane0,
                 callee_entry: indirect_temps.lane2,
             },
-            callee_frame_base: indirect_temps.lane1,
-            caller_result_base: indirect_temps.lane3,
-            continuation,
+            frame_delta: slot_offset_bytes(transfer.source_args().start)? as u32,
+            args: machine_call_args,
+            results: frame_fallback_results(
+                fixed_callee_return_results(transfer.runtime_results().count),
+                transfer.runtime_results(),
+            ),
+            success: MachineEdge {
+                target: continuation,
+                args: collections::Vec::new(),
+            },
         },
         None => MachineTerminator::TailCall {
             target: MachineCallTarget::Indirect {
                 callee_target: indirect_temps.lane0,
                 callee_entry: indirect_temps.lane2,
             },
-            callee_frame_base: indirect_temps.lane1,
+            args: machine_call_args,
         },
     };
     push_lowered_block(
@@ -1356,7 +1551,7 @@ pub(super) fn preferred_fp_dynamic_reg(
     regfile: &MachineRegFile,
     ordinal: usize,
 ) -> Option<MachineReg> {
-    regfile.ordered_fp_dynamic(ordinal)
+    regfile.ordered_fp_allocatable(ordinal)
 }
 
 fn fp_reg_init_widths(
@@ -1463,11 +1658,17 @@ struct CallIndirectGpTemps {
 // `call_indirect` is the structured MachineIR exception that intentionally
 // threads a fixed GP dynamic bundle across synthetic blocks.
 fn call_indirect_gp_temps(lower: &BlockLowerContext<'_>) -> Result<CallIndirectGpTemps, WasmError> {
+    let base = lower.regfile().gp_arg_lane_count();
+    if lower.regfile().gp_dynamic_count() < base + INDIRECT_DISPATCH_CONTROL_GP_LANES {
+        return Err(WasmError::internal(
+            "call_indirect lowering requires four GP dynamic control lanes",
+        ));
+    }
     Ok(CallIndirectGpTemps {
-        lane0: lower.reserved_gp_dynamic(0, "call_indirect control lane 0")?,
-        lane1: lower.reserved_gp_dynamic(1, "call_indirect control lane 1")?,
-        lane2: lower.reserved_gp_dynamic(2, "call_indirect control lane 2")?,
-        lane3: lower.reserved_gp_dynamic(3, "call_indirect control lane 3")?,
+        lane0: lower.reserved_gp_dynamic(base, "call_indirect control lane 0")?,
+        lane1: lower.reserved_gp_dynamic(base + 1, "call_indirect control lane 1")?,
+        lane2: lower.reserved_gp_dynamic(base + 2, "call_indirect control lane 2")?,
+        lane3: lower.reserved_gp_dynamic(base + 3, "call_indirect control lane 3")?,
     })
 }
 
@@ -1927,7 +2128,7 @@ fn build_call_indirect_local_zero_loop_block(
 
 fn build_call_indirect_local_transfer_block(
     lower: &mut BlockLowerContext<'_>,
-    results: FrameSpan,
+    _results: FrameSpan,
 ) -> Result<collections::Vec<MachineInst>, WasmError> {
     let runtime_layout = lower.runtime_abi_layout();
     let call_info = runtime_layout.local_call_info;
@@ -1935,36 +2136,20 @@ fn build_call_indirect_local_transfer_block(
     let callee_target = temps.lane0;
     // lane1 is `callee_frame_base`, populated by the earlier checks block.
     let callee_entry = temps.lane2;
-    let caller_result_base = temps.lane3;
+    let info_base = temps.lane3;
 
-    // Use lane3 first as a scratch to find the call info record, then load
-    // the callee entry address from it. After that, we overwrite lane3 with
-    // the absolute caller_result_base address.
-    emit_local_call_info_entry_addr(lower, callee_target, caller_result_base, callee_entry)?;
+    emit_local_call_info_entry_addr(lower, callee_target, info_base, callee_entry)?;
     lower.emit_machine_inst(MachineInst {
         kind: MachineInstKind::Load {
             owner: MachineRegOwner::LinearValue,
             ty: MachineStorageType::GpWord,
             dst: callee_entry,
             addr: MachineAddr {
-                base: caller_result_base,
+                base: info_base,
                 offset: call_info.entry_offset as i32,
             },
             width: lower.gp_word_mem_width(),
             extension: MachineLoadExtension::None,
-        },
-    });
-    // caller_result_base = caller_fp + results.start_offset.
-    // This is purely caller-side state — it does not depend on the callee's
-    // frame layout, so we can compute it without consulting the call info
-    // table at all.
-    lower.emit_machine_inst(MachineInst {
-        kind: MachineInstKind::IntBinary {
-            width: lower.gp_word_int_width(),
-            op: MachineIntBinaryOp::Add,
-            dst: caller_result_base,
-            lhs: MachineValue::Reg(lower.frame_base_reg()),
-            rhs: MachineValue::Imm64(slot_offset_bytes(results.start)? as u64),
         },
     });
     Ok(lower.take_ops())
@@ -2151,6 +2336,8 @@ fn indexed_const_addr(
 fn compute_block_entry_cache_dirty(
     program: &SsaProgram,
     cached_locals: &[CachedLocal],
+    abi: &MachineFunctionAbi,
+    entry_cache_params: &[collections::Vec<EntryCacheParam>],
 ) -> collections::Vec<collections::Vec<bool>> {
     if program.blocks.is_empty() || cached_locals.is_empty() {
         return collections::vec![collections::Vec::new(); program.blocks.len()];
@@ -2164,6 +2351,26 @@ fn compute_block_entry_cache_dirty(
         .collect::<BTreeMap<FrameSlot, usize>>();
     let mut entry_dirty =
         collections::vec![collections::vec![false; cached_locals.len()]; program.blocks.len()];
+    let register_param_slots = register_param_slots(&abi.param_locs);
+    let entry_index = program.entry.as_usize();
+    if let Some(entries) = entry_cache_params.get(entry_index) {
+        for entry in entries {
+            if !entry.needs_value {
+                continue;
+            }
+            let cached_index = usize::from(entry.cached_index);
+            let Some(cached) = cached_locals.get(cached_index) else {
+                continue;
+            };
+            if register_param_slots.contains(&cached.slot) {
+                if let Some(bits) = entry_dirty.get_mut(entry_index) {
+                    if let Some(bit) = bits.get_mut(cached_index) {
+                        *bit = true;
+                    }
+                }
+            }
+        }
+    }
 
     loop {
         let mut changed = false;
@@ -2186,6 +2393,7 @@ fn compute_block_entry_cache_dirty(
                     &program.blocks[pred_index],
                     &entry_dirty[pred_index],
                     &slot_to_index,
+                    &register_param_slots,
                 );
                 for &slot in entry_slots {
                     if let Some(&cached_index) = slot_to_index.get(&slot) {
@@ -2206,6 +2414,21 @@ fn compute_block_entry_cache_dirty(
     }
 
     entry_dirty
+}
+
+fn register_param_slots(param_locs: &[MachineParamLoc]) -> collections::Vec<FrameSlot> {
+    let mut slots = collections::Vec::new();
+    for loc in param_locs {
+        match *loc {
+            MachineParamLoc::Frame { .. } => {}
+            MachineParamLoc::GpArg { param_index, .. }
+            | MachineParamLoc::GpArgPair { param_index, .. }
+            | MachineParamLoc::FpArg { param_index, .. } => {
+                slots.push(FrameSlot(param_index));
+            }
+        }
+    }
+    slots
 }
 
 fn compute_ssa_predecessors(program: &SsaProgram) -> collections::Vec<collections::Vec<usize>> {
@@ -2259,6 +2482,7 @@ fn simulate_block_cache_exit_state(
     block: &SsaBlock,
     entry_dirty: &[bool],
     slot_to_index: &BTreeMap<FrameSlot, usize>,
+    register_param_slots: &[FrameSlot],
 ) -> (collections::Vec<bool>, collections::Vec<bool>) {
     let mut resident = collections::vec![false; slot_to_index.len()];
     let mut dirty = collections::vec![false; slot_to_index.len()];
@@ -2274,7 +2498,17 @@ fn simulate_block_cache_exit_state(
 
     for inst in &block.ops {
         match inst.op {
-            SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_ENSURE_CACHE | SsaOp::LOCAL_RESERVE_CACHE => {
+            SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_ENSURE_CACHE => {
+                let slot = FrameSlot(inst.meta);
+                if let Some(&cached_index) = slot_to_index.get(&slot) {
+                    if !resident[cached_index] {
+                        resident[cached_index] = true;
+                        dirty[cached_index] =
+                            block.id == program.entry && register_param_slots.contains(&slot);
+                    }
+                }
+            }
+            SsaOp::LOCAL_RESERVE_CACHE => {
                 let slot = FrameSlot(inst.meta);
                 if let Some(&cached_index) = slot_to_index.get(&slot) {
                     if !resident[cached_index] {

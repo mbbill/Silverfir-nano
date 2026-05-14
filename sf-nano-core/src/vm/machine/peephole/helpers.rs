@@ -4,8 +4,9 @@ use crate::collections;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    is_fp_reg, is_gp_reg, MachineAddr, MachineBranchCond, MachineCallTarget, MachineEdge,
-    MachineInst, MachineInstKind, MachineIntUnaryOp, MachineMemWidth, MachineReg,
+    is_fp_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineBranchCond,
+    MachineCallArgs, MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineEdge,
+    MachineInst, MachineInstKind, MachineIntUnaryOp, MachineMemWidth, MachineReg, MachineResultDst,
     MachineStorageType, MachineTerminator, MachineValue,
 };
 
@@ -656,33 +657,74 @@ pub(super) fn terminator_uses_reg(term: &MachineTerminator, reg: MachineReg) -> 
         }
         MachineTerminator::Call {
             target,
-            callee_frame_base,
-            caller_result_base,
+            args,
+            results,
+            success,
             ..
-        } => match target {
-            MachineCallTarget::Direct(_) => *callee_frame_base == reg || *caller_result_base == reg,
-            MachineCallTarget::Indirect {
-                callee_target,
-                callee_entry,
-            } => {
-                *callee_target == reg
-                    || *callee_entry == reg
-                    || *callee_frame_base == reg
-                    || *caller_result_base == reg
-            }
-        },
-        MachineTerminator::TailCall {
-            target,
-            callee_frame_base,
-        } => match target {
-            MachineCallTarget::Direct(_) => *callee_frame_base == reg,
-            MachineCallTarget::Indirect {
-                callee_target,
-                callee_entry,
-            } => *callee_target == reg || *callee_entry == reg || *callee_frame_base == reg,
-        },
+        } => {
+            call_target_uses_reg(target, reg)
+                || call_args_use_reg(args, reg)
+                || call_success_uses_reg(success, results, reg)
+        }
+        MachineTerminator::TailCall { target, args } => {
+            call_target_uses_reg(target, reg) || call_args_use_reg(args, reg)
+        }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => false,
     }
+}
+
+fn call_target_uses_reg(target: &MachineCallTarget, reg: MachineReg) -> bool {
+    match target {
+        MachineCallTarget::Direct(_) => false,
+        MachineCallTarget::Indirect {
+            callee_target,
+            callee_entry,
+        } => *callee_target == reg || *callee_entry == reg,
+    }
+}
+
+fn call_args_use_reg(args: &MachineCallArgs, reg: MachineReg) -> bool {
+    args.lane_args.iter().any(|arg| match arg {
+        MachineCallLaneArg::Gp { src, .. } | MachineCallLaneArg::Fp { src, .. } => {
+            arg_src_uses_reg(src, reg)
+        }
+        MachineCallLaneArg::GpPair { src, .. } => arg_src_pair_uses_reg(src, reg),
+    })
+}
+
+fn arg_src_pair_uses_reg(src: &MachineArgSrcPair, reg: MachineReg) -> bool {
+    arg_src_uses_reg(&src.lo, reg) || arg_src_uses_reg(&src.hi, reg)
+}
+
+fn arg_src_uses_reg(src: &MachineArgSrc, reg: MachineReg) -> bool {
+    matches!(src, MachineArgSrc::Reg(src) if *src == reg)
+}
+
+fn call_success_uses_reg(
+    success: &MachineEdge,
+    results: &MachineCallResults,
+    reg: MachineReg,
+) -> bool {
+    success
+        .args
+        .iter()
+        .any(|v| value_is_reg(v, reg) && !call_results_define_reg(results, reg))
+}
+
+fn call_results_define_reg(results: &MachineCallResults, reg: MachineReg) -> bool {
+    match results {
+        MachineCallResults::None | MachineCallResults::FrameFallback { .. } => false,
+        MachineCallResults::ScalarGp { dst } | MachineCallResults::ScalarFp { dst } => {
+            result_dst_is_reg(*dst, reg)
+        }
+        MachineCallResults::ScalarGpPair { lo, hi } => {
+            result_dst_is_reg(*lo, reg) || result_dst_is_reg(*hi, reg)
+        }
+    }
+}
+
+fn result_dst_is_reg(dst: MachineResultDst, reg: MachineReg) -> bool {
+    matches!(dst, MachineResultDst::Reg(dst) if dst == reg)
 }
 
 fn edge_uses_reg(edge: &MachineEdge, reg: MachineReg) -> bool {

@@ -67,8 +67,11 @@ use crate::{
         arch,
         arch::common::helpers::page_align_function,
         machine::{
-            lower_module, lower_single_function,
-            machine_ir::{MachineFrameRegion, MachineFuncId, MachineFunctionAbi, MachineModuleAbi},
+            derive_param_locs_from_types, lower_module, lower_single_function,
+            machine_ir::{
+                MachineFrameRegion, MachineFuncId, MachineFunctionAbi, MachineModuleAbi,
+                MachineParamLoc,
+            },
             optimize_function, optimize_module, ConstPoolBuilder, LowerFunctionInput,
             LowerModuleInput, LoweredMachineModule,
         },
@@ -140,10 +143,11 @@ fn decode_function_semantic(
     .map_err(|_err| WasmError::internal("native decode failed for function"))
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Debug)]
 struct FunctionStaticSummary {
     id: MachineFuncId,
     frame: FrameLayoutPlan,
+    param_locs: collections::Vec<MachineParamLoc>,
     result_count: u16,
 }
 
@@ -151,6 +155,7 @@ impl FunctionStaticSummary {
     fn abi(self) -> MachineFunctionAbi {
         MachineFunctionAbi {
             id: self.id,
+            param_locs: self.param_locs,
             frame_prefix_slots: self.frame.frame_prefix_size,
             total_frame_slots: self.frame.total_slots(),
             helper_scratch: self.frame.call_scratch.map(frame_span_region),
@@ -350,6 +355,10 @@ fn build_static_summaries(
                             scan.max_stack_height,
                             backend.call_scratch_slots,
                         ),
+                        param_locs: derive_param_locs_from_types(
+                            spec.func_type().params(),
+                            backend,
+                        ),
                         result_count: scan.result_count,
                     };
                     abi.functions[func_idx] = summary.abi();
@@ -373,6 +382,7 @@ fn build_static_summaries(
                 semantic.max_stack_height,
                 backend.call_scratch_slots,
             ),
+            param_locs: derive_param_locs_from_types(spec.func_type().params(), backend),
             result_count: spec.func_type().results().len() as u16,
         };
         abi.functions[func_idx] = summary.abi();

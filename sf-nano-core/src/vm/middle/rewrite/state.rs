@@ -243,6 +243,34 @@ impl BlockState {
             .into()
     }
 
+    pub(super) fn value_at_stack_index(&self, stack_index: u16) -> Option<SsaValue> {
+        if stack_index < self.spill_depth || stack_index >= self.stack_height {
+            return None;
+        }
+        self.live
+            .get(stack_index.saturating_sub(self.spill_depth) as usize)
+            .copied()
+    }
+
+    pub(super) fn type_at_stack_index(&self, stack_index: u16) -> Option<ValueType> {
+        self.type_stack.get(stack_index as usize).copied()
+    }
+
+    /// Spill live values below the top `consumed` stack operands.
+    ///
+    /// This keeps the bounded call-operand suffix live while publishing older
+    /// live transients that cannot cross the call boundary.
+    pub(super) fn spill_live_below_top(
+        &mut self,
+        consumed: u16,
+    ) -> Result<collections::Vec<SsaValue>, WasmError> {
+        let keep_start = self.stack_height.saturating_sub(consumed);
+        if self.spill_depth >= keep_start {
+            return Ok(collections::Vec::new());
+        }
+        self.spill_prefix(keep_start.saturating_sub(self.spill_depth))
+    }
+
     pub(super) fn finish_call(&mut self, consumed: u16, produced: u16, result_types: &[ValueType]) {
         let base = self.stack_height.saturating_sub(consumed) as usize;
         self.type_stack.truncate(base);

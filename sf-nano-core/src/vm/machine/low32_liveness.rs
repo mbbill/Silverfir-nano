@@ -7,9 +7,10 @@
 use crate::collections;
 use crate::vm::machine::{
     machine_ir::{
-        MachineBlockId, MachineBranchCond, MachineCallTarget, MachineEdge, MachineFunction,
-        MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineReg, MachineTerminator,
-        MachineValue,
+        MachineArgSrc, MachineArgSrcPair, MachineBlockId, MachineBranchCond, MachineCallArgs,
+        MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineEdge, MachineFunction,
+        MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineReg, MachineResultDst,
+        MachineTerminator, MachineValue,
     },
     peephole::helpers as mir_helpers,
 };
@@ -146,20 +147,18 @@ impl Low32DeadHiDefs {
             }
             MachineTerminator::Call {
                 target,
-                callee_frame_base,
-                caller_result_base,
-                continuation: _,
+                args,
+                results,
+                success,
+                ..
             } => {
                 Self::demand_call_target(target, &mut demand);
-                Self::demand_reg(&mut demand, *callee_frame_base);
-                Self::demand_reg(&mut demand, *caller_result_base);
+                Self::demand_call_args(args, &mut demand);
+                Self::demand_call_success_sources(success, results, &mut demand);
             }
-            MachineTerminator::TailCall {
-                target,
-                callee_frame_base,
-            } => {
+            MachineTerminator::TailCall { target, args } => {
                 Self::demand_call_target(target, &mut demand);
-                Self::demand_reg(&mut demand, *callee_frame_base);
+                Self::demand_call_args(args, &mut demand);
             }
             MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
         }
@@ -471,6 +470,60 @@ impl Low32DeadHiDefs {
             Self::demand_reg(demand, *callee_target);
             Self::demand_reg(demand, *callee_entry);
         }
+    }
+
+    fn demand_call_args(args: &MachineCallArgs, demand: &mut [bool]) {
+        for arg in &args.lane_args {
+            match arg {
+                MachineCallLaneArg::Gp { src, .. } | MachineCallLaneArg::Fp { src, .. } => {
+                    Self::demand_arg_src(src, demand);
+                }
+                MachineCallLaneArg::GpPair { src, .. } => {
+                    Self::demand_arg_src_pair(src, demand);
+                }
+            }
+        }
+    }
+
+    fn demand_arg_src_pair(src: &MachineArgSrcPair, demand: &mut [bool]) {
+        Self::demand_arg_src(&src.lo, demand);
+        Self::demand_arg_src(&src.hi, demand);
+    }
+
+    fn demand_arg_src(src: &MachineArgSrc, demand: &mut [bool]) {
+        if let MachineArgSrc::Reg(reg) = src {
+            Self::demand_reg(demand, *reg);
+        }
+    }
+
+    fn demand_call_success_sources(
+        success: &MachineEdge,
+        results: &MachineCallResults,
+        demand: &mut [bool],
+    ) {
+        for arg in &success.args {
+            if let MachineValue::Reg(reg) = arg {
+                if !Self::call_results_define_reg(results, *reg) {
+                    Self::demand_reg(demand, *reg);
+                }
+            }
+        }
+    }
+
+    fn call_results_define_reg(results: &MachineCallResults, reg: MachineReg) -> bool {
+        match results {
+            MachineCallResults::None | MachineCallResults::FrameFallback { .. } => false,
+            MachineCallResults::ScalarGp { dst } | MachineCallResults::ScalarFp { dst } => {
+                Self::result_dst_is_reg(*dst, reg)
+            }
+            MachineCallResults::ScalarGpPair { lo, hi } => {
+                Self::result_dst_is_reg(*lo, reg) || Self::result_dst_is_reg(*hi, reg)
+            }
+        }
+    }
+
+    fn result_dst_is_reg(dst: MachineResultDst, reg: MachineReg) -> bool {
+        matches!(dst, MachineResultDst::Reg(dst) if dst == reg)
     }
 
     fn demand_value(demand: &mut [bool], value: &MachineValue) {

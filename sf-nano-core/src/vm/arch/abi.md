@@ -22,7 +22,7 @@ This document does **not** define:
 - how many registers a target budgets by default
 - target-specific prologue or encoding details
 
-## The Two Rules
+## The Three Rules
 
 ### Rule 1: Only fixed MachineIR registers require mandatory call-boundary preservation
 
@@ -46,9 +46,8 @@ Each backend must define how these four roles survive both boundary classes:
   again preferably by keeping them in preserved host registers and otherwise
   by an explicit save/restore sequence in the local-call boundary.
 
-Cached locals and linear values do **not** require this mandatory
-preservation. They may be published to frame slots and reloaded explicitly by
-lowering.
+Cached locals and linear values do **not** require fixed-register-style
+preservation. They live in the dynamic banks described by Rule 3.
 
 ### Rule 2: If a register is not unquestionably callee-saved at the foreign ABI boundary, treat it as caller-saved there
 
@@ -67,6 +66,54 @@ Use the conservative policy:
 This rule is intentionally conservative. It keeps new platform bring-up safe
 even when the target ABI has special platform registers.
 
+### Rule 3: Dynamic registers have an internal JIT volatility contract
+
+The dynamic MachineIR banks are part of the wasm-to-wasm JIT ABI. Each backend
+must split each dynamic bank into abstract volatility classes:
+
+```text
+GP dynamic = [volatile GP][preserved GP][backend-internal GP scratch]
+FP dynamic = [volatile FP][preserved FP]
+```
+
+`BackendConfig` publishes the counts for these abstract regions. It does not
+publish physical registers. Middle and MachineIR may reason about the counts
+and the abstract order only; each backend's `abi.rs` remains the sole owner of
+the physical mapping.
+
+The local-call ABI rules are:
+
+- call argument lanes are a prefix of the volatile dynamic bank
+- values dead at the call may live in volatile dynamic regs with no save
+- values live across the call may live in preserved dynamic regs
+- callees may freely clobber volatile dynamic regs after consuming entry args
+- callees must preserve every preserved dynamic reg they clobber
+- function lowering records a per-function preserved clobber mask
+- body prelude/return/error/tail paths save and restore exactly that mask
+
+The allocation policy follows from the ABI:
+
+- use volatile dynamic regs first
+- use preserved dynamic regs last
+- using a preserved dynamic reg is allowed, but it makes the function
+  responsible for preserving that register around its body
+
+The current arm64 split is:
+
+```text
+GP dynamic = 15 volatile + 6 preserved + 1 backend scratch
+FP dynamic = 22 volatile + 8 preserved
+GP/FP arg lanes = first 4 volatile lanes
+```
+
+Other backends must publish the same abstract fields even when their preserved
+count is zero. Physical register names remain private to each backend's
+`abi.rs`.
+
+This is independent of whether the value is currently a transient SSA value or
+a cached local. "Cached local" is not an ABI class. The ABI class is the
+abstract register's volatility.
+
 ## Shared MachineIR Register Roles
 
 The first four MachineIR GP registers are fixed roles shared by all native
@@ -83,14 +130,18 @@ All remaining machine registers are dynamically allocated by lowering.
 
 The logical regfile layout is:
 
-`[fixed | gp_dynamic | fp_dynamic]`
+```text
+[fixed | gp_volatile | gp_preserved | gp_internal_scratch | fp_volatile | fp_preserved]
+```
 
 This layout is defined by [`lower_regalloc.rs`](sf-nano-core/src/vm/machine/lower_regalloc.rs).
 
 Implications:
 
 - fixed registers are a shared contract, not a backend choice
-- the GP/FP bank split is real, but there is no static local-cache/linear-value split inside either bank
+- the GP/FP bank split is real
+- the volatile/preserved split is real
+- there is no static local-cache/linear-value split inside either volatility class
 - semantic linear-value ownership is tracked by lowering state, not by machine-register number
 - FP bank starts at `first_fp_reg`
 - 32-bit legalization/finalization may rewrite GP regs, but must preserve this
@@ -122,24 +173,27 @@ Callers should observe the fixed roles as continuously live either way.
 
 ### Dynamic GP / FP banks
 
-Each backend exposes one ordered GP dynamic bank and one ordered FP dynamic
-bank.
+Each backend exposes ordered GP and FP dynamic banks. The order has ABI
+meaning at the volatility-class boundary:
 
 Important properties:
 
-- the order is an allocation preference, not a semantic class boundary
+- the volatile prefix is caller-saved across local wasm-to-wasm calls
+- the preserved suffix is callee-saved across local wasm-to-wasm calls
+- argument lanes are mapped to the start of the volatile prefix
 - a dynamic register may hold either an SSA value or a cached local
 - only the lowering state knows which dynamic regs currently hold SSA values
 - cached locals still have canonical frame-slot homes
 
-Therefore cached locals and SSA values may both use:
+Therefore cached locals and SSA values may both use either volatility class:
 
-- callee-saved registers
-- caller-saved registers
-- any mixture of the two
+- use volatile regs for values that need not survive a call
+- use preserved regs for values worth keeping across calls
+- spill/publish to frame when neither bank is sufficient
 
-as long as lowering publishes frame-backed state before a boundary that may
-clobber it.
+The backend must preserve the physical registers that implement the preserved
+abstract regs. The middle and MachineIR layers must never name target physical
+registers to express this policy.
 
 ## Backend Lowering Discipline
 
@@ -207,9 +261,10 @@ Important consequences:
   current helper does not mention it
 - the backend must not infer "this dynamic reg probably holds only a transient"
   from register number or allocation order
-- the backend must not treat caller-saved dynamic regs as implicit scratch regs
-- the backend must not treat callee-saved dynamic regs as implicitly preserved
-  local-cache regs
+- the backend must not treat volatile dynamic regs as implicit scratch regs
+- the backend must not treat preserved dynamic regs as implicitly preserved
+  unless the function's preserved clobber mask causes the body prelude and
+  every exit path to save/restore them
 
 Only lowering state knows whether a dynamic register currently holds:
 
@@ -302,22 +357,46 @@ This means:
 
 ### Local native calls
 
-Transients must already be dead at local-call boundaries.
+The engine defines its own JIT-to-JIT ABI. It is not the host C ABI:
+parameter lanes, frame switching, result copying, and trap propagation are
+MachineIR contracts that each native backend lowers to the target's real call
+and return instructions.
 
-Cached locals are also publishable state, so lowering may spill them before the
-call and let the callee freely reuse those dynamic registers.
+The shared call argument contract is split:
 
-The engine defines its own JIT-to-JIT ABI. Therefore:
+- A leading frame prefix is already present in the callee's frame region.
+- A trailing scalar suffix is carried in abstract GP/FP argument lanes.
+- `v128` parameters and scalar parameters that do not fit the configured lane
+  budget remain frame-passed.
 
-- SSA values are not required to survive local calls
-- cached locals are not required to survive local calls in registers
-- fixed registers are the only always-live machine state across local calls
+SSA lowering chooses the split from the backend register budget without naming
+backend physical registers. MachineIR lowering records each register-passed
+argument as a `MachineCallArgs::lane_args` source: either the live MachineIR
+register that already holds the argument, or the caller-frame slot where the
+argument can be reloaded. The backend maps abstract lane numbers to its
+physical argument registers and performs the final shuffle immediately before
+the real native call.
 
-The local-call ABI must preserve those fixed registers. The preferred strategy
-is again to keep them in host registers that the callee does not clobber. If a
-target cannot do that, its local-call sequence must save and restore the fixed
-roles explicitly. Either way, callers should observe the fixed roles as live on
-return.
+The callee sees the same split through `MachineFunctionAbi::param_locs`.
+Register-passed parameters are register-only at body entry; if their canonical
+frame slots are later needed, MachineIR publishes them through the same typed
+frame-store helpers used for ordinary locals. This is especially important for
+`v128`, which currently stays frame-passed because the frame representation is
+a raw handle while the register representation is a native vector value.
+
+For local calls:
+
+- SSA values are not required to survive the call unless they are explicit
+  `lane_args` consumed by the call.
+- Cached locals are publishable state; MachineIR may keep clean/dead caches in
+  caller-clobbered registers and must publish dirty caches before a boundary
+  that needs frame-authoritative state.
+- Fixed registers are the only always-live machine state across local calls.
+
+The local-call ABI must preserve the fixed registers. The preferred strategy is
+to keep them in host registers that the callee does not clobber. If a target
+cannot do that, its local-call sequence must save and restore the fixed roles
+explicitly. Either way, callers observe the fixed roles as live on return.
 
 ### Foreign C ABI argument and return registers
 
@@ -351,16 +430,20 @@ Frame slots are the canonical storage for:
 
 - locals
 - spilled cached locals
-- call arguments/results
-- backend-private local-call record metadata
+- frame-passed call arguments
+- current frame-fallback call results
 
-Registers are an execution cache over that canonical frame state.
+Registers are an execution cache over that canonical frame state, with one
+local-call exception: register-passed scalar parameters are entry values whose
+home slots become authoritative only after MachineIR publishes them.
 
 Consequences:
 
 - cached locals may always be synchronized through frame slots
 - a backend must not assume that keeping a local only in a register is
   sufficient at a call boundary
+- a backend must not invent its own parameter-passing split; it must follow
+  `MachineFunctionAbi::param_locs` and `MachineCallArgs`
 - dynamic-register placement is an optimization policy, not an ABI fact
 
 ## What `abi.rs` Must Define Per Platform
@@ -413,11 +496,13 @@ may still be target-only.
 
 ## Local Call ABI
 
-Compiled local calls between MachineIR functions use a backend-private
-host-stack call record. The MIR-level contract is the `Call` terminator
-with `target`, `callee_frame_base`, `caller_result_base`, and
-`continuation`; the call record layout itself is target-private and
-never appears in the abstract MIR.
+Compiled local calls between MachineIR functions use a caller-restored
+frame-pointer ABI. The MIR-level contract is the `Call` terminator with
+`target`, `frame_delta`, `args`, `results`, and `success`.
+
+There is no per-call host-stack record in the abstract ABI. The caller switches
+`MACHINE_FP_REG` to the callee frame before the real native call and restores it
+after the callee returns, before checking status or placing fallback results.
 
 ### Public entry vs internal entry
 
@@ -425,10 +510,11 @@ Each function gets two entry points in the emitted code:
 
 - The **public entry** is the function start. It runs the C-ABI prologue
   (save callee-saved registers, move C arg regs into the fixed MachineIR
-  roles), then the **public-entry caller stub** that builds a "root"
-  call record on the host stack and `bl/call`s the internal entry. When
-  the body returns, the stub falls through to the C-ABI epilogue and
-  the platform `ret`.
+  roles), then the **public-entry caller stub** that loads root register
+  parameters from the public frame and `bl/call`s the internal entry. On
+  success, the stub copies fallback return slots into the public result prefix
+  if needed. It then falls through to the C-ABI epilogue and the platform
+  `ret`.
 - The **internal entry** is the body's true start, bound at
   `internal_entry_label` (allocated in `CompilerCore::new`). All local
   call sites and direct-call relocations resolve to this label, never
@@ -461,30 +547,84 @@ unconditional on native backends.
 The body has exactly two terminal sequences:
 
 1. **Success Return** — emitted inline at every `Return` terminator.
-   Pops the body prelude link save, pops the caller's call record,
-   copies `MachineFunctionAbi::return_results` from the callee frame to
-   `*caller_result_base`, restores `MACHINE_FP_REG`, sets `C_RET0 = 0`,
-   and executes the platform `ret`.
+   Restores the function's preserved dynamic clobbers, pops the body prelude
+   link save, sets `C_RET0 = 0`, and executes the platform `ret`.
+   `MACHINE_FP_REG` still points at the callee frame when control returns to
+   the native caller.
 2. **`body_local_error_label`** — bound by the pipeline tail, reached
-   from every trap stub and from every post-call status check. A
-   near-copy of the success path: same prelude pop and same call-record
-   pop, but **no** result copy and **no** touch of `C_RET0` (which
-   already holds the trap kind set by the trap stub or inherited from a
-   trapped descendant's BL). Trap stubs end with `bl raise_trap; b
-   body_local_error_label`. There is no shared `return_error_label`.
+   from every trap stub and from every post-call status check. A near-copy of
+   the success path: same preserved-clobber restore and same prelude pop, but
+   **no** touch of `C_RET0` (which already holds the trap kind set by the trap
+   stub or inherited from a trapped descendant's BL). Trap stubs end with
+   `bl raise_trap; b body_local_error_label`. There is no shared
+   `return_error_label`.
+
+### Parameter passing
+
+`MachineFunctionAbi::param_locs` is the callee-side parameter contract:
+
+- `Frame { param_index, slot }` means the value is read from the callee frame.
+- `GpArg { param_index, lane, ty }` means the value arrives in GP lane `lane`.
+- `GpArgPair { param_index, lo_lane, hi_lane }` means a 32-bit GP backend
+  receives an `i64` split across two GP lanes.
+- `FpArg { param_index, lane, ty }` means the value arrives in FP lane `lane`.
+
+`MachineCallArgs` is the caller-side mirror:
+
+- `frame_params` names the leading frame-passed parameter prefix.
+- `lane_args` names every register-passed parameter, its abstract destination
+  lane, and its MachineIR source (`Reg`, `FrameSlot`, or `FrameSlotOffset` for
+  the high word of split 32-bit `i64` arguments).
+
+The lane numbers are abstract MachineIR lanes. Shared MachineIR must not depend
+on target physical registers; backend codegen performs that final mapping and
+the final parallel move.
+
+### Result passing
+
+Frame-fallback return values use a fixed callee-side region:
+
+```text
+callee fallback return slots = frame slots [0, result_count)
+```
+
+This is deliberately independent of the callee's local count and operand-stack
+base. It lets direct calls, indirect calls, and tail calls agree on the fallback
+return location without a per-call result-base record or per-callee dynamic
+metadata. Return canonicalization may overwrite parameter/local slots because a
+return terminates the function.
+
+For a non-tail local call, the caller copies fallback results from
+`caller_fp + frame_delta + 0` into the caller's requested result frame span
+after the status check succeeds. Tail calls do not return to the current
+function, so the callee's fixed fallback slots are already the caller's fallback
+slots after argument repacking.
+
+Scalar result-register returns are intentionally a separate follow-up ABI
+change because they require the SSA return/result contract to carry live return
+values through `Return`, not only frame spans.
 
 ### Call sequence (arm64, reference implementation)
 
-For a direct-target `Call` (with `caller_result_base` and
-`callee_frame_base` already materialised in registers by earlier MIR
-ops):
+At the terminator, the backend first lowers `MachineCallArgs::lane_args`:
+
+- register sources are emitted as one true parallel move into the abstract
+  argument lanes, so swaps do not bounce through the wasm frame
+- frame sources are loaded into their lanes after the register shuffle, so the
+  load cannot clobber a source register another lane still needs
+
+For a direct-target `Call`, the backend then switches `fp_reg` by `frame_delta`
+and enters the callee with the target's real native call instruction:
 
 ```
-stp caller_result_base, fp_reg, [sp, #-16]!   ; push call record
-mov fp_reg, callee_fp                         ; switch frame pointer
+; call-lane shuffle, if lane sources are not already in-place
+mov/mov/ldr ...                                ; backend-specific
+add fp_reg, fp_reg, #frame_delta              ; switch to callee frame
 ldr s0, =callee_literal                       ; deferred literal pool
 blr s0                                        ; native call
+sub fp_reg, fp_reg, #frame_delta              ; restore caller frame
 cbnz w0, body_local_error_label               ; status check on C_RET0
+; optional FrameFallback result copy happens here
                                               ; (continuation falls through
                                               ;  if it is the next emitted
                                               ;  block — see "Block layout"
@@ -493,17 +633,6 @@ cbnz w0, body_local_error_label               ; status check on C_RET0
 
 An indirect-target `Call` is identical except it uses the runtime
 register `callee_entry` directly instead of a deferred literal.
-
-The 16-byte record pushed before each call contains:
-
-| offset | content              |
-|-------:|----------------------|
-|    0   | caller_result_base   |
-|    8   | caller fp            |
-
-The body prelude link save (a separate 16-byte `stp x29, x30`) sits
-above this record. Both the success Return and `body_local_error_label`
-pop them in the matching order.
 
 ### Trap propagation via C_RET0
 
@@ -514,7 +643,7 @@ Local-call trap status flows through `C_RET0`:
 - **Error**: trap stubs execute `bl raise_trap` (which records the
   WasmError on the runtime context and sets `C_RET0` to a non-zero
   trap kind), then `b body_local_error_label`. `body_local_error_label`
-  preserves `C_RET0` across its prelude/record pop and through the
+  preserves `C_RET0` across its prelude pop and through the
   native return, so the caller's post-BL `cbnz w0` sees the propagated
   error code and re-branches to its own `body_local_error_label`. The
   whole chain unwinds to the public-entry caller stub, whose epilogue
@@ -547,11 +676,12 @@ emulator) do not need it.
 
 ### Public-entry caller stub
 
-The root call record built by `lower_root_caller_stub` uses
-`caller_fp = caller_result_base = MACHINE_FP_REG` (the root frame
-pointer). That makes the body's unified Return copy results into the
-same bytes that `eval.rs::collect_native_results_from_stack` reads
-afterwards, so root invocation needs no special-case wiring.
+The public-entry caller stub loads register-passed root parameters from the
+public frame, performs a real native call to `internal_entry_label`, and checks
+`C_RET0`. On success, if `MachineFunctionAbi::return_results` is not already
+slot 0, it copies the fallback return region into the public result prefix that
+`eval.rs::collect_native_results_from_stack` reads. With the fixed fallback
+return-slot rule this copy is normally a no-op.
 
 ### Frame metadata
 
@@ -562,11 +692,11 @@ publishes:
   geometry produced by `FrameLayoutPlan`.
 - `helper_scratch: Option<MachineFrameRegion>` — frame region for
   runtime helpers that take a frame-relative scratch base. This is the
-  only frame slot region the call ABI now reserves; the older
-  `call_scratch` (which used to hold a MIR-visible call link) is gone.
-- `return_results: Option<MachineFrameRegion>` — region the callee
-  writes its return values into; the unified Return copies from here
-  to `*caller_result_base`.
+  only helper-specific frame slot region the call ABI reserves.
+- `param_locs` — callee-side parameter locations, split between frame slots and
+  abstract register argument lanes.
+- `return_results: Option<MachineFrameRegion>` — fixed frame-fallback return
+  region. For functions with results this is slots `[0, result_count)`.
 - `init_locals` — non-param local slots that may be read before being
   written. The callee zero-initialises these at function entry; locals
   not listed here are written before any read.
@@ -574,12 +704,9 @@ publishes:
 ### Host-stack-depth caveat
 
 The local-call ABI consumes host stack proportional to native call
-depth: each nested local call pushes a 16-byte backend-private call
-record, and each native body also pays its backend-specific body
-prelude cost (currently 16 bytes on arm64/armv7a, 8 bytes on x86_64,
-0 in the emulator). For a wasm program that recurses W levels deep,
-host stack consumption is therefore roughly "call-record cost per edge
-+ body-prelude cost per active native body" along the active path.
+depth: each active native body pays its backend-specific body prelude cost
+(currently 16 bytes on arm64/armv7a, 8 bytes on x86_64, 0 in the emulator).
+The caller-restored local-call ABI does not add a separate per-call link record.
 
 `vm/runtime/context.rs` does **not** maintain a `native_call_depth`
 guard today. The current assumption is that the wasm-side stack

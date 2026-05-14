@@ -91,6 +91,7 @@ fn rejects_out_of_range_helper_metadata() {
                     terminator: MachineTerminator::Return,
                 }],
             },
+            preserved_clobbers: collections::Vec::new(),
         }],
         consts: collections::vec![MachineConstData {
             id: MachineConstId(0),

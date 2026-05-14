@@ -15,14 +15,16 @@ use crate::{
     module::entities::FunctionSpec,
     vm::{
         machine::machine_ir::{
-            MachineAddr, MachineBlock, MachineBlockId, MachineBranchCond, MachineCallRuntime,
-            MachineCallTarget, MachineCompareKind, MachineConvertOp, MachineEdge,
-            MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineFrameRegion,
-            MachineFuncId, MachineFunctionAbi, MachineIndexExtend, MachineInst, MachineInstKind,
+            MachineAddr, MachineArgSrc, MachineBlock, MachineBlockId, MachineBranchCond,
+            MachineCallArgs, MachineCallResults, MachineCallRuntime, MachineCallTarget,
+            MachineCompareKind, MachineConvertOp, MachineEdge, MachineFloatBinaryOp,
+            MachineFloatUnaryOp, MachineFloatWidth, MachineFrameRegion, MachineFuncId,
+            MachineFunctionAbi, MachineIndexExtend, MachineInst, MachineInstKind,
             MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
-            MachineMemWidth, MachineProgram, MachineReg, MachineShiftOp, MachineSign,
-            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
-            MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineMemWidth, MachineParamLoc, MachineProgram, MachineReg, MachineShiftOp,
+            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+            MACHINE_MEM0_SIZE_REG,
         },
         result_buffer::ResultBuffer,
         runtime::{
@@ -54,6 +56,18 @@ unsafe extern "C" {
     fn floor(x: f64) -> f64;
     fn trunc(x: f64) -> f64;
     fn sqrt(x: f64) -> f64;
+}
+
+fn caller_results_base_delta(results: &MachineCallResults) -> u32 {
+    match results {
+        MachineCallResults::FrameFallback { caller_results, .. } => {
+            u32::from(caller_results.base_slot) * 8
+        }
+        MachineCallResults::None
+        | MachineCallResults::ScalarGp { .. }
+        | MachineCallResults::ScalarGpPair { .. }
+        | MachineCallResults::ScalarFp { .. } => 0,
+    }
 }
 
 #[derive(Debug)]
@@ -94,6 +108,13 @@ struct Emulator<'a> {
     address_space: EmulatorAddressSpace,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct CapturedArgLane {
+    dst: MachineReg,
+    value: u64,
+    kind: RegAddrKind,
+}
+
 pub(crate) fn eval_root_with_context(
     compiled: &CompiledNativeModule,
     func_id: MachineFuncId,
@@ -109,7 +130,7 @@ pub(crate) fn eval_root_with_context(
     let fp_base = address_space.frame_base_value(fp)?;
     let mem0_base = address_space.mem0_base_value(ctx);
     let mem0_size = ctx.mem0_size;
-    Emulator {
+    let mut emulator = Emulator {
         ctx,
         compiled,
         root_frame: fp,
@@ -127,8 +148,9 @@ pub(crate) fn eval_root_with_context(
         addr_kinds: init_entry_addr_kinds(compiled.backend().total_reg_count()),
         call_stack: collections::Vec::new(),
         address_space,
-    }
-    .run()
+    };
+    emulator.load_entry_param_lanes_from_frame(fp)?;
+    emulator.run()
 }
 
 pub(crate) fn eval(
@@ -244,19 +266,12 @@ impl<'a> Emulator<'a> {
                 }
                 MachineTerminator::Call {
                     target,
-                    callee_frame_base,
-                    caller_result_base,
-                    continuation,
-                } => self.enter_call(
-                    target,
-                    *callee_frame_base,
-                    *caller_result_base,
-                    *continuation,
-                ),
-                MachineTerminator::TailCall {
-                    target,
-                    callee_frame_base,
-                } => self.enter_tail_call(target, *callee_frame_base),
+                    frame_delta,
+                    args,
+                    results,
+                    success,
+                } => self.enter_call(target, *frame_delta, args, results, success),
+                MachineTerminator::TailCall { target, args } => self.enter_tail_call(target, args),
                 MachineTerminator::Return => {
                     if self.handle_return()? {
                         return Ok(());
@@ -1543,9 +1558,10 @@ impl<'a> Emulator<'a> {
     fn enter_call(
         &mut self,
         target: &MachineCallTarget,
-        callee_frame_base: MachineReg,
-        caller_result_base: MachineReg,
-        continuation: MachineBlockId,
+        frame_delta: u32,
+        args: &MachineCallArgs,
+        results: &MachineCallResults,
+        success: &MachineEdge,
     ) -> Result<(), WasmError> {
         let (callee, check_stack_capacity) = match target {
             MachineCallTarget::Direct(callee) => (*callee, true),
@@ -1553,25 +1569,26 @@ impl<'a> Emulator<'a> {
                 (MachineFuncId(self.read_reg(*callee_target)? as u32), false)
             }
         };
-        let callee_fp = self
-            .address_space
-            .host_stack_ptr(self.read_reg(callee_frame_base)?)?;
-        let result_base_ptr = self
-            .address_space
-            .host_stack_ptr(self.read_reg(caller_result_base)?)?;
+        let lane_args = self.capture_call_arg_lanes(args)?;
+        let callee_fp = unsafe { self.fp.add((frame_delta / 8) as usize) };
+        let result_base_ptr = unsafe {
+            self.fp
+                .add((caller_results_base_delta(results) / 8) as usize)
+        };
         self.enter_callee(
             callee,
             callee_fp,
             result_base_ptr,
-            continuation,
+            success.target,
             check_stack_capacity,
+            lane_args,
         )
     }
 
     fn enter_tail_call(
         &mut self,
         target: &MachineCallTarget,
-        callee_frame_base: MachineReg,
+        args: &MachineCallArgs,
     ) -> Result<(), WasmError> {
         let (callee, check_stack_capacity) = match target {
             MachineCallTarget::Direct(callee) => (*callee, true),
@@ -1579,10 +1596,8 @@ impl<'a> Emulator<'a> {
                 (MachineFuncId(self.read_reg(*callee_target)? as u32), false)
             }
         };
-        let callee_fp = self
-            .address_space
-            .host_stack_ptr(self.read_reg(callee_frame_base)?)?;
-        self.enter_tail_callee(callee, callee_fp, check_stack_capacity)
+        let lane_args = self.capture_call_arg_lanes(args)?;
+        self.enter_tail_callee(callee, self.fp, check_stack_capacity, lane_args)
     }
 
     fn enter_callee(
@@ -1592,6 +1607,7 @@ impl<'a> Emulator<'a> {
         caller_result_base: *mut u64,
         continuation: MachineBlockId,
         check_stack_capacity: bool,
+        lane_args: collections::Vec<CapturedArgLane>,
     ) -> Result<(), WasmError> {
         let callee_function = self
             .compiled
@@ -1630,6 +1646,7 @@ impl<'a> Emulator<'a> {
             self.ctx.mem0_size,
         );
         self.addr_kinds = init_entry_addr_kinds(self.compiled.backend().total_reg_count());
+        self.install_captured_arg_lanes(&lane_args)?;
         #[cfg(sf_call_trace)]
         function_trace::native_function_trace_enter_func_idx(self.ctx, callee.0);
         Ok(())
@@ -1640,6 +1657,7 @@ impl<'a> Emulator<'a> {
         callee: MachineFuncId,
         callee_fp: *mut u64,
         check_stack_capacity: bool,
+        lane_args: collections::Vec<CapturedArgLane>,
     ) -> Result<(), WasmError> {
         let callee_function = self
             .compiled
@@ -1665,9 +1683,141 @@ impl<'a> Emulator<'a> {
             self.ctx.mem0_size,
         );
         self.addr_kinds = init_entry_addr_kinds(self.compiled.backend().total_reg_count());
+        self.install_captured_arg_lanes(&lane_args)?;
         #[cfg(sf_call_trace)]
         function_trace::native_function_trace_tail_call_enter_func_idx(self.ctx, callee.0);
         Ok(())
+    }
+
+    fn load_entry_param_lanes_from_frame(&mut self, source_fp: *mut u64) -> Result<(), WasmError> {
+        let param_locs = self.runtime_for(self.func_id)?.param_locs.clone();
+        for loc in param_locs {
+            match loc {
+                MachineParamLoc::Frame { .. } => {}
+                MachineParamLoc::GpArg {
+                    param_index, lane, ..
+                } => {
+                    let reg = self.gp_arg_lane_reg(lane)?;
+                    let value = unsafe { *source_fp.add(param_index as usize) };
+                    self.write_reg_with_kind(reg, value, fixed_reg_addr_kind(reg))?;
+                }
+                MachineParamLoc::GpArgPair {
+                    param_index,
+                    lo_lane,
+                    hi_lane,
+                } => {
+                    let raw = unsafe { *source_fp.add(param_index as usize) };
+                    let lo = self.gp_arg_lane_reg(lo_lane)?;
+                    let hi = self.gp_arg_lane_reg(hi_lane)?;
+                    self.write_reg_with_kind(lo, u64::from(raw as u32), fixed_reg_addr_kind(lo))?;
+                    self.write_reg_with_kind(hi, raw >> 32, fixed_reg_addr_kind(hi))?;
+                }
+                MachineParamLoc::FpArg {
+                    param_index, lane, ..
+                } => {
+                    let reg = self.fp_arg_lane_reg(lane)?;
+                    let value = unsafe { *source_fp.add(param_index as usize) };
+                    self.write_reg_with_kind(reg, value, fixed_reg_addr_kind(reg))?;
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn capture_call_arg_lanes(
+        &self,
+        args: &MachineCallArgs,
+    ) -> Result<collections::Vec<CapturedArgLane>, WasmError> {
+        let mut out = collections::Vec::with_capacity(args.lane_args.len().saturating_mul(2));
+        for arg in &args.lane_args {
+            match arg {
+                crate::vm::machine::machine_ir::MachineCallLaneArg::Gp { lane, src, .. } => {
+                    let dst = self.gp_arg_lane_reg(*lane)?;
+                    let (value, kind) = self.read_arg_src(*src)?;
+                    out.push(CapturedArgLane { dst, value, kind });
+                }
+                crate::vm::machine::machine_ir::MachineCallLaneArg::GpPair {
+                    lo_lane,
+                    hi_lane,
+                    src,
+                    ..
+                } => {
+                    let lo = self.gp_arg_lane_reg(*lo_lane)?;
+                    let hi = self.gp_arg_lane_reg(*hi_lane)?;
+                    let (lo_value, lo_kind) = self.read_arg_src(src.lo)?;
+                    let (hi_value, hi_kind) = self.read_arg_src(src.hi)?;
+                    out.push(CapturedArgLane {
+                        dst: lo,
+                        value: lo_value,
+                        kind: lo_kind,
+                    });
+                    out.push(CapturedArgLane {
+                        dst: hi,
+                        value: hi_value,
+                        kind: hi_kind,
+                    });
+                }
+                crate::vm::machine::machine_ir::MachineCallLaneArg::Fp { lane, src, .. } => {
+                    let dst = self.fp_arg_lane_reg(*lane)?;
+                    let (value, kind) = self.read_arg_src(*src)?;
+                    out.push(CapturedArgLane { dst, value, kind });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn install_captured_arg_lanes(&mut self, lanes: &[CapturedArgLane]) -> Result<(), WasmError> {
+        for lane in lanes {
+            let kind = match fixed_reg_addr_kind(lane.dst) {
+                RegAddrKind::Unknown => lane.kind,
+                fixed => fixed,
+            };
+            self.write_reg_with_kind(lane.dst, lane.value, kind)?;
+        }
+        Ok(())
+    }
+
+    fn read_arg_src(&self, src: MachineArgSrc) -> Result<(u64, RegAddrKind), WasmError> {
+        match src {
+            MachineArgSrc::Reg(reg) => Ok((self.read_reg(reg)?, self.reg_addr_kind(reg))),
+            MachineArgSrc::FrameSlot(slot) => {
+                let value = unsafe { *self.fp.add(slot.0 as usize) };
+                Ok((value, RegAddrKind::Unknown))
+            }
+            MachineArgSrc::FrameSlotOffset { slot, byte_offset } => {
+                let base = unsafe { self.fp.add(slot.0 as usize).cast::<u8>() };
+                let value = match byte_offset {
+                    0 => unsafe { *base.cast::<u64>() },
+                    4 => unsafe { u64::from(*base.add(4).cast::<u32>()) },
+                    offset => {
+                        let ptr = unsafe { base.offset(isize::from(offset)) };
+                        unsafe { *ptr.cast::<u64>() }
+                    }
+                };
+                Ok((value, RegAddrKind::Unknown))
+            }
+        }
+    }
+
+    fn gp_arg_lane_reg(&self, lane: u8) -> Result<MachineReg, WasmError> {
+        let config = self.compiled.backend();
+        if lane >= config.allocatable_gp_dynamic_budget() {
+            return Err(WasmError::internal(
+                "internal GP argument lane is out of range",
+            ));
+        }
+        Ok(MachineReg(MACHINE_FIXED_REG_COUNT + u16::from(lane)))
+    }
+
+    fn fp_arg_lane_reg(&self, lane: u8) -> Result<MachineReg, WasmError> {
+        let config = self.compiled.backend();
+        if lane >= config.fp_dynamic_budget {
+            return Err(WasmError::internal(
+                "internal FP argument lane is out of range",
+            ));
+        }
+        Ok(MachineReg(config.first_fp_reg() + u16::from(lane)))
     }
 
     fn handle_return(&mut self) -> Result<bool, WasmError> {
@@ -3553,6 +3703,7 @@ mod tests {
                                 },
                             ],
                         },
+                        preserved_clobbers: collections::Vec::new(),
                     }],
                     consts: collections::Vec::new(),
                 },
@@ -3624,6 +3775,7 @@ mod tests {
                                 terminator: MachineTerminator::Return,
                             }],
                         },
+                        preserved_clobbers: collections::Vec::new(),
                     }],
                     consts: collections::Vec::new(),
                 },
@@ -3709,6 +3861,7 @@ mod tests {
                             terminator: MachineTerminator::Return,
                         }],
                     },
+                    preserved_clobbers: collections::Vec::new(),
                 }],
                 consts: collections::Vec::new(),
             },
@@ -3758,6 +3911,7 @@ mod tests {
                             terminator: MachineTerminator::Return,
                         }],
                     },
+                    preserved_clobbers: collections::Vec::new(),
                 }],
                 consts: collections::Vec::new(),
             },

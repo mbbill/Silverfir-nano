@@ -3,9 +3,9 @@
 use crate::{
     error::WasmError,
     vm::machine::machine_ir::{
-        MachineBlockId, MachineBranchCond, MachineCallTarget, MachineCompareKind, MachineConstId,
-        MachineEdge, MachineReg, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
-        MACHINE_FP_REG,
+        MachineBlockId, MachineBranchCond, MachineCallArgs, MachineCallResults, MachineCallTarget,
+        MachineCompareKind, MachineConstId, MachineEdge, MachineTerminator, MachineTrapKind,
+        MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
     },
 };
 
@@ -19,11 +19,24 @@ use super::{
 
 use crate::vm::arch::common::helpers::is_fallthrough_edge;
 use crate::vm::arch::common::helpers::trap_code;
+use crate::vm::arch::common::pipeline::emit_call_arg_lanes;
 use crate::vm::arch::common::template::{
     decode_template_chain_next, encode_template_chain_next, TemplateBranchSense,
 };
 use crate::vm::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
 use crate::vm::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
+
+fn caller_results_base_delta(results: &MachineCallResults) -> u32 {
+    match results {
+        MachineCallResults::FrameFallback { caller_results, .. } => {
+            u32::from(caller_results.base_slot) * 8
+        }
+        MachineCallResults::None
+        | MachineCallResults::ScalarGp { .. }
+        | MachineCallResults::ScalarGpPair { .. }
+        | MachineCallResults::ScalarFp { .. } => 0,
+    }
+}
 
 impl<'a> X86_64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────
@@ -62,20 +75,12 @@ impl<'a> X86_64Backend<'a> {
             }
             MachineTerminator::Call {
                 target,
-                callee_frame_base,
-                caller_result_base,
-                continuation,
-            } => self.lower_call(
-                target,
-                *callee_frame_base,
-                *caller_result_base,
-                *continuation,
-                fallthrough,
-            ),
-            MachineTerminator::TailCall {
-                target,
-                callee_frame_base,
-            } => self.lower_tail_call(target, *callee_frame_base),
+                frame_delta,
+                args,
+                results,
+                success,
+            } => self.lower_call(target, *frame_delta, args, results, success, fallthrough),
+            MachineTerminator::TailCall { target, args } => self.lower_tail_call(target, args),
         }
     }
 
@@ -452,26 +457,41 @@ impl<'a> X86_64Backend<'a> {
     fn lower_call(
         &mut self,
         target: &MachineCallTarget,
-        callee_frame_base: MachineReg,
-        caller_result_base: MachineReg,
-        continuation: MachineBlockId,
+        frame_delta: u32,
+        args: &MachineCallArgs,
+        results: &MachineCallResults,
+        success: &MachineEdge,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        let callee_fp = self.map_gp_reg(callee_frame_base)?;
-        let caller_result_base = self.map_gp_reg(caller_result_base)?;
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let body_local_error_label = self.core.body_local_error_label;
-        let continuation_label = self.core.block_label(continuation)?;
-        let continuation_is_fallthrough = fallthrough == Some(continuation);
+        let continuation_label = self.core.block_label(success.target)?;
+        let continuation_is_fallthrough = fallthrough == Some(success.target);
+
+        emit_call_arg_lanes::<Self>(self, args)?;
+
+        let callee_fp_idx = self.gp_scratch.alloc();
+        let callee_fp = self.gp_scratch.reg(callee_fp_idx);
+        self.materialize_frame_addr(callee_fp, fp_reg, frame_delta);
+
+        let caller_result_base_idx = self.gp_scratch.alloc();
+        let caller_result_base = self.gp_scratch.reg(caller_result_base_idx);
+        self.materialize_frame_addr(
+            caller_result_base,
+            fp_reg,
+            caller_results_base_delta(results),
+        );
 
         // Push the call record: caller_fp at higher slot, caller_result_base
         // at lower slot. Matches the layout consumed by the body's unified
         // Return and body_local_error_tail.
         enc::push(&mut self.core.text, fp_reg);
         enc::push(&mut self.core.text, caller_result_base);
+        self.gp_scratch.free_index(caller_result_base_idx);
 
         // Switch fp_reg to the callee's frame base.
         enc::mov_rr_64(&mut self.core.text, fp_reg, callee_fp);
+        self.gp_scratch.free_index(callee_fp_idx);
 
         match target {
             MachineCallTarget::Direct(callee) => {
@@ -509,10 +529,11 @@ impl<'a> X86_64Backend<'a> {
     fn lower_tail_call(
         &mut self,
         target: &MachineCallTarget,
-        callee_frame_base: MachineReg,
+        args: &MachineCallArgs,
     ) -> Result<(), WasmError> {
-        let callee_fp = self.map_gp_reg(callee_frame_base)?;
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+
+        emit_call_arg_lanes::<Self>(self, args)?;
 
         let scratch_idx = match target {
             MachineCallTarget::Direct(callee) => {
@@ -530,7 +551,9 @@ impl<'a> X86_64Backend<'a> {
         };
 
         enc::add_rsp_imm8(&mut self.core.text, 8);
-        enc::mov_rr_64(&mut self.core.text, fp_reg, callee_fp);
+        // Tail-call arguments have already been repacked to the current frame
+        // prefix, so the callee reuses the current MACHINE_FP_REG value.
+        let _ = fp_reg;
 
         match target {
             MachineCallTarget::Direct(_) => {
@@ -549,6 +572,15 @@ impl<'a> X86_64Backend<'a> {
             self.gp_scratch.free_index(scratch_idx);
         }
         Ok(())
+    }
+
+    fn materialize_frame_addr(&mut self, dst: X86Reg, base: X86Reg, delta: u32) {
+        if dst != base {
+            enc::mov_rr_64(&mut self.core.text, dst, base);
+        }
+        if delta != 0 {
+            enc::add_ri_64(&mut self.core.text, dst, delta as i32);
+        }
     }
 
     // ── Call runtime ─────────────────────────────────────────────────────────

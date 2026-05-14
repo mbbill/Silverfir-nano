@@ -164,6 +164,7 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         enc::push(&mut self.core.text, fp_reg);
         // push caller_result_base (→ lower slot)
         enc::push(&mut self.core.text, fp_reg);
+        self.lower_root_param_lanes_from_frame();
         // call internal_entry_label (patched by patch_fixups)
         let internal_entry_label = self.core.internal_entry_label;
         self.emit_call_rel32(internal_entry_label);

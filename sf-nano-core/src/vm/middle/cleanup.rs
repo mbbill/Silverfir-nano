@@ -541,24 +541,24 @@ fn substitute_terminator(terminator: SsaTerminator, subst: &[ValueSubstitution])
         SsaTerminator::TailCallIndirect {
             type_idx,
             table_idx,
-            index_slot,
+            index,
             args,
             return_results,
         } => SsaTerminator::TailCallIndirect {
             type_idx,
             table_idx,
-            index_slot,
+            index,
             args,
             return_results,
         },
         SsaTerminator::TailCallRef {
             type_idx,
-            ref_slot,
+            callee_ref,
             args,
             return_results,
         } => SsaTerminator::TailCallRef {
             type_idx,
-            ref_slot,
+            callee_ref,
             args,
             return_results,
         },

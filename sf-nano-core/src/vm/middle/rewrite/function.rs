@@ -24,8 +24,9 @@ use crate::{
             },
             ssa_ir::{
                 ir::{
-                    entry_cache_requirement, LocalSlotInfo, SsaBinding, SsaBlock, SsaCallOp,
-                    SsaEdge, SsaInst, SsaOp, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+                    entry_cache_requirement, LocalSlotInfo, SsaBinding, SsaBlock, SsaCallArgs,
+                    SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInst, SsaOp,
+                    SsaOperand, SsaProgram, SsaTerminator, SsaValue,
                 },
                 target::SsaTarget,
             },
@@ -622,15 +623,20 @@ fn apply_inline_prefix(
             inline_fill_for_operands(state, frame, values, keep_live)?;
             inline_spill_all_except_top(state, frame, keep_live)?;
         }
-        SemanticOpKind::CallDirect { .. }
-        | SemanticOpKind::CallIndirect { .. }
-        | SemanticOpKind::CallRef { .. }
-        | SemanticOpKind::ReturnCallDirect { .. }
-        | SemanticOpKind::ReturnCallIndirect { .. }
-        | SemanticOpKind::ReturnCallRef { .. }
-        | SemanticOpKind::ReturnVoid
-        | SemanticOpKind::ReturnOne
-        | SemanticOpKind::Return { .. } => {
+        SemanticOpKind::CallDirect { params, .. } => {
+            inline_prepare_call_operands(state, frame, *params)?;
+        }
+        SemanticOpKind::CallIndirect { params, .. } | SemanticOpKind::CallRef { params, .. } => {
+            inline_prepare_call_operands(state, frame, params.saturating_add(1))?;
+        }
+        SemanticOpKind::ReturnCallDirect { params, .. } => {
+            inline_prepare_call_operands(state, frame, *params)?;
+        }
+        SemanticOpKind::ReturnCallIndirect { params, .. }
+        | SemanticOpKind::ReturnCallRef { params, .. } => {
+            inline_prepare_call_operands(state, frame, params.saturating_add(1))?;
+        }
+        SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
             inline_spill_all(state, frame)?;
         }
         SemanticOpKind::AllocExnRef { .. } => {
@@ -771,6 +777,23 @@ fn inline_spill_all(state: &mut BlockState, frame: FrameLayoutPlan) -> Result<()
     let count = state.live().len() as u16;
     let base_slot = frame.operand_slot(state.spill_depth());
     let spilled = state.spill_prefix(count)?;
+    for (offset, src) in spilled.into_iter().enumerate() {
+        state
+            .ops
+            .push(SsaInst::spill(base_slot.advance(offset as u16), src));
+    }
+    Ok(())
+}
+
+/// Publish live values below the call operand suffix, while leaving the
+/// current bounded operand suffix live for MachineIR call planning.
+fn inline_prepare_call_operands(
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    consumed: u16,
+) -> Result<(), WasmError> {
+    let base_slot = frame.operand_slot(state.spill_depth());
+    let spilled = state.spill_live_below_top(consumed)?;
     for (offset, src) in spilled.into_iter().enumerate() {
         state
             .ops
@@ -1193,10 +1216,12 @@ fn lower_call_direct(
     materialized_cache: &mut BTreeSet<FrameSlot>,
     builder: &mut ProgramBuilder,
 ) -> Result<(), WasmError> {
-    let call_base = call_base_slot(frame, state.height(), params);
+    let stack_base = state.height().saturating_sub(params);
+    let call_base = frame.operand_slot(stack_base);
+    let args = capture_call_args(state, stack_base, call_base, params)?;
     let call_idx = builder.push_call_op(SsaCallOp::CallDirect {
         callee,
-        args: FrameSpan::new(call_base, params),
+        args,
         results: FrameSpan::new(call_base, results),
     })?;
     state.ops.push(SsaInst::call(call_idx));
@@ -1219,12 +1244,19 @@ fn lower_call_indirect(
     builder: &mut ProgramBuilder,
 ) -> Result<(), WasmError> {
     let consumed = params.saturating_add(1);
-    let call_base = call_base_slot(frame, state.height(), consumed);
+    let stack_base = state.height().saturating_sub(consumed);
+    let call_base = frame.operand_slot(stack_base);
+    let args = capture_call_args(state, stack_base, call_base, params)?;
+    let index = capture_operand_loc(
+        state,
+        stack_base.saturating_add(params),
+        call_base.advance(params),
+    )?;
     let call_idx = builder.push_call_op(SsaCallOp::CallIndirect {
         type_idx,
         table_idx,
-        index_slot: call_base.advance(params),
-        args: FrameSpan::new(call_base, params),
+        index,
+        args,
         results: FrameSpan::new(call_base, results),
     })?;
     state.ops.push(SsaInst::call(call_idx));
@@ -1246,11 +1278,18 @@ fn lower_call_ref(
     builder: &mut ProgramBuilder,
 ) -> Result<(), WasmError> {
     let consumed = params.saturating_add(1);
-    let call_base = call_base_slot(frame, state.height(), consumed);
+    let stack_base = state.height().saturating_sub(consumed);
+    let call_base = frame.operand_slot(stack_base);
+    let args = capture_call_args(state, stack_base, call_base, params)?;
+    let callee_ref = capture_operand_loc(
+        state,
+        stack_base.saturating_add(params),
+        call_base.advance(params),
+    )?;
     let call_idx = builder.push_call_op(SsaCallOp::CallRef {
         type_idx,
-        ref_slot: call_base.advance(params),
-        args: FrameSpan::new(call_base, params),
+        callee_ref,
+        args,
         results: FrameSpan::new(call_base, results),
     })?;
     state.ops.push(SsaInst::call(call_idx));
@@ -1290,13 +1329,15 @@ fn lower_tail_call_direct(
     results: u16,
     frame: FrameLayoutPlan,
     state: &BlockState,
-) -> SsaTerminator {
-    let args = FrameSpan::new(call_base_slot(frame, state.height(), params), params);
-    SsaTerminator::TailCallDirect {
+) -> Result<SsaTerminator, WasmError> {
+    let stack_base = state.height().saturating_sub(params);
+    let call_base = frame.operand_slot(stack_base);
+    let args = capture_call_args(state, stack_base, call_base, params)?;
+    Ok(SsaTerminator::TailCallDirect {
         callee,
         args,
         return_results: return_results(frame, results),
-    }
+    })
 }
 
 fn lower_tail_call_indirect(
@@ -1306,16 +1347,23 @@ fn lower_tail_call_indirect(
     results: u16,
     frame: FrameLayoutPlan,
     state: &BlockState,
-) -> SsaTerminator {
+) -> Result<SsaTerminator, WasmError> {
     let consumed = params.saturating_add(1);
-    let call_base = call_base_slot(frame, state.height(), consumed);
-    SsaTerminator::TailCallIndirect {
+    let stack_base = state.height().saturating_sub(consumed);
+    let call_base = frame.operand_slot(stack_base);
+    let args = capture_call_args(state, stack_base, call_base, params)?;
+    let index = capture_operand_loc(
+        state,
+        stack_base.saturating_add(params),
+        call_base.advance(params),
+    )?;
+    Ok(SsaTerminator::TailCallIndirect {
         type_idx,
         table_idx,
-        index_slot: call_base.advance(params),
-        args: FrameSpan::new(call_base, params),
+        index,
+        args,
         return_results: return_results(frame, results),
-    }
+    })
 }
 
 fn lower_tail_call_ref(
@@ -1324,19 +1372,87 @@ fn lower_tail_call_ref(
     results: u16,
     frame: FrameLayoutPlan,
     state: &BlockState,
-) -> SsaTerminator {
+) -> Result<SsaTerminator, WasmError> {
     let consumed = params.saturating_add(1);
-    let call_base = call_base_slot(frame, state.height(), consumed);
-    SsaTerminator::TailCallRef {
+    let stack_base = state.height().saturating_sub(consumed);
+    let call_base = frame.operand_slot(stack_base);
+    let args = capture_call_args(state, stack_base, call_base, params)?;
+    let callee_ref = capture_operand_loc(
+        state,
+        stack_base.saturating_add(params),
+        call_base.advance(params),
+    )?;
+    Ok(SsaTerminator::TailCallRef {
         type_idx,
-        ref_slot: call_base.advance(params),
-        args: FrameSpan::new(call_base, params),
+        callee_ref,
+        args,
         return_results: return_results(frame, results),
-    }
+    })
 }
 
 fn call_base_slot(frame: FrameLayoutPlan, stack_height: u16, consumed: u16) -> FrameSlot {
     frame.operand_slot(stack_height.saturating_sub(consumed))
+}
+
+fn capture_call_args(
+    state: &BlockState,
+    stack_base: u16,
+    frame_base: FrameSlot,
+    params: u16,
+) -> Result<SsaCallArgs, WasmError> {
+    let mut live_suffix = collections::Vec::new();
+    let mut param_types = collections::Vec::with_capacity(params as usize);
+    let mut stack_prefix_count = params;
+    for param_index in 0..params {
+        let slot = frame_base.advance(param_index);
+        let stack_index = stack_base.saturating_add(param_index);
+        let ty = state
+            .type_at_stack_index(stack_index)
+            .unwrap_or(ValueType::I64);
+        param_types.push(ty);
+        if let Some(value) = state.value_at_stack_index(stack_index) {
+            if stack_prefix_count == params {
+                stack_prefix_count = param_index;
+            }
+            live_suffix.push(SsaCallLiveArg {
+                param_index,
+                value,
+                ty,
+                frame_slot: slot,
+            });
+        } else if !live_suffix.is_empty() {
+            return Err(WasmError::internal(
+                "SSA call live arguments must be a contiguous suffix",
+            ));
+        }
+    }
+    Ok(SsaCallArgs {
+        frame_base,
+        total_params: params,
+        param_types,
+        stack_prefix_count,
+        live_suffix,
+    })
+}
+
+fn capture_operand_loc(
+    state: &BlockState,
+    stack_index: u16,
+    slot: FrameSlot,
+) -> Result<SsaCallOperandLoc, WasmError> {
+    Ok(
+        if let Some(value) = state.value_at_stack_index(stack_index) {
+            SsaCallOperandLoc::Live {
+                value,
+                ty: state
+                    .type_at_stack_index(stack_index)
+                    .unwrap_or(ValueType::I64),
+                slot,
+            }
+        } else {
+            SsaCallOperandLoc::Stack { slot }
+        },
+    )
 }
 
 #[inline]
@@ -1432,7 +1548,8 @@ fn branch_payload(
 }
 
 fn return_results(frame: FrameLayoutPlan, results: u16) -> Option<FrameSpan> {
-    (results != 0).then(|| FrameSpan::new(frame.operand_slot(0), results))
+    let _ = frame;
+    (results != 0).then(|| FrameSpan::new(FrameSlot(0), results))
 }
 
 struct LoweredTerminator {
@@ -2334,7 +2451,7 @@ fn lower_block_terminator(
             results,
         } => Ok(LoweredTerminator::new(lower_tail_call_direct(
             *callee, *params, *results, frame, state,
-        ))),
+        )?)),
         SemanticOpKind::ReturnCallIndirect {
             type_idx,
             table_idx,
@@ -2342,14 +2459,14 @@ fn lower_block_terminator(
             results,
         } => Ok(LoweredTerminator::new(lower_tail_call_indirect(
             *type_idx, *table_idx, *params, *results, frame, state,
-        ))),
+        )?)),
         SemanticOpKind::ReturnCallRef {
             type_idx,
             params,
             results,
         } => Ok(LoweredTerminator::new(lower_tail_call_ref(
             *type_idx, *params, *results, frame, state,
-        ))),
+        )?)),
     }
 }
 
@@ -2726,7 +2843,7 @@ fn canonicalize_return_results(
         return;
     }
     let src = frame.operand_slot(state.height().saturating_sub(arity));
-    let dst = frame.operand_slot(0);
+    let dst = FrameSlot(0);
     if src == dst {
         return;
     }
