@@ -109,8 +109,8 @@ impl<'a> Arm64Backend<'a> {
         &mut self,
         op_code: u32,
         result_scratch_idx: Option<u8>,
-    ) {
-        self.emit_preserved_call_and_close_with_prefix(op_code, result_scratch_idx, 0);
+    ) -> Result<(), WasmError> {
+        self.emit_preserved_call_and_close_with_prefix(op_code, result_scratch_idx, 0)
     }
 
     pub(super) fn emit_preserved_call_and_close_with_prefix(
@@ -118,7 +118,7 @@ impl<'a> Arm64Backend<'a> {
         op_code: u32,
         result_scratch_idx: Option<u8>,
         prefix_bytes: u32,
-    ) {
+    ) -> Result<(), WasmError> {
         use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
 
         let call_scratch_idx = result_scratch_idx.unwrap_or_else(|| self.gp_scratch.alloc());
@@ -149,7 +149,7 @@ impl<'a> Arm64Backend<'a> {
             call_scratch,
             preserved_entry as *const () as usize as u64,
         );
-        self.core.text.emit_u32(enc::blr(call_scratch));
+        self.emit_body_returning_blr(call_scratch)?;
 
         // Errors exit the current function via `body_local_error_label`, so
         // they only need to discard the preserved frame and keep `C_RET0`
@@ -186,6 +186,7 @@ impl<'a> Arm64Backend<'a> {
         if result_scratch_idx.is_none() {
             self.gp_scratch.free_index(call_scratch_idx);
         }
+        Ok(())
     }
 
     // ── Register save/restore ───────────────────────────────────────────────

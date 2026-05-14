@@ -66,12 +66,10 @@ pub(crate) trait ArchBackend<'a>: Sized {
     //                                    holds 0 (success) or the trap
     //                                    kind (error) — see §9.
     //   4. (internal_entry_label binding)
-    //   5. `lower_body_prelude`       — body entry prelude: per-arch
-    //                                    native-call setup (link save on
-    //                                    arm64/arm32, alignment shim on
-    //                                    x86_64). Today native backends emit
-    //                                    it unconditionally; a future leaf
-    //                                    optimization may gate it.
+    //   5. `lower_body_prelude`       — body entry prelude: per-arch setup
+    //                                    such as link-save state on
+    //                                    link-register targets or stack
+    //                                    alignment shims where needed.
     //   6. (body blocks + edge stubs)
     //   7. `lower_body_local_error_tail` — bound at `body_local_error_label`,
     //                                    restores preserved dynamic clobbers,

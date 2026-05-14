@@ -468,7 +468,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 let scratch_idx = self.gp_scratch.alloc();
                 let scratch = self.gp_scratch.reg(scratch_idx);
                 let callee_load = self.core.text.emit_u32(enc::ldr_lit_64(scratch, 0));
-                self.core.text.emit_u32(enc::blr(scratch));
+                self.emit_body_returning_blr(scratch)?;
                 self.pending_call_literals
                     .push(super::backend::PendingCallLiteral {
                         ldr_offset: callee_load,
@@ -479,7 +479,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             }
             MachineCallTarget::Indirect { callee_entry, .. } => {
                 let callee_entry = self.map_gp_reg(*callee_entry)?;
-                self.core.text.emit_u32(enc::blr(callee_entry));
+                self.emit_body_returning_blr(callee_entry)?;
                 None
             }
         };
@@ -535,10 +535,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
             MachineCallTarget::Indirect { .. } => None,
         };
 
-        self.lower_preserved_dynamic_body_restore();
-        self.core
-            .text
-            .emit_u32(enc::ldp_64_post_index(x29, x30, abi::stack_reg(), 16));
+        if self.has_body_host_frame() {
+            self.lower_preserved_dynamic_body_restore();
+            self.core
+                .text
+                .emit_u32(enc::ldp_64_post_index(x29, x30, abi::stack_reg(), 16));
+        }
         // Tail-call arguments have already been repacked to the current frame
         // prefix, so the callee reuses the current MACHINE_FP_REG value.
         let _ = fp_reg;
@@ -974,11 +976,13 @@ impl<'a> super::backend::Arm64Backend<'a> {
         }
 
         // Restore any JIT-ABI preserved dynamic regs, then pop the body
-        // prelude link save.
-        self.lower_preserved_dynamic_body_restore();
-        self.core
-            .text
-            .emit_u32(enc::ldp_64_post_index(x29, x30, abi::stack_reg(), 16));
+        // prelude link save if this body emitted one.
+        if self.has_body_host_frame() {
+            self.lower_preserved_dynamic_body_restore();
+            self.core
+                .text
+                .emit_u32(enc::ldp_64_post_index(x29, x30, abi::stack_reg(), 16));
+        }
 
         // Success status: C_RET0 = 0.
         self.core.text.emit_u32(enc::mov_zero_64(abi::C_RET0));
@@ -1010,7 +1014,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         let call_scratch_idx = self.gp_scratch.alloc();
         let call_scratch = self.gp_scratch.reg(call_scratch_idx);
         self.materialize_u64(call_scratch, call_runtime_entry_ptr() as usize as u64);
-        self.core.text.emit_u32(enc::blr(call_scratch));
+        self.emit_body_returning_blr(call_scratch)?;
         self.gp_scratch.free_index(call_scratch_idx);
 
         // Nonzero helper status means the runtime stored a WasmError in
@@ -1028,6 +1032,15 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
     /// Emit a trap stub -- called by `ArchBackend::emit_trap`.
     pub(super) fn lower_trap_dispatch(&mut self, kind: MachineTrapKind) {
+        let local_link_save = !self.has_body_host_frame();
+        if local_link_save {
+            self.core.text.emit_u32(enc::stp_64_pre_index(
+                abi::host_fp_reg(),
+                abi::host_lr_reg(),
+                abi::stack_reg(),
+                -16,
+            ));
+        }
         // Set up arguments: x0 = ctx, x1 = trap code
         self.core
             .text
@@ -1038,6 +1051,14 @@ impl<'a> super::backend::Arm64Backend<'a> {
         materialize_u64_into(&mut self.core.text, call_scratch, raise_trap as u64);
         self.core.text.emit_u32(enc::blr(call_scratch));
         self.gp_scratch.free_index(call_scratch_idx);
+        if local_link_save {
+            self.core.text.emit_u32(enc::ldp_64_post_index(
+                abi::host_fp_reg(),
+                abi::host_lr_reg(),
+                abi::stack_reg(),
+                16,
+            ));
+        }
         // raise_trap returned with C_RET0 = NativeCallStatus::Error (= 1).
         // Branch to body_local_error_label, which preserves C_RET0 and
         // propagates upward to the caller through the unified Return tail.

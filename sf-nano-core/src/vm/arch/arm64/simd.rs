@@ -262,7 +262,10 @@ impl<'a> Arm64Backend<'a> {
         self.gp_scratch.free_index(gp0_idx);
     }
 
-    fn emit_preserved_call_for_v128_from_raw(&mut self, dst_fp: Arm64FpReg) {
+    fn emit_preserved_call_for_v128_from_raw(
+        &mut self,
+        dst_fp: Arm64FpReg,
+    ) -> Result<(), WasmError> {
         let call_scratch_idx = self.gp_scratch.alloc();
         let call_scratch = self.gp_scratch.reg(call_scratch_idx);
 
@@ -288,7 +291,7 @@ impl<'a> Arm64Backend<'a> {
             call_scratch,
             preserved_entry as *const () as usize as u64,
         );
-        self.core.text.emit_u32(enc::blr(call_scratch));
+        self.emit_body_returning_blr(call_scratch)?;
 
         let error_path = self.core.new_label();
         self.lower_cbnz(abi::C_RET0, error_path);
@@ -308,13 +311,14 @@ impl<'a> Arm64Backend<'a> {
 
         self.core.bind_label(done);
         self.gp_scratch.free_index(call_scratch_idx);
+        Ok(())
     }
 
     fn lower_v128_from_raw(&mut self, dst: MachineReg, raw: MachineValue) -> Result<(), WasmError> {
         let dst_fp = self.map_fp_reg(dst)?;
         self.emit_preserved_frame_open_with_prefix(V128_PREFIX_BYTES);
         self.emit_io_store_value_at((V128_PREFIX_BYTES / 8) as usize, preserved_io::ARG0, raw)?;
-        self.emit_preserved_call_for_v128_from_raw(dst_fp);
+        self.emit_preserved_call_for_v128_from_raw(dst_fp)?;
         Ok(())
     }
 
@@ -336,7 +340,7 @@ impl<'a> Arm64Backend<'a> {
             preserved_op::V128_TO_RAW,
             Some(raw_idx),
             V128_PREFIX_BYTES,
-        );
+        )?;
         if dst_gp != raw_tmp {
             self.core.text.emit_u32(enc::mov_reg_64(dst_gp, raw_tmp));
         }

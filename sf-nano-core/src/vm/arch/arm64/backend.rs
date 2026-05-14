@@ -11,8 +11,9 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId,
-            MachineInst, MachineReg, MachineReturnAbi, MachineTerminator, MachineTrapKind,
-            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineFunction, MachineInst, MachineInstKind, MachineReg, MachineReturnAbi,
+            MachineTerminator, MachineTrapKind, MACHINE_CTX_REG, MACHINE_FP_REG,
+            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
@@ -26,7 +27,10 @@ use super::{
 #[cfg(sf_ir_dump)]
 use crate::vm::arch::common::types::DebugRegion;
 use crate::vm::arch::common::{
-    backend::ArchBackend, core::CompilerCore, scratch_pool::ScratchPool, types::ParallelSource,
+    backend::ArchBackend,
+    core::{CompilerCore, FunctionBody},
+    scratch_pool::ScratchPool,
+    types::ParallelSource,
 };
 
 // ── Frame layout constants ───────────────────────────────────────────────────
@@ -126,6 +130,23 @@ pub(crate) struct Arm64Backend<'a> {
 }
 
 impl<'a> Arm64Backend<'a> {
+    pub(super) fn has_body_host_frame(&self) -> bool {
+        match self.core.body {
+            FunctionBody::Mir(function) => arm64_function_needs_body_host_frame(function),
+            FunctionBody::Template { .. } => true,
+        }
+    }
+
+    pub(super) fn emit_body_returning_blr(&mut self, target: Arm64Reg) -> Result<(), WasmError> {
+        if !self.has_body_host_frame() {
+            return Err(WasmError::internal(
+                "arm64 body-returning native call requires a body link save",
+            ));
+        }
+        self.core.text.emit_u32(enc::blr(target));
+        Ok(())
+    }
+
     fn preserved_dynamic_body_regs(
         &self,
     ) -> (collections::Vec<Arm64Reg>, collections::Vec<Arm64FpReg>) {
@@ -320,6 +341,72 @@ impl<'a> Arm64Backend<'a> {
     }
 }
 
+fn arm64_function_needs_body_host_frame(function: &MachineFunction) -> bool {
+    if !function.preserved_clobbers.is_empty() {
+        return true;
+    }
+
+    function.program.blocks.iter().any(|block| {
+        block
+            .ops
+            .iter()
+            .any(|inst| arm64_inst_lowers_to_inline_native_call(&inst.kind))
+            || matches!(block.terminator, MachineTerminator::Call { .. })
+    })
+}
+
+/// ARM64-only lowering effect: true when this MachineIR instruction emits a
+/// native call and then resumes inside the same wasm body. Shared MachineIR
+/// deliberately does not own this predicate because other backends may lower
+/// the same instruction without clobbering a link register.
+fn arm64_inst_lowers_to_inline_native_call(kind: &MachineInstKind) -> bool {
+    match kind {
+        MachineInstKind::CallRuntime(_)
+        | MachineInstKind::EhThrow { .. }
+        | MachineInstKind::EhThrowRef { .. }
+        | MachineInstKind::EhAllocExnRef { .. }
+        | MachineInstKind::MemoryGrow { .. }
+        | MachineInstKind::MemoryFill { .. }
+        | MachineInstKind::MemoryCopy { .. }
+        | MachineInstKind::MemoryInit { .. }
+        | MachineInstKind::DataDrop { .. }
+        | MachineInstKind::TableGrow { .. }
+        | MachineInstKind::TableFill { .. }
+        | MachineInstKind::TableCopy { .. }
+        | MachineInstKind::TableInit { .. }
+        | MachineInstKind::ElemDrop { .. }
+        | MachineInstKind::RefFunc { .. }
+        | MachineInstKind::RefAsNonNull { .. }
+        | MachineInstKind::RefEq { .. }
+        | MachineInstKind::RefI31 { .. }
+        | MachineInstKind::I31GetS { .. }
+        | MachineInstKind::I31GetU { .. }
+        | MachineInstKind::AnyConvertExtern { .. }
+        | MachineInstKind::ExternConvertAny { .. }
+        | MachineInstKind::RefTest { .. }
+        | MachineInstKind::RefCast { .. }
+        | MachineInstKind::StructNew { .. }
+        | MachineInstKind::StructNewDefault { .. }
+        | MachineInstKind::StructGet { .. }
+        | MachineInstKind::StructSet { .. }
+        | MachineInstKind::ArrayNew { .. }
+        | MachineInstKind::ArrayNewDefault { .. }
+        | MachineInstKind::ArrayNewFixed { .. }
+        | MachineInstKind::ArrayNewData { .. }
+        | MachineInstKind::ArrayNewElem { .. }
+        | MachineInstKind::ArrayGet { .. }
+        | MachineInstKind::ArraySet { .. }
+        | MachineInstKind::ArrayFill { .. }
+        | MachineInstKind::ArrayCopy { .. }
+        | MachineInstKind::ArrayInitData { .. }
+        | MachineInstKind::ArrayInitElem { .. }
+        | MachineInstKind::ArrayLen { .. } => true,
+        #[cfg(sf_has_simd)]
+        MachineInstKind::V128FromRaw { .. } | MachineInstKind::V128ToRaw { .. } => true,
+        _ => false,
+    }
+}
+
 // ── ArchBackend trait implementation ─────────────────────────────────────────
 
 impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
@@ -456,14 +543,13 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.core.bind_label(done);
     }
 
-    /// Body entry prelude. Push x29/x30 onto the host stack so the body can
-    /// freely make nested `bl`s without losing the LR set by the caller's
-    /// `bl` into this function. The body's unified Return and
-    /// `body_local_error_label` both pop this pair before the native `ret`.
-    ///
-    /// Native backends emit this prelude unconditionally today; a future leaf
-    /// optimization may skip it when the body makes no native calls.
+    /// Body entry prelude. Non-leaf bodies push x29/x30 onto the host stack so
+    /// nested native calls can freely clobber LR. Leaf bodies with no preserved
+    /// dynamic save area skip this prelude and return using the incoming LR.
     fn lower_body_prelude(&mut self) {
+        if !self.has_body_host_frame() {
+            return;
+        }
         let x29 = abi::host_fp_reg();
         let x30 = abi::host_lr_reg();
         // stp x29, x30, [sp, #-16]!
@@ -529,6 +615,10 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     }
 
     fn lower_body_local_error_tail(&mut self) {
+        if !self.has_body_host_frame() {
+            self.core.text.emit_u32(enc::ret());
+            return;
+        }
         self.lower_preserved_dynamic_body_restore();
         let x29 = abi::host_fp_reg();
         let x30 = abi::host_lr_reg();

@@ -3812,7 +3812,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.emit_io_store_value(preserved_io::ARG0, delta)?;
         let result_scratch_idx = self.gp_scratch.alloc();
         let result_scratch = self.gp_scratch.reg(result_scratch_idx);
-        self.emit_preserved_call_and_close(preserved_op::MEMORY_GROW, Some(result_scratch_idx));
+        self.emit_preserved_call_and_close(preserved_op::MEMORY_GROW, Some(result_scratch_idx))?;
 
         self.core
             .text
@@ -3836,7 +3836,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.emit_io_store_value(preserved_io::ARG0, arg0)?;
         self.emit_io_store_value(preserved_io::ARG1, arg1)?;
         self.emit_io_store_value(preserved_io::ARG2, arg2)?;
-        self.emit_preserved_call_and_close(op_code, None);
+        self.emit_preserved_call_and_close(op_code, None)?;
         Ok(())
     }
 
@@ -3853,7 +3853,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         for &(slot, value) in args {
             self.emit_io_store_value(slot, value)?;
         }
-        self.emit_preserved_call_and_close(op_code, None);
+        self.emit_preserved_call_and_close(op_code, None)?;
         Ok(())
     }
 
@@ -3877,7 +3877,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
         let result_scratch_idx = self.gp_scratch.alloc();
         let result_scratch = self.gp_scratch.reg(result_scratch_idx);
-        self.emit_preserved_call_and_close(op_code, Some(result_scratch_idx));
+        self.emit_preserved_call_and_close(op_code, Some(result_scratch_idx))?;
 
         if let Some(width) = ty.float_width() {
             let dst_fp = self.map_fp_reg(dst)?;
@@ -3914,7 +3914,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
         let result_scratch_idx = self.gp_scratch.alloc();
         let result_scratch = self.gp_scratch.reg(result_scratch_idx);
-        self.emit_preserved_call_and_close(op_code, Some(result_scratch_idx));
+        self.emit_preserved_call_and_close(op_code, Some(result_scratch_idx))?;
 
         if let Some(width) = ty.float_width() {
             let dst_fp = self.map_fp_reg(dst)?;
@@ -4001,7 +4001,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             op_code,
             Some(result_scratch_idx),
             payload_bytes,
-        );
+        )?;
         self.core.text.emit_u32(enc::mov_reg_64(
             map_gp(self.core.compiled.backend(), dst)?,
             result_scratch,
@@ -4022,7 +4022,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.emit_io_store_value(preserved_io::ARG0, dest)?;
         self.emit_io_store_value(preserved_io::ARG1, val)?;
         self.emit_io_store_value(preserved_io::ARG2, len)?;
-        self.emit_preserved_call_and_close(preserved_op::MEMORY_FILL, None);
+        self.emit_preserved_call_and_close(preserved_op::MEMORY_FILL, None)?;
         Ok(())
     }
 
@@ -4040,7 +4040,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.emit_io_store_value(preserved_io::ARG0, dest)?;
         self.emit_io_store_value(preserved_io::ARG1, src)?;
         self.emit_io_store_value(preserved_io::ARG2, len)?;
-        self.emit_preserved_call_and_close(preserved_op::MEMORY_COPY, None);
+        self.emit_preserved_call_and_close(preserved_op::MEMORY_COPY, None)?;
         Ok(())
     }
 
@@ -4058,14 +4058,14 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.emit_io_store_value(preserved_io::ARG0, dest)?;
         self.emit_io_store_value(preserved_io::ARG1, src)?;
         self.emit_io_store_value(preserved_io::ARG2, len)?;
-        self.emit_preserved_call_and_close(preserved_op::MEMORY_INIT, None);
+        self.emit_preserved_call_and_close(preserved_op::MEMORY_INIT, None)?;
         Ok(())
     }
 
     fn lower_data_drop(&mut self, data_idx: u32) -> Result<(), WasmError> {
         self.emit_preserved_frame_open();
         self.emit_io_store_imm(preserved_io::IMM0, data_idx);
-        self.emit_preserved_call_and_close(preserved_op::DATA_DROP, None);
+        self.emit_preserved_call_and_close(preserved_op::DATA_DROP, None)?;
         Ok(())
     }
 
@@ -4084,7 +4084,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.emit_io_store_value(preserved_io::ARG1, delta)?;
         let result_scratch_idx = self.gp_scratch.alloc();
         let result_scratch = self.gp_scratch.reg(result_scratch_idx);
-        self.emit_preserved_call_and_close(preserved_op::TABLE_GROW, Some(result_scratch_idx));
+        self.emit_preserved_call_and_close(preserved_op::TABLE_GROW, Some(result_scratch_idx))?;
 
         self.core
             .text
@@ -4105,7 +4105,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.emit_io_store_value(preserved_io::ARG0, start)?;
         self.emit_io_store_value(preserved_io::ARG1, val)?;
         self.emit_io_store_value(preserved_io::ARG2, len)?;
-        self.emit_preserved_call_and_close(preserved_op::TABLE_FILL, None);
+        self.emit_preserved_call_and_close(preserved_op::TABLE_FILL, None)?;
         Ok(())
     }
 
@@ -4123,7 +4123,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.emit_io_store_value(preserved_io::ARG0, dest)?;
         self.emit_io_store_value(preserved_io::ARG1, src)?;
         self.emit_io_store_value(preserved_io::ARG2, len)?;
-        self.emit_preserved_call_and_close(preserved_op::TABLE_COPY, None);
+        self.emit_preserved_call_and_close(preserved_op::TABLE_COPY, None)?;
         Ok(())
     }
 
@@ -4141,14 +4141,14 @@ impl<'a> super::backend::Arm64Backend<'a> {
         self.emit_io_store_value(preserved_io::ARG0, dest)?;
         self.emit_io_store_value(preserved_io::ARG1, src)?;
         self.emit_io_store_value(preserved_io::ARG2, len)?;
-        self.emit_preserved_call_and_close(preserved_op::TABLE_INIT, None);
+        self.emit_preserved_call_and_close(preserved_op::TABLE_INIT, None)?;
         Ok(())
     }
 
     fn lower_elem_drop(&mut self, elem_idx: u32) -> Result<(), WasmError> {
         self.emit_preserved_frame_open();
         self.emit_io_store_imm(preserved_io::IMM0, elem_idx);
-        self.emit_preserved_call_and_close(preserved_op::ELEM_DROP, None);
+        self.emit_preserved_call_and_close(preserved_op::ELEM_DROP, None)?;
         Ok(())
     }
 
