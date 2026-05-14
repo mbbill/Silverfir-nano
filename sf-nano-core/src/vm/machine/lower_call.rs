@@ -6,8 +6,9 @@ use crate::{
             MachineCallArgs, MachineCallLaneArg, MachineCallResults, MachineCallRuntime,
             MachineCallTarget, MachineCompareKind, MachineConstId, MachineFrameRegion,
             MachineFuncId, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineLoadExtension,
-            MachineMemWidth, MachineParamLoc, MachineReg, MachineRegOwner, MachineSign,
-            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MachineMemWidth, MachineParamLoc, MachineReg, MachineRegOwner, MachineResultDst,
+            MachineReturnAbi, MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,
+            MachineValue,
         },
         middle::{
             frame::{FrameSlot, FrameSpan},
@@ -40,7 +41,13 @@ impl<'a> BlockLowerContext<'a> {
         self.publish_register_params_to_frame()?;
         let arg_span = args.frame_span();
         let callee_id = MachineFuncId(callee);
-        let (callee_frame_prefix_slots, callee_total_frame_slots, callee_results, param_locs) = {
+        let (
+            callee_frame_prefix_slots,
+            callee_total_frame_slots,
+            callee_results,
+            return_abi,
+            param_locs,
+        ) = {
             let callee_runtime = self.runtime_for_func(callee_id)?;
             let results_count = callee_runtime
                 .return_results
@@ -50,6 +57,7 @@ impl<'a> BlockLowerContext<'a> {
                 callee_runtime.frame_prefix_slots,
                 callee_runtime.total_frame_slots,
                 results_count,
+                callee_runtime.return_abi.clone(),
                 callee_runtime.param_locs.clone(),
             )
         };
@@ -127,7 +135,7 @@ impl<'a> BlockLowerContext<'a> {
             target: MachineCallTarget::Direct(callee_id),
             frame_delta: slot_offset_bytes(arg_span.start)? as u32,
             args: machine_args,
-            results: call_results(self.runtime_for_func(callee_id)?.return_results, results),
+            results: call_results(&return_abi, results),
             success: crate::vm::machine::machine_ir::MachineEdge {
                 target: continuation,
                 args: collections::Vec::new(),
@@ -642,7 +650,7 @@ impl<'a> BlockLowerContext<'a> {
         }
     }
 
-    fn publish_value_to_frame_slot(
+    pub(super) fn publish_value_to_frame_slot(
         &mut self,
         value: SsaValue,
         slot: FrameSlot,
@@ -827,16 +835,27 @@ fn frame_region(span: FrameSpan) -> MachineFrameRegion {
 }
 
 #[inline]
-fn call_results(
-    callee_results: Option<MachineFrameRegion>,
-    caller_results: FrameSpan,
-) -> MachineCallResults {
-    match (callee_results, caller_results.count) {
-        (_, 0) => MachineCallResults::None,
-        (Some(callee_results), _) => MachineCallResults::FrameFallback {
-            callee_results,
+fn call_results(return_abi: &MachineReturnAbi, caller_results: FrameSpan) -> MachineCallResults {
+    if caller_results.count == 0 {
+        return MachineCallResults::None;
+    }
+    match return_abi {
+        MachineReturnAbi::None => MachineCallResults::None,
+        MachineReturnAbi::ScalarGp { ty } => MachineCallResults::ScalarGp {
+            dst: MachineResultDst::FrameSlot(caller_results.start),
+            ty: *ty,
+        },
+        MachineReturnAbi::ScalarGpPair => MachineCallResults::ScalarGpPair {
+            lo: MachineResultDst::FrameSlot(caller_results.start),
+            hi: MachineResultDst::FrameSlot(caller_results.start),
+        },
+        MachineReturnAbi::ScalarFp { ty } => MachineCallResults::ScalarFp {
+            dst: MachineResultDst::FrameSlot(caller_results.start),
+            ty: *ty,
+        },
+        MachineReturnAbi::FrameFallback { results } => MachineCallResults::FrameFallback {
+            callee_results: *results,
             caller_results: frame_region(caller_results),
         },
-        (None, _) => MachineCallResults::None,
     }
 }

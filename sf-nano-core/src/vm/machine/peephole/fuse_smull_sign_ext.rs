@@ -444,6 +444,7 @@ fn visit_edges(terminator: &MachineTerminator, mut f: impl FnMut(&MachineEdge)) 
         MachineTerminator::Call { .. }
         | MachineTerminator::TailCall { .. }
         | MachineTerminator::Return
+        | MachineTerminator::ReturnScalar { .. }
         | MachineTerminator::Trap { .. } => {}
     }
 }

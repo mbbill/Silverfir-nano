@@ -53,7 +53,7 @@ impl<'a> Arm32Backend<'a> {
         _fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
         match terminator {
-            MachineTerminator::Return => {
+            MachineTerminator::Return | MachineTerminator::ReturnScalar { .. } => {
                 self.emit_return_sequence()?;
             }
 

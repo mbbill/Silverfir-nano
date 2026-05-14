@@ -160,6 +160,7 @@ mod tests {
         SsaProgram {
             entry: SsaTarget(0),
             local_slot_types: collections::vec![ValueType::I32; 2],
+            result_types: collections::Vec::new(),
             local_slot_info: collections::vec![
                 LocalSlotInfo {
                     is_param: true,
@@ -252,6 +253,7 @@ mod tests {
                 start: FrameSlot(0),
                 count: 0,
             },
+            result_types: collections::Vec::new(),
         });
         let call = SsaInst::call(call_idx);
         let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));

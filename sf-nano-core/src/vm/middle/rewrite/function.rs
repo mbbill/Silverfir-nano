@@ -26,7 +26,7 @@ use crate::{
                 ir::{
                     entry_cache_requirement, LocalSlotInfo, SsaBinding, SsaBlock, SsaCallArgs,
                     SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInst, SsaOp,
-                    SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+                    SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator, SsaValue,
                 },
                 target::SsaTarget,
             },
@@ -142,11 +142,13 @@ pub(crate) fn rewrite_function(
     if semantic.ops.is_empty() {
         let local_slot_info = collect_local_slot_info(&semantic);
         let local_slot_types = core::mem::take(&mut semantic.local_types);
+        let result_types = core::mem::take(&mut semantic.result_types);
         drop(semantic);
         return Ok(SsaProgram {
             entry: SsaTarget(0),
             blocks: collections::Vec::new(),
             local_slot_types,
+            result_types,
             local_slot_info,
             block_entry_cached_slots: collections::Vec::new(),
             block_cfg_origins: collections::Vec::new(),
@@ -259,11 +261,13 @@ pub(crate) fn rewrite_function(
     drop(planner);
     let local_slot_info = collect_local_slot_info(&semantic);
     let local_slot_types = core::mem::take(&mut semantic.local_types);
+    let result_types = core::mem::take(&mut semantic.result_types);
     drop(semantic);
 
     let mut program = SsaProgram {
         entry: SsaTarget(cfg.entry.0),
         local_slot_types,
+        result_types,
         local_slot_info,
         block_entry_cached_slots,
         block_cfg_origins,
@@ -636,7 +640,15 @@ fn apply_inline_prefix(
         | SemanticOpKind::ReturnCallRef { params, .. } => {
             inline_prepare_call_operands(state, frame, params.saturating_add(1))?;
         }
-        SemanticOpKind::ReturnVoid | SemanticOpKind::ReturnOne | SemanticOpKind::Return { .. } => {
+        SemanticOpKind::ReturnOne => {
+            inline_fill_for_operands(state, frame, values, 1)?;
+            inline_spill_all_except_top(state, frame, 1)?;
+        }
+        SemanticOpKind::Return { arity } if *arity == 1 => {
+            inline_fill_for_operands(state, frame, values, 1)?;
+            inline_spill_all_except_top(state, frame, 1)?;
+        }
+        SemanticOpKind::ReturnVoid | SemanticOpKind::Return { .. } => {
             inline_spill_all(state, frame)?;
         }
         SemanticOpKind::AllocExnRef { .. } => {
@@ -1223,6 +1235,7 @@ fn lower_call_direct(
         callee,
         args,
         results: FrameSpan::new(call_base, results),
+        result_types: result_types.to_vec().into(),
     })?;
     state.ops.push(SsaInst::call(call_idx));
     state.finish_call(params, results, result_types);
@@ -1258,6 +1271,7 @@ fn lower_call_indirect(
         index,
         args,
         results: FrameSpan::new(call_base, results),
+        result_types: result_types.to_vec().into(),
     })?;
     state.ops.push(SsaInst::call(call_idx));
     state.finish_call(consumed, results, result_types);
@@ -1291,6 +1305,7 @@ fn lower_call_ref(
         callee_ref,
         args,
         results: FrameSpan::new(call_base, results),
+        result_types: result_types.to_vec().into(),
     })?;
     state.ops.push(SsaInst::call(call_idx));
     state.finish_call(consumed, results, result_types);
@@ -2433,12 +2448,15 @@ fn lower_block_terminator(
         SemanticOpKind::ReturnVoid => Ok(LoweredTerminator::new(SsaTerminator::Return {
             results: None,
         })),
-        SemanticOpKind::ReturnOne => Ok(LoweredTerminator::new(SsaTerminator::Return {
-            results: {
-                canonicalize_return_results(state, frame, values, 1, &semantic.result_types);
-                return_results(frame, 1)
-            },
-        })),
+        SemanticOpKind::ReturnOne => Ok(LoweredTerminator::new(return_scalar_or_frame(
+            state,
+            frame,
+            values,
+            &semantic.result_types,
+        )?)),
+        SemanticOpKind::Return { arity } if *arity == 1 => Ok(LoweredTerminator::new(
+            return_scalar_or_frame(state, frame, values, &semantic.result_types)?,
+        )),
         SemanticOpKind::Return { arity } => Ok(LoweredTerminator::new(SsaTerminator::Return {
             results: {
                 canonicalize_return_results(state, frame, values, *arity, &semantic.result_types);
@@ -2830,6 +2848,58 @@ fn maybe_publish_taken_branch_payloads(
         published.push(entry.stack_drop);
     }
     Ok(())
+}
+
+fn return_scalar_or_frame(
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
+    result_types: &[ValueType],
+) -> Result<SsaTerminator, WasmError> {
+    let Some(results) = return_results(frame, 1) else {
+        return Ok(SsaTerminator::Return { results: None });
+    };
+    let ty = result_types.first().copied().unwrap_or(ValueType::I64);
+    if !scalar_return_supported(ty) {
+        canonicalize_scalar_return_result(state, frame, values, ty);
+        return Ok(SsaTerminator::Return {
+            results: Some(results),
+        });
+    }
+    let stack_index = state.height().saturating_sub(1);
+    let slot = frame.operand_slot(stack_index);
+    let result = if let Some(value) = state.value_at_stack_index(stack_index) {
+        SsaScalarResultLoc::Live { value, ty, slot }
+    } else {
+        SsaScalarResultLoc::Stack { slot, ty }
+    };
+    Ok(SsaTerminator::ReturnScalar { result, results })
+}
+
+#[inline]
+fn scalar_return_supported(ty: ValueType) -> bool {
+    !matches!(ty, ValueType::V128)
+}
+
+fn canonicalize_scalar_return_result(
+    state: &mut BlockState,
+    frame: FrameLayoutPlan,
+    values: &mut ValueAlloc,
+    ty: ValueType,
+) {
+    let stack_index = state.height().saturating_sub(1);
+    if let Some(value) = state.value_at_stack_index(stack_index) {
+        state.ops.push(SsaInst::spill(FrameSlot(0), value));
+        return;
+    }
+
+    let src = frame.operand_slot(stack_index);
+    if src == FrameSlot(0) {
+        return;
+    }
+    let value = values.fresh_typed(ty);
+    state.ops.push(SsaInst::fill(src, value));
+    state.ops.push(SsaInst::spill(FrameSlot(0), value));
 }
 
 fn canonicalize_return_results(

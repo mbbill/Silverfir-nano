@@ -4895,7 +4895,9 @@ impl<'a> Riscv32Backend<'a> {
                 then_edge,
                 else_edge,
             } => self.lower_branch(cond, then_edge, else_edge, fallthrough),
-            MachineTerminator::Return => self.lower_return_sequence(),
+            MachineTerminator::Return | MachineTerminator::ReturnScalar { .. } => {
+                self.lower_return_sequence()
+            }
             MachineTerminator::Trap { kind } => {
                 self.lower_trap_dispatch(*kind);
                 Ok(())

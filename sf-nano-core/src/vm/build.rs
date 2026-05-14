@@ -67,10 +67,10 @@ use crate::{
         arch,
         arch::common::helpers::page_align_function,
         machine::{
-            derive_param_locs_from_types, lower_module, lower_single_function,
+            derive_param_locs_from_types, derive_return_abi, lower_module, lower_single_function,
             machine_ir::{
                 MachineFrameRegion, MachineFuncId, MachineFunctionAbi, MachineModuleAbi,
-                MachineParamLoc,
+                MachineParamLoc, MachineReturnAbi,
             },
             optimize_function, optimize_module, ConstPoolBuilder, LowerFunctionInput,
             LowerModuleInput, LoweredMachineModule,
@@ -149,21 +149,33 @@ struct FunctionStaticSummary {
     frame: FrameLayoutPlan,
     param_locs: collections::Vec<MachineParamLoc>,
     result_count: u16,
+    return_abi: MachineReturnAbi,
 }
 
 impl FunctionStaticSummary {
     fn abi(self) -> MachineFunctionAbi {
+        let return_results = frame_return_results(self.frame, self.result_count);
         MachineFunctionAbi {
             id: self.id,
             param_locs: self.param_locs,
             frame_prefix_slots: self.frame.frame_prefix_size,
             total_frame_slots: self.frame.total_slots(),
             helper_scratch: self.frame.call_scratch.map(frame_span_region),
-            return_results: (self.result_count > 0)
-                .then(|| frame_span_region(self.frame.return_results(self.result_count))),
+            return_results,
+            return_abi: self.return_abi,
             init_locals: collections::Vec::new(),
         }
     }
+}
+
+fn frame_return_results(frame: FrameLayoutPlan, result_count: u16) -> Option<MachineFrameRegion> {
+    (result_count > 0).then(|| frame_span_region(frame.return_results(result_count)))
+}
+
+fn frame_return_abi(return_results: Option<MachineFrameRegion>) -> MachineReturnAbi {
+    return_results
+        .map(|results| MachineReturnAbi::FrameFallback { results })
+        .unwrap_or(MachineReturnAbi::None)
 }
 
 #[derive(Clone, Debug)]
@@ -348,18 +360,21 @@ fn build_static_summaries(
                 phase_span_with_function("template_scan", Some(func_idx as u32));
             match template::scan_function(backend, spec, !module.memories.is_empty()) {
                 Ok(scan) => {
+                    let frame = plan_frame_layout(
+                        scan.local_count,
+                        scan.max_stack_height,
+                        backend.call_scratch_slots,
+                    );
+                    let return_results = frame_return_results(frame, scan.result_count);
                     let summary = FunctionStaticSummary {
                         id: MachineFuncId(func_idx as u32),
-                        frame: plan_frame_layout(
-                            scan.local_count,
-                            scan.max_stack_height,
-                            backend.call_scratch_slots,
-                        ),
+                        frame,
                         param_locs: derive_param_locs_from_types(
                             spec.func_type().params(),
                             backend,
                         ),
                         result_count: scan.result_count,
+                        return_abi: frame_return_abi(return_results),
                     };
                     abi.functions[func_idx] = summary.abi();
                     is_local_func[func_idx] = true;
@@ -375,15 +390,19 @@ fn build_static_summaries(
         }
         let sem_scan_function_phase = phase_span_with_function("sem_scan", Some(func_idx as u32));
         let semantic = decode_function_semantic(module, store, spec)?;
+        let frame = plan_frame_layout(
+            semantic.local_count,
+            semantic.max_stack_height,
+            backend.call_scratch_slots,
+        );
+        let result_count = spec.func_type().results().len() as u16;
+        let return_results = frame_return_results(frame, result_count);
         let summary = FunctionStaticSummary {
             id: MachineFuncId(func_idx as u32),
-            frame: plan_frame_layout(
-                semantic.local_count,
-                semantic.max_stack_height,
-                backend.call_scratch_slots,
-            ),
+            frame,
             param_locs: derive_param_locs_from_types(spec.func_type().params(), backend),
-            result_count: spec.func_type().results().len() as u16,
+            result_count,
+            return_abi: derive_return_abi(spec.func_type().results(), return_results, backend),
         };
         abi.functions[func_idx] = summary.abi();
         is_local_func[func_idx] = true;

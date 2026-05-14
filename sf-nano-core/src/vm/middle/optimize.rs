@@ -19,7 +19,7 @@ use crate::{
     vm::{
         middle::ssa_ir::ir::{
             SsaCallArgs, SsaCallOp, SsaCallOperandLoc, SsaInst, SsaOp, SsaOperand, SsaProgram,
-            SsaTerminator, SsaValue,
+            SsaScalarResultLoc, SsaTerminator, SsaValue,
         },
         wasm::primitive_op::{self, PrimitiveOpKind},
     },
@@ -997,6 +997,9 @@ fn mark_terminator_uses(term: &SsaTerminator, used: &mut [bool]) {
         | SsaTerminator::TrapUnreachable
         | SsaTerminator::EhThrow { .. }
         | SsaTerminator::EhThrowRef { .. } => {}
+        SsaTerminator::ReturnScalar { result, .. } => {
+            mark_scalar_result_uses(result, used);
+        }
         SsaTerminator::TailCallDirect { args, .. } => {
             mark_call_args_uses(args, used);
         }
@@ -1039,6 +1042,14 @@ fn mark_call_args_uses(args: &SsaCallArgs, used: &mut [bool]) {
 
 fn mark_call_operand_uses(loc: &SsaCallOperandLoc, used: &mut [bool]) {
     if let SsaCallOperandLoc::Live { value, .. } = loc {
+        if let Some(slot) = used.get_mut(value.0 as usize) {
+            *slot = true;
+        }
+    }
+}
+
+fn mark_scalar_result_uses(loc: &SsaScalarResultLoc, used: &mut [bool]) {
+    if let SsaScalarResultLoc::Live { value, .. } = loc {
         if let Some(slot) = used.get_mut(value.0 as usize) {
             *slot = true;
         }
@@ -1121,6 +1132,9 @@ fn max_value_index_parts(
         | SsaTerminator::TrapUnreachable
         | SsaTerminator::EhThrow { .. }
         | SsaTerminator::EhThrowRef { .. } => {}
+        SsaTerminator::ReturnScalar { result, .. } => {
+            max_value = max_value.max(max_scalar_result_value(result));
+        }
         SsaTerminator::TailCallDirect { args, .. } => {
             max_value = max_value.max(max_call_args_value(args));
         }
@@ -1162,6 +1176,13 @@ fn max_call_operand_value(loc: &SsaCallOperandLoc) -> Option<SsaValue> {
     }
 }
 
+fn max_scalar_result_value(loc: &SsaScalarResultLoc) -> Option<SsaValue> {
+    match loc {
+        SsaScalarResultLoc::Stack { .. } => None,
+        SsaScalarResultLoc::Live { value, .. } => Some(*value),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use crate::collections;
@@ -1184,6 +1205,7 @@ mod tests {
             entry: SsaTarget(0),
             blocks: collections::Vec::new(),
             local_slot_types: collections::Vec::new(),
+            result_types: collections::Vec::new(),
             local_slot_info: collections::Vec::new(),
             block_entry_cached_slots: collections::Vec::new(),
             block_cfg_origins: collections::Vec::new(),
@@ -1324,6 +1346,7 @@ mod tests {
                 }],
             },
             results: FrameSpan::new(FrameSlot(0), 0),
+            result_types: collections::Vec::new(),
         });
         program.blocks.push(SsaBlock {
             id: SsaTarget(0),

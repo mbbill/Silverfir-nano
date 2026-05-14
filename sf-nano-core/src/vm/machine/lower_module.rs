@@ -16,8 +16,9 @@ use crate::{
             MachineFloatWidth, MachineFrameRegion, MachineFuncId, MachineFunction,
             MachineFunctionAbi, MachineInst, MachineInstKind, MachineIntBinaryOp,
             MachineLoadExtension, MachineMemWidth, MachineModule, MachineModuleAbi,
-            MachineParamLoc, MachineProgram, MachineReg, MachineRegOwner, MachineSign,
-            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MachineParamLoc, MachineProgram, MachineReg, MachineRegOwner, MachineResultSrc,
+            MachineReturnAbi, MachineReturnValue, MachineSign, MachineStorageType,
+            MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::{
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
@@ -215,6 +216,7 @@ fn lower_function_runtime(
         let result_span = input.frame.return_results(input.result_count);
         return_results = Some(frame_span_region(result_span));
     }
+    let return_abi = derive_return_abi(&input.ssa.result_types, return_results, config);
 
     let init_locals = input
         .ssa
@@ -232,6 +234,7 @@ fn lower_function_runtime(
         total_frame_slots: input.frame.total_slots(),
         helper_scratch,
         return_results,
+        return_abi,
         init_locals,
     })
 }
@@ -505,6 +508,7 @@ fn lower_function(
                         callee,
                         args,
                         results,
+                        ..
                     } if is_local_func
                         .get(*callee as usize)
                         .copied()
@@ -532,6 +536,7 @@ fn lower_function(
                         callee,
                         args,
                         results,
+                        ..
                     } => {
                         lower.lower_call_runtime(*callee, args, *results, const_pool)?;
                     }
@@ -540,6 +545,7 @@ fn lower_function(
                         callee_ref,
                         args,
                         results,
+                        result_types,
                     } => {
                         let type_idx = *type_idx;
                         let param_locs = derive_param_locs_from_types(&args.param_types, config);
@@ -556,6 +562,8 @@ fn lower_function(
                             IndirectCallSource::Ref { ref_slot },
                             type_idx,
                             IndirectTransfer::Call { args, results },
+                            result_types,
+                            config,
                             param_locs,
                             current_block,
                             current_params,
@@ -575,6 +583,7 @@ fn lower_function(
                             index,
                             args,
                             results,
+                            result_types,
                         } = call
                         else {
                             unreachable!("matched call_indirect");
@@ -598,6 +607,8 @@ fn lower_function(
                             },
                             type_idx,
                             IndirectTransfer::Call { args, results },
+                            result_types,
+                            config,
                             param_locs,
                             current_block,
                             current_params,
@@ -638,7 +649,7 @@ fn lower_function(
                         runtime_tail_results_span(*return_results),
                         const_pool,
                     )?;
-                    MachineTerminator::Return
+                    return_terminator_from_frame(&current_abi.return_abi)
                 };
                 push_lowered_block(
                     current_block,
@@ -679,6 +690,8 @@ fn lower_function(
                         args,
                         return_results,
                     },
+                    &input.ssa.result_types,
+                    config,
                     param_locs,
                     current_block,
                     current_params,
@@ -713,6 +726,8 @@ fn lower_function(
                         args,
                         return_results,
                     },
+                    &input.ssa.result_types,
+                    config,
                     param_locs,
                     current_block,
                     current_params,
@@ -868,6 +883,7 @@ fn derive_return_results(program: &SsaProgram) -> Result<Option<MachineFrameRegi
     for block in &program.blocks {
         let results = match &block.terminator {
             SsaTerminator::Return { results } => *results,
+            SsaTerminator::ReturnScalar { results, .. } => Some(*results),
             SsaTerminator::TailCallDirect { return_results, .. }
             | SsaTerminator::TailCallIndirect { return_results, .. }
             | SsaTerminator::TailCallRef { return_results, .. } => *return_results,
@@ -895,17 +911,92 @@ fn frame_span_region(span: FrameSpan) -> MachineFrameRegion {
     }
 }
 
+pub(crate) fn derive_return_abi(
+    result_types: &[ValueType],
+    return_results: Option<MachineFrameRegion>,
+    config: BackendConfig,
+) -> MachineReturnAbi {
+    let Some(results) = return_results else {
+        return MachineReturnAbi::None;
+    };
+    if !config.scalar_return_lanes || result_types.len() != 1 || results.slots != 1 {
+        return MachineReturnAbi::FrameFallback { results };
+    }
+    match value_type_storage_type(result_types[0]) {
+        MachineStorageType::GpWord => MachineReturnAbi::ScalarGp {
+            ty: MachineStorageType::GpWord,
+        },
+        MachineStorageType::GpI64 if config.gp_unit_bytes == 4 => MachineReturnAbi::ScalarGpPair,
+        MachineStorageType::GpI64 => MachineReturnAbi::ScalarGp {
+            ty: MachineStorageType::GpI64,
+        },
+        MachineStorageType::Fp32 => MachineReturnAbi::ScalarFp {
+            ty: MachineStorageType::Fp32,
+        },
+        MachineStorageType::Fp64 => MachineReturnAbi::ScalarFp {
+            ty: MachineStorageType::Fp64,
+        },
+        MachineStorageType::V128 => MachineReturnAbi::FrameFallback { results },
+    }
+}
+
 #[inline]
-fn frame_fallback_results(
-    callee_results: MachineFrameRegion,
+fn call_results_for_return_abi(
+    return_abi: &MachineReturnAbi,
     caller_results: FrameSpan,
 ) -> MachineCallResults {
     if caller_results.count == 0 {
-        MachineCallResults::None
-    } else {
-        MachineCallResults::FrameFallback {
-            callee_results,
+        return MachineCallResults::None;
+    }
+    match return_abi {
+        MachineReturnAbi::None => MachineCallResults::None,
+        MachineReturnAbi::ScalarGp { ty } => MachineCallResults::ScalarGp {
+            dst: crate::vm::machine::machine_ir::MachineResultDst::FrameSlot(caller_results.start),
+            ty: *ty,
+        },
+        MachineReturnAbi::ScalarGpPair => MachineCallResults::ScalarGpPair {
+            lo: crate::vm::machine::machine_ir::MachineResultDst::FrameSlot(caller_results.start),
+            hi: crate::vm::machine::machine_ir::MachineResultDst::FrameSlot(caller_results.start),
+        },
+        MachineReturnAbi::ScalarFp { ty } => MachineCallResults::ScalarFp {
+            dst: crate::vm::machine::machine_ir::MachineResultDst::FrameSlot(caller_results.start),
+            ty: *ty,
+        },
+        MachineReturnAbi::FrameFallback { results } => MachineCallResults::FrameFallback {
+            callee_results: *results,
             caller_results: frame_span_region(caller_results),
+        },
+    }
+}
+
+fn return_terminator_from_frame(return_abi: &MachineReturnAbi) -> MachineTerminator {
+    match return_abi {
+        MachineReturnAbi::ScalarGp { ty } => MachineTerminator::ReturnScalar {
+            value: MachineReturnValue::ScalarGp {
+                src: MachineResultSrc::FrameSlot(FrameSlot(0)),
+                ty: *ty,
+            },
+        },
+        MachineReturnAbi::ScalarGpPair => MachineTerminator::ReturnScalar {
+            value: MachineReturnValue::ScalarGpPair {
+                lo: MachineResultSrc::FrameSlotOffset {
+                    slot: FrameSlot(0),
+                    byte_offset: 0,
+                },
+                hi: MachineResultSrc::FrameSlotOffset {
+                    slot: FrameSlot(0),
+                    byte_offset: 4,
+                },
+            },
+        },
+        MachineReturnAbi::ScalarFp { ty } => MachineTerminator::ReturnScalar {
+            value: MachineReturnValue::ScalarFp {
+                src: MachineResultSrc::FrameSlot(FrameSlot(0)),
+                ty: *ty,
+            },
+        },
+        MachineReturnAbi::None | MachineReturnAbi::FrameFallback { .. } => {
+            MachineTerminator::Return
         }
     }
 }
@@ -1031,6 +1122,8 @@ fn lower_indirect_dispatch_cluster(
     source: IndirectCallSource,
     type_idx: u32,
     transfer: IndirectTransfer,
+    result_types: &[ValueType],
+    config: BackendConfig,
     param_locs: collections::Vec<MachineParamLoc>,
     current_block: MachineBlockId,
     current_params: collections::Vec<MachineBlockParam>,
@@ -1354,8 +1447,14 @@ fn lower_indirect_dispatch_cluster(
             },
             frame_delta: slot_offset_bytes(transfer.source_args().start)? as u32,
             args: machine_call_args,
-            results: frame_fallback_results(
-                fixed_callee_return_results(transfer.runtime_results().count),
+            results: call_results_for_return_abi(
+                &derive_return_abi(
+                    result_types,
+                    Some(fixed_callee_return_results(
+                        transfer.runtime_results().count,
+                    )),
+                    config,
+                ),
                 transfer.runtime_results(),
             ),
             success: MachineEdge {
@@ -1391,7 +1490,7 @@ fn lower_indirect_dispatch_cluster(
             target: continuation,
             args: collections::Vec::new(),
         }),
-        None => MachineTerminator::Return,
+        None => return_terminator_from_frame(lower.current_return_abi()),
     };
     push_lowered_block(
         runtime_call,
@@ -1465,6 +1564,7 @@ fn attach_continuation_args(
         MachineTerminator::Call { .. }
         | MachineTerminator::TailCall { .. }
         | MachineTerminator::Return
+        | MachineTerminator::ReturnScalar { .. }
         | MachineTerminator::Trap { .. } => false,
     };
     if attached {
@@ -2461,6 +2561,7 @@ fn compute_ssa_predecessors(program: &SsaProgram) -> collections::Vec<collection
                 }
             }
             SsaTerminator::Return { .. }
+            | SsaTerminator::ReturnScalar { .. }
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }

@@ -1,7 +1,7 @@
 use super::inst::MachineInst;
 use crate::collections;
 
-use super::abi::{MachineCallArgs, MachineCallResults};
+use super::abi::{MachineCallArgs, MachineCallResults, MachineReturnValue};
 use super::types::{
     MachineBlockId, MachineCompareKind, MachineFloatWidth, MachineFuncId, MachineIntWidth,
     MachineReg, MachineRegOwner, MachineSign, MachineStorageType, MachineTrapKind, MachineValue,
@@ -168,6 +168,12 @@ pub(crate) enum MachineTerminator {
     /// caller's frame pointer, sets `C_RET0 = 0` (the success status),
     /// and executes the platform's native return.
     Return,
+    /// Return one scalar value through the backend's wasm-to-wasm return lane.
+    /// Backends still use the normal status register for success/trap
+    /// propagation; the scalar lane is separate from that status channel.
+    ReturnScalar {
+        value: MachineReturnValue,
+    },
     Trap {
         kind: MachineTrapKind,
     },

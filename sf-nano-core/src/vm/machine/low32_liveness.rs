@@ -10,7 +10,7 @@ use crate::vm::machine::{
         MachineArgSrc, MachineArgSrcPair, MachineBlockId, MachineBranchCond, MachineCallArgs,
         MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineEdge, MachineFunction,
         MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineReg, MachineResultDst,
-        MachineTerminator, MachineValue,
+        MachineResultSrc, MachineReturnValue, MachineTerminator, MachineValue,
     },
     peephole::helpers as mir_helpers,
 };
@@ -161,6 +161,9 @@ impl Low32DeadHiDefs {
                 Self::demand_call_args(args, &mut demand);
             }
             MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+            MachineTerminator::ReturnScalar { value } => {
+                Self::demand_return_value(value, &mut demand);
+            }
         }
         demand
     }
@@ -496,6 +499,24 @@ impl Low32DeadHiDefs {
         }
     }
 
+    fn demand_return_value(value: &MachineReturnValue, demand: &mut [bool]) {
+        match value {
+            MachineReturnValue::ScalarGp { src, .. } | MachineReturnValue::ScalarFp { src, .. } => {
+                Self::demand_result_src(src, demand);
+            }
+            MachineReturnValue::ScalarGpPair { lo, hi } => {
+                Self::demand_result_src(lo, demand);
+                Self::demand_result_src(hi, demand);
+            }
+        }
+    }
+
+    fn demand_result_src(src: &MachineResultSrc, demand: &mut [bool]) {
+        if let MachineResultSrc::Reg(reg) = src {
+            Self::demand_reg(demand, *reg);
+        }
+    }
+
     fn demand_call_success_sources(
         success: &MachineEdge,
         results: &MachineCallResults,
@@ -513,7 +534,7 @@ impl Low32DeadHiDefs {
     fn call_results_define_reg(results: &MachineCallResults, reg: MachineReg) -> bool {
         match results {
             MachineCallResults::None | MachineCallResults::FrameFallback { .. } => false,
-            MachineCallResults::ScalarGp { dst } | MachineCallResults::ScalarFp { dst } => {
+            MachineCallResults::ScalarGp { dst, .. } | MachineCallResults::ScalarFp { dst, .. } => {
                 Self::result_dst_is_reg(*dst, reg)
             }
             MachineCallResults::ScalarGpPair { lo, hi } => {

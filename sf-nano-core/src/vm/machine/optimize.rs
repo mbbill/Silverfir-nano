@@ -53,6 +53,7 @@ fn shrink_machine_terminator_storage(terminator: &mut MachineTerminator) {
         MachineTerminator::Call { .. }
         | MachineTerminator::TailCall { .. }
         | MachineTerminator::Return
+        | MachineTerminator::ReturnScalar { .. }
         | MachineTerminator::Trap { .. } => {}
     }
 }

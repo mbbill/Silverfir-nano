@@ -14,7 +14,9 @@ use crate::vm::middle::frame::FrameSlot;
 
 use super::ir::SsaProgram;
 #[cfg(any(debug_assertions, test))]
-use super::ir::{SsaBinding, SsaBlock, SsaEdge, SsaInstView, SsaOp, SsaTerminator, SsaValue};
+use super::ir::{
+    SsaBinding, SsaBlock, SsaEdge, SsaInstView, SsaOp, SsaScalarResultLoc, SsaTerminator, SsaValue,
+};
 
 #[cfg(any(debug_assertions, test))]
 pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
@@ -74,6 +76,7 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
                 }
             }
             SsaTerminator::Return { .. }
+            | SsaTerminator::ReturnScalar { .. }
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }
@@ -159,7 +162,21 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
             | SsaTerminator::TrapUnreachable
             | SsaTerminator::EhThrow { .. }
             | SsaTerminator::EhThrowRef { .. } => {}
+            SsaTerminator::ReturnScalar { result, .. } => {
+                validate_scalar_result_value(result, &check)?
+            }
         }
+    }
+    Ok(())
+}
+
+#[cfg(any(debug_assertions, test))]
+fn validate_scalar_result_value(
+    result: &SsaScalarResultLoc,
+    check: &dyn Fn(SsaValue) -> Result<(), WasmError>,
+) -> Result<(), WasmError> {
+    if let SsaScalarResultLoc::Live { value, .. } = result {
+        check(*value)?;
     }
     Ok(())
 }

@@ -54,7 +54,7 @@ fn collect_terminator_preserved_defs(
         return;
     };
     match results {
-        MachineCallResults::ScalarGp { dst } | MachineCallResults::ScalarFp { dst } => {
+        MachineCallResults::ScalarGp { dst, .. } | MachineCallResults::ScalarFp { dst, .. } => {
             if let MachineResultDst::Reg(reg) = dst {
                 push_preserved_clobber(regs, *reg, config);
             }

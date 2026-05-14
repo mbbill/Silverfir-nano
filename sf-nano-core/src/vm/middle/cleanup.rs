@@ -16,8 +16,8 @@ use crate::collections;
 
 use super::ssa_ir::{
     ir::{
-        SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaOp, SsaOperand, SsaProgram, SsaTerminator,
-        SsaValue,
+        SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaOp, SsaOperand, SsaProgram, SsaScalarResultLoc,
+        SsaTerminator, SsaValue,
     },
     target::SsaTarget,
 };
@@ -413,6 +413,7 @@ fn incoming_edge_locations(
                 }
             }
             SsaTerminator::Return { .. }
+            | SsaTerminator::ReturnScalar { .. }
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }
@@ -529,6 +530,10 @@ fn substitute_terminator(terminator: SsaTerminator, subst: &[ValueSubstitution])
                 .collect(),
         },
         SsaTerminator::Return { results } => SsaTerminator::Return { results },
+        SsaTerminator::ReturnScalar { result, results } => SsaTerminator::ReturnScalar {
+            result: substitute_scalar_result(result, subst),
+            results,
+        },
         SsaTerminator::TailCallDirect {
             callee,
             args,
@@ -565,6 +570,20 @@ fn substitute_terminator(terminator: SsaTerminator, subst: &[ValueSubstitution])
         SsaTerminator::TrapUnreachable => SsaTerminator::TrapUnreachable,
         SsaTerminator::EhThrow { tag_idx, args } => SsaTerminator::EhThrow { tag_idx, args },
         SsaTerminator::EhThrowRef { exnref_slot } => SsaTerminator::EhThrowRef { exnref_slot },
+    }
+}
+
+fn substitute_scalar_result(
+    result: SsaScalarResultLoc,
+    subst: &[ValueSubstitution],
+) -> SsaScalarResultLoc {
+    match result {
+        SsaScalarResultLoc::Stack { slot, ty } => SsaScalarResultLoc::Stack { slot, ty },
+        SsaScalarResultLoc::Live { value, ty, slot } => SsaScalarResultLoc::Live {
+            value: substitute_value(value, subst),
+            ty,
+            slot,
+        },
     }
 }
 
@@ -777,6 +796,7 @@ fn remap_terminator_targets(term: &mut SsaTerminator, mapping: &[SsaTarget]) {
             }
         }
         SsaTerminator::Return { .. }
+        | SsaTerminator::ReturnScalar { .. }
         | SsaTerminator::TailCallDirect { .. }
         | SsaTerminator::TailCallIndirect { .. }
         | SsaTerminator::TailCallRef { .. }
@@ -805,6 +825,7 @@ fn remap_terminator_target_after_single_removal(term: &mut SsaTerminator, remove
             }
         }
         SsaTerminator::Return { .. }
+        | SsaTerminator::ReturnScalar { .. }
         | SsaTerminator::TailCallDirect { .. }
         | SsaTerminator::TailCallIndirect { .. }
         | SsaTerminator::TailCallRef { .. }
@@ -840,6 +861,7 @@ fn visit_outgoing_edges(term: &SsaTerminator, mut visit: impl FnMut(&SsaEdge)) {
             }
         }
         SsaTerminator::Return { .. }
+        | SsaTerminator::ReturnScalar { .. }
         | SsaTerminator::TailCallDirect { .. }
         | SsaTerminator::TailCallIndirect { .. }
         | SsaTerminator::TailCallRef { .. }
@@ -980,6 +1002,7 @@ mod tests {
                 },
             ],
             local_slot_types: collections::Vec::new(),
+            result_types: collections::Vec::new(),
             local_slot_info: collections::Vec::new(),
             block_entry_cached_slots: collections::vec![
                 collections::Vec::new(),
@@ -1017,6 +1040,7 @@ mod tests {
             entry: SsaTarget(0),
             blocks: collections::Vec::new(),
             local_slot_types: collections::vec![ValueType::I32],
+            result_types: collections::Vec::new(),
             local_slot_info: collections::vec![Default::default()],
             block_entry_cached_slots: collections::vec![
                 collections::Vec::new(),
@@ -1097,6 +1121,7 @@ mod tests {
                 },
             ],
             local_slot_types: collections::Vec::new(),
+            result_types: collections::Vec::new(),
             local_slot_info: collections::Vec::new(),
             block_entry_cached_slots: collections::vec![
                 collections::Vec::new(),
@@ -1122,6 +1147,7 @@ mod tests {
             entry: SsaTarget(1),
             blocks: collections::Vec::new(),
             local_slot_types: collections::Vec::new(),
+            result_types: collections::Vec::new(),
             local_slot_info: collections::Vec::new(),
             block_entry_cached_slots: collections::vec![
                 collections::Vec::new(),
@@ -1209,6 +1235,7 @@ mod tests {
                 },
             ],
             local_slot_types: collections::Vec::new(),
+            result_types: collections::Vec::new(),
             local_slot_info: collections::Vec::new(),
             block_entry_cached_slots: collections::vec![
                 collections::vec![FrameSlot(0)],

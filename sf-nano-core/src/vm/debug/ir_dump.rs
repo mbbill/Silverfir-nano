@@ -394,6 +394,7 @@ fn render_call(bop: &SsaCallOp) -> String {
             callee,
             args,
             results,
+            ..
         } => format!(
             "call_direct f{callee} args={} results=fp[{}..{})",
             render_ssa_call_args(args),
@@ -406,6 +407,7 @@ fn render_call(bop: &SsaCallOp) -> String {
             index,
             args,
             results,
+            ..
         } => format!(
             "call_indirect type={type_idx} table={table_idx} index={} args={} results=fp[{}..{})",
             render_ssa_call_operand_loc(index),
@@ -418,6 +420,7 @@ fn render_call(bop: &SsaCallOp) -> String {
             callee_ref,
             args,
             results,
+            ..
         } => format!(
             "call_ref type={type_idx} ref={} args={} results=fp[{}..{})",
             render_ssa_call_operand_loc(callee_ref),
@@ -458,6 +461,12 @@ fn render_lir_terminator(term: &SsaTerminator) -> String {
             Some(span) => format!("return fp[{}..{})", span.start.0, span.start.0 + span.count),
             None => "return void".into(),
         },
+        SsaTerminator::ReturnScalar { result, results } => format!(
+            "return_scalar {} -> fp[{}..{})",
+            render_ssa_scalar_result_loc(result),
+            results.start.0,
+            results.start.0 + results.count,
+        ),
         SsaTerminator::TailCallDirect {
             callee,
             args,
@@ -530,6 +539,17 @@ fn render_ssa_call_operand_loc(loc: &crate::vm::middle::ssa_ir::ir::SsaCallOpera
             format!("fp[{}]", slot.0)
         }
         crate::vm::middle::ssa_ir::ir::SsaCallOperandLoc::Live { value, slot, .. } => {
+            format!("v{}@fp[{}]", value.0, slot.0)
+        }
+    }
+}
+
+fn render_ssa_scalar_result_loc(loc: &crate::vm::middle::ssa_ir::ir::SsaScalarResultLoc) -> String {
+    match loc {
+        crate::vm::middle::ssa_ir::ir::SsaScalarResultLoc::Stack { slot, .. } => {
+            format!("fp[{}]", slot.0)
+        }
+        crate::vm::middle::ssa_ir::ir::SsaScalarResultLoc::Live { value, slot, .. } => {
             format!("v{}@fp[{}]", value.0, slot.0)
         }
     }
@@ -1684,7 +1704,40 @@ fn render_machine_term(term: &MachineTerminator) -> String {
             ),
         },
         MachineTerminator::Return => "return".into(),
+        MachineTerminator::ReturnScalar { value } => {
+            format!("return_scalar {}", render_machine_return_value(value))
+        }
         MachineTerminator::Trap { kind } => format!("trap {:?}", kind),
+    }
+}
+
+fn render_machine_return_value(
+    value: &crate::vm::machine::machine_ir::MachineReturnValue,
+) -> String {
+    use crate::vm::machine::machine_ir::MachineReturnValue;
+    match value {
+        MachineReturnValue::ScalarGp { src, ty } => {
+            format!("gp({:?})={}", ty, render_machine_result_src(*src))
+        }
+        MachineReturnValue::ScalarGpPair { lo, hi } => format!(
+            "gppair=({}, {})",
+            render_machine_result_src(*lo),
+            render_machine_result_src(*hi)
+        ),
+        MachineReturnValue::ScalarFp { src, ty } => {
+            format!("fp({:?})={}", ty, render_machine_result_src(*src))
+        }
+    }
+}
+
+fn render_machine_result_src(src: crate::vm::machine::machine_ir::MachineResultSrc) -> String {
+    use crate::vm::machine::machine_ir::MachineResultSrc;
+    match src {
+        MachineResultSrc::Reg(reg) => format!("r{}", reg.0),
+        MachineResultSrc::FrameSlot(slot) => format!("fp[{}]", slot.0),
+        MachineResultSrc::FrameSlotOffset { slot, byte_offset } => {
+            format!("fp[{}]+{}", slot.0, byte_offset)
+        }
     }
 }
 

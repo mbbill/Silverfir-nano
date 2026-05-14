@@ -9,14 +9,15 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineBlockId, MachineBranchCond, MachineEdge, MachineFloatWidth, MachineInst,
-            MachineInstKind, MachineIntWidth, MachineLoadExtension, MachineReg, MachineRegOwner,
+            MachineInstKind, MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg,
+            MachineRegOwner, MachineResultSrc, MachineReturnAbi, MachineReturnValue,
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::{
             frame::FrameSlot,
             ssa_ir::ir::{
-                DecodedOperand, SsaEdge, SsaInst, SsaInstView, SsaOp, SsaOperand, SsaTerminator,
-                SsaValue,
+                DecodedOperand, SsaEdge, SsaInst, SsaInstView, SsaOp, SsaOperand,
+                SsaScalarResultLoc, SsaTerminator, SsaValue,
             },
         },
         wasm::primitive_op::PrimitiveOpKind,
@@ -79,6 +80,24 @@ impl<'a> BlockLowerContext<'a> {
                 }
                 Ok(MachineTerminator::Return)
             }
+            SsaTerminator::ReturnScalar { result, .. } => {
+                if matches!(
+                    self.current_return_abi(),
+                    MachineReturnAbi::ScalarGp { .. }
+                        | MachineReturnAbi::ScalarGpPair
+                        | MachineReturnAbi::ScalarFp { .. }
+                ) {
+                    let return_value = self.lower_scalar_return_value(result)?;
+                    self.release_dead_values()?;
+                    Ok(MachineTerminator::ReturnScalar {
+                        value: return_value,
+                    })
+                } else {
+                    self.publish_scalar_return_to_frame(result)?;
+                    self.release_dead_values()?;
+                    Ok(MachineTerminator::Return)
+                }
+            }
             SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. } => Err(WasmError::internal(
@@ -93,6 +112,159 @@ impl<'a> BlockLowerContext<'a> {
                 ))
             }
         }
+    }
+
+    fn lower_scalar_return_value(
+        &mut self,
+        result: &SsaScalarResultLoc,
+    ) -> Result<MachineReturnValue, WasmError> {
+        let ty = match result {
+            SsaScalarResultLoc::Stack { ty, .. } | SsaScalarResultLoc::Live { ty, .. } => *ty,
+        };
+        let storage = crate::vm::machine::lower_regalloc::value_type_storage_type(ty);
+        match storage {
+            MachineStorageType::GpWord => Ok(MachineReturnValue::ScalarGp {
+                src: self.scalar_result_src(result)?,
+                ty: MachineStorageType::GpWord,
+            }),
+            MachineStorageType::GpI64 if self.gp_reg_width() == 4 => {
+                let (lo, hi) = self.scalar_result_src_pair(result)?;
+                Ok(MachineReturnValue::ScalarGpPair { lo, hi })
+            }
+            MachineStorageType::GpI64 => Ok(MachineReturnValue::ScalarGp {
+                src: self.scalar_result_src(result)?,
+                ty: MachineStorageType::GpI64,
+            }),
+            MachineStorageType::Fp32 => Ok(MachineReturnValue::ScalarFp {
+                src: self.scalar_result_src(result)?,
+                ty: MachineStorageType::Fp32,
+            }),
+            MachineStorageType::Fp64 => Ok(MachineReturnValue::ScalarFp {
+                src: self.scalar_result_src(result)?,
+                ty: MachineStorageType::Fp64,
+            }),
+            MachineStorageType::V128 => Err(WasmError::internal(
+                "v128 scalar return reached machine lowering".into(),
+            )),
+        }
+    }
+
+    fn scalar_result_src(
+        &mut self,
+        result: &SsaScalarResultLoc,
+    ) -> Result<MachineResultSrc, WasmError> {
+        match result {
+            SsaScalarResultLoc::Stack { slot, .. } => Ok(MachineResultSrc::FrameSlot(*slot)),
+            SsaScalarResultLoc::Live { value, .. } => {
+                Ok(MachineResultSrc::Reg(self.use_value(*value)?))
+            }
+        }
+    }
+
+    fn scalar_result_src_pair(
+        &mut self,
+        result: &SsaScalarResultLoc,
+    ) -> Result<(MachineResultSrc, MachineResultSrc), WasmError> {
+        match result {
+            SsaScalarResultLoc::Stack { slot, .. } => Ok((
+                MachineResultSrc::FrameSlotOffset {
+                    slot: *slot,
+                    byte_offset: 0,
+                },
+                MachineResultSrc::FrameSlotOffset {
+                    slot: *slot,
+                    byte_offset: 4,
+                },
+            )),
+            SsaScalarResultLoc::Live { value, .. } => {
+                let (lo, hi) = self.use_i64_value_pair(*value)?;
+                Ok((MachineResultSrc::Reg(lo), MachineResultSrc::Reg(hi)))
+            }
+        }
+    }
+
+    fn publish_scalar_return_to_frame(
+        &mut self,
+        result: &SsaScalarResultLoc,
+    ) -> Result<(), WasmError> {
+        match result {
+            SsaScalarResultLoc::Live { value, .. } => {
+                self.publish_value_to_frame_slot(*value, FrameSlot(0))?;
+            }
+            SsaScalarResultLoc::Stack { slot, ty } if *slot != FrameSlot(0) => {
+                let storage = crate::vm::machine::lower_regalloc::value_type_storage_type(*ty);
+                let regs = self.borrow_free_gp_dynamic_regs(2)?;
+                let tmp = regs[0];
+                let tmp_hi = regs[1];
+                if storage == MachineStorageType::GpI64 && self.gp_reg_width() == 4 {
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Load {
+                            owner: MachineRegOwner::LinearValue,
+                            ty: MachineStorageType::GpWord,
+                            dst: tmp,
+                            addr: self.frame_addr_offset(*slot, 0)?,
+                            width: MachineMemWidth::U32,
+                            extension: MachineLoadExtension::None,
+                        },
+                    });
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Load {
+                            owner: MachineRegOwner::LinearValue,
+                            ty: MachineStorageType::GpWord,
+                            dst: tmp_hi,
+                            addr: self.frame_addr_offset(*slot, 4)?,
+                            width: MachineMemWidth::U32,
+                            extension: MachineLoadExtension::None,
+                        },
+                    });
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Store {
+                            ty: MachineStorageType::GpWord,
+                            addr: self.frame_addr_offset(FrameSlot(0), 0)?,
+                            width: MachineMemWidth::U32,
+                            src: MachineValue::Reg(tmp),
+                        },
+                    });
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Store {
+                            ty: MachineStorageType::GpWord,
+                            addr: self.frame_addr_offset(FrameSlot(0), 4)?,
+                            width: MachineMemWidth::U32,
+                            src: MachineValue::Reg(tmp_hi),
+                        },
+                    });
+                } else {
+                    if matches!(storage, MachineStorageType::Fp32 | MachineStorageType::Fp64) {
+                        return Err(WasmError::internal(
+                            "stack-resident FP scalar return reached frame fallback".into(),
+                        ));
+                    }
+                    let width = match storage {
+                        _ => MachineMemWidth::U64,
+                    };
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Load {
+                            owner: MachineRegOwner::LinearValue,
+                            ty: storage,
+                            dst: tmp,
+                            addr: self.frame_addr(*slot)?,
+                            width,
+                            extension: MachineLoadExtension::None,
+                        },
+                    });
+                    self.emit_machine_inst(MachineInst {
+                        kind: MachineInstKind::Store {
+                            ty: storage,
+                            addr: self.frame_addr(FrameSlot(0))?,
+                            width,
+                            src: MachineValue::Reg(tmp),
+                        },
+                    });
+                }
+            }
+            SsaScalarResultLoc::Stack { .. } => {}
+        }
+        Ok(())
     }
 
     /// Continuation blocks start with no live cached locals in the explicit

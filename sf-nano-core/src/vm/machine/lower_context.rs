@@ -97,6 +97,7 @@ pub(super) struct BlockLowerContext<'a> {
     regfile: &'a MachineRegFile,
     program: &'a SsaProgram,
     block: &'a SsaBlock,
+    current_abi: &'a MachineFunctionAbi,
     all_runtime: &'a [MachineFunctionAbi],
     machine_params: collections::Vec<ValueRegs>,
     entry_cache_params: collections::Vec<EntryCacheParam>,
@@ -239,6 +240,7 @@ impl<'a> BlockLowerContext<'a> {
             regfile,
             program,
             block,
+            current_abi,
             all_runtime,
             machine_params,
             entry_cache_params,
@@ -495,6 +497,10 @@ impl<'a> BlockLowerContext<'a> {
         self.all_runtime
             .get(func.0 as usize)
             .ok_or_else(|| WasmError::internal("machine runtime metadata missing for callee"))
+    }
+
+    pub(super) fn current_return_abi(&self) -> &crate::vm::machine::machine_ir::MachineReturnAbi {
+        &self.current_abi.return_abi
     }
 
     // -----------------------------------------------------------------------
@@ -953,6 +959,7 @@ impl<'a> BlockLowerContext<'a> {
             SsaTerminator::Branch { .. }
             | SsaTerminator::BrTable { .. }
             | SsaTerminator::Return { .. }
+            | SsaTerminator::ReturnScalar { .. }
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }

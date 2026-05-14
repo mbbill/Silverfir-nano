@@ -430,6 +430,7 @@ impl<'a> CompilerCore<'a> {
                 }
                 MachineTerminator::TailCall { .. }
                 | MachineTerminator::Return
+                | MachineTerminator::ReturnScalar { .. }
                 | MachineTerminator::Trap { .. } => {}
             }
 

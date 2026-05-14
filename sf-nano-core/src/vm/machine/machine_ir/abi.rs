@@ -98,6 +98,7 @@ pub(crate) enum MachineCallResults {
     None,
     ScalarGp {
         dst: MachineResultDst,
+        ty: MachineStorageType,
     },
     ScalarGpPair {
         lo: MachineResultDst,
@@ -105,6 +106,7 @@ pub(crate) enum MachineCallResults {
     },
     ScalarFp {
         dst: MachineResultDst,
+        ty: MachineStorageType,
     },
     FrameFallback {
         callee_results: MachineFrameRegion,
@@ -117,6 +119,44 @@ pub(crate) enum MachineCallResults {
 pub(crate) enum MachineResultDst {
     FrameSlot(FrameSlot),
     Reg(MachineReg),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum MachineResultSrc {
+    FrameSlot(FrameSlot),
+    FrameSlotOffset { slot: FrameSlot, byte_offset: i8 },
+    Reg(MachineReg),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum MachineReturnValue {
+    ScalarGp {
+        src: MachineResultSrc,
+        ty: MachineStorageType,
+    },
+    ScalarGpPair {
+        lo: MachineResultSrc,
+        hi: MachineResultSrc,
+    },
+    ScalarFp {
+        src: MachineResultSrc,
+        ty: MachineStorageType,
+    },
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+pub(crate) enum MachineReturnAbi {
+    None,
+    ScalarGp { ty: MachineStorageType },
+    ScalarGpPair,
+    ScalarFp { ty: MachineStorageType },
+    FrameFallback { results: MachineFrameRegion },
+}
+
+impl Default for MachineReturnAbi {
+    fn default() -> Self {
+        Self::None
+    }
 }
 
 /// One per-function ABI record derived from the shared frame plan.
@@ -132,6 +172,7 @@ pub(crate) struct MachineFunctionAbi {
     /// carried by the MachineIR call ABI and the native call/return pair.
     pub helper_scratch: Option<MachineFrameRegion>,
     pub return_results: Option<MachineFrameRegion>,
+    pub return_abi: MachineReturnAbi,
     /// Non-param local slot indices that may be read before being written.
     /// These slots must be zero-initialized by the callee at function entry.
     /// Locals not listed here are guaranteed to be written before any read,

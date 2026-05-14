@@ -272,7 +272,7 @@ impl<'a> Emulator<'a> {
                     success,
                 } => self.enter_call(target, *frame_delta, args, results, success),
                 MachineTerminator::TailCall { target, args } => self.enter_tail_call(target, args),
-                MachineTerminator::Return => {
+                MachineTerminator::Return | MachineTerminator::ReturnScalar { .. } => {
                     if self.handle_return()? {
                         return Ok(());
                     }

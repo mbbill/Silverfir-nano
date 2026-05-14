@@ -4,7 +4,7 @@ use crate::{
     error::WasmError,
     vm::middle::ssa_ir::ir::{
         DecodedOperand, SsaBlock, SsaCallArgs, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInstView,
-        SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+        SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator, SsaValue,
     },
 };
 
@@ -63,6 +63,9 @@ pub(super) fn compute_remaining_uses(
         | SsaTerminator::TrapUnreachable
         | SsaTerminator::EhThrow { .. }
         | SsaTerminator::EhThrowRef { .. } => {}
+        SsaTerminator::ReturnScalar { result, .. } => {
+            count_scalar_result_loc_use(result, &mut uses);
+        }
         SsaTerminator::TailCallDirect { args, .. } => count_call_args_uses(args, &mut uses),
         SsaTerminator::TailCallIndirect { args, index, .. } => {
             count_call_args_uses(args, &mut uses);
@@ -143,6 +146,12 @@ fn count_call_args_uses(args: &SsaCallArgs, uses: &mut BTreeMap<SsaValue, u32>) 
 
 fn count_call_operand_loc_use(loc: &SsaCallOperandLoc, uses: &mut BTreeMap<SsaValue, u32>) {
     if let SsaCallOperandLoc::Live { value, .. } = loc {
+        *uses.entry(*value).or_insert(0) += 1;
+    }
+}
+
+fn count_scalar_result_loc_use(loc: &SsaScalarResultLoc, uses: &mut BTreeMap<SsaValue, u32>) {
+    if let SsaScalarResultLoc::Live { value, .. } = loc {
         *uses.entry(*value).or_insert(0) += 1;
     }
 }

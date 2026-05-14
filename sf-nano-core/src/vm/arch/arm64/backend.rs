@@ -11,8 +11,8 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId,
-            MachineInst, MachineReg, MachineTerminator, MachineTrapKind, MACHINE_CTX_REG,
-            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineInst, MachineReg, MachineReturnAbi, MachineTerminator, MachineTrapKind,
+            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
@@ -147,11 +147,36 @@ impl<'a> Arm64Backend<'a> {
     }
 
     fn lower_root_result_copy_to_public_slots(&mut self) {
-        let Some(results) = self
-            .core
-            .current_runtime()
-            .and_then(|runtime| runtime.return_results)
-        else {
+        let Some(runtime) = self.core.current_runtime() else {
+            return;
+        };
+        match &runtime.return_abi {
+            MachineReturnAbi::ScalarGp { .. } => {
+                self.emit_root_frame_store_slot(
+                    abi::W2W_GP_RET0,
+                    abi::map_fixed_reg(MACHINE_FP_REG),
+                    0,
+                );
+                return;
+            }
+            MachineReturnAbi::ScalarFp { ty } => {
+                let Some(width) = ty.float_width() else {
+                    return;
+                };
+                self.emit_root_frame_store_fp_slot(
+                    abi::fp_zero_reg(),
+                    abi::map_fixed_reg(MACHINE_FP_REG),
+                    0,
+                    width,
+                );
+                return;
+            }
+            MachineReturnAbi::ScalarGpPair => {
+                return;
+            }
+            MachineReturnAbi::None | MachineReturnAbi::FrameFallback { .. } => {}
+        }
+        let Some(results) = runtime.return_results else {
             return;
         };
         if results.slots == 0 || results.base_slot == 0 {
@@ -192,6 +217,39 @@ impl<'a> Arm64Backend<'a> {
         self.materialize_u64(addr, u64::from(slot) * u64::from(STACK_SLOT_BYTES));
         self.core.text.emit_u32(enc::add_reg_64(addr, base, addr));
         self.core.text.emit_u32(enc::str_64(src, addr, 0));
+        self.gp_scratch.free_index(addr_idx);
+    }
+
+    fn emit_root_frame_store_fp_slot(
+        &mut self,
+        src: Arm64FpReg,
+        base: Arm64Reg,
+        slot: u32,
+        width: MachineFloatWidth,
+    ) {
+        match width {
+            MachineFloatWidth::F32 => {
+                let scaled = slot.saturating_mul(2);
+                if scaled < 4096 {
+                    self.core.text.emit_u32(enc::str_s(src, base, scaled));
+                    return;
+                }
+            }
+            MachineFloatWidth::F64 => {
+                if slot < 4096 {
+                    self.core.text.emit_u32(enc::str_d(src, base, slot));
+                    return;
+                }
+            }
+        }
+        let addr_idx = self.gp_scratch.alloc();
+        let addr = self.gp_scratch.reg(addr_idx);
+        self.materialize_u64(addr, u64::from(slot) * u64::from(STACK_SLOT_BYTES));
+        self.core.text.emit_u32(enc::add_reg_64(addr, base, addr));
+        self.core.text.emit_u32(match width {
+            MachineFloatWidth::F32 => enc::str_s(src, addr, 0),
+            MachineFloatWidth::F64 => enc::str_d(src, addr, 0),
+        });
         self.gp_scratch.free_index(addr_idx);
     }
 

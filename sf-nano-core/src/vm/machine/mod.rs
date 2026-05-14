@@ -41,7 +41,7 @@ mod validate_tests;
 pub(crate) use lower_const_pool::ConstPoolBuilder;
 pub(crate) use lower_module::LoweredMachineModule;
 pub(crate) use lower_module::{
-    derive_param_locs_from_types, lower_module, lower_single_function, LowerFunctionInput,
-    LowerModuleInput,
+    derive_param_locs_from_types, derive_return_abi, lower_module, lower_single_function,
+    LowerFunctionInput, LowerModuleInput,
 };
 pub(crate) use optimize::{optimize_function, optimize_module};

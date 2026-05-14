@@ -14,7 +14,7 @@ use crate::vm::machine::machine_ir::{
     self, MachineAddr, MachineArgSrc, MachineBlock, MachineBranchCond, MachineCallArgs,
     MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineConvertOp, MachineEdge,
     MachineInst, MachineInstKind, MachineMemWidth, MachineReg, MachineRegOwner, MachineResultDst,
-    MachineTerminator, MachineValue,
+    MachineResultSrc, MachineReturnValue, MachineTerminator, MachineValue,
 };
 use crate::vm::machine::ownership::DynamicOwnershipTracker;
 
@@ -606,6 +606,7 @@ fn rewrite_terminator_sources(term: &mut MachineTerminator, aliases: &[Option<Ma
             let _ = args;
         }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+        MachineTerminator::ReturnScalar { value } => rewrite_return_value(value, aliases),
     }
 }
 
@@ -634,10 +635,28 @@ fn rewrite_call_success_sources(
     }
 }
 
+fn rewrite_return_value(value: &mut MachineReturnValue, aliases: &[Option<MachineReg>]) {
+    match value {
+        MachineReturnValue::ScalarGp { src, .. } | MachineReturnValue::ScalarFp { src, .. } => {
+            rewrite_result_src(src, aliases);
+        }
+        MachineReturnValue::ScalarGpPair { lo, hi } => {
+            rewrite_result_src(lo, aliases);
+            rewrite_result_src(hi, aliases);
+        }
+    }
+}
+
+fn rewrite_result_src(src: &mut MachineResultSrc, aliases: &[Option<MachineReg>]) {
+    if let MachineResultSrc::Reg(reg) = src {
+        *reg = resolve_alias(*reg, aliases);
+    }
+}
+
 fn call_results_define_reg(results: &MachineCallResults, reg: MachineReg) -> bool {
     match results {
         MachineCallResults::None | MachineCallResults::FrameFallback { .. } => false,
-        MachineCallResults::ScalarGp { dst } | MachineCallResults::ScalarFp { dst } => {
+        MachineCallResults::ScalarGp { dst, .. } | MachineCallResults::ScalarFp { dst, .. } => {
             result_dst_is_reg(*dst, reg)
         }
         MachineCallResults::ScalarGpPair { lo, hi } => {
@@ -662,6 +681,7 @@ fn rewrite_float_alias_terminator_sources(
         | MachineTerminator::TailCall { .. }
         | MachineTerminator::Return
         | MachineTerminator::Trap { .. } => {}
+        MachineTerminator::ReturnScalar { value } => rewrite_return_value(value, aliases),
     }
 }
 

@@ -7,7 +7,7 @@ use crate::vm::machine::machine_ir::{
     is_fp_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineBranchCond,
     MachineCallArgs, MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineEdge,
     MachineInst, MachineInstKind, MachineIntUnaryOp, MachineMemWidth, MachineReg, MachineResultDst,
-    MachineStorageType, MachineTerminator, MachineValue,
+    MachineResultSrc, MachineReturnValue, MachineStorageType, MachineTerminator, MachineValue,
 };
 
 // --- Instruction analysis ---
@@ -670,6 +670,7 @@ pub(super) fn terminator_uses_reg(term: &MachineTerminator, reg: MachineReg) -> 
             call_target_uses_reg(target, reg) || call_args_use_reg(args, reg)
         }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => false,
+        MachineTerminator::ReturnScalar { value } => return_value_uses_reg(value, reg),
     }
 }
 
@@ -700,6 +701,21 @@ fn arg_src_uses_reg(src: &MachineArgSrc, reg: MachineReg) -> bool {
     matches!(src, MachineArgSrc::Reg(src) if *src == reg)
 }
 
+fn return_value_uses_reg(value: &MachineReturnValue, reg: MachineReg) -> bool {
+    match value {
+        MachineReturnValue::ScalarGp { src, .. } | MachineReturnValue::ScalarFp { src, .. } => {
+            result_src_uses_reg(src, reg)
+        }
+        MachineReturnValue::ScalarGpPair { lo, hi } => {
+            result_src_uses_reg(lo, reg) || result_src_uses_reg(hi, reg)
+        }
+    }
+}
+
+fn result_src_uses_reg(src: &MachineResultSrc, reg: MachineReg) -> bool {
+    matches!(src, MachineResultSrc::Reg(src) if *src == reg)
+}
+
 fn call_success_uses_reg(
     success: &MachineEdge,
     results: &MachineCallResults,
@@ -714,7 +730,7 @@ fn call_success_uses_reg(
 fn call_results_define_reg(results: &MachineCallResults, reg: MachineReg) -> bool {
     match results {
         MachineCallResults::None | MachineCallResults::FrameFallback { .. } => false,
-        MachineCallResults::ScalarGp { dst } | MachineCallResults::ScalarFp { dst } => {
+        MachineCallResults::ScalarGp { dst, .. } | MachineCallResults::ScalarFp { dst, .. } => {
             result_dst_is_reg(*dst, reg)
         }
         MachineCallResults::ScalarGpPair { lo, hi } => {

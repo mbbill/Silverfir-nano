@@ -564,6 +564,7 @@ pub(crate) struct SsaProgram {
     pub entry: SsaTarget,
     pub blocks: collections::Vec<SsaBlock>,
     pub local_slot_types: collections::Vec<ValueType>,
+    pub result_types: collections::Vec<ValueType>,
     pub local_slot_info: collections::Vec<LocalSlotInfo>,
     pub block_entry_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
     pub block_cfg_origins: collections::Vec<collections::Vec<u32>>,
@@ -789,6 +790,25 @@ pub(crate) enum SsaCallOperandLoc {
     },
 }
 
+/// One scalar return value at a return boundary.
+///
+/// The middle end records where the value already lives without choosing a
+/// physical return register. MachineIR may lower this to the backend's scalar
+/// return lane or publish it back to the canonical return frame slot when the
+/// backend keeps frame-based returns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SsaScalarResultLoc {
+    Stack {
+        slot: FrameSlot,
+        ty: ValueType,
+    },
+    Live {
+        value: SsaValue,
+        ty: ValueType,
+        slot: FrameSlot,
+    },
+}
+
 /// Prepared call operations.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum SsaCallOp {
@@ -796,6 +816,7 @@ pub(crate) enum SsaCallOp {
         callee: u32,
         args: SsaCallArgs,
         results: FrameSpan,
+        result_types: collections::Vec<ValueType>,
     },
     CallIndirect {
         type_idx: u32,
@@ -803,12 +824,14 @@ pub(crate) enum SsaCallOp {
         index: SsaCallOperandLoc,
         args: SsaCallArgs,
         results: FrameSpan,
+        result_types: collections::Vec<ValueType>,
     },
     CallRef {
         type_idx: u32,
         callee_ref: SsaCallOperandLoc,
         args: SsaCallArgs,
         results: FrameSpan,
+        result_types: collections::Vec<ValueType>,
     },
 }
 
@@ -827,6 +850,10 @@ pub(crate) enum SsaTerminator {
     },
     Return {
         results: Option<FrameSpan>,
+    },
+    ReturnScalar {
+        result: SsaScalarResultLoc,
+        results: FrameSpan,
     },
     TailCallDirect {
         callee: u32,

@@ -277,6 +277,7 @@ pub(super) const C_ARG0: Arm64Reg = gp(0);
 pub(super) const C_ARG1: Arm64Reg = gp(1);
 pub(super) const C_ARG2: Arm64Reg = gp(2);
 pub(super) const C_RET0: Arm64Reg = gp(0);
+pub(super) const W2W_GP_RET0: Arm64Reg = gp(1);
 
 #[inline]
 pub(super) const fn stack_reg() -> Arm64Reg {
@@ -335,6 +336,7 @@ pub(crate) const fn compile_backend_config() -> BackendConfig {
         FP_PRESERVED_DYNAMIC,
         GP_ARG_LANES,
         FP_ARG_LANES,
+        true,
         SCALAR_CALL_SCRATCH_SLOTS,
     )
 }

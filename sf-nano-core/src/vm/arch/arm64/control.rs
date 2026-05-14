@@ -3,14 +3,15 @@
 use crate::error::WasmError;
 use crate::vm::machine::machine_ir::{
     MachineBlockId, MachineBranchCond, MachineCallArgs, MachineCallResults, MachineCallTarget,
-    MachineCompareKind, MachineConstId, MachineEdge, MachineTerminator, MachineTrapKind,
+    MachineCompareKind, MachineConstId, MachineEdge, MachineFloatWidth, MachineResultDst,
+    MachineResultSrc, MachineReturnValue, MachineStorageType, MachineTerminator, MachineTrapKind,
     MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
 };
 
 use super::abi::map_fixed_reg;
 use super::fusion::map_int_cond;
 use super::inst::{materialize_u64_into, prepare_gp};
-use super::reg::Arm64Reg;
+use super::reg::{Arm64FpReg, Arm64Reg};
 use super::{abi, enc};
 use crate::vm::arch::common::helpers::is_fallthrough_edge;
 use crate::vm::arch::common::helpers::trap_code;
@@ -51,6 +52,11 @@ fn arm64_template_skip_words(current: usize, skip_bytes: usize) -> Result<i32, W
     )
 }
 
+fn scalar_fp_width(ty: MachineStorageType) -> Result<MachineFloatWidth, WasmError> {
+    ty.float_width()
+        .ok_or_else(|| WasmError::internal("arm64 scalar FP return uses non-FP storage"))
+}
+
 impl<'a> super::backend::Arm64Backend<'a> {
     // ── Main terminator dispatch ─────────────────────────────────────────────────
 
@@ -79,7 +85,8 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 then_edge,
                 else_edge,
             } => self.lower_branch(cond, then_edge, else_edge, fallthrough),
-            MachineTerminator::Return => self.lower_return_sequence(),
+            MachineTerminator::Return => self.lower_return_sequence(None),
+            MachineTerminator::ReturnScalar { value } => self.lower_return_sequence(Some(value)),
             MachineTerminator::Trap { kind } => {
                 self.lower_trap_dispatch(*kind);
                 Ok(())
@@ -600,35 +607,104 @@ impl<'a> super::backend::Arm64Backend<'a> {
         frame_delta: u32,
         results: &MachineCallResults,
     ) -> Result<(), WasmError> {
-        let MachineCallResults::FrameFallback {
-            callee_results,
-            caller_results,
-        } = results
-        else {
-            return Ok(());
-        };
-        if callee_results.slots != caller_results.slots {
-            return Err(WasmError::internal(
-                "arm64 frame-fallback result slot count mismatch",
-            ));
-        }
+        match results {
+            MachineCallResults::None => return Ok(()),
+            MachineCallResults::ScalarGp { dst, .. } => {
+                self.place_gp_call_result(*dst, abi::W2W_GP_RET0)?;
+                return Ok(());
+            }
+            MachineCallResults::ScalarFp { dst, ty } => {
+                self.place_fp_call_result(*dst, abi::fp_zero_reg(), scalar_fp_width(*ty)?)?;
+                return Ok(());
+            }
+            MachineCallResults::ScalarGpPair { .. } => {
+                return Err(WasmError::internal(
+                    "arm64 cannot lower 32-bit GP pair scalar call result".into(),
+                ));
+            }
+            MachineCallResults::FrameFallback {
+                callee_results,
+                caller_results,
+            } => {
+                if callee_results.slots != caller_results.slots {
+                    return Err(WasmError::internal(
+                        "arm64 frame-fallback result slot count mismatch",
+                    ));
+                }
 
-        let fp_reg = map_fixed_reg(MACHINE_FP_REG);
-        let value_idx = self.gp_scratch.alloc();
-        let value = self.gp_scratch.reg(value_idx);
-        for index in 0..callee_results.slots as u32 {
-            let src_offset = frame_delta
-                .checked_add(u32::from(callee_results.base_slot).saturating_mul(8))
-                .and_then(|base| base.checked_add(index.saturating_mul(8)))
-                .ok_or_else(|| WasmError::internal("arm64 result source offset overflow"))?;
-            let dst_offset = u32::from(caller_results.base_slot)
-                .saturating_mul(8)
-                .checked_add(index.saturating_mul(8))
-                .ok_or_else(|| WasmError::internal("arm64 result destination offset overflow"))?;
-            self.emit_frame_load_by_byte_offset(value, fp_reg, src_offset);
-            self.emit_frame_store_by_byte_offset(value, fp_reg, dst_offset);
+                let fp_reg = map_fixed_reg(MACHINE_FP_REG);
+                let value_idx = self.gp_scratch.alloc();
+                let value = self.gp_scratch.reg(value_idx);
+                for index in 0..callee_results.slots as u32 {
+                    let src_offset = frame_delta
+                        .checked_add(u32::from(callee_results.base_slot).saturating_mul(8))
+                        .and_then(|base| base.checked_add(index.saturating_mul(8)))
+                        .ok_or_else(|| {
+                            WasmError::internal("arm64 result source offset overflow")
+                        })?;
+                    let dst_offset = u32::from(caller_results.base_slot)
+                        .saturating_mul(8)
+                        .checked_add(index.saturating_mul(8))
+                        .ok_or_else(|| {
+                            WasmError::internal("arm64 result destination offset overflow")
+                        })?;
+                    self.emit_frame_load_by_byte_offset(value, fp_reg, src_offset);
+                    self.emit_frame_store_by_byte_offset(value, fp_reg, dst_offset);
+                }
+                self.gp_scratch.free_index(value_idx);
+                Ok(())
+            }
         }
-        self.gp_scratch.free_index(value_idx);
+    }
+
+    fn place_gp_call_result(
+        &mut self,
+        dst: MachineResultDst,
+        src: Arm64Reg,
+    ) -> Result<(), WasmError> {
+        match dst {
+            MachineResultDst::Reg(reg) => {
+                let dst = self.map_gp_reg(reg)?;
+                if dst != src {
+                    self.core.text.emit_u32(enc::mov_reg_64(dst, src));
+                }
+            }
+            MachineResultDst::FrameSlot(slot) => {
+                self.emit_frame_store_by_byte_offset(
+                    src,
+                    map_fixed_reg(MACHINE_FP_REG),
+                    u32::from(slot.0).saturating_mul(8),
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn place_fp_call_result(
+        &mut self,
+        dst: MachineResultDst,
+        src: Arm64FpReg,
+        width: MachineFloatWidth,
+    ) -> Result<(), WasmError> {
+        match dst {
+            MachineResultDst::Reg(reg) => {
+                let dst = self.map_fp_reg(reg)?;
+                if dst != src {
+                    self.core.text.emit_u32(match width {
+                        MachineFloatWidth::F32 => enc::fmov_s(dst, src),
+                        MachineFloatWidth::F64 => enc::fmov_d(dst, src),
+                    });
+                }
+            }
+            MachineResultDst::FrameSlot(slot) => {
+                self.emit_frame_store_fp_by_byte_offset(
+                    src,
+                    map_fixed_reg(MACHINE_FP_REG),
+                    u32::from(slot.0).saturating_mul(8),
+                    width,
+                );
+            }
+        }
         Ok(())
     }
 
@@ -659,6 +735,160 @@ impl<'a> super::backend::Arm64Backend<'a> {
         let addr = self.gp_scratch.reg(addr_idx);
         self.materialize_frame_addr(addr, base, offset);
         self.core.text.emit_u32(enc::str_64(src, addr, 0));
+        self.gp_scratch.free_index(addr_idx);
+    }
+
+    fn lower_return_value_to_lanes(&mut self, value: &MachineReturnValue) -> Result<(), WasmError> {
+        match value {
+            MachineReturnValue::ScalarGp { src, .. } => {
+                self.move_gp_result_src_to_reg(src, abi::W2W_GP_RET0)?;
+            }
+            MachineReturnValue::ScalarFp { src, ty } => {
+                let width = scalar_fp_width(*ty)?;
+                self.move_fp_result_src_to_reg(src, abi::fp_zero_reg(), width)?;
+            }
+            MachineReturnValue::ScalarGpPair { .. } => {
+                return Err(WasmError::internal(
+                    "arm64 cannot lower 32-bit GP pair scalar return".into(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn move_gp_result_src_to_reg(
+        &mut self,
+        src: &MachineResultSrc,
+        dst: Arm64Reg,
+    ) -> Result<(), WasmError> {
+        match *src {
+            MachineResultSrc::Reg(reg) => {
+                let src = self.map_gp_reg(reg)?;
+                if src != dst {
+                    self.core.text.emit_u32(enc::mov_reg_64(dst, src));
+                }
+            }
+            MachineResultSrc::FrameSlot(slot) => {
+                self.emit_frame_load_by_byte_offset(
+                    dst,
+                    map_fixed_reg(MACHINE_FP_REG),
+                    u32::from(slot.0).saturating_mul(8),
+                );
+            }
+            MachineResultSrc::FrameSlotOffset { slot, byte_offset } => {
+                let offset = u32::from(slot.0)
+                    .saturating_mul(8)
+                    .saturating_add(byte_offset as u32);
+                self.emit_frame_load_by_byte_offset(dst, map_fixed_reg(MACHINE_FP_REG), offset);
+            }
+        }
+        Ok(())
+    }
+
+    fn move_fp_result_src_to_reg(
+        &mut self,
+        src: &MachineResultSrc,
+        dst: Arm64FpReg,
+        width: MachineFloatWidth,
+    ) -> Result<(), WasmError> {
+        match *src {
+            MachineResultSrc::Reg(reg) => {
+                let src = self.map_fp_reg(reg)?;
+                if src != dst {
+                    self.core.text.emit_u32(match width {
+                        MachineFloatWidth::F32 => enc::fmov_s(dst, src),
+                        MachineFloatWidth::F64 => enc::fmov_d(dst, src),
+                    });
+                }
+            }
+            MachineResultSrc::FrameSlot(slot) => {
+                self.emit_frame_load_fp_by_byte_offset(
+                    dst,
+                    map_fixed_reg(MACHINE_FP_REG),
+                    u32::from(slot.0).saturating_mul(8),
+                    width,
+                );
+            }
+            MachineResultSrc::FrameSlotOffset { slot, byte_offset } => {
+                let offset = u32::from(slot.0)
+                    .saturating_mul(8)
+                    .saturating_add(byte_offset as u32);
+                self.emit_frame_load_fp_by_byte_offset(
+                    dst,
+                    map_fixed_reg(MACHINE_FP_REG),
+                    offset,
+                    width,
+                );
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_frame_load_fp_by_byte_offset(
+        &mut self,
+        dst: Arm64FpReg,
+        base: Arm64Reg,
+        offset: u32,
+        width: MachineFloatWidth,
+    ) {
+        match width {
+            MachineFloatWidth::F32 if offset % 4 == 0 => {
+                let scaled = offset / 4;
+                if scaled < 4096 {
+                    self.core.text.emit_u32(enc::ldr_s(dst, base, scaled));
+                    return;
+                }
+            }
+            MachineFloatWidth::F64 if offset % 8 == 0 => {
+                let scaled = offset / 8;
+                if scaled < 4096 {
+                    self.core.text.emit_u32(enc::ldr_d(dst, base, scaled));
+                    return;
+                }
+            }
+            _ => {}
+        }
+        let addr_idx = self.gp_scratch.alloc();
+        let addr = self.gp_scratch.reg(addr_idx);
+        self.materialize_frame_addr(addr, base, offset);
+        self.core.text.emit_u32(match width {
+            MachineFloatWidth::F32 => enc::ldr_s(dst, addr, 0),
+            MachineFloatWidth::F64 => enc::ldr_d(dst, addr, 0),
+        });
+        self.gp_scratch.free_index(addr_idx);
+    }
+
+    fn emit_frame_store_fp_by_byte_offset(
+        &mut self,
+        src: Arm64FpReg,
+        base: Arm64Reg,
+        offset: u32,
+        width: MachineFloatWidth,
+    ) {
+        match width {
+            MachineFloatWidth::F32 if offset % 4 == 0 => {
+                let scaled = offset / 4;
+                if scaled < 4096 {
+                    self.core.text.emit_u32(enc::str_s(src, base, scaled));
+                    return;
+                }
+            }
+            MachineFloatWidth::F64 if offset % 8 == 0 => {
+                let scaled = offset / 8;
+                if scaled < 4096 {
+                    self.core.text.emit_u32(enc::str_d(src, base, scaled));
+                    return;
+                }
+            }
+            _ => {}
+        }
+        let addr_idx = self.gp_scratch.alloc();
+        let addr = self.gp_scratch.reg(addr_idx);
+        self.materialize_frame_addr(addr, base, offset);
+        self.core.text.emit_u32(match width {
+            MachineFloatWidth::F32 => enc::str_s(src, addr, 0),
+            MachineFloatWidth::F64 => enc::str_d(src, addr, 0),
+        });
         self.gp_scratch.free_index(addr_idx);
     }
 
@@ -732,9 +962,16 @@ impl<'a> super::backend::Arm64Backend<'a> {
     /// `C_RET0 = 0` (the success status), and executes the platform `ret`.
     /// The callee leaves `MACHINE_FP_REG` pointing at its own frame; a
     /// returning caller restores its frame after the native call.
-    fn lower_return_sequence(&mut self) -> Result<(), WasmError> {
+    fn lower_return_sequence(
+        &mut self,
+        value: Option<&MachineReturnValue>,
+    ) -> Result<(), WasmError> {
         let x29 = abi::host_fp_reg();
         let x30 = abi::host_lr_reg();
+
+        if let Some(value) = value {
+            self.lower_return_value_to_lanes(value)?;
+        }
 
         // Restore any JIT-ABI preserved dynamic regs, then pop the body
         // prelude link save.

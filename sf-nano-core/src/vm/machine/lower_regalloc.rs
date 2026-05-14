@@ -12,9 +12,10 @@ use crate::{
             MachineArgSrcPair, MachineBlockParam, MachineBranchCond, MachineCallArgs,
             MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineConvertOp,
             MachineEdge, MachineFloatWidth, MachineInst, MachineInstKind, MachineIntWidth,
-            MachineMemWidth, MachineReg, MachineRegOwner, MachineResultDst, MachineStorageType,
-            MachineTerminator, MachineValue, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT,
-            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineMemWidth, MachineReg, MachineRegOwner, MachineResultDst, MachineResultSrc,
+            MachineReturnValue, MachineStorageType, MachineTerminator, MachineValue,
+            MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+            MACHINE_MEM0_SIZE_REG,
         },
         middle::ssa_ir::ir::{DecodedOperand, SsaOperand, SsaProgram, SsaValue},
     },
@@ -1337,6 +1338,9 @@ fn visit_term_source_regs(term: &MachineTerminator, mut visit: impl FnMut(Machin
             visit_call_arg_regs(args, &mut visit);
         }
         MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+        MachineTerminator::ReturnScalar { value } => {
+            visit_return_value_regs(value, &mut visit);
+        }
     }
 }
 
@@ -1375,6 +1379,24 @@ fn visit_arg_src_reg(src: &MachineArgSrc, visit: &mut impl FnMut(MachineReg)) {
     }
 }
 
+fn visit_return_value_regs(value: &MachineReturnValue, visit: &mut impl FnMut(MachineReg)) {
+    match value {
+        MachineReturnValue::ScalarGp { src, .. } | MachineReturnValue::ScalarFp { src, .. } => {
+            visit_result_src_reg(src, visit);
+        }
+        MachineReturnValue::ScalarGpPair { lo, hi } => {
+            visit_result_src_reg(lo, visit);
+            visit_result_src_reg(hi, visit);
+        }
+    }
+}
+
+fn visit_result_src_reg(src: &MachineResultSrc, visit: &mut impl FnMut(MachineReg)) {
+    if let MachineResultSrc::Reg(reg) = src {
+        visit(*reg);
+    }
+}
+
 fn visit_call_success_source_regs(
     success: &MachineEdge,
     results: &MachineCallResults,
@@ -1392,7 +1414,7 @@ fn visit_call_success_source_regs(
 fn call_results_define_reg(results: &MachineCallResults, reg: MachineReg) -> bool {
     match results {
         MachineCallResults::None | MachineCallResults::FrameFallback { .. } => false,
-        MachineCallResults::ScalarGp { dst } | MachineCallResults::ScalarFp { dst } => {
+        MachineCallResults::ScalarGp { dst, .. } | MachineCallResults::ScalarFp { dst, .. } => {
             result_dst_is_reg(*dst, reg)
         }
         MachineCallResults::ScalarGpPair { lo, hi } => {
@@ -1512,6 +1534,7 @@ mod tests {
                 terminator: SsaTerminator::Return { results: None },
             }],
             local_slot_types: collections::Vec::new(),
+            result_types: collections::Vec::new(),
             local_slot_info: collections::Vec::new(),
             block_entry_cached_slots: collections::vec![collections::vec![]],
             block_cfg_origins: collections::vec![],

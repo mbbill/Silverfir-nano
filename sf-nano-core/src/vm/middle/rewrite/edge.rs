@@ -81,6 +81,7 @@ pub(super) fn insert_boundary_repair_blocks(
                 }
             }
             SsaTerminator::Return { .. }
+            | SsaTerminator::ReturnScalar { .. }
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }
@@ -133,6 +134,7 @@ fn count_boundary_repairs(
                 }
             }
             SsaTerminator::Return { .. }
+            | SsaTerminator::ReturnScalar { .. }
             | SsaTerminator::TailCallDirect { .. }
             | SsaTerminator::TailCallIndirect { .. }
             | SsaTerminator::TailCallRef { .. }

@@ -1460,6 +1460,7 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
                 callee: 1,
                 args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(1), 2)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -1764,6 +1765,7 @@ fn lowers_call_runtime_through_frame_metadata_without_helper_scratch() {
                 callee: 7,
                 args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 2)),
                 results: FrameSpan::new(frame.operand_slot(0), 1),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -1905,6 +1907,7 @@ fn flushes_and_reloads_cached_locals_around_call_runtime() {
                 callee: 7,
                 args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 1)),
                 results: FrameSpan::new(frame.operand_slot(0), 0),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -1988,6 +1991,7 @@ fn skips_dead_cached_local_reload_after_direct_runtime_call() {
                 callee: 7,
                 args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 1)),
                 results: FrameSpan::new(frame.operand_slot(0), 0),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -2061,6 +2065,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
                 callee: 7,
                 args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 1)),
                 results: FrameSpan::new(frame.operand_slot(0), 0),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -2126,6 +2131,7 @@ fn lowers_direct_local_call_with_continuation_block() {
                 callee: 1,
                 args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(1), 2)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -2266,6 +2272,7 @@ fn flushes_cached_local_before_second_direct_call() {
                 callee: 1,
                 args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -2284,6 +2291,7 @@ fn flushes_cached_local_before_second_direct_call() {
                 callee: 1,
                 args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -3183,6 +3191,7 @@ fn does_not_save_clean_carried_cache_before_runtime_call() {
                 callee: 7,
                 args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 0)),
                 results: FrameSpan::new(frame.operand_slot(0), 0),
+                result_types: collections::Vec::new(),
             });
             __blk1.ops.push(SsaInst::call(__idx));
         }
@@ -3400,6 +3409,7 @@ fn saves_only_dirty_cached_locals_before_runtime_call() {
                 callee: 7,
                 args: test_i64_call_args(FrameSpan::new(frame.operand_slot(0), 0)),
                 results: FrameSpan::new(frame.operand_slot(0), 0),
+                result_types: collections::Vec::new(),
             });
             __blk1.ops.push(SsaInst::call(__idx));
         }
@@ -3528,6 +3538,7 @@ fn register_passed_entry_param_cache_stays_dirty_across_edges() {
             callee: 7,
             args: test_call_args(FrameSpan::new(frame.operand_slot(0), 0), &[]),
             results: FrameSpan::new(frame.operand_slot(0), 0),
+            result_types: collections::Vec::new(),
         });
         call_block.ops.push(SsaInst::call(call_idx));
         ssa.blocks.push(call_block);
@@ -3658,6 +3669,7 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
                 callee: 2,
                 args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(1), 2)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -3888,6 +3900,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
                 },
                 args: test_i64_call_args(FrameSpan::new(call_base, 2)),
                 results: FrameSpan::new(call_base, 1),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -4101,6 +4114,7 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
                 },
                 args: test_i64_call_args(FrameSpan::new(call_base, 2)),
                 results: FrameSpan::new(call_base, 1),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -4219,6 +4233,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
                 },
                 args: test_i64_call_args(FrameSpan::new(call_base, 2)),
                 results: FrameSpan::new(call_base, 1),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }
@@ -4383,6 +4398,7 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
                 callee: 1,
                 args: test_i64_call_args(FrameSpan::new(caller_frame.operand_slot(1), 2)),
                 results: FrameSpan::new(caller_frame.operand_slot(0), 1),
+                result_types: collections::Vec::new(),
             });
             __blk0.ops.push(SsaInst::call(__idx));
         }

@@ -128,6 +128,7 @@ fn shrink_prepared_ssa_storage(ssa: &mut SsaProgram) {
         block.extra_args.shrink_to_fit();
     }
     ssa.local_slot_types.shrink_to_fit();
+    ssa.result_types.shrink_to_fit();
     ssa.local_slot_info.shrink_to_fit();
     ssa.block_entry_cached_slots.shrink_to_fit();
     for slots in &mut ssa.block_entry_cached_slots {
@@ -149,6 +150,7 @@ fn empty_program(semantic: &SemanticProgram) -> SsaProgram {
         entry: SsaTarget(0),
         blocks: collections::Vec::new(),
         local_slot_types: semantic.local_types.clone(),
+        result_types: semantic.result_types.clone(),
         local_slot_info: collections::vec![Default::default(); semantic.local_count as usize],
         block_entry_cached_slots: collections::Vec::new(),
         block_cfg_origins: collections::Vec::new(),

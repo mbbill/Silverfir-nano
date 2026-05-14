@@ -888,6 +888,7 @@ fn block_successors(terminator: &SsaTerminator) -> collections::Vec<SsaTarget> {
             entries.iter().map(|entry| entry.target).collect()
         }
         SsaTerminator::Return { .. }
+        | SsaTerminator::ReturnScalar { .. }
         | SsaTerminator::TailCallDirect { .. }
         | SsaTerminator::TailCallIndirect { .. }
         | SsaTerminator::TailCallRef { .. }

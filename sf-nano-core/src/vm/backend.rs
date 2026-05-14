@@ -46,6 +46,7 @@ pub(crate) struct BackendConfig {
     pub fp_dynamic_budget: u8,
     pub gp_arg_lanes: u8,
     pub fp_arg_lanes: u8,
+    pub scalar_return_lanes: bool,
     pub call_scratch_slots: u16,
 }
 
@@ -73,6 +74,7 @@ impl BackendConfig {
             0,
             default_gp_arg_lanes(gp_volatile_dynamic),
             default_fp_arg_lanes(fp_dynamic_budget),
+            false,
             call_scratch_slots,
         )
     }
@@ -87,6 +89,7 @@ impl BackendConfig {
         fp_preserved_dynamic: u8,
         gp_arg_lanes: u8,
         fp_arg_lanes: u8,
+        scalar_return_lanes: bool,
         call_scratch_slots: u16,
     ) -> Self {
         let gp_dynamic_budget = gp_volatile_dynamic
@@ -104,6 +107,7 @@ impl BackendConfig {
             fp_dynamic_budget,
             gp_arg_lanes: min_u8(gp_arg_lanes, gp_volatile_dynamic),
             fp_arg_lanes: min_u8(fp_arg_lanes, fp_volatile_dynamic),
+            scalar_return_lanes,
             call_scratch_slots,
         }
     }
@@ -212,13 +216,14 @@ mod tests {
 
     #[test]
     fn backend_config_publishes_dynamic_volatility_layout() {
-        let config = BackendConfig::with_volatility(8, 6, 4, 1, 5, 3, 4, 2, 3);
+        let config = BackendConfig::with_volatility(8, 6, 4, 1, 5, 3, 4, 2, true, 3);
         assert_eq!(config.gp_dynamic_budget, 11);
         assert_eq!(config.fp_dynamic_budget, 8);
         assert_eq!(config.allocatable_gp_dynamic_budget(), 10);
         assert_eq!(config.allocatable_fp_dynamic_budget(), 8);
         assert_eq!(config.gp_arg_lanes, 4);
         assert_eq!(config.fp_arg_lanes, 2);
+        assert!(config.scalar_return_lanes);
     }
 }
 

@@ -8,7 +8,7 @@ use super::machine_ir::{
     is_dynamic_reg, MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineCallArgs,
     MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineConstId, MachineEdge,
     MachineFloatWidth, MachineFuncId, MachineInst, MachineReg, MachineRegOwner, MachineResultDst,
-    MachineValue,
+    MachineResultSrc, MachineReturnValue, MachineValue,
 };
 use super::machine_ir::{
     MachineBlockId, MachineBlockParam, MachineBranchCond, MachineConvertOp, MachineInstKind,
@@ -861,7 +861,33 @@ impl MachineProgram {
                 self.validate_call_args(args, config)
             }
             MachineTerminator::Return => Ok(()),
+            MachineTerminator::ReturnScalar { value } => self.validate_return_value(value, config),
             MachineTerminator::Trap { .. } => Ok(()),
+        }
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_return_value(
+        &self,
+        value: &MachineReturnValue,
+        config: BackendConfig,
+    ) -> ValidateResult {
+        match value {
+            MachineReturnValue::ScalarGp { src, .. } | MachineReturnValue::ScalarFp { src, .. } => {
+                self.validate_result_src(src, config)
+            }
+            MachineReturnValue::ScalarGpPair { lo, hi } => {
+                self.validate_result_src(lo, config)?;
+                self.validate_result_src(hi, config)
+            }
+        }
+    }
+
+    #[cfg(any(debug_assertions, test))]
+    fn validate_result_src(&self, src: &MachineResultSrc, config: BackendConfig) -> ValidateResult {
+        match src {
+            MachineResultSrc::Reg(reg) => self.validate_reg(*reg, config),
+            MachineResultSrc::FrameSlot(_) | MachineResultSrc::FrameSlotOffset { .. } => Ok(()),
         }
     }
 
@@ -927,7 +953,7 @@ impl MachineProgram {
     ) -> Result<(), WasmError> {
         match results {
             MachineCallResults::None | MachineCallResults::FrameFallback { .. } => Ok(()),
-            MachineCallResults::ScalarGp { dst } | MachineCallResults::ScalarFp { dst } => {
+            MachineCallResults::ScalarGp { dst, .. } | MachineCallResults::ScalarFp { dst, .. } => {
                 self.validate_result_dst(*dst, config)
             }
             MachineCallResults::ScalarGpPair { lo, hi } => {
