@@ -109,6 +109,14 @@ pub(super) struct PendingDirectCall {
     pub link: bool,
 }
 
+#[derive(Clone, Copy, Debug)]
+struct DirectCallFallbackVeneer {
+    callee: MachineFuncId,
+    scratch_reg: Arm64Reg,
+    veneer_offset: usize,
+    literal_offset: usize,
+}
+
 #[derive(Debug)]
 pub(crate) struct Arm64Backend<'a> {
     pub core: CompilerCore<'a>,
@@ -330,6 +338,37 @@ impl<'a> Arm64Backend<'a> {
         self.core
             .text
             .emit_u32(enc::add_imm_64(abi::stack_reg(), abi::stack_reg(), total));
+    }
+
+    fn lower_direct_call_fallback_veneer(
+        &mut self,
+        scratch_reg: Arm64Reg,
+    ) -> Result<(usize, usize), WasmError> {
+        let veneer_offset = self.core.text.len();
+        let ldr_offset = self.core.text.emit_u32(enc::ldr_lit_64(scratch_reg, 0));
+        self.core.text.emit_u32(enc::br(scratch_reg));
+        let literal_offset = self.core.text.emit_u64(0);
+        let delta_bytes = literal_offset as isize - ldr_offset as isize;
+        // ldr_lit_64 encodes a signed 19-bit instruction-word offset.
+        // Word range: [-2^18, 2^18 - 1]. Byte range: ±1 MiB.
+        // The literal pool always sits after the LDR here, but the bound is
+        // checked symmetric because the encoding itself is signed.
+        const LDR_LIT_BYTE_MAX: isize = (1 << 20) - 4;
+        if delta_bytes & 0b11 != 0 {
+            return Err(WasmError::internal(
+                "arm64 deferred call literal is not 4-byte aligned",
+            ));
+        }
+        if !(-LDR_LIT_BYTE_MAX..=LDR_LIT_BYTE_MAX).contains(&delta_bytes) {
+            return Err(WasmError::internal(
+                "arm64 deferred call literal pool is out of range",
+            ));
+        }
+        let delta_words = (delta_bytes / 4) as i32;
+        self.core
+            .text
+            .patch_u32(ldr_offset, enc::ldr_lit_64(scratch_reg, delta_words));
+        Ok((veneer_offset, literal_offset))
     }
 }
 
@@ -559,35 +598,24 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     /// preserving the LR produced by the original `bl`.
     fn lower_function_literal_pool(&mut self) -> Result<(), WasmError> {
         let pending = core::mem::take(&mut self.pending_direct_calls);
+        let mut veneers: collections::Vec<DirectCallFallbackVeneer> = collections::Vec::new();
         for call in pending {
-            let veneer_offset = self.core.text.len();
-            let ldr_offset = self
-                .core
-                .text
-                .emit_u32(enc::ldr_lit_64(call.fallback_scratch_reg, 0));
-            self.core.text.emit_u32(enc::br(call.fallback_scratch_reg));
-            let literal_offset = self.core.text.emit_u64(0);
-            let delta_bytes = literal_offset as isize - ldr_offset as isize;
-            // ldr_lit_64 encodes a signed 19-bit instruction-word offset.
-            // Word range: [-2^18, 2^18 - 1]. Byte range: ±1 MiB.
-            // The literal pool always sits *after* the LDR (delta is
-            // positive in practice), but the bound is checked symmetric.
-            const LDR_LIT_BYTE_MAX: isize = (1 << 20) - 4;
-            if delta_bytes & 0b11 != 0 {
-                return Err(WasmError::internal(
-                    "arm64 deferred call literal is not 4-byte aligned",
-                ));
-            }
-            if !(-LDR_LIT_BYTE_MAX..=LDR_LIT_BYTE_MAX).contains(&delta_bytes) {
-                return Err(WasmError::internal(
-                    "arm64 deferred call literal pool is out of range",
-                ));
-            }
-            let delta_words = (delta_bytes / 4) as i32;
-            self.core.text.patch_u32(
-                ldr_offset,
-                enc::ldr_lit_64(call.fallback_scratch_reg, delta_words),
-            );
+            let (veneer_offset, literal_offset) = if let Some(veneer) =
+                veneers.iter().copied().find(|veneer| {
+                    veneer.callee == call.callee && veneer.scratch_reg == call.fallback_scratch_reg
+                }) {
+                (veneer.veneer_offset, veneer.literal_offset)
+            } else {
+                let (veneer_offset, literal_offset) =
+                    self.lower_direct_call_fallback_veneer(call.fallback_scratch_reg)?;
+                veneers.push(DirectCallFallbackVeneer {
+                    callee: call.callee,
+                    scratch_reg: call.fallback_scratch_reg,
+                    veneer_offset,
+                    literal_offset,
+                });
+                (veneer_offset, literal_offset)
+            };
             let patch = if call.link {
                 crate::vm::arch::common::types::DirectCallPatch::arm64_bl(
                     call.inst_offset,
