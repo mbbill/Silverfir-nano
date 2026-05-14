@@ -4,6 +4,7 @@
 //! params. The only repair left here is cached-local set reconciliation.
 
 use crate::collections;
+use tracked_alloc::collections::BTreeMap;
 
 use crate::vm::middle::{
     frame::FrameSlot,
@@ -16,7 +17,7 @@ use crate::vm::middle::{
     },
 };
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 struct RepairActions {
     ensure_cached_locals: collections::Vec<FrameSlot>,
     reserve_cached_locals: collections::Vec<FrameSlot>,
@@ -29,6 +30,13 @@ impl RepairActions {
             && self.reserve_cached_locals.is_empty()
             && self.drop_cached_locals.is_empty()
     }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+struct RepairBlockKey {
+    target: SsaTarget,
+    pred_exit: collections::Vec<FrameSlot>,
+    repair: RepairActions,
 }
 
 /// Identifies which outgoing edge of a terminator a repair applies to.
@@ -55,6 +63,7 @@ pub(super) fn insert_boundary_repair_blocks(
     // Scratch reused across blocks for edge enumeration; avoids allocating a
     // fresh Vec per block for the common 1- and 2-edge cases.
     let mut edge_slots: collections::Vec<(EdgeSlot, SsaTarget)> = collections::Vec::new();
+    let mut repair_blocks: BTreeMap<RepairBlockKey, SsaTarget> = BTreeMap::new();
 
     for block_index in 0..original_len {
         let pred_exit = exit_cached_slots
@@ -92,7 +101,9 @@ pub(super) fn insert_boundary_repair_blocks(
 
         for i in 0..edge_slots.len() {
             let (slot, original_target) = edge_slots[i];
-            if let Some(repair_id) = apply_edge_repair(program, &pred_exit, original_target) {
+            if let Some(repair_id) =
+                apply_edge_repair(program, &pred_exit, original_target, &mut repair_blocks)
+            {
                 retarget_edge(&mut program.blocks[block_index].terminator, slot, repair_id);
             }
         }
@@ -195,6 +206,7 @@ fn apply_edge_repair(
     program: &mut SsaProgram,
     pred_exit: &[FrameSlot],
     original_target: SsaTarget,
+    repair_blocks: &mut BTreeMap<RepairBlockKey, SsaTarget>,
 ) -> Option<SsaTarget> {
     let target_id = original_target.as_usize();
 
@@ -214,6 +226,15 @@ fn apply_edge_repair(
         let repair_params = target_block.map(|b| b.params.clone()).unwrap_or_default();
         (repair, repair_params)
     };
+
+    let key = RepairBlockKey {
+        target: original_target,
+        pred_exit: pred_exit.to_vec().into(),
+        repair: repair.clone(),
+    };
+    if let Some(&repair_id) = repair_blocks.get(&key) {
+        return Some(repair_id);
+    }
 
     let repair_id = SsaTarget(program.blocks.len() as u32);
     let ops = build_repair_ops(&repair);
@@ -241,6 +262,7 @@ fn apply_edge_repair(
     if !program.block_cfg_origins.is_empty() {
         program.block_cfg_origins.push(collections::Vec::new());
     }
+    repair_blocks.insert(key, repair_id);
     Some(repair_id)
 }
 
@@ -354,4 +376,108 @@ fn derive_edge_repair(
         }
     }
     repair
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::value_type::ValueType;
+    use crate::vm::middle::ssa_ir::{
+        ir::{SsaOp, SsaOperand, SsaValue},
+        validate::validate_program,
+    };
+    use crate::vm::wasm::primitive_op::PrimitiveOpKind;
+
+    #[test]
+    fn br_table_edges_share_identical_boundary_repair_block() {
+        let slot0 = FrameSlot(0);
+        let slot1 = FrameSlot(1);
+        let index = SsaValue(0);
+        let cached = SsaValue(1);
+
+        let mut program = SsaProgram {
+            entry: SsaTarget(0),
+            blocks: collections::Vec::new(),
+            local_slot_types: collections::vec![ValueType::I32, ValueType::I32],
+            result_types: collections::Vec::new(),
+            local_slot_info: collections::vec![Default::default(), Default::default()],
+            block_entry_cached_slots: collections::vec![
+                collections::Vec::new(),
+                collections::vec![slot0]
+            ],
+            block_cfg_origins: collections::Vec::new(),
+            value_types: collections::vec![ValueType::I32, ValueType::I32],
+            value_sink_local: collections::vec![None, None],
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
+        };
+        let pool_idx = program
+            .intern_primitive(PrimitiveOpKind::I32Const { value: 0 })
+            .unwrap();
+        let index_inst =
+            SsaInst::primitive(pool_idx, index, [SsaOperand::NONE, SsaOperand::NONE], 0);
+        let to_target = SsaEdge {
+            target: SsaTarget(1),
+            bindings: collections::Vec::new(),
+        };
+        program.blocks = collections::vec![
+            SsaBlock {
+                id: SsaTarget(0),
+                params: collections::Vec::new(),
+                ops: collections::vec![index_inst],
+                extra_args: collections::Vec::new(),
+                terminator: SsaTerminator::BrTable {
+                    index,
+                    entries: collections::vec![to_target.clone(), to_target.clone(), to_target],
+                },
+            },
+            SsaBlock {
+                id: SsaTarget(1),
+                params: collections::Vec::new(),
+                ops: collections::vec![SsaInst::local_get_cache(slot0, cached)],
+                extra_args: collections::Vec::new(),
+                terminator: SsaTerminator::Return { results: None },
+            },
+        ];
+        let exit_cached_slots =
+            collections::vec![collections::vec![slot1], collections::vec![slot0]];
+
+        insert_boundary_repair_blocks(&mut program, &exit_cached_slots);
+
+        assert_eq!(
+            program.blocks.len(),
+            3,
+            "repeated br_table edges should be retargeted to one shared repair block"
+        );
+        let repair_target = match &program.blocks[0].terminator {
+            SsaTerminator::BrTable { entries, .. } => {
+                assert!(entries.iter().all(|edge| edge.target == entries[0].target));
+                entries[0].target
+            }
+            other => panic!("expected br_table, got {other:?}"),
+        };
+        assert_eq!(repair_target, SsaTarget(2));
+        let repair_block = &program.blocks[repair_target.as_usize()];
+        assert_eq!(
+            program.block_entry_cached_slots[repair_target.as_usize()],
+            collections::vec![slot1]
+        );
+        assert_eq!(
+            repair_block
+                .ops
+                .iter()
+                .map(|inst| (inst.op, FrameSlot(inst.meta)))
+                .collect::<collections::Vec<_>>(),
+            collections::vec![
+                (SsaOp::LOCAL_DROP_CACHE, slot1),
+                (SsaOp::LOCAL_ENSURE_CACHE, slot0)
+            ]
+        );
+        assert!(matches!(
+            &repair_block.terminator,
+            SsaTerminator::Goto(edge) if edge.target == SsaTarget(1)
+        ));
+        validate_program(&program).unwrap();
+    }
 }
