@@ -322,7 +322,11 @@ const GP_PRESERVED_DYNAMIC: u8 = 6;
 const GP_INTERNAL_SCRATCH: u8 = 1;
 const FP_VOLATILE_DYNAMIC: u8 = 22;
 const FP_PRESERVED_DYNAMIC: u8 = 8;
-const GP_ARG_LANES: u8 = 4;
+// Keep the local-call GP ABI wide enough for common C/Lua helper shapes
+// without making every volatile dynamic lane an argument lane. Empirically,
+// 9 removes the remaining Lua frame-prefix call args that 8 leaves behind;
+// wider values grow code in that workload.
+const GP_ARG_LANES: u8 = 9;
 const FP_ARG_LANES: u8 = 4;
 
 #[inline]
