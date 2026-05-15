@@ -38,10 +38,11 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     /// Prepare cached locals for a compiled local call. The cache-layout pass
-    /// selects clean non-ref caches worth carrying; selected clean caches
-    /// already resident in preserved dynamic regs remain live across the call.
-    /// Dirty caches are published before the call because their canonical
-    /// frame slots are not authoritative.
+    /// selects non-ref caches worth carrying; selected caches already resident
+    /// in preserved dynamic regs remain live across the call. Dirty carried
+    /// caches are published once before the call so the frame is authoritative
+    /// at the safepoint, then continue in the preserved lane on the success
+    /// edge.
     pub(super) fn prepare_cached_locals_for_local_call(
         &mut self,
     ) -> Result<
@@ -62,6 +63,10 @@ impl<'a> BlockLowerContext<'a> {
                 WasmError::internal("cached local binding missing during local-call cache prep")
             })?;
             if self.can_keep_cached_local_across_local_call(index, &cached) {
+                if self.is_cache_dirty(index) {
+                    self.emit_save_bound_cached_local(&cached)?;
+                    self.set_cache_dirty(index, false);
+                }
                 success_args.extend(cached_local_success_args(&cached));
                 continuation_params.extend(cached_local_continuation_params(&cached));
                 continue;
@@ -186,7 +191,6 @@ impl<'a> BlockLowerContext<'a> {
         cached: &BoundCachedLocal,
     ) -> bool {
         self.cache_has_value(index)
-            && !self.is_cache_dirty(index)
             && self.prefers_preserved_cache_binding(index)
             && !cached.value_ty.is_ref()
             && self.regfile().is_preserved_dynamic_reg(cached.reg)

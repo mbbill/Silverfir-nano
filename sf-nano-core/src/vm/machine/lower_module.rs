@@ -383,8 +383,12 @@ fn lower_function(
     let current_abi = runtime
         .get(input.id.0 as usize)
         .ok_or_else(|| WasmError::internal("runtime metadata missing for current function"))?;
-    let call_preserved_cache_candidates =
-        compute_local_call_cache_preferences(&input.ssa, &explicit_cache, is_local_func);
+    let call_preserved_cache_candidates = compute_local_call_cache_preferences(
+        &input.ssa,
+        &explicit_cache,
+        is_local_func,
+        u16::from(config.preserved_cache_min_local_call_crosses),
+    );
     let entry_cache_params = compute_block_entry_cache_params(
         regfile,
         &input.ssa,
@@ -2698,8 +2702,8 @@ fn simulate_block_cache_exit_state(
                         .get(cached_index)
                         .copied()
                         .unwrap_or(false)
-                        && !dirty[cached_index]
                     {
+                        dirty[cached_index] = false;
                         continue;
                     }
                     resident[cached_index] = false;

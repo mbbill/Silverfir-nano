@@ -88,6 +88,7 @@ pub(super) fn compute_block_entry_cache_params(
         cached_locals,
         &slot_to_cached_index,
         is_local_func,
+        regfile.preserved_cache_min_local_call_crosses(),
     );
     let predecessors = compute_predecessors(program);
     let rpo = compute_reverse_postorder(program);
@@ -282,6 +283,7 @@ pub(super) fn compute_local_call_cache_preferences(
     program: &SsaProgram,
     cached_locals: &[CachedLocal],
     is_local_func: &[bool],
+    min_local_call_crosses: u16,
 ) -> collections::Vec<collections::Vec<bool>> {
     let slot_to_cached_index = cached_locals
         .iter()
@@ -293,6 +295,7 @@ pub(super) fn compute_local_call_cache_preferences(
         cached_locals,
         &slot_to_cached_index,
         is_local_func,
+        min_local_call_crosses,
     )
 }
 
@@ -301,12 +304,14 @@ fn compute_local_call_cache_preferences_with_map(
     cached_locals: &[CachedLocal],
     slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
     is_local_func: &[bool],
+    min_local_call_crosses: u16,
 ) -> collections::Vec<collections::Vec<bool>> {
-    let mut preferences =
+    let mut candidates =
         collections::vec![collections::vec![false; cached_locals.len()]; program.blocks.len()];
     if cached_locals.is_empty() {
-        return preferences;
+        return candidates;
     }
+    let mut cross_counts = collections::vec![0u16; cached_locals.len()];
 
     for (block_index, block) in program.blocks.iter().enumerate() {
         let call_needs_after =
@@ -323,10 +328,6 @@ fn compute_local_call_cache_preferences_with_map(
                 resident[cached_index] = true;
                 has_value[cached_index] = block_entry_cache_requirement(entry_slots, block, slot)
                     == Some(EntryCacheRequirement::Ensure);
-                // Entry cache params can merge different predecessor states.
-                // Until this block reloads the value, avoid making preserved
-                // placement depend on carrying that uncertain state through
-                // another local call.
                 dirty[cached_index] = has_value[cached_index];
             }
         }
@@ -382,10 +383,14 @@ fn compute_local_call_cache_preferences_with_map(
                                 .unwrap_or(false)
                             && resident[cached_index]
                             && has_value[cached_index]
-                            && !dirty[cached_index]
                             && !cached_locals[cached_index].value_ty.is_ref();
                         if keep {
-                            preferences[block_index][cached_index] = true;
+                            candidates[block_index][cached_index] = true;
+                            cross_counts[cached_index] =
+                                cross_counts[cached_index].saturating_add(1);
+                            // Lowering publishes dirty carried caches before
+                            // the local call, so the success edge receives a
+                            // clean preserved cache value.
                             dirty[cached_index] = false;
                         } else {
                             resident[cached_index] = false;
@@ -399,7 +404,15 @@ fn compute_local_call_cache_preferences_with_map(
         }
     }
 
-    preferences
+    for block_candidates in &mut candidates {
+        for (cached_index, candidate) in block_candidates.iter_mut().enumerate() {
+            if cross_counts.get(cached_index).copied().unwrap_or(0) < min_local_call_crosses {
+                *candidate = false;
+            }
+        }
+    }
+
+    candidates
 }
 
 fn compute_call_cache_needs_after(
@@ -409,7 +422,7 @@ fn compute_call_cache_needs_after(
     is_local_func: &[bool],
 ) -> collections::Vec<Option<collections::Vec<bool>>> {
     let mut call_needs_after = collections::vec![None; block.ops.len()];
-    let mut needed_after = successor_entry_cache_needs(program, block, slot_to_cached_index);
+    let mut needed_after = collections::vec![false; slot_to_cached_index.len()];
     for (inst_index, inst) in block.ops.iter().enumerate().rev() {
         match inst.op {
             SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_ENSURE_CACHE => {
@@ -498,31 +511,6 @@ fn mark_cache_dropped(
         has_value[cached_index] = false;
         dirty[cached_index] = false;
     }
-}
-
-fn successor_entry_cache_needs(
-    program: &SsaProgram,
-    block: &SsaBlock,
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-) -> collections::Vec<bool> {
-    let mut needed = collections::vec![false; slot_to_cached_index.len()];
-    for target in block_successors(&block.terminator) {
-        let Some(target_block) = program.blocks.get(target.as_usize()) else {
-            continue;
-        };
-        let Some(entry_slots) = program.block_entry_cached_slots.get(target.as_usize()) else {
-            continue;
-        };
-        for &slot in entry_slots {
-            if block_entry_cache_requirement(entry_slots, target_block, slot)
-                != Some(EntryCacheRequirement::Ensure)
-            {
-                continue;
-            }
-            mark_cached_slot(&mut needed, slot_to_cached_index, slot, true);
-        }
-    }
-    needed
 }
 
 fn mark_cached_slot(
@@ -796,11 +784,6 @@ fn simulate_block_exit_layout(
     preserved_lanes: &[bool],
 ) -> Result<collections::Vec<u32>, WasmError> {
     let mut layout: collections::Vec<u32> = entry_layout.to_vec().into();
-    // Entry cache params may arrive from different predecessor states. Until
-    // the block itself reloads from frame or writes the cache, treat resident
-    // values as possibly dirty so the layout does not require carrying them
-    // across a later local call.
-    let mut dirty = collections::vec![false; slot_meta.len()];
     let mut occupied = collections::vec![false; lane_count];
     for lane in 0..prefix_occupied.min(lane_count) {
         occupied[lane] = true;
@@ -816,7 +799,6 @@ fn simulate_block_exit_layout(
                 slot_meta[slot_index].width,
                 true,
             );
-            dirty[slot_index] = true;
         }
     }
 
@@ -885,7 +867,6 @@ fn simulate_block_exit_layout(
                         "FP cache exit layout unexpectedly failed without a feasible hole".into(),
                     ));
                 }
-                dirty[slot_index] = false;
             }
             SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_SET_CACHE => {
                 let slot = FrameSlot(inst.meta);
@@ -950,7 +931,6 @@ fn simulate_block_exit_layout(
                         ));
                     }
                 }
-                dirty[slot_index] = inst.op == SsaOp::LOCAL_SET_CACHE;
             }
             SsaOp::LOCAL_DROP_CACHE => {
                 let slot = FrameSlot(inst.meta);
@@ -969,7 +949,6 @@ fn simulate_block_exit_layout(
                         false,
                     );
                 }
-                dirty[slot_index] = false;
             }
             SsaOp::CALL => {
                 let direct_local = is_direct_local_call(program, is_local_func, inst.meta);
@@ -986,14 +965,12 @@ fn simulate_block_exit_layout(
                             .copied()
                             .unwrap_or(false)
                         && !slot_meta[slot_index].is_ref
-                        && !dirty[slot_index]
-                        && segment_is_preserved(
-                            preserved_lanes,
-                            *lane as usize,
-                            slot_meta[slot_index].width,
-                        )
                     {
-                        continue;
+                        let start = *lane as usize;
+                        let width = slot_meta[slot_index].width;
+                        if segment_is_preserved(preserved_lanes, start, width) {
+                            continue;
+                        }
                     }
                     occupy_segment(
                         &mut occupied,
@@ -1002,7 +979,6 @@ fn simulate_block_exit_layout(
                         false,
                     );
                     *lane = LANE_UNASSIGNED;
-                    dirty[slot_index] = false;
                 }
             }
             // Value (primitive) / Fill / Spill / LocalGetSlot / LocalGetCache /
@@ -1240,15 +1216,24 @@ fn lexicographically_better(lhs: &[u32], rhs: &[u32]) -> bool {
 fn feasible_starts(
     occupied: &[bool],
     width: usize,
-    _preserved_lanes: &[bool],
-    _prefer_preserved: bool,
+    preserved_lanes: &[bool],
+    prefer_preserved: bool,
 ) -> collections::Vec<usize> {
     let mut starts = collections::Vec::new();
     if width == 0 || width > occupied.len() {
         return starts;
     }
     for start in 0..=occupied.len() - width {
-        if segment_available(occupied, start, width) {
+        if segment_available(occupied, start, width)
+            && segment_matches_preference(preserved_lanes, start, width, prefer_preserved)
+        {
+            starts.push(start);
+        }
+    }
+    for start in 0..=occupied.len() - width {
+        if segment_available(occupied, start, width)
+            && !segment_matches_preference(preserved_lanes, start, width, prefer_preserved)
+        {
             starts.push(start);
         }
     }
@@ -1258,10 +1243,13 @@ fn feasible_starts(
 fn choose_hole_start(
     occupied: &[bool],
     width: usize,
-    _preserved_lanes: &[bool],
-    _prefer_preserved: bool,
+    preserved_lanes: &[bool],
+    prefer_preserved: bool,
 ) -> Option<usize> {
-    choose_hole_start_with_filter(occupied, width, |_| true)
+    choose_hole_start_with_filter(occupied, width, |candidate| {
+        segment_matches_preference(preserved_lanes, candidate, width, prefer_preserved)
+    })
+    .or_else(|| choose_hole_start_with_filter(occupied, width, |_| true))
 }
 
 fn choose_hole_start_with_filter(
@@ -1284,18 +1272,21 @@ fn choose_hole_start_with_filter(
         if len < width {
             continue;
         }
-        if !allow_start(start) {
-            continue;
-        }
         let rank = (usize::from(len != width), len);
-        if best
-            .map(|(best_start, best_len)| {
-                rank < (usize::from(best_len != width), best_len)
-                    || (rank == (usize::from(best_len != width), best_len) && start < best_start)
-            })
-            .unwrap_or(true)
-        {
-            best = Some((start, len));
+        for candidate in start..=lane - width {
+            if !allow_start(candidate) {
+                continue;
+            }
+            if best
+                .map(|(best_start, best_len)| {
+                    rank < (usize::from(best_len != width), best_len)
+                        || (rank == (usize::from(best_len != width), best_len)
+                            && candidate < best_start)
+                })
+                .unwrap_or(true)
+            {
+                best = Some((candidate, len));
+            }
         }
     }
     best.map(|(start, _)| start)
@@ -1315,6 +1306,28 @@ fn segment_is_preserved(preserved_lanes: &[bool], start: usize, width: usize) ->
             end <= preserved_lanes.len() && preserved_lanes[start..end].iter().all(|lane| *lane)
         })
         .unwrap_or(false)
+}
+
+fn segment_uses_preserved(preserved_lanes: &[bool], start: usize, width: usize) -> bool {
+    start
+        .checked_add(width)
+        .map(|end| {
+            end <= preserved_lanes.len() && preserved_lanes[start..end].iter().any(|lane| *lane)
+        })
+        .unwrap_or(false)
+}
+
+fn segment_matches_preference(
+    preserved_lanes: &[bool],
+    start: usize,
+    width: usize,
+    prefer_preserved: bool,
+) -> bool {
+    if prefer_preserved {
+        segment_is_preserved(preserved_lanes, start, width)
+    } else {
+        !segment_uses_preserved(preserved_lanes, start, width)
+    }
 }
 
 fn occupy_segment(occupied: &mut [bool], start: usize, width: usize, value: bool) {

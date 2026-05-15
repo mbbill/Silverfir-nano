@@ -48,6 +48,11 @@ pub(crate) struct BackendConfig {
     pub fp_arg_lanes: u8,
     pub scalar_return_lanes: bool,
     pub call_scratch_slots: u16,
+    /// Static call-crossing threshold before a cached local prefers preserved
+    /// dynamic lanes. Preserved lanes have a function-entry save/return-restore
+    /// cost, so the shared placer only uses them for locals that cross several
+    /// direct local calls.
+    pub preserved_cache_min_local_call_crosses: u8,
 }
 
 impl BackendConfig {
@@ -109,6 +114,7 @@ impl BackendConfig {
             fp_arg_lanes: min_u8(fp_arg_lanes, fp_volatile_dynamic),
             scalar_return_lanes,
             call_scratch_slots,
+            preserved_cache_min_local_call_crosses: 7,
         }
     }
 

@@ -69,7 +69,7 @@ fn host_backend_config_with_preserved(
     gp_preserved_dynamic: u8,
     gp_internal_scratch: u8,
 ) -> BackendConfig {
-    BackendConfig::with_volatility(
+    let mut config = BackendConfig::with_volatility(
         HOST_GP_UNIT_BYTES,
         gp_volatile_dynamic,
         gp_preserved_dynamic,
@@ -80,7 +80,9 @@ fn host_backend_config_with_preserved(
         0,
         false,
         HOST_CALL_SCRATCH_SLOTS,
-    )
+    );
+    config.preserved_cache_min_local_call_crosses = 2;
+    config
 }
 
 fn gp32_backend_config(
@@ -2506,7 +2508,7 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
         }];
         caller.block_entry_cached_slots = collections::vec![];
         caller.block_cfg_origins = collections::vec![];
-        caller.value_types = collections::vec![ValueType::I32, ValueType::I32];
+        caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         caller.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
             id: SsaTarget(0),
@@ -2535,6 +2537,20 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
             drop_idx,
             SsaValue::NONE,
             [SsaOperand::value(SsaValue(1)), SsaOperand::NONE],
+            0,
+        ));
+        let second_call_idx = caller.push_call_op(SsaCallOp::CallDirect {
+            callee: 1,
+            args: test_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0), &[]),
+            results: FrameSpan::new(caller_frame.operand_slot(0), 0),
+            result_types: collections::Vec::new(),
+        });
+        block.ops.push(SsaInst::call(second_call_idx));
+        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(2)));
+        block.ops.push(SsaInst::primitive(
+            drop_idx,
+            SsaValue::NONE,
+            [SsaOperand::value(SsaValue(2)), SsaOperand::NONE],
             0,
         ));
         caller.blocks.push(block);
@@ -2584,7 +2600,7 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
     .expect("direct local call should carry preserved cached local");
 
     let caller_program = &lowered.module.functions[0].program;
-    assert_eq!(caller_program.blocks.len(), 2);
+    assert_eq!(caller_program.blocks.len(), 3);
     let call_block = &caller_program.blocks[0];
     let continuation = &caller_program.blocks[1];
     let MachineTerminator::Call {
@@ -2609,23 +2625,27 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
             .ops
             .iter()
             .chain(continuation.ops.iter())
+            .chain(caller_program.blocks[2].ops.iter())
             .all(|inst| !matches!(inst.kind, MachineInstKind::Store { .. })),
         "clean non-ref cache in a preserved reg should not be stored around the local call; call_ops={:?}, cont_ops={:?}",
         call_block.ops,
         continuation.ops
     );
     assert!(
-        continuation
-            .ops
-            .iter()
-            .all(|inst| !matches!(inst.kind, MachineInstKind::Load { .. })),
+        continuation.ops.iter().all(|inst| !matches!(
+            inst.kind,
+            MachineInstKind::Load {
+                owner: MachineRegOwner::CachedLocal,
+                ..
+            }
+        )),
         "continued local.get_cache should use the carried cache register, not reload; ops={:?}",
         continuation.ops
     );
 }
 
 #[test]
-fn direct_local_call_does_not_force_clean_cache_into_preserved_reg_when_volatile_available() {
+fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_available() {
     let caller_frame = plan_frame_layout(1, 0, 4);
     let callee_frame = plan_frame_layout(0, 0, 4);
     let slot = caller_frame.local_slot(0);
@@ -2635,12 +2655,12 @@ fn direct_local_call_does_not_force_clean_cache_into_preserved_reg_when_volatile
         caller.entry = SsaTarget(0);
         caller.local_slot_types = collections::vec![ValueType::I32];
         caller.local_slot_info = collections::vec![LocalSlotInfo {
-            is_param: true,
+            is_param: false,
             reads_before_write: true,
         }];
         caller.block_entry_cached_slots = collections::vec![];
         caller.block_cfg_origins = collections::vec![];
-        caller.value_types = collections::vec![ValueType::I32, ValueType::I32];
+        caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         caller.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
             id: SsaTarget(0),
@@ -2669,6 +2689,20 @@ fn direct_local_call_does_not_force_clean_cache_into_preserved_reg_when_volatile
             drop_idx,
             SsaValue::NONE,
             [SsaOperand::value(SsaValue(1)), SsaOperand::NONE],
+            0,
+        ));
+        let second_call_idx = caller.push_call_op(SsaCallOp::CallDirect {
+            callee: 1,
+            args: test_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0), &[]),
+            results: FrameSpan::new(caller_frame.operand_slot(0), 0),
+            result_types: collections::Vec::new(),
+        });
+        block.ops.push(SsaInst::call(second_call_idx));
+        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(2)));
+        block.ops.push(SsaInst::primitive(
+            drop_idx,
+            SsaValue::NONE,
+            [SsaOperand::value(SsaValue(2)), SsaOperand::NONE],
             0,
         ));
         caller.blocks.push(block);
@@ -2714,16 +2748,18 @@ fn direct_local_call_does_not_force_clean_cache_into_preserved_reg_when_volatile
             },
         ],
     })
-    .expect("direct local call should lower without forcing preserved cache");
+    .expect("direct local call should lower with a preserved cache lane");
 
     let caller_function = &lowered.module.functions[0];
     assert!(
-        caller_function.preserved_clobbers.is_empty(),
-        "clean cache carry should not introduce a preserved clobber when volatile lanes are available: {:?}",
+        caller_function
+            .preserved_clobbers
+            .contains(&MachineReg(MACHINE_FIXED_REG_COUNT + 3)),
+        "call-live clean cache should use the first preserved lane when one is available: {:?}",
         caller_function.preserved_clobbers
     );
     let caller_program = &caller_function.program;
-    assert_eq!(caller_program.blocks.len(), 2);
+    assert_eq!(caller_program.blocks.len(), 3);
     let call_block = &caller_program.blocks[0];
     let continuation = &caller_program.blocks[1];
     let MachineTerminator::Call { ref success, .. } = call_block.terminator else {
@@ -2732,21 +2768,185 @@ fn direct_local_call_does_not_force_clean_cache_into_preserved_reg_when_volatile
             call_block.terminator
         );
     };
+    assert_eq!(success.args.len(), 1);
+    assert!(matches!(
+        success.args[0],
+        MachineValue::Reg(MachineReg(reg)) if reg == MACHINE_FIXED_REG_COUNT + 3
+    ));
+    assert_eq!(continuation.params.len(), 1);
+    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedLocal);
     assert!(
-        success.args.is_empty(),
-        "volatile clean cache should not be carried through the local-call success edge"
-    );
-    assert!(
-        continuation
-            .ops
-            .iter()
-            .any(|inst| matches!(inst.kind, MachineInstKind::Load { .. })),
-        "continued local.get_cache should reload when no preserved lane was naturally used"
+        continuation.ops.iter().all(|inst| !matches!(
+            inst.kind,
+            MachineInstKind::Load {
+                owner: MachineRegOwner::CachedLocal,
+                ..
+            }
+        )),
+        "continued local.get_cache should use the carried preserved cache register"
     );
 }
 
 #[test]
-fn direct_local_call_publishes_dirty_non_ref_cache_even_in_preserved_reg() {
+fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_home() {
+    let caller_frame = plan_frame_layout(1, 0, 4);
+    let callee_frame = plan_frame_layout(0, 0, 4);
+    let slot = caller_frame.local_slot(0);
+
+    let caller = {
+        let mut caller = SsaProgram::default();
+        caller.entry = SsaTarget(0);
+        caller.local_slot_types = collections::vec![ValueType::I32];
+        caller.local_slot_info = collections::vec![LocalSlotInfo {
+            is_param: true,
+            reads_before_write: true,
+        }];
+        caller.block_entry_cached_slots = collections::vec![];
+        caller.block_cfg_origins = collections::vec![];
+        caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
+        caller.value_sink_local = collections::vec![];
+        let mut block = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        };
+        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(0)));
+        let drop_idx = caller.intern_primitive(PrimitiveOpKind::Drop).unwrap();
+        block.ops.push(SsaInst::primitive(
+            drop_idx,
+            SsaValue::NONE,
+            [SsaOperand::value(SsaValue(0)), SsaOperand::NONE],
+            0,
+        ));
+        let call_idx = caller.push_call_op(SsaCallOp::CallDirect {
+            callee: 1,
+            args: test_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0), &[]),
+            results: FrameSpan::new(caller_frame.operand_slot(0), 0),
+            result_types: collections::Vec::new(),
+        });
+        block.ops.push(SsaInst::call(call_idx));
+        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
+        block.ops.push(SsaInst::primitive(
+            drop_idx,
+            SsaValue::NONE,
+            [SsaOperand::value(SsaValue(1)), SsaOperand::NONE],
+            0,
+        ));
+        let second_call_idx = caller.push_call_op(SsaCallOp::CallDirect {
+            callee: 1,
+            args: test_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0), &[]),
+            results: FrameSpan::new(caller_frame.operand_slot(0), 0),
+            result_types: collections::Vec::new(),
+        });
+        block.ops.push(SsaInst::call(second_call_idx));
+        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(2)));
+        block.ops.push(SsaInst::primitive(
+            drop_idx,
+            SsaValue::NONE,
+            [SsaOperand::value(SsaValue(2)), SsaOperand::NONE],
+            0,
+        ));
+        caller.blocks.push(block);
+        caller
+    };
+    let callee = {
+        let mut callee = SsaProgram::default();
+        callee.entry = SsaTarget(0);
+        callee.local_slot_types = collections::vec![];
+        callee.local_slot_info = collections::vec![];
+        callee.block_entry_cached_slots = collections::vec![];
+        callee.block_cfg_origins = collections::vec![];
+        callee.value_types = collections::vec![];
+        callee.value_sink_local = collections::vec![];
+        callee.blocks.push(SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::Vec::new(),
+            extra_args: collections::Vec::new(),
+            terminator: SsaTerminator::Return { results: None },
+        });
+        callee
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config_with_preserved(3, 3, 0),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![
+            LowerFunctionInput {
+                id: MachineFuncId(0),
+                frame: caller_frame,
+                ssa: caller,
+                result_count: 0,
+            },
+            LowerFunctionInput {
+                id: MachineFuncId(1),
+                frame: callee_frame,
+                ssa: callee,
+                result_count: 0,
+            },
+        ],
+    })
+    .expect(
+        "direct local call should materialize a call-live register param cache in a preserved lane",
+    );
+
+    let caller_program = &lowered.module.functions[0].program;
+    let call_block = &caller_program.blocks[0];
+    let continuation = &caller_program.blocks[1];
+    let preserved = MachineReg(MACHINE_FIXED_REG_COUNT + 3);
+    assert!(
+        call_block.ops.iter().any(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::Move {
+                    owner: MachineRegOwner::CachedLocal,
+                    dst,
+                    src: MachineValue::Reg(MachineReg(src)),
+                    ..
+                } if dst == preserved && src == MACHINE_FIXED_REG_COUNT
+            )
+        }),
+        "register param cache should move from volatile arg lane into preserved lane; ops={:?}",
+        call_block.ops
+    );
+    let MachineTerminator::Call { ref success, .. } = call_block.terminator else {
+        panic!(
+            "expected direct local call terminator, got {:?}",
+            call_block.terminator
+        );
+    };
+    assert_eq!(
+        success.args,
+        collections::vec![MachineValue::Reg(preserved)]
+    );
+    assert_eq!(continuation.params.len(), 1);
+    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedLocal);
+    assert!(
+        call_block
+            .ops
+            .iter()
+            .any(|inst| matches!(inst.kind, MachineInstKind::Store { .. })),
+        "dirty register param cache must be frame-published before the local call"
+    );
+    assert!(
+        continuation.ops.iter().all(|inst| !matches!(
+            inst.kind,
+            MachineInstKind::Load {
+                owner: MachineRegOwner::CachedLocal,
+                ..
+            }
+        )),
+        "continued local.get_cache should use the carried preserved cache register"
+    );
+}
+
+#[test]
+fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
     let caller_frame = plan_frame_layout(1, 1, 4);
     let callee_frame = plan_frame_layout(0, 0, 4);
     let slot = caller_frame.local_slot(0);
@@ -2761,7 +2961,7 @@ fn direct_local_call_publishes_dirty_non_ref_cache_even_in_preserved_reg() {
         }];
         caller.block_entry_cached_slots = collections::vec![];
         caller.block_cfg_origins = collections::vec![];
-        caller.value_types = collections::vec![ValueType::I32, ValueType::I32];
+        caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         caller.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
             id: SsaTarget(0),
@@ -2793,6 +2993,20 @@ fn direct_local_call_publishes_dirty_non_ref_cache_even_in_preserved_reg() {
             drop_idx,
             SsaValue::NONE,
             [SsaOperand::value(SsaValue(1)), SsaOperand::NONE],
+            0,
+        ));
+        let second_call_idx = caller.push_call_op(SsaCallOp::CallDirect {
+            callee: 1,
+            args: test_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0), &[]),
+            results: FrameSpan::new(caller_frame.operand_slot(0), 0),
+            result_types: collections::Vec::new(),
+        });
+        block.ops.push(SsaInst::call(second_call_idx));
+        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(2)));
+        block.ops.push(SsaInst::primitive(
+            drop_idx,
+            SsaValue::NONE,
+            [SsaOperand::value(SsaValue(2)), SsaOperand::NONE],
             0,
         ));
         caller.blocks.push(block);
@@ -2841,7 +3055,7 @@ fn direct_local_call_publishes_dirty_non_ref_cache_even_in_preserved_reg() {
     .expect("direct local call should publish dirty non-ref cache");
 
     let caller_program = &lowered.module.functions[0].program;
-    assert_eq!(caller_program.blocks.len(), 2);
+    assert_eq!(caller_program.blocks.len(), 3);
     let call_block = &caller_program.blocks[0];
     let continuation = &caller_program.blocks[1];
     let MachineTerminator::Call { ref success, .. } = call_block.terminator else {
@@ -2850,10 +3064,13 @@ fn direct_local_call_publishes_dirty_non_ref_cache_even_in_preserved_reg() {
             call_block.terminator
         );
     };
-    assert!(
-        success.args.is_empty(),
-        "dirty non-ref caches must not be carried through the local-call success edge"
-    );
+    assert_eq!(success.args.len(), 1);
+    assert!(matches!(
+        success.args[0],
+        MachineValue::Reg(MachineReg(reg)) if reg == MACHINE_FIXED_REG_COUNT + 1
+    ));
+    assert_eq!(continuation.params.len(), 1);
+    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedLocal);
     assert!(
         call_block
             .ops
@@ -2863,11 +3080,14 @@ fn direct_local_call_publishes_dirty_non_ref_cache_even_in_preserved_reg() {
         call_block.ops
     );
     assert!(
-        continuation
-            .ops
-            .iter()
-            .any(|inst| matches!(inst.kind, MachineInstKind::Load { .. })),
-        "continued local.get_cache should reload after publishing a dirty cache; ops={:?}",
+        continuation.ops.iter().all(|inst| !matches!(
+            inst.kind,
+            MachineInstKind::Load {
+                owner: MachineRegOwner::CachedLocal,
+                ..
+            }
+        )),
+        "continued local.get_cache should use the carried preserved cache register; ops={:?}",
         continuation.ops
     );
 }

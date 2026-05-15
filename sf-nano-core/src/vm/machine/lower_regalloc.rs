@@ -49,6 +49,7 @@ pub(super) struct MachineRegFile {
     fp_volatile_count: usize,
     fp_preserved_count: usize,
     gp_arg_lane_count: usize,
+    preserved_cache_min_local_call_crosses: u16,
     first_fp_reg: u16,
     reg_count: u16,
 }
@@ -81,6 +82,9 @@ impl MachineRegFile {
             fp_volatile_count: usize::from(config.fp_volatile_dynamic),
             fp_preserved_count: usize::from(config.fp_preserved_dynamic),
             gp_arg_lane_count,
+            preserved_cache_min_local_call_crosses: u16::from(
+                config.preserved_cache_min_local_call_crosses,
+            ),
             first_fp_reg,
             reg_count: next,
         })
@@ -136,6 +140,11 @@ impl MachineRegFile {
     #[inline]
     pub(super) fn gp_arg_lane_count(&self) -> usize {
         self.gp_arg_lane_count
+    }
+
+    #[inline]
+    pub(super) fn preserved_cache_min_local_call_crosses(&self) -> u16 {
+        self.preserved_cache_min_local_call_crosses
     }
 
     #[inline]

@@ -473,7 +473,7 @@ impl<'a> BlockLowerContext<'a> {
                     "register-passed parameter type does not match cached local type",
                 ));
             }
-            self.bind_cached_local_to_regs(cached_index, lo, hi)?;
+            self.bind_register_param_cached_local(cached_index, lo, hi)?;
             self.set_cache_live(cached_index, true);
             self.set_cache_has_value(cached_index, true);
             // The frame slot is not authoritative yet. Mark dirty so any

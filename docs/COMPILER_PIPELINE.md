@@ -299,14 +299,20 @@ Why it belongs here:
   vs write intent
 
 MachineIR may further avoid the save/reload pair for compiled direct local
-calls. `lower_cache_layout` scans each block for non-ref cached locals that are
-clean and needed after a direct local call. `lower_call_internal()` carries only
-those selected caches that already reside in preserved dynamic lanes as explicit
-`Call.success` edge arguments. The allocator does not move a cache into a
-preserved lane solely to create this carry; preserved-lane use should be caused
-by real register pressure. Dirty caches are frame-published before the call
-because the canonical frame slot is not authoritative. The continuation block
-receives each survivor as a cached-local parameter.
+calls. `lower_cache_layout` scans each function for non-ref cached locals that
+are needed after direct local calls. A cached local only receives a preserved
+lane preference after it crosses the backend-configured static call threshold;
+one isolated call is not enough to pay for a callee-saved register in the
+function prologue/epilogue.
+
+When a cached local is important enough, new cache homes prefer preserved
+dynamic lanes. Inherited block-entry layouts are not forced to switch banks just
+to satisfy this preference, because that would create extra edge-copy code.
+`lower_call_internal()` carries selected non-ref caches that are already
+resident in preserved dynamic lanes as explicit `Call.success` edge arguments.
+Dirty carried caches are frame-published before the call, then continue as
+clean preserved-lane values on the success edge. Ref-typed cached locals are
+never carried across the local-call safepoint.
 
 This is deliberately not a middle-end policy decision: the middle-end does not
 know which abstract lanes are preserved, and runtime/indirect/ref calls still
@@ -547,7 +553,9 @@ The GP and FP dynamic banks are ordered pools with an abstract volatility split
 supplied by `BackendConfig`: volatile lanes first, then preserved lanes (plus
 any backend-only scratch tail for GP). Cached-local residency and linear-value
 ownership are tracked in `BlockLowerContext` state rather than by register
-number. The bank order is an ABI preference, but ownership is authoritative.
+number. `BackendConfig` also supplies the static call-crossing threshold used
+before a cached local prefers preserved lanes. The bank order is an ABI
+preference, but ownership is authoritative.
 
 Why that matters:
 
@@ -680,9 +688,10 @@ simple rule:
 
 - no live transient values may cross a call
 - runtime helpers publish dirty cached locals before the helper boundary
-- compiled direct local calls publish/drop non-selected cached locals and every
-  dirty cached local, but may carry selected clean non-ref cached locals already
-  in preserved dynamic regs through the explicit `Call.success` edge
+- compiled direct local calls publish/drop non-selected cached locals and publish
+  every dirty cached local; selected non-ref cached locals already in preserved
+  dynamic regs are carried through the explicit `Call.success` edge, with dirty
+  survivors published once before the call and then treated as clean
 - cached locals are selectively reloaded after calls based on the successor
   block's entry-cache requirement (reloads the continuation does not need are
   never emitted)

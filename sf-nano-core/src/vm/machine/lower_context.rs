@@ -649,11 +649,7 @@ impl<'a> BlockLowerContext<'a> {
         index: usize,
     ) -> Result<BoundCachedLocal, WasmError> {
         if self.cache_bindings.get(index).copied().flatten().is_none() {
-            let preferred = if let Some(preferred) = self.preferred_cache_binding(index) {
-                preferred
-            } else {
-                self.allocate_cache_binding(index)?
-            };
+            let preferred = self.allocate_cache_binding(index)?;
             let slot = self
                 .cache_bindings
                 .get_mut(index)
@@ -853,6 +849,12 @@ impl<'a> BlockLowerContext<'a> {
         if !self.is_linear_value_reg(reg) || self.is_fp_reg(reg) != ty.is_fp() {
             return Ok(None);
         }
+        if self.prefers_preserved_cache_binding(index)
+            && !self.binding_is_fully_preserved(reg, hi_reg)
+            && self.find_cache_binding(index, Some(true))?.is_some()
+        {
+            return Ok(None);
+        }
         match ty {
             MachineStorageType::GpI64 if self.gp_reg_width == 4 => {
                 let Some(hi_reg) = hi_reg else {
@@ -1032,22 +1034,54 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     fn allocate_cache_binding(&self, index: usize) -> Result<CachedLocalBinding, WasmError> {
+        let preferred_preserved = self.prefers_preserved_cache_binding(index);
+        if let Some(binding) = self.preferred_cache_binding(index) {
+            if self.cache_binding_matches_preference(
+                binding.reg,
+                binding.hi_reg,
+                Some(preferred_preserved),
+            ) {
+                return Ok(binding);
+            }
+        }
+        if let Some(binding) = self.find_cache_binding(index, Some(preferred_preserved))? {
+            return Ok(binding);
+        }
+        if let Some(binding) = self.preferred_cache_binding(index) {
+            return Ok(binding);
+        }
+        if let Some(binding) = self.find_cache_binding(index, None)? {
+            return Ok(binding);
+        }
+        Err(WasmError::internal("no free cache register available for cached local in block b (live_values=, bound_caches=)"))
+    }
+
+    fn find_cache_binding(
+        &self,
+        index: usize,
+        preference: Option<bool>,
+    ) -> Result<Option<CachedLocalBinding>, WasmError> {
         let cached =
             self.cached_locals.get(index).copied().ok_or_else(|| {
                 WasmError::internal("cached local binding request is out of range")
             })?;
 
         if cached.ty.is_fp() {
-            for fp_index in 0..self.regfile.fp_dynamic_count() {
-                let Some(reg) = self.regfile.fp_dynamic(fp_index) else {
+            for fp_index in 0..self.regfile.fp_allocatable_count() {
+                let Some(reg) =
+                    super::lower_module::preferred_fp_dynamic_reg(self.regfile, fp_index)
+                else {
                     continue;
                 };
+                if !self.cache_binding_matches_preference(reg, None, preference) {
+                    continue;
+                }
                 if self.dynamic_reg_unavailable(reg) {
                     continue;
                 }
-                return Ok(CachedLocalBinding { reg, hi_reg: None });
+                return Ok(Some(CachedLocalBinding { reg, hi_reg: None }));
             }
-            return Err(WasmError::internal("no free FP cache register available for cached local in block b (live_values=, bound_caches=)"));
+            return Ok(None);
         }
 
         if self.gp_reg_width == 4 && matches!(cached.ty, MachineStorageType::GpI64) {
@@ -1058,23 +1092,23 @@ impl<'a> BlockLowerContext<'a> {
                 else {
                     continue;
                 };
-                if self.dynamic_reg_unavailable(lo) {
-                    continue;
-                }
                 let Some(hi) =
                     super::lower_module::preferred_gp_dynamic_reg(self.regfile, gp_index + 1)
                 else {
                     break;
                 };
-                if self.dynamic_reg_unavailable(hi) {
+                if !self.cache_binding_matches_preference(lo, Some(hi), preference) {
                     continue;
                 }
-                return Ok(CachedLocalBinding {
+                if self.dynamic_reg_unavailable(lo) || self.dynamic_reg_unavailable(hi) {
+                    continue;
+                }
+                return Ok(Some(CachedLocalBinding {
                     reg: lo,
                     hi_reg: Some(hi),
-                });
+                }));
             }
-            return Err(WasmError::internal("no free GP cache register pair available for cached local in block b (live_values=, bound_caches=)"));
+            return Ok(None);
         }
 
         for gp_index in 0..self.regfile.gp_allocatable_count() {
@@ -1082,12 +1116,105 @@ impl<'a> BlockLowerContext<'a> {
             else {
                 continue;
             };
+            if !self.cache_binding_matches_preference(reg, None, preference) {
+                continue;
+            }
             if self.dynamic_reg_unavailable(reg) {
                 continue;
             }
-            return Ok(CachedLocalBinding { reg, hi_reg: None });
+            return Ok(Some(CachedLocalBinding { reg, hi_reg: None }));
         }
-        Err(WasmError::internal("no free GP cache register available for cached local in block b (live_values=, bound_caches=)"))
+        Ok(None)
+    }
+
+    fn cache_binding_matches_preference(
+        &self,
+        reg: MachineReg,
+        hi_reg: Option<MachineReg>,
+        preference: Option<bool>,
+    ) -> bool {
+        match preference {
+            Some(true) => self.binding_is_fully_preserved(reg, hi_reg),
+            Some(false) => !self.binding_uses_preserved(reg, hi_reg),
+            None => true,
+        }
+    }
+
+    fn binding_is_fully_preserved(&self, reg: MachineReg, hi_reg: Option<MachineReg>) -> bool {
+        self.regfile.is_preserved_dynamic_reg(reg)
+            && hi_reg
+                .map(|reg| self.regfile.is_preserved_dynamic_reg(reg))
+                .unwrap_or(true)
+    }
+
+    fn binding_uses_preserved(&self, reg: MachineReg, hi_reg: Option<MachineReg>) -> bool {
+        self.regfile.is_preserved_dynamic_reg(reg)
+            || hi_reg
+                .map(|reg| self.regfile.is_preserved_dynamic_reg(reg))
+                .unwrap_or(false)
+    }
+
+    pub(super) fn bind_register_param_cached_local(
+        &mut self,
+        index: usize,
+        src_lo: MachineReg,
+        src_hi: Option<MachineReg>,
+    ) -> Result<BoundCachedLocal, WasmError> {
+        if self.prefers_preserved_cache_binding(index) {
+            if let Some(target) = self.find_cache_binding(index, Some(true))? {
+                let cached = self.bind_cached_local_to_regs(index, target.reg, target.hi_reg)?;
+                self.emit_move_register_param_to_cached_local(&cached, src_lo, src_hi)?;
+                return Ok(cached);
+            }
+        }
+        self.bind_cached_local_to_regs(index, src_lo, src_hi)
+    }
+
+    pub(super) fn emit_move_register_param_to_cached_local(
+        &mut self,
+        cached: &BoundCachedLocal,
+        src_lo: MachineReg,
+        src_hi: Option<MachineReg>,
+    ) -> Result<(), WasmError> {
+        if let Some(dst_hi) = cached.hi_reg {
+            let Some(src_hi) = src_hi else {
+                return Err(WasmError::internal(
+                    "cached i64 register-param source is missing high half",
+                ));
+            };
+            if cached.reg != src_lo {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::CachedLocal,
+                        ty: MachineStorageType::GpWord,
+                        dst: cached.reg,
+                        src: MachineValue::Reg(src_lo),
+                    },
+                });
+            }
+            if dst_hi != src_hi {
+                self.emit_machine_inst(MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::CachedLocal,
+                        ty: MachineStorageType::GpWord,
+                        dst: dst_hi,
+                        src: MachineValue::Reg(src_hi),
+                    },
+                });
+            }
+            return Ok(());
+        }
+        if cached.reg != src_lo {
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Move {
+                    owner: MachineRegOwner::CachedLocal,
+                    ty: cached.ty,
+                    dst: cached.reg,
+                    src: MachineValue::Reg(src_lo),
+                },
+            });
+        }
+        Ok(())
     }
 
     fn dynamic_reg_unavailable(&self, reg: MachineReg) -> bool {
@@ -1205,7 +1332,8 @@ impl<'a> BlockLowerContext<'a> {
         if let Some(cached) = self.cached_locals.get(cached_index).copied() {
             if let Some((lo, hi, ty)) = self.register_param_state(cached.slot) {
                 if ty == cached.ty {
-                    self.bind_cached_local_to_regs(cached_index, lo, hi)?;
+                    let cached = self.bind_cached_local_to_regs(cached_index, regs.lo, regs.hi)?;
+                    self.emit_move_register_param_to_cached_local(&cached, lo, hi)?;
                     self.set_cache_live(cached_index, true);
                     self.set_cache_has_value(cached_index, true);
                     self.set_cache_dirty(cached_index, true);
