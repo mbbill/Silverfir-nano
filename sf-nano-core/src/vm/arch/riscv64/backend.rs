@@ -3492,7 +3492,8 @@ impl<'a> Riscv64Backend<'a> {
                 self.lower_return_sequence()
             }
             MachineTerminator::Trap { kind } => {
-                self.lower_trap_dispatch(*kind);
+                let trap_label = self.core.ensure_trap_label(*kind);
+                self.emit_jal(abi::zero_reg(), trap_label);
                 Ok(())
             }
             MachineTerminator::JumpTable { index, entries } => {

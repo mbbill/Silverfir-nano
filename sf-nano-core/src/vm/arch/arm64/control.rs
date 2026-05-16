@@ -88,7 +88,8 @@ impl<'a> super::backend::Arm64Backend<'a> {
             MachineTerminator::Return => self.lower_return_sequence(None),
             MachineTerminator::ReturnScalar { value } => self.lower_return_sequence(Some(value)),
             MachineTerminator::Trap { kind } => {
-                self.lower_trap_dispatch(*kind);
+                let trap_label = self.core.ensure_trap_label(*kind);
+                self.lower_b(trap_label);
                 Ok(())
             }
             MachineTerminator::JumpTable { index, entries } => {
