@@ -33,6 +33,13 @@ use crate::vm::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store
 
 pub type HostFn = fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), WasmError>;
 
+#[cfg(sf_jit)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum TableDispatchMode {
+    Generic,
+    FixedLocalOnly { len: u32 },
+}
+
 pub struct Caller<'a> {
     memory: Option<&'a mut [u8]>,
 }
@@ -479,6 +486,8 @@ pub struct ModuleInst {
     pub elements: collections::Vec<ElementInst>,
     pub data: collections::Vec<DataInst>,
     #[cfg(sf_jit)]
+    pub(crate) table_dispatch_modes: collections::Vec<TableDispatchMode>,
+    #[cfg(sf_jit)]
     native_buf: RefCell<Option<CodeBuffer>>,
 }
 
@@ -495,6 +504,8 @@ impl ModuleInst {
             tags: collections::Vec::new(),
             elements: collections::Vec::new(),
             data: collections::Vec::new(),
+            #[cfg(sf_jit)]
+            table_dispatch_modes: collections::Vec::new(),
             #[cfg(sf_jit)]
             native_buf: RefCell::new(None),
         }
@@ -521,6 +532,21 @@ impl ModuleInst {
     pub(crate) fn set_function_handle(&mut self, index: usize, handle: RefHandle) {
         self.ensure_function_handle_capacity(index + 1);
         self.function_handles[index] = handle;
+    }
+
+    #[cfg(sf_jit)]
+    #[inline]
+    pub(crate) fn table_dispatch_modes(&self) -> &[TableDispatchMode] {
+        &self.table_dispatch_modes
+    }
+
+    #[cfg(sf_jit)]
+    pub(crate) fn clear_native_code(&self) {
+        for function in &self.functions {
+            if let Some(spec) = function.spec() {
+                spec.clear_native_code();
+            }
+        }
     }
 
     #[cfg(sf_jit)]
@@ -572,6 +598,8 @@ impl Default for ModuleInst {
             tags: collections::Vec::new(),
             elements: collections::Vec::new(),
             data: collections::Vec::new(),
+            #[cfg(sf_jit)]
+            table_dispatch_modes: collections::Vec::new(),
             #[cfg(sf_jit)]
             native_buf: RefCell::new(None),
         }

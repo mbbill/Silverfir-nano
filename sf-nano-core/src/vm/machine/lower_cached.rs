@@ -104,6 +104,29 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
+    pub(super) fn evict_cached_locals_in_gp_regs(
+        &mut self,
+        regs: &[crate::vm::machine::machine_ir::MachineReg],
+    ) -> Result<(), WasmError> {
+        for index in 0..self.cached_locals().len() {
+            if !self.is_cache_live(index) {
+                continue;
+            }
+            let Some(cached) = self.bound_cached_local(index) else {
+                continue;
+            };
+            if regs.contains(&cached.reg)
+                || cached
+                    .hi_reg
+                    .map(|reg| regs.contains(&reg))
+                    .unwrap_or(false)
+            {
+                self.emit_drop_cached_local(index)?;
+            }
+        }
+        Ok(())
+    }
+
     /// Emit zero stores for the listed local slots into the function's own
     /// frame. Used at the entry block to satisfy the wasm zero-init contract
     /// for non-param locals that may be read before being written. Locals not

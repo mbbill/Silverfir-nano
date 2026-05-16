@@ -32,8 +32,14 @@ use crate::{
     error::WasmError,
     module::type_defs::CompositeType,
     vm::{
-        entities::{FunctionInst, ModuleInst},
-        runtime::{code::CompiledNativeModule, dispatch_view::NativeDispatchMetadata},
+        entities::{FunctionInst, ModuleInst, TableDispatchMode},
+        runtime::{
+            code::CompiledNativeModule,
+            dispatch_view::{
+                NativeDispatchMetadata, NativeFixedCallTableEntry, NativeFixedCallTableView,
+            },
+            layout::local_call_info_abi_layout,
+        },
         store::Store,
         tag::TagHandle,
         value::RefHandle,
@@ -97,6 +103,8 @@ pub(crate) struct NativeContext {
     pub(crate) function_views_len: usize,
     pub(crate) local_call_infos_base: *const u8,
     pub(crate) local_call_infos_len: usize,
+    pub(crate) fixed_call_table_views_base: *const NativeFixedCallTableView,
+    pub(crate) fixed_call_table_views_len: usize,
     pub(crate) type_canon_base: *const u32,
     pub(crate) type_canon_len: usize,
     /// Number of globals the trailing `[*mut u64]` tail holds. Fixed for the
@@ -121,7 +129,10 @@ pub(crate) struct NativeContext {
     memory_views: collections::Vec<NativeMemoryView>,
     table_views: collections::Vec<NativeTableView>,
     function_views: collections::Vec<NativeFunctionView>,
+    fixed_call_table_views: collections::Vec<NativeFixedCallTableView>,
+    fixed_call_entry_tables: collections::Vec<collections::Vec<NativeFixedCallTableEntry>>,
     type_canon: collections::Vec<u32>,
+    dispatch_gp_unit_bytes: u8,
     #[cfg(sf_call_trace)]
     pub(crate) trace_stack: collections::Vec<u32>,
     /// Zero-sized anchor marking the start of the trailing raw-ptr array.
@@ -173,11 +184,14 @@ impl NativeContext {
         self.refresh_table_views();
         self.refresh_type_canon();
         self.refresh_function_views();
+        self.refresh_fixed_call_table_views();
     }
 
     #[inline]
     pub(crate) fn seed_local_call_infos(&mut self, compiled: &CompiledNativeModule) {
+        self.dispatch_gp_unit_bytes = compiled.backend().gp_unit_bytes;
         self.seed_dispatch_metadata(compiled.dispatch_metadata());
+        self.refresh_fixed_call_table_views();
     }
 
     #[inline]
@@ -409,6 +423,114 @@ impl NativeContext {
     }
 
     #[inline]
+    pub(crate) fn refresh_fixed_call_table_views(&mut self) {
+        let Some(store) = self.store() else {
+            self.fixed_call_table_views.clear();
+            self.fixed_call_entry_tables.clear();
+            self.fixed_call_table_views_base = core::ptr::null();
+            self.fixed_call_table_views_len = 0;
+            return;
+        };
+
+        let module = store.module();
+        let table_count = module.tables.len();
+        if table_count == 0 {
+            self.fixed_call_table_views.clear();
+            self.fixed_call_entry_tables.clear();
+            self.fixed_call_table_views_base = core::ptr::null();
+            self.fixed_call_table_views_len = 0;
+            return;
+        }
+
+        let mut entry_tables = collections::Vec::with_capacity(table_count);
+
+        for table_idx in 0..table_count {
+            let mode = module
+                .table_dispatch_modes
+                .get(table_idx)
+                .copied()
+                .unwrap_or(TableDispatchMode::Generic);
+            if !matches!(mode, TableDispatchMode::FixedLocalOnly { .. }) {
+                entry_tables.push(collections::Vec::new());
+                continue;
+            }
+
+            let elements = module.tables[table_idx].elements();
+            let mut entry_table = collections::Vec::with_capacity(elements.len());
+
+            for handle in elements.iter().copied() {
+                let Some(view) = self.function_view_for_fixed_handle(handle) else {
+                    entry_table.push(NativeFixedCallTableEntry {
+                        type_canon: u32::MAX,
+                        local_target: u32::MAX,
+                        entry: 0,
+                    });
+                    continue;
+                };
+                let entry = self.local_call_entry_word(view.local_target);
+                entry_table.push(NativeFixedCallTableEntry {
+                    type_canon: view.type_canon,
+                    local_target: view.local_target,
+                    entry: entry as u64,
+                });
+            }
+            drop(elements);
+
+            entry_tables.push(entry_table);
+        }
+
+        let mut views = collections::Vec::with_capacity(table_count);
+        for table_idx in 0..table_count {
+            views.push(NativeFixedCallTableView {
+                entry_base: entry_tables[table_idx].as_ptr(),
+                len: entry_tables[table_idx].len(),
+            });
+        }
+
+        self.fixed_call_entry_tables = entry_tables;
+        self.fixed_call_table_views = views;
+        self.fixed_call_table_views_base = if self.fixed_call_table_views.is_empty() {
+            core::ptr::null()
+        } else {
+            self.fixed_call_table_views.as_ptr()
+        };
+        self.fixed_call_table_views_len = self.fixed_call_table_views.len();
+    }
+
+    #[inline]
+    fn function_view_for_fixed_handle(&self, handle: RefHandle) -> Option<NativeFunctionView> {
+        if handle.is_null() || handle.is_special() {
+            return None;
+        }
+        let view = self.function_views.get(handle.encoded()).copied()?;
+        (view.kind == function_kind::LOCAL).then_some(view)
+    }
+
+    #[inline]
+    fn local_call_entry_word(&self, local_target: u32) -> usize {
+        if self.local_call_infos_base.is_null()
+            || (local_target as usize) >= self.local_call_infos_len
+        {
+            return 0;
+        }
+        let layout = local_call_info_abi_layout(self.dispatch_gp_unit_bytes);
+        let offset = local_target as usize * layout.stride as usize + layout.entry_offset as usize;
+        unsafe {
+            match self.dispatch_gp_unit_bytes {
+                4 => {
+                    core::ptr::read_unaligned(self.local_call_infos_base.add(offset).cast::<u32>())
+                        as usize
+                }
+                8 => {
+                    core::ptr::read_unaligned(self.local_call_infos_base.add(offset).cast::<u64>())
+                        as usize
+                }
+                _ => 0,
+            }
+        }
+    }
+
+    #[inline]
     pub(crate) fn refresh_type_canon(&mut self) {
         let Some(store) = self.store() else {
             self.type_canon.clear();
@@ -517,6 +639,8 @@ impl NativeContextBox {
                 function_views_len: 0,
                 local_call_infos_base: core::ptr::null(),
                 local_call_infos_len: 0,
+                fixed_call_table_views_base: core::ptr::null(),
+                fixed_call_table_views_len: 0,
                 type_canon_base: core::ptr::null(),
                 type_canon_len: 0,
                 globals_len: n_globals,
@@ -531,7 +655,10 @@ impl NativeContextBox {
                 memory_views: collections::Vec::new(),
                 table_views: collections::Vec::new(),
                 function_views: collections::Vec::new(),
+                fixed_call_table_views: collections::Vec::new(),
+                fixed_call_entry_tables: collections::Vec::new(),
                 type_canon: collections::Vec::new(),
+                dispatch_gp_unit_bytes: core::mem::size_of::<usize>() as u8,
                 #[cfg(sf_call_trace)]
                 trace_stack: collections::Vec::new(),
                 globals_ptrs_tail: [0u64; 0],
@@ -629,6 +756,10 @@ pub(crate) mod ctx_offset {
             core::mem::offset_of!(NativeContext, local_call_infos_base) as u32;
         pub(crate) const LOCAL_CALL_INFOS_LEN: u32 =
             core::mem::offset_of!(NativeContext, local_call_infos_len) as u32;
+        pub(crate) const FIXED_CALL_TABLE_VIEWS_BASE: u32 =
+            core::mem::offset_of!(NativeContext, fixed_call_table_views_base) as u32;
+        pub(crate) const FIXED_CALL_TABLE_VIEWS_LEN: u32 =
+            core::mem::offset_of!(NativeContext, fixed_call_table_views_len) as u32;
         pub(crate) const TYPE_CANON_BASE: u32 =
             core::mem::offset_of!(NativeContext, type_canon_base) as u32;
         pub(crate) const TYPE_CANON_LEN: u32 =
@@ -664,6 +795,15 @@ pub(crate) mod function_view_offset {
     pub(crate) const TYPE_CANON: u32 = core::mem::offset_of!(NativeFunctionView, type_canon) as u32;
     pub(crate) const LOCAL_TARGET: u32 =
         core::mem::offset_of!(NativeFunctionView, local_target) as u32;
+}
+
+#[cfg(test)]
+pub(crate) mod fixed_call_table_view_offset {
+    use super::NativeFixedCallTableView;
+
+    pub(crate) const ENTRY_BASE: u32 =
+        core::mem::offset_of!(NativeFixedCallTableView, entry_base) as u32;
+    pub(crate) const LEN: u32 = core::mem::offset_of!(NativeFixedCallTableView, len) as u32;
 }
 
 #[cfg(test)]

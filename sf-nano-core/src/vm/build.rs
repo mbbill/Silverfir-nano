@@ -60,6 +60,7 @@ pub const fn native_capacity_skips() -> (usize, usize) {
 
 #[cfg(sf_ir_dump)]
 use crate::vm::debug::ir_dump;
+use crate::vm::entities::TableDispatchMode;
 use crate::vm::{backend::BackendConfig, entities::ModuleInst};
 use crate::{
     error::WasmError,
@@ -70,7 +71,9 @@ use crate::{
             types::{DirectCallPatch, DirectCallPatchSite},
         },
         machine::{
-            derive_param_locs_from_types, derive_return_abi, lower_module, lower_single_function,
+            derive_param_locs_from_types, derive_return_abi,
+            lower_module_with_table_dispatch_modes,
+            lower_single_function_with_table_dispatch_modes,
             machine_ir::{
                 MachineFrameRegion, MachineFuncId, MachineFunctionAbi, MachineModuleAbi,
                 MachineParamLoc, MachineReturnAbi,
@@ -577,6 +580,7 @@ fn compile_full_streaming_function(
     compiled_view: &mut StreamingCompiledModule,
     const_pool: &mut ConstPoolBuilder,
     is_local_func: &[bool],
+    table_dispatch_modes: &[TableDispatchMode],
     groups: &mut usize,
     ssa_ops: &mut usize,
     mir_ops: &mut usize,
@@ -607,7 +611,7 @@ fn compile_full_streaming_function(
         .sum::<usize>();
 
     let result_count = spec.func_type().results().len() as u16;
-    let (mut machine, _abi) = lower_single_function(
+    let (mut machine, _abi) = lower_single_function_with_table_dispatch_modes(
         backend,
         LowerFunctionInput {
             id: func_id,
@@ -617,6 +621,7 @@ fn compile_full_streaming_function(
         },
         &mut compiled_view.abi.functions,
         is_local_func,
+        table_dispatch_modes,
         const_pool,
         #[cfg(sf_has_guard_pages)]
         use_guard_pages,
@@ -731,6 +736,7 @@ fn finish_native_compile_streaming(
                 &mut compiled_view,
                 &mut const_pool,
                 &is_local_func,
+                module.table_dispatch_modes(),
                 &mut groups,
                 &mut ssa_ops,
                 &mut mir_ops,
@@ -1122,14 +1128,17 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     let use_guard_pages = use_guard_pages && backend.gp_unit_bytes == 8;
     #[cfg(sf_has_guard_pages)]
     let use_stack_guard_pages = backend.gp_unit_bytes == 8;
-    let mut lowered = lower_module(LowerModuleInput {
-        backend,
-        functions: prepared_functions,
-        #[cfg(sf_has_guard_pages)]
-        use_guard_pages,
-        #[cfg(sf_has_guard_pages)]
-        use_stack_guard_pages,
-    })?;
+    let mut lowered = lower_module_with_table_dispatch_modes(
+        LowerModuleInput {
+            backend,
+            functions: prepared_functions,
+            #[cfg(sf_has_guard_pages)]
+            use_guard_pages,
+            #[cfg(sf_has_guard_pages)]
+            use_stack_guard_pages,
+        },
+        module.table_dispatch_modes(),
+    )?;
     let module_opt_phase = phase_span("module_opt");
     optimize_module(&mut lowered.module);
     if backend.is_32bit_gp_target() {

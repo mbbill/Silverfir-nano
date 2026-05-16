@@ -43,6 +43,28 @@ pub(crate) struct NativeLocalCallInfo32 {
     pub(crate) frame_prefix_slots: u32,
 }
 
+/// One fixed-table dispatch entry.
+///
+/// The entry is intentionally 16 bytes on both 32-bit and 64-bit targets so
+/// lowering can scale the table index with a shift instead of multiplying by a
+/// target-dependent record size. On 32-bit targets the low 32 bits of `entry`
+/// hold the callee entry word.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NativeFixedCallTableEntry {
+    pub(crate) type_canon: u32,
+    pub(crate) local_target: u32,
+    pub(crate) entry: u64,
+}
+
+/// Per-table fast dispatch view for immutable local-only tables.
+#[repr(C)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct NativeFixedCallTableView {
+    pub(crate) entry_base: *const NativeFixedCallTableEntry,
+    pub(crate) len: usize,
+}
+
 /// Late-published metadata table used by local `call_indirect` lowering.
 ///
 /// The module ABI already knows every row in this table, but native backends do

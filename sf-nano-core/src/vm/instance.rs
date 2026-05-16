@@ -9,7 +9,8 @@ use tracked_alloc::{
 
 use crate::error::WasmError;
 use crate::module::entities::{
-    ConstExpr, Data, Element, ElementInit, FunctionDef, GlobalDef, MemoryDef, TableDef, TagDef,
+    ConstExpr, Data, Element, ElementInit, FunctionDef, FunctionSpec, GlobalDef, MemoryDef,
+    TableDef, TagDef,
 };
 use crate::module::type_context::{
     check_function_types_equivalent, concrete_type_matches_cross_context,
@@ -17,8 +18,14 @@ use crate::module::type_context::{
 };
 use crate::module::type_defs::FunctionType;
 use crate::module::Module;
+#[cfg(sf_jit)]
+use crate::op_decoder::{Decoder, OpStream, OpcodeHandler};
+#[cfg(sf_jit)]
+use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::utils::limits::{Limitable, Limits};
 use crate::value_type::{HeapType, ValueType};
+#[cfg(sf_jit)]
+use crate::vm::entities::TableDispatchMode;
 use crate::vm::entities::{
     DataInst, ElementInst, FunctionInst, GlobalInst, HostFn, MemInst, ModuleInst, TableInst,
     TagInst,
@@ -543,6 +550,125 @@ fn global_value_type_can_initialize_cross_context(
     }
 }
 
+#[cfg(sf_jit)]
+struct TableMutationScan {
+    has_mutation: bool,
+}
+
+#[cfg(sf_jit)]
+impl OpcodeHandler for TableMutationScan {
+    fn on_decode_begin(&mut self) -> Result<(), WasmError> {
+        self.has_mutation = false;
+        Ok(())
+    }
+
+    fn on_stream<'x, 'y, 'z>(
+        &mut self,
+        stream: &mut OpStream<'x, 'y, 'z>,
+    ) -> Result<(), WasmError> {
+        while let Some(op) = stream.next()? {
+            match op.wasm_op {
+                WasmOpcode::OP(Opcode::TABLE_SET)
+                | WasmOpcode::FC(OpcodeFC::TABLE_INIT)
+                | WasmOpcode::FC(OpcodeFC::TABLE_COPY)
+                | WasmOpcode::FC(OpcodeFC::TABLE_GROW)
+                | WasmOpcode::FC(OpcodeFC::TABLE_FILL) => {
+                    self.has_mutation = true;
+                }
+                _ => {}
+            }
+        }
+        Ok(())
+    }
+
+    fn on_decode_end(&mut self) -> Result<(), WasmError> {
+        Ok(())
+    }
+}
+
+#[cfg(sf_jit)]
+fn function_has_table_mutation(spec: &FunctionSpec) -> Result<bool, WasmError> {
+    let mut scan = TableMutationScan {
+        has_mutation: false,
+    };
+    {
+        let mut decoder = Decoder::new(spec.code());
+        decoder.add_handler(&mut scan);
+        decoder.decode_function()?;
+    }
+    Ok(scan.has_mutation)
+}
+
+#[cfg(sf_jit)]
+fn element_init_is_local_only(module: &Module, init: &ElementInit) -> bool {
+    match init {
+        ElementInit::FunctionIndexes(indices) => indices.iter().all(|idx| {
+            module
+                .functions()
+                .get(*idx)
+                .map(|func| !func.is_import())
+                .unwrap_or(false)
+        }),
+        ElementInit::InitExprs { .. } => false,
+    }
+}
+
+#[cfg(sf_jit)]
+fn table_active_elements_are_local_only(module: &Module, table_idx: usize) -> bool {
+    module.elements().iter().all(|element| match element {
+        Element::Active {
+            table_index, init, ..
+        } if *table_index == table_idx => element_init_is_local_only(module, init),
+        _ => true,
+    })
+}
+
+#[cfg(sf_jit)]
+fn module_declares_type_subtyping(module: &Module) -> bool {
+    module
+        .types()
+        .as_slice()
+        .iter()
+        .any(|ty| !ty.supertypes.is_empty())
+}
+
+#[cfg(sf_jit)]
+fn compute_static_table_dispatch_modes(
+    module: &Module,
+) -> Result<collections::Vec<TableDispatchMode>, WasmError> {
+    let has_table_mutation = module
+        .functions()
+        .iter()
+        .filter_map(|func| func.spec())
+        .try_fold(false, |seen, spec| {
+            function_has_table_mutation(spec).map(|has_mutation| seen || has_mutation)
+        })?;
+    let mut modes = collections::Vec::with_capacity(module.tables().len());
+    for (table_idx, table) in module.tables().iter().enumerate() {
+        let fixed_size = table.limits().max() == Some(table.limits().min());
+        let private_local = !table.is_import() && table.export_names().is_empty();
+        let default_null = table.spec().init_expr().is_none();
+        let local_only = table_active_elements_are_local_only(module, table_idx);
+        let exact_type_checks = !module_declares_type_subtyping(module);
+        let fixed_len = u32::try_from(table.limits().min()).ok();
+        let mode = if !has_table_mutation
+            && fixed_size
+            && private_local
+            && default_null
+            && local_only
+            && exact_type_checks
+        {
+            fixed_len
+                .map(|len| TableDispatchMode::FixedLocalOnly { len })
+                .unwrap_or(TableDispatchMode::Generic)
+        } else {
+            TableDispatchMode::Generic
+        };
+        modes.push(mode);
+    }
+    Ok(modes)
+}
+
 impl Instance {
     pub fn new(wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError> {
         let module = Module::new("main", wasm_bytes)?;
@@ -601,6 +727,9 @@ impl Instance {
         }
 
         let start_func_index = module.start_function_index();
+        #[cfg(sf_jit)]
+        let table_dispatch_modes = compute_static_table_dispatch_modes(&module)
+            .map_err(InstanceInstantiationError::Complete)?;
         let (
             types,
             mod_functions,
@@ -1095,6 +1224,10 @@ impl Instance {
         module_inst.tags = tag_insts;
         module_inst.elements = elements;
         module_inst.data = data;
+        #[cfg(sf_jit)]
+        {
+            module_inst.table_dispatch_modes = table_dispatch_modes;
+        }
         let mut store = Box::new(Store::new_with_registries(
             module_inst,
             registry.function_registry_shared(),
@@ -1429,6 +1562,14 @@ impl Instance {
             return Err(WasmError::invalid("table size mismatch"));
         }
         table_elements.copy_from_slice(elements);
+        drop(table_elements);
+        #[cfg(sf_jit)]
+        {
+            for mode in &mut self.store.module_mut().table_dispatch_modes {
+                *mode = TableDispatchMode::Generic;
+            }
+            self.store.module().clear_native_code();
+        }
         Ok(())
     }
 
@@ -1699,6 +1840,74 @@ mod tests {
                 .expect("table import limits should stay valid"),
         );
         builder.build()
+    }
+
+    #[cfg(sf_jit)]
+    #[test]
+    fn fixed_private_local_table_enables_local_only_dispatch_mode() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (type $t (func))
+              (func $f)
+              (table 1 1 funcref)
+              (elem (i32.const 0) $f)
+            )
+            "#,
+        )
+        .expect("wat should encode");
+        let module = Module::new("test", &wasm).expect("module should parse");
+        let modes =
+            compute_static_table_dispatch_modes(&module).expect("table facts should compute");
+        assert_eq!(
+            modes,
+            collections::vec![TableDispatchMode::FixedLocalOnly { len: 1 }]
+        );
+    }
+
+    #[cfg(sf_jit)]
+    #[test]
+    fn table_mutation_keeps_dispatch_mode_generic() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (type $t (func))
+              (func $f)
+              (func $set (param i32 funcref)
+                local.get 0
+                local.get 1
+                table.set 0)
+              (table 1 1 funcref)
+              (elem (i32.const 0) $f)
+            )
+            "#,
+        )
+        .expect("wat should encode");
+        let module = Module::new("test", &wasm).expect("module should parse");
+        let modes =
+            compute_static_table_dispatch_modes(&module).expect("table facts should compute");
+        assert_eq!(modes, collections::vec![TableDispatchMode::Generic]);
+    }
+
+    #[cfg(sf_jit)]
+    #[test]
+    fn subtype_module_keeps_dispatch_mode_generic() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (type $super (func))
+              (type $sub (sub $super (func)))
+              (func $f (type $sub))
+              (table 1 1 funcref)
+              (elem (i32.const 0) $f)
+            )
+            "#,
+        )
+        .expect("wat should encode");
+        let module = Module::new("test", &wasm).expect("module should parse");
+        let modes =
+            compute_static_table_dispatch_modes(&module).expect("table facts should compute");
+        assert_eq!(modes, collections::vec![TableDispatchMode::Generic]);
     }
 
     fn grow_shared_memory_for_test(memory: &MemInst, new_pages: usize) {

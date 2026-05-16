@@ -8,7 +8,10 @@
 use core::mem::{offset_of, size_of};
 
 use super::context::NativeContext;
-use super::dispatch_view::{CallDispatchView, NativeLocalCallInfo32, NativeLocalCallInfo64};
+use super::dispatch_view::{
+    CallDispatchView, NativeFixedCallTableEntry, NativeFixedCallTableView, NativeLocalCallInfo32,
+    NativeLocalCallInfo64,
+};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct PointerLenAbiLayout {
@@ -34,6 +37,21 @@ pub(crate) struct LocalCallInfoAbiLayout {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FixedCallTableViewAbiLayout {
+    pub entry_base_offset: u32,
+    pub len_offset: u32,
+    pub stride: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct FixedCallTableEntryAbiLayout {
+    pub type_canon_offset: u32,
+    pub local_target_offset: u32,
+    pub entry_offset: u32,
+    pub stride: u32,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct NativeContextAbiLayout {
     pub stack_end_offset: u32,
     pub mem0_base_offset: u32,
@@ -46,6 +64,8 @@ pub(crate) struct NativeContextAbiLayout {
     pub function_views_len_offset: u32,
     pub local_call_infos_base_offset: u32,
     pub local_call_infos_len_offset: u32,
+    pub fixed_call_table_views_base_offset: u32,
+    pub fixed_call_table_views_len_offset: u32,
     pub type_canon_base_offset: u32,
     pub type_canon_len_offset: u32,
     pub globals_len_offset: u32,
@@ -68,6 +88,8 @@ pub(crate) struct NativeRuntimeAbiLayout {
     pub pointer_len_view: PointerLenAbiLayout,
     pub function_view: FunctionViewAbiLayout,
     pub local_call_info: LocalCallInfoAbiLayout,
+    pub fixed_call_table_view: FixedCallTableViewAbiLayout,
+    pub fixed_call_table_entry: FixedCallTableEntryAbiLayout,
     pub context: NativeContextAbiLayout,
     pub ref_handle_stride: u32,
 }
@@ -117,6 +139,25 @@ pub(crate) const fn local_call_info_abi_layout(gp_unit_bytes: u8) -> LocalCallIn
 }
 
 #[inline]
+pub(crate) const fn fixed_call_table_view_abi_layout() -> FixedCallTableViewAbiLayout {
+    FixedCallTableViewAbiLayout {
+        entry_base_offset: offset_of!(NativeFixedCallTableView, entry_base) as u32,
+        len_offset: offset_of!(NativeFixedCallTableView, len) as u32,
+        stride: size_of::<NativeFixedCallTableView>() as u32,
+    }
+}
+
+#[inline]
+pub(crate) const fn fixed_call_table_entry_abi_layout() -> FixedCallTableEntryAbiLayout {
+    FixedCallTableEntryAbiLayout {
+        type_canon_offset: offset_of!(NativeFixedCallTableEntry, type_canon) as u32,
+        local_target_offset: offset_of!(NativeFixedCallTableEntry, local_target) as u32,
+        entry_offset: offset_of!(NativeFixedCallTableEntry, entry) as u32,
+        stride: size_of::<NativeFixedCallTableEntry>() as u32,
+    }
+}
+
+#[inline]
 pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntimeAbiLayout {
     match gp_unit_bytes {
         4 | 8 => {}
@@ -127,6 +168,8 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
     let pointer_len_view = pointer_len_abi_layout(gp_unit_bytes);
     let function_view = function_view_abi_layout();
     let local_call_info = local_call_info_abi_layout(gp_unit_bytes);
+    let fixed_call_table_view = fixed_call_table_view_abi_layout();
+    let fixed_call_table_entry = fixed_call_table_entry_abi_layout();
 
     let stack_end_offset = 0;
     let mem0_base_offset = align_up(stack_end_offset + ptr, ptr);
@@ -139,7 +182,9 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
     let function_views_len_offset = function_views_base_offset + ptr;
     let local_call_infos_base_offset = function_views_len_offset + ptr;
     let local_call_infos_len_offset = local_call_infos_base_offset + ptr;
-    let type_canon_base_offset = local_call_infos_len_offset + ptr;
+    let fixed_call_table_views_base_offset = local_call_infos_len_offset + ptr;
+    let fixed_call_table_views_len_offset = fixed_call_table_views_base_offset + ptr;
+    let type_canon_base_offset = fixed_call_table_views_len_offset + ptr;
     let type_canon_len_offset = type_canon_base_offset + ptr;
     let globals_len_offset = type_canon_len_offset + ptr;
     let store_offset = globals_len_offset + ptr;
@@ -160,6 +205,8 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
         pointer_len_view,
         function_view,
         local_call_info,
+        fixed_call_table_view,
+        fixed_call_table_entry,
         context: NativeContextAbiLayout {
             stack_end_offset,
             mem0_base_offset,
@@ -172,6 +219,8 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
             function_views_len_offset,
             local_call_infos_base_offset,
             local_call_infos_len_offset,
+            fixed_call_table_views_base_offset,
+            fixed_call_table_views_len_offset,
             type_canon_base_offset,
             type_canon_len_offset,
             globals_len_offset,
@@ -187,13 +236,18 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
 #[cfg(test)]
 mod tests {
     use super::{
+        fixed_call_table_entry_abi_layout, fixed_call_table_view_abi_layout,
         function_view_abi_layout, local_call_info_abi_layout, native_runtime_abi_layout,
         pointer_len_abi_layout,
     };
     use crate::vm::runtime::context::{
-        ctx_offset, function_view_offset, memory_view_offset, table_view_offset, NativeContext,
+        ctx_offset, fixed_call_table_view_offset, function_view_offset, memory_view_offset,
+        table_view_offset, NativeContext,
     };
-    use crate::vm::runtime::dispatch_view::{NativeLocalCallInfo32, NativeLocalCallInfo64};
+    use crate::vm::runtime::dispatch_view::{
+        NativeFixedCallTableEntry, NativeFixedCallTableView, NativeLocalCallInfo32,
+        NativeLocalCallInfo64,
+    };
 
     #[test]
     fn host_width_runtime_layout_matches_host_struct_offsets() {
@@ -238,6 +292,14 @@ mod tests {
             ctx_offset::LOCAL_CALL_INFOS_LEN
         );
         assert_eq!(
+            layout.context.fixed_call_table_views_base_offset,
+            ctx_offset::FIXED_CALL_TABLE_VIEWS_BASE
+        );
+        assert_eq!(
+            layout.context.fixed_call_table_views_len_offset,
+            ctx_offset::FIXED_CALL_TABLE_VIEWS_LEN
+        );
+        assert_eq!(
             layout.context.type_canon_base_offset,
             ctx_offset::TYPE_CANON_BASE
         );
@@ -264,6 +326,41 @@ mod tests {
         assert_eq!(
             layout.local_target_offset,
             function_view_offset::LOCAL_TARGET
+        );
+    }
+
+    #[test]
+    fn fixed_call_table_view_abi_layout_matches_host_offsets() {
+        let layout = fixed_call_table_view_abi_layout();
+        assert_eq!(
+            layout.entry_base_offset,
+            fixed_call_table_view_offset::ENTRY_BASE
+        );
+        assert_eq!(layout.len_offset, fixed_call_table_view_offset::LEN);
+        assert_eq!(
+            layout.stride,
+            core::mem::size_of::<NativeFixedCallTableView>() as u32
+        );
+    }
+
+    #[test]
+    fn fixed_call_table_entry_abi_layout_matches_host_offsets() {
+        let layout = fixed_call_table_entry_abi_layout();
+        assert_eq!(
+            layout.type_canon_offset,
+            core::mem::offset_of!(NativeFixedCallTableEntry, type_canon) as u32
+        );
+        assert_eq!(
+            layout.local_target_offset,
+            core::mem::offset_of!(NativeFixedCallTableEntry, local_target) as u32
+        );
+        assert_eq!(
+            layout.entry_offset,
+            core::mem::offset_of!(NativeFixedCallTableEntry, entry) as u32
+        );
+        assert_eq!(
+            layout.stride,
+            core::mem::size_of::<NativeFixedCallTableEntry>() as u32
         );
     }
 
@@ -323,8 +420,10 @@ mod tests {
         assert_eq!(layout.context.function_views_base_offset, 32);
         assert_eq!(layout.context.local_call_infos_base_offset, 40);
         assert_eq!(layout.context.local_call_infos_len_offset, 44);
-        assert_eq!(layout.context.type_canon_base_offset, 48);
-        assert_eq!(layout.context.globals_len_offset, 56);
+        assert_eq!(layout.context.fixed_call_table_views_base_offset, 48);
+        assert_eq!(layout.context.fixed_call_table_views_len_offset, 52);
+        assert_eq!(layout.context.type_canon_base_offset, 56);
+        assert_eq!(layout.context.globals_len_offset, 64);
         assert_eq!(layout.ref_handle_stride, 4);
     }
 }

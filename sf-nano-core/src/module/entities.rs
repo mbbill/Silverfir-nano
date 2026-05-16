@@ -171,6 +171,14 @@ impl FunctionSpec {
             *self.native_cache.get() = cache;
         }
     }
+
+    #[cfg(sf_jit)]
+    pub(crate) fn clear_native_code(&self) {
+        unsafe {
+            *self.native_code.get() = None;
+            *self.native_cache.get() = NativeCodeCache::default();
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
