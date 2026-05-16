@@ -2,10 +2,11 @@ use crate::collections;
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
-    MachineCallRuntime, MachineCompareKind, MachineConstId, MachineEdge, MachineFloatBinaryOp,
-    MachineFloatWidth, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
-    MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
-    MachineRegOwner, MachineSign, MachineStorageType, MachineTerminator, MachineValue,
+    MachineCallRuntime, MachineCompareKind, MachineConstId, MachineConvertOp, MachineEdge,
+    MachineFloatBinaryOp, MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind,
+    MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
+    MachineProgram, MachineReg, MachineRegOwner, MachineSign, MachineStorageType,
+    MachineTerminator, MachineValue,
 };
 use crate::vm::machine::peephole::optimize;
 
@@ -1298,6 +1299,136 @@ fn reuses_identical_loads_when_memory_stays_unchanged() {
             ..
         }
     ));
+}
+
+#[test]
+fn reuses_frame_loads_after_indexed_memory_fusion() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(7),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 8,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Convert {
+                        op: MachineConvertOp::I64ExtendI32U,
+                        dst: MachineReg(7),
+                        src: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: MachineIntWidth::I64,
+                        op: MachineIntBinaryOp::Add,
+                        dst: MachineReg(7),
+                        lhs: MachineValue::Reg(MachineReg(2)),
+                        rhs: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(7),
+                            offset: 0,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(8)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(7),
+                        addr: MachineAddr {
+                            base: MachineReg(1),
+                            offset: 8,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Convert {
+                        op: MachineConvertOp::I64ExtendI32U,
+                        dst: MachineReg(7),
+                        src: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: MachineIntWidth::I64,
+                        op: MachineIntBinaryOp::Add,
+                        dst: MachineReg(7),
+                        lhs: MachineValue::Reg(MachineReg(2)),
+                        rhs: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(7),
+                            offset: 0,
+                        },
+                        width: MachineMemWidth::U32,
+                        src: MachineValue::Reg(MachineReg(9)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(7, 8, 10, 10, 0));
+
+    let block = &program.blocks[0];
+    let load_count = block
+        .ops
+        .iter()
+        .filter(|inst| matches!(inst.kind, MachineInstKind::Load { .. }))
+        .count();
+    let indexed_store_count = block
+        .ops
+        .iter()
+        .filter(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::IndexedStore {
+                    base: MachineReg(2),
+                    index: MachineReg(7),
+                    index_extend: MachineIndexExtend::ZeroExtend32,
+                    ..
+                }
+            )
+        })
+        .count();
+
+    assert_eq!(
+        load_count, 1,
+        "the second frame load should be removed after indexed-memory fusion; ops={:?}",
+        block.ops
+    );
+    assert_eq!(
+        indexed_store_count, 2,
+        "both address-building sequences should fuse to indexed stores; ops={:?}",
+        block.ops
+    );
 }
 
 #[test]
