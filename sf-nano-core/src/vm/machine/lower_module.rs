@@ -428,6 +428,7 @@ fn lower_function(
         &input.ssa,
         &explicit_cache,
         is_local_func,
+        table_dispatch_modes,
         u16::from(config.preserved_cache_min_local_call_crosses),
     );
     let entry_cache_params = compute_block_entry_cache_params(
@@ -436,6 +437,7 @@ fn lower_function(
         &explicit_cache,
         gp_reg_width,
         is_local_func,
+        table_dispatch_modes,
     )?;
     let block_entry_cache_dirty = compute_block_entry_cache_dirty(
         &input.ssa,

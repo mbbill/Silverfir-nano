@@ -1629,6 +1629,7 @@ mod tests {
                 explicit_cache,
                 4,
                 &[],
+                &[],
             )
             .expect("entry cache layouts"),
         ));

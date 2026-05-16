@@ -6,13 +6,14 @@ use core::cmp::Reverse;
 use crate::{
     error::WasmError,
     vm::{
+        entities::TableDispatchMode,
         machine::machine_ir::MachineStorageType,
         middle::{
             frame::FrameSlot,
             ssa_ir::{
                 ir::{
                     block_entry_cache_requirement, EntryCacheRequirement, SsaBlock, SsaCallOp,
-                    SsaOp, SsaProgram, SsaTerminator,
+                    SsaInst, SsaOp, SsaProgram, SsaTerminator,
                 },
                 target::SsaTarget,
             },
@@ -56,6 +57,7 @@ pub(super) fn compute_block_entry_cache_params(
     cached_locals: &[CachedLocal],
     gp_reg_width: u8,
     is_local_func: &[bool],
+    table_dispatch_modes: &[TableDispatchMode],
 ) -> Result<collections::Vec<collections::Vec<EntryCacheParam>>, WasmError> {
     if program.blocks.is_empty() || cached_locals.is_empty() {
         return Ok(collections::vec![collections::Vec::new(); program.blocks.len()]);
@@ -88,6 +90,7 @@ pub(super) fn compute_block_entry_cache_params(
         cached_locals,
         &slot_to_cached_index,
         is_local_func,
+        table_dispatch_modes,
         regfile.preserved_cache_min_local_call_crosses(),
     );
     let predecessors = compute_predecessors(program);
@@ -117,6 +120,7 @@ pub(super) fn compute_block_entry_cache_params(
             &slot_meta,
             &param_usage,
             is_local_func,
+            table_dispatch_modes,
             &call_preserve_preferences,
             &regfile.gp_allocatable_preserved_lanes(),
             &mut gp_layouts,
@@ -136,6 +140,7 @@ pub(super) fn compute_block_entry_cache_params(
             &slot_meta,
             &param_usage,
             is_local_func,
+            table_dispatch_modes,
             &call_preserve_preferences,
             &regfile.fp_allocatable_preserved_lanes(),
             &mut fp_layouts,
@@ -161,6 +166,7 @@ pub(super) fn compute_block_entry_cache_params(
             &slot_meta,
             &param_usage,
             is_local_func,
+            table_dispatch_modes,
             &call_preserve_preferences,
             &regfile.gp_allocatable_preserved_lanes(),
             &mut gp_layouts,
@@ -189,6 +195,7 @@ pub(super) fn compute_block_entry_cache_params(
             &slot_meta,
             &param_usage,
             is_local_func,
+            table_dispatch_modes,
             &call_preserve_preferences,
             &regfile.fp_allocatable_preserved_lanes(),
             &mut fp_layouts,
@@ -197,6 +204,23 @@ pub(super) fn compute_block_entry_cache_params(
             &mut fp_visited,
         )?;
     }
+
+    improve_gp_layouts_for_incoming_edges(
+        program,
+        &predecessors,
+        &slot_to_cached_index,
+        &bank_slots,
+        &slot_meta,
+        &param_usage,
+        is_local_func,
+        table_dispatch_modes,
+        &call_preserve_preferences,
+        &regfile.gp_allocatable_preserved_lanes(),
+        regfile.gp_allocatable_count(),
+        &mut gp_layouts,
+        &mut gp_exit_layouts,
+        lanes,
+    )?;
 
     let mut layouts = collections::vec![collections::Vec::new(); program.blocks.len()];
     for (block_index, block) in program.blocks.iter().enumerate() {
@@ -283,6 +307,7 @@ pub(super) fn compute_local_call_cache_preferences(
     program: &SsaProgram,
     cached_locals: &[CachedLocal],
     is_local_func: &[bool],
+    table_dispatch_modes: &[TableDispatchMode],
     min_local_call_crosses: u16,
 ) -> collections::Vec<collections::Vec<bool>> {
     let slot_to_cached_index = cached_locals
@@ -295,6 +320,7 @@ pub(super) fn compute_local_call_cache_preferences(
         cached_locals,
         &slot_to_cached_index,
         is_local_func,
+        table_dispatch_modes,
         min_local_call_crosses,
     )
 }
@@ -304,6 +330,7 @@ fn compute_local_call_cache_preferences_with_map(
     cached_locals: &[CachedLocal],
     slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
     is_local_func: &[bool],
+    table_dispatch_modes: &[TableDispatchMode],
     min_local_call_crosses: u16,
 ) -> collections::Vec<collections::Vec<bool>> {
     let mut candidates =
@@ -312,10 +339,17 @@ fn compute_local_call_cache_preferences_with_map(
         return candidates;
     }
     let mut cross_counts = collections::vec![0u16; cached_locals.len()];
+    let block_cache_live_in = compute_block_cache_live_in(program, slot_to_cached_index);
 
     for (block_index, block) in program.blocks.iter().enumerate() {
-        let call_needs_after =
-            compute_call_cache_needs_after(program, block, slot_to_cached_index, is_local_func);
+        let call_needs_after = compute_call_cache_needs_after(
+            program,
+            block,
+            slot_to_cached_index,
+            is_local_func,
+            table_dispatch_modes,
+            &block_cache_live_in,
+        );
         let mut resident = collections::vec![false; cached_locals.len()];
         let mut has_value = collections::vec![false; cached_locals.len()];
         let mut dirty = collections::vec![false; cached_locals.len()];
@@ -371,19 +405,20 @@ fn compute_local_call_cache_preferences_with_map(
                     );
                 }
                 SsaOp::CALL => {
-                    let direct_local = is_direct_local_call(program, is_local_func, inst.meta);
+                    let local_jit_call =
+                        is_local_jit_call(program, is_local_func, table_dispatch_modes, inst.meta);
                     let needs_after = call_needs_after
                         .get(inst_index)
                         .and_then(|bits| bits.as_ref());
                     for cached_index in 0..cached_locals.len() {
-                        let keep = direct_local
+                        let keep = local_jit_call
+                            && !cached_locals[cached_index].value_ty.is_ref()
                             && needs_after
                                 .and_then(|bits| bits.get(cached_index))
                                 .copied()
                                 .unwrap_or(false)
                             && resident[cached_index]
-                            && has_value[cached_index]
-                            && !cached_locals[cached_index].value_ty.is_ref();
+                            && has_value[cached_index];
                         if keep {
                             candidates[block_index][cached_index] = true;
                             cross_counts[cached_index] =
@@ -391,6 +426,8 @@ fn compute_local_call_cache_preferences_with_map(
                             // Lowering publishes dirty carried caches before
                             // the local call, so the success edge receives a
                             // clean preserved cache value.
+                            resident[cached_index] = true;
+                            has_value[cached_index] = true;
                             dirty[cached_index] = false;
                         } else {
                             resident[cached_index] = false;
@@ -404,11 +441,13 @@ fn compute_local_call_cache_preferences_with_map(
         }
     }
 
+    let promoted = cross_counts
+        .iter()
+        .map(|count| *count >= min_local_call_crosses)
+        .collect::<collections::Vec<_>>();
     for block_candidates in &mut candidates {
         for (cached_index, candidate) in block_candidates.iter_mut().enumerate() {
-            if cross_counts.get(cached_index).copied().unwrap_or(0) < min_local_call_crosses {
-                *candidate = false;
-            }
+            *candidate = promoted.get(cached_index).copied().unwrap_or(false);
         }
     }
 
@@ -420,9 +459,15 @@ fn compute_call_cache_needs_after(
     block: &SsaBlock,
     slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
     is_local_func: &[bool],
+    table_dispatch_modes: &[TableDispatchMode],
+    block_cache_live_in: &[collections::Vec<bool>],
 ) -> collections::Vec<Option<collections::Vec<bool>>> {
     let mut call_needs_after = collections::vec![None; block.ops.len()];
-    let mut needed_after = collections::vec![false; slot_to_cached_index.len()];
+    let mut needed_after = successor_cache_needs(
+        &block.terminator,
+        block_cache_live_in,
+        slot_to_cached_index.len(),
+    );
     for (inst_index, inst) in block.ops.iter().enumerate().rev() {
         match inst.op {
             SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_ENSURE_CACHE => {
@@ -442,7 +487,7 @@ fn compute_call_cache_needs_after(
                 );
             }
             SsaOp::CALL => {
-                if is_direct_local_call(program, is_local_func, inst.meta) {
+                if is_local_jit_call(program, is_local_func, table_dispatch_modes, inst.meta) {
                     call_needs_after[inst_index] = Some(needed_after.clone());
                 } else {
                     needed_after.fill(false);
@@ -453,6 +498,74 @@ fn compute_call_cache_needs_after(
     }
 
     call_needs_after
+}
+
+fn compute_block_cache_live_in(
+    program: &SsaProgram,
+    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
+) -> collections::Vec<collections::Vec<bool>> {
+    let slot_count = slot_to_cached_index.len();
+    let mut live_in = collections::vec![collections::vec![false; slot_count]; program.blocks.len()];
+    if slot_count == 0 {
+        return live_in;
+    }
+
+    loop {
+        let mut changed = false;
+        for block in program.blocks.iter().rev() {
+            let mut needed = successor_cache_needs(&block.terminator, &live_in, slot_count);
+            apply_cache_need_transfer(block.ops.iter().rev(), slot_to_cached_index, &mut needed);
+            let block_index = block.id.as_usize();
+            if live_in
+                .get(block_index)
+                .map(|old| old.as_slice() != needed.as_slice())
+                .unwrap_or(false)
+            {
+                live_in[block_index] = needed;
+                changed = true;
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+
+    live_in
+}
+
+fn successor_cache_needs(
+    terminator: &SsaTerminator,
+    block_cache_live_in: &[collections::Vec<bool>],
+    slot_count: usize,
+) -> collections::Vec<bool> {
+    let mut needed = collections::vec![false; slot_count];
+    for target in block_successors(terminator) {
+        let Some(bits) = block_cache_live_in.get(target.as_usize()) else {
+            continue;
+        };
+        for (dst, src) in needed.iter_mut().zip(bits.iter().copied()) {
+            *dst |= src;
+        }
+    }
+    needed
+}
+
+fn apply_cache_need_transfer<'a>(
+    ops: impl Iterator<Item = &'a SsaInst>,
+    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
+    needed: &mut [bool],
+) {
+    for inst in ops {
+        match inst.op {
+            SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_ENSURE_CACHE => {
+                mark_cached_slot(needed, slot_to_cached_index, FrameSlot(inst.meta), true);
+            }
+            SsaOp::LOCAL_SET_CACHE | SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_DROP_CACHE => {
+                mark_cached_slot(needed, slot_to_cached_index, FrameSlot(inst.meta), false);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn mark_cache_loaded(
@@ -526,13 +639,22 @@ fn mark_cached_slot(
     }
 }
 
-fn is_direct_local_call(program: &SsaProgram, is_local_func: &[bool], call_index: u16) -> bool {
+pub(super) fn is_local_jit_call(
+    program: &SsaProgram,
+    is_local_func: &[bool],
+    table_dispatch_modes: &[TableDispatchMode],
+    call_index: u16,
+) -> bool {
     match program.call_ops.get(call_index as usize) {
         Some(SsaCallOp::CallDirect { callee, .. }) => is_local_func
             .get(*callee as usize)
             .copied()
             .unwrap_or(false),
-        Some(SsaCallOp::CallIndirect { .. } | SsaCallOp::CallRef { .. }) | None => false,
+        Some(SsaCallOp::CallIndirect { table_idx, .. }) => matches!(
+            table_dispatch_modes.get(*table_idx as usize).copied(),
+            Some(TableDispatchMode::FixedLocalOnly { .. })
+        ),
+        Some(SsaCallOp::CallRef { .. }) | None => false,
     }
 }
 
@@ -709,6 +831,7 @@ fn assign_bank_layouts_from_root(
     slot_meta: &[SlotLayoutMeta],
     param_usage: &[ParamPrefixUsage],
     is_local_func: &[bool],
+    table_dispatch_modes: &[TableDispatchMode],
     call_preserve_preferences: &[collections::Vec<bool>],
     preserved_lanes: &[bool],
     layouts: &mut [u32],
@@ -756,6 +879,7 @@ fn assign_bank_layouts_from_root(
             prefix,
             program,
             is_local_func,
+            table_dispatch_modes,
             call_preserve_preferences
                 .get(block_index)
                 .map(|bits| bits.as_slice())
@@ -770,6 +894,291 @@ fn assign_bank_layouts_from_root(
     Ok(())
 }
 
+fn improve_gp_layouts_for_incoming_edges(
+    program: &SsaProgram,
+    predecessors: &[collections::Vec<usize>],
+    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
+    bank_slots: &[[collections::Vec<usize>; 2]],
+    slot_meta: &[SlotLayoutMeta],
+    param_usage: &[ParamPrefixUsage],
+    is_local_func: &[bool],
+    table_dispatch_modes: &[TableDispatchMode],
+    call_preserve_preferences: &[collections::Vec<bool>],
+    preserved_lanes: &[bool],
+    lane_count: usize,
+    layouts: &mut [u32],
+    exit_layouts: &mut [u32],
+    lanes: usize,
+) -> Result<(), WasmError> {
+    for _ in 0..2 {
+        let mut changed = false;
+        for block_index in 0..program.blocks.len() {
+            let Some(preds) = predecessors.get(block_index) else {
+                continue;
+            };
+            if preds.is_empty() {
+                continue;
+            }
+            let slots = &bank_slots[block_index][0];
+            if slots.is_empty() {
+                continue;
+            }
+            let row_base = block_index * lanes;
+            let current = collections::Vec::from(&layouts[row_base..row_base + lanes]);
+            let current = current.as_slice();
+            let pred_layouts = preds
+                .iter()
+                .filter_map(|pred| {
+                    let start = pred.checked_mul(lanes)?;
+                    exit_layouts
+                        .get(start..start + lanes)
+                        .map(collections::Vec::from)
+                })
+                .collect::<collections::Vec<_>>();
+            if pred_layouts.is_empty() {
+                continue;
+            }
+            let pred_layout_refs = pred_layouts
+                .iter()
+                .map(|layout| layout.as_slice())
+                .collect::<collections::Vec<_>>();
+            let needs_value = entry_cache_needs_value(
+                program,
+                block_index,
+                slot_to_cached_index,
+                slot_meta.len(),
+            );
+            let Some(candidate) = edge_preferred_gp_layout(
+                slots,
+                current,
+                &pred_layout_refs,
+                &needs_value,
+                slot_meta,
+                lane_count,
+                param_usage[block_index].gp,
+                call_preserve_preferences
+                    .get(block_index)
+                    .map(|bits| bits.as_slice())
+                    .unwrap_or(&[]),
+                preserved_lanes,
+            ) else {
+                continue;
+            };
+            let current_cost = incoming_edge_layout_cost(
+                slots,
+                current,
+                &pred_layout_refs,
+                &needs_value,
+                slot_meta,
+                call_preserve_preferences
+                    .get(block_index)
+                    .map(|bits| bits.as_slice())
+                    .unwrap_or(&[]),
+                preserved_lanes,
+            );
+            let candidate_cost = incoming_edge_layout_cost(
+                slots,
+                &candidate,
+                &pred_layout_refs,
+                &needs_value,
+                slot_meta,
+                call_preserve_preferences
+                    .get(block_index)
+                    .map(|bits| bits.as_slice())
+                    .unwrap_or(&[]),
+                preserved_lanes,
+            );
+            if candidate_cost >= current_cost || candidate.as_slice() == current {
+                continue;
+            }
+            layouts[row_base..row_base + lanes].copy_from_slice(&candidate);
+            let exit_row = simulate_block_exit_layout(
+                &program.blocks[block_index],
+                &layouts[row_base..row_base + lanes],
+                slot_to_cached_index,
+                slot_meta,
+                LayoutBank::Gp,
+                lane_count,
+                param_usage[block_index].gp,
+                program,
+                is_local_func,
+                table_dispatch_modes,
+                call_preserve_preferences
+                    .get(block_index)
+                    .map(|bits| bits.as_slice())
+                    .unwrap_or(&[]),
+                preserved_lanes,
+            )?;
+            exit_layouts[row_base..row_base + lanes].copy_from_slice(&exit_row);
+            changed = true;
+        }
+        if !changed {
+            break;
+        }
+    }
+    Ok(())
+}
+
+fn entry_cache_needs_value(
+    program: &SsaProgram,
+    block_index: usize,
+    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
+    slot_count: usize,
+) -> collections::Vec<bool> {
+    let mut needs = collections::vec![false; slot_count];
+    let Some(block) = program.blocks.get(block_index) else {
+        return needs;
+    };
+    let Some(entry_slots) = program.block_entry_cached_slots.get(block_index) else {
+        return needs;
+    };
+    for &slot in entry_slots {
+        if block_entry_cache_requirement(entry_slots, block, slot)
+            != Some(EntryCacheRequirement::Ensure)
+        {
+            continue;
+        }
+        if let Some(&cached_index) = slot_to_cached_index.get(&slot) {
+            if let Some(bit) = needs.get_mut(cached_index) {
+                *bit = true;
+            }
+        }
+    }
+    needs
+}
+
+fn edge_preferred_gp_layout(
+    slots: &[usize],
+    current_layout: &[u32],
+    pred_layouts: &[&[u32]],
+    needs_value: &[bool],
+    slot_meta: &[SlotLayoutMeta],
+    lane_count: usize,
+    prefix_occupied: usize,
+    call_preserve_preferences: &[bool],
+    preserved_lanes: &[bool],
+) -> Option<collections::Vec<u32>> {
+    let mut layout = collections::vec![LANE_UNASSIGNED; slot_meta.len()];
+    let mut occupied = collections::vec![false; lane_count];
+    for lane in 0..prefix_occupied.min(lane_count) {
+        occupied[lane] = true;
+    }
+    let mut ordered = slots.to_vec();
+    ordered.sort_by_key(|&slot| {
+        (
+            Reverse(slot_meta[slot].width),
+            Reverse(
+                call_preserve_preferences
+                    .get(slot)
+                    .copied()
+                    .unwrap_or(false),
+            ),
+            slot,
+        )
+    });
+
+    for slot in ordered {
+        let width = slot_meta[slot].width;
+        let prefer_preserved = call_preserve_preferences
+            .get(slot)
+            .copied()
+            .unwrap_or(false);
+        let mut best: Option<(usize, usize)> = None;
+        for start in 0..=lane_count.saturating_sub(width) {
+            if !segment_available(&occupied, start, width) {
+                continue;
+            }
+            let cost = edge_slot_layout_cost(
+                slot,
+                start,
+                width,
+                pred_layouts,
+                needs_value,
+                preserved_lanes,
+                prefer_preserved,
+            )
+            .saturating_add(
+                current_layout
+                    .get(slot)
+                    .copied()
+                    .filter(|current| *current != LANE_UNASSIGNED && *current as usize != start)
+                    .map(|_| 1)
+                    .unwrap_or(0),
+            );
+            if best
+                .map(|(best_cost, best_start)| {
+                    cost < best_cost || (cost == best_cost && start < best_start)
+                })
+                .unwrap_or(true)
+            {
+                best = Some((cost, start));
+            }
+        }
+        let (_, start) = best?;
+        occupy_segment(&mut occupied, start, width, true);
+        layout[slot] = start as u32;
+    }
+    Some(layout)
+}
+
+fn incoming_edge_layout_cost(
+    slots: &[usize],
+    layout: &[u32],
+    pred_layouts: &[&[u32]],
+    needs_value: &[bool],
+    slot_meta: &[SlotLayoutMeta],
+    call_preserve_preferences: &[bool],
+    preserved_lanes: &[bool],
+) -> usize {
+    slots
+        .iter()
+        .copied()
+        .map(|slot| {
+            let start = layout[slot];
+            if start == LANE_UNASSIGNED {
+                return usize::MAX / 4;
+            }
+            let width = slot_meta[slot].width;
+            edge_slot_layout_cost(
+                slot,
+                start as usize,
+                width,
+                pred_layouts,
+                needs_value,
+                preserved_lanes,
+                call_preserve_preferences
+                    .get(slot)
+                    .copied()
+                    .unwrap_or(false),
+            )
+        })
+        .sum()
+}
+
+fn edge_slot_layout_cost(
+    slot: usize,
+    start: usize,
+    width: usize,
+    pred_layouts: &[&[u32]],
+    needs_value: &[bool],
+    preserved_lanes: &[bool],
+    prefer_preserved: bool,
+) -> usize {
+    let mut cost = preference_mismatch_cost(preserved_lanes, start, width, prefer_preserved);
+    if needs_value.get(slot).copied().unwrap_or(true) {
+        for pred in pred_layouts {
+            match pred.get(slot).copied().unwrap_or(LANE_UNASSIGNED) {
+                LANE_UNASSIGNED => cost = cost.saturating_add(width.saturating_mul(2)),
+                pred_start if pred_start as usize != start => {
+                    cost = cost.saturating_add(width);
+                }
+                _ => {}
+            }
+        }
+    }
+    cost
+}
+
 fn simulate_block_exit_layout(
     block: &SsaBlock,
     entry_layout: &[u32],
@@ -780,6 +1189,7 @@ fn simulate_block_exit_layout(
     prefix_occupied: usize,
     program: &SsaProgram,
     is_local_func: &[bool],
+    table_dispatch_modes: &[TableDispatchMode],
     call_preserve_preferences: &[bool],
     preserved_lanes: &[bool],
 ) -> Result<collections::Vec<u32>, WasmError> {
@@ -951,7 +1361,8 @@ fn simulate_block_exit_layout(
                 }
             }
             SsaOp::CALL => {
-                let direct_local = is_direct_local_call(program, is_local_func, inst.meta);
+                let local_jit_call =
+                    is_local_jit_call(program, is_local_func, table_dispatch_modes, inst.meta);
                 for (slot_index, lane) in layout.iter_mut().enumerate() {
                     if slot_meta.get(slot_index).map(|meta| meta.bank) != Some(bank) {
                         continue;
@@ -959,7 +1370,7 @@ fn simulate_block_exit_layout(
                     if *lane == LANE_UNASSIGNED {
                         continue;
                     }
-                    if direct_local
+                    if local_jit_call
                         && call_preserve_preferences
                             .get(slot_index)
                             .copied()
@@ -1016,7 +1427,13 @@ fn build_block_bank_layout(
             if parent_start != LANE_UNASSIGNED {
                 let start = parent_start as usize;
                 let width = slot_meta[slot].width;
-                if segment_available(&occupied, start, width) {
+                let prefer_preserved = call_preserve_preferences
+                    .get(slot)
+                    .copied()
+                    .unwrap_or(false);
+                if segment_available(&occupied, start, width)
+                    && segment_matches_preference(preserved_lanes, start, width, prefer_preserved)
+                {
                     occupy_segment(&mut occupied, start, width, true);
                     layout[slot] = parent_start;
                     continue;
@@ -1170,8 +1587,10 @@ fn search_exact_gp_layout(
         }
     });
     if let Some(parent_start) = parent_start_opt {
-        if let Some(pos) = starts.iter().position(|&start| start == parent_start) {
-            starts.swap(0, pos);
+        if segment_matches_preference(preserved_lanes, parent_start, width, prefer_preserved) {
+            if let Some(pos) = starts.iter().position(|&start| start == parent_start) {
+                starts.swap(0, pos);
+            }
         }
     }
     for start in starts {
@@ -1181,7 +1600,9 @@ fn search_exact_gp_layout(
             Some(parent_start) if parent_start != start => width,
             _ => 0,
         };
-        let added_cost = move_cost;
+        let preference_cost =
+            preference_mismatch_cost(preserved_lanes, start, width, prefer_preserved);
+        let added_cost = move_cost.saturating_add(preference_cost);
         search_exact_gp_layout(
             ordered,
             index + 1,
@@ -1196,6 +1617,19 @@ fn search_exact_gp_layout(
         );
         current[slot] = LANE_UNASSIGNED;
         occupy_segment(occupied, start, width, false);
+    }
+}
+
+fn preference_mismatch_cost(
+    preserved_lanes: &[bool],
+    start: usize,
+    width: usize,
+    prefer_preserved: bool,
+) -> usize {
+    if segment_matches_preference(preserved_lanes, start, width, prefer_preserved) {
+        0
+    } else {
+        width.saturating_mul(preserved_lanes.len().saturating_add(1))
     }
 }
 
@@ -1395,7 +1829,9 @@ fn block_successors(terminator: &SsaTerminator) -> collections::Vec<SsaTarget> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vm::middle::frame::FrameSpan;
     use crate::vm::middle::ssa_ir::ir::SsaEdge;
+    use crate::vm::middle::ssa_ir::ir::SsaValue;
 
     fn long_linear_program(block_count: usize) -> SsaProgram {
         let blocks = (0..block_count)
@@ -1469,6 +1905,7 @@ mod tests {
             &[],
             &[],
             &[],
+            &[],
             &mut layouts,
             &mut exit_layouts,
             0,
@@ -1477,5 +1914,101 @@ mod tests {
         .expect("long linear idom tree should not overflow the native stack");
 
         assert!(visited.into_iter().all(|visited| visited));
+    }
+
+    #[test]
+    fn inherited_call_preserved_cache_moves_to_preserved_lane() {
+        let slots = collections::vec![0usize];
+        let parent_layout = collections::vec![0u32];
+        let slot_meta = collections::vec![SlotLayoutMeta {
+            bank: LayoutBank::Gp,
+            width: 1,
+            is_ref: false,
+        }];
+        let call_preserve_preferences = collections::vec![true];
+        let preserved_lanes = collections::vec![false, false, true];
+
+        let layout = build_block_bank_layout(
+            &slots,
+            Some(&parent_layout),
+            &slot_meta,
+            3,
+            0,
+            LayoutBank::Gp,
+            &call_preserve_preferences,
+            &preserved_lanes,
+        )
+        .expect("one-slot preserved layout should be feasible");
+
+        assert_eq!(
+            layout[0], 2,
+            "a call-crossing inherited cache must move out of volatile lanes"
+        );
+    }
+
+    #[test]
+    fn hot_call_preserved_cache_preference_is_function_wide() {
+        let slot = FrameSlot(0);
+        let cached = CachedLocal {
+            slot,
+            value_ty: crate::value_type::ValueType::I32,
+            ty: MachineStorageType::GpWord,
+            info: crate::vm::middle::ssa_ir::ir::LocalSlotInfo {
+                is_param: false,
+                reads_before_write: false,
+            },
+        };
+        let mut program = SsaProgram::default();
+        program.entry = SsaTarget(0);
+        program.value_types = collections::vec![
+            crate::value_type::ValueType::I32,
+            crate::value_type::ValueType::I32
+        ];
+        program.block_entry_cached_slots =
+            collections::vec![collections::vec![slot], collections::vec![slot]];
+        let call_idx = program.push_call_op(SsaCallOp::CallDirect {
+            callee: 1,
+            args: crate::vm::middle::ssa_ir::ir::SsaCallArgs {
+                frame_base: FrameSlot(1),
+                total_params: 0,
+                param_types: collections::Vec::new(),
+                stack_prefix_count: 0,
+                live_suffix: collections::Vec::new(),
+            },
+            results: FrameSpan::new(FrameSlot(1), 0),
+            result_types: collections::Vec::new(),
+        });
+        program.blocks = collections::vec![
+            SsaBlock {
+                id: SsaTarget(0),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                extra_args: collections::Vec::new(),
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: collections::Vec::new(),
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(1),
+                params: collections::Vec::new(),
+                ops: collections::vec![
+                    SsaInst::local_get_cache(slot, SsaValue(0)),
+                    SsaInst::call(call_idx),
+                    SsaInst::local_get_cache(slot, SsaValue(1)),
+                ],
+                extra_args: collections::Vec::new(),
+                terminator: SsaTerminator::Return { results: None },
+            },
+        ];
+
+        let preferences =
+            compute_local_call_cache_preferences(&program, &[cached], &[true, true], &[], 1);
+
+        assert_eq!(
+            preferences[0][0], true,
+            "once a cached local is hot enough to preserve across calls, predecessor blocks should keep the same preserved-bank layout"
+        );
+        assert_eq!(preferences[1][0], true);
     }
 }
