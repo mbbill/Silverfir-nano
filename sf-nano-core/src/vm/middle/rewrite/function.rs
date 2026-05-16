@@ -955,6 +955,7 @@ fn lower_block_body_op(
                 state,
                 resident_cache,
                 materialized_cache,
+                values,
                 builder,
                 config,
             )
@@ -978,6 +979,7 @@ fn lower_block_body_op(
                 state,
                 resident_cache,
                 materialized_cache,
+                values,
                 builder,
                 config,
             )
@@ -1276,8 +1278,9 @@ fn lower_call_indirect(
     state: &mut BlockState,
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
+    values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
-    _config: BackendConfig,
+    config: BackendConfig,
 ) -> Result<(), WasmError> {
     let consumed = params.saturating_add(1);
     let stack_base = state.height().saturating_sub(consumed);
@@ -1296,8 +1299,17 @@ fn lower_call_indirect(
         results: FrameSpan::new(call_base, results),
         result_types: result_types.to_vec().into(),
     })?;
-    state.ops.push(SsaInst::call(call_idx));
-    state.finish_call(consumed, results, result_types);
+    let live_result = live_scalar_call_result(config, results, result_types, values);
+    match live_result {
+        Some((value, ty)) => {
+            state.ops.push(SsaInst::call_result(call_idx, value));
+            state.finish_call_with_live_scalar(consumed, value, ty)?;
+        }
+        None => {
+            state.ops.push(SsaInst::call(call_idx));
+            state.finish_call(consumed, results, result_types);
+        }
+    }
     resident_cache.clear();
     materialized_cache.clear();
     Ok(())
@@ -1312,8 +1324,9 @@ fn lower_call_ref(
     state: &mut BlockState,
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
+    values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
-    _config: BackendConfig,
+    config: BackendConfig,
 ) -> Result<(), WasmError> {
     let consumed = params.saturating_add(1);
     let stack_base = state.height().saturating_sub(consumed);
@@ -1331,8 +1344,17 @@ fn lower_call_ref(
         results: FrameSpan::new(call_base, results),
         result_types: result_types.to_vec().into(),
     })?;
-    state.ops.push(SsaInst::call(call_idx));
-    state.finish_call(consumed, results, result_types);
+    let live_result = live_scalar_call_result(config, results, result_types, values);
+    match live_result {
+        Some((value, ty)) => {
+            state.ops.push(SsaInst::call_result(call_idx, value));
+            state.finish_call_with_live_scalar(consumed, value, ty)?;
+        }
+        None => {
+            state.ops.push(SsaInst::call(call_idx));
+            state.finish_call(consumed, results, result_types);
+        }
+    }
     resident_cache.clear();
     materialized_cache.clear();
     Ok(())
@@ -2426,6 +2448,7 @@ fn lower_block_terminator(
                 state,
                 resident_cache,
                 materialized_cache,
+                values,
                 builder,
                 config,
             )?;
@@ -2466,6 +2489,7 @@ fn lower_block_terminator(
                 state,
                 resident_cache,
                 materialized_cache,
+                values,
                 builder,
                 config,
             )?;

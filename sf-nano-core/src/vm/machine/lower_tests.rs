@@ -8,13 +8,14 @@ use crate::vm::{
     machine::{
         lower_module,
         machine_ir::{
-            is_fp_reg, is_gp_reg, MachineAddr, MachineBlockId, MachineBlockParam,
-            MachineBranchCond, MachineCallResults, MachineCallTarget, MachineCompareKind,
-            MachineConvertOp, MachineEdge, MachineFloatWidth, MachineFrameRegion, MachineFuncId,
-            MachineFunction, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,
-            MachineLoadExtension, MachineMemWidth, MachineModule, MachineReg, MachineRegOwner,
-            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
-            MACHINE_FIXED_REG_COUNT,
+            is_fp_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineBlockId, MachineBlockParam,
+            MachineBranchCond, MachineCallLaneArg, MachineCallResults, MachineCallTarget,
+            MachineCompareKind, MachineConvertOp, MachineEdge, MachineFloatWidth,
+            MachineFrameRegion, MachineFuncId, MachineFunction, MachineInstKind,
+            MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
+            MachineModule, MachineReg, MachineRegOwner, MachineResultDst, MachineSign,
+            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
         },
         LowerFunctionInput, LowerModuleInput,
     },
@@ -22,8 +23,9 @@ use crate::vm::{
         frame::{plan_frame_layout, FrameSpan},
         ssa_ir::{
             ir::{
-                LocalSlotInfo, SsaBinding, SsaBlock, SsaCallArgs, SsaCallOp, SsaCallOperandLoc,
-                SsaEdge, SsaInst, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+                LocalSlotInfo, SsaBinding, SsaBlock, SsaCallArgs, SsaCallLiveArg, SsaCallOp,
+                SsaCallOperandLoc, SsaEdge, SsaInst, SsaOperand, SsaProgram, SsaTerminator,
+                SsaValue,
             },
             target::SsaTarget,
         },
@@ -4744,7 +4746,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     assert_eq!(lowered.module.consts.len(), 1);
 
     let program = &lowered.module.functions[0].program;
-    assert_eq!(program.blocks.len(), 11);
+    assert_eq!(program.blocks.len(), 10);
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Branch { .. }
@@ -4763,7 +4765,10 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     ));
     assert!(matches!(
         program.blocks[6].terminator,
-        MachineTerminator::Branch { .. }
+        MachineTerminator::Jump(MachineEdge {
+            target: MachineBlockId(7),
+            ..
+        })
     ));
     assert_eq!(program.blocks[6].params.len(), 1);
     assert!(matches!(
@@ -4775,18 +4780,10 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     ));
     assert!(matches!(
         program.blocks[7].terminator,
-        MachineTerminator::Branch { .. }
-    ));
-    assert!(matches!(
-        program.blocks[7].ops[0].kind,
-        MachineInstKind::Store { .. }
-    ));
-    assert!(matches!(
-        program.blocks[8].terminator,
         MachineTerminator::Call {
             target: MachineCallTarget::Indirect { .. },
             success: MachineEdge {
-                target: MachineBlockId(10),
+                target: MachineBlockId(9),
                 ..
             },
             ..
@@ -4831,14 +4828,14 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         }
     ));
     assert!(matches!(
-        program.blocks[3].terminator,
+        &program.blocks[3].terminator,
         MachineTerminator::Branch {
             cond: MachineBranchCond::IntCompare {
-                rhs: MachineValue::Reg(_),
+                rhs: MachineValue::Reg(rhs),
                 ..
             },
             ..
-        }
+        } if *rhs == type_check_scaled
     ));
 
     let dispatch_ops = &program.blocks[5].ops;
@@ -4880,30 +4877,396 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         }
     ));
     assert!(matches!(
-        program.blocks[9].ops[0].kind,
+        program.blocks[8].ops[0].kind,
         MachineInstKind::CallRuntime(_)
     ));
     assert!(matches!(
-        program.blocks[9].ops[1].kind,
+        program.blocks[8].ops[1].kind,
         MachineInstKind::Load { .. }
     ));
     assert!(matches!(
-        program.blocks[9].ops[2].kind,
+        program.blocks[8].ops[2].kind,
         MachineInstKind::Load { .. }
     ));
     assert!(matches!(
-        program.blocks[9].terminator,
+        program.blocks[8].terminator,
         MachineTerminator::Jump(MachineEdge {
-            target: MachineBlockId(10),
+            target: MachineBlockId(9),
             ..
         })
     ));
     assert!(matches!(
-        program.blocks[10].terminator,
+        program.blocks[9].terminator,
         MachineTerminator::Trap {
             kind: MachineTrapKind::Unreachable
         }
     ));
+}
+
+#[test]
+fn lowers_call_indirect_local_path_with_live_register_args() {
+    let frame = plan_frame_layout(0, 8, 4);
+    let call_base = frame.operand_slot(0);
+    let ssa = {
+        let mut ssa = SsaProgram::default();
+        ssa.entry = SsaTarget(0);
+        ssa.local_slot_types = collections::vec![];
+        ssa.local_slot_info = collections::vec![];
+        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_cfg_origins = collections::vec![];
+        ssa.value_types = collections::vec![
+            ValueType::I32,
+            ValueType::I32,
+            ValueType::I32,
+            ValueType::I32,
+        ];
+        ssa.value_sink_local = collections::vec![];
+        let mut block = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::TrapUnreachable,
+        };
+        for value in 0..4 {
+            let prim = ssa
+                .intern_primitive(PrimitiveOpKind::I32Const { value: value + 1 })
+                .unwrap();
+            block.ops.push(SsaInst::primitive(
+                prim,
+                SsaValue(value),
+                [SsaOperand::NONE, SsaOperand::NONE],
+                0,
+            ));
+        }
+        let args = SsaCallArgs {
+            frame_base: call_base,
+            total_params: 4,
+            param_types: collections::vec![
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+            ],
+            stack_prefix_count: 0,
+            live_suffix: collections::vec![
+                SsaCallLiveArg {
+                    param_index: 0,
+                    value: SsaValue(0),
+                    ty: ValueType::I32,
+                    frame_slot: call_base,
+                },
+                SsaCallLiveArg {
+                    param_index: 1,
+                    value: SsaValue(1),
+                    ty: ValueType::I32,
+                    frame_slot: call_base.advance(1),
+                },
+                SsaCallLiveArg {
+                    param_index: 2,
+                    value: SsaValue(2),
+                    ty: ValueType::I32,
+                    frame_slot: call_base.advance(2),
+                },
+                SsaCallLiveArg {
+                    param_index: 3,
+                    value: SsaValue(3),
+                    ty: ValueType::I32,
+                    frame_slot: call_base.advance(3),
+                },
+            ],
+        };
+        let call_idx = ssa.push_call_op(SsaCallOp::CallIndirect {
+            type_idx: 3,
+            table_idx: 0,
+            index: SsaCallOperandLoc::Stack {
+                slot: call_base.advance(4),
+            },
+            args,
+            results: FrameSpan::new(call_base, 0),
+            result_types: collections::Vec::new(),
+        });
+        block.ops.push(SsaInst::call(call_idx));
+        ssa.blocks.push(block);
+        ssa
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(0, 10, 0, 2),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("call_indirect live register args should lower");
+
+    let program = &lowered.module.functions[0].program;
+    let call_args = program
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            MachineTerminator::Call {
+                target: MachineCallTarget::Indirect { .. },
+                args,
+                ..
+            } => Some(args),
+            _ => None,
+        })
+        .expect("expected local indirect call terminator");
+    assert_eq!(call_args.lane_args.len(), 4);
+    assert!(call_args.lane_args.iter().all(|arg| matches!(
+        arg,
+        MachineCallLaneArg::Gp {
+            src: MachineArgSrc::Reg(_),
+            ..
+        }
+    )));
+
+    let runtime_block = program
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .ops
+                .iter()
+                .any(|inst| matches!(inst.kind, MachineInstKind::CallRuntime(_)))
+        })
+        .expect("expected runtime fallback block");
+    let arg_offsets = collections::vec![
+        i32::from(call_base.0) * 8,
+        i32::from(call_base.advance(1).0) * 8,
+        i32::from(call_base.advance(2).0) * 8,
+        i32::from(call_base.advance(3).0) * 8,
+    ];
+    let is_arg_frame_store = |inst: &crate::vm::machine::machine_ir::MachineInst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::Store {
+                addr:
+                    MachineAddr {
+                        base: MACHINE_FP_REG,
+                        offset,
+                    },
+                ..
+            } if arg_offsets.contains(&offset)
+        )
+    };
+    let hot_arg_stores = program
+        .blocks
+        .iter()
+        .filter(|block| block.id != runtime_block.id)
+        .flat_map(|block| block.ops.iter())
+        .filter(|inst| is_arg_frame_store(inst))
+        .count();
+    assert_eq!(
+        hot_arg_stores, 0,
+        "local call_indirect hot path must carry live args in registers instead of eagerly publishing them to the callee frame"
+    );
+    let runtime_arg_stores = runtime_block
+        .ops
+        .iter()
+        .filter(|inst| is_arg_frame_store(inst))
+        .count();
+    assert_eq!(
+        runtime_arg_stores, 4,
+        "runtime fallback must still publish carried live args before calling the runtime helper"
+    );
+}
+
+#[test]
+fn lowers_call_indirect_live_scalar_result_through_register_continuation() {
+    let frame = plan_frame_layout(1, 8, 4);
+    let call_base = frame.operand_slot(0);
+    let result_slot = frame.local_slot(0);
+    let ssa = {
+        let mut ssa = SsaProgram::default();
+        ssa.entry = SsaTarget(0);
+        ssa.local_slot_types = collections::vec![ValueType::I32];
+        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+            is_param: false,
+            reads_before_write: false,
+        }];
+        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_cfg_origins = collections::vec![];
+        ssa.value_types = collections::vec![
+            ValueType::I32,
+            ValueType::I32,
+            ValueType::I32,
+            ValueType::I32,
+            ValueType::I32,
+        ];
+        ssa.value_sink_local = collections::vec![];
+        let mut block = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::TrapUnreachable,
+        };
+        for value in 0..4 {
+            let prim = ssa
+                .intern_primitive(PrimitiveOpKind::I32Const { value: value + 1 })
+                .unwrap();
+            block.ops.push(SsaInst::primitive(
+                prim,
+                SsaValue(value),
+                [SsaOperand::NONE, SsaOperand::NONE],
+                0,
+            ));
+        }
+        let args = SsaCallArgs {
+            frame_base: call_base,
+            total_params: 4,
+            param_types: collections::vec![
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+            ],
+            stack_prefix_count: 0,
+            live_suffix: collections::vec![
+                SsaCallLiveArg {
+                    param_index: 0,
+                    value: SsaValue(0),
+                    ty: ValueType::I32,
+                    frame_slot: call_base,
+                },
+                SsaCallLiveArg {
+                    param_index: 1,
+                    value: SsaValue(1),
+                    ty: ValueType::I32,
+                    frame_slot: call_base.advance(1),
+                },
+                SsaCallLiveArg {
+                    param_index: 2,
+                    value: SsaValue(2),
+                    ty: ValueType::I32,
+                    frame_slot: call_base.advance(2),
+                },
+                SsaCallLiveArg {
+                    param_index: 3,
+                    value: SsaValue(3),
+                    ty: ValueType::I32,
+                    frame_slot: call_base.advance(3),
+                },
+            ],
+        };
+        let call_idx = ssa.push_call_op(SsaCallOp::CallIndirect {
+            type_idx: 3,
+            table_idx: 0,
+            index: SsaCallOperandLoc::Stack {
+                slot: call_base.advance(4),
+            },
+            args,
+            results: FrameSpan::new(call_base, 1),
+            result_types: collections::vec![ValueType::I32],
+        });
+        block.ops.push(SsaInst::call_result(call_idx, SsaValue(4)));
+        block
+            .ops
+            .push(SsaInst::local_set_slot(result_slot, SsaValue(4)));
+        ssa.blocks.push(block);
+        ssa
+    };
+
+    let allocatable_gp = 10;
+    let total_gp = total_gp_budget_for_allocatable(allocatable_gp, HOST_GP_UNIT_BYTES);
+    let backend = BackendConfig::with_volatility(
+        HOST_GP_UNIT_BYTES,
+        allocatable_gp,
+        0,
+        total_gp.saturating_sub(allocatable_gp),
+        0,
+        0,
+        4,
+        0,
+        true,
+        HOST_CALL_SCRATCH_SLOTS,
+    );
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("call_indirect live scalar result should lower through a register");
+
+    let program = &lowered.module.functions[0].program;
+    let (result_reg, continuation) = program
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            MachineTerminator::Call {
+                target: MachineCallTarget::Indirect { .. },
+                results:
+                    MachineCallResults::ScalarGp {
+                        dst: MachineResultDst::Reg(reg),
+                        ty: MachineStorageType::GpWord,
+                    },
+                success,
+                ..
+            } => {
+                assert_eq!(
+                    success.args,
+                    collections::vec![MachineValue::Reg(*reg)],
+                    "local indirect success edge should carry the scalar result register"
+                );
+                Some((*reg, success.target))
+            }
+            _ => None,
+        })
+        .expect("expected local indirect call with register scalar result");
+
+    let continuation_block = program
+        .blocks
+        .iter()
+        .find(|block| block.id == continuation)
+        .expect("missing indirect-call continuation block");
+    assert_eq!(continuation_block.params.len(), 1);
+    assert_eq!(continuation_block.params[0].reg, result_reg);
+
+    let runtime_block = program
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .ops
+                .iter()
+                .any(|inst| matches!(inst.kind, MachineInstKind::CallRuntime(_)))
+        })
+        .expect("expected runtime fallback block");
+    assert!(matches!(
+        runtime_block.terminator,
+        MachineTerminator::Jump(MachineEdge {
+            target,
+            ref args,
+        }) if target == continuation && args == &collections::vec![MachineValue::Reg(result_reg)]
+    ));
+    assert!(
+        runtime_block.ops.iter().any(|inst| matches!(
+            inst.kind,
+            MachineInstKind::Load {
+                dst,
+                addr,
+                ..
+            } if dst == result_reg && addr.offset == i32::from(call_base.0) * 8
+        )),
+        "runtime fallback must materialize the frame result into the same continuation register; ops={:?}",
+        runtime_block.ops
+    );
 }
 
 #[test]
@@ -4960,7 +5323,7 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
     assert_eq!(lowered.module.consts.len(), 1);
 
     let program = &lowered.module.functions[0].program;
-    assert_eq!(program.blocks.len(), 9);
+    assert_eq!(program.blocks.len(), 8);
     assert!(matches!(
         program.blocks[0].ops[0].kind,
         MachineInstKind::Load {
@@ -4990,36 +5353,35 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
     assert_eq!(program.blocks[4].params.len(), 1);
     assert!(matches!(
         program.blocks[4].terminator,
-        MachineTerminator::Branch { .. }
+        MachineTerminator::Jump(MachineEdge {
+            target: MachineBlockId(5),
+            ..
+        })
     ));
     assert!(matches!(
         program.blocks[5].terminator,
-        MachineTerminator::Branch { .. }
-    ));
-    assert!(matches!(
-        program.blocks[6].terminator,
         MachineTerminator::Call {
             target: MachineCallTarget::Indirect { .. },
             success: MachineEdge {
-                target: MachineBlockId(8),
+                target: MachineBlockId(7),
                 ..
             },
             ..
         }
     ));
     assert!(matches!(
-        program.blocks[7].ops[0].kind,
+        program.blocks[6].ops[0].kind,
         MachineInstKind::CallRuntime(_)
     ));
     assert!(matches!(
-        program.blocks[7].terminator,
+        program.blocks[6].terminator,
         MachineTerminator::Jump(MachineEdge {
-            target: MachineBlockId(8),
+            target: MachineBlockId(7),
             ..
         })
     ));
     assert!(matches!(
-        program.blocks[8].terminator,
+        program.blocks[7].terminator,
         MachineTerminator::Trap {
             kind: MachineTrapKind::Unreachable
         }

@@ -2,13 +2,13 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineBlockId, MachineBlockParam,
-            MachineBranchCond, MachineCallArgs, MachineCallLaneArg, MachineCallResults,
-            MachineCallRuntime, MachineCallTarget, MachineCompareKind, MachineConstId,
-            MachineFrameRegion, MachineFuncId, MachineInst, MachineInstKind, MachineIntBinaryOp,
-            MachineLoadExtension, MachineMemWidth, MachineParamLoc, MachineReg, MachineRegOwner,
-            MachineResultDst, MachineReturnAbi, MachineSign, MachineStorageType, MachineTerminator,
-            MachineTrapKind, MachineValue,
+            MachineArgSrc, MachineArgSrcPair, MachineBlockId, MachineBlockParam, MachineBranchCond,
+            MachineCallArgs, MachineCallLaneArg, MachineCallResults, MachineCallRuntime,
+            MachineCallTarget, MachineCompareKind, MachineConstId, MachineFrameRegion,
+            MachineFuncId, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineLoadExtension,
+            MachineMemWidth, MachineParamLoc, MachineReg, MachineRegOwner, MachineResultDst,
+            MachineReturnAbi, MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind,
+            MachineValue,
         },
         middle::{
             frame::{FrameSlot, FrameSpan},
@@ -328,7 +328,7 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn call_result_placement(
+    pub(super) fn call_result_placement(
         &mut self,
         return_abi: &MachineReturnAbi,
         caller_results: FrameSpan,
@@ -428,7 +428,7 @@ impl<'a> BlockLowerContext<'a> {
         }
     }
 
-    fn materialize_runtime_call_result(
+    pub(super) fn materialize_runtime_call_result(
         &mut self,
         value: SsaValue,
         slot: FrameSlot,
@@ -922,40 +922,6 @@ impl<'a> BlockLowerContext<'a> {
                 },
             },
         });
-        Ok(())
-    }
-
-    pub(super) fn emit_zero_canonical_slot_at_addr(
-        &mut self,
-        base: MachineReg,
-    ) -> Result<(), WasmError> {
-        if self.gp_reg_width() == 4 {
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Store {
-                    ty: MachineStorageType::GpWord,
-                    addr: MachineAddr { base, offset: 0 },
-                    width: MachineMemWidth::U32,
-                    src: MachineValue::Imm64(0),
-                },
-            });
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Store {
-                    ty: MachineStorageType::GpWord,
-                    addr: MachineAddr { base, offset: 4 },
-                    width: MachineMemWidth::U32,
-                    src: MachineValue::Imm64(0),
-                },
-            });
-        } else {
-            self.emit_machine_inst(MachineInst {
-                kind: MachineInstKind::Store {
-                    ty: MachineStorageType::GpI64,
-                    addr: MachineAddr { base, offset: 0 },
-                    width: MachineMemWidth::U64,
-                    src: MachineValue::Imm64(0),
-                },
-            });
-        }
         Ok(())
     }
 }

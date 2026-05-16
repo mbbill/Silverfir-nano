@@ -373,6 +373,53 @@ fn loop_interior_state_blocks_keep_hot_locals_for_later_dispatch_bodies() {
 }
 
 #[test]
+fn region_solver_keeps_higher_value_stable_layout_when_child_capacity_competes() {
+    // Two child loop regions share one effective cache lane. The second loop
+    // reads local2 more often than local1. The solver must let capacity prices
+    // select the higher-value stable resident instead of reconstructing a
+    // weaker local from a zero-price extraction.
+    let semantic = i32_program(
+        3,
+        1,
+        0,
+        collections::vec![
+            op(SemanticOpKind::Loop {
+                params: 0,
+                results: 0,
+            }),
+            op(SemanticOpKind::End),
+            op(SemanticOpKind::Loop {
+                params: 0,
+                results: 0,
+            }),
+            op(SemanticOpKind::LocalGet { idx: 1 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::LocalGet { idx: 1 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::LocalGet { idx: 2 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::LocalGet { idx: 2 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::LocalGet { idx: 2 }),
+            prim(PrimitiveOpKind::Drop),
+            op(SemanticOpKind::End),
+            op(SemanticOpKind::ReturnVoid),
+        ],
+    );
+
+    let pipeline = plan_i32_program(&semantic, 2, 0);
+    let slot1 = pipeline.frame.local_slot(1);
+    let slot2 = pipeline.frame.local_slot(2);
+    let second_loop_body = block_for_semantic_index(&pipeline.cfg, 3);
+    let entry = &pipeline.planner.block_open(second_loop_body).cached_locals;
+
+    assert!(
+        entry.contains(&slot2) && !entry.contains(&slot1),
+        "the effective one-lane layout should choose the higher-value local2, not the weaker local1; entry={entry:?}"
+    );
+}
+
+#[test]
 fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair() {
     // The loop body writes local0 before any read and then reads it later in
     // the same iteration. Finalized entry should therefore keep local0 hot,

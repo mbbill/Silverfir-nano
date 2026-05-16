@@ -202,7 +202,7 @@ fn solve_bank(
         .map(|_| collections::vec![false; regions.nodes.len()])
         .collect::<collections::Vec<_>>();
 
-    for _ in 0..PRICE_ITERS {
+    for iter in 0..PRICE_ITERS {
         let mut demand = collections::vec![0usize; regions.nodes.len()];
         for (slot_pos, &slot_index) in slots.iter().enumerate() {
             compute_slot_dp(
@@ -231,12 +231,16 @@ fn solve_bank(
         for region_id in 0..regions.nodes.len() {
             let cap = capacities[region_id];
             let overload = demand[region_id] as isize - cap as isize;
-            let step = if cap == 0 { 1.0 } else { 1.0 / cap as f64 };
+            let damping = 1.0 / (iter + 2) as f64;
+            let step = if cap == 0 {
+                damping
+            } else {
+                damping / cap as f64
+            };
             lambdas[region_id] = (lambdas[region_id] + step * overload as f64).max(0.0);
         }
     }
 
-    let zero_lambdas = collections::vec![0.0; regions.nodes.len()];
     for (slot_pos, &slot_index) in slots.iter().enumerate() {
         compute_slot_dp(
             slot_index,
@@ -244,7 +248,7 @@ fn solve_bank(
             regions,
             benefit,
             call_tax,
-            &zero_lambdas,
+            &lambdas,
             &mut slot_dps[slot_pos],
         );
     }
@@ -325,9 +329,7 @@ fn extract_feasible_states(
     let mut values = collections::vec![collections::vec![neg_inf; cap + 1]; bank_slots.len() + 1];
     let mut take = collections::vec![collections::vec![false; cap + 1]; bank_slots.len() + 1];
 
-    for used in 0..=cap {
-        values[0][used] = 0.0;
-    }
+    values[0][0] = 0.0;
 
     for (item_index, &slot_index) in bank_slots.iter().enumerate() {
         let weight = local_meta[slot_index].units;
@@ -563,4 +565,76 @@ fn compute_block_call_counts(
                 .count() as u32
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn feasible_extraction_backtracks_the_best_capacity_choice() {
+        let regions = RegionTree {
+            nodes: collections::vec![
+                RegionNode {
+                    children: collections::vec![1, 2],
+                    entry_freq: 1.0,
+                    exit_freq: 1.0,
+                    gp_capacity: 1,
+                    ..RegionNode::default()
+                },
+                RegionNode {
+                    entry_freq: 1.0,
+                    exit_freq: 1.0,
+                    gp_capacity: 1,
+                    ..RegionNode::default()
+                },
+                RegionNode {
+                    entry_freq: 1.0,
+                    exit_freq: 1.0,
+                    gp_capacity: 1,
+                    ..RegionNode::default()
+                },
+            ],
+            owner_by_block: collections::Vec::new(),
+        };
+        let local_meta = collections::vec![
+            LocalMeta {
+                bank: Bank::Gp,
+                units: 1,
+            },
+            LocalMeta {
+                bank: Bank::Gp,
+                units: 1,
+            },
+            LocalMeta {
+                bank: Bank::Gp,
+                units: 1,
+            },
+        ];
+        let benefit = collections::vec![
+            collections::vec![0.0, 0.0, 0.0],
+            collections::vec![0.0, 0.0, 0.0],
+            collections::vec![0.0, 2.0, 3.0],
+        ];
+        let call_tax = collections::vec![
+            collections::vec![0.0, 0.0, 0.0],
+            collections::vec![0.0, 0.0, 0.0],
+            collections::vec![0.0, 0.0, 0.0],
+        ];
+        let mut selected = collections::vec![collections::vec![false; 3]; 3];
+
+        solve_bank(
+            Bank::Gp,
+            &regions,
+            &local_meta,
+            &benefit,
+            &call_tax,
+            &mut selected,
+        );
+
+        assert!(
+            selected.iter().all(|region| region[2] && !region[1]),
+            "the one-slot plan should carry the higher-value local2, not reconstruct the weaker local1; selected={selected:?}"
+        );
+    }
 }

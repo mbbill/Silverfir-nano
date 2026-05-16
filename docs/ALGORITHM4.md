@@ -284,14 +284,18 @@ After solving all locals at the current `λ`:
 ```text
 demand[R]   = Σ_L units(L) · x[R,L]
 overload[R] = demand[R] − cap(R)
-λ[R]        = max(0, λ[R] + step · overload[R])
-step        = 1.0 / cap(R)
+λ[R]        = max(0, λ[R] + step(iter, R) · overload[R])
+step(iter,R)= (1.0 / (iter + 2)) / max(1, cap(R))
 ```
 
 Repeat Steps 4–5 for a small number of iterations. Convergence is fast
 because the region tree is small (typically 5–20 nodes), each local's DP is
 `O(regions)`, and most locals have clear benefit rankings with few on the
 margin.
+
+The step is intentionally damped. With an undamped `1 / cap(R)` step, tiny
+regions can oscillate between overfull and empty and the final iteration can
+land on a zero-price state that ignores capacity competition.
 
 *Status.* The current implementation uses a fixed `PRICE_ITERS = 12`.
 
