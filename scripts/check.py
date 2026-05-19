@@ -227,7 +227,7 @@ def reexec_in_wsl(argv: Sequence[str]) -> int:
 
     print(f"Silverfir check: native Windows detected; delegating to WSL at {linux_root}", flush=True)
     try:
-        completed = subprocess.run(cmd, check=False)
+        completed = subprocess.run(cmd, shell=False, check=False)
     except OSError as exc:
         print(f"Silverfir check: failed to launch WSL: {exc}", file=sys.stderr)
         return 1
