@@ -57,7 +57,7 @@ jobs:
         # toolchain used by the project's `scripts/zig-riscv32-linux-musl-cc.sh`.
         uses: mlugg/setup-zig@v1
         with:
-          version: 0.15.2
+          version: 0.14.0
 
       - name: Run check.py full --all-targets
         run: python3 scripts/check.py full --install-targets --all-targets

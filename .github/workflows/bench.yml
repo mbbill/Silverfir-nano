@@ -165,7 +165,7 @@ jobs:
 
       - uses: mlugg/setup-zig@v1
         with:
-          version: 0.15.2
+          version: 0.14.0
 
       - name: Build sf-nano-cli (riscv32, release, jit, build-std)
         run: |
