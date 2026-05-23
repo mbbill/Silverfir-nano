@@ -41,7 +41,24 @@ pub(crate) fn build_plan(
     // The lightweight pass is the only pass that needs to simulate every
     // semantic op boundary. It keeps full EntryState only at CFG block entries,
     // not at every semantic op.
-    let lightweight = compute_lightweight_plan(semantic, cfg, config.gp_unit_bytes);
+    let mut lightweight = compute_lightweight_plan(semantic, cfg, config.gp_unit_bytes);
+    // Lift entry-block peak pressure to cover incoming-param register
+    // occupancy. The stack-pressure simulation above tracks the operand
+    // stack only; function params arrive in caller-set GP/FP arg lanes and
+    // are live in those regs until the body consumes them. Without this
+    // lift, cap(R_root) overshoots on arches with tight GP budgets — on
+    // x86_64 (7 allocatable, 4 GP arg lanes) ALGORITHM4 was selecting
+    // residents the machine layer could not bind, surfacing as the
+    // `no free cache register` failure on coremark-class functions.
+    let (entry_gp_param_units, entry_fp_param_units) =
+        entry_block_param_register_footprint(semantic, &config);
+    let entry_block = cfg.entry.as_usize();
+    if let Some(slot) = lightweight.peak_gp.get_mut(entry_block) {
+        *slot = (*slot).max(entry_gp_param_units);
+    }
+    if let Some(slot) = lightweight.peak_fp.get_mut(entry_block) {
+        *slot = (*slot).max(entry_fp_param_units);
+    }
     let block_local_summaries = analyze_block_local_summaries(semantic, cfg, frame);
 
     let block_entry_cached_locals = solve_public_cache_sets(
@@ -514,6 +531,48 @@ pub(crate) struct LightweightPlanOutput {
     pub peak_fp: collections::Vec<usize>,
     /// Per-block entry `EntryState` with full `stack_types` for spilled value fills.
     pub block_entries: collections::Vec<EntryState>,
+}
+
+/// Simulate the backend's GP/FP arg-lane assignment to compute how many
+/// register units are consumed by incoming params at function entry.
+///
+/// Each param consumes a GP or FP arg lane based on its type; once the
+/// configured arg-lane pool is exhausted, the remaining params go to the
+/// frame and do not occupy registers. The returned counts are the entry
+/// block's persistent register-param footprint that must be added to the
+/// transient stack pressure when computing region capacity.
+fn entry_block_param_register_footprint(
+    semantic: &SemanticProgram,
+    config: &BackendConfig,
+) -> (usize, usize) {
+    let param_count = usize::from(semantic.params).min(semantic.local_types.len());
+    let mut gp_used = 0usize;
+    let mut fp_used = 0usize;
+    let gp_arg_lanes = usize::from(config.gp_arg_lanes);
+    let fp_arg_lanes = usize::from(config.fp_arg_lanes);
+    let gp_unit_bytes = config.gp_unit_bytes;
+    for ty in &semantic.local_types[..param_count] {
+        match ty {
+            ValueType::F32 | ValueType::F64 | ValueType::V128 => {
+                if fp_used < fp_arg_lanes {
+                    fp_used += 1;
+                }
+            }
+            ValueType::I64 if gp_unit_bytes < 8 => {
+                // i64 on 32-bit GP consumes a pair of arg lanes; if either
+                // half spills, the param goes to the frame entirely.
+                if gp_used + 2 <= gp_arg_lanes {
+                    gp_used += 2;
+                }
+            }
+            _ => {
+                if gp_used < gp_arg_lanes {
+                    gp_used += 1;
+                }
+            }
+        }
+    }
+    (gp_used, fp_used)
 }
 
 /// Compute per-op compact entry points and per-block peak transient pressure
