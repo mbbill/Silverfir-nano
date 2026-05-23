@@ -1053,8 +1053,77 @@ impl<'a> BlockLowerContext<'a> {
         if let Some(binding) = self.find_cache_binding(index, None)? {
             return Ok(binding);
         }
-        Err(WasmError::internal("no free cache register available for cached local in block b (live_values=, bound_caches=)"))
+        self.dump_cache_binding_failure(index, preferred_preserved);
+        Err(WasmError::internal(
+            "no free cache register available for cached local; see stderr regalloc-fail dump",
+        ))
     }
+
+    /// Print register-allocator state at the moment `allocate_cache_binding`
+    /// gives up. Only emits on hosted builds; bare-metal builds compile this
+    /// out. The dump lists each allocatable register and the constraint(s)
+    /// that mark it unavailable, plus the relevant per-index state.
+    #[cfg(sf_has_std)]
+    fn dump_cache_binding_failure(&self, index: usize, preferred_preserved: bool) {
+        let ty = self.cached_locals.get(index).map(|c| c.ty);
+        let entry_param = self
+            .entry_cache_params
+            .iter()
+            .find(|entry| usize::from(entry.cached_index) == index)
+            .map(|entry| (entry.regs.lo, entry.regs.hi));
+        std::eprintln!(
+            "[regalloc-fail] cached_local index={} ty={:?} preferred_preserved={} entry_param={:?} total_cached_locals={}",
+            index,
+            ty,
+            preferred_preserved,
+            entry_param,
+            self.cached_locals.len(),
+        );
+        std::eprintln!(
+            "[regalloc-fail] gp_allocatable_count={} fp_allocatable_count={} gp_reg_width={}",
+            self.regfile.gp_allocatable_count(),
+            self.regfile.fp_allocatable_count(),
+            self.gp_reg_width,
+        );
+        let is_fp_ty = ty.map(|t| t.is_fp()).unwrap_or(false);
+        if is_fp_ty {
+            for fp_index in 0..self.regfile.fp_allocatable_count() {
+                if let Some(reg) =
+                    super::lower_module::preferred_fp_dynamic_reg(self.regfile, fp_index)
+                {
+                    self.dump_reg_constraints("fp", fp_index, reg);
+                }
+            }
+        } else {
+            for gp_index in 0..self.regfile.gp_allocatable_count() {
+                if let Some(reg) =
+                    super::lower_module::preferred_gp_dynamic_reg(self.regfile, gp_index)
+                {
+                    self.dump_reg_constraints("gp", gp_index, reg);
+                }
+            }
+        }
+    }
+
+    #[cfg(sf_has_std)]
+    fn dump_reg_constraints(&self, kind: &str, ordinal: usize, reg: MachineReg) {
+        let bound_cache = self.is_bound_cache_reg(reg);
+        let param = self.incoming_param_owns_reg(reg);
+        let value = self.value_location_owns_reg(reg);
+        let linear = self
+            .dynamic_index(reg)
+            .ok()
+            .map(|i| self.linear_value_occupied(i))
+            .unwrap_or(true);
+        let preserved = self.regfile.is_preserved_dynamic_reg(reg);
+        std::eprintln!(
+            "[regalloc-fail]   {}[{}]={:?} preserved={} unavail: bound_cache={} param={} value={} linear={}",
+            kind, ordinal, reg, preserved, bound_cache, param, value, linear,
+        );
+    }
+
+    #[cfg(not(sf_has_std))]
+    fn dump_cache_binding_failure(&self, _index: usize, _preferred_preserved: bool) {}
 
     fn find_cache_binding(
         &self,
