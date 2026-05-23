@@ -10,6 +10,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # Cross-arch QEMU/RV32 runs are owned by check-linux.yml (the x64 job).
+  # This arm64 Linux job validates native arm64 only; defer the rest.
+  SF_CHECK_SKIP_CROSS_RUNTIME: "1"
+
 jobs:
   check:
     name: full (arm64 native)
