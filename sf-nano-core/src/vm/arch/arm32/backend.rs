@@ -551,6 +551,11 @@ impl<'a> Arm32Backend<'a> {
 
     /// Save the fixed MachineIR roles plus both backend-owned GP scratches
     /// into helper-scratch slots 5..=7 without perturbing `SP`.
+    ///
+    /// Slots +56/+60 always hold R12/R14 by physical identity. The scratch
+    /// pool rotates allocations, so taking "whichever scratch comes first"
+    /// here and again in the restore would map +56 and +60 to a different
+    /// pair of regs on the way out, swapping the two saved values.
     fn emit_fixed_helper_state_save(&mut self, helper_scratch: MachineFrameRegion) {
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         let base_byte_offset = i32::from(helper_scratch.base_slot) * 8;
@@ -567,16 +572,12 @@ impl<'a> Arm32Backend<'a> {
         self.core
             .text
             .emit_u32(enc::str_imm(Arm32Reg::R11, fp_reg, base_byte_offset + 52));
-        {
-            let s0 = self.gp_scratch.scoped_alloc();
-            self.core
-                .text
-                .emit_u32(enc::str_imm(*s0, fp_reg, base_byte_offset + 56));
-            let s1 = self.gp_scratch.scoped_alloc();
-            self.core
-                .text
-                .emit_u32(enc::str_imm(*s1, fp_reg, base_byte_offset + 60));
-        }
+        self.core
+            .text
+            .emit_u32(enc::str_imm(Arm32Reg::R12, fp_reg, base_byte_offset + 56));
+        self.core
+            .text
+            .emit_u32(enc::str_imm(Arm32Reg::R14, fp_reg, base_byte_offset + 60));
     }
 
     fn emit_fixed_helper_state_restore(&mut self, helper_scratch: MachineFrameRegion) {
@@ -595,16 +596,12 @@ impl<'a> Arm32Backend<'a> {
         self.core
             .text
             .emit_u32(enc::ldr_imm(Arm32Reg::R11, fp_reg, base_byte_offset + 52));
-        {
-            let s0 = self.gp_scratch.scoped_alloc();
-            let s1 = self.gp_scratch.scoped_alloc();
-            self.core
-                .text
-                .emit_u32(enc::ldr_imm(*s0, fp_reg, base_byte_offset + 56));
-            self.core
-                .text
-                .emit_u32(enc::ldr_imm(*s1, fp_reg, base_byte_offset + 60));
-        }
+        self.core
+            .text
+            .emit_u32(enc::ldr_imm(Arm32Reg::R12, fp_reg, base_byte_offset + 56));
+        self.core
+            .text
+            .emit_u32(enc::ldr_imm(Arm32Reg::R14, fp_reg, base_byte_offset + 60));
     }
 
     /// `push {r5}` — save the dynamic GP register we're about to use as a
