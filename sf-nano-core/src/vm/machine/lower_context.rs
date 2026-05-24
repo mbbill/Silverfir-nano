@@ -649,23 +649,7 @@ impl<'a> BlockLowerContext<'a> {
         index: usize,
     ) -> Result<BoundCachedLocal, WasmError> {
         if self.cache_bindings.get(index).copied().flatten().is_none() {
-            let preferred = match self.allocate_cache_binding(index) {
-                Ok(binding) => binding,
-                Err(_) if self.has_register_only_params() => {
-                    // Allocator ran out of free lanes but some incoming params
-                    // still own their arg-lane regs because the body hasn't
-                    // referenced their slots yet. Most commonly this happens at
-                    // a region boundary where cleanup folded a boundary-repair
-                    // block into the predecessor (ALGORITHM4 sized cap(R) for
-                    // one region but the merged block needs the union of both
-                    // regions' resident sets, plus the persistent param
-                    // occupancy). Spill the unread params to frame to free
-                    // their lanes, then retry the binding once.
-                    self.publish_register_params_to_frame()?;
-                    self.allocate_cache_binding(index)?
-                }
-                Err(e) => return Err(e),
-            };
+            let preferred = self.allocate_cache_binding(index)?;
             let slot = self
                 .cache_bindings
                 .get_mut(index)
@@ -674,12 +658,6 @@ impl<'a> BlockLowerContext<'a> {
         }
         self.bound_cached_local(index)
             .ok_or_else(|| WasmError::internal("cached local binding missing after assignment"))
-    }
-
-    fn has_register_only_params(&self) -> bool {
-        self.param_slot_state
-            .iter()
-            .any(|state| matches!(state, ParamSlotState::RegisterOnly { .. }))
     }
 
     pub(super) fn bind_cached_local_to_regs(
@@ -1293,21 +1271,8 @@ impl<'a> BlockLowerContext<'a> {
             if self.is_fp_reg(lo) || !self.is_linear_value_reg(lo) {
                 return Ok(None);
             }
-            let hi = match self.first_free_linear_value_reg(MachineStorageType::GpWord) {
-                Some(reg) => reg,
-                None if self.has_register_only_params() => {
-                    // Mirror alloc_i64_value_pair's fallback: under high
-                    // pair pressure (armv7-a + i64-heavy SSA), free up the
-                    // arg lanes still owned by unread incoming params.
-                    self.publish_register_params_to_frame()?;
-                    self.first_free_linear_value_reg(MachineStorageType::GpWord)
-                        .ok_or_else(|| {
-                            WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value")
-                        })?
-                }
-                None => {
-                    return Err(WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value"));
-                }
+            let Some(hi) = self.first_free_linear_value_reg(MachineStorageType::GpWord) else {
+                return Err(WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value"));
             };
             self.values[index].value = value;
             self.values[index].hi_reg = Some(hi);
