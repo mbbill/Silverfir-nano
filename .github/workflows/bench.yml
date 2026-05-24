@@ -1,16 +1,18 @@
 name: bench
 
 on:
+  pull_request:
   push:
     branches: [main]
   workflow_dispatch:
 
-# Bench only the tip of each push event. Multi-commit rebase pushes record one
-# data point on the final tip; squash-merged PRs are one-commit-per-push, so
-# every landed PR shows up as its own data point.
+# Bench acts as both regression-tracking history (on push: main) and per-PR
+# validation (on pull_request). Cancel older in-flight PR runs when a new
+# push arrives to keep the queue small; main pushes always run to completion
+# so every landed PR shows up as its own data point in the history.
 concurrency:
   group: bench-${{ github.ref }}
-  cancel-in-progress: false
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: write
