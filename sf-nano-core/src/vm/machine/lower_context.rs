@@ -1271,8 +1271,21 @@ impl<'a> BlockLowerContext<'a> {
             if self.is_fp_reg(lo) || !self.is_linear_value_reg(lo) {
                 return Ok(None);
             }
-            let Some(hi) = self.first_free_linear_value_reg(MachineStorageType::GpWord) else {
-                return Err(WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value"));
+            // Match alloc_i64_value_pair's existing pattern (lower_regalloc.rs:562):
+            // if no free GP lane is available for the hi half but incoming params
+            // still own their arg-lane regs, publish those params to frame to
+            // free the lanes, then retry. This is transient-SSA-value allocation
+            // (not cached-local binding), so the publish is an ABI-publication
+            // timing decision rather than a register-allocation invention.
+            let hi = match self.first_free_linear_value_reg(MachineStorageType::GpWord) {
+                Some(reg) => reg,
+                None => {
+                    self.publish_register_params_to_frame()?;
+                    self.first_free_linear_value_reg(MachineStorageType::GpWord)
+                        .ok_or_else(|| {
+                            WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value")
+                        })?
+                }
             };
             self.values[index].value = value;
             self.values[index].hi_reg = Some(hi);
