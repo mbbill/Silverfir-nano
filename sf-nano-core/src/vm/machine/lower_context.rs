@@ -649,7 +649,23 @@ impl<'a> BlockLowerContext<'a> {
         index: usize,
     ) -> Result<BoundCachedLocal, WasmError> {
         if self.cache_bindings.get(index).copied().flatten().is_none() {
-            let preferred = self.allocate_cache_binding(index)?;
+            let preferred = match self.allocate_cache_binding(index) {
+                Ok(binding) => binding,
+                Err(_) if self.has_register_only_params() => {
+                    // Allocator ran out of free lanes but some incoming params
+                    // still own their arg-lane regs because the body hasn't
+                    // referenced their slots yet. Most commonly this happens at
+                    // a region boundary where cleanup folded a boundary-repair
+                    // block into the predecessor (ALGORITHM4 sized cap(R) for
+                    // one region but the merged block needs the union of both
+                    // regions' resident sets, plus the persistent param
+                    // occupancy). Spill the unread params to frame to free
+                    // their lanes, then retry the binding once.
+                    self.publish_register_params_to_frame()?;
+                    self.allocate_cache_binding(index)?
+                }
+                Err(e) => return Err(e),
+            };
             let slot = self
                 .cache_bindings
                 .get_mut(index)
@@ -658,6 +674,12 @@ impl<'a> BlockLowerContext<'a> {
         }
         self.bound_cached_local(index)
             .ok_or_else(|| WasmError::internal("cached local binding missing after assignment"))
+    }
+
+    fn has_register_only_params(&self) -> bool {
+        self.param_slot_state
+            .iter()
+            .any(|state| matches!(state, ParamSlotState::RegisterOnly { .. }))
     }
 
     pub(super) fn bind_cached_local_to_regs(
@@ -1054,7 +1076,7 @@ impl<'a> BlockLowerContext<'a> {
             return Ok(binding);
         }
         Err(WasmError::internal(
-            "no free cache register: rewrite emitted more concurrent cache slots than the region's resident-set capacity",
+            "no free cache register: cache demand exceeds available dynamic lanes even after spilling register params",
         ))
     }
 
