@@ -1293,8 +1293,21 @@ impl<'a> BlockLowerContext<'a> {
             if self.is_fp_reg(lo) || !self.is_linear_value_reg(lo) {
                 return Ok(None);
             }
-            let Some(hi) = self.first_free_linear_value_reg(MachineStorageType::GpWord) else {
-                return Err(WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value"));
+            let hi = match self.first_free_linear_value_reg(MachineStorageType::GpWord) {
+                Some(reg) => reg,
+                None if self.has_register_only_params() => {
+                    // Mirror alloc_i64_value_pair's fallback: under high
+                    // pair pressure (armv7-a + i64-heavy SSA), free up the
+                    // arg lanes still owned by unread incoming params.
+                    self.publish_register_params_to_frame()?;
+                    self.first_free_linear_value_reg(MachineStorageType::GpWord)
+                        .ok_or_else(|| {
+                            WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value")
+                        })?
+                }
+                None => {
+                    return Err(WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value"));
+                }
             };
             self.values[index].value = value;
             self.values[index].hi_reg = Some(hi);
