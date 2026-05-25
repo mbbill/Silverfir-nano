@@ -10,6 +10,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+env:
+  # Cross-arch QEMU/RV32 runs are owned by check-linux.yml (the x64 job).
+  # This arm64 Linux job validates native arm64 only; defer the rest.
+  SF_CHECK_SKIP_CROSS_RUNTIME: "1"
+
 jobs:
   check:
     name: full (arm64 native)
@@ -43,7 +48,11 @@ jobs:
         uses: Swatinem/rust-cache@v2
 
       - name: Run check.py full
-        run: python3 scripts/check.py full --install-targets
+        # --default-targets keeps the cargo-check target matrix to the
+        # host-friendly rows. The cross-arch rows (armv7/riscv64/riscv32) are
+        # owned by check-linux.yml, where the qemu-user-static + Zig toolchain
+        # is installed.
+        run: python3 scripts/check.py full --install-targets --default-targets
 
       - name: Upload check logs on failure
         if: failure()

@@ -15,7 +15,7 @@ use crate::vm::{
             MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
             MachineModule, MachineReg, MachineRegOwner, MachineResultDst, MachineSign,
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
-            MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
+            MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
         },
         LowerFunctionInput, LowerModuleInput,
     },
@@ -6112,6 +6112,148 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
     }
     assert!(saw_offset_wrap, "missing offset wraparound trap");
     assert!(saw_access_wrap, "missing access-size wraparound trap");
+}
+
+#[test]
+fn gp32_mem0_store_does_not_reuse_live_source_as_address_scratch() {
+    let frame = plan_frame_layout(0, 1, 2);
+    let ssa = {
+        let mut ssa = SsaProgram::default();
+        ssa.entry = SsaTarget(0);
+        ssa.local_slot_types = collections::vec![];
+        ssa.local_slot_info = collections::vec![];
+        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_cfg_origins = collections::vec![];
+        ssa.value_types = collections::vec![];
+        ssa.value_sink_local = collections::vec![];
+        let mut block = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::Return { results: None },
+        };
+
+        let i32_const = |ssa: &mut SsaProgram, value, result| {
+            let prim = ssa
+                .intern_primitive(PrimitiveOpKind::I32Const { value })
+                .unwrap();
+            SsaInst::primitive(
+                prim,
+                SsaValue(result),
+                [SsaOperand::NONE, SsaOperand::NONE],
+                0,
+            )
+        };
+        block.ops.push(i32_const(&mut ssa, 8, 0));
+        let i64_zero = ssa
+            .intern_primitive(PrimitiveOpKind::I64Const { value: 0 })
+            .unwrap();
+        block.ops.push(SsaInst::primitive(
+            i64_zero,
+            SsaValue(1),
+            [SsaOperand::NONE, SsaOperand::NONE],
+            0,
+        ));
+        for (result, value) in [(2, 11), (3, 13), (4, 17)] {
+            block.ops.push(i32_const(&mut ssa, value, result));
+        }
+
+        let store64 = ssa
+            .intern_primitive(PrimitiveOpKind::I64Store {
+                offset: 44,
+                memidx: 0,
+            })
+            .unwrap();
+        block.ops.push(SsaInst::primitive(
+            store64,
+            SsaValue::NONE,
+            [
+                SsaOperand::value(SsaValue(0)),
+                SsaOperand::value(SsaValue(1)),
+            ],
+            0,
+        ));
+
+        let add = ssa.intern_primitive(PrimitiveOpKind::I32Add).unwrap();
+        block.ops.push(SsaInst::primitive(
+            add,
+            SsaValue(6),
+            [
+                SsaOperand::value(SsaValue(2)),
+                SsaOperand::value(SsaValue(3)),
+            ],
+            0,
+        ));
+        block.ops.push(SsaInst::primitive(
+            add,
+            SsaValue(8),
+            [
+                SsaOperand::value(SsaValue(6)),
+                SsaOperand::value(SsaValue(4)),
+            ],
+            0,
+        ));
+        block
+            .ops
+            .push(SsaInst::local_set_slot(frame.local_slot(0), SsaValue(8)));
+        ssa.blocks.push(block);
+        ssa
+    };
+
+    let backend = gp32_backend_config(0, 6, 0, 2);
+    let lowered = lower_module(LowerModuleInput {
+        backend,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("32-bit mem0 stores should lower without aliasing address scratch and source");
+
+    let ops = &lowered.module.functions[0].program.blocks[0].ops;
+    let mut checked_mem0_store = false;
+    for pair in ops.windows(2) {
+        let MachineInstKind::IntBinary {
+            op: MachineIntBinaryOp::Add,
+            dst,
+            lhs: MachineValue::Reg(lhs),
+            rhs: MachineValue::Reg(rhs),
+            ..
+        } = pair[0].kind
+        else {
+            continue;
+        };
+        if lhs != MACHINE_MEM0_BASE_REG {
+            continue;
+        }
+        if dst != rhs {
+            continue;
+        }
+        if let MachineInstKind::Store {
+            addr,
+            src: MachineValue::Reg(src),
+            ..
+        } = pair[1].kind
+        {
+            checked_mem0_store = true;
+            assert_ne!(
+                src, addr.base,
+                "mem0 store clobbered its source by reusing it as the effective-address scratch"
+            );
+        }
+    }
+    assert!(
+        checked_mem0_store,
+        "test did not exercise a direct mem0 store after effective-address materialization"
+    );
+    assert_valid_32bit_gp_target(&lowered.module, backend);
 }
 
 #[cfg(sf_has_guard_pages)]

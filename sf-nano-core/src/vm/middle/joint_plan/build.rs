@@ -41,7 +41,24 @@ pub(crate) fn build_plan(
     // The lightweight pass is the only pass that needs to simulate every
     // semantic op boundary. It keeps full EntryState only at CFG block entries,
     // not at every semantic op.
-    let lightweight = compute_lightweight_plan(semantic, cfg, config.gp_unit_bytes);
+    let mut lightweight = compute_lightweight_plan(semantic, cfg, config.gp_unit_bytes);
+    // Lift entry-block peak pressure to cover incoming-param register
+    // occupancy. The stack-pressure simulation above tracks the operand
+    // stack only; function params arrive in caller-set GP/FP arg lanes and
+    // are live in those regs until the body consumes them. Without this
+    // lift, cap(R_root) overshoots on arches with tight GP budgets — on
+    // x86_64 (7 allocatable, 4 GP arg lanes) ALGORITHM4 was selecting
+    // residents the machine layer could not bind, surfacing as the
+    // `no free cache register` failure on coremark-class functions.
+    let (entry_gp_param_units, entry_fp_param_units) =
+        entry_block_param_register_footprint(semantic, &config);
+    let entry_block = cfg.entry.as_usize();
+    if let Some(slot) = lightweight.peak_gp.get_mut(entry_block) {
+        *slot = (*slot).max(entry_gp_param_units);
+    }
+    if let Some(slot) = lightweight.peak_fp.get_mut(entry_block) {
+        *slot = (*slot).max(entry_fp_param_units);
+    }
     let block_local_summaries = analyze_block_local_summaries(semantic, cfg, frame);
 
     let block_entry_cached_locals = solve_public_cache_sets(
@@ -516,6 +533,52 @@ pub(crate) struct LightweightPlanOutput {
     pub block_entries: collections::Vec<EntryState>,
 }
 
+/// Simulate the backend's GP/FP arg-lane assignment to compute how many
+/// register units are consumed by incoming params at function entry.
+///
+/// The machine ABI keeps only a contiguous suffix of params in registers so
+/// the frame prefix remains canonical. Walk from the last param backward and
+/// stop when a param cannot fit in the configured arg lanes, matching
+/// `compute_param_locs`.
+fn entry_block_param_register_footprint(
+    semantic: &SemanticProgram,
+    config: &BackendConfig,
+) -> (usize, usize) {
+    let param_count = usize::from(semantic.params).min(semantic.local_types.len());
+    let mut gp_used = 0usize;
+    let mut fp_used = 0usize;
+    let gp_arg_lanes = usize::from(config.gp_arg_lanes);
+    let fp_arg_lanes = usize::from(config.fp_arg_lanes);
+    let gp_unit_bytes = config.gp_unit_bytes;
+    for param_index in (0..param_count).rev() {
+        let ty = semantic.local_types[param_index];
+        match ty {
+            ValueType::V128 => break,
+            ValueType::F32 | ValueType::F64 => {
+                if fp_used >= fp_arg_lanes {
+                    break;
+                }
+                fp_used += 1;
+            }
+            ValueType::I64 if gp_unit_bytes < 8 => {
+                // i64 on 32-bit GP consumes a pair of arg lanes; if either
+                // half spills, the param goes to the frame entirely.
+                if gp_used + 2 > gp_arg_lanes {
+                    break;
+                }
+                gp_used += 2;
+            }
+            _ => {
+                if gp_used >= gp_arg_lanes {
+                    break;
+                }
+                gp_used += 1;
+            }
+        }
+    }
+    (gp_used, fp_used)
+}
+
 /// Compute per-op compact entry points and per-block peak transient pressure
 /// using a lightweight stack simulation.
 ///
@@ -728,5 +791,67 @@ fn lightweight_spill_all_except_top(state: &mut PrepareState, keep_top: u16) {
     let count = live_count.saturating_sub(keep_top);
     if count > 0 {
         state.spill_depth += count;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn semantic_with_params(types: &[ValueType]) -> SemanticProgram {
+        SemanticProgram {
+            params: types.len() as u16,
+            local_count: types.len() as u16,
+            local_types: types.iter().copied().collect(),
+            ..SemanticProgram::default()
+        }
+    }
+
+    fn config_with_arg_lanes(
+        gp_unit_bytes: u8,
+        gp_arg_lanes: u8,
+        fp_arg_lanes: u8,
+    ) -> BackendConfig {
+        BackendConfig::with_volatility(
+            gp_unit_bytes,
+            gp_arg_lanes,
+            0,
+            0,
+            fp_arg_lanes,
+            0,
+            gp_arg_lanes,
+            fp_arg_lanes,
+            false,
+            0,
+        )
+    }
+
+    #[test]
+    fn entry_param_footprint_uses_backend_suffix_selection_for_gp32_pairs() {
+        let semantic = semantic_with_params(&[ValueType::I32, ValueType::I64, ValueType::I64]);
+        let config = config_with_arg_lanes(4, 4, 0);
+
+        assert_eq!(
+            entry_block_param_register_footprint(&semantic, &config),
+            (4, 0),
+            "the two trailing i64 params occupy all four GP arg lanes"
+        );
+    }
+
+    #[test]
+    fn entry_param_footprint_stops_at_frame_only_param_in_suffix() {
+        let semantic = semantic_with_params(&[
+            ValueType::I32,
+            ValueType::V128,
+            ValueType::I32,
+            ValueType::F64,
+        ]);
+        let config = config_with_arg_lanes(8, 4, 4);
+
+        assert_eq!(
+            entry_block_param_register_footprint(&semantic, &config),
+            (1, 1),
+            "only the contiguous register-param suffix after v128 stays in arg lanes"
+        );
     }
 }

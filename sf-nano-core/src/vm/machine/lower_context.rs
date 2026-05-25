@@ -1053,7 +1053,9 @@ impl<'a> BlockLowerContext<'a> {
         if let Some(binding) = self.find_cache_binding(index, None)? {
             return Ok(binding);
         }
-        Err(WasmError::internal("no free cache register available for cached local in block b (live_values=, bound_caches=)"))
+        Err(WasmError::internal(
+            "middle cache demand exceeded available dynamic lanes after canonical register params were frame-published",
+        ))
     }
 
     fn find_cache_binding(
@@ -1255,6 +1257,11 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     /// Try to reuse a dead scalar candidate's register as the lo half of a new pair.
+    ///
+    /// Returns `Ok(None)` when no free GP lane is available for the hi half,
+    /// letting the caller fall through to `alloc_i64_value_pair`. That path
+    /// owns the single canonical register-param publication retry; if that
+    /// still cannot allocate, the middle-end budget invariant failed.
     pub(super) fn try_reuse_scalar_for_pair(
         &mut self,
         value: SsaValue,
@@ -1270,7 +1277,7 @@ impl<'a> BlockLowerContext<'a> {
                 return Ok(None);
             }
             let Some(hi) = self.first_free_linear_value_reg(MachineStorageType::GpWord) else {
-                return Err(WasmError::internal("prepared SSA-IR exceeded GP dynamic pair budget during native lowering in block b for value"));
+                return Ok(None);
             };
             self.values[index].value = value;
             self.values[index].hi_reg = Some(hi);

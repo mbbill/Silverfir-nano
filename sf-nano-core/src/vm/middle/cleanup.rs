@@ -257,6 +257,22 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
             continue;
         }
 
+        // Boundary-repair blocks emitted by `rewrite/edge.rs` contain only
+        // cache-only ops (LocalEnsureCache / LocalReserveCache / LocalDropCache).
+        // They exist precisely to give the machine layer a fresh
+        // `cache_bindings` slate when crossing a region boundary: each new
+        // block starts with all cache bindings = None. Merging such a
+        // successor into its predecessor makes the merged block need
+        // simultaneous bindings for `pred_exit_cache ∪ succ_ensure_slots`,
+        // which can exceed the configured dynamic-lane budget once entry
+        // register params and transient values are accounted for. Keeping the
+        // repair block separate is the middle-layer mechanism that preserves
+        // the budget proof handed to machine lowering.
+        let succ_ops = &program.blocks[succ_index].ops;
+        if !succ_ops.is_empty() && succ_ops.iter().all(|inst| is_cache_only_op(inst.op)) {
+            continue;
+        }
+
         let Some(subst) = binding_substitution(&program.blocks[succ_index].params, &edge.bindings)
         else {
             continue;

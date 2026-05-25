@@ -51,9 +51,13 @@ jobs:
           sudo apt-get install -y -qq qemu-user-static
 
       - name: Install Zig (RV32 musl C linker)
-        uses: goto-bus-stop/setup-zig@v2
+        # 0.13.0 ships no `lib/libc/musl/crt/riscv32/{crti,crtn}.s`, so the
+        # musl CRT sub-compilation fails for the riscv32gc-unknown-linux-musl
+        # target. 0.15.x has rv32 musl support and matches the local
+        # toolchain used by the project's `scripts/zig-riscv32-linux-musl-cc.sh`.
+        uses: mlugg/setup-zig@v1
         with:
-          version: 0.13.0
+          version: 0.14.0
 
       - name: Run check.py full --all-targets
         run: python3 scripts/check.py full --install-targets --all-targets

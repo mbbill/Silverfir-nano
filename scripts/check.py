@@ -1350,10 +1350,20 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
                 ignore_warnings=True,
             )
 
-        run_x64_spectest(runner, profile_name, extra_args, env)
-        run_riscv64_spectest(runner, profile_name, extra_args, env)
-        run_riscv32_spectest(runner, profile_name, extra_args, env)
-        run_armv7_spectests(runner, profile_name, extra_args, env)
+        # Cross-arch runtime checks. They require QEMU user-mode (or Colima
+        # on macOS) and, for riscv32, a working Zig + nightly Rust. CI jobs
+        # for hosts not provisioned with that tooling set SF_CHECK_SKIP_CROSS_RUNTIME=1
+        # to opt out of these rather than failing on missing prerequisites.
+        if os.environ.get("SF_CHECK_SKIP_CROSS_RUNTIME"):
+            runner.skip(
+                f"run: spectest cross-arch ({profile_name})",
+                "SF_CHECK_SKIP_CROSS_RUNTIME=1: x64/armv7/riscv64/riscv32 runtime checks deferred to the dedicated cross-arch CI job.",
+            )
+        else:
+            run_x64_spectest(runner, profile_name, extra_args, env)
+            run_riscv64_spectest(runner, profile_name, extra_args, env)
+            run_riscv32_spectest(runner, profile_name, extra_args, env)
+            run_armv7_spectests(runner, profile_name, extra_args, env)
 
 
 def run_binary_if_present(
@@ -1683,7 +1693,13 @@ def run_wasitest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
         run_wasitest_host_profile(runner, profile_name, extra_args)
 
     if "release" in profiles:
-        run_wasitest_release_cross_targets(runner, extra_args)
+        if os.environ.get("SF_CHECK_SKIP_CROSS_RUNTIME"):
+            runner.skip(
+                "run: wasitest cross-arch (release)",
+                "SF_CHECK_SKIP_CROSS_RUNTIME=1: x64/armv7/riscv64/riscv32 WASI runs deferred to the dedicated cross-arch CI job.",
+            )
+        else:
+            run_wasitest_release_cross_targets(runner, extra_args)
 
 
 def run_wasitest_host_profile(runner: CheckRunner, profile_name: str, extra_args: Sequence[str]) -> None:

@@ -532,6 +532,9 @@ impl<'a> BlockLowerContext<'a> {
         if let Some(reg) = self.try_value_reg(value) {
             return Ok(reg);
         }
+        // Reclaim lanes whose owning SSA value's last use has passed (see
+        // alloc_i64_value_pair for the same rationale).
+        self.release_dead_values()?;
         let reg = match self.first_free_linear_value_reg(ty) {
             Some(reg) => reg,
             None => {
@@ -555,6 +558,12 @@ impl<'a> BlockLowerContext<'a> {
         if self.try_value_reg(value).is_some() {
             return Err(WasmError::internal("SSA-IR value already has a scalar machine-register mapping; cannot also allocate a pair"));
         }
+
+        // Reclaim any lanes still nominally owned by SSA values whose last
+        // use has already passed. Op-end usually does this, but a primitive
+        // can allocate its result before reaching the op-end release, so
+        // for armv7-a (8 GP, tight) we'd otherwise see false pressure here.
+        self.release_dead_values()?;
 
         let (lo, hi) = match self.first_free_gp_linear_value_pair() {
             Some(regs) => regs,
@@ -735,6 +744,14 @@ impl<'a> BlockLowerContext<'a> {
         &mut self,
         count: usize,
     ) -> Result<collections::Vec<MachineReg>, WasmError> {
+        if let Some(regs) = self.try_borrow_free_gp_dynamic_regs(count) {
+            return Ok(regs);
+        }
+        // Same housekeeping as alloc_*: drop lanes whose owning SSA value
+        // is already dead. Publishing register params only releases values
+        // that already have canonical frame homes; after that, a free-lane
+        // failure is a middle-end budget bug.
+        self.release_dead_values()?;
         if let Some(regs) = self.try_borrow_free_gp_dynamic_regs(count) {
             return Ok(regs);
         }

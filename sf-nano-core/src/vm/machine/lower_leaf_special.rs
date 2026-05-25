@@ -1427,7 +1427,6 @@ impl<'a> BlockLowerContext<'a> {
         };
         let (addr, addr_hi) = self.use_memory_index_word(addr_value)?;
         self.emit_memory_index_high_trap_if_nonzero(addr_hi);
-        let src = self.use_value(src_value)?;
         let access_bytes = spec.access_bytes();
         if spec.memidx == 0 {
             let addr32 = if let Some(addr32) = self.dead_value_reg(addr_value) {
@@ -1437,6 +1436,7 @@ impl<'a> BlockLowerContext<'a> {
             };
             let residual =
                 self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            let src = self.use_value(src_value)?;
             self.emit_machine_ops(
                 self.lower_mem0_store_continuation(addr32, residual, src, spec.ty, spec.width)?,
             );
@@ -1452,6 +1452,7 @@ impl<'a> BlockLowerContext<'a> {
                 addr32,
                 memory_view,
             )?;
+            let src = self.use_value(src_value)?;
             self.emit_machine_ops(self.lower_memory_continuation(
                 spec.memidx,
                 addr32,
@@ -1524,7 +1525,6 @@ impl<'a> BlockLowerContext<'a> {
         };
         let (addr, addr_hi) = self.use_memory_index_word(addr_value)?;
         self.emit_memory_index_high_trap_if_nonzero(addr_hi);
-        let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
         let access_bytes = spec.access_bytes();
         if spec.memidx == 0 {
             let addr32 = if let Some(addr32) = self.dead_value_reg(addr_value) {
@@ -1534,6 +1534,7 @@ impl<'a> BlockLowerContext<'a> {
             };
             let residual =
                 self.emit_mem0_bounds_trap_if(spec.offset, access_bytes, addr, addr32)?;
+            let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
             self.emit_machine_ops(
                 self.lower_mem0_i64_store_continuation(
                     addr32, residual, src_lo, src_hi, spec.width,
@@ -1554,6 +1555,7 @@ impl<'a> BlockLowerContext<'a> {
                 addr32,
                 base,
             )?;
+            let (src_lo, src_hi) = self.use_i64_value_pair(src_value)?;
             self.emit_machine_ops(self.lower_memory_i64_store_continuation(
                 spec.memidx,
                 addr32,
