@@ -1,11 +1,35 @@
-# Silverfir-nano
+<div align="center">
+  <h1>Silverfir-nano</h1>
+  <p><strong>A compact, optimizing WebAssembly 3.0 JIT, from desktop to microcontroller.</strong></p>
 
-## A compact, optimizing WebAssembly 3.0 JIT, from desktop to microcontroller.
+  <p>
+    <a href="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-linux.yml"><img alt="check-linux" src="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-linux.yml/badge.svg?branch=main"></a>
+    <a href="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-linux-arm.yml"><img alt="check-linux-arm" src="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-linux-arm.yml/badge.svg?branch=main"></a>
+    <a href="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-macos.yml"><img alt="check-macos" src="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-macos.yml/badge.svg?branch=main"></a>
+    <a href="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-windows.yml"><img alt="check-windows" src="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-windows.yml/badge.svg?branch=main"></a>
+    <a href="https://github.com/mbbill/Silverfir-nano/actions/workflows/bench.yml"><img alt="bench" src="https://github.com/mbbill/Silverfir-nano/actions/workflows/bench.yml/badge.svg?branch=main"></a>
+  </p>
 
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="assets/highlights-dark.svg">
-  <img src="assets/highlights.svg" alt="Silverfir-nano: Fast, Small, Portable, Full Wasm 3.0, On-device JIT" width="560">
-</picture>
+  <p>
+    <img alt="no_std" src="https://img.shields.io/badge/no__std-alloc%20only-2ea44f">
+    <img alt="WebAssembly 3.0" src="https://img.shields.io/badge/WebAssembly-3.0-654ff0">
+    <img alt="native backends" src="https://img.shields.io/badge/native%20backends-6-f97316">
+    <img alt="license" src="https://img.shields.io/badge/license-MIT%20%2F%20Apache--2.0-blue">
+  </p>
+
+  <p>
+    <a href="#performance-apple-m4">Benchmarks</a> |
+    <a href="#webassembly-compatibility">Wasm compatibility</a> |
+    <a href="#validation">Validation</a> |
+    <a href="docs/COMPILER_PIPELINE.md">Compiler pipeline</a>
+  </p>
+
+  <p>
+    <img src="assets/highlights.svg" alt="Silverfir-nano: Fast, Small, Portable, Full Wasm 3.0, On-device JIT" width="620">
+  </p>
+</div>
+
+## Highlights
 
 Silverfir-nano is a `no_std` WebAssembly JIT engine built to be strong on
 every axis a Wasm runtime is judged on, not just one:
