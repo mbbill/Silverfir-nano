@@ -1054,7 +1054,7 @@ impl<'a> BlockLowerContext<'a> {
             return Ok(binding);
         }
         Err(WasmError::internal(
-            "no free cache register: cache demand exceeds available dynamic lanes even after spilling register params",
+            "middle cache demand exceeded available dynamic lanes after canonical register params were frame-published",
         ))
     }
 
@@ -1260,8 +1260,8 @@ impl<'a> BlockLowerContext<'a> {
     ///
     /// Returns `Ok(None)` when no free GP lane is available for the hi half,
     /// letting the caller fall through to `alloc_i64_value_pair`. That path
-    /// already owns the publish-params-and-retry recovery (one canonical
-    /// pressure-fallback site rather than two).
+    /// owns the single canonical register-param publication retry; if that
+    /// still cannot allocate, the middle-end budget invariant failed.
     pub(super) fn try_reuse_scalar_for_pair(
         &mut self,
         value: SsaValue,

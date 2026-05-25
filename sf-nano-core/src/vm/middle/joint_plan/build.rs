@@ -536,11 +536,10 @@ pub(crate) struct LightweightPlanOutput {
 /// Simulate the backend's GP/FP arg-lane assignment to compute how many
 /// register units are consumed by incoming params at function entry.
 ///
-/// Each param consumes a GP or FP arg lane based on its type; once the
-/// configured arg-lane pool is exhausted, the remaining params go to the
-/// frame and do not occupy registers. The returned counts are the entry
-/// block's persistent register-param footprint that must be added to the
-/// transient stack pressure when computing region capacity.
+/// The machine ABI keeps only a contiguous suffix of params in registers so
+/// the frame prefix remains canonical. Walk from the last param backward and
+/// stop when a param cannot fit in the configured arg lanes, matching
+/// `compute_param_locs`.
 fn entry_block_param_register_footprint(
     semantic: &SemanticProgram,
     config: &BackendConfig,
@@ -551,24 +550,29 @@ fn entry_block_param_register_footprint(
     let gp_arg_lanes = usize::from(config.gp_arg_lanes);
     let fp_arg_lanes = usize::from(config.fp_arg_lanes);
     let gp_unit_bytes = config.gp_unit_bytes;
-    for ty in &semantic.local_types[..param_count] {
+    for param_index in (0..param_count).rev() {
+        let ty = semantic.local_types[param_index];
         match ty {
-            ValueType::F32 | ValueType::F64 | ValueType::V128 => {
-                if fp_used < fp_arg_lanes {
-                    fp_used += 1;
+            ValueType::V128 => break,
+            ValueType::F32 | ValueType::F64 => {
+                if fp_used >= fp_arg_lanes {
+                    break;
                 }
+                fp_used += 1;
             }
             ValueType::I64 if gp_unit_bytes < 8 => {
                 // i64 on 32-bit GP consumes a pair of arg lanes; if either
                 // half spills, the param goes to the frame entirely.
-                if gp_used + 2 <= gp_arg_lanes {
-                    gp_used += 2;
+                if gp_used + 2 > gp_arg_lanes {
+                    break;
                 }
+                gp_used += 2;
             }
             _ => {
-                if gp_used < gp_arg_lanes {
-                    gp_used += 1;
+                if gp_used >= gp_arg_lanes {
+                    break;
                 }
+                gp_used += 1;
             }
         }
     }
@@ -787,5 +791,67 @@ fn lightweight_spill_all_except_top(state: &mut PrepareState, keep_top: u16) {
     let count = live_count.saturating_sub(keep_top);
     if count > 0 {
         state.spill_depth += count;
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn semantic_with_params(types: &[ValueType]) -> SemanticProgram {
+        SemanticProgram {
+            params: types.len() as u16,
+            local_count: types.len() as u16,
+            local_types: types.iter().copied().collect(),
+            ..SemanticProgram::default()
+        }
+    }
+
+    fn config_with_arg_lanes(
+        gp_unit_bytes: u8,
+        gp_arg_lanes: u8,
+        fp_arg_lanes: u8,
+    ) -> BackendConfig {
+        BackendConfig::with_volatility(
+            gp_unit_bytes,
+            gp_arg_lanes,
+            0,
+            0,
+            fp_arg_lanes,
+            0,
+            gp_arg_lanes,
+            fp_arg_lanes,
+            false,
+            0,
+        )
+    }
+
+    #[test]
+    fn entry_param_footprint_uses_backend_suffix_selection_for_gp32_pairs() {
+        let semantic = semantic_with_params(&[ValueType::I32, ValueType::I64, ValueType::I64]);
+        let config = config_with_arg_lanes(4, 4, 0);
+
+        assert_eq!(
+            entry_block_param_register_footprint(&semantic, &config),
+            (4, 0),
+            "the two trailing i64 params occupy all four GP arg lanes"
+        );
+    }
+
+    #[test]
+    fn entry_param_footprint_stops_at_frame_only_param_in_suffix() {
+        let semantic = semantic_with_params(&[
+            ValueType::I32,
+            ValueType::V128,
+            ValueType::I32,
+            ValueType::F64,
+        ]);
+        let config = config_with_arg_lanes(8, 4, 4);
+
+        assert_eq!(
+            entry_block_param_register_footprint(&semantic, &config),
+            (1, 1),
+            "only the contiguous register-param suffix after v128 stays in arg lanes"
+        );
     }
 }

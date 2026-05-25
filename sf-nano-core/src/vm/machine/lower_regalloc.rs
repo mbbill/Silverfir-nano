@@ -748,8 +748,9 @@ impl<'a> BlockLowerContext<'a> {
             return Ok(regs);
         }
         // Same housekeeping as alloc_*: drop lanes whose owning SSA value
-        // is already dead. The pressure recovery (publish_register_params)
-        // is a heavier fallback, so try the free reclaim first.
+        // is already dead. Publishing register params only releases values
+        // that already have canonical frame homes; after that, a free-lane
+        // failure is a middle-end budget bug.
         self.release_dead_values()?;
         if let Some(regs) = self.try_borrow_free_gp_dynamic_regs(count) {
             return Ok(regs);

@@ -264,13 +264,10 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
         // block starts with all cache bindings = None. Merging such a
         // successor into its predecessor makes the merged block need
         // simultaneous bindings for `pred_exit_cache ∪ succ_ensure_slots`,
-        // which on tight-budget arches (x86_64: 7 GP allocatable, 4 GP arg
-        // lanes; armv7-a similar) exceeds physical lane count once
-        // unconsumed params are factored in. ALGORITHM4 §5.3 specifies the
-        // rewrite layer as the owner of pressure recovery; keeping the
-        // boundary-repair block separate is the rewrite-layer mechanism
-        // that prevents the cache-pressure spike from being created in the
-        // first place.
+        // which can exceed the configured dynamic-lane budget once entry
+        // register params and transient values are accounted for. Keeping the
+        // repair block separate is the middle-layer mechanism that preserves
+        // the budget proof handed to machine lowering.
         let succ_ops = &program.blocks[succ_index].ops;
         if !succ_ops.is_empty() && succ_ops.iter().all(|inst| is_cache_only_op(inst.op)) {
             continue;
