@@ -14,16 +14,16 @@ use crate::{
 /// Immutable decode context for one function body.
 #[derive(Clone, Copy)]
 pub(crate) struct CompileContext<'a> {
-    pub types: &'a TypeContext,
-    pub store: &'a Store,
-    pub params: u16,
-    pub local_count: u16,
-    pub results: u16,
+    pub(in crate::vm::wasm) types: &'a TypeContext,
+    pub(in crate::vm::wasm) store: &'a Store,
+    pub(in crate::vm::wasm) params: u16,
+    pub(in crate::vm::wasm) local_count: u16,
+    pub(in crate::vm::wasm) results: u16,
     /// Per-local value types (params ++ non-param locals).
     /// When empty, the decode stage will not propagate type info.
-    pub local_types: &'a [ValueType],
+    pub(in crate::vm::wasm) local_types: &'a [ValueType],
     /// Function result types in signature order.
-    pub result_types: &'a [ValueType],
+    pub(in crate::vm::wasm) result_types: &'a [ValueType],
 }
 
 impl<'a> CompileContext<'a> {
@@ -49,7 +49,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub(crate) fn resolve_block_type(&self, block_type: &BlockType) -> (u16, u16) {
+    fn resolve_block_type(&self, block_type: &BlockType) -> (u16, u16) {
         match block_type {
             BlockType::Empty => (0, 0),
             BlockType::ValueType(_) => (0, 1),
@@ -62,7 +62,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub(crate) fn resolve_block_type_from_imm(&self, imm: &Immediate) -> (u16, u16) {
+    pub(in crate::vm::wasm) fn resolve_block_type_from_imm(&self, imm: &Immediate) -> (u16, u16) {
         match imm {
             Immediate::Block(block_type) => self.resolve_block_type(block_type),
             _ => (0, 0),
@@ -70,10 +70,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub(crate) fn resolve_block_result_types(
-        &self,
-        block_type: &BlockType,
-    ) -> collections::Vec<ValueType> {
+    fn resolve_block_result_types(&self, block_type: &BlockType) -> collections::Vec<ValueType> {
         match block_type {
             BlockType::Empty => collections::Vec::new(),
             BlockType::ValueType(value_type) => collections::vec![*value_type],
@@ -86,7 +83,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub(crate) fn resolve_block_result_types_from_imm(
+    pub(in crate::vm::wasm) fn resolve_block_result_types_from_imm(
         &self,
         imm: &Immediate,
     ) -> collections::Vec<ValueType> {
@@ -97,7 +94,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub(crate) fn resolve_type_index(&self, type_idx: u32) -> (u16, u16) {
+    pub(in crate::vm::wasm) fn resolve_type_index(&self, type_idx: u32) -> (u16, u16) {
         self.types
             .get_function_type(type_idx)
             .map(|ty| (ty.params().len() as u16, ty.results().len() as u16))
@@ -105,7 +102,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub(crate) fn resolve_func_type(&self, func_idx: u32) -> (u16, u16) {
+    pub(in crate::vm::wasm) fn resolve_func_type(&self, func_idx: u32) -> (u16, u16) {
         let func = self.store.function(func_idx as usize);
         let ty = func.func_type();
         (ty.params().len() as u16, ty.results().len() as u16)
@@ -115,7 +112,7 @@ impl<'a> CompileContext<'a> {
     /// for valid wasm tags (validator rejects non-zero), but we read it out so
     /// the SIR layer stays honest.
     #[inline]
-    pub(crate) fn resolve_tag_type(&self, tag_idx: u32) -> (u16, u16) {
+    pub(in crate::vm::wasm) fn resolve_tag_type(&self, tag_idx: u32) -> (u16, u16) {
         let Some(tag_inst) = self.store.module().tags.get(tag_idx as usize) else {
             return (0, 0);
         };
@@ -127,7 +124,7 @@ impl<'a> CompileContext<'a> {
 
     /// Resolve the block type embedded inside a `TryTable` immediate.
     #[inline]
-    pub(crate) fn resolve_try_table_block_type(&self, imm: &Immediate) -> (u16, u16) {
+    pub(in crate::vm::wasm) fn resolve_try_table_block_type(&self, imm: &Immediate) -> (u16, u16) {
         match imm {
             Immediate::TryTable { block_type, .. } => self.resolve_block_type(block_type),
             _ => (0, 0),
@@ -135,7 +132,7 @@ impl<'a> CompileContext<'a> {
     }
 
     #[inline]
-    pub(crate) fn resolve_try_table_result_types(
+    pub(in crate::vm::wasm) fn resolve_try_table_result_types(
         &self,
         imm: &Immediate,
     ) -> collections::Vec<ValueType> {

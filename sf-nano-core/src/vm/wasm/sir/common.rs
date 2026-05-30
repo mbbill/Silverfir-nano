@@ -9,7 +9,7 @@ pub(crate) struct SemanticIndex(u32);
 
 impl SemanticIndex {
     #[inline]
-    pub(crate) const fn new(raw: usize) -> Self {
+    pub(in crate::vm::wasm) const fn new(raw: usize) -> Self {
         Self(raw as u32)
     }
 
@@ -35,12 +35,12 @@ impl SemanticTarget {
     }
 
     #[inline]
-    pub(crate) const fn pending() -> Self {
+    pub(in crate::vm::wasm) const fn pending() -> Self {
         Self(SemanticIndex(u32::MAX))
     }
 
     #[inline]
-    pub(crate) const fn is_pending(self) -> bool {
+    pub(in crate::vm::wasm) const fn is_pending(self) -> bool {
         self.0 .0 == u32::MAX
     }
 }
@@ -48,7 +48,7 @@ impl SemanticTarget {
 /// Semantic branch-table entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct BrTableEntry {
-    pub target: SemanticTarget,
-    pub stack_drop: u32,
-    pub arity: u16,
+    pub(crate) target: SemanticTarget,
+    pub(crate) stack_drop: u32,
+    pub(crate) arity: u16,
 }

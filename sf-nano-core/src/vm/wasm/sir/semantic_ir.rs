@@ -25,17 +25,17 @@ use super::primitive_op::PrimitiveOpKind;
 /// `forwards_exn = true` marks the `_ref` forms.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SemanticCatchClause {
-    pub tag_idx: Option<u32>,
-    pub payload_arity: u16,
-    pub forwards_exn: bool,
-    pub stack_drop: u32,
-    pub target: SemanticTarget,
+    pub(crate) tag_idx: Option<u32>,
+    pub(crate) payload_arity: u16,
+    pub(crate) forwards_exn: bool,
+    pub(crate) stack_drop: u32,
+    pub(crate) target: SemanticTarget,
 }
 
 /// One semantic Wasm operation.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SemanticOp {
-    pub kind: SemanticOpKind,
+    pub(crate) kind: SemanticOpKind,
 }
 
 /// Semantic function-body op kind.
@@ -166,30 +166,30 @@ pub(crate) enum SemanticOpKind {
 /// Semantic program for one function body.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct SemanticProgram {
-    pub params: u16,
-    pub results: u16,
-    pub local_count: u16,
-    pub max_stack_height: u16,
-    pub ops: collections::Vec<SemanticOp>,
+    pub(crate) params: u16,
+    pub(crate) results: u16,
+    pub(crate) local_count: u16,
+    pub(crate) max_stack_height: u16,
+    pub(crate) ops: collections::Vec<SemanticOp>,
     /// Per-local value types (params ++ non-param locals).
     ///
     /// When non-empty, `local_types.len() == local_count`.
     /// When empty, downstream consumers should treat all values as untyped.
-    pub local_types: collections::Vec<ValueType>,
+    pub(crate) local_types: collections::Vec<ValueType>,
     /// Function result types in signature order.
     ///
     /// When non-empty, `result_types.len() == results`.
-    pub result_types: collections::Vec<ValueType>,
+    pub(crate) result_types: collections::Vec<ValueType>,
     /// Per-op result types for dynamic producers and structured control signatures.
     ///
     /// Maps semantic op index to result value types for ops that push
     /// results whose types are not deterministic from the opcode alone
     /// (calls, blocks with multi-value signatures, etc.).
-    pub op_result_types: BTreeMap<usize, collections::Vec<ValueType>>,
+    pub(crate) op_result_types: BTreeMap<usize, collections::Vec<ValueType>>,
 }
 
 #[cfg(any(debug_assertions, test))]
-pub(crate) fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
+fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
     match kind {
         SemanticOpKind::CallDirect { results, .. }
         | SemanticOpKind::CallIndirect { results, .. }
@@ -209,7 +209,7 @@ pub(crate) fn semantic_op_result_arity(kind: &SemanticOpKind) -> Option<usize> {
 
 impl SemanticProgram {
     #[cfg(not(sf_has_simd))]
-    pub(crate) fn requires_simd(&self) -> bool {
+    fn requires_simd(&self) -> bool {
         self.local_types
             .iter()
             .chain(self.result_types.iter())
