@@ -19,7 +19,7 @@ impl GcRef {
 }
 
 #[derive(Debug, Clone)]
-pub(crate) enum GcObject {
+enum GcObject {
     Struct(GcStruct),
     Array(GcArray),
 }
@@ -68,13 +68,13 @@ impl GcHeap {
         GcRef::new(index)
     }
 
-    pub(crate) fn get(&self, gc_ref: GcRef) -> Result<&GcObject, WasmError> {
+    fn get(&self, gc_ref: GcRef) -> Result<&GcObject, WasmError> {
         self.objects
             .get(gc_ref.index())
             .ok_or_else(|| WasmError::invalid("invalid GC reference"))
     }
 
-    pub(crate) fn get_mut(&mut self, gc_ref: GcRef) -> Result<&mut GcObject, WasmError> {
+    fn get_mut(&mut self, gc_ref: GcRef) -> Result<&mut GcObject, WasmError> {
         self.objects
             .get_mut(gc_ref.index())
             .ok_or_else(|| WasmError::invalid("invalid GC reference"))
