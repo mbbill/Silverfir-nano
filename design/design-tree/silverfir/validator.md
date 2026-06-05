@@ -29,3 +29,11 @@
 - A block type immediate is resolved to a concrete function type before
   type-checking the block: the empty and inline-value-type forms map directly,
   and a type-index form indexes the module's function-type vector.
+
+## Facts
+
+- 2024-02-01 (57ae0b79) pitfall: the control-frame constructor took height
+  and unreachable but discarded both, silently inerting underflow detection
+  and stack-polymorphism — a constructor that accepts a field's value and
+  then ignores it reads as correct at every call site while defeating the
+  invariant the field exists to enforce (diff).

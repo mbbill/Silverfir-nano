@@ -143,6 +143,8 @@ and improve this document — the next extractor inherits the fixes.
 3. Process the batch's pieces in order per the core loop, at depth D,
    repairing the tree per the grammar.
 4. Append ledger rows as pieces are processed, questions as they arise.
+4b. Run `python3 design/lint.py` after writing; fix every violation before
+    reporting. A batch that does not lint clean is not done.
 5. Report: verdict counts, repairs (node paths), questions, anomaly
    self-check (rule 4), and process feedback — anything ambiguous or that
    fought you is part of the deliverable.
@@ -160,7 +162,8 @@ language beyond ledger queries; silent depth downgrades; consulting any
 **Injector** (after author answers): fold answers into facts/whys, flip
 question status, add `statement` rows.
 
-**Observers** review batch report + ledger diff + tree diff. At minimum,
+**Observers** review batch report + ledger diff + tree diff (lint and
+ledger checks are mechanical — review only judgment). At minimum,
 re-read every `change`-class row whose ref claims no tree delta — that
 reasoning is where dropped re-decisions hide. A reviewed batch is accepted
 by **committing `design/` to git** — snapshots make batches replayable.

@@ -1,8 +1,7 @@
 - The validation walk doubles as branch-target precomputation: while
   type-checking a function the validator builds a per-function jump table
-  (`JumpTable`) that a later interpreter will consult so a branch never has to
-  rescan code at run time. It is built on the validation pass because that pass
-  already tracks the stack heights and arities a branch needs.
+  (`JumpTable`) that a later interpreter will consult so a branch never has
+  to rescan code at run time.
 
 - Each branch produces one table entry recording where it jumps to and how the
   operand stack is reshaped on the jump (`JumpTableEntry`): the resolved target
@@ -26,3 +25,13 @@
   lies past this entry's resolved target, scanning forward for forward branches
   and backward for loop branches. The next-index is what an interpreter follows
   to find the next live branch from a jump destination.
+
+## Facts
+
+- 2024-02-02 (ba69c050) rationale: the table is built on the validation pass
+  rather than its own pass because validation already tracks the stack
+  heights and arities a branch needs (diff).
+
+- 2024-02-03 (0305ca11) pitfall: the else edge was first treated as a
+  value-dropping branch with a computed stack offset and arity; an else
+  block keeps the stack as-is, so both fields must be zero (diff).

@@ -43,6 +43,20 @@ every `.alt/` and you are reading exactly what the code implements.
   Items are edited freely as the design evolves — git records when. When an
   option is superseded, its items freeze at their last-true state.
 
+- **`## Facts`** (only if the node has any): an append-only log of what
+  happened, broke, was measured, or was stated — plus recorded judgment and
+  rationale. Entries start with `- `, blank-line separated:
+  `- <date> [(<hash>)] <kind>: <text> (provenance)` — kind is a short open
+  label (`pitfall`, `rationale`, `measurement`, `statement`, ...); the hash
+  is required for facts demonstrable from a commit, omitted for author
+  statements. A fact never re-describes the chosen design, and **the tree
+  never references its own construction** (no batches, deferrals, or
+  extraction bookkeeping — that lives in the ledger). A fact graduates to
+  its own file in `<name>.fact/` only when it has *body* — measurement
+  tables, a recovered document, a rollout report, a long diagnosis — and
+  then the section carries a one-line entry linking it. Same principle as
+  node-vs-item graduation.
+
 - **`## Moves`** (only if the node has any): an append-only log written
   **only when something crosses the `.alt/` boundary or is dropped** — never
   for births, item edits, or progress. A node that never moved has no Moves
@@ -72,13 +86,12 @@ Moves end in `replaced by` or `removed`; revival is rare — `.alt/` is
 effectively permanent. Record only alternatives that really existed in this
 codebase or were really weighed — never invent rivals.
 
-**`<name>.fact/`** — facts: what happened, broke, or was measured, plus
-recorded judgment and rationale ("chosen for constant-time branching over
-rescanning"). One-line fact files are fine. Pure prose; facts recorded
-retroactively carry `commit: <hash>`; author statements are quoted with their
-date. A fact **never re-describes the chosen design** — that is the node's
-job, in one place only. Facts are immutable: a fact is history, and history
-does not change. Location is provenance (file the fact where it was
+**`<name>.fact/`** — graduated facts only: fact files exist solely for
+facts with body (tables, recovered documents, rollout reports, long
+diagnoses); everything smaller lives in the node's `## Facts` section. Pure
+prose, no headings; retroactive files carry `commit: <hash>` on the first
+line; author statements are quoted with their date. Facts are immutable —
+history does not change. Location is provenance (file the fact where it was
 discovered), never exclusive bearing.
 
 **Rules of structure:**
@@ -115,6 +128,17 @@ topology:
 
 - Dirty pages are written back on eviction, not on every mutation.
 
+## Facts
+
+- 2031-04-02 (ab12cd34) measurement: under the ingest benchmark,
+  write-through spent 71% of wall time blocked on synchronous page writes;
+  batching at eviction cut ingest latency 3.4x — full run data in
+  [[page-cache.fact/write-through-stall]] (diff).
+
+- 2031-06-17 (ef56ab78) pitfall: a crash between mutation and eviction
+  loses the dirty page; a write-ahead log now sits in front of the cache
+  (diff).
+
 ## Moves
 
 - 2031-04-02 (ab12cd34) replaced [[write-through-cache]]: write-through
@@ -138,10 +162,16 @@ blocked on synchronous page writes; batching dirty pages at eviction cut
 ingest latency 3.4x.
 ```
 
-Lint: one top-level node; no orphan dirs (`X/`, `X.alt/`, `X.fact/` need a
-sibling `X.md`); no empty `.alt/`; no title headings; Moves only for
-boundary events, append-only, paired whys verbatim; no invented rivals; facts
-never re-describe the design; every why has provenance.
+Lint — mechanically enforced by `python3 design/lint.py` (each check cites
+the rule here): one top-level node; no orphan dirs (`X/`, `X.alt/`,
+`X.fact/` need a sibling `X.md`); no empty `.alt/` or `.fact/`; no title
+headings; Items first, then optional `## Facts`, then optional `## Moves`,
+no other headings; every Facts/Moves entry dated, labeled, and
+provenance-tagged; Moves only for boundary events, append-only (checked
+against the last accepted commit), paired whys verbatim (wrap-insensitive);
+every `[[link]]` resolves; an `.alt` member's Moves end in `replaced by` /
+`removed`; fact files heading-free; no invented rivals; facts never
+re-describe the design; the tree never references its own construction.
 
 ## Maintaining the tree during development
 

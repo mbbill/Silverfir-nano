@@ -39,6 +39,19 @@
   empty type, a single inline value type, or a positive type index, normalized
   into a three-way tag (`BlockType`) before it reaches the consumer.
 
+## Facts
+
+- 2024-01-26 (4336bd63) rationale: the handler-based decoder shipped before
+  any real consumer existed — its first two handlers only adjust an indent
+  counter and log — so the streaming shape was chosen on its own merits (no
+  IR to allocate, several passes share one walk), not retrofitted to an
+  existing validator (diff).
+
+- 2024-01-29 (a719e961) rationale: immediates were re-tagged from raw byte
+  shapes to Wasm roles because the validator matches on what an immediate
+  means, not on how wide it is — role tags let each rule pattern-match
+  directly (diff).
+
 ## Moves
 
 - 2024-02-01 (5bb02079) replaced [[single-handler-decode-fn]]: a
