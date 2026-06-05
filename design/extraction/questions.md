@@ -26,3 +26,20 @@ re-decode-on-demand streaming-handler model a deliberate premise from the
 outset — e.g. to avoid the per-function allocation and to let validation,
 disassembly, and (later) execution share one decode loop?
 blocks: silverfir/decoder.md
+
+## Q3 (status: open)
+context: Commits ba69c050 ("Added jump table, unfinished yet"), 920cf91b ("link
+the jump table"), and 0305ca11 build a per-function jump table during the
+validation walk: each branch gets a precomputed target offset, stack_offset, and
+arity, plus a linked next-index, explicitly "for the interpreter." No
+interpreter exists yet in the repo at this point, and no alternative
+branch-resolution scheme (e.g. resolving branch targets lazily at interpretation
+time, or threading the code into a separate CFG / block structure) appears in
+history — the jump table is introduced as the sole mechanism.
+question: Was precomputing branch targets into a jump table during validation a
+deliberate up-front commitment to the eventual execution model (fused with
+validation specifically to reuse the stack-height/arity bookkeeping the
+type-checker already computes), and were lazy/at-runtime branch resolution or a
+separate CFG representation considered and rejected — on what grounds (avoiding a
+second pass over the code, interpreter dispatch speed, memory)?
+blocks: silverfir/validator/jump-table.md

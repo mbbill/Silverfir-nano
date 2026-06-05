@@ -48,6 +48,13 @@ Judgment calibration (learned from observed runs):
   node; defer until it does, and note the deferral in the batch report.
 - A real mechanism built ahead of its consumer is a current node.
 - Never invent an alternative that this codebase did not contain or weigh.
+- **Settling vs re-decision**: while a mechanism is still being built (no
+  consumer has yet run against it), its internal iterations are settling —
+  record the settled state, HIT the refinements. Once a form has been the
+  working design, replacing it is a re-decision.
+- A bug fixed in a node being written this same batch: write the item at
+  its corrected behavior, file the bug as a pitfall fact, and say so in the
+  row's ref.
 
 When a rejected alternative's code survives in history and its deciding
 measurement does not, the measurement can be re-run: build the old commit in
