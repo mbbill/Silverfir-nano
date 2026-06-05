@@ -1,0 +1,12 @@
+seq	piece-id	class	verdict	ref	depth	batch
+1	e4a20f95986de2aa7b605ef26bfafb9f6e6519e3	add	REPAIR	created silverfir.md (root); silverfir/parser.md; silverfir/module.md; silverfir/parser/payload.md (as slice-cursor, then-current); silverfir/leb128.md (as leb128-crate dep, then-current)	D	1
+2	9e801234602b50b2d2eba3dcd8f0312e6cd4f877	change	REPAIR	leb128 external-crate -> in-house: leb128.alt/leb128-crate.md + paired moves + leb128.fact/unrolled-target.md; payload slice-cursor -> Cow+position: payload.alt/slice-cursor.md + paired moves; version-read u32 LE bugfix folded into parser.md item (no separate node)	D	1
+3	e58c2b5460a8ae7e21dc1d2f3f044f3ea01957f1	note	SKIP	license	D	1
+4	a2861399d9b741d91ac9bcc213d26bab53e6efb7	change	SKIP	idiom-swap	D	1
+5	49da46923d046612344b84f4cf35b61141294730	change	REPAIR	entity Kind<Local> enum -> flat struct+KindTrait: silverfir/module/entity-kind.md + entity-kind.alt/kind-enum.md + paired moves; shrink_to_fit item added to module.md	D	1
+6	4336bd635b8d8c6eb1d6aedd70fc03dcae4c2086	add	REPAIR	created silverfir/decoder.md (visitor OpcodeHandler, 3-prefix opcode table via macro) + decoder.fact/handler-built-ahead-of-consumer.md; validator deferred (no node yet) per note seq6b	D	1
+6b	note	note	note	seq6: validator.rs introduced as a stub OpcodeHandler (indent counter only, no semantic checks); no node created -- deferred until it embodies a real validation decision	D	1
+7	3a8b5fd6d7472c1026b97b2f654225db8a5666e7	add	HIT	silverfir/decoder.md (op_offset to consumer; second handler OpcodePrinter) + silverfir/module.md (per-function code_offset is the byte-offset data the decoder item already references)	D	1
+8	90c636c9d47e4addefc4e5154f06d08c488a8039	change	SKIP	diagnostic-display	D	1
+9	204c4ed716fed82a48b1f3de13f62811600ca648	change	SKIP	formatting	D	1
+10	87af167459434e4e8ed603b9094dcd71b6d5e8f7	change	SKIP	formatting	D	1

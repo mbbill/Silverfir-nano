@@ -1,81 +1,158 @@
 # design/ — the project's design tree
 
-This directory externalizes the design *reasoning* of Silverfir-nano as a Monte
-Carlo Tree Search over the solution space: options are choices, facts are the
-evidence that re-weights them, and the current design is the selected traversal.
-The model is in [`docs/DESIGN_GRAPH.md`](docs/DESIGN_GRAPH.md); the memory /
-value-function is in [`docs/FACT_BASE.md`](docs/FACT_BASE.md).
+This directory externalizes design *reasoning* as a search over the solution
+space: options are choices, facts are the evidence that weights them, and the
+current design is the selected path. The code is one path through that space —
+the path settled *today*; the tree records the explored region, the lessons,
+and the known-bad territory. The model is in
+[`docs/DESIGN_GRAPH.md`](docs/DESIGN_GRAPH.md); the memory / value-function is
+in [`docs/FACT_BASE.md`](docs/FACT_BASE.md).
+
+**Who reads this tree, and why.** Every line is read by someone — human or
+agent — deciding what to build next: rewriting the system, extending it, or
+re-opening a settled choice. A line pays rent only if it could change that
+decision: something to keep, something to avoid, something now free to
+reconsider. Calibration — pays rent: an expressivity wall ("the old shape
+could not express X"), a kill-fact, a measured loss, a road not taken. Never
+pays: allocation hygiene, idiom swaps, dependency bumps, progress milestones,
+restatements of the code. This is the test for every item, move, and fact.
 
 ```
 design/
-├── design-tree/   the design — options, alternatives (.alt/), evidence (.evidence/)
-└── docs/          DESIGN_GRAPH.md (the model) + FACT_BASE.md (the memory)
+├── design-tree/   the design — options, alternatives (.alt/), facts (.fact/)
+├── docs/          DESIGN_GRAPH.md (the model) + FACT_BASE.md (the memory)
+├── EXTRACTION.md  the one-time fact-extraction workflow (recovering history)
+└── extraction/    working state of an extraction run (ledger, questions)
 ```
 
-## Tree conventions (`design-tree/`)
+## Tree grammar (`design-tree/`)
 
-The filesystem **is** the tree.
+The filesystem **is** the tree. Exactly one top-level node exists: the **root
+option**, named after the system. The main tree IS the current design — ignore
+every `.alt/` and you are reading exactly what the code implements.
 
-**The main tree IS the current design** — the live architecture laid down as
-files. Ignore every `.alt/` and you are reading exactly what the code implements
-(and what code review checks it against). Alternatives are recorded, never
-deleted: they sit beside what beat them.
+**`<name>.md` — an option node.** Two sections:
 
-- `<name>.md` — an **option**: one element of the design. Body = *what* it is,
-  plus an **"In practice" contract** (Must / Must not) — the source of truth for
-  codegen and code review (the faithfulness gate's spec). **No justification
-  narrative**: the *why* lives in `.evidence/` annexes and is read or retrieved,
-  never narrated in the body.
-- `<name>/` — its parts: the sub-options it is composed of, all in force —
-  components living at the same time.
-- `<name>.alt/` — its **alternatives**: predecessors and rivals, each a full
-  option (with its own subtree and its own `.alt/`s). `.alt` nesting is the
-  generational record — walking in is walking back in time.
-- `<name>.evidence/` — everything recorded that **bears on it**: implementation
-  discoveries, measurements and diagnosed causes, external references (papers,
-  articles, experiments elsewhere — filed at the decision they informed), and
-  judgment/taste records. Pure prose, no fields (retroactive entries carry
-  `commit: <hash>`). The read-time judge *weighs the evidence*.
-- Presence encodes selection: main tree = current; inside an `.alt/` =
-  superseded or rejected. No `selected:` marker exists.
+- **Items** (top of file, no heading): statements that hold true of the
+  implementation while this option is current. Each starts with `- `,
+  separated by blank lines. Items are **concepts, not code**: each must hold
+  for *any* faithful implementation of the decision. At most one code
+  identifier per node, parenthesized, as a findability anchor; never
+  enumerate functions, methods, or fields. Items are checkable, never
+  argued — no "so that / because" tails (the why lives in facts and moves).
+  Items are edited freely as the design evolves — git records when. When an
+  option is superseded, its items freeze at their last-true state.
 
-**Logical vs physical addressing.** `.alt/` is purely physical structuring. In
-the logical graph an `.alt/` member is a *sibling* of the option it is attached
-to — together they form the OR-group under the parent. Fact `origin:` paths are
-**logical** (`.alt` segments stripped), which makes them pivot-proof: demoting an
-option into an `.alt/` does not change its logical path.
+- **`## Moves`** (only if the node has any): an append-only log written
+  **only when something crosses the `.alt/` boundary or is dropped** — never
+  for births, item edits, or progress. A node that never moved has no Moves
+  section. Entries start with `- `, blank-line separated, 8-char hashes:
 
-**Refactoring is file motion.** A pivot = move the incumbent (`X.md` + `X/` +
-`X.alt/`) into the challenger's `.alt/` and build the challenger in the main
-tree — it is the working design from day one; a failed exploration is the
-reverse move. Borrowed components are *copied*; the `.alt` keeps its complete
-design.
+  - `- <date> (<hash>) replaced [[X]]: <why> (provenance)` — on the winner.
+  - `- <date> (<hash>) replaced by [[X]]: <why> (provenance)` — on the loser,
+    now in `.alt/`. **The why is copied verbatim on both sides** — same
+    sentence, never paraphrased (verbatim means the sentence, not the
+    line-wrapping).
+  - `- <date> (<hash>) dropped: <what>: <why> (provenance)` — part of this
+    design was deleted with no successor. One line here; no ghost node for
+    "not doing it".
+  - `- <date> (<hash>) removed: <why> (provenance)` — this whole node was
+    deleted with no successor (the node itself now sits in `.alt/`).
+  - `- <date> (<hash>) revived: <why> (provenance)` — rare.
 
-Lint: no orphan dirs (`X/` and `X.alt/` require a sibling `X.md`), no empty
-`.alt/`, no `selected:` anywhere, every fact origin resolves logically.
+  Every why carries provenance: `(diff)` — demonstrable from the change;
+  `(author)` — stated by a human; `(inferred → Qn)` — a plausible reading
+  that MUST open question Qn. An unmarked why is invalid.
 
-The only **nodes** are the `.md` files; directories are structure. The path
-narrates the reasoning, and *is* the (non-Markovian) context. The current design
-= follow the `selected: true` options from `root.md`.
+**`<name>/`** — the option's parts: sub-options all in force at once.
 
-## Evidence conventions (`X.evidence/`)
+**`<name>.alt/`** — its alternatives: predecessors and rivals, each a full
+node (own subtree, own `.alt/`s). Walking in is walking back in time. An alt's
+Moves end in `replaced by` or `removed`; revival is rare — `.alt/` is
+effectively permanent. Record only alternatives that really existed in this
+codebase or were really weighed — never invent rivals.
 
-Evidence is **co-located**: each option's annex holds what bears on it, so
-navigation is mechanical — browse the option, its evidence is beside it. No
-retrieval needed to answer "why is this here / why was that abandoned".
+**`<name>.fact/`** — facts: what happened, broke, or was measured, plus
+recorded judgment and rationale ("chosen for constant-time branching over
+rescanning"). One-line fact files are fine. Pure prose; facts recorded
+retroactively carry `commit: <hash>`; author statements are quoted with their
+date. A fact **never re-describes the chosen design** — that is the node's
+job, in one place only. Facts are immutable: a fact is history, and history
+does not change. Location is provenance (file the fact where it was
+discovered), never exclusive bearing.
 
-- `X.evidence/<slug>.md` — pure prose, **no fields**: the observation, its
-  conditions, and its nature (measurement, diagnosis, external reference,
-  judgment/taste) all live in the statement. Names stay short — the location
-  carries the context. One exception: evidence recorded *retroactively* carries
-  `commit: <hash>` — the historical commit it belongs to.
-- **Location is origin** (logical path = physical path with `.alt`/`.evidence`
-  stripped); evidence moves with its option's subtree on pivots, nothing to
-  remap. Placement is provenance and filing — never exclusive bearing: relevance
-  to other decisions stays a **read-time judgment**, over a derived global index
-  (`**/*.evidence/*.md`).
-- Consolidations (lessons spanning a subtree) live at the subtree's root —
-  **height = generality**; `root.evidence/` is the distilled-wisdom layer.
-- End-to-end *unattributed* measurements (whole-system benchmark runs) have no
-  home here by design; a chronological `runs/` log is the planned extension if
-  needed — credit assignment is explicit work, never a filing default.
+**Rules of structure:**
+
+- A node exists only if a real alternative exists; otherwise the content is
+  an item on the nearest real node, or nothing. The tree is **not a module
+  map**. Representation budget follows information density: an unweighed path
+  stays thin — never compensate missing facts with description. Fact density
+  is the confidence signal: a node with no facts honestly says "nobody
+  weighed this; reconsider freely."
+- The tree must be *generatively sufficient*: tree + spec + ordinary
+  engineering competence rebuilds the code. The faithfulness check reads
+  items against the implementation.
+- **A replacement is a re-decision by default.** When a working mechanism or
+  representation is replaced — whether a whole node or its internal shape —
+  move the old form into `.alt/` and write the paired move lines, unless the
+  change is purely cosmetic (rename, restyle). If the old shape could not
+  express something the new one can, that delta is the lesson; record it.
+- A pivot is file motion: move the incumbent (`X.md` + `X/` + `X.alt/`) into
+  the challenger's `.alt/`; borrowed components are copied so the alt keeps
+  its complete design. The paired move lines land in the same change.
+- Logical addressing: an `.alt/` member is logically a *sibling* of the
+  option it is attached to; logical paths strip `.alt`/`.fact` segments and
+  are pivot-proof.
+
+A canonical node, for calibration — from a **fictional** project `acorn`, a
+key-value store (root `acorn.md`; parts under `acorn/`; this is
+`acorn/storage/page-cache.md`). Copy its **form**, never its names, paths, or
+topology:
+
+```markdown
+- Reads go through a fixed-size page cache (`PageCache`); a page is only
+  ever loaded from disk on a cache miss.
+
+- Dirty pages are written back on eviction, not on every mutation.
+
+## Moves
+
+- 2031-04-02 (ab12cd34) replaced [[write-through-cache]]: write-through
+  stalled every mutation on disk latency; batching at eviction removed the
+  stall (diff).
+
+- 2031-09-05 (cd34ef56) dropped: per-page checksums — the storage layer
+  gained end-to-end checksums, making the cache's own redundant (diff).
+```
+
+`write-through-cache.md` sits in `page-cache.alt/`, items frozen, its Moves
+ending with the same why verbatim: `replaced by [[page-cache]]: write-through
+stalled every mutation on disk latency; batching at eviction removed the
+stall (diff).` A canonical fact (`page-cache.fact/write-through-stall.md`):
+
+```markdown
+commit: ab12cd34
+
+Under the ingest benchmark, write-through caching spent 71% of wall time
+blocked on synchronous page writes; batching dirty pages at eviction cut
+ingest latency 3.4x.
+```
+
+Lint: one top-level node; no orphan dirs (`X/`, `X.alt/`, `X.fact/` need a
+sibling `X.md`); no empty `.alt/`; no title headings; Moves only for
+boundary events, append-only, paired whys verbatim; no invented rivals; facts
+never re-describe the design; every why has provenance.
+
+## Maintaining the tree during development
+
+- A re-decision and its file motion land together: the change that alters the
+  code moves the loser into `.alt/`, writes both move lines, and files the
+  fact if it has body. Never let the tree lag the code.
+- New mechanisms get nodes when they earn them (real alternative, properties
+  beyond a line or two); otherwise items on the nearest node.
+- Item edits are silent — git records when; a driving fact, if any, is filed
+  in `.fact/`.
+- Deletions without successor get a `dropped` (or `removed`) move line.
+- Review reads the tree: a change contradicting a holds-true item either
+  fixes the code or updates the tree — silent divergence is the failure mode
+  the tree exists to prevent.
