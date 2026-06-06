@@ -48,10 +48,16 @@ Judgment calibration (learned from observed runs):
   node; defer until it does, and note the deferral in the batch report.
 - A real mechanism built ahead of its consumer is a current node.
 - Never invent an alternative that this codebase did not contain or weigh.
-- **Settling vs re-decision**: while a mechanism is still being built (no
-  consumer has yet run against it), its internal iterations are settling —
-  record the settled state, HIT the refinements. Once a form has been the
-  working design, replacing it is a re-decision.
+- **Settling vs re-decision**: settling applies only while the mechanism
+  itself has never been exercised — never run by any binary, test, or pass
+  over real input. A parser that parses real modules is consumed even if
+  the wider product is incomplete; only a form that never executed is
+  settling. And an expressivity delta always wins: if the prior form could
+  not express something the new one can (see README), it is a re-decision
+  no matter how briefly the prior form lived. One carve-out: **adopting or
+  dropping an external dependency is always a re-decision** — a dependency
+  is a commitment the moment it is declared, whether or not the code that
+  used it ever ran.
 - A bug fixed in a node being written this same batch: write the item at
   its corrected behavior, file the bug as a pitfall fact, and say so in the
   row's ref.

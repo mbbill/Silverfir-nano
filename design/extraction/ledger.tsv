@@ -1,22 +1,12 @@
 seq	piece-id	class	verdict	ref	depth	batch
-1	e4a20f95986de2aa7b605ef26bfafb9f6e6519e3	add	REPAIR	created silverfir.md (root); silverfir/parser.md; silverfir/module.md; silverfir/parser/payload.md (as slice-cursor, then-current); silverfir/leb128.md (as leb128-crate dep, then-current)	D	1
-2	9e801234602b50b2d2eba3dcd8f0312e6cd4f877	change	REPAIR	leb128 external-crate -> in-house: leb128.alt/leb128-crate.md + paired moves + leb128.fact/unrolled-target.md; payload slice-cursor -> Cow+position: payload.alt/slice-cursor.md + paired moves; version-read u32 LE bugfix folded into parser.md item (no separate node)	D	1
-3	e58c2b5460a8ae7e21dc1d2f3f044f3ea01957f1	note	SKIP	license	D	1
+1	e4a20f95986de2aa7b605ef26bfafb9f6e6519e3	add	REPAIR	created root [[silverfir]] + parser/module subtree; payload reader, leb128 decoding, and import/local kind born in their commit-1 forms (now in payload-cursor.alt/borrowed-slice-reader, leb128.alt/leb128-crate, module.alt/kind-sum-type, then-current)	D	1
+2	9e801234602b50b2d2eba3dcd8f0312e6cd4f877	change	REPAIR	[[leb128]] replaces external [[leb128-crate]]; [[payload-cursor]] replaces [[borrowed-slice-reader]]; paired move lines + rationale facts filed	D	1
+3	e58c2b5460a8ae7e21dc1d2f3f044f3ea01957f1	add	SKIP	license	D	1
 4	a2861399d9b741d91ac9bcc213d26bab53e6efb7	change	SKIP	idiom-swap	D	1
-5	49da46923d046612344b84f4cf35b61141294730	change	REPAIR	entity Kind<Local> enum -> flat struct+KindTrait: silverfir/module/entity-kind.md + entity-kind.alt/kind-enum.md + paired moves; shrink_to_fit item added to module.md	D	1
-6	4336bd635b8d8c6eb1d6aedd70fc03dcae4c2086	add	REPAIR	created silverfir/decoder.md (visitor OpcodeHandler, 3-prefix opcode table via macro) + decoder.fact/handler-built-ahead-of-consumer.md; validator deferred (no node yet) per note seq6b	D	1
-6b	note:6	note	-	seq6: validator.rs introduced as a stub OpcodeHandler (indent counter only, no semantic checks); no node created -- deferred until it embodies a real validation decision	D	1
-7	3a8b5fd6d7472c1026b97b2f654225db8a5666e7	add	HIT	silverfir/decoder.md (op_offset to consumer; second handler OpcodePrinter) + silverfir/module.md (per-function code_offset is the byte-offset data the decoder item already references)	D	1
-8	90c636c9d47e4addefc4e5154f06d08c488a8039	change	SKIP	diagnostic-display	D	1
-9	204c4ed716fed82a48b1f3de13f62811600ca648	change	SKIP	formatting	D	1
-10	87af167459434e4e8ed603b9094dcd71b6d5e8f7	change	SKIP	formatting	D	1
-11	a719e961fac62008ed16e94cabb4e75a1c30e864	change	REPAIR	Immediate variants re-tagged raw-shape -> Wasm role (MemArg, LabelIndex, CallIndirectArgs, ...): amended decoder.md item + decoder.fact/immediate-tags-by-role-not-shape.md; opcodes.rs whitespace-only, validator.rs {:?}->{} ride-along (cosmetic)	D	2
-12	2cc2e201c082c05e330ab908f0590aba66861176	change	SKIP	code-motion (OpcodePrinter validator.rs -> op_decoder.rs)	D	2
-13	80306a9ae2a442548718493e80bd707ac4d34295	change	REPAIR	validator stub -> abstract-stack type-checker: created silverfir/validator.md + validator.fact/stub-to-abstract-stack-algorithm.md (resolves note seq6b deferral); decoder.md BlockType s33 item; module.md function_types accessor is HIT (item already lists function-types vector); .vscode SKIP	D	2
-14	f41bfdb30205423afce85ab36db812c23a0b023d	change	HIT	silverfir/validator.md (type-predicate pop + is_type/is_num/is_ref, more opcode rules) -- same-batch settling of the validator node born seq13; BRLabels->BrLabels typo trivial	D	2
-15	9b9176224139785b0ba832a0aec765acc6b4e421	add	HIT	silverfir/validator.md (per-opcode rules for OP+FC spaces: numeric/parametric/variable/memory/table/ref; handle_load/store align<=size_of check); FD/SIMD left stub	D	2
-16	57ae0b79fd90d2b5a152db8c08a302db1772b0e3	fix	REPAIR	ControlFrame::new dropped its height/unreachable args (hardcoded 0/false) + underflow ==->=: filed silverfir/validator.fact/control-frame-fields-dropped-on-construction.md (item already states correct behavior)	D	2
-17	5bb0207979995f53b70a5ceab26f511fad24b553	change	REPAIR	single-handler decode_function -> multi-handler Decoder (Vec<&mut dyn OpcodeHandler> fan-out) + on_decode_begin/end: decoder.alt/single-handler-decode-fn.md + paired moves; decoder.md items amended; JumpTableItem scaffold (dead, consumed seq18)	D	2
-18	ba69c0506b8988cd9e861bcead4a62a5155d6030	add	REPAIR	precomputed per-function jump table built on validation walk: created silverfir/validator/jump-table.md; decoder.md next_op_offset item; ControlFrame/Context relocation is code-motion	D	2
-19	920cf91b04aed8b81615aa1f2ae8ba3dc5f4230b	change	HIT	silverfir/validator/jump-table.md (next_idx linking in on_decode_end; op_offset gains structural role) -- completes jump-table node born seq18	D	2
-20	0305ca115f7e241f41ddbac75d2e6ec37ed6ef71	fix	REPAIR	else-block jump stack_offset/arity bug -> keep stack as-is (0,0): filed silverfir/validator/jump-table.fact/else-jump-keeps-stack-as-is.md; handler-register order swap is debug-output ordering (no item)	D	2
+5	49da46923d046612344b84f4cf35b61141294730	change	REPAIR	[[module]] replaces sum-type [[kind-sum-type]] (flat optional import/export); paired move lines + rationale fact	D	1
+6	4336bd635b8d8c6eb1d6aedd70fc03dcae4c2086	add	REPAIR	created [[opcode-decoder]] (handler-pass + immediate enum + generated opcode table)	D	1
+7	3a8b5fd6d7472c1026b97b2f654225db8a5666e7	change	REPAIR	[[parser]] replaces [[per-section-cursor]] to recover absolute code offsets; paired move lines + rationale fact	D	1
+8	90c636c9d47e4addefc4e5154f06d08c488a8039	add	HIT	[[silverfir]] [[module]] [[opcode-decoder]] — Display impls + accessors, printing affordance only	D	1
+9	204c4ed716fed82a48b1f3de13f62811600ca648	change	HIT	[[silverfir]] (loading now validates) + [[opcode-decoder]] (opcode display names); remainder formatting	D	1
+10	87af167459434e4e8ed603b9094dcd71b6d5e8f7	change	SKIP	dead-code	D	1
+10b	note:2	note	-	observer: payload-cursor alt-vs-settling is judgment-contested (runs split 2-2; commit 1 never executed, but the slice form physically existed); kept as recorded — more information preserved	D	1

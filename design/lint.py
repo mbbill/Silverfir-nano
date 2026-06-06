@@ -180,6 +180,16 @@ def git(*args):
     return subprocess.run(["git", *args], cwd=DESIGN, capture_output=True, text=True)
 
 if git("rev-parse", "HEAD").returncode == 0:
+    # A pivot (README "A pivot is file motion") relocates the incumbent's
+    # frozen Facts/Moves into the challenger's .alt/ in the same change, so a
+    # committed entry that leaves one file must reappear verbatim in another —
+    # that is relocation, not removal. Append-only therefore means "no entry
+    # lost from the tree", checked tree-globally; only entries that vanish
+    # everywhere are edited/removed.
+    tree_entries = set()
+    for p in node_files:
+        tree_entries.update(re.sub(r"\s+", " ", b)
+                            for b in parsed[p]["facts"] + parsed[p]["moves"])
     for p in node_files:
         rel = os.path.relpath(p, os.path.dirname(DESIGN))
         old = git("show", f"HEAD:{rel}")
@@ -189,9 +199,7 @@ if git("rev-parse", "HEAD").returncode == 0:
         for sec in re.findall(r"^## (?:Facts|Moves)$(.*?)(?=^## |\Z)",
                               old.stdout, flags=re.M | re.S):
             old_entries.update(re.sub(r"\s+", " ", b) for b in blocks(sec))
-        new_entries = set(re.sub(r"\s+", " ", b)
-                          for b in parsed[p]["facts"] + parsed[p]["moves"])
-        gone = old_entries - new_entries
+        gone = old_entries - tree_entries
         if gone:
             err("R-append", p, f"{len(gone)} committed Facts/Moves entr{'y' if len(gone)==1 else 'ies'} edited or removed")
 
@@ -218,7 +226,9 @@ if "--ledger" in sys.argv:
             err("L-depth", lp, f"seq {seq}: message-only depth")
         if verdict == "HIT":
             named = re.findall(r"[a-z0-9-]+(?:/[a-z0-9-]+)+", ref)
-            if named and not any(n in logicals for n in named):
+            words = set(re.findall(r"[a-z0-9-]+", ref))
+            stems_ok = words & {l.split("/")[-1] for l in logicals}
+            if named and not any(n in logicals for n in named) and not stems_ok:
                 err("L-hitref", lp, f"seq {seq}: no named node resolves: {named}")
 
 # ---------- report ----------

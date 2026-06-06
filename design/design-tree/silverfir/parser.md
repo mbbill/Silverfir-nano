@@ -1,17 +1,29 @@
-- The parser walks the module binary section by section in a single forward
-  pass, reading a section id and length, carving out that section's byte
-  range, and dispatching to a per-section routine (`parse_module`).
+- The parser walks the binary once, section by section in encounter order, and
+  drives a mutable accumulator (`ModuleBuilder`) that is consumed into an
+  immutable `Module` at the end.
 
-- Section order is enforced as the pass runs: each section id must be strictly
-  greater than the previous, except that custom sections may appear anywhere
-  and the data-count section is allowed to precede the code and data sections.
-  Out-of-order sections are rejected as malformed.
+- Section order is enforced by a state machine: each non-custom section must
+  have a larger id than the previous one, custom sections may appear anywhere,
+  and the data-count section is the one exception that may precede code and
+  data.
 
-- Parsing is zero-copy where it can be: byte ranges that outlive the parse
-  (code bodies, init/offset expressions, data segments) are handed out as
-  `Cow` slices that borrow the original module bytes when the input was
-  borrowed, and own a copy only when the input itself was owned.
+- Each section's parser reads directly from the single module-wide cursor and
+  is bounded by the declared section length: after a section is parsed the
+  cursor must sit exactly at the section's end, otherwise the binary is
+  malformed.
 
-- The module is assembled through a mutable builder that accumulates each
-  entity vector as sections are parsed, then is finalized into an immutable
-  module (`ModuleBuilder`).
+- A function's code is recorded with its absolute byte offset from the start of
+  the module (`code_offset`), not just its bytes.
+
+## Facts
+
+- 2024-01-28 (3a8b5fd6) rationale: carving each section into its own sub-cursor
+  reset the byte position to zero, so a function's offset within the whole
+  module could not be recovered; parsing from the single module-wide cursor and
+  bounding by declared length keeps absolute offsets available (diff).
+
+## Moves
+
+- 2024-01-28 (3a8b5fd6) replaced [[per-section-cursor]]: a per-section cursor
+  numbered bytes from the section start, so absolute in-module code offsets were
+  unrecoverable; parsing from one module-wide cursor preserves them (diff).

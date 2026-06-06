@@ -45,7 +45,14 @@ every `.alt/` and you are reading exactly what the code implements.
 
 - **`## Facts`** (only if the node has any): an append-only log of what
   happened, broke, was measured, or was stated — plus recorded judgment and
-  rationale. Entries start with `- `, blank-line separated:
+  rationale. **Admission test, applied before writing any fact: name (a) the
+  decision it bears on and (b) what a future implementor would do
+  differently knowing it. If you cannot name both, it is not a fact — it is
+  narration.** Observations about the repository or its history (commit
+  shapes, squashed imports, development gaps, renames, file counts), about
+  the development process, or about tooling are never facts: facts are about
+  the design, not the project's paperwork. Entries start with `- `,
+  blank-line separated:
   `- <date> [(<hash>)] <kind>: <text> (provenance)` — kind is a short open
   label (`pitfall`, `rationale`, `measurement`, `statement`, ...); the hash
   is required for facts demonstrable from a commit, omitted for author
@@ -74,9 +81,15 @@ every `.alt/` and you are reading exactly what the code implements.
     deleted with no successor (the node itself now sits in `.alt/`).
   - `- <date> (<hash>) revived: <why> (provenance)` — rare.
 
-  Every why carries provenance: `(diff)` — demonstrable from the change;
-  `(author)` — stated by a human; `(inferred → Qn)` — a plausible reading
-  that MUST open question Qn. An unmarked why is invalid.
+  Every why carries provenance (see the provenance rule below).
+
+**Provenance — applies to every Facts entry and every Moves entry.** Each
+entry ends with its provenance: `(diff)` — demonstrable from the change
+itself; `(author)` — stated by a human; `(inferred → Qn)` — a plausible
+reading that MUST open question Qn. An unmarked entry is invalid. **The tag
+covers every clause**: if any part of the entry is inference, split the
+entry or downgrade the whole of it — a true observation must never smuggle
+in an inferred cause.
 
 **`<name>/`** — the option's parts: sub-options all in force at once.
 

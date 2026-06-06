@@ -1,15 +1,29 @@
-- A parsed module is an immutable bundle of the binary version plus one vector
-  per entity kind: function types, functions, memories, tables, globals,
-  element segments, and data segments, with an optional start-function index
-  (`Module`).
+- A parsed module holds its definitions in flat per-kind vectors — functions,
+  memories, tables, globals, elements, data — plus the optional start-function
+  index and binary version.
 
-- Every entity kind (function, table, memory, global) is one struct that can
-  represent either an imported or a locally-defined instance; there is no
-  separate type for the imported case.
+- Imported and local definitions of the same kind live in one vector. An item's
+  import status and its export name are carried as two optional fields shared by
+  all kinds (`Kind`), so a single definition can be both imported and exported.
 
-- Function bodies are not decoded into instructions at parse time: a local
-  function stores its declared locals and its raw code bytes as a borrowed
-  slice, to be decoded on demand.
+- Kind-local payload is carried as optional fields directly on each definition
+  (a function's locals, code, and code offset; a global's init expression) and
+  is absent for imported definitions.
 
-- The builder shrinks each entity vector to fit before finalizing the module,
-  so the long-lived module carries no spare capacity.
+- The builder pre-sizes and then shrinks its vectors to fit before sealing the
+  module, so the finished module holds no slack capacity.
+
+## Facts
+
+- 2024-01-25 (49da4692) rationale: import-vs-local was reshaped from a sum type
+  (where a definition was *either* imported *or* a local-payload variant) into a
+  flat record of optional import-path and export-path fields, because a Wasm
+  definition can be imported and re-exported at once — a state the either/or sum
+  type could not represent (diff).
+
+## Moves
+
+- 2024-01-25 (49da4692) replaced [[kind-sum-type]]: encoding import-vs-local as
+  a sum type made imported-and-exported inexpressible, and parked export name on
+  a field outside the variant; flat optional import/export fields express both
+  states at once (diff).
