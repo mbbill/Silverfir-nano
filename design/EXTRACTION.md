@@ -48,6 +48,21 @@ Judgment calibration (learned from observed runs):
   node; defer until it does, and note the deferral in the batch report.
 - A real mechanism built ahead of its consumer is a current node.
 - Never invent an alternative that this codebase did not contain or weigh.
+- **Transient mid-refactor boundary.** A batch's last commit is an arbitrary
+  cut and may land mid-refactor — a subsystem disabled or non-compiling as
+  construction churn that adjacent commits restore. Faithfulness is then
+  checked against the last in-batch commit where that subsystem was coherent;
+  the transient disable is construction paperwork, not a tree event (no
+  `dropped`/`removed`). Distinguish from a real removal: if the subsystem
+  stays gone, it is a genuine delete; if the very next commits revive it, it
+  was churn.
+- **Bugs are not design.** Items describe the design the code implements, not
+  its defects: a localized implementation bug (a wrong predicate, an
+  off-by-one) does not change the design statement — write the item at the
+  design the code structurally implements. A bug becomes a pitfall fact at
+  the commit that *fixes* it (that is where the lesson crystallizes), never
+  by describing buggy behavior in an item or by the extractor pre-emptively
+  filing an unfixed slip it happened to notice.
 - **Settling vs re-decision**: settling applies only while the mechanism
   itself has never been exercised — never run by any binary, test, or pass
   over real input. A parser that parses real modules is consumed even if
