@@ -54,10 +54,17 @@ Judgment calibration (learned from observed runs):
   the wider product is incomplete; only a form that never executed is
   settling. And an expressivity delta always wins: if the prior form could
   not express something the new one can (see README), it is a re-decision
-  no matter how briefly the prior form lived. One carve-out: **adopting or
-  dropping an external dependency is always a re-decision** — a dependency
-  is a commitment the moment it is declared, whether or not the code that
-  used it ever ran.
+  no matter how briefly the prior form lived — **provided the prior form was
+  a complete, working design.** Completing an incomplete stub or placeholder
+  is settling, not a re-decision, even when the finished form expresses more
+  than the stub: a stub that punts (a raw byte forwarded undecoded, a
+  `todo!`, an arm that returns a default) was never a weighed alternative,
+  just unfinished work — finishing it is progress, recorded as item edits,
+  not an `.alt/`. The discriminator: was the old form a complete mechanism
+  that *worked and was replaced*, or a placeholder that was *filled in*?
+  One carve-out the other way: **adopting or dropping an external dependency
+  is always a re-decision** — a dependency is a commitment the moment it is
+  declared, whether or not the code that used it ever ran.
 - A bug fixed in a node being written this same batch: write the item at
   its corrected behavior, file the bug as a pitfall fact, and say so in the
   row's ref.
