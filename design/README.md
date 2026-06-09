@@ -42,6 +42,9 @@ every `.alt/` and you are reading exactly what the code implements.
   argued — no "so that / because" tails (the why lives in facts and moves).
   Items are edited freely as the design evolves — git records when. When an
   option is superseded, its items freeze at their last-true state.
+  **Items and facts describe the live code only** — never commented-out,
+  aspirational, or planned code. A dead reference or a TODO is not a design
+  statement.
 
 - **`## Facts`** (only if the node has any): an append-only log of what
   happened, broke, was measured, or was stated — plus recorded judgment and
@@ -51,8 +54,11 @@ every `.alt/` and you are reading exactly what the code implements.
   narration.** Observations about the repository or its history (commit
   shapes, squashed imports, development gaps, renames, file counts), about
   the development process, or about tooling are never facts: facts are about
-  the design, not the project's paperwork. Entries start with `- `,
-  blank-line separated:
+  the design, not the project's paperwork. **A re-decision's why lives in
+  its Moves line, not here** — a `rationale` fact is allowed only for a why
+  that has no move to carry it (the reasoning behind a current design that
+  never displaced a predecessor). Never file a fact that restates a Moves
+  line or an item. Entries start with `- `, blank-line separated:
   `- <date> [(<hash>)] <kind>: <text> (provenance)` — kind is a short open
   label (`pitfall`, `rationale`, `measurement`, `statement`, ...); the hash
   is required for facts demonstrable from a commit, omitted for author

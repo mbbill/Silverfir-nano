@@ -109,6 +109,12 @@ for p in node_files:
     for para in re.split(r"\n\s*\n", items_part.strip()):
         if para and not para.startswith("- "):
             err("R-items", p, f"non-item content in items section: {para.splitlines()[0][:60]!r}")
+        # R-tail: items state what holds, never why (no rationale tails)
+        flat = re.sub(r"\s+", " ", para)
+        m = re.search(r"( so | so that | because )", flat)
+        if para.startswith("- ") and m:
+            err("R-tail", p, f"item has a rationale tail ({m.group(1).strip()!r}); "
+                f"move the why to Facts/Moves: {flat[:70]!r}")
     # R-entry: facts/moves entries dated+labeled, provenance-tagged
     for kind, blist in (("Facts", parsed[p]["facts"]), ("Moves", parsed[p]["moves"])):
         for b in blist:
@@ -118,6 +124,22 @@ for p in node_files:
                 err("R-prov", p, f"{kind} entry missing provenance tag: {b.splitlines()[0][:70]!r}")
             if kind == "Moves" and not MOVE_VERB.match(b):
                 err("R-verb", p, f"Moves entry has no boundary verb: {b.splitlines()[0][:70]!r}")
+            # R-join: one entry = one claim; a chaining connective smuggles a
+            # second (often inferred) clause under one provenance tag.
+            if re.search(r"\b(which is why|that is why|the reason|hence|therefore)\b",
+                         re.sub(r"\s+", " ", b), re.I):
+                err("R-join", p, f"{kind} entry chains two claims (atomize it): "
+                    f"{b.splitlines()[0][:70]!r}")
+
+    # R-redundant: a 'rationale' fact must not share a commit with a Moves
+    # entry on the same node — the move already carries that re-decision's why.
+    move_hashes = {m.group(3) for b in parsed[p]["moves"]
+                   if (m := ENTRY_HEAD.match(b))}
+    for b in parsed[p]["facts"]:
+        m = ENTRY_HEAD.match(b)
+        if m and m.group(4).strip() == "rationale" and m.group(3) in move_hashes:
+            err("R-redundant", p, f"rationale fact shares commit {m.group(3)} with a "
+                f"move on this node; the move already records the why")
     # R-meta: tree never references its own construction
     for word in ("ledger", "batch report", "design tree", "extraction run", "deferred until"):
         if word in text.lower():
