@@ -44,7 +44,13 @@ every `.alt/` and you are reading exactly what the code implements.
   option is superseded, its items freeze at their last-true state.
   **Items and facts describe the live code only** — never commented-out,
   aspirational, or planned code. A dead reference or a TODO is not a design
-  statement.
+  statement. The distinction from a bug: a localized bug (the code runs but
+  computes the wrong thing — a flipped predicate, an off-by-one) does not
+  change the design, so the item states the design and the bug is a pitfall
+  fact at its fix; but an *unimplemented* capability (a `TODO`, a stub, a
+  missing branch — the code does not do it at all) must never be asserted by
+  an item, even when it is the design's evident intent. State only what the
+  code performs; the unimplemented half is recorded when it is implemented.
 
 - **`## Facts`** (only if the node has any): an append-only log of what
   happened, broke, was measured, or was stated — plus recorded judgment and

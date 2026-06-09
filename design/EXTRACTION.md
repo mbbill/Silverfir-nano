@@ -55,7 +55,10 @@ Judgment calibration (learned from observed runs):
   the transient disable is construction paperwork, not a tree event (no
   `dropped`/`removed`). Distinguish from a real removal: if the subsystem
   stays gone, it is a genuine delete; if the very next commits revive it, it
-  was churn.
+  was churn. Relatedly, when writing a superseded form into `.alt/`, diff
+  its last *coherent* (compiling) blob, not a transiently-disabled or
+  non-compiling one — the `.alt/` must record the design as it actually
+  worked, so "last-true" means last-coherent, not last-written.
 - **Bugs are not design.** Items describe the design the code implements, not
   its defects: a localized implementation bug (a wrong predicate, an
   off-by-one) does not change the design statement — write the item at the
