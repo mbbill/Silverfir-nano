@@ -111,8 +111,9 @@ for p in node_files:
             err("R-items", p, f"non-item content in items section: {para.splitlines()[0][:60]!r}")
         # R-tail: items state what holds, never why (no rationale tails)
         flat = re.sub(r"\s+", " ", para)
-        m = re.search(r"( so | so that | because )", flat)
-        if para.startswith("- ") and m:
+        m = re.search(r"(^|[ ,;(])(so|so that|because|thus|hence|since|therefore)[ ,]",
+                      flat, re.I)
+        if para.startswith("- ") and m and m.group(2).lower() not in ("since",) :
             err("R-tail", p, f"item has a rationale tail ({m.group(1).strip()!r}); "
                 f"move the why to Facts/Moves: {flat[:70]!r}")
     # R-entry: facts/moves entries dated+labeled, provenance-tagged
@@ -191,6 +192,20 @@ for p in node_files:
         err("R-frozen", p, ".alt member's Moves must end in 'replaced by'/'removed'")
     if not in_alt and re.search(r"replaced by \[\[", last) and "revived" not in last:
         err("R-frozen", p, "main-tree node ends 'replaced by' (should it be in .alt/?)")
+
+# ---------- R-thin: node with no decision-content is a module-map entry ----------
+for p in node_files:
+    base = p[:-3]
+    has_alt = os.path.isdir(base + ".alt") and any(
+        f.endswith(".md") for f in os.listdir(base + ".alt")) if os.path.isdir(base + ".alt") else False
+    has_children = os.path.isdir(base) and any(
+        f.endswith(".md") for f in os.listdir(base)) if os.path.isdir(base) else False
+    has_facts = bool(parsed[p]["facts"])
+    has_moves = bool(parsed[p]["moves"])
+    if not (has_alt or has_children or has_facts or has_moves):
+        err("R-thin", p, "node has no .alt/, no Facts, no Moves, and no children — "
+            "it asserts a component without recording a decision (module-map node); "
+            "fold it into its parent, or record the decision (alternative, rationale fact)")
 
 # ---------- R-factfile: graduated fact files are heading-free prose ----------
 for p in fact_files:

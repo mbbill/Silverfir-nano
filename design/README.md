@@ -54,7 +54,10 @@ every `.alt/` and you are reading exactly what the code implements.
   narration.** Observations about the repository or its history (commit
   shapes, squashed imports, development gaps, renames, file counts), about
   the development process, or about tooling are never facts: facts are about
-  the design, not the project's paperwork. **A re-decision's why lives in
+  the design, not the project's paperwork. Evidence that an abstraction has
+  more than one real consumer is a fact on the abstraction's own node, not an
+  item elsewhere; runtime gating, logging, and similar plumbing are not
+  items. **A re-decision's why lives in
   its Moves line, not here** — a `rationale` fact is allowed only for a why
   that has no move to carry it (the reasoning behind a current design that
   never displaced a predecessor). Never file a fact that restates a Moves
@@ -81,8 +84,11 @@ every `.alt/` and you are reading exactly what the code implements.
     sentence, never paraphrased (verbatim means the sentence, not the
     line-wrapping).
   - `- <date> (<hash>) dropped: <what>: <why> (provenance)` — part of this
-    design was deleted with no successor. One line here; no ghost node for
-    "not doing it".
+    design was deleted with **no successor**. One line here; no ghost node for
+    "not doing it". Dropping an external dependency but reimplementing its
+    capability in-tree is **not** a drop — the in-tree code is the successor,
+    so it is a `replaced` re-decision (node + `.alt/` holding the dependency's
+    rejected shape). `dropped` is only for a capability removed outright.
   - `- <date> (<hash>) removed: <why> (provenance)` — this whole node was
     deleted with no successor (the node itself now sits in `.alt/`).
   - `- <date> (<hash>) revived: <why> (provenance)` — rare.
@@ -129,6 +135,16 @@ discovered), never exclusive bearing.
   move the old form into `.alt/` and write the paired move lines, unless the
   change is purely cosmetic (rename, restyle). If the old shape could not
   express something the new one can, that delta is the lesson; record it.
+  **When the thing re-decided is an internal aspect of a node, not a node of
+  its own, promote that aspect to a child node** so its rejected form has a
+  home in the child's `.alt/`: `parent/aspect.md` (current) +
+  `parent/aspect.alt/old-aspect.md`, with paired move lines. The test is
+  objective: **if the chosen form exists because the old form hit an
+  expressivity wall** — something it could not do, which the move why states —
+  the rejected shape pays rent by definition; promote it. Only a pure-taste
+  replacement with no wall (the old form worked, the new is merely nicer) may
+  fold to a why-only rationale fact. Never put a half-node in `.alt/` that
+  describes only one facet of its parent.
 - A pivot is file motion: move the incumbent (`X.md` + `X/` + `X.alt/`) into
   the challenger's `.alt/`; borrowed components are copied so the alt keeps
   its complete design. The paired move lines land in the same change.

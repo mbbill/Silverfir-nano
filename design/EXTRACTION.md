@@ -158,12 +158,29 @@ Forbidden: verdicts beyond what was read; editing history; completion
 language beyond ledger queries; silent depth downgrades; consulting any
 `_bak*` directory.
 
-**Auditor** (era boundaries, or on observer demand):
-1. Generative-sufficiency sweep at the boundary commit: every item true?
-   any code subsystem with no generating node? Report discrepancies as
-   proposed REPAIRs — do not apply.
-2. Spot-audit K random HIT rows: re-derive each verdict from the diff;
-   report rows whose evidence does not hold.
+**Auditor** (after every batch — the faithfulness gate the linter cannot
+be). A FRESH agent with no extractor context: reads only the tree, the
+batch's diffs, and these docs, and is adversarial (assumes defects exist).
+Classifies from diffs, never commit messages. Detection only — never edits
+the tree. Three checks:
+1. **Faithfulness** — every item of every current (non-`.alt`) node is true
+   of the code at the batch's last commit. Flag items describing code that
+   does not exist there, a superseded approach stated as current, or wrong
+   behavior. Read the source at that commit to confirm.
+2. **Completeness** — every change/delete commit's design event is recorded
+   faithfully and at the right structure: a replaced working mechanism is a
+   re-decision (loser in `.alt/`, paired Moves); an expressivity-wall aspect
+   is a promoted node+alt, not a fact, not buried on an unrelated node, not
+   mislabeled (`dropped` vs `replaced`). Flag missing, mis-located,
+   under-structured, or mislabeled events.
+3. **Ledger spot-check** — re-derive a few HIT/REPAIR rows from their diffs.
+Output: a numbered defect list, each with file/location, what is wrong, the
+diff evidence, and the corrective action — or an explicit "clean" naming what
+was verified. Every defect must be diff-backed; distinguish a defect (an item
+is false / an event mis-recorded) from a note (true but worth flagging).
+The observer relays the defect list to the parked extractor, which fixes and
+re-lints; the same auditor then re-checks the fixed spots plus an adjacent
+glance. Bound: two fix rounds, then escalate to the observer.
 
 **Injector** (after author answers): fold answers into facts/whys, flip
 question status, add `statement` rows.
