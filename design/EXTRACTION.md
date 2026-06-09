@@ -64,7 +64,11 @@ Judgment calibration (learned from observed runs):
   that *worked and was replaced*, or a placeholder that was *filled in*?
   One carve-out the other way: **adopting or dropping an external dependency
   is always a re-decision** — a dependency is a commitment the moment it is
-  declared, whether or not the code that used it ever ran.
+  declared, whether or not the code that used it ever ran. This is about the
+  *engine/product's own* dependencies. Test-harness, build, and tooling
+  dependencies are paperwork (like the tests and scripts themselves):
+  excluded from the tree entirely — adopting or dropping them is never a tree
+  event.
 - A bug fixed in a node being written this same batch: write the item at
   its corrected behavior, file the bug as a pitfall fact, and say so in the
   row's ref.
