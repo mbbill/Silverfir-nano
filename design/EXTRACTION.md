@@ -35,7 +35,13 @@ or fabricated), then:
   no successor → `dropped` (or `removed`) move line on the survivor.
 - **bug fix** — does the fix change a holds-true item? yes → design flaw:
   correct the item and file the fact. No, but instructive → pitfall fact at
-  the nearest node. No, pure slip → SKIP.
+  the nearest node. No, pure slip → SKIP. When the fix **replaces the
+  mechanism's form** — its algorithm or representation, not a predicate,
+  constant, or arm within it — the replacement default governs instead of
+  this branch: loser into `.alt/` with paired move lines, the failure as
+  the why (a byte-scanning boundary-finder replaced by an opcode walk is a
+  re-decision; a flipped skip-predicate inside the same loop is a pitfall
+  fact).
 - **conformance** — the spec/suite dictated it, no alternative → FORCED.
 - **statement** (author answer, chat log) — file as a fact at the node it
   bears on; if it reveals an unrecorded design, REPAIR first.
@@ -65,7 +71,12 @@ Judgment calibration (learned from observed runs):
   design the code structurally implements. A bug becomes a pitfall fact at
   the commit that *fixes* it (that is where the lesson crystallizes), never
   by describing buggy behavior in an item or by the extractor pre-emptively
-  filing an unfixed slip it happened to notice.
+  filing an unfixed slip it happened to notice. Pitfall admission line: a
+  slip **inside the mechanism's own invariant logic** — its guards,
+  boundary conditions, the rules that make it correct (an underflow guard
+  that never fired, an error constructed at the decode boundary but never
+  raised) — is instructive and is filed at its fix; a generic coding slip
+  with no mechanism-specific lesson is a SKIP.
 - **Settling vs re-decision**: settling applies only while the mechanism
   itself has never been exercised — never run by any binary, test, or pass
   over real input. A parser that parses real modules is consumed even if
@@ -80,6 +91,14 @@ Judgment calibration (learned from observed runs):
   just unfinished work — finishing it is progress, recorded as item edits,
   not an `.alt/`. The discriminator: was the old form a complete mechanism
   that *worked and was replaced*, or a placeholder that was *filled in*?
+  Two tiebreakers, in order: a **type-level wall** — the old form's
+  signature could not hold the new capability at all (a borrow-only reader
+  cannot carry caller-owned input) — is a re-decision regardless of whether
+  the form ever ran; an indirection or ergonomics wall ("possible but
+  awkward") is not a wall. And when the repo cannot show whether a form was
+  ever exercised (early construction, no tests yet), default to
+  re-decision — a dropped transition is unrecoverable, while an
+  over-recorded `.alt/` is visible and reviewable.
   One carve-out the other way: **adopting or dropping an external dependency
   is always a re-decision** — a dependency is a commitment the moment it is
   declared, whether or not the code that used it ever ran. This is about the
@@ -167,7 +186,7 @@ Hard rules (each exists because its violation has happened):
 4. A batch with zero REPAIRs *and* zero questions must flag itself in its
    report — that pattern is what silent skimming produces.
 
-## The agent workflow
+## The agent workflow (sequential mode)
 
 Subagents execute; observers (humans + coordinator) review between batches
 and improve this document — the next extractor inherits the fixes.
@@ -219,3 +238,147 @@ ledger checks are mechanical — review only judgment). At minimum,
 re-read every `change`-class row whose ref claims no tree delta — that
 reasoning is where dropped re-decisions hide. A reviewed batch is accepted
 by **committing `design/` to git** — snapshots make batches replayable.
+
+## Parallel mode — map/reduce over commit windows
+
+Sequential mode threads tree state through every batch, so wall-clock is
+the whole history. The dependency is narrower than it looks: of all the
+judgments in the core loop, only two need global state — **naming** (is
+this the same concept another window touched?) and **placement** (main
+tree, or which `.alt/` generation). Everything else — what happened,
+settling vs re-decision, the why, provenance, the loser's last-coherent
+state — is commit-local, judged from the diff plus the code at the parent
+commit, which git serves at any point in history. Parallel mode runs the
+commit-local work concurrently and defers the two global judgments to one
+reduce step. Every judgment rule in this document applies unchanged at map
+time; only the orchestration differs. Throughout, **E** is the run's end
+commit — repo HEAD for a full run, the last covered commit for a partial
+one.
+
+**Stage 1 — skeleton.** One pass over the code at E builds the main tree:
+nodes and items only — no Facts, no Moves, no `.alt/`. Legitimate because
+items are statements true of the current code, and the code at E is their
+primary source; the faithfulness check applies as usual. Bias coarse: the
+reduce deepens a too-coarse skeleton locally (aspect promotion), while a
+too-fine one forces cross-window merges. The skeleton is **scaffolding,
+not output**: it gives map agents shared coordinates and the reduce a
+placement target, but its nodes are presumed to be module-map until
+history earns them — the reduce prunes every node no timeline touches.
+Tree size must track what history taught, never code size.
+
+**Stage 2 — map.** History is cut into fixed windows of 10–20 commits in
+`git log --reverse` order; `seq` is the commit's global ordinal, fixed by
+the cut, so window outputs concatenate without coordination. One agent per
+window reads every diff at depth D and writes exactly two files — it never
+writes the tree:
+
+- `extraction/win-<NN>.ledger.tsv` — same columns and hard rules as the
+  ledger above; `batch` holds the window id. Map verdicts: **RECORD** —
+  design information emitted (ref lists the record ids); **COVERED** — an
+  implementation of a design already evident (ref names the covering
+  concept: a skeleton node, an own-window record, or a mechanism present
+  in the parent commit's code, with an anchor); FORCED and SKIP as above.
+  **COVERED and SKIP are not fact-free**: before moving on, ask the diff
+  one more question — does it demonstrate a rationale, a pitfall at its
+  fix, or consumer evidence for an abstraction? If yes, emit the `fact`
+  record even though no structure changed (observed failure: windows that
+  treated COVERED as terminal lost every rationale fact).
+- `extraction/win-<NN>.records.jsonl` — placement-free **evidence
+  records**, one JSON object per line. Common fields: `id` (`W<NN>-r<k>`),
+  `seq`, `hash` (8-char), `date`, `provenance`. A `concept` is always
+  `{name: <one line>, anchors: [code identifiers / paths as of this
+  commit]}` — anchors are the join keys the reduce resolves identity with.
+  Types:
+
+  - `transition` — a re-decision or deletion. `verb` (`replaced` /
+    `dropped` / `removed`), `old` (a concept), `new` (a concept; null for
+    dropped/removed), `why` (one sentence — the reduce writes it verbatim
+    on both sides of the move pair), `frozen_items` (for replaced/removed:
+    the loser's items at its last-coherent blob, drafted now — map time is
+    the only moment the loser's code is already in hand).
+  - `fact` — `kind` (open label as above), `concept`, `text`.
+  - `birth` — a mechanism's first appearance: `concept` plus at most one
+    item-worthy line. Births are identity evidence for the reduce, not
+    tree content — pure adds stay LOW density. A why must never ride
+    inside a birth's item text: reasoning demonstrable from the diff is
+    its own `fact` record (kind `rationale`), or it is silently lost when
+    the birth's node prunes (observed failure: a commit-once-on-success
+    rationale discarded with its pruned instantiation birth).
+  - `question` — the questions protocol, window-local id `W<NN>-q<k>`;
+    in-record provenance reads `(inferred → W<NN>-q<k>)`.
+
+  Exact shapes (`design/lint.py --window <NN>` enforces them; content here
+  is from the fictional `acorn` project — copy the form, never the
+  content):
+
+  ```jsonl
+  {"id":"W03-r1","seq":24,"hash":"ab12cd34","date":"2031-04-02","type":"transition","provenance":"diff","verb":"replaced","old":{"name":"write-through page cache","anchors":["WriteThrough","src/store/cache.rs"]},"new":{"name":"write-back page cache","anchors":["PageCache","src/store/cache.rs"]},"why":"write-through stalled every mutation on disk latency; batching at eviction removed the stall","frozen_items":["Every mutation writes its page to disk before returning."]}
+  {"id":"W03-r2","seq":27,"hash":"cd34ef56","date":"2031-04-09","type":"fact","provenance":"diff","kind":"pitfall","concept":{"name":"write-back page cache","anchors":["PageCache"]},"text":"a crash between mutation and eviction loses the dirty page; a write-ahead log now sits in front of the cache"}
+  {"id":"W03-r3","seq":21,"hash":"ef56ab78","date":"2031-03-30","type":"birth","provenance":"diff","concept":{"name":"page cache","anchors":["PageCache","src/store/cache.rs"]},"item":"Reads go through a fixed-size page cache; a page loads from disk only on a miss."}
+  {"id":"W03-q1","seq":24,"hash":"ab12cd34","type":"question","context":"ab12cd34 replaces the allocator wholesale; the diff shows no failure of the old one","question":"what failed or was measured to motivate the replacement?","blocks":"page allocator"}
+  ```
+
+  For `dropped`/`removed`, `new` is null; `frozen_items` is required for
+  `replaced`/`removed` (the superseded form needs its items) and absent
+  for `dropped`. A `question` record carries no provenance — it is one.
+
+A rename or representation change is itself a transition, so the old and
+new anchors are linked exactly where name continuity breaks — identity
+survives renames with no agent tracing lineages. A map agent may peek at
+commits beyond its window to judge whether a deletion is transient churn
+or real, but emits rows and records only for commits it owns. The
+transient-boundary rule's faithfulness half has no analogue here —
+faithfulness is checked only at E; its last-coherent-blob half lives on in
+`frozen_items`.
+
+**Stage 3 — reduce.** One agent; reads the skeleton and every record —
+never the diffs. (If the records outgrow one context, fold per top-level
+skeleton subtree first, then the root.) In order:
+
+1. **Identity** — cluster records into concept timelines by anchors and
+   names; transitions stitch timelines across their own rename boundaries.
+2. **Fold, in seq order** — each timeline's transitions become the node
+   and its generational `.alt/` chain: the final form must be a skeleton
+   concept; predecessors nest by generation; move pairs are generated from
+   each transition's single `why` (verbatim by construction);
+   `frozen_items` become the alt's items; facts attach to the generation
+   current at their seq; `dropped` lands on the surviving parent. Aspect
+   promotion is decided here, with the node's whole transition set in
+   view.
+3. **Prune** — demote every node whose whole subtree gained no `.alt/`,
+   no Facts, and no Moves from the fold: delete the node; its items
+   collapse to the nearest surviving ancestor *iff they pass the
+   regeneration test* (README) — what spec and competence regenerate
+   anyway is deleted, what a rebuild could legitimately diverge on is
+   kept. A commitment that passes the regeneration test but has no
+   recorded why may instead earn its node outright with a `prior` fact
+   (README) — marked, question opened, recovery lazy. This is the
+   "node exists only if a real alternative exists" rule applied to the
+   skeleton; `R-thin` enforces it mechanically.
+4. **Questions** — renumber `W*-q*` globally, write `questions.md`,
+   rewrite the `(inferred → ...)` tags accordingly.
+5. **Placements** — write `extraction/placements.tsv`: every record id →
+   the (post-prune) tree path(s) it landed at, or `discarded: <reason>`.
+   The reduce never invents: every Facts/Moves line in the tree derives
+   from a record.
+6. Concatenate window ledgers into `ledger.tsv`; run lint; fix.
+
+Closure — mechanical, and the reason parallel mode is safe (errors surface
+as contradictions, not silent gaps):
+
+- every transition chain ends at a skeleton concept or in a `removed` /
+  `dropped` — an orphan chain is a missed transition or a misfiled dead
+  lineage;
+- every skeleton node either earned structure from the fold or was
+  pruned — none survives on code shape alone;
+- every record id appears in placements exactly once;
+- concatenated ledger: rows == commits, seq contiguous, zero M rows.
+
+**Stage 4 — audit.** Per window, the same adversarial fresh-agent contract
+as sequential mode, retargeted at records: every change/delete commit's
+design event has a faithful record (completeness); every record is
+diff-backed (faithfulness); spot-check COVERED rows. One reduce auditor
+checks tree-vs-records (no invention; placements honest) and skeleton
+items against the code at E. Fix loops as above: defects relay to the
+parked map/reduce agent, two rounds, then escalate. Acceptance = lint +
+closure + all audits clean → commit `design/`.

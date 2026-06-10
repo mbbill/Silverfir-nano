@@ -1,18 +1,161 @@
 #!/usr/bin/env python3
-"""Linter for the design tree. Every check cites a rule stated in README.md;
-this file is the executable form of that grammar, never a second spec.
+"""Linter for the design tree. Every check cites a rule stated in README.md
+or EXTRACTION.md; this file is the executable form of those rules, never a
+second spec.
 
-Usage:  python3 design/lint.py [--ledger]
+Usage:  python3 design/lint.py [--ledger] [--skeleton] [--window NN] [--parallel]
+  --skeleton   tree checks minus R-thin (a Stage-1 skeleton is pre-prune)
+  --window NN  check only extraction/win-NN.{records.jsonl,ledger.tsv}
+  --parallel   check all window files + cross-window seq + placements + R-derive
 Exit 0 = clean. Violations -> stderr, exit 1.
 """
-import os, re, subprocess, sys
+import json, os, re, subprocess, sys
 
 DESIGN = os.path.dirname(os.path.abspath(__file__))
 TREE = os.path.join(DESIGN, "design-tree")
+EXTR = os.path.join(DESIGN, "extraction")
 ERRORS = []
+
+SKELETON = "--skeleton" in sys.argv
+PARALLEL = "--parallel" in sys.argv
+WINDOW = sys.argv[sys.argv.index("--window") + 1] if "--window" in sys.argv else None
 
 def err(rule, path, msg):
     ERRORS.append(f"[{rule}] {os.path.relpath(path, DESIGN)}: {msg}")
+
+def report_and_exit(label):
+    if ERRORS:
+        print(f"{len(ERRORS)} violation(s):", file=sys.stderr)
+        for e in ERRORS:
+            print("  " + e, file=sys.stderr)
+        sys.exit(1)
+    print(f"lint clean: {label}")
+    sys.exit(0)
+
+# ---------- parallel-mode window files (EXTRACTION.md "Parallel mode") ----------
+REC_PROV = re.compile(r"^(diff|author|inferred (→|->) W\d{2}-q\d+)$")
+REC_VERDICTS = ("RECORD", "COVERED", "FORCED", "SKIP", "-")
+REC = {}           # record id -> {"hash":..., "type":..., "window":...}
+LEDGER_SEQS = []   # int seqs across all checked window ledgers
+
+def ok_concept(c):
+    return (isinstance(c, dict) and isinstance(c.get("name"), str)
+            and c["name"].strip() and isinstance(c.get("anchors"), list)
+            and c["anchors"] and all(isinstance(a, str) and a.strip()
+                                     for a in c["anchors"]))
+
+def check_window(nn):
+    rp = os.path.join(EXTR, f"win-{nn}.records.jsonl")
+    lp = os.path.join(EXTR, f"win-{nn}.ledger.tsv")
+    rec_seqs = set()
+    if not os.path.exists(rp):
+        err("P-files", rp, "missing records file")
+    else:
+        for i, line in enumerate(open(rp), 1):
+            if not line.strip():
+                continue
+            try:
+                r = json.loads(line)
+            except ValueError:
+                err("P-json", rp, f"line {i}: invalid JSON"); continue
+            rid, typ = r.get("id", ""), r.get("type", "")
+            tag = rid or f"line {i}"
+            if not re.fullmatch(rf"W{nn}-[rq]\d+", rid):
+                err("P-id", rp, f"line {i}: id {rid!r} not W{nn}-r<k>/W{nn}-q<k>")
+            elif rid in REC:
+                err("P-id", rp, f"line {i}: duplicate id {rid}")
+            if not isinstance(r.get("seq"), int):
+                err("P-seq", rp, f"{tag}: seq must be an integer")
+            else:
+                rec_seqs.add(r["seq"])
+            if not re.fullmatch(r"[0-9a-f]{8}", r.get("hash", "") or ""):
+                err("P-hash", rp, f"{tag}: hash must be 8 hex chars")
+            if typ != "question" and not re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}", r.get("date", "") or ""):
+                err("P-date", rp, f"{tag}: bad/missing date")
+            if typ != "question" and not REC_PROV.match(r.get("provenance", "") or ""):
+                err("P-prov", rp, f"{tag}: bad/missing provenance")
+            if typ == "transition":
+                verb = r.get("verb")
+                if verb not in ("replaced", "dropped", "removed"):
+                    err("P-verb", rp, f"{tag}: bad verb {verb!r}")
+                if not ok_concept(r.get("old")):
+                    err("P-concept", rp, f"{tag}: bad/missing old concept")
+                if verb == "replaced" and not ok_concept(r.get("new")):
+                    err("P-concept", rp, f"{tag}: replaced needs a new concept")
+                if verb in ("dropped", "removed") and r.get("new") is not None:
+                    err("P-concept", rp, f"{tag}: {verb} must have new=null")
+                if not (isinstance(r.get("why"), str) and r["why"].strip()):
+                    err("P-why", rp, f"{tag}: missing why")
+                fi = r.get("frozen_items")
+                if verb in ("replaced", "removed") and not (
+                        isinstance(fi, list) and fi and
+                        all(isinstance(x, str) and x.strip() for x in fi)):
+                    err("P-frozen", rp, f"{tag}: {verb} needs frozen_items")
+            elif typ == "fact":
+                if not (isinstance(r.get("kind"), str) and r["kind"].strip()):
+                    err("P-kind", rp, f"{tag}: missing kind")
+                if not ok_concept(r.get("concept")):
+                    err("P-concept", rp, f"{tag}: bad/missing concept")
+                if not (isinstance(r.get("text"), str) and r["text"].strip()):
+                    err("P-text", rp, f"{tag}: missing text")
+            elif typ == "birth":
+                if not ok_concept(r.get("concept")):
+                    err("P-concept", rp, f"{tag}: bad/missing concept")
+            elif typ == "question":
+                if not rid.startswith(f"W{nn}-q"):
+                    err("P-id", rp, f"{tag}: question ids use -q")
+                for f in ("context", "question", "blocks"):
+                    if not (isinstance(r.get(f), str) and r[f].strip()):
+                        err("P-question", rp, f"{tag}: missing {f}")
+            else:
+                err("P-type", rp, f"{tag}: bad type {typ!r}")
+            if rid:
+                REC[rid] = {"hash": r.get("hash"), "type": typ, "window": nn}
+    win_ids = {i for i, v in REC.items() if v["window"] == nn}
+    if not os.path.exists(lp):
+        err("P-files", lp, "missing window ledger")
+        return
+    rows = [l.rstrip("\n").split("\t") for l in open(lp)]
+    if not rows or rows[0] != ["seq", "piece-id", "class", "verdict", "ref", "depth", "batch"]:
+        err("P-header", lp, "bad/missing header row")
+    want = None
+    ints = set()
+    for r in rows[1:]:
+        if len(r) != 7:
+            err("P-cols", lp, f"row has {len(r)} columns: {r[:2]}"); continue
+        seq, pid, cls, verdict, ref, depth, batch = r
+        if re.fullmatch(r"\d+", seq):
+            if want is not None and int(seq) != want:
+                err("P-seq", lp, f"seq {seq}, expected {want}")
+            want = int(seq) + 1
+            ints.add(int(seq)); LEDGER_SEQS.append(int(seq))
+        elif not re.fullmatch(r"\d+b", seq):
+            err("P-seq", lp, f"bad seq {seq!r}")
+        if cls not in ("add", "change", "fix", "forced", "statement", "note"):
+            err("P-class", lp, f"seq {seq}: bad class {cls!r}")
+        if verdict not in REC_VERDICTS:
+            err("P-verdict", lp, f"seq {seq}: bad verdict {verdict!r}")
+        if verdict in ("RECORD", "COVERED") and not ref.strip():
+            err("P-ref", lp, f"seq {seq}: {verdict} without ref")
+        if verdict == "RECORD":
+            cited = re.findall(r"W\d{2}-[rq]\d+", ref)
+            if not cited:
+                err("P-ref", lp, f"seq {seq}: RECORD ref cites no record ids")
+            for c in cited:
+                if c not in win_ids:
+                    err("P-ref", lp, f"seq {seq}: ref cites unknown record {c}")
+        if depth == "M":
+            err("P-depth", lp, f"seq {seq}: message-only depth")
+        if batch != f"W{nn}":
+            err("P-batch", lp, f"seq {seq}: batch {batch!r}, expected W{nn}")
+    stray = rec_seqs - ints
+    if stray:
+        err("P-seq", rp, f"record seqs not in this window's ledger: {sorted(stray)}")
+
+if WINDOW:
+    check_window(WINDOW)
+    report_and_exit(f"window {WINDOW}")
 
 # ---------- collect ----------
 node_files, fact_files = [], []
@@ -194,7 +337,8 @@ for p in node_files:
         err("R-frozen", p, "main-tree node ends 'replaced by' (should it be in .alt/?)")
 
 # ---------- R-thin: node with no decision-content is a module-map entry ----------
-for p in node_files:
+# (--skeleton skips this one check: a Stage-1 skeleton is pre-prune by design)
+for p in ([] if SKELETON else node_files):
     base = p[:-3]
     has_alt = os.path.isdir(base + ".alt") and any(
         f.endswith(".md") for f in os.listdir(base + ".alt")) if os.path.isdir(base + ".alt") else False
@@ -240,6 +384,66 @@ if git("rev-parse", "HEAD").returncode == 0:
         if gone:
             err("R-append", p, f"{len(gone)} committed Facts/Moves entr{'y' if len(gone)==1 else 'ies'} edited or removed")
 
+# ---------- parallel mode: all windows + placements + derivation ----------
+if PARALLEL:
+    wins = sorted(re.match(r"win-(\d{2})\.", f).group(1)
+                  for f in os.listdir(EXTR) if re.match(r"win-\d{2}\.records\.jsonl$", f))
+    if not wins:
+        err("P-files", EXTR, "no win-*.records.jsonl files found")
+    for nn in wins:
+        check_window(nn)
+    # cross-window: ledger seqs cover 1..N contiguously, no duplicates
+    s = sorted(LEDGER_SEQS)
+    if len(s) != len(set(s)):
+        dup = sorted({x for x in s if s.count(x) > 1})
+        err("P-seq", EXTR, f"duplicate seqs across windows: {dup}")
+    elif s and (s[0] != 1 or s != list(range(1, len(s) + 1))):
+        err("P-seq", EXTR, f"window ledgers not contiguous from 1: {s[0]}..{s[-1]}, {len(s)} rows")
+    # placements: every record lands exactly once (post-reduce only)
+    pp = os.path.join(EXTR, "placements.tsv")
+    paths_by_hash = {}
+    if os.path.exists(pp):
+        placed = {}
+        for i, line in enumerate(open(pp), 1):
+            if not line.strip():
+                continue
+            parts = line.rstrip("\n").split("\t")
+            if len(parts) != 2:
+                err("P-place", pp, f"line {i}: expected 'id<TAB>placement'"); continue
+            rid, val = parts
+            if rid not in REC:
+                err("P-place", pp, f"line {i}: unknown record id {rid}"); continue
+            if rid in placed:
+                err("P-place", pp, f"line {i}: duplicate placement for {rid}"); continue
+            placed[rid] = val
+            if val.startswith("discarded:"):
+                if not val[len("discarded:"):].strip():
+                    err("P-place", pp, f"{rid}: discarded without a reason")
+                continue
+            for t in (t.strip() for t in val.split(",")):
+                if t == "questions.md":
+                    continue
+                if not os.path.exists(os.path.join(TREE, t)):
+                    err("P-place", pp, f"{rid}: target does not exist: {t}")
+                else:
+                    h = REC[rid]["hash"]
+                    if h:
+                        paths_by_hash.setdefault(h, set()).add(t)
+        missing = set(REC) - set(placed)
+        if missing:
+            err("P-place", pp, f"{len(missing)} record(s) never placed: {sorted(missing)[:10]}")
+        # R-derive: every hashed Facts/Moves entry in the tree comes from a
+        # record placed at that node ("the reduce never invents").
+        for p in node_files:
+            rel = os.path.relpath(p, TREE)
+            for b in parsed[p]["facts"] + parsed[p]["moves"]:
+                m = ENTRY_HEAD.match(b)
+                if not m or not m.group(3):
+                    continue
+                if rel not in paths_by_hash.get(m.group(3), set()):
+                    err("R-derive", p, f"entry ({m.group(3)}) has no record placed "
+                        f"here: {b.splitlines()[0][:60]!r}")
+
 # ---------- optional: ledger checks ----------
 if "--ledger" in sys.argv:
     lp = os.path.join(DESIGN, "extraction", "ledger.tsv")
@@ -255,9 +459,10 @@ if "--ledger" in sys.argv:
             want = int(seq) + 1
         elif not re.fullmatch(r"\d+b", seq):
             err("L-seq", lp, f"bad seq {seq!r}")
-        if verdict not in ("HIT", "REPAIR", "FORCED", "SKIP", "-"):
+        if verdict not in ("HIT", "REPAIR", "FORCED", "SKIP", "-",
+                           "RECORD", "COVERED"):  # last two: parallel mode
             err("L-verdict", lp, f"seq {seq}: bad verdict {verdict!r}")
-        if verdict in ("HIT", "REPAIR") and not ref.strip():
+        if verdict in ("HIT", "REPAIR", "RECORD", "COVERED") and not ref.strip():
             err("L-ref", lp, f"seq {seq}: {verdict} without ref")
         if depth == "M":
             err("L-depth", lp, f"seq {seq}: message-only depth")

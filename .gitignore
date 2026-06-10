@@ -4,3 +4,6 @@ target
 design/design-tree/
 design/extraction/ledger.tsv
 design/extraction/questions.md
+design/extraction/win-*
+design/extraction/placements.tsv
+design/_bak-*/

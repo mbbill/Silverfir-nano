@@ -40,6 +40,12 @@ every `.alt/` and you are reading exactly what the code implements.
   identifier per node, parenthesized, as a findability anchor; never
   enumerate functions, methods, or fields. Items are checkable, never
   argued — no "so that / because" tails (the why lives in facts and moves).
+  **Admission test for an item — the regeneration test**: would a faithful
+  rebuild from tree + spec + ordinary engineering competence *legitimately
+  diverge here* without this line? If a competent rebuilder could equally
+  pick another shape, the commitment is an item even when no alternative
+  was ever weighed; if the line only restates what spec or competence
+  dictates anyway, it is not an item.
   Items are edited freely as the design evolves — git records when. When an
   option is superseded, its items freeze at their last-true state.
   **Items and facts describe the live code only** — never commented-out,
@@ -71,7 +77,14 @@ every `.alt/` and you are reading exactly what the code implements.
   `- <date> [(<hash>)] <kind>: <text> (provenance)` — kind is a short open
   label (`pitfall`, `rationale`, `measurement`, `statement`, ...); the hash
   is required for facts demonstrable from a commit, omitted for author
-  statements. A fact never re-describes the chosen design, and **the tree
+  statements. One kind has its own rule — **`prior`**: a deliberate-looking
+  commitment whose rationale the artifacts cannot show gets `prior:
+  selected without recorded deliberation; the author's judgment is the
+  only evidence (inferred → Qn)` — never a speculated why. Admit it only
+  past the items' regeneration test ("every line had a reason" alone
+  admits nothing). Resolution is lazy: the question fires when the node
+  is next revisited, answered by the author, a recovered document, or
+  "habit, no strong reason" — each of which is filed and pays rent. A fact never re-describes the chosen design, and **the tree
   never references its own construction** (no batches, deferrals, or
   extraction bookkeeping — that lives in the ledger). A fact graduates to
   its own file in `<name>.fact/` only when it has *body* — measurement
