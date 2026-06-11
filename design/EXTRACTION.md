@@ -333,7 +333,11 @@ faithfulness is checked only at E; its last-coherent-blob half lives on in
 
 **Stage 3 — reduce.** One agent; reads the skeleton and every record —
 never the diffs. (If the records outgrow one context, fold per top-level
-skeleton subtree first, then the root.) In order:
+skeleton subtree first, then the root. Hierarchical ownership is by
+subtree: a sub-reduce that finds a record whose timeline belongs outside
+its assigned subtree hands it back for re-routing — it never places
+content across an ownership boundary; observed failure: cross-placed
+transitions silently dropped.) In order:
 
 1. **Identity** — cluster records into concept timelines by anchors and
    names; transitions stitch timelines across their own rename boundaries.
@@ -360,7 +364,12 @@ skeleton subtree first, then the root.) In order:
 5. **Placements** — write `extraction/placements.tsv`: every record id →
    the (post-prune) tree path(s) it landed at, or `discarded: <reason>`.
    The reduce never invents: every Facts/Moves line in the tree derives
-   from a record.
+   from a record. A transition judged **intra-generation churn** — an
+   internal reshape of a form that was later replaced wholesale — may
+   place as `absorbed: <the superseded generation's node>`: its why must
+   survive there as a hashed fact (`R-fold` verifies this mechanically).
+   `absorbed` is never valid onto a live (non-`.alt`) node — a live
+   form's reshape is a re-decision or an item edit, never an absorption.
 6. Concatenate window ledgers into `ledger.tsv`; run lint; fix.
 
 Closure — mechanical, and the reason parallel mode is safe (errors surface
@@ -382,3 +391,14 @@ checks tree-vs-records (no invention; placements honest) and skeleton
 items against the code at E. Fix loops as above: defects relay to the
 parked map/reduce agent, two rounds, then escalate. Acceptance = lint +
 closure + all audits clean → commit `design/`.
+
+**Recovery.** Per-window outputs are the durable checkpoint — never the
+orchestrator's journal (concurrent stages interleave nondeterministically,
+so journal replay re-runs paid work). Persist acceptance per window as
+runs complete (`extraction/audit-state.tsv`: window, status, source);
+recovery is a fresh launch whose window list is filtered by that file,
+passed in as arguments. Chunk long sweeps into several smaller runs so an
+interruption loses little. Audit recall is sampled, not exhaustive — an
+independent re-audit of an accepted window may still find marginal
+misses; the reduce's closure checks and tree-level audit are the
+deliberate second pass, so do not chase sweep-level audit convergence.

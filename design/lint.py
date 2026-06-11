@@ -420,6 +420,18 @@ if PARALLEL:
                 if not val[len("discarded:"):].strip():
                     err("P-place", pp, f"{rid}: discarded without a reason")
                 continue
+            if val.startswith("absorbed:"):
+                t = val[len("absorbed:"):].strip()
+                if REC[rid]["type"] != "transition":
+                    err("P-place", pp, f"{rid}: absorbed is only for transition records")
+                if ".alt" not in t:
+                    err("P-place", pp, f"{rid}: absorbed target must be a superseded "
+                        f"generation (.alt member): {t}")
+                if not os.path.exists(os.path.join(TREE, t)):
+                    err("P-place", pp, f"{rid}: target does not exist: {t}")
+                elif REC[rid]["hash"]:
+                    paths_by_hash.setdefault(REC[rid]["hash"], set()).add(t)
+                continue
             for t in (t.strip() for t in val.split(",")):
                 if t == "questions.md":
                     continue
@@ -432,6 +444,29 @@ if PARALLEL:
         missing = set(REC) - set(placed)
         if missing:
             err("P-place", pp, f"{len(missing)} record(s) never placed: {sorted(missing)[:10]}")
+        # R-fold: a placed (non-discarded) transition record must materialize as
+        # a Moves entry carrying its hash at one of its placed nodes — placement
+        # alone does not prove the re-decision was folded into the tree.
+        for rid, val in placed.items():
+            if REC[rid]["type"] != "transition" or val.startswith("discarded:"):
+                continue
+            if val.startswith("absorbed:"):
+                t = val[len("absorbed:"):].strip()
+                full = os.path.join(TREE, t)
+                if not any(REC[rid]["hash"] in re.findall(r"\(([0-9a-f]{8})\)", b)
+                           for b in parsed.get(full, {}).get("facts", [])):
+                    err("R-fold", pp, f"{rid}: absorbed transition ({REC[rid]['hash']}) "
+                        f"has no hashed Facts entry at {t}")
+                continue
+            folded = False
+            for t in (t.strip() for t in val.split(",")):
+                full = os.path.join(TREE, t)
+                for b in parsed.get(full, {}).get("moves", []):
+                    if REC[rid]["hash"] in re.findall(r"\(([0-9a-f]{8})\)", b):
+                        folded = True
+            if not folded:
+                err("R-fold", pp, f"{rid}: placed transition ({REC[rid]['hash']}) has no "
+                    f"Moves entry at any placed node — re-decision dropped by the reduce")
         # R-derive: every hashed Facts/Moves entry in the tree comes from a
         # record placed at that node ("the reduce never invents").
         for p in node_files:
