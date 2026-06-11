@@ -332,12 +332,15 @@ for p in node_files:
 
 # ---------- R-frozen: .alt members end superseded; main nodes do not ----------
 for p in node_files:
-    in_alt = ".alt" + os.sep in p or p.split(os.sep)[-2].endswith(".alt")
+    # the freeze obligation is the alt MEMBER's (the node directly inside
+    # X.alt/); its subtree parts are frozen with it and unconstrained
+    in_alt_member = p.split(os.sep)[-2].endswith(".alt")
+    in_alt_subtree = ".alt" + os.sep in p
     mv = parsed[p]["moves"]
     last = mv[-1] if mv else ""
-    if in_alt and not re.search(r"(replaced by \[\[|removed:)", last):
+    if in_alt_member and not re.search(r"(replaced by \[\[|removed:)", last):
         err("R-frozen", p, ".alt member's Moves must end in 'replaced by'/'removed'")
-    if not in_alt and re.search(r"replaced by \[\[", last) and "revived" not in last:
+    if not in_alt_subtree and re.search(r"replaced by \[\[", last) and "revived" not in last:
         err("R-frozen", p, "main-tree node ends 'replaced by' (should it be in .alt/?)")
 
 # ---------- R-thin: node with no decision-content is a module-map entry ----------
