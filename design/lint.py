@@ -222,10 +222,11 @@ def blocks(text):
     return [b for b in out if b.strip()]
 
 def norm_why(b):
-    """strip entry head + provenance, collapse whitespace -> comparable why"""
+    """strip entry head + provenance, collapse whitespace and backticks
+    (rendering, not content) -> comparable why"""
     b = re.sub(r"^- [^:]*?(\[\[[^\]]+\]\])?:", "", b, count=1)
     b = PROV.sub("", b.strip())
-    return re.sub(r"\s+", " ", b).strip().rstrip(".")
+    return re.sub(r"\s+", " ", b.replace("`", "")).strip().rstrip(".")
 
 parsed = {}  # path -> dict(items, facts, moves)
 for p in node_files:
@@ -306,7 +307,9 @@ def resolve(ref, frm):
     return near[0] if len(near) == 1 else (cands[0] if cands else None)
 
 for p in node_files:
-    for ref in LINK.findall(open(p).read()):
+    # backtick-quoted spans are verbatim code (e.g. a TOML `[[table]]`
+    # faithfully quoted in a why), never links
+    for ref in LINK.findall(re.sub(r"`[^`]*`", "", open(p).read())):
         if resolve(ref, p) is None:
             err("R-link", p, f"unresolvable link [[{ref}]]")
 
@@ -487,7 +490,7 @@ if PARALLEL:
         for v in REC.values():
             if v["type"] == "transition" and v["hash"] and v["why"]:
                 whys_by_hash.setdefault(v["hash"], set()).add(
-                    re.sub(r"\s+", " ", v["why"]).strip().rstrip("."))
+                    re.sub(r"\s+", " ", v["why"].replace("`", "")).strip().rstrip("."))
         for p in node_files:
             for b in parsed[p]["moves"]:
                 m = ENTRY_HEAD.match(b)

@@ -100,8 +100,10 @@ every `.alt/` and you are reading exactly what the code implements.
   - `- <date> (<hash>) replaced [[X]]: <why> (provenance)` — on the winner.
   - `- <date> (<hash>) replaced by [[X]]: <why> (provenance)` — on the loser,
     now in `.alt/`. **The why is copied verbatim on both sides** — same
-    sentence, never paraphrased (verbatim means the sentence, not the
-    line-wrapping).
+    sentence, never paraphrased (verbatim means the sentence — line-wrapping
+    and code-token backticks are rendering, not content; a literal `[[...]]`
+    token quoted from source material is backtick-escaped so it does not
+    read as a link).
   - `- <date> (<hash>) dropped: <what>: <why> (provenance)` — part of this
     design was deleted with **no successor**. One line here; no ghost node for
     "not doing it". Dropping an external dependency but reimplementing its
