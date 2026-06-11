@@ -111,7 +111,8 @@ def check_window(nn):
             else:
                 err("P-type", rp, f"{tag}: bad type {typ!r}")
             if rid:
-                REC[rid] = {"hash": r.get("hash"), "type": typ, "window": nn}
+                REC[rid] = {"hash": r.get("hash"), "type": typ, "window": nn,
+                            "why": r.get("why") if typ == "transition" else None}
     win_ids = {i for i, v in REC.items() if v["window"] == nn}
     if not os.path.exists(lp):
         err("P-files", lp, "missing window ledger")
@@ -478,6 +479,31 @@ if PARALLEL:
                 if rel not in paths_by_hash.get(m.group(3), set()):
                     err("R-derive", p, f"entry ({m.group(3)}) has no record placed "
                         f"here: {b.splitlines()[0][:60]!r}")
+        # R-why: a replaced/replaced-by move why with (diff) provenance must be
+        # the verbatim why of a transition record at that hash — the reduce
+        # never authors a why ("move pairs are generated from each
+        # transition's single why, verbatim by construction").
+        whys_by_hash = {}
+        for v in REC.values():
+            if v["type"] == "transition" and v["hash"] and v["why"]:
+                whys_by_hash.setdefault(v["hash"], set()).add(
+                    re.sub(r"\s+", " ", v["why"]).strip().rstrip("."))
+        for p in node_files:
+            for b in parsed[p]["moves"]:
+                m = ENTRY_HEAD.match(b)
+                if not m or not m.group(3):
+                    continue
+                if not re.search(r"replaced( by)? \[\[", b.splitlines()[0] + " " +
+                                 (b.splitlines()[1] if len(b.splitlines()) > 1 else "")):
+                    continue
+                pm = PROV.search(b)
+                if not pm or pm.group(1) != "diff":
+                    continue
+                h = m.group(3)
+                if h in whys_by_hash and norm_why(b) not in whys_by_hash[h]:
+                    err("R-why", p, f"move why ({h}) is not the verbatim why of any "
+                        f"transition record at that hash — reduce-authored why: "
+                        f"{norm_why(b)[:70]!r}")
 
 # ---------- optional: ledger checks ----------
 if "--ledger" in sys.argv:
