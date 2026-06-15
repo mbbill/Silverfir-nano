@@ -86,6 +86,13 @@
   one window state per absolute depth — corrected from an earlier D0-D4 framing
   (diff).
 
+- 2026-02-22 (4bb1de83) limitation: the TOS register window holds operands in
+  64-bit integer GPRs, so float values are bit-cast through integer registers
+  across the handler chain rather than kept FP-resident; the author flags this
+  as possibly non-optimal on some platforms and notes float-heavy workloads were
+  not extensively profiled — the later micro-JIT re-adds GPR-vs-FP slot-location
+  tracking ([[micro-jit]]) precisely to keep floats FP-resident (author).
+
 ## Moves
 
 - 2026-03-07 replaced by [[compiler]]: the interpreter's preserve_none
