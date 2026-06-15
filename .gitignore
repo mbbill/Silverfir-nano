@@ -1,9 +1,5 @@
 target
 /tmp
-# extraction tree is untracked during tuning; commit only when a run is locked in
-design/design-tree/
-design/extraction/ledger.tsv
-design/extraction/questions.md
-design/extraction/win-*
-design/extraction/placements.tsv
+# design build records (per-run audit trails) are archived but not tracked;
+# the design tree itself IS the committed deliverable
 design/_bak-*/
