@@ -60,6 +60,14 @@
   and hot-local rationale facts; recovered in full in
   [[fast-interpreter.fact/interpreter-design-paper]] (author).
 
+- 2026-06-14 rationale: the interpreter's governing objective is to minimize
+  the number of dispatches — each tail-call hop is the dominant
+  per-instruction cost on modern CPUs — so every technique (fusion, the TOS
+  register window, hot-local caching) is a means to fewer or cheaper
+  dispatches, not an end in itself; fusion is the primary dispatch-count
+  reducer but only one possible means, and a design that reduces dispatch
+  another way need not use it (author).
+
 ## Moves
 
 - 2026-02-14 replaced [[fast]]: the fast compiled-handler interpreter is the

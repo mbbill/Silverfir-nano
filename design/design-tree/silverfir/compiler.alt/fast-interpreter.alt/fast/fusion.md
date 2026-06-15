@@ -86,6 +86,14 @@
   cross-reference being reserved op names so generated fused names cannot collide
   (diff).
 
+- 2026-06-14 rationale: fusion is not unconditionally good. Its discovered
+  pattern set is profile-dependent — tuned to the profiled workload, it helps
+  far less on un-profiled or dissimilar code — and a large fused-pattern set
+  explodes the handler/binary size (a different explosion from XIR's
+  register-permutation one, but the same size cost); so fusion trades binary
+  size and generality for dispatch reduction and is the wrong choice when
+  small size or workload-agnostic performance is the goal (author).
+
 ## Moves
 
 - 2026-02-06 (478aee26) replaced [[hand-written-fused-handlers]]: each fused

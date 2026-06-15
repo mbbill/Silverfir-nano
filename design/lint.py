@@ -279,11 +279,12 @@ for p in node_files:
 
     # R-redundant: a 'rationale' fact must not share a commit with a Moves
     # entry on the same node — the move already carries that re-decision's why.
+    # Only real commit hashes count; author entries (no hash) never collide.
     move_hashes = {m.group(3) for b in parsed[p]["moves"]
-                   if (m := ENTRY_HEAD.match(b))}
+                   if (m := ENTRY_HEAD.match(b)) and m.group(3)}
     for b in parsed[p]["facts"]:
         m = ENTRY_HEAD.match(b)
-        if m and m.group(4).strip() == "rationale" and m.group(3) in move_hashes:
+        if m and m.group(4).strip() == "rationale" and m.group(3) and m.group(3) in move_hashes:
             err("R-redundant", p, f"rationale fact shares commit {m.group(3)} with a "
                 f"move on this node; the move already records the why")
     # R-meta: tree never references its own construction

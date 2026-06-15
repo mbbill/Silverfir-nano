@@ -97,6 +97,14 @@
   rounding, and the saturating truncations test is_nan() rather than !is_finite()
   so infinities saturate to the integer bounds instead of collapsing to 0 (diff).
 
+- 2026-06-14 rationale: cross-language LTO couples the toolchain versions —
+  with LTO enabled the compilers emit LLVM IR instead of object files, so
+  clang and rustc must use the SAME LLVM version for the IR to link; this
+  version lock-step, on top of the Win64 failure and the
+  preserve_none/musttail C-only requirement, is the deeper limit of the
+  Rust-impl-plus-C-handler approach — an interpreter that must avoid this
+  coupling cannot use the C trampoline at all (author).
+
 ## Moves
 
 - 2025-12-03 (e76be08e) replaced [[hand-maintained-handler-tables]]: adding one
