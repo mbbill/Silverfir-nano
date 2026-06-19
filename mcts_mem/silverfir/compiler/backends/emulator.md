@@ -59,3 +59,12 @@
   not be processed; the fix special-cases reserved args as identity-only (the
   target register already holds the cached-local value, no move happens) and
   asserts they are non-moving, matching the native backends (code).
+
+## Moves
+
+- 2026-03-08 (e25f8063) replaced [[lockstep-differential-runner]]: keeping a
+  separate interpreter and the native backend running side by side in
+  instruction-lockstep, synchronizing their step boundaries and paused state at
+  every instruction, proved too complex and surfaced too many issues to be worth
+  it, so it was abandoned early on feasibility grounds rather than on the
+  differential idea being unsound (sourced)

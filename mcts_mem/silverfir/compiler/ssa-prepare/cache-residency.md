@@ -130,6 +130,14 @@
   coloring) nano was built to avoid; the gain did not justify reopening that door
   (sourced).
 
+- 2026-05-24 (30779e5d) pitfall: ALGORITHM4's entry-block capacity counted only
+  operand-stack transient pressure and ignored that incoming parameters arrive
+  pinned in their GP/FP argument lanes until consumed, so on a tight GP budget
+  (x86_64: 7 allocatable minus 4 argument lanes) cap(R_root) over-admitted
+  residents the machine layer could not bind; the entry block now lifts peak
+  GP/FP pressure by the simulated argument-lane footprint before computing its
+  cap, and arm64's wider register file is why the bug stayed hidden there (code).
+
 ## Moves
 
 - 2026-04-06 (0b5d2ea0) replaced [[per-block-residency]]: choosing a resident set

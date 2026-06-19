@@ -106,3 +106,9 @@
   gets *worse* local-cache allocation (more locals to cover) — footprint cost
   plus negative interaction with the local cache, not a refactor casualty
   (sourced).
+
+- 2026-04-30 (92a3a400) replaced [[compiler.alt/block-streaming-pipeline]]:
+  the whole-function joint planner and cross-block optimizations both need more
+  than one block live at once, so per-block streaming would either lose codegen
+  quality or buffer the whole function back and defeat the one-block memory goal
+  (sourced)

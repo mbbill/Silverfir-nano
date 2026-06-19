@@ -40,6 +40,13 @@
   'missing float-width tracking' error compiling lua.wasm — a contract a backend
   joining the shared pipeline must satisfy (code).
 
+- 2026-05-24 (30779e5d) pitfall: arm32's fixed helper state save/restore drew its
+  two saved registers from the 2-slot rotating scratch pool at both save and
+  restore, but a BLX between them advances the pool cursor by one, so restore
+  handed the slots back in swapped order (R12 <-> R14/LR) and the function
+  returned through `bx lr` into garbage; the save/restore must name the physical
+  registers (R12 and R14) directly rather than re-draw from pool rotation (code).
+
 ## Moves
 
 - 2026-04-01 (db81af27) replaced [[release-based-scratch-guard]]: release()

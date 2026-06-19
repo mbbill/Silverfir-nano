@@ -54,6 +54,14 @@
   only JIT-attributed faults are counted against the storm guard and resumed by
   patching RAX=1 and RIP=return_error_label (code).
 
+- 2026-05-24 (30779e5d) pitfall: the userspace-vs-rt_sigaction layout mismatch
+  fixed for Linux x86_64 recurred on Linux arm64 and armv7-a — their hand-rolled
+  kernel_sigaction (32 bytes, field order handler/flags/restorer/mask) is the
+  rt_sigaction syscall ABI, but libc's sigaction() wrapper expects the 152-byte
+  userspace layout (128-byte sigset_t, order handler/mask/flags/restorer), so
+  libc read garbage flags and the SIGSEGV/SIGBUS handler never installed, hanging
+  the first JIT trap; every Linux port must mirror the userspace layout (code).
+
 ## Moves
 
 - 2026-04-07 (11b835a2) replaced [[monolithic-trap-signal]]: the guard-page

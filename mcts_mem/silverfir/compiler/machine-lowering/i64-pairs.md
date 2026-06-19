@@ -36,3 +36,5 @@
 ## Moves
 
 - 2026-03-21 (cf1c59ed) replaced [[late-i64-legalization-pass]]: the post-lowering pass had to rediscover by storage-flow analysis the i64/i32/float register types and re-pack an inflated GP bank that were already known during lowering; emitting pair MachineIR straight from the lowerer keeps that information in hand and removes the analysis, hi-half tracking, and bank-compaction infrastructure (code).
+
+- 2026-03-20 (4316be53) replaced [[early-semantic-ir-legalization]]: splitting i64 at the semantic-IR level forces planning, LIR, locals, params, returns, and frame layout to all carry a 32-bit pair shape, duplicating arity bookkeeping the lowerer can do alone since it already knows each value's type, so keeping the split inside the lowerer wins by leaving everything above it Wasm-shaped and scalar (sourced)

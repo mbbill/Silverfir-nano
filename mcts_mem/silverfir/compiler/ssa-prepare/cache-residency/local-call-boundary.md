@@ -35,6 +35,14 @@
   alongside the cache prefs and carried on each boundary op rather than recomputed
   at lowering (code).
 
+- 2026-05-24 (30779e5d) pitfall: cache-only boundary-repair blocks (whose ops are
+  only LocalEnsureCache / LocalReserveCache / LocalDropCache) exist so the machine
+  layer gets a fresh cache-binding slate at a region boundary, so the CFG cleanup
+  pass must not fold them into their single predecessor; merging forced the
+  predecessor to bind the union of its exit cache and the successor's ensure slots
+  at once, which exceeds physical lane count on tight-budget arches once
+  unconsumed parameters are still register-pinned (code).
+
 ## Moves
 
 - 2026-05-14 (9cdd924a) replaced [[publish-all-boundary]]: requiring every
