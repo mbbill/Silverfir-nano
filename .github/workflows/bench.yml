@@ -44,6 +44,12 @@ jobs:
       run:
         shell: bash
     steps:
+      # Windows runners hit MAX_PATH on the deeply nested mcts_mem/ .alt/ paths;
+      # enable Git long paths before checkout so it can write them.
+      - name: Enable Git long paths
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
       - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
