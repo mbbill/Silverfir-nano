@@ -19,6 +19,12 @@ jobs:
     runs-on: windows-latest
     timeout-minutes: 90
     steps:
+      # Some tracked design-tree artifacts have deeply nested .alt/ paths that
+      # exceed Windows' 260-char MAX_PATH. Enable Git long-path support before
+      # checkout so it can write them (actions/checkout reads --system config).
+      - name: Enable Git long paths
+        run: git config --system core.longpaths true
+
       - name: Checkout
         uses: actions/checkout@v4
 
