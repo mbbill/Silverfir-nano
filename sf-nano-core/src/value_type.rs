@@ -510,6 +510,13 @@ impl ValueType {
         matches!(self, ValueType::F32 | ValueType::F64 | ValueType::Unknown)
     }
 
+    /// True for values banked in the FP/vector register file (F32, F64, V128) —
+    /// the register-bank predicate, distinct from `is_float` / `is_vec`.
+    #[inline]
+    pub fn is_fp(&self) -> bool {
+        matches!(self, ValueType::F32 | ValueType::F64 | ValueType::V128)
+    }
+
     #[inline]
     pub fn is_vec(&self) -> bool {
         matches!(self, ValueType::V128 | ValueType::Unknown)

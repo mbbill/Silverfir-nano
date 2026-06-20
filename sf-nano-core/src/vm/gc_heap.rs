@@ -33,7 +33,6 @@ pub(crate) struct GcStruct {
 #[derive(Debug, Clone)]
 pub(crate) struct GcArray {
     pub(crate) type_idx: u32,
-    #[allow(dead_code)]
     pub(crate) elements: collections::Vec<Value>,
 }
 
@@ -96,7 +95,6 @@ impl GcHeap {
         }
     }
 
-    #[allow(dead_code)]
     #[inline]
     pub(crate) fn get_array(&self, gc_ref: GcRef) -> Result<&GcArray, WasmError> {
         match self.get(gc_ref)? {
@@ -105,7 +103,6 @@ impl GcHeap {
         }
     }
 
-    #[allow(dead_code)]
     #[inline]
     pub(crate) fn get_array_mut(&mut self, gc_ref: GcRef) -> Result<&mut GcArray, WasmError> {
         match self.get_mut(gc_ref)? {

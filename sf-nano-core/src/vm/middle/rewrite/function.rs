@@ -501,7 +501,7 @@ fn count_cached_local_budget_units(
             .get(slot.0 as usize)
             .copied()
             .unwrap_or(ValueType::I64);
-        if ty.is_float() {
+        if ty.is_fp() {
             fp += 1;
         } else {
             gp += gp_value_budget_units(ty, gp_unit_bytes);

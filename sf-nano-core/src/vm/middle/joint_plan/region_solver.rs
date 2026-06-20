@@ -512,7 +512,7 @@ fn build_local_meta(
                 .get(slot_index)
                 .copied()
                 .unwrap_or(ValueType::I64);
-            if ty.is_float() {
+            if ty.is_fp() {
                 LocalMeta {
                     bank: Bank::Fp,
                     units: 1,
