@@ -52,3 +52,10 @@
   64-bit zero test on an i32 result is equivalent to a 32-bit one, and both
   lhs==0 and rhs==0 operand orders are matched because the wasm operand may be
   hoisted to either side (code).
+
+- 2026-06-20 correction: the 5eca447e fact above describes trapping truncation
+  as an out-of-line helper call (arm64_trapping_trunc); that symbol does not
+  exist. arm64 trapping truncation is now lowered inline by lower_trapping_trunc
+  — an inline NaN check (fcmp src,src) plus upper/lower bounds checks with a
+  one-way trap exit (no register preservation) followed by native fcvtzs/fcvtzu;
+  only arm32/x86_64 call out-of-line helpers (code).

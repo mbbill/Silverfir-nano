@@ -1,16 +1,19 @@
 - A single fallible error type (`WasmError`) carries every failure the engine
-  raises, tagged with a category that names the phase that detected it:
-  malformed (binary decode), invalid (validation), unlinkable (instantiation /
-  linking), and trap (execution).
+  raises: the spec-phase variants malformed (binary decode), invalid
+  (validation), unlinkable (instantiation / linking), and trap (execution); the
+  engine-internal variants exhaustion, exit, and internal; plus the two
+  exception-handling variants exception (uncaught wasm exception surfaced to the
+  embedder) and host_throw (host-side catchable throw, VM-internal).
 
 - The category tracks the phase at which a module is rejected, not the kind of
   the failure; the same condition is reported under whichever phase first
   detects it.
 
-- `WasmError` is a `Copy` enum whose variants carry `&'static str` messages:
-  error construction allocates nothing and errors can be built in const fns, at
-  the cost of dropped dynamic interpolation — the offending value no longer
-  appears in the message text (`WasmError`).
+- `WasmError` is a non-`Copy` enum (`Clone`); its common variants carry
+  `&'static str` messages and stay const-constructible and allocation-free,
+  while two variants carry heap payloads: exception holds an
+  `Option<String>` module tag name and host_throw holds a `Vec<Value>`
+  (`WasmError`).
 
 ## Facts
 
@@ -32,6 +35,12 @@
   range is an Unlinkable failure (instantiation/linking), and a bad opcode in a
   constant expression is Invalid (validation) not Malformed (decode) — the
   category tracks the phase that rejects the module (code).
+
+- 2026-04-22 statement: the exception-handling feature made WasmError non-Copy
+  (it derives Clone) by adding two heap-carrying variants — Exception
+  (Option<String>) and HostThrow (Vec<Value>); the common spec-phase and
+  engine-internal variants still carry &'static str, remain const-constructible,
+  and allocate nothing, so allocation is confined to the two EH variants (code).
 
 ## Moves
 

@@ -26,6 +26,11 @@
   layer holds semantic markers, the lowered layer holds concrete
   placement-resolved ops (code).
 
+- 2026-06-20 correction: the 2026-03-06 (80645597) Fact above is superseded
+  historical state — no CacheSpill/CacheFill markers exist; the decode/placement
+  split (sibling Fact c58d3a92, same day) removed them, and the live Item now
+  states semantic IR carries no cache registers (code).
+
 - 2026-06-14 rationale: semantic-IR leaf inlining (replacing a call to a small
   leaf callee with the callee's body before lowering) is deliberately left
   disabled. nano is a streaming compiler that compiles function-by-function (not

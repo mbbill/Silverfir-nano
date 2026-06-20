@@ -8,10 +8,11 @@
   registers directly, while accesses to other memories first load that memory's view
   base from the runtime context (`lower_mem0_load_continuation`).
 
-- The bounds-check address arithmetic folds the static access offset and the access
-  width into a single addend added once to the zero-extended 32-bit Wasm address, and
-  the add is skipped when that combined addend is zero; an aligned zero-offset access
-  checks the bare extended address with no extra instruction.
+- The bounds-check address arithmetic adds the static offset and the access width to
+  the zero-extended 32-bit Wasm address as two separate adds; when a free transient is
+  available the access-width add targets a distinct check register (clean effective
+  address, residual 0), and only under register pressure does it fold into the address
+  and return a residual the continuation subtracts (`lower_memory_load`).
 
 ## Facts
 

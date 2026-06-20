@@ -6,10 +6,10 @@
 
 - The high-half register of an i64-pair op is dropped when a backward
   per-instruction liveness analysis over MachineIR marks it not demanded by any later
-  computation; 32-bit GP lowering then emits only the low half for selected pair
-  add/sub/and, extend32_s, and small-count right shifts. The analysis is a shared
-  MachineIR module feeding both 32-bit GP backends the same dead-high-half facts
-  (`Low32DeadHiDefs`).
+  computation; the backend native emitter (arm32 / riscv32) then emits only the low half
+  for selected pair add/sub/and, extend32_s, and small-count right shifts. The analysis
+  is a shared MachineIR module feeding both 32-bit GP backends the same dead-high-half
+  facts (`Low32DeadHiDefs`).
 
 ## Facts
 

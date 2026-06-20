@@ -62,6 +62,13 @@
   libc read garbage flags and the SIGSEGV/SIGBUS handler never installed, hanging
   the first JIT trap; every Linux port must mirror the userspace layout (code).
 
+- 2026-06-20 correction: the 2026-05-24 (30779e5d) sigaction fact overstates
+  scope — the fix landed only on x86_64 and arm64. armv7-a's signal handler
+  (armv7a_linux.rs) was never compiled in any build because guard pages are
+  64-bit-only (the 8 GB + 64 KB window cannot fit a 32-bit address space), and
+  that dead file has now been removed; armv7-a traps via the explicit
+  bounds-check + per-call stack-precheck path, with no signal handler (code).
+
 ## Moves
 
 - 2026-04-07 (11b835a2) replaced [[monolithic-trap-signal]]: the guard-page

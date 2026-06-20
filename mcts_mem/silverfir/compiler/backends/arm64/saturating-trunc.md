@@ -1,6 +1,7 @@
-- The arm64 backend emits saturating float-to-int truncations inline as native
-  `fcvtzs`/`fcvtzu`; only trapping truncations, which must detect out-of-range
-  and NaN and raise a Wasm trap, stay an out-of-line helper call
+- The arm64 backend emits both saturating and trapping float-to-int
+  truncations inline as native `fcvtzs`/`fcvtzu`; trapping truncations add an
+  inline NaN check plus bounds checks with a one-way trap exit and no register
+  preservation, unlike arm32/x86_64 which call out-of-line helpers
   (`lower_trapping_trunc`).
 
 ## Moves

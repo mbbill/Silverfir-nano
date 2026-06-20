@@ -8,6 +8,10 @@
 - The fusion is limited to integer/test conditions and never fuses float
   compares; float-compare-and-branch is not fused anywhere.
 
+- The fusion is additionally skipped for i64 IntCompare/TestBits on 32-bit GP
+  targets (gp_reg_width == 4), where an i64 compare is a register pair that
+  cannot fold into one hardware compare-and-branch.
+
 - The fusion fires only when the compare-result register is transient.
 
 ## Facts

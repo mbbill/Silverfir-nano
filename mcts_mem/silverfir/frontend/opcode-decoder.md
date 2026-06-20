@@ -29,6 +29,11 @@
   is empty, a byte below 0x80 is a value type, otherwise the bytes are an s33
   signed-LEB type index (negative is rejected as malformed) (code).
 
+- 2026-06-20 correction: the 2024-01-30 (80306a9a) Fact above is stale on the
+  type-index form — the block-type type index is read as a 32-bit signed LEB
+  (read_leb128_i32), not an s33, with negative rejected as malformed
+  (decode_block_type) (code).
+
 - 2026-04-11 (89d889fb) rationale: the lazy op decoder accumulated every
   decoded op of a function body in one growing buffer, so a single-consumer
   decode's peak buffer scaled with the whole body length even though consumed

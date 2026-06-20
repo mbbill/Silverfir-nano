@@ -22,3 +22,13 @@
   lands in the raw-value window, where ref-typed globals are re-encoded through
   the machine ref representation and sub-word access is masked into the 8-byte
   cell (code).
+
+- 2026-06-20 correction: the c86da6a9 Fact's "at most 8 memories" is stale —
+  emu32 now enforces at most 32 memories (`MAX_MEMORY_COUNT_32`); tables stay at
+  16 (`MAX_TABLE_COUNT_32`) (code).
+
+- 2026-06-20 correction: the 219b5e56 Fact's separate `GlobalInst`-metadata
+  sub-window no longer exists — it was collapsed into an inline globals-ptr tail
+  appended to the context window (`globals_ptrs_inline_offset`); only the
+  raw-value window remains a separate window, and its constant is spelled
+  `GLOBALS_RAW_BASE_32` (plural), not `GLOBAL_RAW_BASE_32` (code).

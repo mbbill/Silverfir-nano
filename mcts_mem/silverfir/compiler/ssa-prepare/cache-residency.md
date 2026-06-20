@@ -138,6 +138,14 @@
   GP/FP pressure by the simulated argument-lane footprint before computing its
   cap, and arm64's wider register file is why the bug stayed hidden there (code).
 
+- 2026-06-20 correction: the 2026-04-08 (47daba23) Fact above was reversed on
+  2026-04-27 (65ccf38f) — gp32 `i64` cached `local.get`/`local.tee` again
+  source-aliases both cache lo/hi registers rather than materializing a real
+  linear pair. The "from the frame slot" wording in that Fact was also
+  imprecise: the Apr-8 fix snapshotted from the cache registers, not the frame
+  slot; only the non-cached `LocalGetSlot` path actually loads from the frame
+  (code).
+
 ## Moves
 
 - 2026-04-06 (0b5d2ea0) replaced [[per-block-residency]]: choosing a resident set

@@ -12,21 +12,23 @@
   `Copy` index (`ExnRef`), with the exception's field payload stored out of
   line from the registry entry.
 
-- A raw pooled reference is resolved back to its value through a per-store
-  reference registry whose entries carry an i31 scalar inline and a GC
-  reference as the originating store pointer plus its index handle
-  (`RefRegistryEntry`); resolution against this registry is what reattaches a
-  `Copy` handle to its store-local value after a runtime-boundary crossing.
+- A raw pooled reference is resolved back to its value through a cross-store
+  reference registry shared across linked stores whose entries carry an i31
+  scalar inline and a GC reference as the originating store pointer plus its
+  index handle (`RefRegistryEntry`); resolution against this registry is what
+  reattaches a `Copy` handle to its originating-store value after a
+  runtime-boundary crossing.
 
 - `ref.test` and `ref.cast` are decided at runtime, not at compile time, by a
   reference type-check that dispatches on the handle's class (null, extern,
   host, pooled) and, for pooled i31/GC references, walks the structural and
   declared subtype relation in the store's type context (`check_ref_type_match`).
 
-- A v128 value's 16-byte payload is interned into a per-store SIMD registry at
-  every runtime-boundary crossing, with the operand/frame slot carrying the
-  registry index in place of the payload; the bytes are recovered by
-  de-interning on the way back out (`SharedSimdRegistry`).
+- A v128 value's 16-byte payload is interned into a cross-store SIMD registry
+  shared across linked stores at every runtime-boundary crossing, with the
+  operand/frame slot carrying the registry index in place of the payload; the
+  bytes are recovered by de-interning on the way back out
+  (`SharedSimdRegistry`).
 
 - A thrown Wasm exception that propagates past every active `try_table` handler
   in an invocation surfaces to the embedder as a distinct error variant

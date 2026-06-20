@@ -1,7 +1,8 @@
 - Each SSA-IR instruction is a flat fixed-size 16-byte record (`SsaInst`) with
-  packed 4-byte operands; per-op payloads — primitive ops, constants, call ops,
-  and overflow args — are interned into program-level pools rather than carried
-  inline, keeping `SsaBlock.ops` cache-dense (`primitive_pool`, `const_pool`).
+  packed 4-byte operands; per-op payloads — primitive ops, constants, call ops —
+  are interned into program-level pools rather than carried inline, while
+  overflow args live block-level in `SsaBlock.extra_args` (indexed by
+  `SsaInst.meta`), keeping `SsaBlock.ops` cache-dense.
 
 ## Facts
 
@@ -10,6 +11,11 @@
   PRIMITIVE_BASE=10), which caps the number of distinct primitive ops a single
   function may hold at u16::MAX-PRIMITIVE_BASE+1; interning past that ceiling
   returns an internal error rather than overflowing the opcode (code).
+
+- 2026-06-20 statement: overflow args are not program-level interned — they live
+  block-level in `SsaBlock.extra_args` (indexed by `SsaInst.meta`) and are not
+  deduped; only const_pool / primitive_pool / call_ops are program-level interned
+  (the 2026-04-13 move's "extra args" listing is imprecise) (code).
 
 ## Moves
 

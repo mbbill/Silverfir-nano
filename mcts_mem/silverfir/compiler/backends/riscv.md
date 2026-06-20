@@ -22,3 +22,10 @@
   pool has 2 slots an out-of-range offset must be folded into that address
   scratch before the source value is materialized, or the address, source, and
   large-offset scratches overlap live ranges and exhaust the pool (code).
+
+- 2026-06-20 correction: the 17a3fe31 "2-slot GP scratch pool" premise is
+  stale — the GP scratch pool is now 3 slots on RV64
+  (`ScratchPool<RiscvReg, 3>`) and 6 slots on RV32 (`ScratchPool<RiscvReg, 6>`).
+  The ordering rule it states still holds: an out-of-range static offset is
+  folded into the address scratch before the source value is materialized
+  (code).

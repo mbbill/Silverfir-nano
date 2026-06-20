@@ -184,7 +184,7 @@ benefit(R, L) = Σ B ∈ OwnedBlocks(R):
 
 `access_count(B, L)` is `local.get + local.set + local.tee` count for `L` in
 block `B`. Each such access costs one frame op if uncached, zero if cached.
-`block_weight(B) = 10^loop_depth(B)` by default.
+`block_weight(B) = 8^loop_depth(B)` by default.
 
 **Call tax.**
 

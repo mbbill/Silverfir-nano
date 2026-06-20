@@ -163,6 +163,13 @@
   entry block and move the entry's id, which machine lowering relies on to emit
   the parameter-load / non-parameter-zero entry init (code).
 
+- 2026-06-20 correction: the 2026-03-27 (3a9284d1) pitfall no longer
+  holds — gp32 `i64` (and Select) const operands are now absorbed on all targets,
+  and the pair lowering consumes Const operands by splitting them into lo/hi
+  `Imm64` (use_i64_operand_pair), so there is no `unwrap_value()` panic; const
+  folding into operands is no longer disabled for `i64` ops on 32-bit GP targets
+  (code).
+
 ## Moves
 
 - 2026-03-12 (2ea0bb68) replaced [[two-stage-planning]]: the planning layer
