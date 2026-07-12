@@ -582,7 +582,6 @@ pub(crate) struct SsaProgram {
     pub result_types: collections::Vec<ValueType>,
     pub local_slot_info: collections::Vec<LocalSlotInfo>,
     pub block_entry_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
-    pub block_cfg_origins: collections::Vec<collections::Vec<u32>>,
     pub value_types: collections::Vec<ValueType>,
     pub value_sink_local: collections::Vec<Option<FrameSlot>>,
     /// Backing store for `SsaOperand::Const` — each entry is a 64-bit value.
@@ -652,14 +651,6 @@ impl SsaProgram {
         let idx = self.call_ops.len() as u32;
         self.call_ops.push(call);
         idx
-    }
-
-    #[cfg(test)]
-    pub(crate) fn final_block_for_cfg_block(&self, cfg_block: u32) -> Option<SsaTarget> {
-        self.block_cfg_origins
-            .iter()
-            .position(|origins| origins.contains(&cfg_block))
-            .map(|index| SsaTarget(index as u32))
     }
 }
 

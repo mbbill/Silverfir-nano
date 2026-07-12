@@ -198,7 +198,6 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
             {
                 continue;
             }
-            merge_block_origins_into_target(program, block_index, target.as_usize());
             program.entry = target;
             remove_blocks(program, &[block_index]);
             return true;
@@ -232,7 +231,6 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
         for (loc, new_edge) in incoming.into_iter().zip(composed.into_iter()) {
             *edge_at_mut(program, loc) = new_edge;
         }
-        merge_block_origins_into_target(program, block_index, target.as_usize());
         remove_blocks(program, &[block_index]);
         return true;
     }
@@ -345,7 +343,6 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
 
         pred.ops.extend(merged_ops);
         pred.terminator = merged_terminator;
-        merge_block_origins(pred_index, succ_index, &mut program.block_cfg_origins);
         remove_blocks(program, &[succ_index]);
         return true;
     }
@@ -670,61 +667,29 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
 
     let old_blocks = core::mem::take(&mut program.blocks);
     let old_entries = core::mem::take(&mut program.block_entry_cached_slots);
-    let keep_origins = !program.block_cfg_origins.is_empty();
-    let old_origins = if keep_origins {
-        core::mem::take(&mut program.block_cfg_origins)
-    } else {
-        collections::Vec::new()
-    };
     let kept_blocks = block_len.saturating_sub(removed.len());
     let mut new_blocks = collections::Vec::with_capacity(kept_blocks);
     let mut new_entries =
         collections::Vec::with_capacity(old_entries.len().saturating_sub(removed.len()));
-    let mut new_origins = if keep_origins {
-        collections::Vec::with_capacity(old_origins.len().saturating_sub(removed.len()))
-    } else {
-        collections::Vec::new()
-    };
 
-    if keep_origins {
-        for (old_index, ((mut block, entry_slots), origins)) in old_blocks
-            .into_iter()
-            .zip(old_entries.into_iter())
-            .zip(old_origins.into_iter())
-            .enumerate()
-        {
-            if removed_mask[old_index] {
-                continue;
-            }
-            remap_terminator_targets(&mut block.terminator, &mapping);
-            block.id = mapping[old_index];
-            new_blocks.push(block);
-            new_entries.push(entry_slots);
-            new_origins.push(origins);
+    for (old_index, (mut block, entry_slots)) in old_blocks
+        .into_iter()
+        .zip(old_entries.into_iter())
+        .enumerate()
+    {
+        if removed_mask[old_index] {
+            continue;
         }
-    } else {
-        for (old_index, (mut block, entry_slots)) in old_blocks
-            .into_iter()
-            .zip(old_entries.into_iter())
-            .enumerate()
-        {
-            if removed_mask[old_index] {
-                continue;
-            }
-            remap_terminator_targets(&mut block.terminator, &mapping);
-            block.id = mapping[old_index];
-            new_blocks.push(block);
-            new_entries.push(entry_slots);
-        }
+        remap_terminator_targets(&mut block.terminator, &mapping);
+        block.id = mapping[old_index];
+        new_blocks.push(block);
+        new_entries.push(entry_slots);
     }
 
     debug_assert!(removed_mask.get(program.entry.as_usize()).copied() != Some(true));
     program.entry = mapping[program.entry.as_usize()];
     program.blocks = new_blocks;
     program.block_entry_cached_slots = new_entries;
-    if keep_origins {
-        program.block_cfg_origins = new_origins;
-    }
 }
 
 fn remove_one_block(program: &mut SsaProgram, removed_index: usize) {
@@ -736,9 +701,6 @@ fn remove_one_block(program: &mut SsaProgram, removed_index: usize) {
 
     program.blocks.remove(removed_index);
     program.block_entry_cached_slots.remove(removed_index);
-    if !program.block_cfg_origins.is_empty() {
-        program.block_cfg_origins.remove(removed_index);
-    }
 
     if program.entry.as_usize() > removed_index {
         program.entry = SsaTarget(program.entry.0 - 1);
@@ -750,49 +712,6 @@ fn remove_one_block(program: &mut SsaProgram, removed_index: usize) {
     for block in &mut program.blocks {
         remap_terminator_target_after_single_removal(&mut block.terminator, removed_index);
     }
-}
-
-fn merge_block_origins_into_target(program: &mut SsaProgram, from: usize, to: usize) {
-    if program.block_cfg_origins.is_empty()
-        || from == to
-        || from >= program.block_cfg_origins.len()
-        || to >= program.block_cfg_origins.len()
-    {
-        return;
-    }
-
-    let (from_origins, to_origins) = if from < to {
-        let (head, tail) = program.block_cfg_origins.split_at_mut(to);
-        (&head[from], &mut tail[0])
-    } else {
-        let (head, tail) = program.block_cfg_origins.split_at_mut(from);
-        (&tail[0], &mut head[to])
-    };
-    merge_origin_lists(from_origins, to_origins);
-}
-
-fn merge_block_origins(dst: usize, src: usize, origins: &mut [collections::Vec<u32>]) {
-    if origins.is_empty() || dst == src || dst >= origins.len() || src >= origins.len() {
-        return;
-    }
-
-    let (src_origins, dst_origins) = if src < dst {
-        let (head, tail) = origins.split_at_mut(dst);
-        (&head[src], &mut tail[0])
-    } else {
-        let (head, tail) = origins.split_at_mut(src);
-        (&tail[0], &mut head[dst])
-    };
-    merge_origin_lists(src_origins, dst_origins);
-}
-
-fn merge_origin_lists(src: &[u32], dst: &mut collections::Vec<u32>) {
-    for &origin in src {
-        if !dst.contains(&origin) {
-            dst.push(origin);
-        }
-    }
-    dst.sort_unstable();
 }
 
 fn remap_terminator_targets(term: &mut SsaTerminator, mapping: &[SsaTarget]) {
@@ -1025,7 +944,6 @@ mod tests {
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
-            block_cfg_origins: collections::vec![],
             value_types: collections::vec![ValueType::I32; 32],
             value_sink_local: collections::vec![None; 32],
             const_pool: collections::Vec::new(),
@@ -1062,7 +980,6 @@ mod tests {
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
-            block_cfg_origins: collections::vec![],
             value_types: collections::vec![ValueType::I32; 16],
             value_sink_local: collections::vec![None; 16],
             const_pool: collections::Vec::new(),
@@ -1144,7 +1061,6 @@ mod tests {
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
-            block_cfg_origins: collections::vec![],
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
             const_pool: collections::Vec::new(),
@@ -1169,7 +1085,6 @@ mod tests {
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
-            block_cfg_origins: collections::vec![],
             value_types: collections::vec![ValueType::I32; 2],
             value_sink_local: collections::vec![None; 2],
             const_pool: collections::Vec::new(),
@@ -1259,12 +1174,6 @@ mod tests {
                 collections::vec![FrameSlot(2)],
                 collections::vec![FrameSlot(3)],
             ],
-            block_cfg_origins: collections::vec![
-                collections::vec![10],
-                collections::vec![11],
-                collections::vec![12],
-                collections::vec![13],
-            ],
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
             const_pool: collections::Vec::new(),
@@ -1304,14 +1213,6 @@ mod tests {
                 collections::vec![FrameSlot(0)],
                 collections::vec![FrameSlot(2)],
                 collections::vec![FrameSlot(3)],
-            ]
-        );
-        assert_eq!(
-            program.block_cfg_origins,
-            collections::vec![
-                collections::vec![10],
-                collections::vec![12],
-                collections::vec![13],
             ]
         );
         validate_program(&program).unwrap();

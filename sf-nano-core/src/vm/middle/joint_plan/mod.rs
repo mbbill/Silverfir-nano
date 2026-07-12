@@ -11,8 +11,6 @@ pub(crate) use interface::{
 };
 mod block_open;
 pub(super) mod build;
-#[cfg(test)]
-pub(super) mod canonical;
 pub(super) mod entry_region;
 mod facade;
 pub(super) mod facts;

@@ -8,9 +8,7 @@ use crate::collections;
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{MachineBlock, MachineInstKind, MachineValue};
 
-use super::helpers::{
-    addrs_overlap, for_each_defined_reg, kill_tracked_loads_by_reg, rewrite_move_storage_type,
-};
+use super::helpers::{addrs_overlap, kill_tracked_loads_by_reg, rewrite_move_storage_type};
 use super::TrackedLoad;
 
 pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfig) {
@@ -111,7 +109,7 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
                     src: MachineValue::Reg(src_reg),
                 };
             }
-            for_each_defined_reg(&inst.kind, |dst| {
+            inst.kind.for_each_defined_reg(|dst| {
                 kill_tracked_loads_by_reg(&mut tracked, dst);
             });
             if let Some(load) = produced_load {

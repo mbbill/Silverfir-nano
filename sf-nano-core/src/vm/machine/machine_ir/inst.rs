@@ -765,4 +765,107 @@ impl MachineInstKind {
             Self::SimdStore { .. } | Self::SimdStoreLane { .. } => None,
         }
     }
+
+    /// Visit every register this instruction defines.
+    ///
+    /// Most instructions define a single destination register, but legalized
+    /// i64 pair operations on 32-bit backends define two GP lanes (`dst_lo`
+    /// then `dst_hi`), and `StructGet` / `ArrayGet` define a second lane only
+    /// when their `dst_hi` is present. This is the single source of truth for
+    /// the machine backend's def set: ownership tracking, register allocation,
+    /// and the late peepholes all route through it so they cannot drift.
+    pub(crate) fn for_each_defined_reg(&self, mut f: impl FnMut(MachineReg)) {
+        match self {
+            Self::Move { dst, .. }
+            | Self::FloatConst { dst, .. }
+            | Self::Load { dst, .. }
+            | Self::IntUnary { dst, .. }
+            | Self::IntBinary { dst, .. }
+            | Self::IntCompare { dst, .. }
+            | Self::FloatUnary { dst, .. }
+            | Self::FloatBinary { dst, .. }
+            | Self::FloatCompare { dst, .. }
+            | Self::Convert { dst, .. }
+            | Self::Select { dst, .. }
+            | Self::IndexedLoad { dst, .. }
+            | Self::BitfieldExtractU { dst, .. }
+            | Self::IntBinaryShifted { dst, .. }
+            | Self::TestBits { dst, .. }
+            | Self::EhAllocExnRef { dst, .. }
+            | Self::RefFunc { dst, .. }
+            | Self::RefAsNonNull { dst, .. }
+            | Self::RefEq { dst, .. }
+            | Self::RefI31 { dst, .. }
+            | Self::I31GetS { dst, .. }
+            | Self::I31GetU { dst, .. }
+            | Self::AnyConvertExtern { dst, .. }
+            | Self::ExternConvertAny { dst, .. }
+            | Self::RefTest { dst, .. }
+            | Self::RefCast { dst, .. }
+            | Self::StructNew { dst, .. }
+            | Self::StructNewDefault { dst, .. }
+            | Self::ArrayNew { dst, .. }
+            | Self::ArrayNewDefault { dst, .. }
+            | Self::ArrayNewFixed { dst, .. }
+            | Self::ArrayNewData { dst, .. }
+            | Self::ArrayNewElem { dst, .. }
+            | Self::ArrayLen { dst, .. }
+            | Self::MemoryGrow { dst, .. }
+            | Self::TableGrow { dst, .. }
+            | Self::Int64PairCompare { dst, .. }
+            | Self::ConvertI64PairToFloat { dst, .. }
+            | Self::ReinterpretI64PairToF64 { dst, .. } => f(*dst),
+            #[cfg(sf_has_simd)]
+            Self::V128Const { dst, .. }
+            | Self::V128FromRaw { dst, .. }
+            | Self::V128ToRaw { dst, .. }
+            | Self::SimdUnary { dst, .. }
+            | Self::SimdBinary { dst, .. }
+            | Self::SimdTernary { dst, .. }
+            | Self::SimdShift { dst, .. }
+            | Self::SimdExtractLane { dst, .. }
+            | Self::SimdReplaceLane { dst, .. }
+            | Self::SimdShuffle { dst, .. }
+            | Self::SimdLoad { dst, .. }
+            | Self::SimdLoadLane { dst, .. } => f(*dst),
+            Self::StructGet { dst, dst_hi, .. } | Self::ArrayGet { dst, dst_hi, .. } => {
+                f(*dst);
+                if let Some(dst_hi) = dst_hi {
+                    f(*dst_hi);
+                }
+            }
+            Self::Int64PairBinary { dst_lo, dst_hi, .. }
+            | Self::Int64PairUnary { dst_lo, dst_hi, .. }
+            | Self::Int64PairDivRem { dst_lo, dst_hi, .. }
+            | Self::Int64PairShift { dst_lo, dst_hi, .. }
+            | Self::Int64MulFromSignExt32 { dst_lo, dst_hi, .. }
+            | Self::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
+            | Self::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. } => {
+                f(*dst_lo);
+                f(*dst_hi);
+            }
+            Self::Store { .. }
+            | Self::IndexedStore { .. }
+            | Self::TrapIf { .. }
+            | Self::CallRuntime(_)
+            | Self::EhThrow { .. }
+            | Self::EhThrowRef { .. }
+            | Self::MemoryFill { .. }
+            | Self::MemoryCopy { .. }
+            | Self::MemoryInit { .. }
+            | Self::DataDrop { .. }
+            | Self::TableFill { .. }
+            | Self::TableCopy { .. }
+            | Self::TableInit { .. }
+            | Self::ElemDrop { .. }
+            | Self::StructSet { .. }
+            | Self::ArraySet { .. }
+            | Self::ArrayFill { .. }
+            | Self::ArrayCopy { .. }
+            | Self::ArrayInitData { .. }
+            | Self::ArrayInitElem { .. } => {}
+            #[cfg(sf_has_simd)]
+            Self::SimdStore { .. } | Self::SimdStoreLane { .. } => {}
+        }
+    }
 }

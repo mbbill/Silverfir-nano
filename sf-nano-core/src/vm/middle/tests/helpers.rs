@@ -10,7 +10,6 @@ use crate::vm::{
         frame::{plan_frame_layout, FrameLayoutPlan, FrameSlot},
         joint_plan::JointPlanner,
         prepare_function,
-        slot_ssa::{self},
         ssa_ir::ir::{SsaBlock, SsaInst, SsaOp, SsaProgram, SsaTerminator},
         PrepareInput, PreparedFunction,
     },
@@ -144,19 +143,12 @@ pub(super) fn plan_program(
         .unwrap_or_else(|err| panic!("test semantic program must validate: {}", err.message()));
     let frame = plan_frame_layout(semantic.local_count, semantic.max_stack_height, 3);
     let cfg = cfg::build_semantic_cfg(semantic);
-    let slot = slot_ssa::lower_slot_only_ssa(semantic, &cfg, frame).unwrap_or_else(|err| {
+    let planner = JointPlanner::build(semantic, &cfg, frame, config).unwrap_or_else(|err| {
         panic!(
-            "slot-only SSA lowering should succeed for test semantic program: {}",
+            "joint planner should build for test semantic program: {}",
             err.message()
         )
     });
-    let planner = JointPlanner::build(semantic, &cfg, slot.blocks.len(), frame, config)
-        .unwrap_or_else(|err| {
-            panic!(
-                "joint planner should build for test semantic program: {}",
-                err.message()
-            )
-        });
     PlannedPipeline {
         frame,
         cfg,
@@ -229,20 +221,131 @@ pub(super) fn block_for_semantic_index(cfg: &SemanticCfg, semantic_index: usize)
         .unwrap_or_else(|| panic!("semantic index {semantic_index} should map to one CFG block"))
 }
 
-pub(super) fn prepared_block_for_semantic_index(
-    prepared: &PreparedFunction,
-    cfg: &SemanticCfg,
-    semantic_index: usize,
-) -> usize {
-    let cfg_block = block_for_semantic_index(cfg, semantic_index);
-    prepared
-        .ssa
-        .final_block_for_cfg_block(cfg_block.0)
-        .unwrap_or_else(|| {
-            panic!(
-                "final SSA program should preserve a block origin for CFG block {} (semantic index {semantic_index})",
-                cfg_block.0
-            )
-        })
-        .as_usize()
+/// Control-flow successor block indices of `block`.
+fn ssa_successor_blocks(block: &SsaBlock) -> collections::Vec<usize> {
+    let mut succs = collections::Vec::new();
+    match &block.terminator {
+        SsaTerminator::Goto(edge) => succs.push(edge.target.as_usize()),
+        SsaTerminator::Branch {
+            then_edge,
+            else_edge,
+            ..
+        } => {
+            succs.push(then_edge.target.as_usize());
+            succs.push(else_edge.target.as_usize());
+        }
+        SsaTerminator::BrTable { entries, .. } => {
+            for edge in entries {
+                succs.push(edge.target.as_usize());
+            }
+        }
+        _ => {}
+    }
+    succs
+}
+
+/// The (then, else) successor blocks of the program's single `Branch` block.
+///
+/// The branch-boundary tests each build exactly one conditional, so the sole
+/// `Branch` terminator names the then/else blocks directly.
+pub(super) fn branch_edge_targets(program: &SsaProgram) -> (usize, usize) {
+    let mut found = None;
+    for block in &program.blocks {
+        if let SsaTerminator::Branch {
+            then_edge,
+            else_edge,
+            ..
+        } = &block.terminator
+        {
+            assert!(
+                found.is_none(),
+                "expected exactly one Branch block in the test program"
+            );
+            found = Some((then_edge.target.as_usize(), else_edge.target.as_usize()));
+        }
+    }
+    found.expect("test program should contain one Branch block")
+}
+
+/// The natural-loop backedges `(latch, header)` reachable from the entry,
+/// found by a depth-first search that flags edges back to an on-stack ancestor.
+fn loop_backedges(program: &SsaProgram) -> collections::Vec<(usize, usize)> {
+    let n = program.blocks.len();
+    let succs: collections::Vec<collections::Vec<usize>> =
+        program.blocks.iter().map(ssa_successor_blocks).collect();
+    // 0 = unvisited, 1 = on DFS stack, 2 = finished.
+    let mut state = collections::vec![0u8; n];
+    let mut next = collections::vec![0usize; n];
+    let mut stack = collections::vec![program.entry.as_usize()];
+    let mut backedges = collections::Vec::new();
+    state[program.entry.as_usize()] = 1;
+    while let Some(&node) = stack.last() {
+        if next[node] < succs[node].len() {
+            let succ = succs[node][next[node]];
+            next[node] += 1;
+            match state[succ] {
+                0 => {
+                    state[succ] = 1;
+                    stack.push(succ);
+                }
+                1 => backedges.push((node, succ)),
+                _ => {}
+            }
+        } else {
+            state[node] = 2;
+            stack.pop();
+        }
+    }
+    backedges
+}
+
+/// The single loop header (backedge target) in the test program.
+pub(super) fn loop_header_block(program: &SsaProgram) -> usize {
+    let backedges = loop_backedges(program);
+    let header = backedges
+        .first()
+        .expect("test program should contain one loop")
+        .1;
+    assert!(
+        backedges.iter().all(|(_, h)| *h == header),
+        "expected all backedges to share one loop header; backedges={backedges:?}"
+    );
+    header
+}
+
+/// The loop body block: the loop header's successor that stays inside the loop
+/// (i.e. can reach the header again). Distinct from the header itself unless the
+/// loop is a single self-looping block.
+pub(super) fn loop_body_block(program: &SsaProgram) -> usize {
+    let header = loop_header_block(program);
+    let mut body = None;
+    for succ in ssa_successor_blocks(&program.blocks[header]) {
+        if succ != header && can_reach(program, succ, header) {
+            assert!(
+                body.is_none_or(|existing| existing == succ),
+                "expected one in-loop successor of the loop header"
+            );
+            body = Some(succ);
+        }
+    }
+    body.expect("loop header should have one in-loop successor block")
+}
+
+/// Whether `target` is reachable from `from` following control-flow edges.
+fn can_reach(program: &SsaProgram, from: usize, target: usize) -> bool {
+    let mut seen = collections::vec![false; program.blocks.len()];
+    let mut stack = collections::vec![from];
+    seen[from] = true;
+    while let Some(node) = stack.pop() {
+        if node == target {
+            return true;
+        }
+        for succ in ssa_successor_blocks(&program.blocks[node]) {
+            if !seen[succ] {
+                seen[succ] = true;
+                stack.push(succ);
+            }
+        }
+    }
+    false
 }

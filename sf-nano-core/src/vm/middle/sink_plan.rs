@@ -185,7 +185,6 @@ mod tests {
             value_types: collections::vec![ValueType::I32; value_count],
             value_sink_local: collections::vec![None; value_count],
             block_entry_cached_slots: collections::vec![],
-            block_cfg_origins: collections::vec![],
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),

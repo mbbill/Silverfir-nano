@@ -3,8 +3,7 @@ use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind
 use crate::collections;
 
 use super::helpers::{
-    contains_ensure_cache, i32_program, op, plan_i32_program, prepare_i32_program,
-    prepared_block_for_semantic_index, prim, target,
+    branch_edge_targets, contains_ensure_cache, i32_program, op, prepare_i32_program, prim, target,
 };
 
 #[test]
@@ -36,10 +35,9 @@ fn prepared_ssa_trims_carried_local_when_branch_block_never_uses_it_and_pressure
         ],
     );
 
-    let pipeline = plan_i32_program(&semantic, 1, 0);
     let prepared = prepare_i32_program(&semantic, 1, 0);
     let slot0 = prepared.frame.local_slot(0);
-    let then_block = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 4);
+    let then_block = branch_edge_targets(&prepared.ssa).0;
 
     assert!(
         !prepared.ssa.block_entry_cached_slots[then_block].contains(&slot0),
@@ -82,11 +80,9 @@ fn prepared_ssa_keeps_unused_carried_local_when_branch_block_can_carry_it_throug
         ],
     );
 
-    let pipeline = plan_i32_program(&semantic, 2, 0);
     let prepared = prepare_i32_program(&semantic, 2, 0);
     let slot0 = prepared.frame.local_slot(0);
-    let then_block = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 4);
-    let else_block = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 6);
+    let (then_block, else_block) = branch_edge_targets(&prepared.ssa);
 
     assert_eq!(
         prepared.ssa.block_entry_cached_slots[then_block],
@@ -124,10 +120,9 @@ fn prepared_ssa_uses_trimmed_final_entry_for_branch_block() {
         ],
     );
 
-    let pipeline = plan_i32_program(&semantic, 1, 0);
     let prepared = prepare_i32_program(&semantic, 1, 0);
     let slot0 = prepared.frame.local_slot(0);
-    let then_block = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 4);
+    let then_block = branch_edge_targets(&prepared.ssa).0;
 
     assert!(
         !prepared.ssa.block_entry_cached_slots[then_block].contains(&slot0),
@@ -167,11 +162,9 @@ fn prepared_ssa_keeps_surviving_carried_local_in_branch_entry() {
         ],
     );
 
-    let pipeline = plan_i32_program(&semantic, 2, 0);
     let prepared = prepare_i32_program(&semantic, 2, 0);
     let slot0 = prepared.frame.local_slot(0);
-    let then_block = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 4);
-    let else_block = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 6);
+    let (then_block, else_block) = branch_edge_targets(&prepared.ssa);
 
     assert_eq!(
         prepared.ssa.block_entry_cached_slots[then_block],
@@ -215,11 +208,10 @@ fn prepared_ssa_trims_multi_carried_entry_down_to_the_hot_survivor() {
         ],
     );
 
-    let pipeline = plan_i32_program(&semantic, 2, 0);
     let prepared = prepare_i32_program(&semantic, 2, 0);
     let slot0 = prepared.frame.local_slot(0);
     let slot1 = prepared.frame.local_slot(1);
-    let then_block = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 6);
+    let then_block = branch_edge_targets(&prepared.ssa).0;
 
     assert_eq!(
         prepared.ssa.block_entry_cached_slots[then_block],

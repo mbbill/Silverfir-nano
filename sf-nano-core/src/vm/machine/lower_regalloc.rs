@@ -401,7 +401,7 @@ impl<'a> BlockLowerContext<'a> {
         let mut params = collections::Vec::new();
         let mut all_defined = collections::Vec::new();
         for inst in continuation_ops {
-            for_each_inst_defined_reg(&inst.kind, |reg| {
+            inst.kind.for_each_defined_reg(|reg| {
                 if self.is_linear_value_reg(reg) && !all_defined.contains(&reg) {
                     all_defined.push(reg);
                 }
@@ -439,7 +439,7 @@ impl<'a> BlockLowerContext<'a> {
                     );
                 }
             });
-            for_each_inst_defined_reg(&inst.kind, |dst| {
+            inst.kind.for_each_defined_reg(|dst| {
                 if self.is_linear_value_reg(dst) && !defined_so_far.contains(&dst) {
                     defined_so_far.push(dst);
                 }
@@ -910,125 +910,6 @@ pub(super) fn machine_block_params_for_value(
             ]
         }
         _ => collections::vec![machine_block_param(regs.lo, ty)],
-    }
-}
-
-/// Visit all registers defined by an instruction, including both halves of i64 pair ops.
-fn for_each_inst_defined_reg(kind: &MachineInstKind, mut f: impl FnMut(MachineReg)) {
-    if let Some(dst) = inst_defined_reg(kind) {
-        f(dst);
-    }
-    match kind {
-        MachineInstKind::Int64PairBinary { dst_lo, dst_hi, .. }
-        | MachineInstKind::Int64PairUnary { dst_lo, dst_hi, .. }
-        | MachineInstKind::Int64PairDivRem { dst_lo, dst_hi, .. }
-        | MachineInstKind::Int64PairShift { dst_lo, dst_hi, .. }
-        | MachineInstKind::Int64MulFromSignExt32 { dst_lo, dst_hi, .. }
-        | MachineInstKind::ConvertFloatToI64Pair { dst_lo, dst_hi, .. }
-        | MachineInstKind::ReinterpretF64ToI64Pair { dst_lo, dst_hi, .. }
-        | MachineInstKind::StructGet {
-            dst: dst_lo,
-            dst_hi: Some(dst_hi),
-            ..
-        }
-        | MachineInstKind::ArrayGet {
-            dst: dst_lo,
-            dst_hi: Some(dst_hi),
-            ..
-        } => {
-            f(*dst_lo);
-            f(*dst_hi);
-        }
-        _ => {}
-    }
-}
-
-pub(super) fn inst_defined_reg(kind: &MachineInstKind) -> Option<MachineReg> {
-    match kind {
-        MachineInstKind::Move { dst, .. }
-        | MachineInstKind::FloatConst { dst, .. }
-        | MachineInstKind::Load { dst, .. }
-        | MachineInstKind::IntUnary { dst, .. }
-        | MachineInstKind::IntBinary { dst, .. }
-        | MachineInstKind::IntCompare { dst, .. }
-        | MachineInstKind::FloatUnary { dst, .. }
-        | MachineInstKind::FloatBinary { dst, .. }
-        | MachineInstKind::FloatCompare { dst, .. }
-        | MachineInstKind::Convert { dst, .. }
-        | MachineInstKind::Select { dst, .. }
-        | MachineInstKind::IndexedLoad { dst, .. }
-        | MachineInstKind::BitfieldExtractU { dst, .. }
-        | MachineInstKind::IntBinaryShifted { dst, .. }
-        | MachineInstKind::TestBits { dst, .. }
-        | MachineInstKind::EhAllocExnRef { dst, .. }
-        | MachineInstKind::RefFunc { dst, .. }
-        | MachineInstKind::RefAsNonNull { dst, .. }
-        | MachineInstKind::RefEq { dst, .. }
-        | MachineInstKind::RefI31 { dst, .. }
-        | MachineInstKind::I31GetS { dst, .. }
-        | MachineInstKind::I31GetU { dst, .. }
-        | MachineInstKind::AnyConvertExtern { dst, .. }
-        | MachineInstKind::ExternConvertAny { dst, .. }
-        | MachineInstKind::RefTest { dst, .. }
-        | MachineInstKind::RefCast { dst, .. }
-        | MachineInstKind::StructNew { dst, .. }
-        | MachineInstKind::StructNewDefault { dst, .. }
-        | MachineInstKind::ArrayNew { dst, .. }
-        | MachineInstKind::ArrayNewDefault { dst, .. }
-        | MachineInstKind::ArrayNewFixed { dst, .. }
-        | MachineInstKind::ArrayNewData { dst, .. }
-        | MachineInstKind::ArrayNewElem { dst, .. }
-        | MachineInstKind::ArrayLen { dst, .. } => Some(*dst),
-        #[cfg(sf_has_simd)]
-        MachineInstKind::V128Const { dst, .. }
-        | MachineInstKind::V128FromRaw { dst, .. }
-        | MachineInstKind::V128ToRaw { dst, .. }
-        | MachineInstKind::SimdUnary { dst, .. }
-        | MachineInstKind::SimdBinary { dst, .. }
-        | MachineInstKind::SimdTernary { dst, .. }
-        | MachineInstKind::SimdShift { dst, .. }
-        | MachineInstKind::SimdExtractLane { dst, .. }
-        | MachineInstKind::SimdReplaceLane { dst, .. }
-        | MachineInstKind::SimdShuffle { dst, .. }
-        | MachineInstKind::SimdLoad { dst, .. }
-        | MachineInstKind::SimdLoadLane { dst, .. } => Some(*dst),
-        MachineInstKind::StructGet { dst, dst_hi, .. }
-        | MachineInstKind::ArrayGet { dst, dst_hi, .. } => dst_hi.is_none().then_some(*dst),
-        MachineInstKind::MemoryGrow { dst, .. } | MachineInstKind::TableGrow { dst, .. } => {
-            Some(*dst)
-        }
-        MachineInstKind::MemoryFill { .. }
-        | MachineInstKind::MemoryCopy { .. }
-        | MachineInstKind::MemoryInit { .. }
-        | MachineInstKind::DataDrop { .. }
-        | MachineInstKind::TableFill { .. }
-        | MachineInstKind::TableCopy { .. }
-        | MachineInstKind::TableInit { .. }
-        | MachineInstKind::ElemDrop { .. }
-        | MachineInstKind::StructSet { .. }
-        | MachineInstKind::ArraySet { .. }
-        | MachineInstKind::ArrayFill { .. }
-        | MachineInstKind::ArrayCopy { .. }
-        | MachineInstKind::ArrayInitData { .. }
-        | MachineInstKind::ArrayInitElem { .. } => None,
-        MachineInstKind::Int64PairBinary { .. } => None,
-        MachineInstKind::Int64PairUnary { .. } => None,
-        MachineInstKind::Int64PairDivRem { .. } => None,
-        MachineInstKind::Int64PairShift { .. } => None,
-        MachineInstKind::Int64MulFromSignExt32 { .. } => None,
-        MachineInstKind::Int64PairCompare { dst, .. } => Some(*dst),
-        MachineInstKind::ConvertFloatToI64Pair { .. } => None,
-        MachineInstKind::ConvertI64PairToFloat { dst, .. }
-        | MachineInstKind::ReinterpretI64PairToF64 { dst, .. } => Some(*dst),
-        MachineInstKind::ReinterpretF64ToI64Pair { .. } => None,
-        MachineInstKind::Store { .. }
-        | MachineInstKind::IndexedStore { .. }
-        | MachineInstKind::TrapIf { .. }
-        | MachineInstKind::CallRuntime(_)
-        | MachineInstKind::EhThrow { .. }
-        | MachineInstKind::EhThrowRef { .. } => None,
-        #[cfg(sf_has_simd)]
-        MachineInstKind::SimdStore { .. } | MachineInstKind::SimdStoreLane { .. } => None,
     }
 }
 
@@ -1624,7 +1505,6 @@ mod tests {
             result_types: collections::Vec::new(),
             local_slot_info: collections::Vec::new(),
             block_entry_cached_slots: collections::vec![collections::vec![]],
-            block_cfg_origins: collections::vec![],
             value_types,
             value_sink_local: collections::vec![],
             const_pool: collections::Vec::new(),

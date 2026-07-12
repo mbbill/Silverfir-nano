@@ -277,7 +277,7 @@ impl SignExtState {
                 }
             }
             other => {
-                super::helpers::for_each_defined_reg(other, |reg| {
+                other.for_each_defined_reg(|reg| {
                     self.set_unknown_value(reg);
                 });
             }

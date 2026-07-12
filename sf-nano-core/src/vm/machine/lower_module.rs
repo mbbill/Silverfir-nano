@@ -942,7 +942,6 @@ fn release_cache_planning_only_ssa_storage(ssa: &mut SsaProgram) {
     drop(core::mem::take(&mut ssa.local_slot_types));
     drop(core::mem::take(&mut ssa.local_slot_info));
     drop(core::mem::take(&mut ssa.block_entry_cached_slots));
-    drop(core::mem::take(&mut ssa.block_cfg_origins));
 }
 
 fn release_prepared_ssa_storage(ssa: &mut SsaProgram) {
@@ -950,7 +949,6 @@ fn release_prepared_ssa_storage(ssa: &mut SsaProgram) {
     drop(core::mem::take(&mut ssa.local_slot_types));
     drop(core::mem::take(&mut ssa.local_slot_info));
     drop(core::mem::take(&mut ssa.block_entry_cached_slots));
-    drop(core::mem::take(&mut ssa.block_cfg_origins));
     drop(core::mem::take(&mut ssa.value_types));
     drop(core::mem::take(&mut ssa.value_sink_local));
     drop(core::mem::take(&mut ssa.const_pool));

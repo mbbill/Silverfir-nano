@@ -1211,7 +1211,6 @@ mod tests {
             result_types: collections::Vec::new(),
             local_slot_info: collections::Vec::new(),
             block_entry_cached_slots: collections::Vec::new(),
-            block_cfg_origins: collections::Vec::new(),
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
             const_pool: collections::Vec::new(),

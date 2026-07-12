@@ -1,10 +1,9 @@
 //! Middle layer: semantic Wasm IR to prepared SSA-IR.
 //!
-//! This module is being rebuilt around a simpler ownership model:
+//! Ownership model:
 //! - `cfg.rs` builds the explicit semantic CFG
-//! - `slot_ssa.rs` will build slot-only SSA
-//! - `joint_plan/` will decide cache and spill policy
-//! - `rewrite/` will materialize the final SSA-IR
+//! - `joint_plan/` decides cache and spill policy
+//! - `rewrite/` materializes the final SSA-IR
 
 pub(crate) mod frame;
 pub(crate) mod ssa_ir;
@@ -16,8 +15,6 @@ mod joint_plan;
 mod optimize;
 mod rewrite;
 mod sink_plan;
-#[cfg(test)]
-mod slot_ssa;
 
 #[cfg(test)]
 mod tests;
@@ -73,20 +70,8 @@ pub(crate) fn prepare_function(
     let semantic_cfg = cfg::build_semantic_cfg(&semantic);
     drop(cfg_phase);
 
-    // The old slot-only SSA pass was retained only as a block-count sanity
-    // check. The semantic CFG is the source of block structure for the current
-    // rewriter, so avoid materializing a second transient IR just to re-count
-    // the same blocks.
-    let slot_block_count = semantic_cfg.blocks.len();
-
     let joint_plan_phase = phase_span_with_function("joint_plan", input.function_index);
-    let planner = JointPlanner::build(
-        &semantic,
-        &semantic_cfg,
-        slot_block_count,
-        frame,
-        input.config,
-    )?;
+    let planner = JointPlanner::build(&semantic, &semantic_cfg, frame, input.config)?;
     drop(joint_plan_phase);
 
     let rewrite_cfg = rewrite::RewriteCfg::from_semantic_cfg(&semantic_cfg);
@@ -134,10 +119,6 @@ fn shrink_prepared_ssa_storage(ssa: &mut SsaProgram) {
     for slots in &mut ssa.block_entry_cached_slots {
         slots.shrink_to_fit();
     }
-    ssa.block_cfg_origins.shrink_to_fit();
-    for origins in &mut ssa.block_cfg_origins {
-        origins.shrink_to_fit();
-    }
     ssa.value_types.shrink_to_fit();
     ssa.value_sink_local.shrink_to_fit();
     ssa.const_pool.shrink_to_fit();
@@ -153,7 +134,6 @@ fn empty_program(semantic: &SemanticProgram) -> SsaProgram {
         result_types: semantic.result_types.clone(),
         local_slot_info: collections::vec![Default::default(); semantic.local_count as usize],
         block_entry_cached_slots: collections::Vec::new(),
-        block_cfg_origins: collections::Vec::new(),
         value_types: collections::Vec::new(),
         value_sink_local: collections::Vec::new(),
         const_pool: collections::Vec::new(),

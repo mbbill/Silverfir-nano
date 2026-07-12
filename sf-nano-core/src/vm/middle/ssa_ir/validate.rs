@@ -49,12 +49,6 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
         ));
     }
 
-    if !program.block_cfg_origins.is_empty()
-        && program.blocks.len() != program.block_cfg_origins.len()
-    {
-        return Err(WasmError::internal("SSA-IR has blocks but CFG-origin rows"));
-    }
-
     for (index, block) in program.blocks.iter().enumerate() {
         validate_block_id(block, index)?;
         validate_params(&block.params)?;

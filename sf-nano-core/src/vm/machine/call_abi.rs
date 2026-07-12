@@ -9,12 +9,9 @@ use crate::collections;
 
 use crate::vm::{
     backend::BackendConfig,
-    machine::{
-        machine_ir::{
-            is_preserved_dynamic_reg, MachineCallResults, MachineProgram, MachineReg,
-            MachineResultDst, MachineTerminator,
-        },
-        ownership::for_each_defined_reg,
+    machine::machine_ir::{
+        is_preserved_dynamic_reg, MachineCallResults, MachineProgram, MachineReg, MachineResultDst,
+        MachineTerminator,
     },
 };
 
@@ -35,7 +32,7 @@ pub(super) fn collect_preserved_clobbers(
             push_preserved_clobber(&mut regs, param.reg, config);
         }
         for inst in &block.ops {
-            for_each_defined_reg(&inst.kind, |reg| {
+            inst.kind.for_each_defined_reg(|reg| {
                 push_preserved_clobber(&mut regs, reg, config);
             });
         }

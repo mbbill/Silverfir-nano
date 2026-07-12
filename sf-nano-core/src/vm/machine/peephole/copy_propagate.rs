@@ -18,9 +18,7 @@ use crate::vm::machine::machine_ir::{
 };
 use crate::vm::machine::ownership::DynamicOwnershipTracker;
 
-use super::helpers::{
-    count_value_uses, for_each_defined_reg, inst_defines, reg_live_after, terminator_uses_reg,
-};
+use super::helpers::{count_value_uses, inst_defines, reg_live_after, terminator_uses_reg};
 
 /// Reusable scratch buffers for copy_propagate to avoid per-block allocation.
 pub(super) struct CopyPropagateScratch {
@@ -108,7 +106,7 @@ pub(super) fn copy_propagate(
             continue;
         }
 
-        for_each_defined_reg(&inst.kind, |dst| {
+        inst.kind.for_each_defined_reg(|dst| {
             kill_alias(aliases, dst);
             kill_alias(float_aliases, dst);
         });

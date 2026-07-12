@@ -3,7 +3,7 @@
 use crate::collections;
 
 use crate::vm::wasm::{
-    common::SemanticTarget,
+    common::{BrTableEntry, SemanticTarget},
     primitive_op::PrimitiveOpKind,
     semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
 };
@@ -230,6 +230,78 @@ fn build_semantic_to_block_map(
     map
 }
 
+/// Which edge of a conditional branch falls through to the next op; the
+/// opposite edge is the explicit branch target.
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum FallthroughEdge {
+    /// The `then` edge falls through (`if`, `br_on_non_null`, `br_on_cast_fail`).
+    Then,
+    /// The `else` edge falls through (`br_if`, `br_on_null`, `br_on_cast`).
+    Else,
+}
+
+/// How a semantic op transfers control out of its block.
+///
+/// This is the single source of truth for a semantic op's control behavior.
+/// Successor enumeration, block-leader detection, and terminator construction
+/// are all derived from it so they cannot disagree.
+enum ControlKind<'a> {
+    /// Terminates the block with no successors (`unreachable`, `throw`).
+    Trap,
+    /// Returns from the function; no successors.
+    Return,
+    /// Unconditional branch to a single target.
+    Goto(SemanticTarget),
+    /// Conditional two-way branch to `target`, with the opposite edge falling
+    /// through to the next op.
+    Branch {
+        target: SemanticTarget,
+        fallthrough: FallthroughEdge,
+    },
+    /// Multi-way table branch.
+    Table(&'a [BrTableEntry]),
+    /// Falls through to the next op (or nowhere when it is the last op).
+    Fallthrough,
+}
+
+fn control_kind(kind: &SemanticOpKind) -> ControlKind<'_> {
+    match kind {
+        SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
+        | SemanticOpKind::Throw { .. }
+        | SemanticOpKind::ThrowRef => ControlKind::Trap,
+        SemanticOpKind::ReturnVoid
+        | SemanticOpKind::ReturnOne
+        | SemanticOpKind::Return { .. }
+        | SemanticOpKind::ReturnCallDirect { .. }
+        | SemanticOpKind::ReturnCallIndirect { .. }
+        | SemanticOpKind::ReturnCallRef { .. } => ControlKind::Return,
+        SemanticOpKind::Br { target, .. } => ControlKind::Goto(*target),
+        SemanticOpKind::BrIf { target, .. }
+        | SemanticOpKind::BrOnNull { target, .. }
+        | SemanticOpKind::BrOnCast { target, .. } => ControlKind::Branch {
+            target: *target,
+            fallthrough: FallthroughEdge::Else,
+        },
+        SemanticOpKind::BrOnNonNull { target, .. }
+        | SemanticOpKind::BrOnCastFail { target, .. } => ControlKind::Branch {
+            target: *target,
+            fallthrough: FallthroughEdge::Then,
+        },
+        SemanticOpKind::BrTable { entries } => ControlKind::Table(entries),
+        SemanticOpKind::If { else_target, .. } => ControlKind::Branch {
+            target: *else_target,
+            fallthrough: FallthroughEdge::Then,
+        },
+        SemanticOpKind::Else { end_target } => ControlKind::Goto(*end_target),
+        _ => ControlKind::Fallthrough,
+    }
+}
+
+/// The next semantic op, when the current op is not the last one.
+fn semantic_fallthrough(index: usize, len: usize) -> Option<SemanticTarget> {
+    (index + 1 < len).then(|| SemanticTarget::new(index + 1))
+}
+
 fn build_terminator(
     source: CfgBlockId,
     op_index: usize,
@@ -238,45 +310,31 @@ fn build_terminator(
     semantic_to_block: &[CfgBlockId],
 ) -> (CfgTerminator, collections::Vec<CfgEdge>) {
     let len = semantic.ops.len();
-    let fallthrough = || {
-        if op_index + 1 < len {
-            Some(map_edge(
-                source,
-                SemanticTarget::new(op_index + 1),
-                semantic_to_block,
-            ))
-        } else {
-            None
-        }
-    };
+    let fallthrough_edge =
+        || semantic_fallthrough(op_index, len).map(|t| map_edge(source, t, semantic_to_block));
 
-    match &op.kind {
-        SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
-        | SemanticOpKind::Throw { .. }
-        | SemanticOpKind::ThrowRef => (
+    match control_kind(&op.kind) {
+        ControlKind::Trap => (
             CfgTerminator::TrapUnreachable { op_index },
             collections::Vec::new(),
         ),
-        SemanticOpKind::ReturnVoid
-        | SemanticOpKind::ReturnOne
-        | SemanticOpKind::Return { .. }
-        | SemanticOpKind::ReturnCallDirect { .. }
-        | SemanticOpKind::ReturnCallIndirect { .. }
-        | SemanticOpKind::ReturnCallRef { .. } => {
-            (CfgTerminator::Return { op_index }, collections::Vec::new())
-        }
-        SemanticOpKind::Br { target, .. } => {
-            let edge = map_edge(source, *target, semantic_to_block);
+        ControlKind::Return => (CfgTerminator::Return { op_index }, collections::Vec::new()),
+        ControlKind::Goto(target) => {
+            let edge = map_edge(source, target, semantic_to_block);
             (
                 CfgTerminator::Goto { op_index, edge },
                 collections::vec![edge],
             )
         }
-        SemanticOpKind::BrIf { target, .. }
-        | SemanticOpKind::BrOnNull { target, .. }
-        | SemanticOpKind::BrOnCast { target, .. } => {
-            let then_edge = map_edge(source, *target, semantic_to_block);
-            let else_edge = fallthrough().unwrap_or(then_edge);
+        ControlKind::Branch {
+            target,
+            fallthrough,
+        } => {
+            let target_edge = map_edge(source, target, semantic_to_block);
+            let (then_edge, else_edge) = match fallthrough {
+                FallthroughEdge::Then => (fallthrough_edge().unwrap_or(target_edge), target_edge),
+                FallthroughEdge::Else => (target_edge, fallthrough_edge().unwrap_or(target_edge)),
+            };
             (
                 CfgTerminator::Branch {
                     op_index,
@@ -286,21 +344,7 @@ fn build_terminator(
                 dedup_edges(collections::vec![then_edge, else_edge]),
             )
         }
-        SemanticOpKind::BrOnNonNull { target, .. }
-        | SemanticOpKind::BrOnCastFail { target, .. } => {
-            let then_edge =
-                fallthrough().unwrap_or_else(|| map_edge(source, *target, semantic_to_block));
-            let else_edge = map_edge(source, *target, semantic_to_block);
-            (
-                CfgTerminator::Branch {
-                    op_index,
-                    then_edge,
-                    else_edge,
-                },
-                dedup_edges(collections::vec![then_edge, else_edge]),
-            )
-        }
-        SemanticOpKind::BrTable { entries } => {
+        ControlKind::Table(entries) => {
             let edges = entries
                 .iter()
                 .map(|entry| map_edge(source, entry.target, semantic_to_block))
@@ -313,28 +357,8 @@ fn build_terminator(
                 dedup_edges(edges),
             )
         }
-        SemanticOpKind::If { else_target, .. } => {
-            let then_edge =
-                fallthrough().unwrap_or_else(|| map_edge(source, *else_target, semantic_to_block));
-            let else_edge = map_edge(source, *else_target, semantic_to_block);
-            (
-                CfgTerminator::Branch {
-                    op_index,
-                    then_edge,
-                    else_edge,
-                },
-                dedup_edges(collections::vec![then_edge, else_edge]),
-            )
-        }
-        SemanticOpKind::Else { end_target } => {
-            let edge = map_edge(source, *end_target, semantic_to_block);
-            (
-                CfgTerminator::Goto { op_index, edge },
-                collections::vec![edge],
-            )
-        }
-        _ => {
-            let edge = fallthrough().unwrap_or(CfgEdge {
+        ControlKind::Fallthrough => {
+            let edge = fallthrough_edge().unwrap_or(CfgEdge {
                 target: source,
                 is_backedge: false,
             });
@@ -397,59 +421,33 @@ fn for_each_semantic_successor(
     op: &SemanticOp,
     mut f: impl FnMut(SemanticTarget),
 ) {
-    let fallthrough = || {
-        if index + 1 < len {
-            Some(SemanticTarget::new(index + 1))
-        } else {
-            None
-        }
-    };
-
-    match &op.kind {
-        SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
-        | SemanticOpKind::ReturnVoid
-        | SemanticOpKind::ReturnOne
-        | SemanticOpKind::Return { .. }
-        | SemanticOpKind::ReturnCallDirect { .. }
-        | SemanticOpKind::ReturnCallIndirect { .. }
-        | SemanticOpKind::ReturnCallRef { .. } => {}
-        SemanticOpKind::Br { target, .. } => {
-            f(*target);
-        }
-        SemanticOpKind::BrIf { target, .. }
-        | SemanticOpKind::BrOnNull { target, .. }
-        | SemanticOpKind::BrOnCast { target, .. } => {
-            f(*target);
-            if let Some(ft) = fallthrough() {
-                f(ft);
+    match control_kind(&op.kind) {
+        ControlKind::Trap | ControlKind::Return => {}
+        ControlKind::Goto(target) => f(target),
+        ControlKind::Branch {
+            target,
+            fallthrough,
+        } => match fallthrough {
+            FallthroughEdge::Then => {
+                if let Some(ft) = semantic_fallthrough(index, len) {
+                    f(ft);
+                }
+                f(target);
             }
-        }
-        SemanticOpKind::BrOnNonNull { target, .. }
-        | SemanticOpKind::BrOnCastFail { target, .. } => {
-            if let Some(ft) = fallthrough() {
-                f(ft);
+            FallthroughEdge::Else => {
+                f(target);
+                if let Some(ft) = semantic_fallthrough(index, len) {
+                    f(ft);
+                }
             }
-            f(*target);
-        }
-        SemanticOpKind::BrTable { entries } => {
+        },
+        ControlKind::Table(entries) => {
             for entry in entries {
                 f(entry.target);
             }
         }
-        SemanticOpKind::If { else_target, .. } => {
-            if let Some(ft) = fallthrough() {
-                f(ft);
-            }
-            f(*else_target);
-        }
-        SemanticOpKind::Else { end_target } => {
-            f(*end_target);
-        }
-        SemanticOpKind::Throw { .. } | SemanticOpKind::ThrowRef => {
-            // No fallthrough successor — throw terminates the block.
-        }
-        _ => {
-            if let Some(ft) = fallthrough() {
+        ControlKind::Fallthrough => {
+            if let Some(ft) = semantic_fallthrough(index, len) {
                 f(ft);
             }
         }
@@ -457,51 +455,11 @@ fn for_each_semantic_successor(
 }
 
 fn is_plain_fallthrough(index: usize, len: usize, op: &SemanticOp) -> bool {
-    match &op.kind {
-        SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
-        | SemanticOpKind::ReturnVoid
-        | SemanticOpKind::ReturnOne
-        | SemanticOpKind::Return { .. }
-        | SemanticOpKind::ReturnCallDirect { .. }
-        | SemanticOpKind::ReturnCallIndirect { .. }
-        | SemanticOpKind::ReturnCallRef { .. }
-        | SemanticOpKind::Br { .. }
-        | SemanticOpKind::BrIf { .. }
-        | SemanticOpKind::BrOnNull { .. }
-        | SemanticOpKind::BrOnNonNull { .. }
-        | SemanticOpKind::BrOnCast { .. }
-        | SemanticOpKind::BrOnCastFail { .. }
-        | SemanticOpKind::BrTable { .. }
-        | SemanticOpKind::If { .. }
-        | SemanticOpKind::Else { .. }
-        | SemanticOpKind::Throw { .. }
-        | SemanticOpKind::ThrowRef => false,
-        _ => index + 1 < len,
-    }
+    matches!(control_kind(&op.kind), ControlKind::Fallthrough) && index + 1 < len
 }
 
 fn splits_after(kind: &SemanticOpKind) -> bool {
-    matches!(
-        kind,
-        SemanticOpKind::If { .. }
-            | SemanticOpKind::Else { .. }
-            | SemanticOpKind::Br { .. }
-            | SemanticOpKind::BrIf { .. }
-            | SemanticOpKind::BrOnNull { .. }
-            | SemanticOpKind::BrOnNonNull { .. }
-            | SemanticOpKind::BrOnCast { .. }
-            | SemanticOpKind::BrOnCastFail { .. }
-            | SemanticOpKind::BrTable { .. }
-            | SemanticOpKind::ReturnVoid
-            | SemanticOpKind::ReturnOne
-            | SemanticOpKind::Return { .. }
-            | SemanticOpKind::ReturnCallDirect { .. }
-            | SemanticOpKind::ReturnCallIndirect { .. }
-            | SemanticOpKind::ReturnCallRef { .. }
-            | SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
-            | SemanticOpKind::Throw { .. }
-            | SemanticOpKind::ThrowRef
-    )
+    !matches!(control_kind(kind), ControlKind::Fallthrough)
 }
 
 #[cfg(test)]

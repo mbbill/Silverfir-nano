@@ -102,11 +102,6 @@ pub(super) struct ProgramBuilder {
     call_ops: collections::Vec<SsaCallOp>,
 }
 
-#[inline]
-fn track_block_cfg_origins() -> bool {
-    cfg!(any(debug_assertions, test))
-}
-
 impl ProgramBuilder {
     pub(super) fn intern_primitive(&mut self, kind: PrimitiveOpKind) -> Result<u32, WasmError> {
         if let Some(idx) = self.primitive_pool.iter().position(|k| k == &kind) {
@@ -153,7 +148,6 @@ pub(crate) fn rewrite_function(
             result_types,
             local_slot_info,
             block_entry_cached_slots: collections::Vec::new(),
-            block_cfg_origins: collections::Vec::new(),
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
             const_pool: collections::Vec::new(),
@@ -174,20 +168,13 @@ pub(crate) fn rewrite_function(
         .collect::<collections::Vec<_>>();
 
     let original_block_count = cfg.blocks.len();
-    let track_cfg_origins = track_block_cfg_origins();
     let mut builder = ProgramBuilder::default();
     let mut blocks = collections::Vec::with_capacity(original_block_count);
     let mut block_entry_cached_slots = collections::Vec::with_capacity(original_block_count);
     let mut block_exit_cached_slots = collections::Vec::with_capacity(original_block_count);
-    let mut block_cfg_origins = if track_cfg_origins {
-        collections::Vec::with_capacity(original_block_count)
-    } else {
-        collections::Vec::new()
-    };
     let mut extra_blocks = collections::Vec::new();
     let mut extra_block_cached_slots = collections::Vec::new();
     let mut extra_block_exit_cached_slots = collections::Vec::new();
-    let mut extra_block_cfg_origins = collections::Vec::new();
     for (block_index, cfg_block) in cfg.blocks.iter().enumerate() {
         let block_entry = planner.block_open(cfg_block.id);
         let params = block_params[block_index].clone();
@@ -227,9 +214,6 @@ pub(crate) fn rewrite_function(
         actual_exit.shrink_to_fit();
         block_entry_cached_slots.push(final_entry);
         block_exit_cached_slots.push(actual_exit);
-        if track_cfg_origins {
-            block_cfg_origins.push(collections::vec![block_index as u32]);
-        }
         let mut block = SsaBlock {
             id: SsaTarget(block_index as u32),
             params,
@@ -241,9 +225,6 @@ pub(crate) fn rewrite_function(
         blocks.push(block);
         extra_block_cached_slots.extend(lowered.extra_block_cached_slots);
         extra_block_exit_cached_slots.extend(lowered.extra_block_exit_cached_slots);
-        if track_cfg_origins {
-            extra_block_cfg_origins.extend(lowered.extra_block_cfg_origins);
-        }
         for mut block in lowered.extra_blocks {
             shrink_ssa_block_storage(&mut block);
             extra_blocks.push(block);
@@ -255,10 +236,6 @@ pub(crate) fn rewrite_function(
     block_entry_cached_slots.extend(extra_block_cached_slots);
     block_exit_cached_slots.reserve_exact(extra_block_exit_cached_slots.len());
     block_exit_cached_slots.extend(extra_block_exit_cached_slots);
-    if track_cfg_origins {
-        block_cfg_origins.reserve_exact(extra_block_cfg_origins.len());
-        block_cfg_origins.extend(extra_block_cfg_origins);
-    }
 
     drop(block_params);
     drop(planner);
@@ -273,7 +250,6 @@ pub(crate) fn rewrite_function(
         result_types,
         local_slot_info,
         block_entry_cached_slots,
-        block_cfg_origins,
         blocks,
         value_types: values.take_types(),
         value_sink_local: collections::Vec::new(),
@@ -357,7 +333,6 @@ struct LoweredBlock {
     extra_blocks: collections::Vec<SsaBlock>,
     extra_block_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
     extra_block_exit_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
-    extra_block_cfg_origins: collections::Vec<collections::Vec<u32>>,
 }
 
 /// Lower one CFG block exactly once from the planner-chosen entry state.
@@ -451,7 +426,6 @@ fn lower_block_range(
         extra_blocks: terminator.extra_blocks,
         extra_block_cached_slots: terminator.extra_block_cached_slots,
         extra_block_exit_cached_slots: terminator.extra_block_exit_cached_slots,
-        extra_block_cfg_origins: terminator.extra_block_cfg_origins,
     })
 }
 
@@ -1631,7 +1605,6 @@ struct LoweredTerminator {
     extra_blocks: collections::Vec<SsaBlock>,
     extra_block_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
     extra_block_exit_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
-    extra_block_cfg_origins: collections::Vec<collections::Vec<u32>>,
 }
 
 impl LoweredTerminator {
@@ -1641,7 +1614,6 @@ impl LoweredTerminator {
             extra_blocks: collections::Vec::new(),
             extra_block_cached_slots: collections::Vec::new(),
             extra_block_exit_cached_slots: collections::Vec::new(),
-            extra_block_cfg_origins: collections::Vec::new(),
         }
     }
 }
@@ -2066,11 +2038,6 @@ fn lower_block_terminator(
                         .iter()
                         .copied()
                         .collect()],
-                    extra_block_cfg_origins: if track_block_cfg_origins() {
-                        collections::vec![collections::Vec::new()]
-                    } else {
-                        collections::Vec::new()
-                    },
                 })
             } else {
                 if target_expects_canonical_payload(

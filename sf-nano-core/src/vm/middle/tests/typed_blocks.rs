@@ -6,7 +6,7 @@ use crate::vm::middle::tests::helpers::{
     typed_program,
 };
 use crate::vm::{
-    middle::{cfg, frame::plan_frame_layout, joint_plan, slot_ssa},
+    middle::{cfg, frame::plan_frame_layout, joint_plan},
     wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind},
 };
 
@@ -210,9 +210,6 @@ fn structured_branch_target_keeps_exact_transient_entry_at_end_block_open() {
 
     let frame = plan_frame_layout(semantic.local_count, semantic.max_stack_height, 3);
     let cfg = cfg::build_semantic_cfg(&semantic);
-    let slot = slot_ssa::lower_slot_only_ssa(&semantic, &cfg, frame)
-        .expect("slot-only SSA should build for structured branch target regression");
-    let _ = slot; // only used to ensure slot-only SSA lowers successfully above
     let plan = joint_plan::build::build_plan(&semantic, &cfg, frame, host_config(7, 13))
         .expect("joint plan should build for structured branch target regression");
     let join_block = block_for_semantic_index(&cfg, 6);

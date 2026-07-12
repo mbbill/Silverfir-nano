@@ -56,9 +56,6 @@ pub(super) fn insert_boundary_repair_blocks(
     let repair_count = count_boundary_repairs(program, exit_cached_slots, original_len);
     program.blocks.reserve_exact(repair_count);
     program.block_entry_cached_slots.reserve_exact(repair_count);
-    if !program.block_cfg_origins.is_empty() {
-        program.block_cfg_origins.reserve_exact(repair_count);
-    }
 
     // Scratch reused across blocks for edge enumeration; avoids allocating a
     // fresh Vec per block for the common 1- and 2-edge cases.
@@ -259,9 +256,6 @@ fn apply_edge_repair(
     program
         .block_entry_cached_slots
         .push(pred_exit.to_vec().into());
-    if !program.block_cfg_origins.is_empty() {
-        program.block_cfg_origins.push(collections::Vec::new());
-    }
     repair_blocks.insert(key, repair_id);
     Some(repair_id)
 }
@@ -330,9 +324,6 @@ fn maybe_repair_entry(program: &mut SsaProgram) {
     program
         .block_entry_cached_slots
         .push(collections::Vec::new());
-    if !program.block_cfg_origins.is_empty() {
-        program.block_cfg_origins.push(collections::Vec::new());
-    }
     program.entry = repair_id;
 }
 
@@ -405,7 +396,6 @@ mod tests {
                 collections::Vec::new(),
                 collections::vec![slot0]
             ],
-            block_cfg_origins: collections::Vec::new(),
             value_types: collections::vec![ValueType::I32, ValueType::I32],
             value_sink_local: collections::vec![None, None],
             const_pool: collections::Vec::new(),

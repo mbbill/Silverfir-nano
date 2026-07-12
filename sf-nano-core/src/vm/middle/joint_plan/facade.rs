@@ -40,12 +40,11 @@ impl JointPlanner {
     pub(crate) fn build(
         semantic: &SemanticProgram,
         cfg: &SemanticCfg,
-        slot_block_count: usize,
         frame: FrameLayoutPlan,
         config: BackendConfig,
     ) -> Result<Self, WasmError> {
         let plan = build::build_plan(semantic, cfg, frame, config)?;
-        validate::validate_plan(cfg, slot_block_count, &plan)?;
+        validate::validate_plan(cfg, &plan)?;
         Ok(Self { plan })
     }
 

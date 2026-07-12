@@ -137,7 +137,6 @@ fn lowers_simple_slot_and_add_block() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -259,7 +258,6 @@ fn lowers_select_with_wasm_operand_order() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -363,7 +361,6 @@ fn lowers_v128_binary_and_publishes_raw_slot_handle() {
     ssa.local_slot_types = collections::vec![ValueType::V128];
     ssa.local_slot_info = collections::vec![LocalSlotInfo::default()];
     ssa.block_entry_cached_slots = collections::vec![collections::Vec::new()];
-    ssa.block_cfg_origins = collections::vec![];
     ssa.value_types = collections::vec![ValueType::V128, ValueType::V128, ValueType::V128];
     ssa.value_sink_local = collections::vec![];
 
@@ -460,7 +457,6 @@ fn lowers_v128_local_get_slot_through_raw_handle_boundary() {
     ssa.local_slot_types = collections::vec![ValueType::V128];
     ssa.local_slot_info = collections::vec![LocalSlotInfo::default()];
     ssa.block_entry_cached_slots = collections::vec![collections::Vec::new()];
-    ssa.block_cfg_origins = collections::vec![];
     ssa.value_types = collections::vec![ValueType::V128, ValueType::V128];
     ssa.value_sink_local = collections::vec![];
 
@@ -544,7 +540,6 @@ fn native_backend_requires_at_least_one_gp_linear_value_register() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -589,7 +584,6 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -649,7 +643,6 @@ fn rejects_inconsistent_return_result_spans() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -702,7 +695,6 @@ fn rejects_mixed_void_and_value_returns() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -752,7 +744,6 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -819,7 +810,6 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64, ValueType::I64];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -908,7 +898,6 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![
             ValueType::I64,
             ValueType::I64,
@@ -1013,7 +1002,6 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
             reads_before_write: true,
         }];
         ssa.block_entry_cached_slots = collections::vec![collections::vec![]];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1082,7 +1070,6 @@ fn gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate() {
             reads_before_write: false,
         }];
         ssa.block_entry_cached_slots = collections::vec![collections::vec![]];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1154,7 +1141,6 @@ fn gp32_i64_local_get_set_cache_same_slot_emits_no_self_moves() {
             reads_before_write: true,
         }];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1218,7 +1204,6 @@ fn gp32_i64_local_set_cache_materializes_live_pair_alias_before_overwrite() {
             },
         ];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64, ValueType::I64];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1312,7 +1297,6 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64, ValueType::I64];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1387,7 +1371,6 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![
             ValueType::I32,
             ValueType::I64,
@@ -1502,7 +1485,6 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
         caller.local_slot_types = collections::vec![];
         caller.local_slot_info = collections::vec![];
         caller.block_entry_cached_slots = collections::vec![];
-        caller.block_cfg_origins = collections::vec![];
         caller.value_types = collections::vec![];
         caller.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1530,7 +1512,6 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
         callee.local_slot_types = collections::vec![];
         callee.local_slot_info = collections::vec![];
         callee.block_entry_cached_slots = collections::vec![];
-        callee.block_cfg_origins = collections::vec![];
         callee.value_types = collections::vec![];
         callee.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1584,7 +1565,6 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             reads_before_write: false
         }];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1682,7 +1662,6 @@ fn local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free() 
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1749,7 +1728,6 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
             reads_before_write: false
         }];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1815,7 +1793,6 @@ fn lowers_call_runtime_through_frame_metadata_without_helper_scratch() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1875,7 +1852,6 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -1944,7 +1920,6 @@ fn flushes_and_reloads_cached_locals_around_call_runtime() {
             reads_before_write: false
         }];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -2030,7 +2005,6 @@ fn skips_dead_cached_local_reload_after_direct_runtime_call() {
             reads_before_write: true
         }];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -2106,7 +2080,6 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             reads_before_write: true
         }];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -2191,7 +2164,6 @@ fn lowers_direct_local_call_with_continuation_block() {
         caller.local_slot_types = collections::vec![];
         caller.local_slot_info = collections::vec![];
         caller.block_entry_cached_slots = collections::vec![];
-        caller.block_cfg_origins = collections::vec![];
         caller.value_types = collections::vec![];
         caller.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -2219,7 +2191,6 @@ fn lowers_direct_local_call_with_continuation_block() {
         callee.local_slot_types = collections::vec![];
         callee.local_slot_info = collections::vec![];
         callee.block_entry_cached_slots = collections::vec![];
-        callee.block_cfg_origins = collections::vec![];
         callee.value_types = collections::vec![];
         callee.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -2334,7 +2305,6 @@ fn flushes_cached_local_before_second_direct_call() {
             reads_before_write: true
         }];
         caller.block_entry_cached_slots = collections::vec![];
-        caller.block_cfg_origins = collections::vec![];
         caller.value_types = collections::vec![];
         caller.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -2381,7 +2351,6 @@ fn flushes_cached_local_before_second_direct_call() {
         callee.local_slot_types = collections::vec![];
         callee.local_slot_info = collections::vec![];
         callee.block_entry_cached_slots = collections::vec![];
-        callee.block_cfg_origins = collections::vec![];
         callee.value_types = collections::vec![];
         callee.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -2509,7 +2478,6 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
             reads_before_write: true,
         }];
         caller.block_entry_cached_slots = collections::vec![];
-        caller.block_cfg_origins = collections::vec![];
         caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         caller.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
@@ -2564,7 +2532,6 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
         callee.local_slot_types = collections::vec![];
         callee.local_slot_info = collections::vec![];
         callee.block_entry_cached_slots = collections::vec![];
-        callee.block_cfg_origins = collections::vec![];
         callee.value_types = collections::vec![];
         callee.value_sink_local = collections::vec![];
         callee.blocks.push(SsaBlock {
@@ -2661,7 +2628,6 @@ fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_availabl
             reads_before_write: true,
         }];
         caller.block_entry_cached_slots = collections::vec![];
-        caller.block_cfg_origins = collections::vec![];
         caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         caller.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
@@ -2716,7 +2682,6 @@ fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_availabl
         callee.local_slot_types = collections::vec![];
         callee.local_slot_info = collections::vec![];
         callee.block_entry_cached_slots = collections::vec![];
-        callee.block_cfg_origins = collections::vec![];
         callee.value_types = collections::vec![];
         callee.value_sink_local = collections::vec![];
         callee.blocks.push(SsaBlock {
@@ -2804,7 +2769,6 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
             reads_before_write: true,
         }];
         caller.block_entry_cached_slots = collections::vec![];
-        caller.block_cfg_origins = collections::vec![];
         caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         caller.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
@@ -2859,7 +2823,6 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
         callee.local_slot_types = collections::vec![];
         callee.local_slot_info = collections::vec![];
         callee.block_entry_cached_slots = collections::vec![];
-        callee.block_cfg_origins = collections::vec![];
         callee.value_types = collections::vec![];
         callee.value_sink_local = collections::vec![];
         callee.blocks.push(SsaBlock {
@@ -2962,7 +2925,6 @@ fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
             reads_before_write: false,
         }];
         caller.block_entry_cached_slots = collections::vec![];
-        caller.block_cfg_origins = collections::vec![];
         caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         caller.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
@@ -3020,7 +2982,6 @@ fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
         callee.local_slot_types = collections::vec![];
         callee.local_slot_info = collections::vec![];
         callee.block_entry_cached_slots = collections::vec![];
-        callee.block_cfg_origins = collections::vec![];
         callee.value_types = collections::vec![];
         callee.value_sink_local = collections::vec![];
         callee.blocks.push(SsaBlock {
@@ -3109,7 +3070,6 @@ fn direct_local_call_publishes_dirty_ref_cache_even_in_preserved_reg() {
             reads_before_write: false,
         }];
         caller.block_entry_cached_slots = collections::vec![];
-        caller.block_cfg_origins = collections::vec![];
         caller.value_types = collections::vec![ValueType::funcref()];
         caller.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
@@ -3145,7 +3105,6 @@ fn direct_local_call_publishes_dirty_ref_cache_even_in_preserved_reg() {
         callee.local_slot_types = collections::vec![];
         callee.local_slot_info = collections::vec![];
         callee.block_entry_cached_slots = collections::vec![];
-        callee.block_cfg_origins = collections::vec![];
         callee.value_types = collections::vec![];
         callee.value_sink_local = collections::vec![];
         callee.blocks.push(SsaBlock {
@@ -3215,7 +3174,6 @@ fn preserves_cached_locals_across_block_edges() {
             reads_before_write: true
         }];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -3353,7 +3311,6 @@ fn threads_cached_locals_through_block_edge_params() {
         }];
         ssa.block_entry_cached_slots =
             collections::vec![collections::vec![], collections::vec![slot]];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -3471,7 +3428,6 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
         ];
         ssa.block_entry_cached_slots =
             collections::vec![collections::vec![], collections::vec![slot1]];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -3578,7 +3534,6 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
             reads_before_write: false,
         }];
         ssa.block_entry_cached_slots = collections::vec![collections::vec![]];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -3660,7 +3615,6 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
             collections::vec![],
             collections::vec![slot]
         ];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -3786,7 +3740,6 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
         ];
         ssa.block_entry_cached_slots =
             collections::vec![collections::vec![], collections::vec![slot0, slot1, slot2],];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -3901,7 +3854,6 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
             reads_before_write: true,
         }];
         ssa.block_entry_cached_slots = collections::vec![collections::vec![]];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -3966,7 +3918,6 @@ fn does_not_save_clean_carried_cache_before_runtime_call() {
         }];
         ssa.block_entry_cached_slots =
             collections::vec![collections::vec![], collections::vec![slot]];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -4058,7 +4009,6 @@ fn preserved_call_keeps_carried_cache_live_across_edge() {
         ];
         ssa.block_entry_cached_slots =
             collections::vec![collections::vec![slot0], collections::vec![slot0]];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::funcref(), ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -4174,7 +4124,6 @@ fn saves_only_dirty_cached_locals_before_runtime_call() {
         ];
         ssa.block_entry_cached_slots =
             collections::vec![collections::vec![], collections::vec![clean_slot]];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -4267,7 +4216,6 @@ fn entry_block_cached_locals_are_loaded_in_prologue_not_passed_as_params() {
             reads_before_write: true,
         }];
         ssa.block_entry_cached_slots = collections::vec![collections::vec![slot]];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -4322,7 +4270,6 @@ fn register_passed_entry_param_cache_stays_dirty_across_edges() {
         }];
         ssa.block_entry_cached_slots =
             collections::vec![collections::vec![slot], collections::vec![slot]];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut entry = SsaBlock {
@@ -4402,7 +4349,6 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
             reads_before_write: false
         }];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I64];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -4468,7 +4414,6 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
         caller.local_slot_types = collections::vec![];
         caller.local_slot_info = collections::vec![];
         caller.block_entry_cached_slots = collections::vec![];
-        caller.block_cfg_origins = collections::vec![];
         caller.value_types = collections::vec![];
         caller.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -4496,7 +4441,6 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
         callee.local_slot_types = collections::vec![];
         callee.local_slot_info = collections::vec![];
         callee.block_entry_cached_slots = collections::vec![];
-        callee.block_cfg_origins = collections::vec![];
         callee.value_types = collections::vec![];
         callee.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -4561,7 +4505,6 @@ fn lowers_memory_size_without_helper_boundary() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -4624,7 +4567,6 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -4701,7 +4643,6 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -4913,7 +4854,6 @@ fn lowers_call_indirect_local_path_with_live_register_args() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![
             ValueType::I32,
             ValueType::I32,
@@ -5093,7 +5033,6 @@ fn lowers_call_indirect_live_scalar_result_through_register_continuation() {
             reads_before_write: false,
         }];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![
             ValueType::I32,
             ValueType::I32,
@@ -5279,7 +5218,6 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -5398,7 +5336,6 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -5492,7 +5429,6 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -5571,7 +5507,6 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
         caller.local_slot_types = collections::vec![];
         caller.local_slot_info = collections::vec![];
         caller.block_entry_cached_slots = collections::vec![];
-        caller.block_cfg_origins = collections::vec![];
         caller.value_types = collections::vec![];
         caller.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -5599,7 +5534,6 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
         callee.local_slot_types = collections::vec![];
         callee.local_slot_info = collections::vec![];
         callee.block_entry_cached_slots = collections::vec![];
-        callee.block_cfg_origins = collections::vec![];
         callee.value_types = collections::vec![];
         callee.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -5666,7 +5600,6 @@ fn lowers_global_get_and_set_without_helpers() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -5758,7 +5691,6 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -5840,7 +5772,6 @@ fn lowers_i32_load_with_inline_trap_if() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -5941,7 +5872,6 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -6032,7 +5962,6 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -6123,7 +6052,6 @@ fn gp32_mem0_store_does_not_reuse_live_source_as_address_scratch() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
@@ -6266,7 +6194,6 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -6382,7 +6309,6 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -6458,7 +6384,6 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -6534,7 +6459,6 @@ fn threads_live_linear_values_through_split_continuation_params() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -6647,7 +6571,6 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -6761,7 +6684,6 @@ fn lowers_f32_const_to_fp_machine_const() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::F32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -6838,7 +6760,6 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::F64];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -6901,7 +6822,6 @@ fn untyped_slot_load_stays_in_gp_bank() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -6965,7 +6885,6 @@ fn f32_block_params_keep_f32_width() {
         ssa.local_slot_types = collections::vec![];
         ssa.local_slot_info = collections::vec![];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::F32, ValueType::F32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -7030,7 +6949,6 @@ fn f32_cached_locals_use_f32_slot_widths() {
             reads_before_write: true
         }];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::F32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -7107,7 +7025,6 @@ fn local_get_cache_source_aliases_without_move() {
             reads_before_write: true,
         }];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -7196,7 +7113,6 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
             },
         ];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {
@@ -7281,7 +7197,6 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
             },
         ];
         ssa.block_entry_cached_slots = collections::vec![];
-        ssa.block_cfg_origins = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32];
         ssa.value_sink_local = collections::vec![];
         let mut __blk0 = SsaBlock {

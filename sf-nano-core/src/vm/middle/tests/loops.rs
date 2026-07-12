@@ -6,8 +6,8 @@ use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind
 
 use super::helpers::{
     block_for_semantic_index, count_ensure_cache, first_local_get_for, i32_program,
-    incoming_cache_repair_blocks, op, plan_i32_program, prepare_i32_program,
-    prepared_block_for_semantic_index, prim, target,
+    incoming_cache_repair_blocks, loop_body_block, loop_header_block, op, plan_i32_program,
+    prepare_i32_program, prim, target,
 };
 
 #[test]
@@ -168,7 +168,7 @@ fn hot_loop_header_needs_repair_on_at_most_one_incoming_edge() {
     let prepared = prepare_i32_program(&semantic, 2, 0);
     let slot0 = prepared.frame.local_slot(0);
     let hot_loop_body_cfg = block_for_semantic_index(&pipeline.cfg, 8);
-    let hot_loop_body = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 8);
+    let hot_loop_body = loop_body_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, hot_loop_body);
 
     assert!(
@@ -246,7 +246,7 @@ fn loop_dispatch_header_keeps_hot_pass_through_locals_across_backedge() {
     let slot1 = prepared.frame.local_slot(1);
     let slot2 = prepared.frame.local_slot(2);
     let header_block = block_for_semantic_index(&pipeline.cfg, 10);
-    let header_block_ssa = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 10);
+    let header_block_ssa = loop_header_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, header_block_ssa);
 
     let entry = &pipeline.planner.block_open(header_block).cached_locals;
@@ -337,8 +337,8 @@ fn loop_interior_state_blocks_keep_hot_locals_for_later_dispatch_bodies() {
     let slot1 = prepared.frame.local_slot(1);
     let state_block_cfg = block_for_semantic_index(&pipeline.cfg, 14);
     let dispatch_block_cfg = block_for_semantic_index(&pipeline.cfg, 16);
-    let state_block = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 14);
-    let dispatch_block = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 16);
+    let state_block = loop_header_block(&prepared.ssa);
+    let dispatch_block = loop_body_block(&prepared.ssa);
     let state_entry = &pipeline.planner.block_open(state_block_cfg).cached_locals;
     let dispatch_entry = &pipeline
         .planner
@@ -460,10 +460,9 @@ fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair
         ],
     );
 
-    let pipeline = plan_i32_program(&semantic, 2, 0);
     let prepared = prepare_i32_program(&semantic, 2, 0);
     let slot0 = prepared.frame.local_slot(0);
-    let loop_body = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 6);
+    let loop_body = loop_header_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, loop_body);
 
     assert!(
@@ -552,7 +551,7 @@ fn hot_loop_header_needs_no_cache_repair_when_all_incoming_edges_already_match()
     let prepared = prepare_i32_program(&semantic, 2, 0);
     let slot0 = prepared.frame.local_slot(0);
     let loop_body_cfg = block_for_semantic_index(&pipeline.cfg, 4);
-    let loop_body = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 4);
+    let loop_body = loop_header_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, loop_body);
 
     assert_eq!(
@@ -614,7 +613,7 @@ fn loop_header_trims_cold_carried_local_so_only_the_cold_edge_needs_repair() {
     let slot0 = prepared.frame.local_slot(0);
     let slot1 = prepared.frame.local_slot(1);
     let loop_body_cfg = block_for_semantic_index(&pipeline.cfg, 8);
-    let loop_body = prepared_block_for_semantic_index(&prepared, &pipeline.cfg, 8);
+    let loop_body = loop_body_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, loop_body);
     let slot1_repairs = repair_blocks
         .iter()
