@@ -5,7 +5,7 @@
 //! `spill_depth` splitting the window into a spilled prefix and a live suffix,
 //! the per-slot `type_stack`, and an alias tag per live entry. This module owns
 //! that evolution — one implementation of fill / spill / capacity / eviction —
-//! so the two passes (and, in Phase 2, the exact-row pass D) cannot drift.
+//! so the two passes (and the exact-row pass D walker) cannot drift.
 //!
 //! The engine ([`Window`]) owns the typed state. A [`DisciplineDriver`] owns
 //! only emission and SSA-value identity: `on_spill` / `on_fill` / `on_drop_cache`

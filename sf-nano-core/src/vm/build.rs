@@ -1071,10 +1071,11 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
 
     let mut groups = 0usize;
     let mut ssa_ops = 0usize;
-    // Module facts for pass C (lane assignment). A function is local exactly when
-    // it has a spec (the same predicate `build_static_summaries` uses); the batch
-    // path derives it directly from the has-spec flags rather than re-running that
-    // scan. Table modes are the module's current dispatch modes.
+    // Module facts for the middle's final-SSA cache-signal derivation. A function
+    // is local exactly when it has a spec (the same predicate
+    // `build_static_summaries` uses); the batch path derives it directly from the
+    // has-spec flags rather than re-running that scan. Table modes are the
+    // module's current dispatch modes.
     let is_local_func: collections::Vec<bool> = module
         .functions
         .iter()

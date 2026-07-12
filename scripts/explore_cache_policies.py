@@ -16,7 +16,7 @@ Typical use:
     --wasi-fast \
     --policy algorithm4 \
     --policy algorithm4:edge=0.75 \
-    --policy simplify_no_edge_cost
+    --policy algorithm4:edge=0
 """
 
 from __future__ import annotations

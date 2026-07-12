@@ -145,15 +145,22 @@ Main code (pipeline entry is `prepare_function` in `middle/mod.rs`):
 - `sf-nano-core/src/vm/middle/slot_ssa.rs` — slot-only SSA skeleton
 - `sf-nano-core/src/vm/middle/joint_plan/` — joint transient/cache planner
   (entry-region analysis, local-access decisions, init-local facts,
-  region solver)
+  region solver, and the exact-simulation walker in `exact.rs` that produces
+  the plan-authoritative per-block cache entry/exit rows + per-edge repair
+  actions)
 - `sf-nano-core/src/vm/middle/rewrite/` — final SSA-IR materialization
-  (function body + edge repair)
+  (function body + edge repair), seeded from the plan's exact rows
 - `sf-nano-core/src/vm/middle/cleanup.rs` — structural CFG cleanups
   (cache-run canonicalization, jump threading, single-predecessor merge,
   unreachable-block removal)
 - `sf-nano-core/src/vm/middle/optimize.rs` — constant folding and
   constant-operand absorption
 - `sf-nano-core/src/vm/middle/sink_plan.rs` — cached-local sink planning
+- `sf-nano-core/src/vm/middle/final_signals.rs` — derives the two
+  machine-facing cache signals (per-entry `Ensure`/`Reserve` requirement rows
+  + whole-function preferred-preserved flags) over the FINAL SSA, after
+  cleanup's block merges, using `ModuleFacts` (callee locality + table
+  dispatch modes) to classify local-JIT-call crosses
 - `sf-nano-core/src/vm/middle/ssa_ir/ir.rs` — SSA-IR definitions
 
 Pipeline order in `prepare_function`:
@@ -163,13 +170,20 @@ validate semantic
 plan_frame_layout
 cfg::build_semantic_cfg
 slot_ssa::lower_slot_only_ssa
-JointPlanner::build  (joint_plan/*)
-rewrite::rewrite_function
+JointPlanner::build  (joint_plan/*: region solver + exact walker -> plan-authoritative cache rows)
+rewrite::rewrite_function  (seeds each block from the plan's exact entry row)
 cleanup::cleanup_program
 optimize::optimize_program
 sink_plan::plan_sinks
+final_signals: derive block_entry_cache_requirements + preferred_preserved over the FINAL SSA
 validate prepared SSA
 ```
+
+The two machine-facing cache signals are derived last, over the final SSA, so
+they see cleanup's block merges — a pre-cleanup per-block classification would
+go stale when a merge folds a successor's first-touch into its predecessor. The
+machine reads these rows (see stage 3); the exact walker's own requirement
+classification stays internal to the plan's edge-repair derivation.
 
 This stage is where the engine makes most of its important optimization
 decisions. It does not try to produce final code yet. It produces an IR whose
@@ -568,15 +582,30 @@ Why that matters:
 
 ### Optimization: entry cached-local initialization
 
-At each block entry, `lower_cache_layout::compute_block_entry_cache_params`
-plus `rewrite`-emitted `LocalEnsureCache` / `LocalReserveCache` ops drive
-machine lowering to:
+The machine owns the physical lane layout: `lower_cache_layout::
+compute_block_entry_cache_params` assigns each cached local a register,
+biasing call-crossing preferred locals into preserved lanes. It reads two rows
+the middle publishes on the `SsaProgram` (both derived over the final SSA in
+`final_signals`, see stage 2):
+
+- `block_entry_cache_requirements` — per entry slot, `Ensure` (materialize the
+  value on entry) vs `Reserve` (the block writes it first, so no incoming value
+  is needed); this is the machine's `needs_value` input and drives the edge
+  `reserve()` markers
+- `preferred_preserved` — the whole-function per-slot flag promoted into the
+  layout's per-block preference (also consumed by binding-time register
+  selection in `lower_context` for mid-block caches)
+
+Together with `rewrite`-emitted `LocalEnsureCache` / `LocalReserveCache` ops,
+this drives machine lowering to:
 
 - load cached parameters from frame slots
 - zero-initialize only locals that may be read before write
 - skip untouched cached locals entirely when `reads_before_write == false`
 
-This is the backend realization of the earlier joint-plan analysis.
+This is the backend realization of the earlier joint-plan analysis; the middle
+hands the machine the context-free preference + per-entry requirement, and the
+machine places the lanes.
 
 ### Optimization: `LocalGet` source aliasing
 

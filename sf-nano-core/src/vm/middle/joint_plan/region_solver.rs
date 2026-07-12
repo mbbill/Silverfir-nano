@@ -58,8 +58,6 @@ impl Algorithm4Params {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) enum ResidencyPolicy {
     Algorithm4(Algorithm4Params),
-    DiagnosticStatic,
-    DiagnosticNone,
 }
 
 impl ResidencyPolicy {
@@ -85,32 +83,9 @@ impl ResidencyPolicy {
         if trimmed.is_empty() || trimmed == "algorithm4" {
             return Ok(Self::default());
         }
-        if trimmed == "diag_static" || trimmed == "simplify_static_global" {
-            return Ok(Self::DiagnosticStatic);
-        }
-        if trimmed == "diag_none" {
-            return Ok(Self::DiagnosticNone);
-        }
-        if trimmed == "simplify_no_call_tax" {
-            let mut cfg = Algorithm4Params::default();
-            cfg.call_tax_scale = 0.0;
-            return Ok(Self::Algorithm4(cfg));
-        }
-        if trimmed == "simplify_no_prices" {
-            let mut cfg = Algorithm4Params::default();
-            cfg.price_iters = 0;
-            return Ok(Self::Algorithm4(cfg));
-        }
-        if trimmed == "simplify_no_edge_cost" {
-            let mut cfg = Algorithm4Params::default();
-            cfg.edge_cost_scale = 0.0;
-            return Ok(Self::Algorithm4(cfg));
-        }
-        if trimmed == "simplify_no_loop_weight" {
-            let mut cfg = Algorithm4Params::default();
-            cfg.assumed_trip_count = 1.0;
-            return Ok(Self::Algorithm4(cfg));
-        }
+        // Only `algorithm4` and its parameterized form (`algorithm4:trip/iters/
+        // edge/call=…`) are supported; the named diagnostic shorthands were
+        // retired — express them as `algorithm4:edge=0`, `algorithm4:iters=0`, etc.
         let Some(params) = trimmed.strip_prefix("algorithm4:") else {
             return Err(WasmError::internal("unknown SF_CACHE_POLICY"));
         };
@@ -231,12 +206,7 @@ pub(super) fn solve_public_cache_sets(
         return collections::vec![collections::Vec::new(); cfg.blocks.len()];
     }
 
-    let policy_params = match policy {
-        ResidencyPolicy::Algorithm4(params) => params,
-        ResidencyPolicy::DiagnosticStatic | ResidencyPolicy::DiagnosticNone => {
-            Algorithm4Params::default()
-        }
-    };
+    let ResidencyPolicy::Algorithm4(policy_params) = policy;
     let mut regions = build_region_tree(semantic, cfg, &policy_params);
     let local_meta = build_local_meta(&semantic.local_types, local_count, gp_unit_bytes);
     let block_weights = compute_block_weights(&regions, &policy_params);
@@ -279,32 +249,24 @@ pub(super) fn solve_public_cache_sets(
     }
 
     let mut selected = collections::vec![collections::vec![false; local_count]; region_count];
-    match policy {
-        ResidencyPolicy::Algorithm4(params) => {
-            solve_bank(
-                Bank::Gp,
-                &regions,
-                &local_meta,
-                &benefit,
-                &call_tax,
-                &params,
-                &mut selected,
-            );
-            solve_bank(
-                Bank::Fp,
-                &regions,
-                &local_meta,
-                &benefit,
-                &call_tax,
-                &params,
-                &mut selected,
-            );
-        }
-        ResidencyPolicy::DiagnosticStatic => {
-            selected = static_global_set(&regions, &local_meta, &benefit, &call_tax);
-        }
-        ResidencyPolicy::DiagnosticNone => {}
-    }
+    solve_bank(
+        Bank::Gp,
+        &regions,
+        &local_meta,
+        &benefit,
+        &call_tax,
+        &policy_params,
+        &mut selected,
+    );
+    solve_bank(
+        Bank::Fp,
+        &regions,
+        &local_meta,
+        &benefit,
+        &call_tax,
+        &policy_params,
+        &mut selected,
+    );
 
     cfg.blocks
         .iter()
@@ -706,76 +668,6 @@ fn block_weight(depth: usize, params: &Algorithm4Params) -> f64 {
         weight *= params.assumed_trip_count;
     }
     weight
-}
-
-fn static_global_set(
-    regions: &RegionTree,
-    local_meta: &[LocalMeta],
-    benefit: &[collections::Vec<f64>],
-    call_tax: &[collections::Vec<f64>],
-) -> collections::Vec<collections::Vec<bool>> {
-    let region_count = regions.nodes.len();
-    let local_count = local_meta.len();
-
-    let mut net = collections::vec![0.0f64; local_count];
-    for region_id in 0..region_count {
-        for slot in 0..local_count {
-            net[slot] += benefit[region_id][slot] - call_tax[region_id][slot];
-        }
-    }
-
-    let mut chosen = collections::vec![false; local_count];
-    for bank in [Bank::Gp, Bank::Fp] {
-        let cap = regions
-            .nodes
-            .iter()
-            .map(|region| match bank {
-                Bank::Gp => region.gp_capacity,
-                Bank::Fp => region.fp_capacity,
-            })
-            .min()
-            .unwrap_or(0);
-        let items = (0..local_count)
-            .filter(|&slot| local_meta[slot].bank == bank)
-            .collect::<collections::Vec<_>>();
-        let mut value =
-            collections::vec![collections::vec![f64::NEG_INFINITY; cap + 1]; items.len() + 1];
-        let mut take = collections::vec![collections::vec![false; cap + 1]; items.len() + 1];
-        for used in 0..=cap {
-            value[0][used] = 0.0;
-        }
-        for (item_index, &slot) in items.iter().enumerate() {
-            let weight = local_meta[slot].units;
-            for used in 0..=cap {
-                let mut best = value[item_index][used];
-                let mut chose = false;
-                if used >= weight {
-                    let candidate = value[item_index][used - weight] + net[slot];
-                    if candidate > best {
-                        best = candidate;
-                        chose = true;
-                    }
-                }
-                value[item_index + 1][used] = best;
-                take[item_index + 1][used] = chose;
-            }
-        }
-        let mut used = 0usize;
-        for candidate in 1..=cap {
-            if value[items.len()][candidate] > value[items.len()][used] {
-                used = candidate;
-            }
-        }
-        for item_index in (0..items.len()).rev() {
-            let slot = items[item_index];
-            if take[item_index + 1][used] {
-                chosen[slot] = true;
-                used = used.saturating_sub(local_meta[slot].units);
-            }
-        }
-    }
-
-    collections::vec![chosen; region_count]
 }
 
 fn compute_block_call_counts(

@@ -6,14 +6,19 @@
 //! the rewriter drives (measure driver, capacity clamp On), and mirrors the
 //! rewriter's per-op cache decisions from `rewrite/function.rs`. From that it
 //! derives the exact per-block cached-local entry/exit rows and the per-edge
-//! boundary repair actions that the rewriter finalizes post-hoc today.
+//! boundary repair actions.
 //!
-//! Phase 2a stores these on the plan and the old lowering path keeps computing
-//! its own; a rewrite-time debug assert proves the two agree across the whole
-//! spectest corpus. The walker never emits SSA values — it evolves only the
-//! typed [`Window`] and observes cache eviction through the resident set the
-//! engine mutates, so the recorded cache-event stream is a faithful projection
-//! of the block's lowered cache ops.
+//! These rows are plan-authoritative: lowering seeds each block from the plan's
+//! exact entry row, and a standing rewrite-time debug assert checks the lowered
+//! exit set against the plan's. The walker never emits SSA values — it evolves
+//! only the typed [`Window`] and observes cache eviction through the resident
+//! set the engine mutates, so the recorded cache-event stream is a faithful
+//! projection of the block's lowered cache ops.
+//!
+//! The machine-facing entry-cache requirement + preferred-preserved rows are NOT
+//! produced here. They are derived over the FINAL (post-cleanup) SSA in
+//! `middle::final_signals`, because a pre-cleanup per-block classification cannot
+//! see the block merges cleanup performs.
 
 use crate::collections;
 

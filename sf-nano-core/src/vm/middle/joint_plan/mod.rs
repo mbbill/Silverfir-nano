@@ -2,13 +2,8 @@
 //!
 //! This module exposes the single planner facade used by `rewrite/`.
 
-#[allow(unused_imports)]
 pub(crate) use facade::JointPlanner;
-#[allow(unused_imports)]
-pub(crate) use interface::{
-    BlockOpenDecision, FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery,
-    TargetEntryDecision, TransientContract,
-};
+pub(crate) use interface::{LocalAccessDecision, LocalAccessQuery, TransientContract};
 mod block_open;
 pub(super) mod build;
 pub(super) mod entry_region;

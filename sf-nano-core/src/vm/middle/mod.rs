@@ -42,10 +42,10 @@ pub(crate) struct PrepareInput {
 }
 
 /// Module-level facts the middle-end reads but semantic decode does not carry.
-/// Threaded into [`prepare_function`] for pass C (lane assignment): the
-/// preserved-cache preference classifies local-JIT-call crosses via
-/// `is_local_jit_call`, which needs both the callee locality flags and the
-/// per-table dispatch modes.
+/// Threaded into [`prepare_function`] for the final-SSA cache-signal derivation
+/// ([`final_signals`]): the preserved-cache preference classifies local-JIT-call
+/// crosses via `is_local_jit_call`, which needs both the callee locality flags
+/// and the per-table dispatch modes.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ModuleFacts<'a> {
     /// Per-function-index locality: is callee `i` a locally-JIT-compiled

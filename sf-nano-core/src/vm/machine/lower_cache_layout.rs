@@ -85,11 +85,11 @@ pub(super) fn compute_block_entry_cache_params(
         })
         .collect::<collections::Vec<_>>();
     let param_usage = compute_param_prefix_usage(program, gp_reg_width);
-    // Preference now comes from the plan's whole-function `preferred_preserved`
-    // (pass D's cross count) instead of the machine re-deriving it. Promote the
-    // per-slot flag to the per-block-per-cached-index shape the layout consumes —
-    // identical to what `compute_local_call_cache_preferences` used to yield
-    // (which was itself function-global-promoted), so the layout is unchanged.
+    // Preference is the whole-function `preferred_preserved` flag (per local
+    // slot, computed by the middle's `final_signals` over the final SSA).
+    // Promote the per-slot flag to the per-block-per-cached-index shape the
+    // layout consumes; the flag is already function-global, so every block gets
+    // the same row.
     let call_preserve_preferences =
         promote_preferred_preserved(cached_locals, preferred_preserved, program.blocks.len());
     let predecessors = compute_predecessors(program);
@@ -308,11 +308,10 @@ fn compute_param_prefix_usage(
         .collect()
 }
 
-/// Promote the plan's whole-function `preferred_preserved` (per local slot) to
-/// the per-block-per-cached-index shape the layout consumes. The plan flag is
-/// already function-global, so every block gets the same row — exactly what the
-/// deleted machine-side `compute_local_call_cache_preferences` produced after
-/// its own promotion, so the layout is unchanged.
+/// Promote the whole-function `preferred_preserved` flag (per local slot,
+/// computed by the middle's `final_signals`) to the per-block-per-cached-index
+/// shape the layout consumes. The flag is already function-global, so every
+/// block gets the same row.
 pub(super) fn promote_preferred_preserved(
     cached_locals: &[CachedLocal],
     preferred_preserved: &[bool],
