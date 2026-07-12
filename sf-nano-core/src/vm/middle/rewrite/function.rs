@@ -16,8 +16,9 @@ use crate::{
     vm::{
         backend::BackendConfig,
         middle::{
-            budget::{count_live_bank_budget_units, gp_value_budget_units},
+            budget::count_live_bank_budget_units,
             cfg::{CfgBlockId, SemanticCfg},
+            discipline::{self, CapacityMode, StructuralAction},
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
                 init_locals::locals_reads_before_write, JointPlanner, LocalAccessDecision,
@@ -439,7 +440,7 @@ fn ensure_state_fits_with_cache(
     _context: &str,
 ) -> Result<(), WasmError> {
     let effective_live_types = state
-        .live_types
+        .live_types()
         .iter()
         .zip(state.live_aliases().iter())
         .filter_map(|(ty, alias)| {
@@ -451,8 +452,11 @@ fn ensure_state_fits_with_cache(
         .collect::<collections::Vec<_>>();
     let (gp_live, fp_live) =
         count_live_bank_budget_units(&effective_live_types, state.gp_unit_bytes);
-    let (gp_cache, fp_cache) =
-        count_cached_local_budget_units(resident_cache, local_slot_types, state.gp_unit_bytes);
+    let (gp_cache, fp_cache) = discipline::count_cached_local_budget_units(
+        resident_cache,
+        local_slot_types,
+        state.gp_unit_bytes,
+    );
     if gp_live + gp_cache > state.gp_live_budget as usize
         || fp_live + fp_cache > state.fp_live_budget as usize
     {
@@ -461,27 +465,6 @@ fn ensure_state_fits_with_cache(
         ));
     }
     Ok(())
-}
-
-fn count_cached_local_budget_units(
-    resident_cache: &BTreeSet<FrameSlot>,
-    local_slot_types: &[ValueType],
-    gp_unit_bytes: u8,
-) -> (usize, usize) {
-    let mut gp = 0usize;
-    let mut fp = 0usize;
-    for &slot in resident_cache {
-        let ty = local_slot_types
-            .get(slot.0 as usize)
-            .copied()
-            .unwrap_or(ValueType::I64);
-        if ty.is_fp() {
-            fp += 1;
-        } else {
-            gp += gp_value_budget_units(ty, gp_unit_bytes);
-        }
-    }
-    (gp, fp)
 }
 
 /// Inline prefix: fill/spill decisions made directly by the rewriter.
@@ -498,321 +481,87 @@ fn apply_inline_prefix(
     resident_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
+    if matches!(op, SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)) {
+        // `unreachable` traps; no structural prefix and no trailing capacity
+        // clamp (matching the old early return).
+        return Ok(());
+    }
+    match discipline::structural_action(op) {
+        StructuralAction::None => {}
+        StructuralAction::PrimitiveFill { pop, .. } => {
+            // Ensure capacity BEFORE filling operands — the fill must not be
+            // undone by a subsequent spill, since operands are consumed
+            // immediately. Reserve room for the filled operands and for any
+            // positive per-bank delta the op's results add.
+            let result_types = emit_result_types(op, local_slot_types);
+            let extra = state.required_capacity(pop, &result_types);
+            state.ensure_capacity(
+                values,
+                frame,
+                CapacityMode::On,
+                resident_cache,
+                local_slot_types,
+                extra,
+            )?;
+            state.fill_operands(values, frame, pop);
+        }
+        StructuralAction::FillKeepSpillRest(keep) => {
+            state.fill_operands(values, frame, keep);
+            state.spill_except_top(values, frame, keep);
+        }
+        StructuralAction::SpillAll => state.spill_all(values, frame),
+        StructuralAction::PrepareCall { params } => {
+            state.spill_live_below_top(values, frame, params);
+        }
+        StructuralAction::ReturnScalar => {
+            state.fill_operands(values, frame, 1);
+            state.spill_except_top(values, frame, 1);
+        }
+        // `else` is a control-flow boundary the semantic CFG already accounts
+        // for; the rewriter emits no fill for it.
+        StructuralAction::ElsePlannerFill => {}
+    }
+    // Trailing capacity clamp: if live transients + cached locals still exceed
+    // the budget, spill the bottom transient (then evict) until it fits.
+    state.ensure_capacity(
+        values,
+        frame,
+        CapacityMode::On,
+        resident_cache,
+        local_slot_types,
+        (0, 0),
+    )?;
+    Ok(())
+}
+
+/// The types the emit-side capacity reservation charges for an op's pushed
+/// results: primitive result type(s), or the accessed local's type for
+/// `local.get` / `local.tee`, or none for `local.set`.
+fn emit_result_types(
+    op: &SemanticOpKind,
+    local_slot_types: &[ValueType],
+) -> collections::Vec<ValueType> {
+    let local_ty = |idx: u16| {
+        local_slot_types
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(ValueType::I64)
+    };
     match op {
         SemanticOpKind::Primitive(kind) => {
-            if matches!(kind, PrimitiveOpKind::Unreachable) {
-                return Ok(());
-            }
-            let (pop, push) = primitive_op::stack_effect(kind);
-            // Ensure capacity BEFORE filling operands. The fill must not be
-            // undone by subsequent spills — operands are consumed immediately.
-            // Reserve enough room for both:
-            // - any currently spilled operands that will be filled into the
-            //   live window
-            // - any positive per-bank delta after the op replaces its
-            //   consumed operands with results
-            let result_ty = primitive_op::result_type(kind).unwrap_or(ValueType::I64);
-            let result_types = if push == 0 {
+            let (_pop, push) = primitive_op::stack_effect(kind);
+            if push == 0 {
                 collections::Vec::new()
             } else {
-                collections::vec![result_ty; push as usize]
-            };
-            let (extra_gp, extra_fp) = inline_required_capacity(state, pop as u16, &result_types);
-            inline_ensure_capacity(
-                state,
-                frame,
-                resident_cache,
-                local_slot_types,
-                extra_gp,
-                extra_fp,
-            )?;
-            inline_fill_for_operands(state, frame, values, pop as u16)?;
-        }
-        SemanticOpKind::LocalGet { idx } => {
-            // Reserve room for the push in the correct bank.
-            let ty = local_slot_types
-                .get(*idx as usize)
-                .copied()
-                .unwrap_or(ValueType::I64);
-            let (extra_gp, extra_fp) = inline_required_capacity(state, 0, &[ty]);
-            inline_ensure_capacity(
-                state,
-                frame,
-                resident_cache,
-                local_slot_types,
-                extra_gp,
-                extra_fp,
-            )?;
-        }
-        SemanticOpKind::LocalSet { .. } | SemanticOpKind::LocalTee { .. } => {
-            let result_types = match op {
-                SemanticOpKind::LocalTee { idx } => collections::vec![local_slot_types
-                    .get(*idx as usize)
-                    .copied()
-                    .unwrap_or(ValueType::I64),],
-                _ => collections::Vec::new(),
-            };
-            let (extra_gp, extra_fp) = inline_required_capacity(state, 1, &result_types);
-            inline_ensure_capacity(
-                state,
-                frame,
-                resident_cache,
-                local_slot_types,
-                extra_gp,
-                extra_fp,
-            )?;
-            inline_fill_for_operands(state, frame, values, 1)?;
-        }
-        SemanticOpKind::Block { .. } => {}
-        SemanticOpKind::Loop { .. } => {
-            inline_spill_all(state, frame)?;
-        }
-        SemanticOpKind::If { params, .. } => {
-            let keep_live = params.saturating_add(1);
-            inline_fill_for_operands(state, frame, values, keep_live)?;
-            inline_spill_all_except_top(state, frame, keep_live)?;
-        }
-        SemanticOpKind::Else { .. } => {
-            // Else restores to block start height + params. The structural
-            // effect in apply_semantic_effect handles height/spill_depth changes.
-            // No explicit fill needed here — the rewriter processes Else as a
-            // control flow boundary that the semantic CFG already accounts for.
-        }
-        SemanticOpKind::End => {}
-        SemanticOpKind::Br { arity, .. } => {
-            inline_fill_for_operands(state, frame, values, *arity)?;
-            inline_spill_all_except_top(state, frame, *arity)?;
-        }
-        SemanticOpKind::BrIf { arity, .. } => {
-            let keep_live = arity.saturating_add(1);
-            inline_fill_for_operands(state, frame, values, keep_live)?;
-            inline_spill_all_except_top(state, frame, keep_live)?;
-        }
-        SemanticOpKind::BrOnNull { arity, .. } => {
-            let keep_live = arity.saturating_add(1);
-            inline_fill_for_operands(state, frame, values, keep_live)?;
-            inline_spill_all_except_top(state, frame, keep_live)?;
-        }
-        SemanticOpKind::BrOnNonNull { arity, .. } => {
-            inline_fill_for_operands(state, frame, values, *arity)?;
-            inline_spill_all_except_top(state, frame, *arity)?;
-        }
-        SemanticOpKind::BrOnCast { arity, .. } | SemanticOpKind::BrOnCastFail { arity, .. } => {
-            inline_fill_for_operands(state, frame, values, *arity)?;
-            inline_spill_all_except_top(state, frame, *arity)?;
-        }
-        SemanticOpKind::BrTable { entries } => {
-            let arity = entries.first().map(|entry| entry.arity).unwrap_or(0);
-            let keep_live = arity.saturating_add(1);
-            inline_fill_for_operands(state, frame, values, keep_live)?;
-            inline_spill_all_except_top(state, frame, keep_live)?;
-        }
-        SemanticOpKind::CallDirect { params, .. } => {
-            inline_prepare_call_operands(state, frame, *params)?;
-        }
-        SemanticOpKind::CallIndirect { params, .. } | SemanticOpKind::CallRef { params, .. } => {
-            inline_prepare_call_operands(state, frame, params.saturating_add(1))?;
-        }
-        SemanticOpKind::ReturnCallDirect { params, .. } => {
-            inline_prepare_call_operands(state, frame, *params)?;
-        }
-        SemanticOpKind::ReturnCallIndirect { params, .. }
-        | SemanticOpKind::ReturnCallRef { params, .. } => {
-            inline_prepare_call_operands(state, frame, params.saturating_add(1))?;
-        }
-        SemanticOpKind::ReturnOne => {
-            inline_fill_for_operands(state, frame, values, 1)?;
-            inline_spill_all_except_top(state, frame, 1)?;
-        }
-        SemanticOpKind::Return { arity } if *arity == 1 => {
-            inline_fill_for_operands(state, frame, values, 1)?;
-            inline_spill_all_except_top(state, frame, 1)?;
-        }
-        SemanticOpKind::ReturnVoid | SemanticOpKind::Return { .. } => {
-            inline_spill_all(state, frame)?;
-        }
-        SemanticOpKind::AllocExnRef { .. } => {
-            inline_spill_all(state, frame)?;
-        }
-        SemanticOpKind::TryTable { .. } => {}
-        SemanticOpKind::Throw { arity, .. } => {
-            inline_fill_for_operands(state, frame, values, *arity)?;
-            inline_spill_all_except_top(state, frame, *arity)?;
-        }
-        SemanticOpKind::ThrowRef => {
-            inline_fill_for_operands(state, frame, values, 1)?;
-            inline_spill_all_except_top(state, frame, 1)?;
-        }
-    }
-    // Ensure capacity: if live transients + cached locals exceed the budget,
-    // spill the bottom transient until it fits. This replaces the old planner's
-    // ensure_capacity which was only needed because it ran with tentative cache.
-    inline_ensure_capacity(state, frame, resident_cache, local_slot_types, 0, 0)?;
-    Ok(())
-}
-
-fn inline_required_capacity(
-    state: &BlockState,
-    operand_count: u16,
-    result_types: &[ValueType],
-) -> (usize, usize) {
-    let min_spill_depth = state.height().saturating_sub(operand_count);
-    let fill_types = state.spilled_types_for_fill(min_spill_depth);
-    let (fill_gp, fill_fp) = count_live_bank_budget_units(&fill_types, state.gp_unit_bytes);
-
-    let already_live_operands = state.live().len().min(operand_count as usize);
-    let existing_operand_types =
-        &state.live_types[state.live_types.len().saturating_sub(already_live_operands)..];
-    let (existing_gp, existing_fp) =
-        count_live_bank_budget_units(existing_operand_types, state.gp_unit_bytes);
-    let (result_gp, result_fp) = count_live_bank_budget_units(result_types, state.gp_unit_bytes);
-
-    (
-        fill_gp.max(result_gp.saturating_sub(existing_gp)),
-        fill_fp.max(result_fp.saturating_sub(existing_fp)),
-    )
-}
-
-/// Spill bottom transients until live + cache + extra_gp/extra_fp fits the budget.
-///
-/// `extra_gp` and `extra_fp` reserve room for values about to be pushed
-/// (e.g., the result of a primitive op).
-fn inline_ensure_capacity(
-    state: &mut BlockState,
-    frame: FrameLayoutPlan,
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    local_slot_types: &[ValueType],
-    extra_gp: usize,
-    extra_fp: usize,
-) -> Result<(), WasmError> {
-    loop {
-        let effective_live_types = state
-            .live_types
-            .iter()
-            .zip(state.live_aliases().iter())
-            .filter_map(|(ty, alias)| {
-                alias
-                    .and_then(|slot| resident_cache.contains(&slot).then_some(()))
-                    .is_none()
-                    .then_some(*ty)
-            })
-            .collect::<collections::Vec<_>>();
-        let (gp_live, fp_live) =
-            count_live_bank_budget_units(&effective_live_types, state.gp_unit_bytes);
-        let (gp_cache, fp_cache) =
-            count_cached_local_budget_units(resident_cache, local_slot_types, state.gp_unit_bytes);
-        if gp_live + gp_cache + extra_gp <= state.gp_live_budget as usize
-            && fp_live + fp_cache + extra_fp <= state.fp_live_budget as usize
-        {
-            return Ok(());
-        }
-        // Prefer spilling a transient over dropping a cache.
-        if !state.live().is_empty() {
-            let base_slot = frame.operand_slot(state.spill_depth());
-            let spilled = state.spill_prefix(1)?;
-            for (offset, src) in spilled.into_iter().enumerate() {
-                state
-                    .ops
-                    .push(SsaInst::spill(base_slot.advance(offset as u16), src));
+                let result_ty = primitive_op::result_type(kind).unwrap_or(ValueType::I64);
+                collections::vec![result_ty; push]
             }
-            continue;
         }
-        // No transients to spill — drop the weakest cached local.
-        if resident_cache.is_empty() {
-            return Err(WasmError::internal(
-                "inline prefix: budget exceeded with nothing to evict",
-            ));
+        SemanticOpKind::LocalGet { idx } | SemanticOpKind::LocalTee { idx } => {
+            collections::vec![local_ty(*idx)]
         }
-        // Drop the highest-numbered cached local. This is a simpler heuristic
-        // than the old planner's `local_keep_key` scoring, but it's sufficient
-        // because cache eviction within a block is rare — it only fires when
-        // transient pressure + cache exceeds the budget with no transients left
-        // to spill. The evicted local will be re-ensured at the next block
-        // boundary by edge repair if needed.
-        let victim = *resident_cache.iter().next_back().unwrap();
-        resident_cache.remove(&victim);
-        state.ops.push(SsaInst::local_drop_cache(victim));
+        _ => collections::Vec::new(),
     }
-}
-
-/// Fill spilled values to make at least `operand_count` values live.
-fn inline_fill_for_operands(
-    state: &mut BlockState,
-    frame: FrameLayoutPlan,
-    values: &mut ValueAlloc,
-    operand_count: u16,
-) -> Result<(), WasmError> {
-    let min_spill_depth = state.height().saturating_sub(operand_count);
-    if state.spill_depth() <= min_spill_depth {
-        return Ok(());
-    }
-    let fill_types = state.spilled_types_for_fill(min_spill_depth);
-    let fill_count = fill_types.len();
-    let base_slot = frame.operand_slot(min_spill_depth);
-    let mut reloaded = collections::Vec::with_capacity(fill_count);
-    for (offset, ty) in fill_types.iter().copied().enumerate() {
-        let dst = values.fresh_typed(ty);
-        state
-            .ops
-            .push(SsaInst::fill(base_slot.advance(offset as u16), dst));
-        reloaded.push(dst);
-    }
-    state.fill_prefix(reloaded, fill_types)?;
-    Ok(())
-}
-
-/// Spill all live transient values to frame slots.
-fn inline_spill_all(state: &mut BlockState, frame: FrameLayoutPlan) -> Result<(), WasmError> {
-    if state.live().is_empty() {
-        return Ok(());
-    }
-    let count = state.live().len() as u16;
-    let base_slot = frame.operand_slot(state.spill_depth());
-    let spilled = state.spill_prefix(count)?;
-    for (offset, src) in spilled.into_iter().enumerate() {
-        state
-            .ops
-            .push(SsaInst::spill(base_slot.advance(offset as u16), src));
-    }
-    Ok(())
-}
-
-/// Publish live values below the call operand suffix, while leaving the
-/// current bounded operand suffix live for MachineIR call planning.
-fn inline_prepare_call_operands(
-    state: &mut BlockState,
-    frame: FrameLayoutPlan,
-    consumed: u16,
-) -> Result<(), WasmError> {
-    let base_slot = frame.operand_slot(state.spill_depth());
-    let spilled = state.spill_live_below_top(consumed)?;
-    for (offset, src) in spilled.into_iter().enumerate() {
-        state
-            .ops
-            .push(SsaInst::spill(base_slot.advance(offset as u16), src));
-    }
-    Ok(())
-}
-
-/// Spill all except the top `keep_top` live values.
-fn inline_spill_all_except_top(
-    state: &mut BlockState,
-    frame: FrameLayoutPlan,
-    keep_top: u16,
-) -> Result<(), WasmError> {
-    let live_count = state.live().len();
-    let spill_count = live_count.saturating_sub(keep_top as usize);
-    if spill_count == 0 {
-        return Ok(());
-    }
-    let base_slot = frame.operand_slot(state.spill_depth());
-    let spilled = state.spill_prefix(spill_count as u16)?;
-    for (offset, src) in spilled.into_iter().enumerate() {
-        state
-            .ops
-            .push(SsaInst::spill(base_slot.advance(offset as u16), src));
-    }
-    Ok(())
 }
 
 fn lower_block_body_op(
@@ -1230,11 +979,11 @@ fn lower_call_direct(
     match live_result {
         Some((value, ty)) => {
             state.ops.push(SsaInst::call_result(call_idx, value));
-            state.finish_call_with_live_scalar(params, value, ty)?;
+            state.finish_call_with_live_scalar(values, params, value, ty)?;
         }
         None => {
             state.ops.push(SsaInst::call(call_idx));
-            state.finish_call(params, results, result_types);
+            state.finish_call(values, params, results, result_types);
         }
     }
     resident_cache.clear();
@@ -1277,11 +1026,11 @@ fn lower_call_indirect(
     match live_result {
         Some((value, ty)) => {
             state.ops.push(SsaInst::call_result(call_idx, value));
-            state.finish_call_with_live_scalar(consumed, value, ty)?;
+            state.finish_call_with_live_scalar(values, consumed, value, ty)?;
         }
         None => {
             state.ops.push(SsaInst::call(call_idx));
-            state.finish_call(consumed, results, result_types);
+            state.finish_call(values, consumed, results, result_types);
         }
     }
     resident_cache.clear();
@@ -1322,11 +1071,11 @@ fn lower_call_ref(
     match live_result {
         Some((value, ty)) => {
             state.ops.push(SsaInst::call_result(call_idx, value));
-            state.finish_call_with_live_scalar(consumed, value, ty)?;
+            state.finish_call_with_live_scalar(values, consumed, value, ty)?;
         }
         None => {
             state.ops.push(SsaInst::call(call_idx));
-            state.finish_call(consumed, results, result_types);
+            state.finish_call(values, consumed, results, result_types);
         }
     }
     resident_cache.clear();
@@ -2584,21 +2333,11 @@ fn canonicalize_live_window_for_target(
     if target_entry.spill_depth > state.spill_depth() {
         // Spill: target expects more values to be spilled.
         let publish_count = target_entry.spill_depth.saturating_sub(state.spill_depth());
-        let base_slot = frame.operand_slot(state.spill_depth());
-        let spilled = state.spill_prefix(publish_count)?;
-        for (offset, value) in spilled.into_iter().enumerate() {
-            state
-                .ops
-                .push(SsaInst::spill(base_slot.advance(offset as u16), value));
-        }
+        state.spill_bottom(values, frame, publish_count);
     } else if target_entry.spill_depth < state.spill_depth() {
         // Fill: target expects more values to be live.
-        inline_fill_for_operands(
-            state,
-            frame,
-            values,
-            state.height().saturating_sub(target_entry.spill_depth),
-        )?;
+        let fill_count = state.height().saturating_sub(target_entry.spill_depth);
+        state.fill_operands(values, frame, fill_count);
     }
     Ok(())
 }
@@ -2693,7 +2432,7 @@ fn edge_to_target(
     // Ensure target's required live values are in the live window.
     let needed = target_entry.live_value_count();
     if needed as usize > state.live().len() {
-        inline_fill_for_operands(state, frame, values, needed)?;
+        state.fill_operands(values, frame, needed);
     }
 
     let bindings = match mapping {

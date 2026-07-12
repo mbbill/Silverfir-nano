@@ -11,6 +11,7 @@ pub(crate) mod ssa_ir;
 mod budget;
 mod cfg;
 mod cleanup;
+mod discipline;
 mod joint_plan;
 mod optimize;
 mod rewrite;

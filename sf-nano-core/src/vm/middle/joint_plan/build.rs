@@ -14,7 +14,11 @@ use crate::{
     value_type::ValueType,
     vm::{
         backend::BackendConfig,
-        middle::{cfg::SemanticCfg, frame::FrameLayoutPlan},
+        middle::{
+            cfg::SemanticCfg,
+            discipline::{self, StructuralAction},
+            frame::FrameLayoutPlan,
+        },
         wasm::{
             primitive_op,
             primitive_op::PrimitiveOpKind,
@@ -675,130 +679,65 @@ pub(crate) fn compute_lightweight_plan(
 /// `ensure_capacity` and cache management. It only applies fills and spills
 /// that are determined by the op kind and Wasm structured control flow.
 fn apply_structural_prefix(op: &SemanticOp, state: &mut PrepareState) {
-    match &op.kind {
-        SemanticOpKind::Primitive(kind) => {
-            if matches!(kind, PrimitiveOpKind::Unreachable) {
-                return;
-            }
-            let (pop, _push) = primitive_op::stack_effect(kind);
-            lightweight_fill_for_operands(state, pop as u16, true);
+    if matches!(
+        &op.kind,
+        SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)
+    ) {
+        return;
+    }
+    match discipline::structural_action(&op.kind) {
+        StructuralAction::None => {}
+        StructuralAction::PrimitiveFill { pop, .. } => measure_fill(state, pop),
+        StructuralAction::FillKeepSpillRest(keep) => {
+            measure_fill(state, keep);
+            measure_spill_except_top(state, keep);
         }
-        SemanticOpKind::LocalGet { .. } => {
-            // LocalGet pushes without popping; no fill needed.
-        }
-        SemanticOpKind::LocalSet { .. } | SemanticOpKind::LocalTee { .. } => {
-            lightweight_fill_for_operands(state, 1, true);
-        }
-        SemanticOpKind::Block { .. } => {}
-        SemanticOpKind::Loop { .. } => {
-            // Loop headers spill everything.
-            lightweight_spill_all(state);
-        }
-        SemanticOpKind::If { params, .. } => {
-            let keep_live = params.saturating_add(1);
-            lightweight_fill_for_operands(state, keep_live, true);
-            lightweight_spill_all_except_top(state, keep_live);
-        }
-        SemanticOpKind::Else { .. } => {
-            if let Some(frame_state) = state.control.last().cloned() {
-                if frame_state.entered_unreachable
-                    || matches!(frame_state.kind, ControlFrameKind::Function)
-                {
-                    return;
-                }
-                lightweight_fill_for_operands(state, frame_state.results, false);
-            }
-        }
-        SemanticOpKind::End => {}
-        SemanticOpKind::Br { arity, .. } => {
-            lightweight_fill_for_operands(state, *arity, true);
-            lightweight_spill_all_except_top(state, *arity);
-        }
-        SemanticOpKind::BrIf { arity, .. } => {
-            let keep_live = arity.saturating_add(1);
-            lightweight_fill_for_operands(state, keep_live, true);
-            lightweight_spill_all_except_top(state, keep_live);
-        }
-        SemanticOpKind::BrOnNull { arity, .. } => {
-            let keep_live = arity.saturating_add(1);
-            lightweight_fill_for_operands(state, keep_live, true);
-            lightweight_spill_all_except_top(state, keep_live);
-        }
-        SemanticOpKind::BrOnNonNull { arity, .. } => {
-            lightweight_fill_for_operands(state, *arity, true);
-            lightweight_spill_all_except_top(state, *arity);
-        }
-        SemanticOpKind::BrOnCast { arity, .. } | SemanticOpKind::BrOnCastFail { arity, .. } => {
-            lightweight_fill_for_operands(state, *arity, true);
-            lightweight_spill_all_except_top(state, *arity);
-        }
-        SemanticOpKind::BrTable { entries } => {
-            let arity = entries.first().map(|entry| entry.arity).unwrap_or(0);
-            let keep_live = arity.saturating_add(1);
-            lightweight_fill_for_operands(state, keep_live, true);
-            lightweight_spill_all_except_top(state, keep_live);
-        }
-        SemanticOpKind::CallDirect { .. }
-        | SemanticOpKind::CallIndirect { .. }
-        | SemanticOpKind::CallRef { .. }
-        | SemanticOpKind::ReturnCallDirect { .. }
-        | SemanticOpKind::ReturnCallIndirect { .. }
-        | SemanticOpKind::ReturnCallRef { .. }
-        | SemanticOpKind::ReturnVoid
-        | SemanticOpKind::ReturnOne
-        | SemanticOpKind::Return { .. } => {
-            lightweight_spill_all(state);
-        }
-        SemanticOpKind::AllocExnRef { .. } => {
-            lightweight_spill_all(state);
-        }
-        SemanticOpKind::TryTable { .. } => {
-            // Same as Block — no pre-op fill/spill needed.
-        }
-        SemanticOpKind::Throw { arity, .. } => {
-            lightweight_fill_for_operands(state, *arity, true);
-            lightweight_spill_all_except_top(state, *arity);
-        }
-        SemanticOpKind::ThrowRef => {
-            lightweight_fill_for_operands(state, 1, true);
-            lightweight_spill_all_except_top(state, 1);
-        }
+        // The planner conservatively spills the whole live window for calls and
+        // returns alike. The returns' spill is dead (mark_unreachable overwrites
+        // spill_depth in apply_semantic_effect right after every return) but is
+        // kept explicit; see the ReturnScalar note in the discipline table.
+        StructuralAction::SpillAll
+        | StructuralAction::PrepareCall { .. }
+        | StructuralAction::ReturnScalar => measure_spill_all(state),
+        StructuralAction::ElsePlannerFill => measure_else_fill(state),
     }
 }
 
-/// Fill operands by lowering spill_depth (state-only, no side effects).
-fn lightweight_fill_for_operands(
-    state: &mut PrepareState,
-    operand_count: u16,
-    skip_if_unreachable: bool,
-) {
-    if skip_if_unreachable && state.unreachable {
+/// Fill operands by lowering spill_depth (state-only). Skips while unreachable.
+fn measure_fill(state: &mut PrepareState, operand_count: u16) {
+    if state.unreachable {
         return;
     }
-    let min_spill_depth = state.height.saturating_sub(operand_count);
-    if state.spill_depth <= min_spill_depth {
-        return;
-    }
-    state.spill_depth = min_spill_depth;
+    state.spill_depth = discipline::fill_target(state.height, state.spill_depth, operand_count);
 }
 
 /// Spill all live transients by raising spill_depth to height.
-fn lightweight_spill_all(state: &mut PrepareState) {
+fn measure_spill_all(state: &mut PrepareState) {
     if state.unreachable {
         return;
     }
-    state.spill_depth = state.height;
+    state.spill_depth = discipline::spill_all_target(state.height);
 }
 
 /// Spill all except the top `keep_top` live values.
-fn lightweight_spill_all_except_top(state: &mut PrepareState, keep_top: u16) {
+fn measure_spill_except_top(state: &mut PrepareState, keep_top: u16) {
     if state.unreachable {
         return;
     }
-    let live_count = state.height.saturating_sub(state.spill_depth);
-    let count = live_count.saturating_sub(keep_top);
-    if count > 0 {
-        state.spill_depth += count;
+    state.spill_depth =
+        discipline::spill_except_top_target(state.height, state.spill_depth, keep_top);
+}
+
+/// `else`: fill the enclosing frame's result arity, control-stack aware. Unlike
+/// the other fills, this ignores `state.unreachable` — the frame checks guard it.
+fn measure_else_fill(state: &mut PrepareState) {
+    if let Some(frame_state) = state.control.last().cloned() {
+        if frame_state.entered_unreachable || matches!(frame_state.kind, ControlFrameKind::Function)
+        {
+            return;
+        }
+        state.spill_depth =
+            discipline::fill_target(state.height, state.spill_depth, frame_state.results);
     }
 }
 

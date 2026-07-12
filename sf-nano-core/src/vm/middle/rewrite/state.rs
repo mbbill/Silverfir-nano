@@ -9,12 +9,15 @@
 
 use crate::collections;
 
+use tracked_alloc::collections::BTreeSet;
+
 use crate::{
     error::WasmError,
     value_type::ValueType,
     vm::middle::{
         budget::count_live_bank_budget_units,
-        frame::FrameSlot,
+        discipline::{BankBudget, CapacityMode, DisciplineDriver, Window},
+        frame::{FrameLayoutPlan, FrameSlot},
         joint_plan::TransientContract,
         ssa_ir::ir::{SsaInst, SsaOperand, SsaValue},
     },
@@ -57,23 +60,61 @@ pub(super) fn make_block_params(
     values.many_typed(entry_live_types)
 }
 
+/// Emit-side [`DisciplineDriver`]: owns SSA-value identity and op emission for
+/// the rewriter. The engine calls these hooks to keep this window in lockstep
+/// with its typed core.
+struct EmitDriver<'a> {
+    live: &'a mut collections::Vec<SsaValue>,
+    ops: &'a mut collections::Vec<SsaInst>,
+    values: &'a mut ValueAlloc,
+}
+
+impl DisciplineDriver for EmitDriver<'_> {
+    fn on_spill(&mut self, base_slot: FrameSlot, count: usize) {
+        let spilled = self.live.drain(..count).collect::<collections::Vec<_>>();
+        for (offset, src) in spilled.into_iter().enumerate() {
+            self.ops
+                .push(SsaInst::spill(base_slot.advance(offset as u16), src));
+        }
+    }
+
+    fn on_fill(&mut self, base_slot: FrameSlot, types: &[ValueType]) {
+        let mut reloaded = collections::Vec::with_capacity(types.len());
+        for (offset, ty) in types.iter().copied().enumerate() {
+            let dst = self.values.fresh_typed(ty);
+            self.ops
+                .push(SsaInst::fill(base_slot.advance(offset as u16), dst));
+            reloaded.push(dst);
+        }
+        let mut new_live = reloaded;
+        new_live.extend(self.live.drain(..));
+        *self.live = new_live;
+    }
+
+    fn on_drop_cache(&mut self, slot: FrameSlot) {
+        self.ops.push(SsaInst::local_drop_cache(slot));
+    }
+
+    fn on_call_boundary(&mut self) {
+        self.live.clear();
+    }
+
+    fn on_call_boundary_scalar(&mut self, result: SsaValue) {
+        self.live.clear();
+        self.live.push(result);
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct BlockState {
     pub(super) gp_unit_bytes: u8,
     pub(super) gp_live_budget: u8,
     pub(super) fp_live_budget: u8,
-    stack_height: u16,
-    spill_depth: u16,
+    /// Typed operand-window state evolution (height, spill depth, types,
+    /// aliases). All core mutation goes through this engine; `BlockState` only
+    /// owns SSA-value identity and emitted ops.
+    window: Window,
     live: collections::Vec<SsaValue>,
-    pub(super) live_types: collections::Vec<ValueType>,
-    live_aliases: collections::Vec<Option<FrameSlot>>,
-    /// Full semantic type stack (spilled + live), maintained in parallel with
-    /// the live window. The rewriter needs this to know the types of spilled
-    /// values when filling them back into the live window.
-    ///
-    /// Invariant: `type_stack.len() == stack_height`, and
-    /// `type_stack[spill_depth..] == live_types`.
-    type_stack: collections::Vec<ValueType>,
     pub(super) ops: collections::Vec<SsaInst>,
     /// Overflow storage for primitive operands beyond the first two. The
     /// primitive variant publishes the start index via [`SsaInst.meta`].
@@ -97,16 +138,19 @@ impl BlockState {
             full_stack_types.len(),
             entry.stack_height,
         );
+        let window = Window::new(
+            entry.stack_height,
+            entry.spill_depth,
+            full_stack_types.to_vec().into(),
+            entry.live_types.to_vec().into(),
+            collections::vec![None; params.len()],
+        );
         let state = Self {
             gp_unit_bytes,
             gp_live_budget,
             fp_live_budget,
-            stack_height: entry.stack_height,
-            spill_depth: entry.spill_depth,
+            window,
             live: params.to_vec().into(),
-            live_types: entry.live_types.to_vec().into(),
-            live_aliases: collections::vec![None; params.len()],
-            type_stack: full_stack_types.to_vec().into(),
             ops: collections::Vec::new(),
             extra_args: collections::Vec::new(),
         };
@@ -115,11 +159,11 @@ impl BlockState {
     }
 
     pub(super) fn height(&self) -> u16 {
-        self.stack_height
+        self.window.height()
     }
 
     pub(super) fn spill_depth(&self) -> u16 {
-        self.spill_depth
+        self.window.spill_depth()
     }
 
     pub(super) fn live(&self) -> &[SsaValue] {
@@ -141,11 +185,7 @@ impl BlockState {
             .live
             .pop()
             .ok_or_else(|| WasmError::internal("transient underflow"))?;
-        self.live_types.pop();
-        self.live_aliases.pop();
-        self.type_stack.pop();
-        self.stack_height = self.stack_height.saturating_sub(1);
-        self.spill_depth = self.spill_depth.min(self.stack_height);
+        self.window.pop_core();
         Ok(value)
     }
 
@@ -157,11 +197,7 @@ impl BlockState {
         }
         let new_len = self.live.len().saturating_sub(count);
         self.live.truncate(new_len);
-        self.live_types.truncate(new_len);
-        self.live_aliases.truncate(new_len);
-        self.stack_height = self.stack_height.saturating_sub(count as u16);
-        self.type_stack.truncate(self.stack_height as usize);
-        self.spill_depth = self.spill_depth.min(self.stack_height);
+        self.window.consume_core(count);
         Ok(())
     }
 
@@ -182,145 +218,173 @@ impl BlockState {
     ) -> Result<(), WasmError> {
         debug_assert_eq!(results.len(), result_types.len());
         debug_assert_eq!(results.len(), result_aliases.len());
-        self.stack_height = self.stack_height.saturating_add(results.len() as u16);
-        self.type_stack.extend_from_slice(&result_types);
         self.live.extend(results);
-        self.live_types.extend(result_types);
-        self.live_aliases.extend(result_aliases);
+        self.window.push_core(&result_types, &result_aliases);
         self.ensure_live_fit("value push")
     }
 
-    pub(super) fn spill_prefix(
-        &mut self,
-        count: u16,
-    ) -> Result<collections::Vec<SsaValue>, WasmError> {
-        let count = count as usize;
-        if count > self.live.len() {
-            return Err(WasmError::internal(
-                "spill requested values from live window",
-            ));
-        }
-        let spilled = self.live.drain(..count).collect::<collections::Vec<_>>();
-        self.live_types.drain(..count);
-        self.live_aliases.drain(..count);
-        self.spill_depth = self.spill_depth.saturating_add(count as u16);
-        Ok(spilled)
-    }
-
-    pub(super) fn fill_prefix(
-        &mut self,
-        values: collections::Vec<SsaValue>,
-        value_types: collections::Vec<ValueType>,
-    ) -> Result<(), WasmError> {
-        let fill_count = values.len();
-        self.spill_depth = self.spill_depth.saturating_sub(fill_count as u16);
-        let mut new_live = values;
-        new_live.extend(self.live.drain(..));
-        self.live = new_live;
-        let mut new_live_types = value_types;
-        new_live_types.extend(self.live_types.drain(..));
-        self.live_types = new_live_types;
-        let mut new_live_aliases = collections::vec![None; fill_count];
-        new_live_aliases.extend(self.live_aliases.drain(..));
-        self.live_aliases = new_live_aliases;
-        Ok(())
-    }
-
-    /// Return the types of spilled values at positions [new_spill..current_spill].
-    ///
-    /// Used by inline prefix fill to know the types of values being restored.
-    pub(super) fn spilled_types_for_fill(
-        &self,
-        new_spill_depth: u16,
-    ) -> collections::Vec<ValueType> {
-        let start = new_spill_depth as usize;
-        let end = self.spill_depth as usize;
-        if start >= end || start >= self.type_stack.len() {
-            return collections::Vec::new();
-        }
-        self.type_stack[start..end.min(self.type_stack.len())]
-            .to_vec()
-            .into()
-    }
-
     pub(super) fn value_at_stack_index(&self, stack_index: u16) -> Option<SsaValue> {
-        if stack_index < self.spill_depth || stack_index >= self.stack_height {
-            return None;
-        }
-        self.live
-            .get(stack_index.saturating_sub(self.spill_depth) as usize)
-            .copied()
+        self.window
+            .live_position(stack_index)
+            .and_then(|pos| self.live.get(pos).copied())
     }
 
     pub(super) fn type_at_stack_index(&self, stack_index: u16) -> Option<ValueType> {
-        self.type_stack.get(stack_index as usize).copied()
+        self.window.type_at_stack_index(stack_index)
     }
 
-    /// Spill live values below the top `consumed` stack operands.
-    ///
-    /// This keeps the bounded call-operand suffix live while publishing older
-    /// live transients that cannot cross the call boundary.
+    pub(super) fn live_aliases(&self) -> &[Option<FrameSlot>] {
+        self.window.live_aliases()
+    }
+
+    pub(super) fn live_types(&self) -> &[ValueType] {
+        self.window.live_types()
+    }
+
+    // -- Discipline transitions (engine-owned; emit driver realizes values) ---
+
+    /// Fill so at least `operand_count` values are live.
+    pub(super) fn fill_operands(
+        &mut self,
+        values: &mut ValueAlloc,
+        frame: FrameLayoutPlan,
+        operand_count: u16,
+    ) {
+        let Self {
+            window, live, ops, ..
+        } = self;
+        let mut driver = EmitDriver { live, ops, values };
+        window.fill(&mut driver, frame, operand_count);
+    }
+
+    /// Spill every live transient.
+    pub(super) fn spill_all(&mut self, values: &mut ValueAlloc, frame: FrameLayoutPlan) {
+        let Self {
+            window, live, ops, ..
+        } = self;
+        let mut driver = EmitDriver { live, ops, values };
+        window.spill_all(&mut driver, frame);
+    }
+
+    /// Spill every live transient except the top `keep_top`.
+    pub(super) fn spill_except_top(
+        &mut self,
+        values: &mut ValueAlloc,
+        frame: FrameLayoutPlan,
+        keep_top: u16,
+    ) {
+        let Self {
+            window, live, ops, ..
+        } = self;
+        let mut driver = EmitDriver { live, ops, values };
+        window.spill_except_top(&mut driver, frame, keep_top);
+    }
+
+    /// Spill the bottom `count` live transients (boundary publish).
+    pub(super) fn spill_bottom(
+        &mut self,
+        values: &mut ValueAlloc,
+        frame: FrameLayoutPlan,
+        count: u16,
+    ) {
+        let Self {
+            window, live, ops, ..
+        } = self;
+        let mut driver = EmitDriver { live, ops, values };
+        window.spill(&mut driver, frame, count);
+    }
+
+    /// Publish live transients below the top `consumed` call-operand suffix,
+    /// keeping that suffix live while spilling older values that cannot cross
+    /// the call boundary.
     pub(super) fn spill_live_below_top(
         &mut self,
+        values: &mut ValueAlloc,
+        frame: FrameLayoutPlan,
         consumed: u16,
-    ) -> Result<collections::Vec<SsaValue>, WasmError> {
-        let keep_start = self.stack_height.saturating_sub(consumed);
-        if self.spill_depth >= keep_start {
-            return Ok(collections::Vec::new());
-        }
-        self.spill_prefix(keep_start.saturating_sub(self.spill_depth))
+    ) {
+        self.spill_except_top(values, frame, consumed);
     }
 
-    pub(super) fn finish_call(&mut self, consumed: u16, produced: u16, result_types: &[ValueType]) {
-        let base = self.stack_height.saturating_sub(consumed) as usize;
-        self.type_stack.truncate(base);
-        self.type_stack.extend_from_slice(result_types);
-        debug_assert!(
-            result_types.len() >= produced as usize,
-            "finish_call: result_types.len()={} but produced={}",
-            result_types.len(),
-            produced,
-        );
-        // Pad with I64 if result_types is shorter (should not happen in practice).
-        for _ in result_types.len()..(produced as usize) {
-            self.type_stack.push(ValueType::I64);
-        }
-        self.stack_height = base as u16 + produced;
-        self.spill_depth = self.stack_height;
-        self.live.clear();
-        self.live_types.clear();
-        self.live_aliases.clear();
+    /// Extra GP/FP budget needed to fill `operand_count` operands and push
+    /// `result_types` (see [`Window::required_capacity`]).
+    pub(super) fn required_capacity(
+        &self,
+        operand_count: u16,
+        result_types: &[ValueType],
+    ) -> (usize, usize) {
+        self.window
+            .required_capacity(operand_count, result_types, self.gp_unit_bytes)
+    }
+
+    /// Clamp the live window against the dynamic-bank budget, spilling then
+    /// evicting via the resident cache.
+    pub(super) fn ensure_capacity(
+        &mut self,
+        values: &mut ValueAlloc,
+        frame: FrameLayoutPlan,
+        mode: CapacityMode,
+        resident: &mut BTreeSet<FrameSlot>,
+        local_slot_types: &[ValueType],
+        extra: (usize, usize),
+    ) -> Result<(), WasmError> {
+        let budget = BankBudget {
+            gp_unit_bytes: self.gp_unit_bytes,
+            gp_live_budget: self.gp_live_budget,
+            fp_live_budget: self.fp_live_budget,
+        };
+        let Self {
+            window, live, ops, ..
+        } = self;
+        let mut driver = EmitDriver { live, ops, values };
+        window.ensure_capacity(
+            &mut driver,
+            frame,
+            mode,
+            resident,
+            local_slot_types,
+            budget,
+            extra,
+        )
+    }
+
+    pub(super) fn finish_call(
+        &mut self,
+        values: &mut ValueAlloc,
+        consumed: u16,
+        produced: u16,
+        result_types: &[ValueType],
+    ) {
+        let Self {
+            window, live, ops, ..
+        } = self;
+        let mut driver = EmitDriver { live, ops, values };
+        window.finish_call(&mut driver, consumed, produced, result_types);
     }
 
     pub(super) fn finish_call_with_live_scalar(
         &mut self,
+        values: &mut ValueAlloc,
         consumed: u16,
         result: SsaValue,
         result_ty: ValueType,
     ) -> Result<(), WasmError> {
-        let base = self.stack_height.saturating_sub(consumed);
-        self.type_stack.truncate(base as usize);
-        self.type_stack.push(result_ty);
-        self.stack_height = base.saturating_add(1);
-        self.spill_depth = base;
-        self.live.clear();
-        self.live_types.clear();
-        self.live_aliases.clear();
-        self.live.push(result);
-        self.live_types.push(result_ty);
-        self.live_aliases.push(None);
+        {
+            let Self {
+                window, live, ops, ..
+            } = self;
+            let mut driver = EmitDriver { live, ops, values };
+            window.finish_call_scalar(&mut driver, consumed, result, result_ty);
+        }
         self.ensure_live_fit("scalar call result")
-    }
-
-    pub(super) fn live_aliases(&self) -> &[Option<FrameSlot>] {
-        &self.live_aliases
     }
 
     fn ensure_live_fit(&self, _context: &str) -> Result<(), WasmError> {
         let effective_live_types = self
-            .live_types
+            .window
+            .live_types()
             .iter()
-            .zip(self.live_aliases.iter())
+            .zip(self.window.live_aliases().iter())
             .filter_map(|(ty, alias)| alias.is_none().then_some(*ty))
             .collect::<collections::Vec<_>>();
         let (gp_live, fp_live) =
