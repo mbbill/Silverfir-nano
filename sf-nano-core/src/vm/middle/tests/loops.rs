@@ -6,8 +6,8 @@ use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind
 
 use super::helpers::{
     block_for_semantic_index, count_ensure_cache, first_local_get_for, i32_program,
-    incoming_cache_repair_blocks, loop_body_block, loop_header_block, natural_loop_blocks, op,
-    plan_i32_program, prepare_i32_program, prim, target,
+    incoming_cache_repair_blocks, is_admitted, loop_body_block, loop_header_block,
+    natural_loop_blocks, op, plan_i32_program, prepare_i32_program, prim, target,
 };
 
 #[test]
@@ -106,14 +106,10 @@ fn hot_loop_body_keeps_hot_local_in_final_entry_with_at_most_one_cold_ensure() {
     let hot_loop_body_cfg = block_for_semantic_index(&pipeline.cfg, 8);
 
     assert!(
-        pipeline
-            .planner
-            .exact_entry(hot_loop_body_cfg)
+        prepared.ssa.block_entry_cached_slots[hot_loop_body_cfg.as_usize()]
             .contains(&slot0),
         "the hot loop body block should keep the carried local in its finalized entry boundary; entries={:?}",
-        pipeline
-            .planner
-            .exact_entry(hot_loop_body_cfg)
+        prepared.ssa.block_entry_cached_slots[hot_loop_body_cfg.as_usize()]
     );
     assert!(
         count_ensure_cache(&prepared.ssa, slot0) <= 1,
@@ -170,10 +166,7 @@ fn hot_loop_header_needs_repair_on_at_most_one_incoming_edge() {
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, hot_loop_body);
 
     assert!(
-        pipeline
-            .planner
-            .exact_entry(hot_loop_body_cfg)
-            .contains(&slot0),
+        prepared.ssa.block_entry_cached_slots[hot_loop_body_cfg.as_usize()].contains(&slot0),
         "the loop header should still admit the hot carried local into finalized entry"
     );
     assert!(
@@ -246,7 +239,7 @@ fn loop_dispatch_header_keeps_hot_pass_through_locals_across_backedge() {
     let header_block_ssa = loop_header_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, header_block_ssa);
 
-    let entry = pipeline.planner.exact_entry(header_block);
+    let entry = &prepared.ssa.block_entry_cached_slots[header_block.as_usize()];
     assert!(
         entry.contains(&slot0) && entry.contains(&slot1) && entry.contains(&slot2),
         "a tiny dispatch header should keep the hot pass-through loop locals hot across the backedge; entry={entry:?}"
@@ -405,11 +398,11 @@ fn region_solver_keeps_higher_value_stable_layout_when_child_capacity_competes()
     let slot1 = pipeline.frame.local_slot(1);
     let slot2 = pipeline.frame.local_slot(2);
     let second_loop_body = block_for_semantic_index(&pipeline.cfg, 3);
-    let entry = pipeline.planner.exact_entry(second_loop_body);
 
     assert!(
-        entry.contains(&slot2) && !entry.contains(&slot1),
-        "the effective one-lane layout should choose the higher-value local2, not the weaker local1; entry={entry:?}"
+        is_admitted(&pipeline.planner, second_loop_body, slot2)
+            && !is_admitted(&pipeline.planner, second_loop_body, slot1),
+        "the effective one-lane layout should admit the higher-value local2, not the weaker local1"
     );
 }
 
@@ -548,7 +541,10 @@ fn hot_loop_header_needs_no_cache_repair_when_all_incoming_edges_already_match()
     let loop_body = loop_header_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, loop_body);
 
-    assert_eq!(pipeline.planner.exact_entry(loop_body_cfg), &[slot0]);
+    assert_eq!(
+        prepared.ssa.block_entry_cached_slots[loop_body_cfg.as_usize()].as_slice(),
+        &[slot0]
+    );
     assert!(
         repair_blocks.is_empty(),
         "matching preheader and backedge exits should not create any cache repair for the loop header; entries={:?}, repair_blocks={:?}",
@@ -622,11 +618,11 @@ fn loop_header_trims_cold_carried_local_so_only_the_cold_edge_needs_repair() {
         .collect::<collections::Vec<_>>();
 
     assert!(
-        pipeline.planner.exact_entry(loop_body_cfg).contains(&slot0),
+        prepared.ssa.block_entry_cached_slots[loop_body_cfg.as_usize()].contains(&slot0),
         "the hot local should stay in the finalized loop-header entry"
     );
     assert!(
-        !pipeline.planner.exact_entry(loop_body_cfg).contains(&slot1),
+        !prepared.ssa.block_entry_cached_slots[loop_body_cfg.as_usize()].contains(&slot1),
         "the cold carried local should be trimmed from the finalized loop-header entry"
     );
     assert!(

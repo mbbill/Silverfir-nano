@@ -1,7 +1,7 @@
 //! Pass D — the exact-simulation walker.
 //!
 //! Runs at the end of `build_plan`, after the region solver fills each block's
-//! tentative cached-local set. For every semantic block, in the order rewrite
+//! planned-resident set. For every semantic block, in the order rewrite
 //! lowers, it re-walks the op stream through the SAME shared discipline engine
 //! the rewriter drives (measure driver, capacity clamp On), and mirrors the
 //! rewriter's per-op cache decisions from `rewrite/function.rs`. From that it
@@ -40,14 +40,14 @@ use crate::{
 };
 
 use super::{
-    facts::{self, FunctionPlan, RepairActions},
+    facts::{self, FunctionPlan, RepairActions, RepairActionsSpans, RowSpan, NO_REPAIR},
     local_access::decide_local_access,
     LocalAccessDecision, LocalAccessQuery,
 };
 
 /// One cache-relevant op in a block's lowered stream, in emission order. This
-/// is the subsequence `simulate_materialized_cache_exit` and
-/// `entry_cache_requirement` scan; the walker records nothing else.
+/// is the subsequence the exit-set replay and `entry_cache_requirement` scan;
+/// the walker records nothing else.
 #[derive(Clone, Copy)]
 enum CacheEvent {
     /// `LOCAL_GET_CACHE`: exit set insert; entry requirement Ensure.
@@ -60,15 +60,20 @@ enum CacheEvent {
     Call,
 }
 
-/// Per-block walk output.
+/// Per-block walk output. Holds only the exact rows plus a compact per-entry
+/// requirement for the edge pass — NOT the full event stream, so the walker's
+/// retained memory stays bounded by the exact rows, not the block's op count.
 struct BlockWalk {
     exact_entry: collections::Vec<FrameSlot>,
     exact_exit: collections::Vec<FrameSlot>,
-    events: collections::Vec<CacheEvent>,
+    /// Parallel to `exact_entry`: each entry slot's first-use requirement, the
+    /// value the edge pass would classify it as (carried_through is always true
+    /// for an entry slot, so a slot never touched defaults to `Ensure`).
+    entry_requirement: collections::Vec<EntryCacheRequirement>,
 }
 
-/// Fill in `exact_entry` / `exact_exit` on every block and the deduped
-/// per-edge `repair_pool` indices. Runs once at the end of `build_plan`.
+/// Build the plan's flat cache-row arenas and per-block spans from a per-block
+/// walk. Runs once at the end of `build_plan`.
 pub(crate) fn compute_exact_plan(
     semantic: &SemanticProgram,
     cfg: &SemanticCfg,
@@ -79,72 +84,196 @@ pub(crate) fn compute_exact_plan(
     if plan.blocks.is_empty() {
         return Ok(());
     }
+    let n = plan.blocks.len();
 
-    // Phase 1 — per-block walk yields exact entry/exit rows and the cache-event
-    // stream (kept for the edge pass's first-use classification of targets).
-    let mut walks = collections::Vec::with_capacity(plan.blocks.len());
-    for (block_index, cfg_block) in cfg.blocks.iter().enumerate() {
-        walks.push(walk_block(
+    // Phase 1 — walk each block into the flat row arena. Its exact entry/exit
+    // slots accumulate in `row_arena`; the block records only an (offset, len)
+    // span. The per-entry requirement (the edge pass's first-use classification)
+    // lands in a transient parallel arena, dropped after phase 2. Scratch
+    // buffers are reused across blocks, not reallocated per block.
+    let mut row_arena: collections::Vec<FrameSlot> = collections::Vec::new();
+    let mut requirement_arena: collections::Vec<EntryCacheRequirement> = collections::Vec::new();
+    let mut entry_spans: collections::Vec<RowSpan> = collections::Vec::with_capacity(n);
+    let mut exit_spans: collections::Vec<RowSpan> = collections::Vec::with_capacity(n);
+    let mut req_spans: collections::Vec<RowSpan> = collections::Vec::with_capacity(n);
+    let mut scratch = WalkScratch::default();
+    for block_index in 0..n {
+        let walk = walk_block(
             block_index,
-            cfg_block.range.clone(),
             semantic,
             cfg,
             frame,
             config,
             plan,
-        )?);
+            &mut scratch,
+        )?;
+        entry_spans.push(append_row(&mut row_arena, &walk.exact_entry));
+        exit_spans.push(append_row(&mut row_arena, &walk.exact_exit));
+        req_spans.push(append_row(&mut requirement_arena, &walk.entry_requirement));
     }
 
-    // Phase 2 — per-edge boundary repair from (pred exit, succ entry), deduped
-    // by the (target, pred_exit, actions) key the repair-block dedup uses.
-    let mut repair_pool: collections::Vec<RepairActions> = collections::Vec::new();
-    let mut dedup: BTreeMap<(usize, collections::Vec<FrameSlot>, RepairActions), u32> =
-        BTreeMap::new();
+    // Phase 2 — per-edge boundary repair from (pred exit, succ entry). Each
+    // non-empty action list is packed into the flat `repair_slot_arena` (its
+    // drop/ensure/reserve groups) and the pool holds POD spans; the flat
+    // per-edge index arena maps each edge to a pool entry (`NO_REPAIR` = none).
+    // The pool is content-deduped: two edges whose derived actions are byte-
+    // identical share one entry. Since the only consumer reads `pool[index]`
+    // for its actions, sharing is invisible to it — every edge maps to the same
+    // action content regardless. Dedup uses a content hash with arena-slice
+    // verification (collision-safe), so no per-edge key is allocated.
+    let mut repair_pool: collections::Vec<RepairActionsSpans> = collections::Vec::new();
+    let mut repair_slot_arena: collections::Vec<FrameSlot> = collections::Vec::new();
+    let mut repair_index_arena: collections::Vec<u32> = collections::Vec::new();
+    let mut repair_spans: collections::Vec<RowSpan> = collections::Vec::with_capacity(n);
+    let mut dedup: BTreeMap<u64, collections::Vec<u32>> = BTreeMap::new();
     for (block_index, cfg_block) in cfg.blocks.iter().enumerate() {
-        let pred_exit = walks[block_index].exact_exit.clone();
-        let mut edge_repair = collections::Vec::new();
+        let pred_exit = &row_arena[exit_spans[block_index].range()];
+        let repair_start = repair_index_arena.len() as u32;
         for target in terminator_edge_targets(&cfg_block.terminator) {
             let t = target.as_usize();
-            let succ_entry = &walks[t].exact_entry;
-            let target_events = &walks[t].events;
-            let actions = facts::derive_edge_repair(&pred_exit, succ_entry, |slot| {
-                events_entry_requirement(target_events, slot, succ_entry.contains(&slot))
+            let succ_entry = &row_arena[entry_spans[t].range()];
+            let succ_requirement = &requirement_arena[req_spans[t].range()];
+            // The classifier is only ever asked about slots in `succ_entry`
+            // (derive_edge_repair iterates it), so the position lookup always
+            // resolves to the precomputed requirement.
+            let actions = facts::derive_edge_repair(pred_exit, succ_entry, |slot| {
+                succ_entry
+                    .iter()
+                    .position(|s| *s == slot)
+                    .map(|idx| succ_requirement[idx])
             });
             if actions.is_empty() {
-                edge_repair.push(None);
+                repair_index_arena.push(NO_REPAIR);
                 continue;
             }
-            let key = (t, pred_exit.clone(), actions.clone());
-            let idx = *dedup.entry(key).or_insert_with(|| {
-                let idx = repair_pool.len() as u32;
-                repair_pool.push(actions.clone());
-                idx
-            });
-            edge_repair.push(Some(idx));
+            let bucket = dedup
+                .entry(repair_content_hash(&actions))
+                .or_insert_with(collections::Vec::new);
+            let mut resolved = None;
+            for &cand in bucket.iter() {
+                let (d, e, r) = repair_slices(&repair_slot_arena, repair_pool[cand as usize]);
+                if d == actions.drop_cached_locals.as_slice()
+                    && e == actions.ensure_cached_locals.as_slice()
+                    && r == actions.reserve_cached_locals.as_slice()
+                {
+                    resolved = Some(cand);
+                    break;
+                }
+            }
+            let idx = match resolved {
+                Some(idx) => idx,
+                None => {
+                    let idx = repair_pool.len() as u32;
+                    let spans = pack_repair(&mut repair_slot_arena, &actions);
+                    repair_pool.push(spans);
+                    bucket.push(idx);
+                    idx
+                }
+            };
+            repair_index_arena.push(idx);
         }
-        plan.blocks[block_index].repair = edge_repair;
+        repair_spans.push(RowSpan {
+            offset: repair_start,
+            len: repair_index_arena.len() as u32 - repair_start,
+        });
     }
 
-    for (block_index, walk) in walks.into_iter().enumerate() {
-        plan.blocks[block_index].exact_entry = walk.exact_entry;
-        plan.blocks[block_index].exact_exit = walk.exact_exit;
+    for block_index in 0..n {
+        plan.blocks[block_index].exact_entry = entry_spans[block_index];
+        plan.blocks[block_index].exact_exit = exit_spans[block_index];
+        plan.blocks[block_index].repair = repair_spans[block_index];
     }
+    plan.row_arena = row_arena;
+    plan.repair_index_arena = repair_index_arena;
     plan.repair_pool = repair_pool;
+    plan.repair_slot_arena = repair_slot_arena;
     Ok(())
+}
+
+/// Append `row` to a flat arena, returning its span.
+fn append_row<T: Copy>(arena: &mut collections::Vec<T>, row: &[T]) -> RowSpan {
+    let offset = arena.len() as u32;
+    arena.extend_from_slice(row);
+    RowSpan {
+        offset,
+        len: row.len() as u32,
+    }
+}
+
+/// Pack an owned repair action list into the flat slot arena, returning the
+/// per-group spans.
+fn pack_repair(
+    arena: &mut collections::Vec<FrameSlot>,
+    actions: &RepairActions,
+) -> RepairActionsSpans {
+    RepairActionsSpans {
+        drop: append_row(arena, &actions.drop_cached_locals),
+        ensure: append_row(arena, &actions.ensure_cached_locals),
+        reserve: append_row(arena, &actions.reserve_cached_locals),
+    }
+}
+
+/// The drop/ensure/reserve slot groups of a packed repair entry, as slices.
+fn repair_slices(
+    arena: &[FrameSlot],
+    spans: RepairActionsSpans,
+) -> (&[FrameSlot], &[FrameSlot], &[FrameSlot]) {
+    (
+        &arena[spans.drop.range()],
+        &arena[spans.ensure.range()],
+        &arena[spans.reserve.range()],
+    )
+}
+
+/// FNV-1a content hash of a repair action list (each group length-prefixed).
+/// Dedup verifies candidates against the arena, so hash collisions are safe —
+/// this only buckets candidates for the equality check.
+fn repair_content_hash(actions: &RepairActions) -> u64 {
+    #[inline]
+    fn mix(h: &mut u64, x: u32) {
+        *h ^= x as u64;
+        *h = h.wrapping_mul(0x0000_0100_0000_01b3);
+    }
+    let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+    for group in [
+        actions.drop_cached_locals.as_slice(),
+        actions.ensure_cached_locals.as_slice(),
+        actions.reserve_cached_locals.as_slice(),
+    ] {
+        mix(&mut h, group.len() as u32);
+        for slot in group {
+            mix(&mut h, slot.0 as u32);
+        }
+    }
+    h
+}
+
+/// Reused per-block scratch: the cache-event stream and the eviction-diff
+/// snapshot, cleared at the start of each block rather than reallocated.
+#[derive(Default)]
+struct WalkScratch {
+    events: collections::Vec<CacheEvent>,
+    before: collections::Vec<FrameSlot>,
 }
 
 fn walk_block(
     block_index: usize,
-    range: core::ops::Range<usize>,
     semantic: &SemanticProgram,
     cfg: &SemanticCfg,
     frame: FrameLayoutPlan,
     config: BackendConfig,
     plan: &FunctionPlan,
+    scratch: &mut WalkScratch,
 ) -> Result<BlockWalk, WasmError> {
     let block_id = cfg.blocks[block_index].id;
+    let range = cfg.blocks[block_index].range.clone();
     let entry = &plan.blocks[block_index].entry;
-    let tentative = &plan.blocks[block_index].tentative_entry_cached_locals;
+    // The step-1 walk seeds from the block's planned residents (the admission
+    // set) — the same seed the rewriter used before pass D became authoritative
+    // — so the filter derivation below reproduces the entry row the old path
+    // computed. Lowering itself now seeds from `exact_entry`, but the walker
+    // must stay planned-seeded here to feed that filter.
+    let planned = plan.planned_residents(block_index);
     let gp_unit_bytes = plan.gp_unit_bytes;
     let budget = BankBudget {
         gp_unit_bytes: plan.gp_unit_bytes,
@@ -159,12 +288,13 @@ fn walk_block(
         entry.stack_height,
         entry.spill_depth,
         entry.stack_types.clone(),
-        entry.live_types().to_vec(),
+        entry.live_types().to_vec().into(),
         collections::vec![None; entry.live_types().len()],
     );
-    let mut resident: BTreeSet<FrameSlot> = tentative.iter().copied().collect();
-    let mut events: collections::Vec<CacheEvent> = collections::Vec::new();
-    let mut before: collections::Vec<FrameSlot> = collections::Vec::new();
+    let mut resident: BTreeSet<FrameSlot> = planned.iter().copied().collect();
+    let WalkScratch { events, before } = scratch;
+    events.clear();
+    before.clear();
     let mut noemit = NoEmit;
 
     let last_index = range.end - 1;
@@ -293,7 +423,7 @@ fn walk_block(
                 config,
                 &mut window,
                 &mut resident,
-                &mut events,
+                events,
             ),
             SemanticOpKind::CallIndirect {
                 params, results, ..
@@ -307,7 +437,7 @@ fn walk_block(
                 config,
                 &mut window,
                 &mut resident,
-                &mut events,
+                events,
             ),
             // Control / branch / return / tail-call ops: the structural prefix
             // already ran; they emit no cached-local op and their stack effect
@@ -316,24 +446,33 @@ fn walk_block(
         }
     }
 
-    // The exact entry keeps only tentative residents the block requires — the
-    // same filter the rewriter applies with `entry_cache_requirement`, seeded
-    // by the hint-materialized set (tentative + cache decisions, cleared on
-    // call, NOT reduced by eviction).
-    let hint = replay_hint(tentative, &events);
-    let exact_entry: collections::Vec<FrameSlot> = tentative
+    // The exact entry keeps only planned residents the block requires — the
+    // same filter the old rewriter applied with `entry_cache_requirement`,
+    // seeded by the hint-materialized set (planned residents + cache decisions,
+    // cleared on call, NOT reduced by eviction).
+    let hint = replay_hint(planned, events);
+    let exact_entry: collections::Vec<FrameSlot> = planned
         .iter()
         .copied()
-        .filter(|slot| events_entry_requirement(&events, *slot, hint.contains(slot)).is_some())
+        .filter(|slot| events_entry_requirement(events, *slot, hint.contains(slot)).is_some())
         .collect();
     // The exact exit replays the recorded cache ops over the FINAL (filtered)
-    // entry seed — the same replay `simulate_materialized_cache_exit` runs.
-    let exact_exit = replay_exit(&exact_entry, &events);
+    // entry seed — the exit set the old post-hoc simulate pass computed, now the
+    // authoritative published row checked against lowered reality.
+    let exact_exit = replay_exit(&exact_entry, events);
+
+    // Compact the block's classification for the edge pass: each entry slot's
+    // first-use requirement (Ensure when never touched by a cache op, since an
+    // entry slot is always carried_through). The event stream is dropped here.
+    let entry_requirement: collections::Vec<EntryCacheRequirement> = exact_entry
+        .iter()
+        .map(|slot| events_first_touch(events, *slot).unwrap_or(EntryCacheRequirement::Ensure))
+        .collect();
 
     Ok(BlockWalk {
         exact_entry,
         exact_exit,
-        events,
+        entry_requirement,
     })
 }
 
@@ -470,7 +609,8 @@ fn events_entry_requirement(
         .or_else(|| carried_through.then_some(EntryCacheRequirement::Ensure))
 }
 
-/// Mirror `simulate_materialized_cache_exit`: replay the cache ops over `seed`.
+/// Replay the cache ops over `seed` to the block's true exit cache set (the
+/// drop-subtracted materialized state at block end).
 fn replay_exit(seed: &[FrameSlot], events: &[CacheEvent]) -> collections::Vec<FrameSlot> {
     let mut materialized: BTreeSet<FrameSlot> = seed.iter().copied().collect();
     for event in events {
@@ -487,9 +627,9 @@ fn replay_exit(seed: &[FrameSlot], events: &[CacheEvent]) -> collections::Vec<Fr
     materialized.into_iter().collect()
 }
 
-/// The rewriter's `materialized_cache` at block end: tentative seed plus every
-/// cache decision, cleared on each call, and — unlike the exit set — never
-/// reduced by eviction.
+/// The old rewriter's `materialized_cache` at block end: planned-resident seed
+/// plus every cache decision, cleared on each call, and — unlike the exit set —
+/// never reduced by eviction.
 fn replay_hint(seed: &[FrameSlot], events: &[CacheEvent]) -> BTreeSet<FrameSlot> {
     let mut hint: BTreeSet<FrameSlot> = seed.iter().copied().collect();
     for event in events {

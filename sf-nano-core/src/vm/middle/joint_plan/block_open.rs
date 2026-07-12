@@ -4,10 +4,7 @@
 //! Every block simply opens with its solved public set, and cached-local
 //! membership no longer changes as a side effect of local accesses.
 
-use crate::collections;
-
 use crate::vm::middle::cfg::CfgBlockId;
-use crate::vm::middle::frame::FrameSlot;
 
 use super::{
     facts::{EntryState, FunctionPlan},
@@ -30,17 +27,6 @@ pub(crate) fn target_entry_decision(plan: &FunctionPlan, block: CfgBlockId) -> T
         stack_height: entry.stack_height,
         spill_depth: entry.spill_depth,
     }
-}
-
-#[inline]
-pub(crate) fn finalize_block_entry_cached_locals(
-    plan: &FunctionPlan,
-    block: CfgBlockId,
-    _actual_exit: &[FrameSlot],
-) -> collections::Vec<FrameSlot> {
-    plan.blocks[block.as_usize()]
-        .tentative_entry_cached_locals
-        .clone()
 }
 
 #[inline]

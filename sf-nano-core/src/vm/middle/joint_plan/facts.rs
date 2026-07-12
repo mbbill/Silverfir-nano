@@ -38,7 +38,8 @@ pub(crate) struct LocalSlotScore {
     pub access_count: u16,
 }
 
-/// Cached-local boundary repair actions for one control-flow edge.
+/// Cached-local boundary repair actions for one control-flow edge — the
+/// transient derivation/consumption form (three owned slot groups).
 ///
 /// Three ordered groups the target block runs on entry: drops (locals the
 /// predecessor exit still holds cached but the successor does not), then
@@ -46,8 +47,11 @@ pub(crate) struct LocalSlotScore {
 /// (successor residents whose first use is a write). Within each group the
 /// slots stay slot-ascending. `build_repair_ops` emits them in that order.
 ///
-/// The plan (pass D) produces these for semantic edges; `rewrite/edge.rs`
-/// still derives them emit-side for synthesized bridge-block edges, sharing
+/// This owned form is used only transiently while deriving or consuming one
+/// edge. The RETAINED plan pool stores the flattened [`RepairActionsSpans`]
+/// into [`FunctionPlan::repair_slot_arena`] instead — POD spans, no per-entry
+/// `Vec` headers (the a3a7a102 lesson). `rewrite/edge.rs` derives this owned
+/// form emit-side for synthesized bridge-block edges, sharing
 /// [`derive_edge_repair`] so the logic exists once.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct RepairActions {
@@ -62,6 +66,17 @@ impl RepairActions {
             && self.reserve_cached_locals.is_empty()
             && self.drop_cached_locals.is_empty()
     }
+}
+
+/// Flattened repair actions: spans into [`FunctionPlan::repair_slot_arena`], one
+/// span per slot group, in the same drop/ensure/reserve grouping
+/// [`RepairActions`] uses. POD (`Copy`) so the retained `repair_pool` carries no
+/// per-entry `Vec` headers.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RepairActionsSpans {
+    pub drop: RowSpan,
+    pub ensure: RowSpan,
+    pub reserve: RowSpan,
 }
 
 /// Derive the boundary repair for one edge from a predecessor's exit cache set
@@ -95,26 +110,52 @@ pub(crate) fn derive_edge_repair(
     repair
 }
 
+/// An `(offset, len)` slice of a flat plan arena. Pass D stores per-block cache
+/// rows as spans into function-level arenas rather than a small `Vec` per block:
+/// on multi-thousand-block functions the per-block `Vec` headers alone dominate
+/// planner memory (the a3a7a102 lesson — per-block materialization).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct RowSpan {
+    pub offset: u32,
+    pub len: u32,
+}
+
+impl RowSpan {
+    #[inline]
+    pub(crate) fn range(self) -> core::ops::Range<usize> {
+        self.offset as usize..self.offset as usize + self.len as usize
+    }
+}
+
+/// Sentinel in [`FunctionPlan::repair_index_arena`] meaning "this edge needs no
+/// repair" (in place of `None`).
+pub(crate) const NO_REPAIR: u32 = u32::MAX;
+
 /// Planned block boundary state used by the planner facade.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct BlockPlan {
     pub entry: EntryState,
-    /// Cached locals the block may assume at open while lowering once.
+    /// The block's planned cache residents (the region solver's public set), as
+    /// a span into [`FunctionPlan::resident_arena`].
     ///
-    /// This is intentionally tentative. Rewrite observes the actual exit and
-    /// finalizes the public block entry afterward by trimming only useless
-    /// carried-in locals.
-    pub tentative_entry_cached_locals: collections::Vec<FrameSlot>,
-    /// Pass D exact entry cache set (slot-ascending): the tentative set trimmed
-    /// to the locals the block actually requires cached on entry.
-    pub exact_entry: collections::Vec<FrameSlot>,
-    /// Pass D exact exit cache set (slot-ascending): the residents live when
-    /// the block hands off to its successors.
-    pub exact_exit: collections::Vec<FrameSlot>,
-    /// Per out-edge index into [`FunctionPlan::repair_pool`], in terminator
-    /// edge order (Goto | BranchThen, BranchElse | BrTable(idx)). `None` means
-    /// the edge needs no repair.
-    pub repair: collections::Vec<Option<u32>>,
+    /// This is the ADMISSION policy, not the published entry row. `local_access`
+    /// admits a local to cache exactly when it is a planned resident, so a hot
+    /// local re-accessed after a call is re-cached even though the exact entry
+    /// row trimmed it — the call invalidated entry residency but not admission.
+    /// Lowering seeds each block from its exact-entry row; this set only governs
+    /// mid-block re-admission.
+    pub planned_residents: RowSpan,
+    /// Pass D exact entry cache set (slot-ascending), as a span into
+    /// [`FunctionPlan::row_arena`]: the planned residents trimmed to the locals
+    /// the block actually requires cached on entry.
+    pub exact_entry: RowSpan,
+    /// Pass D exact exit cache set (slot-ascending), as a span into
+    /// [`FunctionPlan::row_arena`]: the residents live when the block hands off.
+    pub exact_exit: RowSpan,
+    /// Per out-edge repair, as a span into [`FunctionPlan::repair_index_arena`]
+    /// in terminator edge order (Goto | BranchThen, BranchElse | BrTable(idx)).
+    /// Each entry is a [`FunctionPlan::repair_pool`] index, or [`NO_REPAIR`].
+    pub repair: RowSpan,
 }
 
 /// Whole-function joint plan.
@@ -124,7 +165,30 @@ pub(crate) struct FunctionPlan {
     pub gp_dynamic_budget: u8,
     pub fp_dynamic_budget: u8,
     pub blocks: collections::Vec<BlockPlan>,
-    /// Content-deduped boundary-repair action lists (pass D), indexed by
-    /// [`BlockPlan::repair`]. Consumed only by rewrite.
-    pub repair_pool: collections::Vec<RepairActions>,
+    /// Flat arena for every block's planned-resident set; blocks index it via
+    /// their `planned_residents` span. Built in `build_plan` before pass D (the
+    /// walker reads it), so it is a separate arena from `row_arena`.
+    pub resident_arena: collections::Vec<FrameSlot>,
+    /// Content-deduped boundary-repair action lists (pass D), indexed by the
+    /// entries of `repair_index_arena`. Each entry's slot groups live in
+    /// `repair_slot_arena`. Consumed only by rewrite.
+    pub repair_pool: collections::Vec<RepairActionsSpans>,
+    /// Flat arena of the repair pool's drop/ensure/reserve slot groups; pool
+    /// entries index it via their [`RepairActionsSpans`] spans.
+    pub repair_slot_arena: collections::Vec<FrameSlot>,
+    /// Flat arena for every block's exact entry/exit cache rows; blocks index it
+    /// via their `exact_entry` / `exact_exit` spans.
+    pub row_arena: collections::Vec<FrameSlot>,
+    /// Flat arena of per-edge repair-pool indices (or [`NO_REPAIR`]); blocks
+    /// index it via their `repair` span.
+    pub repair_index_arena: collections::Vec<u32>,
+}
+
+impl FunctionPlan {
+    /// `block`'s planned-resident set (admission policy): a slice into
+    /// [`Self::resident_arena`].
+    #[inline]
+    pub(crate) fn planned_residents(&self, block_index: usize) -> &[FrameSlot] {
+        &self.resident_arena[self.blocks[block_index].planned_residents.range()]
+    }
 }

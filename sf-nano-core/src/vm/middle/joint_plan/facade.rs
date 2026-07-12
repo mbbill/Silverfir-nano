@@ -4,8 +4,6 @@
 //! precomputed semantic flags, then delegates each rewrite consultation to the
 //! policy-focused helper modules.
 
-use crate::collections;
-
 use crate::{
     error::WasmError,
     vm::{
@@ -19,9 +17,9 @@ use crate::{
 };
 
 use super::{
-    block_open::{block_open_decision, finalize_block_entry_cached_locals, target_entry_decision},
+    block_open::{block_open_decision, target_entry_decision},
     build,
-    facts::{FunctionPlan, RepairActions},
+    facts::{FunctionPlan, RepairActionsSpans, RowSpan},
     interface::{
         BlockOpenDecision, FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery,
         TargetEntryDecision,
@@ -72,41 +70,46 @@ impl JointPlanner {
         decide_local_access(&self.plan, query)
     }
 
-    #[inline]
-    pub(crate) fn finalize_block_entry(
-        &self,
-        block: CfgBlockId,
-        actual_exit: &[FrameSlot],
-    ) -> collections::Vec<FrameSlot> {
-        finalize_block_entry_cached_locals(&self.plan, block, actual_exit)
-    }
-
-    /// Pass D exact entry cache row for `block` (rewrite-time drift assert).
+    /// `block`'s exact entry cache row — the authoritative published entry set,
+    /// and the seed the rewriter opens the block with. A slice into the plan's
+    /// flat `row_arena`; rewrite copies it into the program's published row.
     #[inline]
     pub(crate) fn exact_entry(&self, block: CfgBlockId) -> &[FrameSlot] {
-        &self.plan.blocks[block.as_usize()].exact_entry
+        &self.plan.row_arena[self.plan.blocks[block.as_usize()].exact_entry.range()]
     }
 
-    /// Pass D exact exit cache row for `block` (rewrite-time drift assert).
+    /// `block`'s exact exit cache row — the authoritative published exit set,
+    /// checked against lowered reality by the standing guard. Slice into
+    /// `row_arena`.
     #[inline]
     pub(crate) fn exact_exit(&self, block: CfgBlockId) -> &[FrameSlot] {
-        &self.plan.blocks[block.as_usize()].exact_exit
+        &self.plan.row_arena[self.plan.blocks[block.as_usize()].exact_exit.range()]
     }
 
-    /// Pass D repair actions for one out-edge of `block` (edge order
-    /// Goto | BranchThen, BranchElse | BrTable(idx)); `None` when the edge
-    /// needs no repair. Used by the rewrite-time drift assert.
+    /// The content-deduped repair-action pool `rewrite/edge.rs` indexes for
+    /// semantic edges. Each entry's slot groups live in [`Self::repair_slot_arena`].
     #[inline]
-    pub(crate) fn exact_edge_repair(
-        &self,
-        block: CfgBlockId,
-        edge_ordinal: usize,
-    ) -> Option<&RepairActions> {
-        self.plan.blocks[block.as_usize()]
-            .repair
-            .get(edge_ordinal)
-            .copied()
-            .flatten()
-            .map(|idx| &self.plan.repair_pool[idx as usize])
+    pub(crate) fn repair_pool(&self) -> &[RepairActionsSpans] {
+        &self.plan.repair_pool
+    }
+
+    /// The flat arena holding the repair pool's drop/ensure/reserve slot groups.
+    #[inline]
+    pub(crate) fn repair_slot_arena(&self) -> &[FrameSlot] {
+        &self.plan.repair_slot_arena
+    }
+
+    /// The flat per-edge repair index arena (`NO_REPAIR` = no repair); a block's
+    /// slice is at its [`Self::repair_span`].
+    #[inline]
+    pub(crate) fn repair_index_arena(&self) -> &[u32] {
+        &self.plan.repair_index_arena
+    }
+
+    /// `block`'s span into [`Self::repair_index_arena`] (one entry per out-edge,
+    /// terminator edge order).
+    #[inline]
+    pub(crate) fn repair_span(&self, block: CfgBlockId) -> RowSpan {
+        self.plan.blocks[block.as_usize()].repair
     }
 }

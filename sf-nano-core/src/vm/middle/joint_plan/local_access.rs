@@ -19,8 +19,8 @@ pub(crate) fn decide_local_access(
         return LocalAccessDecision::Cache;
     }
 
-    if plan.blocks[query.block.as_usize()]
-        .tentative_entry_cached_locals
+    if plan
+        .planned_residents(query.block.as_usize())
         .contains(&query.slot)
     {
         LocalAccessDecision::Cache

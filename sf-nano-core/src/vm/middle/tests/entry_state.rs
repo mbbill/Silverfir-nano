@@ -4,7 +4,8 @@ use crate::value_type::ValueType;
 use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind};
 
 use super::helpers::{
-    block_for_semantic_index, i32_program, op, plan_i32_program, plan_program, prim, typed_program,
+    block_for_semantic_index, i32_program, is_admitted, op, plan_i32_program, plan_program, prim,
+    typed_program,
 };
 
 #[test]
@@ -49,8 +50,14 @@ fn block_open_prefers_hotter_local_when_only_one_cache_slot_remains_after_entry_
     let block_open = pipeline.planner.block_open(block);
 
     assert_eq!(block_open.transient.spill_depth, 0);
-    assert_eq!(pipeline.planner.exact_entry(block), &[slot1]);
-    assert!(!pipeline.planner.exact_entry(block).contains(&slot0));
+    assert!(
+        is_admitted(&pipeline.planner, block, slot1),
+        "the solver should admit the hotter local1 into the one remaining cache slot"
+    );
+    assert!(
+        !is_admitted(&pipeline.planner, block, slot0),
+        "the colder local0 should lose the admission contest"
+    );
 }
 
 #[test]
@@ -93,12 +100,8 @@ fn block_open_keeps_structural_entry_stack_even_when_that_leaves_no_room_for_loc
     assert_eq!(block_open.transient.stack_height, 2);
     assert_eq!(block_open.transient.spill_depth, 0);
     assert!(
-        pipeline.planner.exact_entry(block).is_empty(),
-        "when structural entry stack already consumes the whole budget, block_open must leave cached locals empty rather than changing stack join shape"
-    );
-    assert!(
-        !pipeline.planner.exact_entry(block).contains(&slot0),
-        "the hot local should only be admitted later if pressure allows, not by rewriting the structural entry stack"
+        !is_admitted(&pipeline.planner, block, slot0),
+        "when structural entry stack already consumes the whole budget, the hot local must not be admitted rather than changing stack join shape"
     );
 }
 
@@ -141,5 +144,8 @@ fn block_open_uses_per_bank_budget_so_gp_pressure_does_not_block_hot_fp_local() 
     let block_open = pipeline.planner.block_open(block);
 
     assert_eq!(block_open.transient.spill_depth, 0);
-    assert_eq!(pipeline.planner.exact_entry(block), &[slot0]);
+    assert!(
+        is_admitted(&pipeline.planner, block, slot0),
+        "the hot F32 local should still be admitted into the separate FP budget"
+    );
 }

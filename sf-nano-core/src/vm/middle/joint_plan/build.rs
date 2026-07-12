@@ -17,7 +17,7 @@ use crate::{
         middle::{
             cfg::SemanticCfg,
             discipline::{self, StructuralAction},
-            frame::FrameLayoutPlan,
+            frame::{FrameLayoutPlan, FrameSlot},
         },
         wasm::{
             primitive_op,
@@ -30,7 +30,7 @@ use crate::{
 use super::{
     entry_region::analyze_block_local_summaries,
     exact,
-    facts::{BlockPlan, EntryState, FunctionPlan},
+    facts::{BlockPlan, EntryState, FunctionPlan, RowSpan},
     region_solver::{solve_public_cache_sets, ResidencyPolicy},
 };
 
@@ -83,16 +83,28 @@ pub(crate) fn build_plan(
         peak_fp: _,
         block_entries,
     } = lightweight;
+    // Flatten each block's planned-resident set into one arena; the block keeps
+    // only an (offset, len) span (the a3a7a102 lesson — per-block `Vec` headers
+    // dominate planner memory on multi-thousand-block functions).
+    let mut resident_arena: collections::Vec<FrameSlot> = collections::Vec::new();
     let blocks = block_entries
         .into_iter()
         .enumerate()
-        .map(|(block_index, entry)| BlockPlan {
-            entry,
-            tentative_entry_cached_locals: block_entry_cached_locals
+        .map(|(block_index, entry)| {
+            let residents = block_entry_cached_locals
                 .get(block_index)
-                .cloned()
-                .unwrap_or_default(),
-            ..Default::default()
+                .map(|r| r.as_slice())
+                .unwrap_or(&[]);
+            let offset = resident_arena.len() as u32;
+            resident_arena.extend_from_slice(residents);
+            BlockPlan {
+                entry,
+                planned_residents: RowSpan {
+                    offset,
+                    len: residents.len() as u32,
+                },
+                ..Default::default()
+            }
         })
         .collect();
     let mut plan = FunctionPlan {
@@ -100,7 +112,11 @@ pub(crate) fn build_plan(
         gp_dynamic_budget,
         fp_dynamic_budget,
         blocks,
+        resident_arena,
         repair_pool: collections::Vec::new(),
+        repair_slot_arena: collections::Vec::new(),
+        row_arena: collections::Vec::new(),
+        repair_index_arena: collections::Vec::new(),
     };
 
     // Pass D: exact per-block cache boundaries + per-edge repair actions.

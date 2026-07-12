@@ -21,14 +21,14 @@ use crate::{
             discipline,
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
-                init_locals::locals_reads_before_write, JointPlanner, LocalAccessDecision,
-                LocalAccessQuery,
+                facts::RowSpan, init_locals::locals_reads_before_write, JointPlanner,
+                LocalAccessDecision, LocalAccessQuery,
             },
             ssa_ir::{
                 ir::{
-                    entry_cache_requirement, LocalSlotInfo, SsaBinding, SsaBlock, SsaCallArgs,
-                    SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInst, SsaOp,
-                    SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator, SsaValue,
+                    LocalSlotInfo, SsaBinding, SsaBlock, SsaCallArgs, SsaCallLiveArg, SsaCallOp,
+                    SsaCallOperandLoc, SsaEdge, SsaInst, SsaOp, SsaOperand, SsaProgram,
+                    SsaScalarResultLoc, SsaTerminator, SsaValue,
                 },
                 target::SsaTarget,
             },
@@ -42,7 +42,7 @@ use crate::{
 };
 
 use super::{
-    edge::insert_boundary_repair_blocks,
+    edge::{insert_boundary_repair_blocks, PlanRepairs},
     state::{make_block_params, BlockState, ValueAlloc},
 };
 
@@ -197,11 +197,10 @@ pub(crate) fn rewrite_function(
             cfg,
             &block_params,
             // Pass D authority: lowering seeds the resident/materialized cache
-            // from the plan's exact entry row, not the tentative public set.
-            // Admission (`local_access`) still consults the planned set, so a
-            // hot local re-accessed after a call is re-cached even though it was
-            // trimmed from the entry row. Phantom tentative-only residents no
-            // longer occupy the cache during lowering (pure spill/DROP waste).
+            // from the plan's exact entry row (a slice into the plan arena), not
+            // the tentative public set. Admission (`local_access`) still
+            // consults the planned set, so a hot local re-accessed after a call
+            // is re-cached even though it was trimmed from the entry row.
             planner.exact_entry(cfg_block.id),
             &mut values,
             &mut builder,
@@ -209,31 +208,19 @@ pub(crate) fn rewrite_function(
             extra_blocks.len(),
             config,
         )?;
-        let final_entry = filter_block_entry_cached_slots(
-            &planner.finalize_block_entry(cfg_block.id, &lowered.actual_exit_cached_slots),
-            &lowered.actual_exit_cached_slots,
-            &lowered.ops,
-        );
-        let actual_exit = simulate_materialized_cache_exit(&final_entry, &lowered.ops);
-        // Pass D drift guard: the plan's exact walker must reproduce the rows
-        // the materializer finalizes here. If this fires, the walker is wrong —
-        // it is the one that must be corrected to match the shipped path.
+        // Publishing is plan-authoritative: the block's entry/exit cache rows
+        // ARE the plan's exact rows (copied out of the flat arena into the
+        // program's own published rows). Standing guard: the lowered reality —
+        // the resident cache the engine actually maintained through lowering —
+        // must match the plan's exit row. The entry row is the seed the block
+        // opened with, so checking it would compare the plan to itself; dropped.
         debug_assert_eq!(
-            final_entry.as_slice(),
-            planner.exact_entry(cfg_block.id),
-            "block {block_index}: final entry cache set diverged from the plan's exact walker",
-        );
-        debug_assert_eq!(
-            actual_exit.as_slice(),
+            lowered.actual_exit_cached_slots.as_slice(),
             planner.exact_exit(cfg_block.id),
-            "block {block_index}: published exit cache set diverged from the plan's exact walker",
+            "block {block_index}: lowered exit cache set diverged from the authoritative plan",
         );
-        let mut final_entry = final_entry;
-        final_entry.shrink_to_fit();
-        let mut actual_exit = actual_exit;
-        actual_exit.shrink_to_fit();
-        block_entry_cached_slots.push(final_entry);
-        block_exit_cached_slots.push(actual_exit);
+        block_entry_cached_slots.push(planner.exact_entry(cfg_block.id).to_vec().into());
+        block_exit_cached_slots.push(planner.exact_exit(cfg_block.id).to_vec().into());
         let mut block = SsaBlock {
             id: SsaTarget(block_index as u32),
             params,
@@ -250,18 +237,6 @@ pub(crate) fn rewrite_function(
             extra_blocks.push(block);
         }
     }
-    // Pass D drift guard for the per-edge boundary repair. Runs while `blocks`
-    // still holds only the semantic blocks (before bridges/repairs append), so
-    // an edge to an appended block is an emit-side bridge and is skipped.
-    if cfg!(debug_assertions) {
-        assert_plan_edge_repairs(
-            &planner,
-            cfg,
-            &blocks,
-            &block_entry_cached_slots,
-            &block_exit_cached_slots,
-        );
-    }
     blocks.reserve_exact(extra_blocks.len());
     blocks.extend(extra_blocks);
     block_entry_cached_slots.reserve_exact(extra_block_cached_slots.len());
@@ -270,7 +245,6 @@ pub(crate) fn rewrite_function(
     block_exit_cached_slots.extend(extra_block_exit_cached_slots);
 
     drop(block_params);
-    drop(planner);
     let local_slot_info = collect_local_slot_info(&semantic);
     let local_slot_types = core::mem::take(&mut semantic.local_types);
     let result_types = core::mem::take(&mut semantic.result_types);
@@ -302,8 +276,41 @@ pub(crate) fn rewrite_function(
         }
     }
 
-    insert_boundary_repair_blocks(&mut program, &block_exit_cached_slots);
+    // Per-semantic-block repair spans, read alongside the shared pool + index
+    // arena. The planner stays alive through insertion; the whole plan (compact
+    // flat arenas now) drops with it right after — no incremental freeing needed.
+    let repair_spans: collections::Vec<RowSpan> = (0..original_block_count as u32)
+        .map(|block_index| planner.repair_span(CfgBlockId(block_index)))
+        .collect();
+    insert_boundary_repair_blocks(
+        &mut program,
+        &block_exit_cached_slots,
+        PlanRepairs {
+            pool: planner.repair_pool(),
+            slot_arena: planner.repair_slot_arena(),
+            index_arena: planner.repair_index_arena(),
+            spans: &repair_spans,
+        },
+        original_block_count,
+    );
+    drop(planner);
     drop(block_exit_cached_slots);
+    // Structural standing guard: the block vector and its parallel entry-cache
+    // row vector stay in lockstep, and every block id is its own index. A
+    // bridge or repair block pushed without its cache row would desync these.
+    debug_assert_eq!(
+        program.blocks.len(),
+        program.block_entry_cached_slots.len(),
+        "block vector and entry-cache-row vector desynced after repair insertion",
+    );
+    debug_assert!(
+        program
+            .blocks
+            .iter()
+            .enumerate()
+            .all(|(index, block)| block.id == SsaTarget(index as u32)),
+        "block id layout is not identity after repair insertion",
+    );
     Ok(program)
 }
 
@@ -311,103 +318,6 @@ fn shrink_ssa_block_storage(block: &mut SsaBlock) {
     block.params.shrink_to_fit();
     block.ops.shrink_to_fit();
     block.extra_args.shrink_to_fit();
-}
-
-fn filter_block_entry_cached_slots(
-    entry_slots: &[FrameSlot],
-    actual_exit_slots: &[FrameSlot],
-    ops: &[SsaInst],
-) -> collections::Vec<FrameSlot> {
-    entry_slots
-        .iter()
-        .copied()
-        .filter(|slot| {
-            entry_cache_requirement(ops, *slot, actual_exit_slots.contains(slot)).is_some()
-        })
-        .collect()
-}
-
-fn simulate_materialized_cache_exit(
-    entry_slots: &[FrameSlot],
-    ops: &[SsaInst],
-) -> collections::Vec<FrameSlot> {
-    let mut materialized = entry_slots.iter().copied().collect::<BTreeSet<_>>();
-    for inst in ops {
-        match inst.op {
-            SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_SET_CACHE | SsaOp::LOCAL_ENSURE_CACHE => {
-                materialized.insert(FrameSlot(inst.meta));
-            }
-            SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_DROP_CACHE => {
-                materialized.remove(&FrameSlot(inst.meta));
-            }
-            SsaOp::CALL => materialized.clear(),
-            _ => {}
-        }
-    }
-    materialized.into_iter().collect()
-}
-
-/// Pass D drift guard: for every out-edge of every semantic block whose target
-/// is also a semantic block, the plan's stored repair actions must equal what
-/// the emit-side derivation produces from the finalized rows. Edges to appended
-/// bridge/repair blocks (target id past the semantic count) derive emit-side and
-/// are skipped. Edge enumeration order matches `edge.rs` and the plan
-/// (Goto | BranchThen, BranchElse | BrTable(idx)).
-fn assert_plan_edge_repairs(
-    planner: &JointPlanner,
-    cfg: &RewriteCfg,
-    blocks: &[SsaBlock],
-    entry_cached: &[collections::Vec<FrameSlot>],
-    exit_cached: &[collections::Vec<FrameSlot>],
-) {
-    let semantic_count = blocks.len();
-    let mut edges: collections::Vec<(usize, SsaTarget)> = collections::Vec::new();
-    for (block_index, block) in blocks.iter().enumerate() {
-        edges.clear();
-        match &block.terminator {
-            SsaTerminator::Goto(edge) => edges.push((0, edge.target)),
-            SsaTerminator::Branch {
-                then_edge,
-                else_edge,
-                ..
-            } => {
-                edges.push((0, then_edge.target));
-                edges.push((1, else_edge.target));
-            }
-            SsaTerminator::BrTable { entries, .. } => {
-                for (ordinal, edge) in entries.iter().enumerate() {
-                    edges.push((ordinal, edge.target));
-                }
-            }
-            _ => {}
-        }
-        let pred_exit = exit_cached[block_index].as_slice();
-        let block_id = cfg.blocks[block_index].id;
-        for &(ordinal, target) in &edges {
-            let target_id = target.as_usize();
-            if target_id >= semantic_count {
-                continue;
-            }
-            let derived = super::edge::derive_edge_repair(
-                pred_exit,
-                &entry_cached[target_id],
-                &blocks[target_id].ops,
-            );
-            let plan = planner.exact_edge_repair(block_id, ordinal);
-            if derived.is_empty() {
-                debug_assert!(
-                    plan.is_none(),
-                    "block {block_index} edge {ordinal}: emit derives empty repair but plan stored {plan:?}",
-                );
-            } else {
-                debug_assert_eq!(
-                    Some(&derived),
-                    plan,
-                    "block {block_index} edge {ordinal}: emit-derived repair disagrees with the plan",
-                );
-            }
-        }
-    }
 }
 
 fn collect_local_slot_info(semantic: &SemanticProgram) -> collections::Vec<LocalSlotInfo> {
@@ -517,7 +427,12 @@ fn lower_block_range(
         ops: state.ops,
         extra_args: state.extra_args,
         terminator: terminator.terminator,
-        actual_exit_cached_slots: materialized_cache.iter().copied().collect(),
+        // The true materialized cache set at block exit: `resident_cache` is
+        // drop-subtracted by the engine's evictions (unlike `materialized_cache`,
+        // which is the admission hint). This is the lowered reality the standing
+        // guard checks against the plan's exact_exit row. `materialized_cache`
+        // stays live only for the emit-side bridge-block exit snapshot.
+        actual_exit_cached_slots: resident_cache.iter().copied().collect(),
         extra_blocks: terminator.extra_blocks,
         extra_block_cached_slots: terminator.extra_block_cached_slots,
         extra_block_exit_cached_slots: terminator.extra_block_exit_cached_slots,

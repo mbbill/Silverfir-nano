@@ -8,7 +8,7 @@ use tracked_alloc::collections::BTreeMap;
 
 use crate::vm::middle::{
     frame::FrameSlot,
-    joint_plan::facts::{self, RepairActions},
+    joint_plan::facts::{self, RepairActions, RepairActionsSpans, RowSpan, NO_REPAIR},
     ssa_ir::{
         ir::{
             entry_cache_requirement, SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaProgram,
@@ -34,12 +34,33 @@ enum EdgeSlot {
     BrTable(usize),
 }
 
+/// Pass D's edge-repair data, threaded into repair-block insertion: the
+/// content-deduped action pool (flattened — each entry's slot groups live in
+/// `slot_arena`), the flat per-edge index arena (`NO_REPAIR` = none), and
+/// per-semantic-block spans into it (edge order Goto | BranchThen, BranchElse |
+/// BrTable(idx)).
+#[derive(Clone, Copy)]
+pub(super) struct PlanRepairs<'a> {
+    pub pool: &'a [RepairActionsSpans],
+    pub slot_arena: &'a [FrameSlot],
+    pub index_arena: &'a [u32],
+    pub spans: &'a [RowSpan],
+}
+
 pub(super) fn insert_boundary_repair_blocks(
     program: &mut SsaProgram,
     exit_cached_slots: &[collections::Vec<FrameSlot>],
+    plan: PlanRepairs<'_>,
+    semantic_count: usize,
 ) {
     let original_len = program.blocks.len();
-    let repair_count = count_boundary_repairs(program, exit_cached_slots, original_len);
+    let repair_count = count_boundary_repairs(
+        program,
+        exit_cached_slots,
+        plan,
+        semantic_count,
+        original_len,
+    );
     program.blocks.reserve_exact(repair_count);
     program.block_entry_cached_slots.reserve_exact(repair_count);
 
@@ -55,38 +76,25 @@ pub(super) fn insert_boundary_repair_blocks(
             .unwrap_or(&[]);
 
         edge_slots.clear();
-        match &program.blocks[block_index].terminator {
-            SsaTerminator::Goto(edge) => {
-                edge_slots.push((EdgeSlot::Goto, edge.target));
-            }
-            SsaTerminator::Branch {
-                then_edge,
-                else_edge,
-                ..
-            } => {
-                edge_slots.push((EdgeSlot::BranchThen, then_edge.target));
-                edge_slots.push((EdgeSlot::BranchElse, else_edge.target));
-            }
-            SsaTerminator::BrTable { entries, .. } => {
-                for (idx, edge) in entries.iter().enumerate() {
-                    edge_slots.push((EdgeSlot::BrTable(idx), edge.target));
-                }
-            }
-            SsaTerminator::Return { .. }
-            | SsaTerminator::ReturnScalar { .. }
-            | SsaTerminator::TailCallDirect { .. }
-            | SsaTerminator::TailCallIndirect { .. }
-            | SsaTerminator::TailCallRef { .. }
-            | SsaTerminator::TrapUnreachable
-            | SsaTerminator::EhThrow { .. }
-            | SsaTerminator::EhThrowRef { .. } => {}
-        }
+        collect_edge_slots(&program.blocks[block_index].terminator, &mut edge_slots);
 
-        for i in 0..edge_slots.len() {
-            let (slot, original_target) = edge_slots[i];
-            if let Some(repair_id) =
-                apply_edge_repair(program, &pred_exit, original_target, &mut repair_blocks)
-            {
+        for &(slot, original_target) in &edge_slots {
+            let repair = resolve_edge_repair(
+                program,
+                plan,
+                semantic_count,
+                block_index,
+                edge_slot_ordinal(slot),
+                original_target,
+                pred_exit,
+            );
+            if let Some(repair_id) = materialize_repair_block(
+                program,
+                original_target,
+                pred_exit,
+                repair,
+                &mut repair_blocks,
+            ) {
                 retarget_edge(&mut program.blocks[block_index].terminator, slot, repair_id);
             }
         }
@@ -95,9 +103,106 @@ pub(super) fn insert_boundary_repair_blocks(
     maybe_repair_entry(program);
 }
 
+/// Enumerate a terminator's outgoing edges in the fixed edge order
+/// (Goto | BranchThen, BranchElse | BrTable(idx)) — the same order pass D keys
+/// its per-edge repair on.
+fn collect_edge_slots(
+    terminator: &SsaTerminator,
+    edge_slots: &mut collections::Vec<(EdgeSlot, SsaTarget)>,
+) {
+    match terminator {
+        SsaTerminator::Goto(edge) => edge_slots.push((EdgeSlot::Goto, edge.target)),
+        SsaTerminator::Branch {
+            then_edge,
+            else_edge,
+            ..
+        } => {
+            edge_slots.push((EdgeSlot::BranchThen, then_edge.target));
+            edge_slots.push((EdgeSlot::BranchElse, else_edge.target));
+        }
+        SsaTerminator::BrTable { entries, .. } => {
+            for (idx, edge) in entries.iter().enumerate() {
+                edge_slots.push((EdgeSlot::BrTable(idx), edge.target));
+            }
+        }
+        SsaTerminator::Return { .. }
+        | SsaTerminator::ReturnScalar { .. }
+        | SsaTerminator::TailCallDirect { .. }
+        | SsaTerminator::TailCallIndirect { .. }
+        | SsaTerminator::TailCallRef { .. }
+        | SsaTerminator::TrapUnreachable
+        | SsaTerminator::EhThrow { .. }
+        | SsaTerminator::EhThrowRef { .. } => {}
+    }
+}
+
+#[inline]
+fn edge_slot_ordinal(slot: EdgeSlot) -> usize {
+    match slot {
+        EdgeSlot::Goto | EdgeSlot::BranchThen => 0,
+        EdgeSlot::BranchElse => 1,
+        EdgeSlot::BrTable(idx) => idx,
+    }
+}
+
+/// The repair actions for one outgoing edge. A semantic block's edge to a
+/// semantic target reads the plan's per-edge repair (pass D authority); every
+/// other edge — a semantic block's edge into a synthesized bridge, or any edge
+/// of a bridge/repair block — derives emit-side from the target's lowered ops.
+fn resolve_edge_repair(
+    program: &SsaProgram,
+    plan: PlanRepairs<'_>,
+    semantic_count: usize,
+    block_index: usize,
+    ordinal: usize,
+    target: SsaTarget,
+    pred_exit: &[FrameSlot],
+) -> RepairActions {
+    if block_index < semantic_count && target.as_usize() < semantic_count {
+        let index = plan_edge_index(plan, block_index, ordinal);
+        return if index == NO_REPAIR {
+            RepairActions::default()
+        } else {
+            // Rehydrate the flattened pool entry into the transient owned form
+            // this half consumes (build_repair_ops + the RepairBlockKey dedup).
+            let spans = plan.pool[index as usize];
+            RepairActions {
+                ensure_cached_locals: plan.slot_arena[spans.ensure.range()].to_vec().into(),
+                reserve_cached_locals: plan.slot_arena[spans.reserve.range()].to_vec().into(),
+                drop_cached_locals: plan.slot_arena[spans.drop.range()].to_vec().into(),
+            }
+        };
+    }
+    let target_id = target.as_usize();
+    let target_ops = program
+        .blocks
+        .get(target_id)
+        .map(|b| b.ops.as_slice())
+        .unwrap_or(&[]);
+    let target_entry = program
+        .block_entry_cached_slots
+        .get(target_id)
+        .map(|s| s.as_slice())
+        .unwrap_or(&[]);
+    derive_edge_repair(pred_exit, target_entry, target_ops)
+}
+
+/// The plan's repair-pool index for semantic block `block_index`'s edge at
+/// `ordinal` (`NO_REPAIR` = no repair, or out of range).
+#[inline]
+fn plan_edge_index(plan: PlanRepairs<'_>, block_index: usize, ordinal: usize) -> u32 {
+    plan.spans
+        .get(block_index)
+        .and_then(|span| plan.index_arena.get(span.offset as usize + ordinal))
+        .copied()
+        .unwrap_or(NO_REPAIR)
+}
+
 fn count_boundary_repairs(
     program: &SsaProgram,
     exit_cached_slots: &[collections::Vec<FrameSlot>],
+    plan: PlanRepairs<'_>,
+    semantic_count: usize,
     original_len: usize,
 ) -> usize {
     let mut count = 0;
@@ -110,36 +215,16 @@ fn count_boundary_repairs(
             .unwrap_or(&[]);
 
         edge_slots.clear();
-        match &program.blocks[block_index].terminator {
-            SsaTerminator::Goto(edge) => {
-                edge_slots.push((EdgeSlot::Goto, edge.target));
-            }
-            SsaTerminator::Branch {
-                then_edge,
-                else_edge,
-                ..
-            } => {
-                edge_slots.push((EdgeSlot::BranchThen, then_edge.target));
-                edge_slots.push((EdgeSlot::BranchElse, else_edge.target));
-            }
-            SsaTerminator::BrTable { entries, .. } => {
-                for (idx, edge) in entries.iter().enumerate() {
-                    edge_slots.push((EdgeSlot::BrTable(idx), edge.target));
-                }
-            }
-            SsaTerminator::Return { .. }
-            | SsaTerminator::ReturnScalar { .. }
-            | SsaTerminator::TailCallDirect { .. }
-            | SsaTerminator::TailCallIndirect { .. }
-            | SsaTerminator::TailCallRef { .. }
-            | SsaTerminator::TrapUnreachable
-            | SsaTerminator::EhThrow { .. }
-            | SsaTerminator::EhThrowRef { .. } => {}
-        }
+        collect_edge_slots(&program.blocks[block_index].terminator, &mut edge_slots);
 
-        for i in 0..edge_slots.len() {
-            let (_, original_target) = edge_slots[i];
-            if edge_repair_needed(program, pred_exit, original_target) {
+        for &(slot, original_target) in &edge_slots {
+            let needed =
+                if block_index < semantic_count && original_target.as_usize() < semantic_count {
+                    plan_edge_index(plan, block_index, edge_slot_ordinal(slot)) != NO_REPAIR
+                } else {
+                    edge_repair_needed(program, pred_exit, original_target)
+                };
+            if needed {
                 count += 1;
             }
         }
@@ -182,33 +267,27 @@ fn edge_repair_needed(
     false
 }
 
-/// Compute the repair for one outgoing edge (reads `program` immutably for
-/// the target's ops / params) and, if a repair is needed, push the repair
-/// block onto `program` and return its id.
-fn apply_edge_repair(
+/// Materialize (or dedup to an existing) repair block for `repair` on the edge
+/// into `original_target`, returning the repair block's id. `None` when the
+/// repair is empty. Repair derivation now happens up front in
+/// [`resolve_edge_repair`]; this half owns only block synthesis, the
+/// identity-forwarding param bindings, and the `RepairBlockKey` dedup.
+fn materialize_repair_block(
     program: &mut SsaProgram,
-    pred_exit: &[FrameSlot],
     original_target: SsaTarget,
+    pred_exit: &[FrameSlot],
+    repair: RepairActions,
     repair_blocks: &mut BTreeMap<RepairBlockKey, SsaTarget>,
 ) -> Option<SsaTarget> {
+    if repair.is_empty() {
+        return None;
+    }
     let target_id = original_target.as_usize();
-
-    // Read-only inspection of the original target block.
-    let (repair, repair_params) = {
-        let target_block = program.blocks.get(target_id);
-        let target_ops = target_block.map(|b| b.ops.as_slice()).unwrap_or(&[]);
-        let target_entry = program
-            .block_entry_cached_slots
-            .get(target_id)
-            .map(|s| s.as_slice())
-            .unwrap_or(&[]);
-        let repair = derive_edge_repair(pred_exit, target_entry, target_ops);
-        if repair.is_empty() {
-            return None;
-        }
-        let repair_params = target_block.map(|b| b.params.clone()).unwrap_or_default();
-        (repair, repair_params)
-    };
+    let repair_params = program
+        .blocks
+        .get(target_id)
+        .map(|b| b.params.clone())
+        .unwrap_or_default();
 
     let key = RepairBlockKey {
         target: original_target,
@@ -409,7 +488,20 @@ mod tests {
         let exit_cached_slots =
             collections::vec![collections::vec![slot1], collections::vec![slot0]];
 
-        insert_boundary_repair_blocks(&mut program, &exit_cached_slots);
+        // semantic_count = 0 routes every edge through the emit-side derive
+        // path this test exercises (the plan-authoritative path is covered by
+        // the corpus-wide standing-guard asserts).
+        insert_boundary_repair_blocks(
+            &mut program,
+            &exit_cached_slots,
+            PlanRepairs {
+                pool: &[],
+                slot_arena: &[],
+                index_arena: &[],
+                spans: &[],
+            },
+            0,
+        );
 
         assert_eq!(
             program.blocks.len(),

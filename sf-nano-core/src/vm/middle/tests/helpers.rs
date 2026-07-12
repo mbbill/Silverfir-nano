@@ -1,4 +1,4 @@
-use tracked_alloc::collections::BTreeMap;
+use tracked_alloc::collections::{BTreeMap, BTreeSet};
 
 use crate::collections;
 
@@ -8,7 +8,7 @@ use crate::vm::{
     middle::{
         cfg::{self, CfgBlockId, SemanticCfg},
         frame::{plan_frame_layout, FrameLayoutPlan, FrameSlot},
-        joint_plan::JointPlanner,
+        joint_plan::{JointPlanner, LocalAccessDecision, LocalAccessQuery},
         prepare_function,
         ssa_ir::ir::{SsaBlock, SsaInst, SsaOp, SsaProgram, SsaTerminator},
         PrepareInput, PreparedFunction,
@@ -219,6 +219,22 @@ pub(super) fn incoming_cache_repair_blocks(
 pub(super) fn block_for_semantic_index(cfg: &SemanticCfg, semantic_index: usize) -> CfgBlockId {
     cfg.block_for_semantic_index(semantic_index)
         .unwrap_or_else(|| panic!("semantic index {semantic_index} should map to one CFG block"))
+}
+
+/// Whether the solver plans to cache-admit `slot` at `block`. Queried with an
+/// empty resident cache so it isolates the planned-resident admission policy
+/// from any prior residency — the same admission decision the rewriter makes
+/// per local op, via the production `local_access` API.
+pub(super) fn is_admitted(planner: &JointPlanner, block: CfgBlockId, slot: FrameSlot) -> bool {
+    let empty = BTreeSet::new();
+    matches!(
+        planner.local_access(LocalAccessQuery {
+            block,
+            slot,
+            resident_cache: &empty,
+        }),
+        LocalAccessDecision::Cache,
+    )
 }
 
 /// Control-flow successor block indices of `block`.
