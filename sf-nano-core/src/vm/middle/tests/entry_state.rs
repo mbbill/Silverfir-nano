@@ -49,8 +49,8 @@ fn block_open_prefers_hotter_local_when_only_one_cache_slot_remains_after_entry_
     let block_open = pipeline.planner.block_open(block);
 
     assert_eq!(block_open.transient.spill_depth, 0);
-    assert_eq!(block_open.cached_locals, &[slot1]);
-    assert!(!block_open.cached_locals.contains(&slot0));
+    assert_eq!(pipeline.planner.exact_entry(block), &[slot1]);
+    assert!(!pipeline.planner.exact_entry(block).contains(&slot0));
 }
 
 #[test]
@@ -93,11 +93,11 @@ fn block_open_keeps_structural_entry_stack_even_when_that_leaves_no_room_for_loc
     assert_eq!(block_open.transient.stack_height, 2);
     assert_eq!(block_open.transient.spill_depth, 0);
     assert!(
-        block_open.cached_locals.is_empty(),
+        pipeline.planner.exact_entry(block).is_empty(),
         "when structural entry stack already consumes the whole budget, block_open must leave cached locals empty rather than changing stack join shape"
     );
     assert!(
-        !block_open.cached_locals.contains(&slot0),
+        !pipeline.planner.exact_entry(block).contains(&slot0),
         "the hot local should only be admitted later if pressure allows, not by rewriting the structural entry stack"
     );
 }
@@ -141,5 +141,5 @@ fn block_open_uses_per_bank_budget_so_gp_pressure_does_not_block_hot_fp_local() 
     let block_open = pipeline.planner.block_open(block);
 
     assert_eq!(block_open.transient.spill_depth, 0);
-    assert_eq!(block_open.cached_locals, &[slot0]);
+    assert_eq!(pipeline.planner.exact_entry(block), &[slot0]);
 }

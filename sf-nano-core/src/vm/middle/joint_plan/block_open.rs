@@ -19,7 +19,6 @@ pub(crate) fn block_open_decision(plan: &FunctionPlan, block: CfgBlockId) -> Blo
     let block_plan = &plan.blocks[block.as_usize()];
     BlockOpenDecision {
         transient: transient_contract(&block_plan.entry),
-        cached_locals: &block_plan.tentative_entry_cached_locals,
         stack_types: &block_plan.entry.stack_types,
     }
 }

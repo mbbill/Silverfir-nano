@@ -31,7 +31,6 @@ pub(crate) struct TransientContract<'a> {
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BlockOpenDecision<'a> {
     pub transient: TransientContract<'a>,
-    pub cached_locals: &'a [FrameSlot],
     /// Full semantic type stack at block entry.
     /// Used by the rewriter to know types when filling spilled values inline.
     pub stack_types: &'a [ValueType],

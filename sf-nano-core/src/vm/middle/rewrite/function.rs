@@ -196,7 +196,13 @@ pub(crate) fn rewrite_function(
             frame,
             cfg,
             &block_params,
-            block_entry.cached_locals,
+            // Pass D authority: lowering seeds the resident/materialized cache
+            // from the plan's exact entry row, not the tentative public set.
+            // Admission (`local_access`) still consults the planned set, so a
+            // hot local re-accessed after a call is re-cached even though it was
+            // trimmed from the entry row. Phantom tentative-only residents no
+            // longer occupy the cache during lowering (pure spill/DROP waste).
+            planner.exact_entry(cfg_block.id),
             &mut values,
             &mut builder,
             original_block_count,
