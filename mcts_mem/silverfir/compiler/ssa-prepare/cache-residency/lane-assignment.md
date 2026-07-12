@@ -3,15 +3,30 @@
   with sticky inheritance: the root region gets a deterministic seed layout, each
   child copies kept locals into their parent's lanes, new locals fill the freed
   holes first, and a resident is remapped to a different lane only when
-  fragmentation forces it (`compute_block_entry_cache_params`).
+  fragmentation or a preserved-versus-volatile preference mismatch forces it
+  (`compute_block_entry_cache_params`).
 
 - Drops leave holes rather than compacting survivors down; a local resident on
   both sides of an edge keeps its lane and crosses without a register move.
 
 - The middle IR stays set-based; lane choice lives at machine lowering, where the
   exact per-bank sizes are known, and a block improves its entry layout from its
-  predecessors' exit layouts and looks through successor live-in cache state,
-  leaving the boundary edge-repair pass fewer reconciliation moves to insert.
+  predecessors' exit layouts, leaving the boundary edge-repair pass fewer
+  reconciliation moves to insert.
+
+- The placement pass consumes two structure-derived signals computed by the
+  middle-end instead of deriving them itself: the preserved-lane preference (a
+  whole-function promotion of locals whose local-JIT-call cross count meets the
+  backend threshold) and each entry row's Ensure-versus-Reserve requirement.
+
+- Both signals are published after cleanup, constant folding, and sink
+  planning, by scanning the final blocks and final control flow
+  (`final_signals`); nothing derives them from pre-cleanup state.
+
+- The keep-across-call decision re-checks the physically assigned register's
+  preservation class in addition to the preference bit; call classification
+  reads the module facts threaded into lowering, and reference-typed locals
+  are never kept across calls.
 
 ## Facts
 
@@ -54,6 +69,46 @@
   a local JIT call for cache-preserve planning, so its caches can be carried
   across the call the same way as direct local calls (code).
 
+- 2026-07-12 (30aac662) measurement: middle-side lane assignment was built and
+  rejected — with identical MachineIR op inventories and improved edge
+  parallel-move counts (117 to 89 mismatched positions on the worst stream
+  function), native code still inflated (+322 mov / +172 branch on that
+  function; 8 of 9 corpus modules regressed, lua +7362, speedtest1 +30117)
+  because register choice couples to transient allocation, scratch borrowing,
+  and block-trace selection that only machine lowering sees (sourced).
+
+- 2026-07-12 (30aac662) measurement: lifting the entry argument-lane footprint
+  into the root region's lane floor pinned every cached resident above the
+  footprint function-wide (a six-parameter call-free function's eleven caches
+  shifted from lanes 0-10 to 6-16, +145 instructions from per-exit
+  preserved-register restores); the argument footprint is an entry-block
+  capacity concern, not a lane-placement floor (sourced).
+
+- 2026-07-12 (30aac662) measurement: a HARD volatile-first rule in the
+  rejected middle-side assigner (an unpreferred resident may never take a
+  preserved-suffix lane while a volatile lane is free) measured net-negative
+  (+58 on bzip2) — in a shuffle-dominated regime the region-entry move it
+  forces costs more than the preserved-lane save/restore it avoids; the
+  machine's shipped soft cost-based steering toward volatile lanes for
+  unpreferred residents is a different, retained mechanism (sourced).
+
+- 2026-07-12 (30aac662) pitfall: the cleanup pass that merges a single-
+  predecessor goto successor appends the successor's ops but keeps the
+  predecessor's entry-requirement row, so a slot the merged body write-firsts
+  stays classified Ensure instead of Reserve (code).
+
+- 2026-07-12 rationale: the merge staleness direction is provably Ensure-only
+  (the merge preserves the predecessor's classification and never manufactures
+  a Reserve), wasteful but never a dropped live value; deriving the published
+  signals after cleanup removes the staleness class entirely (code).
+
+- 2026-07-12 measurement: the binding-time preference matching at machine
+  lowering is load-bearing, not subsumed by the entry-layout pass —
+  neutralizing it (forcing the preference check true) regressed coremark by
+  +289 and lua by +1844 native instructions, because the entry layout places
+  only entry-resident caches while binding-time matching is what puts a
+  call-crossing MID-BLOCK cache into a preserved lane (sourced).
+
 ## Moves
 
 - 2026-04-06 (366923b2) replaced [[compact-lane-assignment]]: compacting each
@@ -62,3 +117,19 @@
   earlier-ordered local was added or dropped, causing avoidable cross-edge moves;
   assigning lanes top-down with sticky inheritance and leaving holes after drops
   keeps a shared local on the same lane across edges (code).
+
+- 2026-07-12 (30aac662) replaced [[middle-region-lanes]]: with identical
+  MachineIR op inventories and improved edge parallel-move counts the
+  pure-middle lane assignment still inflated native code because register
+  choice couples to transient allocation, scratch borrowing and trace
+  selection that only the machine sees; lane placement returned below LIR
+  while the structure-derived preference and requirement signals stayed in
+  the middle (code)
+
+- 2026-07-12 (30aac662) replaced [[machine-preference-dataflow]]: the
+  preserved-lane preference and the entry Ensure-versus-Reserve requirement
+  are pure functions of the final SSA and module facts, so the middle computes
+  them once over the final program and byte-identical output proves
+  equivalence; the machine's liveness dataflow and per-block requirement
+  re-scan are deleted, and only physical placement still needs machine context
+  (code)

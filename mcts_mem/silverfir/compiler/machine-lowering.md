@@ -50,6 +50,12 @@
   pass needing an instruction's full def set must use the for-each form that visits
   both halves (code).
 
+- 2026-07-12 (58927160) statement: the def-set enumeration behind the f1099cab and
+  22c1c30f pair-corruption pitfalls is now a single canonical visitor on the
+  instruction kind; the scalar single-register accessors and the three parallel
+  per-pass copies of the match were deleted, so the single-vs-pair def hazard can
+  no longer drift between passes (code).
+
 - 2026-03-13 (4ae8509d) pitfall: select takes (val1, val2, cond) and returns val1
   when cond is nonzero; the machine lowering had on_true and on_false bound to the
   wrong operands, inverting the selected value (code).

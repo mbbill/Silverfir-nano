@@ -170,6 +170,11 @@
   folding into operands is no longer disabled for `i64` ops on 32-bit GP targets
   (code).
 
+- 2026-07-12 (58927160) statement: the slot-only SSA lowering the 2026-04-28
+  (a50023c5) entry describes as demoted to `#[cfg(test)]` was fully deleted,
+  together with its now-vacuous block-count plan check; the test suite anchors
+  on the semantic CFG's block structure instead (code).
+
 ## Moves
 
 - 2026-03-12 (2ea0bb68) replaced [[two-stage-planning]]: the planning layer

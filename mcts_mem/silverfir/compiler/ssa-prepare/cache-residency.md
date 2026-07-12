@@ -31,10 +31,10 @@
   hot canonical locals are kept in separate GP and FP local-cache banks.
 
 - Canonical local accesses keep frame-slot identity throughout the middle-end;
-  the frontend emits only a preferred-slot ranking (a hint, not a storage kind),
-  and which fixed cache register mirrors which slot is decided at machine lowering
-  — register-cached locals are mirrors of their canonical slot homes, never
-  replacements for them.
+  the middle-end publishes exact per-block cached-slot rows (never storage
+  kinds), and which fixed cache register mirrors which slot is decided at
+  machine lowering — register-cached locals are mirrors of their canonical slot
+  homes, never replacements for them.
 
 ## Facts
 
@@ -145,6 +145,41 @@
   imprecise: the Apr-8 fix snapshotted from the cache registers, not the frame
   slot; only the non-cached `LocalGetSlot` path actually loads from the frame
   (code).
+
+- 2026-06-24 measurement: an ALGORITHM4 edge/call/trip policy sweep over
+  coremark, sha256, c-ray, and lua found that raising call tax to
+  `algorithm4:call=1.5` reduced final native instruction count on all four
+  modules versus the current default (unweighted average -1.027%, total
+  instructions -1.371%), while lowering call tax, removing call tax, removing
+  edge cost, and the tested edge multipliers all regressed final native code;
+  seven edge-policy cases improved middle metrics while worsening final native
+  instructions, so cache-residency tuning must rank by final disassembly rather
+  than SSA/MIR/cache-op counts (code).
+
+- 2026-06-24 measurement: the primal-final-extraction experiment (normal price
+  iterations, then recomputing final DPs with zero lambdas before feasible
+  extraction) tied lua but regressed coremark by 24 native instructions (+0.157%)
+  and sha256 by 8 (+0.049%), exactly matching the `simplify_no_prices` result on
+  the same corpus (code).
+
+- 2026-06-24 rationale: because primal final extraction and no-price extraction
+  produced the same final-code regressions on coremark and sha256, the current
+  dual-priced final extraction is not the first ALGORITHM4 component to simplify
+  or fix on this corpus (code).
+
+- 2026-06-24 measurement: removing ALGORITHM4 price iterations alone
+  (`simplify_no_prices`) was nearly neutral but not beneficial on coremark,
+  sha256, and lua — lua was unchanged, while coremark regressed by 24 native
+  instructions and sha256 by 8 — so final feasible extraction carries most of
+  the value on this small corpus but price iteration removal is not yet a safe
+  simplification (code).
+
+- 2026-07-12 statement: the named diagnostic residency policies behind the
+  2026-06-24 sweep facts (simplify_no_prices, simplify_no_edge_cost, the
+  diagnostic static/none policies) were retired from SF_CACHE_POLICY once the
+  experiment campaign concluded; the parameterized algorithm4 form
+  (trip/iters/edge/call) remains, so those dated sweep results are historical
+  record and no longer reproducible by policy name (code).
 
 ## Moves
 
