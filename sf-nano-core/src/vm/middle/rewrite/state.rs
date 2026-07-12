@@ -14,12 +14,15 @@ use tracked_alloc::collections::BTreeSet;
 use crate::{
     error::WasmError,
     value_type::ValueType,
-    vm::middle::{
-        budget::count_live_bank_budget_units,
-        discipline::{BankBudget, CapacityMode, DisciplineDriver, Window},
-        frame::{FrameLayoutPlan, FrameSlot},
-        joint_plan::TransientContract,
-        ssa_ir::ir::{SsaInst, SsaOperand, SsaValue},
+    vm::{
+        middle::{
+            budget::count_live_bank_budget_units,
+            discipline::{self, BankBudget, DisciplineDriver, Window},
+            frame::{FrameLayoutPlan, FrameSlot},
+            joint_plan::TransientContract,
+            ssa_ir::ir::{SsaInst, SsaOperand, SsaValue},
+        },
+        wasm::semantic_ir::SemanticOpKind,
     },
 };
 
@@ -243,7 +246,38 @@ impl BlockState {
 
     // -- Discipline transitions (engine-owned; emit driver realizes values) ---
 
-    /// Fill so at least `operand_count` values are live.
+    /// Apply one op's structural discipline (fill/spill/capacity/eviction)
+    /// through the shared engine dispatch — the same path pass D's exact walker
+    /// uses, so rewriter and walker cannot drift.
+    pub(super) fn apply_op_discipline(
+        &mut self,
+        op: &SemanticOpKind,
+        frame: FrameLayoutPlan,
+        resident: &mut BTreeSet<FrameSlot>,
+        local_slot_types: &[ValueType],
+        values: &mut ValueAlloc,
+    ) -> Result<(), WasmError> {
+        let budget = BankBudget {
+            gp_unit_bytes: self.gp_unit_bytes,
+            gp_live_budget: self.gp_live_budget,
+            fp_live_budget: self.fp_live_budget,
+        };
+        let Self {
+            window, live, ops, ..
+        } = self;
+        let mut driver = EmitDriver { live, ops, values };
+        discipline::apply_op_discipline(
+            op,
+            window,
+            &mut driver,
+            frame,
+            resident,
+            local_slot_types,
+            budget,
+        )
+    }
+
+    /// Fill so at least `operand_count` values are live (edge boundary publish).
     pub(super) fn fill_operands(
         &mut self,
         values: &mut ValueAlloc,
@@ -257,30 +291,7 @@ impl BlockState {
         window.fill(&mut driver, frame, operand_count);
     }
 
-    /// Spill every live transient.
-    pub(super) fn spill_all(&mut self, values: &mut ValueAlloc, frame: FrameLayoutPlan) {
-        let Self {
-            window, live, ops, ..
-        } = self;
-        let mut driver = EmitDriver { live, ops, values };
-        window.spill_all(&mut driver, frame);
-    }
-
-    /// Spill every live transient except the top `keep_top`.
-    pub(super) fn spill_except_top(
-        &mut self,
-        values: &mut ValueAlloc,
-        frame: FrameLayoutPlan,
-        keep_top: u16,
-    ) {
-        let Self {
-            window, live, ops, ..
-        } = self;
-        let mut driver = EmitDriver { live, ops, values };
-        window.spill_except_top(&mut driver, frame, keep_top);
-    }
-
-    /// Spill the bottom `count` live transients (boundary publish).
+    /// Spill the bottom `count` live transients (edge boundary publish).
     pub(super) fn spill_bottom(
         &mut self,
         values: &mut ValueAlloc,
@@ -292,60 +303,6 @@ impl BlockState {
         } = self;
         let mut driver = EmitDriver { live, ops, values };
         window.spill(&mut driver, frame, count);
-    }
-
-    /// Publish live transients below the top `consumed` call-operand suffix,
-    /// keeping that suffix live while spilling older values that cannot cross
-    /// the call boundary.
-    pub(super) fn spill_live_below_top(
-        &mut self,
-        values: &mut ValueAlloc,
-        frame: FrameLayoutPlan,
-        consumed: u16,
-    ) {
-        self.spill_except_top(values, frame, consumed);
-    }
-
-    /// Extra GP/FP budget needed to fill `operand_count` operands and push
-    /// `result_types` (see [`Window::required_capacity`]).
-    pub(super) fn required_capacity(
-        &self,
-        operand_count: u16,
-        result_types: &[ValueType],
-    ) -> (usize, usize) {
-        self.window
-            .required_capacity(operand_count, result_types, self.gp_unit_bytes)
-    }
-
-    /// Clamp the live window against the dynamic-bank budget, spilling then
-    /// evicting via the resident cache.
-    pub(super) fn ensure_capacity(
-        &mut self,
-        values: &mut ValueAlloc,
-        frame: FrameLayoutPlan,
-        mode: CapacityMode,
-        resident: &mut BTreeSet<FrameSlot>,
-        local_slot_types: &[ValueType],
-        extra: (usize, usize),
-    ) -> Result<(), WasmError> {
-        let budget = BankBudget {
-            gp_unit_bytes: self.gp_unit_bytes,
-            gp_live_budget: self.gp_live_budget,
-            fp_live_budget: self.fp_live_budget,
-        };
-        let Self {
-            window, live, ops, ..
-        } = self;
-        let mut driver = EmitDriver { live, ops, values };
-        window.ensure_capacity(
-            &mut driver,
-            frame,
-            mode,
-            resident,
-            local_slot_types,
-            budget,
-            extra,
-        )
     }
 
     pub(super) fn finish_call(

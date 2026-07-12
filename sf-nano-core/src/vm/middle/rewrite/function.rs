@@ -18,7 +18,7 @@ use crate::{
         middle::{
             budget::count_live_bank_budget_units,
             cfg::{CfgBlockId, SemanticCfg},
-            discipline::{self, CapacityMode, StructuralAction},
+            discipline,
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
                 init_locals::locals_reads_before_write, JointPlanner, LocalAccessDecision,
@@ -481,87 +481,9 @@ fn apply_inline_prefix(
     resident_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
-    if matches!(op, SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)) {
-        // `unreachable` traps; no structural prefix and no trailing capacity
-        // clamp (matching the old early return).
-        return Ok(());
-    }
-    match discipline::structural_action(op) {
-        StructuralAction::None => {}
-        StructuralAction::PrimitiveFill { pop, .. } => {
-            // Ensure capacity BEFORE filling operands — the fill must not be
-            // undone by a subsequent spill, since operands are consumed
-            // immediately. Reserve room for the filled operands and for any
-            // positive per-bank delta the op's results add.
-            let result_types = emit_result_types(op, local_slot_types);
-            let extra = state.required_capacity(pop, &result_types);
-            state.ensure_capacity(
-                values,
-                frame,
-                CapacityMode::On,
-                resident_cache,
-                local_slot_types,
-                extra,
-            )?;
-            state.fill_operands(values, frame, pop);
-        }
-        StructuralAction::FillKeepSpillRest(keep) => {
-            state.fill_operands(values, frame, keep);
-            state.spill_except_top(values, frame, keep);
-        }
-        StructuralAction::SpillAll => state.spill_all(values, frame),
-        StructuralAction::PrepareCall { params } => {
-            state.spill_live_below_top(values, frame, params);
-        }
-        StructuralAction::ReturnScalar => {
-            state.fill_operands(values, frame, 1);
-            state.spill_except_top(values, frame, 1);
-        }
-        // `else` is a control-flow boundary the semantic CFG already accounts
-        // for; the rewriter emits no fill for it.
-        StructuralAction::ElsePlannerFill => {}
-    }
-    // Trailing capacity clamp: if live transients + cached locals still exceed
-    // the budget, spill the bottom transient (then evict) until it fits.
-    state.ensure_capacity(
-        values,
-        frame,
-        CapacityMode::On,
-        resident_cache,
-        local_slot_types,
-        (0, 0),
-    )?;
-    Ok(())
-}
-
-/// The types the emit-side capacity reservation charges for an op's pushed
-/// results: primitive result type(s), or the accessed local's type for
-/// `local.get` / `local.tee`, or none for `local.set`.
-fn emit_result_types(
-    op: &SemanticOpKind,
-    local_slot_types: &[ValueType],
-) -> collections::Vec<ValueType> {
-    let local_ty = |idx: u16| {
-        local_slot_types
-            .get(idx as usize)
-            .copied()
-            .unwrap_or(ValueType::I64)
-    };
-    match op {
-        SemanticOpKind::Primitive(kind) => {
-            let (_pop, push) = primitive_op::stack_effect(kind);
-            if push == 0 {
-                collections::Vec::new()
-            } else {
-                let result_ty = primitive_op::result_type(kind).unwrap_or(ValueType::I64);
-                collections::vec![result_ty; push]
-            }
-        }
-        SemanticOpKind::LocalGet { idx } | SemanticOpKind::LocalTee { idx } => {
-            collections::vec![local_ty(*idx)]
-        }
-        _ => collections::Vec::new(),
-    }
+    // Route through the shared engine dispatch — the exact same path pass D's
+    // measure walker uses, so the rewriter and the walker cannot drift.
+    state.apply_op_discipline(op, frame, resident_cache, local_slot_types, values)
 }
 
 fn lower_block_body_op(

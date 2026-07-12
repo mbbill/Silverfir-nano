@@ -550,3 +550,98 @@ pub(crate) fn count_cached_local_budget_units(
     }
     (gp, fp)
 }
+
+/// Apply one op's structural discipline in the rewriter's clamp-On sequence,
+/// driven entirely through the engine. Both the rewriter (emit driver) and the
+/// exact-simulation walker (measure driver) call THIS ONE function, so their
+/// per-op fill/spill/capacity/eviction can never drift.
+///
+/// `unreachable` is skipped whole (no prefix, no trailing clamp), matching the
+/// rewriter's early return. Every other op runs its structural action followed
+/// by a trailing capacity clamp.
+pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
+    op: &SemanticOpKind,
+    window: &mut Window,
+    driver: &mut D,
+    frame: FrameLayoutPlan,
+    resident: &mut BTreeSet<FrameSlot>,
+    local_slot_types: &[ValueType],
+    budget: BankBudget,
+) -> Result<(), WasmError> {
+    if matches!(op, SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)) {
+        return Ok(());
+    }
+    match structural_action(op) {
+        StructuralAction::None => {}
+        StructuralAction::PrimitiveFill { pop, .. } => {
+            // Ensure capacity BEFORE filling (the fill must not be undone by a
+            // subsequent spill), reserving room for the pushed results.
+            let result_types = emit_result_types(op, local_slot_types);
+            let extra = window.required_capacity(pop, &result_types, budget.gp_unit_bytes);
+            window.ensure_capacity(
+                driver,
+                frame,
+                CapacityMode::On,
+                resident,
+                local_slot_types,
+                budget,
+                extra,
+            )?;
+            window.fill(driver, frame, pop);
+        }
+        StructuralAction::FillKeepSpillRest(keep) => {
+            window.fill(driver, frame, keep);
+            window.spill_except_top(driver, frame, keep);
+        }
+        StructuralAction::SpillAll => window.spill_all(driver, frame),
+        // Publish live values below the top `params` call-arg suffix.
+        StructuralAction::PrepareCall { params } => {
+            window.spill_except_top(driver, frame, params);
+        }
+        StructuralAction::ReturnScalar => {
+            window.fill(driver, frame, 1);
+            window.spill_except_top(driver, frame, 1);
+        }
+        StructuralAction::ElsePlannerFill => {}
+    }
+    window.ensure_capacity(
+        driver,
+        frame,
+        CapacityMode::On,
+        resident,
+        local_slot_types,
+        budget,
+        (0, 0),
+    )?;
+    Ok(())
+}
+
+/// Result types the emit-side capacity reservation charges for an op's pushed
+/// results: primitive result type(s), or the accessed local's type for
+/// `local.get` / `local.tee`, or none otherwise.
+fn emit_result_types(
+    op: &SemanticOpKind,
+    local_slot_types: &[ValueType],
+) -> collections::Vec<ValueType> {
+    let local_ty = |idx: u16| {
+        local_slot_types
+            .get(idx as usize)
+            .copied()
+            .unwrap_or(ValueType::I64)
+    };
+    match op {
+        SemanticOpKind::Primitive(kind) => {
+            let (_pop, push) = primitive_op::stack_effect(kind);
+            if push == 0 {
+                collections::Vec::new()
+            } else {
+                let result_ty = primitive_op::result_type(kind).unwrap_or(ValueType::I64);
+                collections::vec![result_ty; push]
+            }
+        }
+        SemanticOpKind::LocalGet { idx } | SemanticOpKind::LocalTee { idx } => {
+            collections::vec![local_ty(*idx)]
+        }
+        _ => collections::Vec::new(),
+    }
+}
