@@ -49,6 +49,6 @@ fn transient_contract(entry: &EntryState) -> TransientContract<'_> {
     TransientContract {
         stack_height: entry.stack_height,
         spill_depth: entry.spill_depth,
-        live_types: &entry.live_types,
+        live_types: entry.live_types(),
     }
 }

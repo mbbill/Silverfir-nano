@@ -6,8 +6,8 @@ use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind
 
 use super::helpers::{
     block_for_semantic_index, count_ensure_cache, first_local_get_for, i32_program,
-    incoming_cache_repair_blocks, loop_body_block, loop_header_block, op, plan_i32_program,
-    prepare_i32_program, prim, target,
+    incoming_cache_repair_blocks, loop_body_block, loop_header_block, natural_loop_blocks, op,
+    plan_i32_program, prepare_i32_program, prim, target,
 };
 
 #[test]
@@ -331,45 +331,42 @@ fn loop_interior_state_blocks_keep_hot_locals_for_later_dispatch_bodies() {
         ],
     );
 
-    let pipeline = plan_i32_program(&semantic, 4, 0);
     let prepared = prepare_i32_program(&semantic, 4, 0);
     let slot0 = prepared.frame.local_slot(0);
     let slot1 = prepared.frame.local_slot(1);
-    let state_block_cfg = block_for_semantic_index(&pipeline.cfg, 14);
-    let dispatch_block_cfg = block_for_semantic_index(&pipeline.cfg, 16);
-    let state_block = loop_header_block(&prepared.ssa);
-    let dispatch_block = loop_body_block(&prepared.ssa);
-    let state_entry = &pipeline.planner.block_open(state_block_cfg).cached_locals;
-    let dispatch_entry = &pipeline
-        .planner
-        .block_open(dispatch_block_cfg)
-        .cached_locals;
-    let state_ssa_block = &prepared.ssa.blocks[state_block];
-    let dispatch_repairs = incoming_cache_repair_blocks(&prepared.ssa, dispatch_block);
+    let header = loop_header_block(&prepared.ssa);
+    let loop_blocks = natural_loop_blocks(&prepared.ssa);
 
+    // Positive property: the hot loop-carried data locals are admitted to the
+    // loop-entry boundary in the first place.
     assert!(
-        state_entry.contains(&slot0)
-            && state_entry.contains(&slot1)
-            && dispatch_entry.contains(&slot0)
-            && dispatch_entry.contains(&slot1),
-        "hot loop-carried data locals should stay cached through the interior state-only chain; state_entry={state_entry:?}, dispatch_entry={dispatch_entry:?}",
+        prepared.ssa.block_entry_cached_slots[header].contains(&slot0)
+            && prepared.ssa.block_entry_cached_slots[header].contains(&slot1),
+        "hot loop-carried data locals should be cached at the loop-header entry; entries={:?}",
+        prepared.ssa.block_entry_cached_slots,
     );
-    assert!(
-        state_ssa_block.ops.iter().all(|inst| {
-            !(inst.op == SsaOp::LOCAL_DROP_CACHE
-                && (FrameSlot(inst.meta) == slot0 || FrameSlot(inst.meta) == slot1))
-        }),
-        "the interior pass-through state block should not drop the hot loop locals; block={state_ssa_block:?}"
-    );
-    assert!(
-        dispatch_repairs.iter().all(|block| {
+
+    // Whole-loop-body property (subsumes the old two-block checks): no block
+    // inside the loop drops a hot data local, and no block re-ensures a slot it
+    // already holds at entry — so the interior state/dispatch chain is a true
+    // pass-through and later bodies never repair the hot locals back in.
+    for &block_index in &loop_blocks {
+        let block = &prepared.ssa.blocks[block_index];
+        assert!(
             block.ops.iter().all(|inst| {
-                !(inst.op == SsaOp::LOCAL_ENSURE_CACHE
+                !(inst.op == SsaOp::LOCAL_DROP_CACHE
                     && (FrameSlot(inst.meta) == slot0 || FrameSlot(inst.meta) == slot1))
-            })
-        }),
-        "the dispatch block should not need to re-ensure the hot locals after the interior state block; repair_blocks={dispatch_repairs:?}",
-    );
+            }),
+            "no interior loop block should drop the hot loop-carried locals; block b{block_index}={block:?}"
+        );
+        let entry = &prepared.ssa.block_entry_cached_slots[block_index];
+        assert!(
+            block.ops.iter().all(|inst| {
+                !(inst.op == SsaOp::LOCAL_ENSURE_CACHE && entry.contains(&FrameSlot(inst.meta)))
+            }),
+            "no loop block should re-ensure a slot already cached at its entry; block b{block_index}={block:?}, entry={entry:?}"
+        );
+    }
 }
 
 #[test]

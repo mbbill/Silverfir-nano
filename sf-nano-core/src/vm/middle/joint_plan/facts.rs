@@ -11,8 +11,17 @@ pub(crate) struct EntryState {
     pub spill_depth: u16,
     /// Full semantic stack typing at this program point, from bottom to top.
     pub stack_types: collections::Vec<ValueType>,
-    /// Rewrite-facing resident suffix.
-    pub live_types: collections::Vec<ValueType>,
+}
+
+impl EntryState {
+    /// Rewrite-facing resident suffix: the live values above the spilled
+    /// prefix. This is exactly `stack_types[spill_depth..]`; the materialized
+    /// field it replaces was always that slice, given the construction-time
+    /// invariant `stack_types.len() == stack_height`.
+    #[inline]
+    pub(crate) fn live_types(&self) -> &[ValueType] {
+        &self.stack_types[self.spill_depth as usize..]
+    }
 }
 
 /// Compact per-block local summary retained for the public-cache solver.

@@ -620,12 +620,18 @@ pub(crate) fn compute_lightweight_plan(
         if is_block_start {
             // Capture block entry state with full stack_types for spilled value fills.
             let spill = state.spill_depth.min(state.height);
-            let live_count = state.height.saturating_sub(spill);
+            // Invariant that keeps `EntryState::live_types()` (the slice view
+            // `stack_types[spill_depth..]`) exact: the type stack is exactly as
+            // tall as the height.
+            debug_assert_eq!(
+                state.type_stack.len(),
+                state.height as usize,
+                "block-entry type stack length must equal stack height"
+            );
             block_entries[block_index] = EntryState {
                 stack_height: state.height,
                 spill_depth: spill,
                 stack_types: state.type_stack.clone(),
-                live_types: state.types_at(spill, live_count),
             };
         }
 

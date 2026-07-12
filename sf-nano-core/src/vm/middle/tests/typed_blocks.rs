@@ -221,7 +221,7 @@ fn structured_branch_target_keeps_exact_transient_entry_at_end_block_open() {
         "block_open must not change the structural transient contract at an End-start join block",
     );
     assert!(
-        join_entry.live_types.is_empty(),
+        join_entry.live_types().is_empty(),
         "the End-start join block should not request live transient values at the boundary",
     );
 }

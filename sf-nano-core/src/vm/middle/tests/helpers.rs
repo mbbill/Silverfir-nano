@@ -331,6 +331,17 @@ pub(super) fn loop_body_block(program: &SsaProgram) -> usize {
     body.expect("loop header should have one in-loop successor block")
 }
 
+/// The natural loop of the (unique) loop header: every block the header reaches
+/// that can also reach the header again. Reachability-based so it does not
+/// assume the final SSA keeps blocks in execution order (it does not — rewrite
+/// appends repair/preheader blocks at higher indices than the blocks they feed).
+pub(super) fn natural_loop_blocks(program: &SsaProgram) -> collections::Vec<usize> {
+    let header = loop_header_block(program);
+    (0..program.blocks.len())
+        .filter(|&block| can_reach(program, header, block) && can_reach(program, block, header))
+        .collect()
+}
+
 /// Whether `target` is reachable from `from` following control-flow edges.
 fn can_reach(program: &SsaProgram, from: usize, target: usize) -> bool {
     let mut seen = collections::vec![false; program.blocks.len()];
