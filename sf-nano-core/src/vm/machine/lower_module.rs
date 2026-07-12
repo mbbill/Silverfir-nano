@@ -45,7 +45,7 @@ use crate::{
 use super::{
     call_abi::{collect_preserved_clobbers, INDIRECT_DISPATCH_CONTROL_GP_LANES},
     gp32::Gp32Lowering,
-    lower_cache_layout::{compute_block_entry_cache_params, compute_local_call_cache_preferences},
+    lower_cache_layout::{compute_block_entry_cache_params, promote_preferred_preserved},
     lower_const_pool::ConstPoolBuilder,
     lower_context::{
         explicit_cached_locals, BlockLowerContext, CachedLocal, EntryCacheParam, ValueRegs,
@@ -424,13 +424,8 @@ fn lower_function(
     let current_abi = runtime
         .get(input.id.0 as usize)
         .ok_or_else(|| WasmError::internal("runtime metadata missing for current function"))?;
-    let call_preserved_cache_candidates = compute_local_call_cache_preferences(
-        &input.ssa,
-        &explicit_cache,
-        is_local_func,
-        table_dispatch_modes,
-        u16::from(config.preserved_cache_min_local_call_crosses),
-    );
+    // The machine owns the physical lane layout again; the plan hands it only the
+    // context-free preference (per local slot) + the per-entry requirement rows.
     let entry_cache_params = compute_block_entry_cache_params(
         regfile,
         &input.ssa,
@@ -438,7 +433,13 @@ fn lower_function(
         gp_reg_width,
         is_local_func,
         table_dispatch_modes,
+        &input.ssa.preferred_preserved,
     )?;
+    let call_preserved_cache_candidates = promote_preferred_preserved(
+        &explicit_cache,
+        &input.ssa.preferred_preserved,
+        input.ssa.blocks.len(),
+    );
     let block_entry_cache_dirty = compute_block_entry_cache_dirty(
         &input.ssa,
         &explicit_cache,

@@ -23,8 +23,8 @@ use crate::{
         },
         middle::frame::{FrameSlot, FrameSpan},
         middle::ssa_ir::ir::{
-            DecodedOperand, SsaBinding, SsaBlock, SsaCallOp, SsaInst, SsaInstView, SsaOperand,
-            SsaProgram, SsaTerminator,
+            DecodedOperand, EntryCacheRequirement, SsaBinding, SsaBlock, SsaCallOp, SsaInst,
+            SsaInstView, SsaOperand, SsaProgram, SsaTerminator,
         },
     },
 };
@@ -255,7 +255,12 @@ fn render_lir_program(out: &mut String, program: &SsaProgram) {
             .get(block.id.0 as usize)
             .cloned()
             .unwrap_or_default();
-        render_lir_block(out, block, &cached, program);
+        let cached_reqs = program
+            .block_entry_cache_requirements
+            .get(block.id.0 as usize)
+            .cloned()
+            .unwrap_or_default();
+        render_lir_block(out, block, &cached, &cached_reqs, program);
     }
 }
 
@@ -295,10 +300,21 @@ fn render_param_locs(out: &mut String, locs: &[MachineParamLoc]) {
     let _ = write!(out, "]");
 }
 
+/// Render one cached-slot token for the `cached=[...]` block header. The leading
+/// `fp[slot]` token is preserved (the native-dump pressure classifier keys GP/FP
+/// off it); the middle's entry requirement is appended as `?` for a `Reserve`
+/// (write-first, no incoming value) entry — `Ensure` adds nothing. The machine
+/// owns the physical lane, so no lane is shown here.
+fn render_cached_slot(slot: FrameSlot, requirement: Option<EntryCacheRequirement>) -> String {
+    let reserve = matches!(requirement, Some(EntryCacheRequirement::Reserve));
+    format!("fp[{}]{}", slot.0, if reserve { "?" } else { "" })
+}
+
 fn render_lir_block(
     out: &mut String,
     block: &SsaBlock,
     cached: &[FrameSlot],
+    cached_reqs: &[EntryCacheRequirement],
     program: &SsaProgram,
 ) {
     if cached.is_empty() {
@@ -326,7 +342,8 @@ fn render_lir_block(
                 .join(", "),
             cached
                 .iter()
-                .map(|s| format!("fp[{}]", s.0))
+                .enumerate()
+                .map(|(i, s)| render_cached_slot(*s, cached_reqs.get(i).copied()))
                 .collect::<collections::Vec<_>>()
                 .join(", ")
         );

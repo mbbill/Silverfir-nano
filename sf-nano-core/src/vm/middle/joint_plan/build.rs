@@ -67,7 +67,7 @@ pub(crate) fn build_plan(
     let block_local_summaries = analyze_block_local_summaries(semantic, cfg, frame);
 
     let policy = ResidencyPolicy::from_env()?;
-    let block_entry_cached_locals = solve_public_cache_sets(
+    let solution = solve_public_cache_sets(
         semantic,
         cfg,
         config.gp_unit_bytes,
@@ -78,6 +78,7 @@ pub(crate) fn build_plan(
         &block_local_summaries,
         policy,
     );
+    let block_entry_cached_locals = &solution;
     let LightweightPlanOutput {
         peak_gp: _,
         peak_fp: _,
@@ -119,7 +120,10 @@ pub(crate) fn build_plan(
         repair_index_arena: collections::Vec::new(),
     };
 
-    // Pass D: exact per-block cache boundaries + per-edge repair actions.
+    // Pass D: exact per-block cache boundaries + per-edge repair actions. The
+    // machine-facing requirement + preferred-preserved rows are NOT derived here;
+    // they are computed over the FINAL SSA in `middle::final_signals` (a
+    // pre-cleanup classification cannot see block merges).
     exact::compute_exact_plan(semantic, cfg, frame, config, &mut plan)?;
 
     Ok(plan)

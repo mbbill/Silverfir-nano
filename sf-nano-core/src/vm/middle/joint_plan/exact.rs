@@ -89,8 +89,11 @@ pub(crate) fn compute_exact_plan(
     // Phase 1 — walk each block into the flat row arena. Its exact entry/exit
     // slots accumulate in `row_arena`; the block records only an (offset, len)
     // span. The per-entry requirement (the edge pass's first-use classification)
-    // lands in a transient parallel arena, dropped after phase 2. Scratch
-    // buffers are reused across blocks, not reallocated per block.
+    // lands in a transient parallel arena feeding the repair derivation below;
+    // both are dropped after phase 2. Scratch buffers are reused across blocks,
+    // not reallocated per block. The machine-facing requirement + preferred rows
+    // are derived later over the FINAL SSA (see `middle::final_signals`), not
+    // here — a pre-cleanup classification cannot see block merges.
     let mut row_arena: collections::Vec<FrameSlot> = collections::Vec::new();
     let mut requirement_arena: collections::Vec<EntryCacheRequirement> = collections::Vec::new();
     let mut entry_spans: collections::Vec<RowSpan> = collections::Vec::with_capacity(n);
@@ -187,6 +190,9 @@ pub(crate) fn compute_exact_plan(
     plan.repair_index_arena = repair_index_arena;
     plan.repair_pool = repair_pool;
     plan.repair_slot_arena = repair_slot_arena;
+    // `requirement_arena`/`req_spans` were consumed by the repair derivation
+    // above and drop here — the machine-facing requirement rows are derived from
+    // the FINAL SSA in `middle::final_signals`, not exported from the plan.
     Ok(())
 }
 
@@ -416,29 +422,33 @@ fn walk_block(
             }
             SemanticOpKind::CallDirect {
                 params, results, ..
-            } => call_effect(
-                *params,
-                *results,
-                call_result_types(semantic, semantic_index),
-                config,
-                &mut window,
-                &mut resident,
-                events,
-            ),
+            } => {
+                events.push(CacheEvent::Call);
+                call_effect(
+                    *params,
+                    *results,
+                    call_result_types(semantic, semantic_index),
+                    config,
+                    &mut window,
+                    &mut resident,
+                );
+            }
             SemanticOpKind::CallIndirect {
                 params, results, ..
             }
             | SemanticOpKind::CallRef {
                 params, results, ..
-            } => call_effect(
-                params.saturating_add(1),
-                *results,
-                call_result_types(semantic, semantic_index),
-                config,
-                &mut window,
-                &mut resident,
-                events,
-            ),
+            } => {
+                events.push(CacheEvent::Call);
+                call_effect(
+                    params.saturating_add(1),
+                    *results,
+                    call_result_types(semantic, semantic_index),
+                    config,
+                    &mut window,
+                    &mut resident,
+                );
+            }
             // Control / branch / return / tail-call ops: the structural prefix
             // already ran; they emit no cached-local op and their stack effect
             // is unobservable at the block boundary.
@@ -543,8 +553,9 @@ fn primitive_effect(
     }
 }
 
-/// Apply a call's boundary effect, mirroring `lower_call_*`: record the CALL
-/// event, run the engine's call finish, and clear the resident cache.
+/// Apply a call's boundary effect, mirroring `lower_call_*`: run the engine's
+/// call finish and clear the resident cache. (The CALL event is recorded by the
+/// caller so the too-many-arguments budget stays clear.)
 fn call_effect(
     consumed: u16,
     results: u16,
@@ -552,9 +563,7 @@ fn call_effect(
     config: BackendConfig,
     window: &mut Window,
     resident: &mut BTreeSet<FrameSlot>,
-    events: &mut collections::Vec<CacheEvent>,
 ) {
-    events.push(CacheEvent::Call);
     let mut noemit = NoEmit;
     match walker_live_scalar(config, results, result_types) {
         Some(ty) => window.finish_call_scalar(&mut noemit, consumed, SsaValue::NONE, ty),

@@ -49,7 +49,6 @@ pub(super) struct MachineRegFile {
     fp_volatile_count: usize,
     fp_preserved_count: usize,
     gp_arg_lane_count: usize,
-    preserved_cache_min_local_call_crosses: u16,
     first_fp_reg: u16,
     reg_count: u16,
 }
@@ -82,9 +81,6 @@ impl MachineRegFile {
             fp_volatile_count: usize::from(config.fp_volatile_dynamic),
             fp_preserved_count: usize::from(config.fp_preserved_dynamic),
             gp_arg_lane_count,
-            preserved_cache_min_local_call_crosses: u16::from(
-                config.preserved_cache_min_local_call_crosses,
-            ),
             first_fp_reg,
             reg_count: next,
         })
@@ -140,11 +136,6 @@ impl MachineRegFile {
     #[inline]
     pub(super) fn gp_arg_lane_count(&self) -> usize {
         self.gp_arg_lane_count
-    }
-
-    #[inline]
-    pub(super) fn preserved_cache_min_local_call_crosses(&self) -> u16 {
-        self.preserved_cache_min_local_call_crosses
     }
 
     #[inline]
@@ -1505,6 +1496,8 @@ mod tests {
             result_types: collections::Vec::new(),
             local_slot_info: collections::Vec::new(),
             block_entry_cached_slots: collections::vec![collections::vec![]],
+            block_entry_cache_requirements: collections::vec![collections::vec![]],
+            preferred_preserved: collections::Vec::new(),
             value_types,
             value_sink_local: collections::vec![],
             const_pool: collections::Vec::new(),
@@ -1525,6 +1518,7 @@ mod tests {
                 program,
                 explicit_cache,
                 4,
+                &[],
                 &[],
                 &[],
             )

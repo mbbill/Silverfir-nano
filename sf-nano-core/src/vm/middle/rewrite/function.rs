@@ -26,9 +26,9 @@ use crate::{
             },
             ssa_ir::{
                 ir::{
-                    LocalSlotInfo, SsaBinding, SsaBlock, SsaCallArgs, SsaCallLiveArg, SsaCallOp,
-                    SsaCallOperandLoc, SsaEdge, SsaInst, SsaOp, SsaOperand, SsaProgram,
-                    SsaScalarResultLoc, SsaTerminator, SsaValue,
+                    EntryCacheRequirement, LocalSlotInfo, SsaBinding, SsaBlock, SsaCallArgs,
+                    SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInst, SsaOp,
+                    SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator, SsaValue,
                 },
                 target::SsaTarget,
             },
@@ -149,6 +149,8 @@ pub(crate) fn rewrite_function(
             result_types,
             local_slot_info,
             block_entry_cached_slots: collections::Vec::new(),
+            block_entry_cache_requirements: collections::Vec::new(),
+            preferred_preserved: collections::Vec::new(),
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
             const_pool: collections::Vec::new(),
@@ -172,9 +174,11 @@ pub(crate) fn rewrite_function(
     let mut builder = ProgramBuilder::default();
     let mut blocks = collections::Vec::with_capacity(original_block_count);
     let mut block_entry_cached_slots = collections::Vec::with_capacity(original_block_count);
+    let mut block_entry_cache_requirements = collections::Vec::with_capacity(original_block_count);
     let mut block_exit_cached_slots = collections::Vec::with_capacity(original_block_count);
     let mut extra_blocks = collections::Vec::new();
     let mut extra_block_cached_slots = collections::Vec::new();
+    let mut extra_block_cache_requirements = collections::Vec::new();
     let mut extra_block_exit_cached_slots = collections::Vec::new();
     for (block_index, cfg_block) in cfg.blocks.iter().enumerate() {
         let block_entry = planner.block_open(cfg_block.id);
@@ -219,7 +223,15 @@ pub(crate) fn rewrite_function(
             planner.exact_exit(cfg_block.id),
             "block {block_index}: lowered exit cache set diverged from the authoritative plan",
         );
-        block_entry_cached_slots.push(planner.exact_entry(cfg_block.id).to_vec().into());
+        let entry_slots = planner.exact_entry(cfg_block.id);
+        // The requirement row is a parallel placeholder here; it is finalized in
+        // `prepare_function` by scanning the FINAL (post-cleanup) block ops, which
+        // is the only faithful view once merges fold blocks together. We keep it
+        // 1:1 with the entry set through cleanup so the parallel-row invariant
+        // (cleanup's re-index, validate's length check) holds.
+        block_entry_cache_requirements
+            .push(collections::vec![EntryCacheRequirement::Ensure; entry_slots.len()]);
+        block_entry_cached_slots.push(entry_slots.to_vec().into());
         block_exit_cached_slots.push(planner.exact_exit(cfg_block.id).to_vec().into());
         let mut block = SsaBlock {
             id: SsaTarget(block_index as u32),
@@ -230,6 +242,13 @@ pub(crate) fn rewrite_function(
         };
         shrink_ssa_block_storage(&mut block);
         blocks.push(block);
+        // Bridge blocks (br_if canonical payload) thread the origin block's live
+        // cache; each threaded cache arrives materialized, so its requirement is
+        // Ensure. The machine assigns the physical lane.
+        for bridge_slots in &lowered.extra_block_cached_slots {
+            extra_block_cache_requirements
+                .push(collections::vec![EntryCacheRequirement::Ensure; bridge_slots.len()]);
+        }
         extra_block_cached_slots.extend(lowered.extra_block_cached_slots);
         extra_block_exit_cached_slots.extend(lowered.extra_block_exit_cached_slots);
         for mut block in lowered.extra_blocks {
@@ -241,6 +260,8 @@ pub(crate) fn rewrite_function(
     blocks.extend(extra_blocks);
     block_entry_cached_slots.reserve_exact(extra_block_cached_slots.len());
     block_entry_cached_slots.extend(extra_block_cached_slots);
+    block_entry_cache_requirements.reserve_exact(extra_block_cache_requirements.len());
+    block_entry_cache_requirements.extend(extra_block_cache_requirements);
     block_exit_cached_slots.reserve_exact(extra_block_exit_cached_slots.len());
     block_exit_cached_slots.extend(extra_block_exit_cached_slots);
 
@@ -256,6 +277,10 @@ pub(crate) fn rewrite_function(
         result_types,
         local_slot_info,
         block_entry_cached_slots,
+        block_entry_cache_requirements,
+        // Finalized in `prepare_function` over the FINAL SSA (the literal 2c2e010
+        // cross-count dataflow); empty here.
+        preferred_preserved: collections::Vec::new(),
         blocks,
         value_types: values.take_types(),
         value_sink_local: collections::Vec::new(),
@@ -296,12 +321,18 @@ pub(crate) fn rewrite_function(
     drop(planner);
     drop(block_exit_cached_slots);
     // Structural standing guard: the block vector and its parallel entry-cache
-    // row vector stay in lockstep, and every block id is its own index. A
-    // bridge or repair block pushed without its cache row would desync these.
+    // row + requirement-row vectors stay in lockstep, and every block id is its
+    // own index. A bridge or repair block pushed without its cache rows would
+    // desync these.
     debug_assert_eq!(
         program.blocks.len(),
         program.block_entry_cached_slots.len(),
         "block vector and entry-cache-row vector desynced after repair insertion",
+    );
+    debug_assert_eq!(
+        program.blocks.len(),
+        program.block_entry_cache_requirements.len(),
+        "block vector and entry-cache-requirement-row vector desynced after repair insertion",
     );
     debug_assert!(
         program

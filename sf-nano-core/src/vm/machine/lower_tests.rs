@@ -23,9 +23,9 @@ use crate::vm::{
         frame::{plan_frame_layout, FrameSpan},
         ssa_ir::{
             ir::{
-                LocalSlotInfo, SsaBinding, SsaBlock, SsaCallArgs, SsaCallLiveArg, SsaCallOp,
-                SsaCallOperandLoc, SsaEdge, SsaInst, SsaOperand, SsaProgram, SsaTerminator,
-                SsaValue,
+                entry_cache_requirement_from_ops, EntryCacheRequirement, LocalSlotInfo, SsaBinding,
+                SsaBlock, SsaCallArgs, SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge,
+                SsaInst, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
             },
             target::SsaTarget,
         },
@@ -85,6 +85,33 @@ fn host_backend_config_with_preserved(
     );
     config.preserved_cache_min_local_call_crosses = 2;
     config
+}
+
+/// Fill `block_entry_cache_requirements` (parallel to `block_entry_cached_slots`,
+/// derived from each block's first-use ops) and `preferred_preserved` (none
+/// preferred) for a machine test that builds its own SSA. The machine computes
+/// the physical lane layout itself; tests needing a preserved cache set the
+/// slot's `preferred_preserved` flag explicitly instead.
+fn set_default_entry_cache_metadata(ssa: &mut SsaProgram) {
+    let requirements: collections::Vec<collections::Vec<EntryCacheRequirement>> = ssa
+        .block_entry_cached_slots
+        .iter()
+        .enumerate()
+        .map(|(block_index, slots)| {
+            let block = ssa.blocks.get(block_index);
+            slots
+                .iter()
+                .map(|&slot| {
+                    match block.and_then(|b| entry_cache_requirement_from_ops(&b.ops, slot)) {
+                        Some(EntryCacheRequirement::Reserve) => EntryCacheRequirement::Reserve,
+                        _ => EntryCacheRequirement::Ensure,
+                    }
+                })
+                .collect()
+        })
+        .collect();
+    ssa.block_entry_cache_requirements = requirements;
+    ssa.preferred_preserved = collections::vec![false; ssa.local_slot_types.len()];
 }
 
 fn gp32_backend_config(
@@ -176,6 +203,7 @@ fn lowers_simple_slot_and_add_block() {
             .ops
             .push(SsaInst::local_set_slot(frame.local_slot(0), SsaValue(2)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -314,6 +342,7 @@ fn lowers_select_with_wasm_operand_order() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -596,6 +625,7 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
             },
         };
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -774,6 +804,7 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
             terminator: SsaTerminator::Return { results: None },
         };
         ssa.blocks.push(__blk1);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -834,6 +865,7 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
             terminator: SsaTerminator::Return { results: None },
         };
         ssa.blocks.push(__blk1);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -957,6 +989,7 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1017,6 +1050,7 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
             .push(SsaInst::spill(frame.operand_slot(0), SsaValue(0)));
         __blk0.ops.push(SsaInst::local_reserve_cache(slot));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1095,6 +1129,7 @@ fn gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate() {
         __blk0.ops.push(SsaInst::local_set_slot(slot, SsaValue(0)));
         __blk0.ops.push(SsaInst::local_reserve_cache(slot));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1153,6 +1188,7 @@ fn gp32_i64_local_get_set_cache_same_slot_emits_no_self_moves() {
         __blk0.ops.push(SsaInst::local_get_cache(slot, SsaValue(0)));
         __blk0.ops.push(SsaInst::local_set_cache(slot, SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1232,6 +1268,7 @@ fn gp32_i64_local_set_cache_materializes_live_pair_alias_before_overwrite() {
             .push(SsaInst::local_set_cache(slot0, SsaValue(1)));
         __blk0.ops.push(SsaInst::local_set_slot(slot1, SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1340,6 +1377,7 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1452,6 +1490,7 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1601,6 +1640,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             .ops
             .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(1)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1686,6 +1726,7 @@ fn local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free() 
             .ops
             .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1752,6 +1793,7 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
             .ops
             .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1812,6 +1854,7 @@ fn lowers_call_runtime_through_frame_metadata_without_helper_scratch() {
             __blk0.ops.push(SsaInst::call(__idx));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1878,6 +1921,7 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
             .ops
             .push(SsaInst::local_set_slot(frame.local_slot(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -1956,6 +2000,7 @@ fn flushes_and_reloads_cached_locals_around_call_runtime() {
             __blk0.ops.push(SsaInst::call(__idx));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -2041,6 +2086,7 @@ fn skips_dead_cached_local_reload_after_direct_runtime_call() {
             __blk0.ops.push(SsaInst::call(__idx));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -2116,6 +2162,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             __blk0.ops.push(SsaInst::call(__idx));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -2523,6 +2570,10 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
             [SsaOperand::value(SsaValue(2)), SsaOperand::NONE],
             0,
         ));
+        // Pass D flags this call-crossing local preferred-preserved (function-wide
+        // cross-count). The machine places the mid-block cache in a preserved
+        // (callee-saved) register and keeps it live across the calls.
+        caller.preferred_preserved = collections::vec![true];
         caller.blocks.push(block);
         caller
     };
@@ -2628,6 +2679,7 @@ fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_availabl
             reads_before_write: true,
         }];
         caller.block_entry_cached_slots = collections::vec![];
+        caller.preferred_preserved = collections::vec![true];
         caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         caller.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
@@ -2769,6 +2821,7 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
             reads_before_write: true,
         }];
         caller.block_entry_cached_slots = collections::vec![];
+        caller.preferred_preserved = collections::vec![true];
         caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         caller.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
@@ -2925,6 +2978,7 @@ fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
             reads_before_write: false,
         }];
         caller.block_entry_cached_slots = collections::vec![];
+        caller.preferred_preserved = collections::vec![true];
         caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
         caller.value_sink_local = collections::vec![];
         let mut block = SsaBlock {
@@ -3218,6 +3272,7 @@ fn preserves_cached_locals_across_block_edges() {
             .ops
             .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(1)));
         ssa.blocks.push(__blk1);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -3346,6 +3401,7 @@ fn threads_cached_locals_through_block_edge_params() {
         __blk1.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
         __blk1.ops.push(SsaInst::local_set_cache(slot, SsaValue(1)));
         ssa.blocks.push(__blk1);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -3483,6 +3539,10 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
             .ops
             .push(SsaInst::local_set_cache(slot1, SsaValue(2)));
         ssa.blocks.push(__blk1);
+        // The machine's edge improver keeps slot1 in its block-0 exit register
+        // (lane 1) across the edge, leaving the hole where slot0 (lane 0) dropped
+        // rather than compacting — so the carried register is non-zero.
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -3557,6 +3617,7 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
         }
         __blk0.ops.push(SsaInst::local_set_cache(slot, SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -3662,6 +3723,7 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
         __blk2.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
         __blk2.ops.push(SsaInst::local_set_cache(slot, SsaValue(1)));
         ssa.blocks.push(__blk2);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -3806,6 +3868,7 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
             .ops
             .push(SsaInst::local_set_cache(slot2, SsaValue(2)));
         ssa.blocks.push(__blk1);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -3866,6 +3929,7 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
         __blk0.ops.push(SsaInst::local_ensure_cache(slot));
         __blk0.ops.push(SsaInst::local_drop_cache(slot));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -3949,6 +4013,7 @@ fn does_not_save_clean_carried_cache_before_runtime_call() {
             __blk1.ops.push(SsaInst::call(__idx));
         }
         ssa.blocks.push(__blk1);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -4054,6 +4119,7 @@ fn preserved_call_keeps_carried_cache_live_across_edge() {
             ));
         }
         ssa.blocks.push(__blk1);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -4169,6 +4235,7 @@ fn saves_only_dirty_cached_locals_before_runtime_call() {
             __blk1.ops.push(SsaInst::call(__idx));
         }
         ssa.blocks.push(__blk1);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -4227,6 +4294,7 @@ fn entry_block_cached_locals_are_loaded_in_prologue_not_passed_as_params() {
         };
         __blk0.ops.push(SsaInst::local_ensure_cache(slot));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -4299,6 +4367,7 @@ fn register_passed_entry_param_cache_stays_dirty_across_edges() {
         });
         call_block.ops.push(SsaInst::call(call_idx));
         ssa.blocks.push(call_block);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -4526,6 +4595,7 @@ fn lowers_memory_size_without_helper_boundary() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -4588,6 +4658,7 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -4666,6 +4737,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
             __blk0.ops.push(SsaInst::call(__idx));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -4928,6 +5000,7 @@ fn lowers_call_indirect_local_path_with_live_register_args() {
         });
         block.ops.push(SsaInst::call(call_idx));
         ssa.blocks.push(block);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -5240,6 +5313,7 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
             __blk0.ops.push(SsaInst::call(__idx));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -5359,6 +5433,7 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
             __blk0.ops.push(SsaInst::call(__idx));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -5461,6 +5536,7 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -5643,6 +5719,7 @@ fn lowers_global_get_and_set_without_helpers() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -5723,6 +5800,7 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -5807,6 +5885,7 @@ fn lowers_i32_load_with_inline_trap_if() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -5907,6 +5986,7 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -5997,6 +6077,7 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -6245,6 +6326,7 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -6337,6 +6419,7 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -6419,6 +6502,7 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -6517,6 +6601,7 @@ fn threads_live_linear_values_through_split_continuation_params() {
             .ops
             .push(SsaInst::local_set_slot(frame.local_slot(0), SsaValue(3)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -6629,6 +6714,7 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width() {
             ));
         }
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -6710,6 +6796,7 @@ fn lowers_f32_const_to_fp_machine_const() {
             .ops
             .push(SsaInst::spill(frame.operand_slot(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -6778,6 +6865,7 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
             .ops
             .push(SsaInst::spill(frame.operand_slot(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -6840,6 +6928,7 @@ fn untyped_slot_load_stays_in_gp_bank() {
             .ops
             .push(SsaInst::spill(frame.operand_slot(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -6912,6 +7001,7 @@ fn f32_block_params_keep_f32_width() {
             terminator: SsaTerminator::Return { results: None },
         };
         ssa.blocks.push(__blk1);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -6965,6 +7055,7 @@ fn f32_cached_locals_use_f32_slot_widths() {
             .ops
             .push(SsaInst::local_set_slot(frame.local_slot(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -7047,6 +7138,7 @@ fn local_get_cache_source_aliases_without_move() {
         }
         __blk0.ops.push(SsaInst::local_set_slot(slot, SsaValue(1)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -7133,6 +7225,7 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
             .push(SsaInst::local_set_cache(slot0, SsaValue(1)));
         __blk0.ops.push(SsaInst::local_set_slot(slot1, SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
@@ -7213,6 +7306,7 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
             .ops
             .push(SsaInst::local_set_cache(slot1, SsaValue(0)));
         ssa.blocks.push(__blk0);
+        set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 

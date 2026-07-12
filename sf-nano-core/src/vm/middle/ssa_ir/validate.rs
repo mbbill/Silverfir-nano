@@ -49,6 +49,30 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
         ));
     }
 
+    if !program.block_entry_cache_requirements.is_empty()
+        && program.blocks.len() != program.block_entry_cache_requirements.len()
+    {
+        return Err(WasmError::internal(
+            "SSA-IR block-entry cache-requirement row vector desynced from blocks",
+        ));
+    }
+
+    // The lane row is parallel 1:1 with the cached-slot row per block; the machine
+    // reader indexes them together, so a length divergence is a hard error.
+    if program.block_entry_cached_slots.len() == program.block_entry_cache_requirements.len() {
+        for (slots, lanes) in program
+            .block_entry_cached_slots
+            .iter()
+            .zip(program.block_entry_cache_requirements.iter())
+        {
+            if slots.len() != lanes.len() {
+                return Err(WasmError::internal(
+                    "SSA-IR block-entry cache-requirement row length diverged from its cached-slot row",
+                ));
+            }
+        }
+    }
+
     for (index, block) in program.blocks.iter().enumerate() {
         validate_block_id(block, index)?;
         validate_params(&block.params)?;

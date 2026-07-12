@@ -1211,6 +1211,8 @@ mod tests {
             result_types: collections::Vec::new(),
             local_slot_info: collections::Vec::new(),
             block_entry_cached_slots: collections::Vec::new(),
+            block_entry_cache_requirements: collections::Vec::new(),
+            preferred_preserved: collections::Vec::new(),
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
             const_pool: collections::Vec::new(),
@@ -1252,6 +1254,9 @@ mod tests {
         program.blocks.push(block);
         program
             .block_entry_cached_slots
+            .push(collections::Vec::new());
+        program
+            .block_entry_cache_requirements
             .push(collections::Vec::new());
 
         fold_constants_into_operands(&mut program, 0);
@@ -1307,6 +1312,9 @@ mod tests {
         });
         program
             .block_entry_cached_slots
+            .push(collections::Vec::new());
+        program
+            .block_entry_cache_requirements
             .push(collections::Vec::new());
 
         fold_constants_into_operands(&mut program, 0);
@@ -1367,6 +1375,9 @@ mod tests {
         });
         program
             .block_entry_cached_slots
+            .push(collections::Vec::new());
+        program
+            .block_entry_cache_requirements
             .push(collections::Vec::new());
 
         fold_constants_into_operands(&mut program, 0);

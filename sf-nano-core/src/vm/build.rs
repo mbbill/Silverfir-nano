@@ -83,7 +83,7 @@ use crate::{
         },
         middle::{
             frame::{plan_frame_layout, FrameLayoutPlan, FrameSpan},
-            prepare_function, PrepareInput,
+            prepare_function, ModuleFacts, PrepareInput,
         },
         runtime::{
             code::{
@@ -598,6 +598,10 @@ fn compile_full_streaming_function(
             config: backend,
             function_index: Some(func_idx as u32),
         },
+        ModuleFacts {
+            is_local_func,
+            table_dispatch_modes,
+        },
         semantic,
     )?;
     drop(ssa_lower_function_phase);
@@ -1067,6 +1071,16 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
 
     let mut groups = 0usize;
     let mut ssa_ops = 0usize;
+    // Module facts for pass C (lane assignment). A function is local exactly when
+    // it has a spec (the same predicate `build_static_summaries` uses); the batch
+    // path derives it directly from the has-spec flags rather than re-running that
+    // scan. Table modes are the module's current dispatch modes.
+    let is_local_func: collections::Vec<bool> = module
+        .functions
+        .iter()
+        .map(|func| func.spec().is_some())
+        .collect();
+    let table_dispatch_modes = module.table_dispatch_modes();
     let mut prepared_functions: collections::Vec<LowerFunctionInput> = collections::Vec::new();
     for (func_idx, func) in module.functions.iter().enumerate() {
         let Some(spec) = func.spec() else {
@@ -1082,6 +1096,10 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             PrepareInput {
                 config: backend,
                 function_index: Some(func_idx as u32),
+            },
+            ModuleFacts {
+                is_local_func: &is_local_func,
+                table_dispatch_modes,
             },
             semantic,
         )?;

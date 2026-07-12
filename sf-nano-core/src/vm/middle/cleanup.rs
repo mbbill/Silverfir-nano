@@ -667,14 +667,18 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
 
     let old_blocks = core::mem::take(&mut program.blocks);
     let old_entries = core::mem::take(&mut program.block_entry_cached_slots);
+    let old_entry_reqs = core::mem::take(&mut program.block_entry_cache_requirements);
     let kept_blocks = block_len.saturating_sub(removed.len());
     let mut new_blocks = collections::Vec::with_capacity(kept_blocks);
     let mut new_entries =
         collections::Vec::with_capacity(old_entries.len().saturating_sub(removed.len()));
+    let mut new_entry_reqs =
+        collections::Vec::with_capacity(old_entry_reqs.len().saturating_sub(removed.len()));
 
-    for (old_index, (mut block, entry_slots)) in old_blocks
+    for (old_index, ((mut block, entry_slots), entry_reqs)) in old_blocks
         .into_iter()
         .zip(old_entries.into_iter())
+        .zip(old_entry_reqs.into_iter())
         .enumerate()
     {
         if removed_mask[old_index] {
@@ -684,12 +688,14 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
         block.id = mapping[old_index];
         new_blocks.push(block);
         new_entries.push(entry_slots);
+        new_entry_reqs.push(entry_reqs);
     }
 
     debug_assert!(removed_mask.get(program.entry.as_usize()).copied() != Some(true));
     program.entry = mapping[program.entry.as_usize()];
     program.blocks = new_blocks;
     program.block_entry_cached_slots = new_entries;
+    program.block_entry_cache_requirements = new_entry_reqs;
 }
 
 fn remove_one_block(program: &mut SsaProgram, removed_index: usize) {
@@ -701,6 +707,7 @@ fn remove_one_block(program: &mut SsaProgram, removed_index: usize) {
 
     program.blocks.remove(removed_index);
     program.block_entry_cached_slots.remove(removed_index);
+    program.block_entry_cache_requirements.remove(removed_index);
 
     if program.entry.as_usize() > removed_index {
         program.entry = SsaTarget(program.entry.0 - 1);
@@ -862,7 +869,10 @@ mod tests {
     use crate::value_type::ValueType;
     use crate::vm::middle::{
         frame::FrameSlot,
-        ssa_ir::{ir::SsaBlock, validate::validate_program},
+        ssa_ir::{
+            ir::{EntryCacheRequirement, SsaBlock},
+            validate::validate_program,
+        },
     };
     use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
@@ -944,6 +954,8 @@ mod tests {
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
+            block_entry_cache_requirements: collections::vec![collections::Vec::new(); 3],
+            preferred_preserved: collections::Vec::new(),
             value_types: collections::vec![ValueType::I32; 32],
             value_sink_local: collections::vec![None; 32],
             const_pool: collections::Vec::new(),
@@ -980,6 +992,8 @@ mod tests {
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
+            block_entry_cache_requirements: collections::vec![collections::Vec::new(); 2],
+            preferred_preserved: collections::Vec::new(),
             value_types: collections::vec![ValueType::I32; 16],
             value_sink_local: collections::vec![None; 16],
             const_pool: collections::Vec::new(),
@@ -1061,6 +1075,8 @@ mod tests {
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
+            block_entry_cache_requirements: collections::vec![collections::Vec::new(); 3],
+            preferred_preserved: collections::Vec::new(),
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
             const_pool: collections::Vec::new(),
@@ -1085,6 +1101,8 @@ mod tests {
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
+            block_entry_cache_requirements: collections::vec![collections::Vec::new(); 2],
+            preferred_preserved: collections::Vec::new(),
             value_types: collections::vec![ValueType::I32; 2],
             value_sink_local: collections::vec![None; 2],
             const_pool: collections::Vec::new(),
@@ -1174,6 +1192,13 @@ mod tests {
                 collections::vec![FrameSlot(2)],
                 collections::vec![FrameSlot(3)],
             ],
+            block_entry_cache_requirements: collections::vec![
+                collections::vec![EntryCacheRequirement::Ensure],
+                collections::vec![EntryCacheRequirement::Ensure],
+                collections::vec![EntryCacheRequirement::Ensure],
+                collections::vec![EntryCacheRequirement::Ensure],
+            ],
+            preferred_preserved: collections::Vec::new(),
             value_types: collections::Vec::new(),
             value_sink_local: collections::Vec::new(),
             const_pool: collections::Vec::new(),

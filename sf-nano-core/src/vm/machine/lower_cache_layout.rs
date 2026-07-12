@@ -12,8 +12,7 @@ use crate::{
             frame::FrameSlot,
             ssa_ir::{
                 ir::{
-                    block_entry_cache_requirement, EntryCacheRequirement, SsaBlock, SsaCallOp,
-                    SsaInst, SsaOp, SsaProgram, SsaTerminator,
+                    EntryCacheRequirement, SsaBlock, SsaCallOp, SsaOp, SsaProgram, SsaTerminator,
                 },
                 target::SsaTarget,
             },
@@ -58,6 +57,7 @@ pub(super) fn compute_block_entry_cache_params(
     gp_reg_width: u8,
     is_local_func: &[bool],
     table_dispatch_modes: &[TableDispatchMode],
+    preferred_preserved: &[bool],
 ) -> Result<collections::Vec<collections::Vec<EntryCacheParam>>, WasmError> {
     if program.blocks.is_empty() || cached_locals.is_empty() {
         return Ok(collections::vec![collections::Vec::new(); program.blocks.len()]);
@@ -85,14 +85,13 @@ pub(super) fn compute_block_entry_cache_params(
         })
         .collect::<collections::Vec<_>>();
     let param_usage = compute_param_prefix_usage(program, gp_reg_width);
-    let call_preserve_preferences = compute_local_call_cache_preferences_with_map(
-        program,
-        cached_locals,
-        &slot_to_cached_index,
-        is_local_func,
-        table_dispatch_modes,
-        regfile.preserved_cache_min_local_call_crosses(),
-    );
+    // Preference now comes from the plan's whole-function `preferred_preserved`
+    // (pass D's cross count) instead of the machine re-deriving it. Promote the
+    // per-slot flag to the per-block-per-cached-index shape the layout consumes —
+    // identical to what `compute_local_call_cache_preferences` used to yield
+    // (which was itself function-global-promoted), so the layout is unchanged.
+    let call_preserve_preferences =
+        promote_preferred_preserved(cached_locals, preferred_preserved, program.blocks.len());
     let predecessors = compute_predecessors(program);
     let rpo = compute_reverse_postorder(program);
     let idom =
@@ -223,18 +222,23 @@ pub(super) fn compute_block_entry_cache_params(
     )?;
 
     let mut layouts = collections::vec![collections::Vec::new(); program.blocks.len()];
-    for (block_index, block) in program.blocks.iter().enumerate() {
+    for block_index in 0..program.blocks.len() {
         let entry_slots = program
             .block_entry_cached_slots
             .get(block_index)
             .map(|s| s.as_slice())
+            .unwrap_or(&[]);
+        let entry_requirements = program
+            .block_entry_cache_requirements
+            .get(block_index)
+            .map(|r| r.as_slice())
             .unwrap_or(&[]);
         // Upper bound: one entry per entry slot, minus any that miss
         // slot_to_cached_index. Sizing tight avoids ~2x push-growth overallocation
         // on the per-block Vec, which otherwise dominates mir_lower peak memory.
         let mut entries =
             collections::Vec::<(u16, u16, EntryCacheParam)>::with_capacity(entry_slots.len());
-        for &slot in entry_slots {
+        for (position, &slot) in entry_slots.iter().enumerate() {
             let Some(&cached_index) = slot_to_cached_index.get(&slot) else {
                 continue;
             };
@@ -258,10 +262,11 @@ pub(super) fn compute_block_entry_cache_params(
                 start,
                 slot_meta[cached_index].width,
             )?;
-            let requirement =
-                block_entry_cache_requirement(entry_slots, block, slot).ok_or_else(|| {
-                    WasmError::internal("entry cache slot in block b has no entry requirement")
-                })?;
+            // needs_value comes from the plan's row requirement (Ensure vs
+            // Reserve), not a machine op re-scan.
+            let requirement = entry_requirements.get(position).copied().ok_or_else(|| {
+                WasmError::internal("entry cache slot in block b has no entry requirement")
+            })?;
             entries.push((
                 regs.lo.0,
                 cached_index_u16,
@@ -303,340 +308,26 @@ fn compute_param_prefix_usage(
         .collect()
 }
 
-pub(super) fn compute_local_call_cache_preferences(
-    program: &SsaProgram,
+/// Promote the plan's whole-function `preferred_preserved` (per local slot) to
+/// the per-block-per-cached-index shape the layout consumes. The plan flag is
+/// already function-global, so every block gets the same row — exactly what the
+/// deleted machine-side `compute_local_call_cache_preferences` produced after
+/// its own promotion, so the layout is unchanged.
+pub(super) fn promote_preferred_preserved(
     cached_locals: &[CachedLocal],
-    is_local_func: &[bool],
-    table_dispatch_modes: &[TableDispatchMode],
-    min_local_call_crosses: u16,
+    preferred_preserved: &[bool],
+    block_count: usize,
 ) -> collections::Vec<collections::Vec<bool>> {
-    let slot_to_cached_index = cached_locals
+    let per_cached: collections::Vec<bool> = cached_locals
         .iter()
-        .enumerate()
-        .map(|(cached_index, cached)| (cached.slot, cached_index))
-        .collect::<BTreeMap<_, _>>();
-    compute_local_call_cache_preferences_with_map(
-        program,
-        cached_locals,
-        &slot_to_cached_index,
-        is_local_func,
-        table_dispatch_modes,
-        min_local_call_crosses,
-    )
-}
-
-fn compute_local_call_cache_preferences_with_map(
-    program: &SsaProgram,
-    cached_locals: &[CachedLocal],
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    is_local_func: &[bool],
-    table_dispatch_modes: &[TableDispatchMode],
-    min_local_call_crosses: u16,
-) -> collections::Vec<collections::Vec<bool>> {
-    let mut candidates =
-        collections::vec![collections::vec![false; cached_locals.len()]; program.blocks.len()];
-    if cached_locals.is_empty() {
-        return candidates;
-    }
-    let mut cross_counts = collections::vec![0u16; cached_locals.len()];
-    let block_cache_live_in = compute_block_cache_live_in(program, slot_to_cached_index);
-
-    for (block_index, block) in program.blocks.iter().enumerate() {
-        let call_needs_after = compute_call_cache_needs_after(
-            program,
-            block,
-            slot_to_cached_index,
-            is_local_func,
-            table_dispatch_modes,
-            &block_cache_live_in,
-        );
-        let mut resident = collections::vec![false; cached_locals.len()];
-        let mut has_value = collections::vec![false; cached_locals.len()];
-        let mut dirty = collections::vec![false; cached_locals.len()];
-
-        if let Some(entry_slots) = program.block_entry_cached_slots.get(block.id.as_usize()) {
-            for &slot in entry_slots {
-                let Some(&cached_index) = slot_to_cached_index.get(&slot) else {
-                    continue;
-                };
-                resident[cached_index] = true;
-                has_value[cached_index] = block_entry_cache_requirement(entry_slots, block, slot)
-                    == Some(EntryCacheRequirement::Ensure);
-                dirty[cached_index] = has_value[cached_index];
-            }
-        }
-
-        for (inst_index, inst) in block.ops.iter().enumerate() {
-            match inst.op {
-                SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_ENSURE_CACHE => {
-                    mark_cache_loaded(
-                        &mut resident,
-                        &mut has_value,
-                        &mut dirty,
-                        slot_to_cached_index,
-                        FrameSlot(inst.meta),
-                    );
-                }
-                SsaOp::LOCAL_RESERVE_CACHE => {
-                    mark_cache_reserved(
-                        &mut resident,
-                        &mut has_value,
-                        &mut dirty,
-                        slot_to_cached_index,
-                        FrameSlot(inst.meta),
-                    );
-                }
-                SsaOp::LOCAL_SET_CACHE => {
-                    mark_cache_set(
-                        &mut resident,
-                        &mut has_value,
-                        &mut dirty,
-                        slot_to_cached_index,
-                        FrameSlot(inst.meta),
-                    );
-                }
-                SsaOp::LOCAL_DROP_CACHE => {
-                    mark_cache_dropped(
-                        &mut resident,
-                        &mut has_value,
-                        &mut dirty,
-                        slot_to_cached_index,
-                        FrameSlot(inst.meta),
-                    );
-                }
-                SsaOp::CALL => {
-                    let local_jit_call =
-                        is_local_jit_call(program, is_local_func, table_dispatch_modes, inst.meta);
-                    let needs_after = call_needs_after
-                        .get(inst_index)
-                        .and_then(|bits| bits.as_ref());
-                    for cached_index in 0..cached_locals.len() {
-                        let keep = local_jit_call
-                            && !cached_locals[cached_index].value_ty.is_ref()
-                            && needs_after
-                                .and_then(|bits| bits.get(cached_index))
-                                .copied()
-                                .unwrap_or(false)
-                            && resident[cached_index]
-                            && has_value[cached_index];
-                        if keep {
-                            candidates[block_index][cached_index] = true;
-                            cross_counts[cached_index] =
-                                cross_counts[cached_index].saturating_add(1);
-                            // Lowering publishes dirty carried caches before
-                            // the local call, so the success edge receives a
-                            // clean preserved cache value.
-                            resident[cached_index] = true;
-                            has_value[cached_index] = true;
-                            dirty[cached_index] = false;
-                        } else {
-                            resident[cached_index] = false;
-                            has_value[cached_index] = false;
-                            dirty[cached_index] = false;
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    let promoted = cross_counts
-        .iter()
-        .map(|count| *count >= min_local_call_crosses)
-        .collect::<collections::Vec<_>>();
-    for block_candidates in &mut candidates {
-        for (cached_index, candidate) in block_candidates.iter_mut().enumerate() {
-            *candidate = promoted.get(cached_index).copied().unwrap_or(false);
-        }
-    }
-
-    candidates
-}
-
-fn compute_call_cache_needs_after(
-    program: &SsaProgram,
-    block: &SsaBlock,
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    is_local_func: &[bool],
-    table_dispatch_modes: &[TableDispatchMode],
-    block_cache_live_in: &[collections::Vec<bool>],
-) -> collections::Vec<Option<collections::Vec<bool>>> {
-    let mut call_needs_after = collections::vec![None; block.ops.len()];
-    let mut needed_after = successor_cache_needs(
-        &block.terminator,
-        block_cache_live_in,
-        slot_to_cached_index.len(),
-    );
-    for (inst_index, inst) in block.ops.iter().enumerate().rev() {
-        match inst.op {
-            SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_ENSURE_CACHE => {
-                mark_cached_slot(
-                    &mut needed_after,
-                    slot_to_cached_index,
-                    FrameSlot(inst.meta),
-                    true,
-                );
-            }
-            SsaOp::LOCAL_SET_CACHE | SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_DROP_CACHE => {
-                mark_cached_slot(
-                    &mut needed_after,
-                    slot_to_cached_index,
-                    FrameSlot(inst.meta),
-                    false,
-                );
-            }
-            SsaOp::CALL => {
-                if is_local_jit_call(program, is_local_func, table_dispatch_modes, inst.meta) {
-                    call_needs_after[inst_index] = Some(needed_after.clone());
-                } else {
-                    needed_after.fill(false);
-                }
-            }
-            _ => {}
-        }
-    }
-
-    call_needs_after
-}
-
-fn compute_block_cache_live_in(
-    program: &SsaProgram,
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-) -> collections::Vec<collections::Vec<bool>> {
-    let slot_count = slot_to_cached_index.len();
-    let mut live_in = collections::vec![collections::vec![false; slot_count]; program.blocks.len()];
-    if slot_count == 0 {
-        return live_in;
-    }
-
-    loop {
-        let mut changed = false;
-        for block in program.blocks.iter().rev() {
-            let mut needed = successor_cache_needs(&block.terminator, &live_in, slot_count);
-            apply_cache_need_transfer(block.ops.iter().rev(), slot_to_cached_index, &mut needed);
-            let block_index = block.id.as_usize();
-            if live_in
-                .get(block_index)
-                .map(|old| old.as_slice() != needed.as_slice())
+        .map(|cached| {
+            preferred_preserved
+                .get(cached.slot.0 as usize)
+                .copied()
                 .unwrap_or(false)
-            {
-                live_in[block_index] = needed;
-                changed = true;
-            }
-        }
-        if !changed {
-            break;
-        }
-    }
-
-    live_in
-}
-
-fn successor_cache_needs(
-    terminator: &SsaTerminator,
-    block_cache_live_in: &[collections::Vec<bool>],
-    slot_count: usize,
-) -> collections::Vec<bool> {
-    let mut needed = collections::vec![false; slot_count];
-    for target in block_successors(terminator) {
-        let Some(bits) = block_cache_live_in.get(target.as_usize()) else {
-            continue;
-        };
-        for (dst, src) in needed.iter_mut().zip(bits.iter().copied()) {
-            *dst |= src;
-        }
-    }
-    needed
-}
-
-fn apply_cache_need_transfer<'a>(
-    ops: impl Iterator<Item = &'a SsaInst>,
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    needed: &mut [bool],
-) {
-    for inst in ops {
-        match inst.op {
-            SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_ENSURE_CACHE => {
-                mark_cached_slot(needed, slot_to_cached_index, FrameSlot(inst.meta), true);
-            }
-            SsaOp::LOCAL_SET_CACHE | SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_DROP_CACHE => {
-                mark_cached_slot(needed, slot_to_cached_index, FrameSlot(inst.meta), false);
-            }
-            _ => {}
-        }
-    }
-}
-
-fn mark_cache_loaded(
-    resident: &mut [bool],
-    has_value: &mut [bool],
-    dirty: &mut [bool],
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    slot: FrameSlot,
-) {
-    if let Some(&cached_index) = slot_to_cached_index.get(&slot) {
-        if !resident[cached_index] || !has_value[cached_index] {
-            dirty[cached_index] = false;
-        }
-        resident[cached_index] = true;
-        has_value[cached_index] = true;
-    }
-}
-
-fn mark_cache_reserved(
-    resident: &mut [bool],
-    has_value: &mut [bool],
-    dirty: &mut [bool],
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    slot: FrameSlot,
-) {
-    if let Some(&cached_index) = slot_to_cached_index.get(&slot) {
-        resident[cached_index] = true;
-        has_value[cached_index] = false;
-        dirty[cached_index] = false;
-    }
-}
-
-fn mark_cache_set(
-    resident: &mut [bool],
-    has_value: &mut [bool],
-    dirty: &mut [bool],
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    slot: FrameSlot,
-) {
-    if let Some(&cached_index) = slot_to_cached_index.get(&slot) {
-        resident[cached_index] = true;
-        has_value[cached_index] = true;
-        dirty[cached_index] = true;
-    }
-}
-
-fn mark_cache_dropped(
-    resident: &mut [bool],
-    has_value: &mut [bool],
-    dirty: &mut [bool],
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    slot: FrameSlot,
-) {
-    if let Some(&cached_index) = slot_to_cached_index.get(&slot) {
-        resident[cached_index] = false;
-        has_value[cached_index] = false;
-        dirty[cached_index] = false;
-    }
-}
-
-fn mark_cached_slot(
-    bits: &mut [bool],
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    slot: FrameSlot,
-    value: bool,
-) {
-    if let Some(&cached_index) = slot_to_cached_index.get(&slot) {
-        if let Some(bit) = bits.get_mut(cached_index) {
-            *bit = value;
-        }
-    }
+        })
+        .collect();
+    collections::vec![per_cached; block_count]
 }
 
 pub(super) fn is_local_jit_call(
@@ -1026,16 +717,16 @@ fn entry_cache_needs_value(
     slot_count: usize,
 ) -> collections::Vec<bool> {
     let mut needs = collections::vec![false; slot_count];
-    let Some(block) = program.blocks.get(block_index) else {
-        return needs;
-    };
     let Some(entry_slots) = program.block_entry_cached_slots.get(block_index) else {
         return needs;
     };
-    for &slot in entry_slots {
-        if block_entry_cache_requirement(entry_slots, block, slot)
-            != Some(EntryCacheRequirement::Ensure)
-        {
+    let entry_requirements = program
+        .block_entry_cache_requirements
+        .get(block_index)
+        .map(|r| r.as_slice())
+        .unwrap_or(&[]);
+    for (position, &slot) in entry_slots.iter().enumerate() {
+        if entry_requirements.get(position).copied() != Some(EntryCacheRequirement::Ensure) {
             continue;
         }
         if let Some(&cached_index) = slot_to_cached_index.get(&slot) {
@@ -1829,9 +1520,7 @@ fn block_successors(terminator: &SsaTerminator) -> collections::Vec<SsaTarget> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::vm::middle::frame::FrameSpan;
     use crate::vm::middle::ssa_ir::ir::SsaEdge;
-    use crate::vm::middle::ssa_ir::ir::SsaValue;
 
     fn long_linear_program(block_count: usize) -> SsaProgram {
         let blocks = (0..block_count)
@@ -1944,71 +1633,5 @@ mod tests {
             layout[0], 2,
             "a call-crossing inherited cache must move out of volatile lanes"
         );
-    }
-
-    #[test]
-    fn hot_call_preserved_cache_preference_is_function_wide() {
-        let slot = FrameSlot(0);
-        let cached = CachedLocal {
-            slot,
-            value_ty: crate::value_type::ValueType::I32,
-            ty: MachineStorageType::GpWord,
-            info: crate::vm::middle::ssa_ir::ir::LocalSlotInfo {
-                is_param: false,
-                reads_before_write: false,
-            },
-        };
-        let mut program = SsaProgram::default();
-        program.entry = SsaTarget(0);
-        program.value_types = collections::vec![
-            crate::value_type::ValueType::I32,
-            crate::value_type::ValueType::I32
-        ];
-        program.block_entry_cached_slots =
-            collections::vec![collections::vec![slot], collections::vec![slot]];
-        let call_idx = program.push_call_op(SsaCallOp::CallDirect {
-            callee: 1,
-            args: crate::vm::middle::ssa_ir::ir::SsaCallArgs {
-                frame_base: FrameSlot(1),
-                total_params: 0,
-                param_types: collections::Vec::new(),
-                stack_prefix_count: 0,
-                live_suffix: collections::Vec::new(),
-            },
-            results: FrameSpan::new(FrameSlot(1), 0),
-            result_types: collections::Vec::new(),
-        });
-        program.blocks = collections::vec![
-            SsaBlock {
-                id: SsaTarget(0),
-                params: collections::Vec::new(),
-                ops: collections::Vec::new(),
-                extra_args: collections::Vec::new(),
-                terminator: SsaTerminator::Goto(SsaEdge {
-                    target: SsaTarget(1),
-                    bindings: collections::Vec::new(),
-                }),
-            },
-            SsaBlock {
-                id: SsaTarget(1),
-                params: collections::Vec::new(),
-                ops: collections::vec![
-                    SsaInst::local_get_cache(slot, SsaValue(0)),
-                    SsaInst::call(call_idx),
-                    SsaInst::local_get_cache(slot, SsaValue(1)),
-                ],
-                extra_args: collections::Vec::new(),
-                terminator: SsaTerminator::Return { results: None },
-            },
-        ];
-
-        let preferences =
-            compute_local_call_cache_preferences(&program, &[cached], &[true, true], &[], 1);
-
-        assert_eq!(
-            preferences[0][0], true,
-            "once a cached local is hot enough to preserve across calls, predecessor blocks should keep the same preserved-bank layout"
-        );
-        assert_eq!(preferences[1][0], true);
     }
 }

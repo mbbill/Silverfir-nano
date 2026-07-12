@@ -12,6 +12,7 @@ mod budget;
 mod cfg;
 mod cleanup;
 mod discipline;
+mod final_signals;
 mod joint_plan;
 mod optimize;
 mod rewrite;
@@ -24,7 +25,7 @@ use crate::collections::{self, phase_span_with_function};
 
 use crate::{
     error::WasmError,
-    vm::{backend::BackendConfig, wasm::semantic_ir::SemanticProgram},
+    vm::{backend::BackendConfig, entities::TableDispatchMode, wasm::semantic_ir::SemanticProgram},
 };
 
 use self::{
@@ -40,6 +41,25 @@ pub(crate) struct PrepareInput {
     pub function_index: Option<u32>,
 }
 
+/// Module-level facts the middle-end reads but semantic decode does not carry.
+/// Threaded into [`prepare_function`] for pass C (lane assignment): the
+/// preserved-cache preference classifies local-JIT-call crosses via
+/// `is_local_jit_call`, which needs both the callee locality flags and the
+/// per-table dispatch modes.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct ModuleFacts<'a> {
+    /// Per-function-index locality: is callee `i` a locally-JIT-compiled
+    /// function (vs an imported/host function)?
+    pub is_local_func: &'a [bool],
+    /// Per-table dispatch mode.
+    ///
+    /// INVARIANT (design §5.b): the prepared SSA is DERIVED from these modes and
+    /// must be RECOMPUTED, never cached, across a table-mutation revert
+    /// (`instance.rs` reverts the modes to `Generic` and clears native code; the
+    /// recompile re-runs `prepare_function` with the reverted modes).
+    pub table_dispatch_modes: &'a [TableDispatchMode],
+}
+
 /// Shared frontend output consumed by interpreter and native backends.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct PreparedFunction {
@@ -49,6 +69,7 @@ pub(crate) struct PreparedFunction {
 
 pub(crate) fn prepare_function(
     input: PrepareInput,
+    facts: ModuleFacts<'_>,
     semantic: SemanticProgram,
 ) -> Result<PreparedFunction, WasmError> {
     semantic.validate()?;
@@ -97,6 +118,19 @@ pub(crate) fn prepare_function(
     sink_plan::plan_sinks(&mut ssa);
     drop(ssa_sink_phase);
 
+    // Derive the two machine-facing cache signals over the FINAL SSA (the exact
+    // program the machine lowers, after cleanup merges + optimize + sink), using
+    // the original algorithms the deleted machine-side dataflows ran. Deriving
+    // them at plan time is unfaithful: a goto-successor merge folds a slot's
+    // first-touch across the block boundary a per-plan-block row cannot see.
+    ssa.block_entry_cache_requirements = final_signals::derive_entry_cache_requirements(&ssa);
+    ssa.preferred_preserved = final_signals::derive_preferred_preserved(
+        &ssa,
+        facts.is_local_func,
+        facts.table_dispatch_modes,
+        u16::from(input.config.preserved_cache_min_local_call_crosses),
+    );
+
     shrink_prepared_ssa_storage(&mut ssa);
 
     let ssa_validate_phase = phase_span_with_function("ssa_validate", input.function_index);
@@ -120,6 +154,10 @@ fn shrink_prepared_ssa_storage(ssa: &mut SsaProgram) {
     for slots in &mut ssa.block_entry_cached_slots {
         slots.shrink_to_fit();
     }
+    ssa.block_entry_cache_requirements.shrink_to_fit();
+    for reqs in &mut ssa.block_entry_cache_requirements {
+        reqs.shrink_to_fit();
+    }
     ssa.value_types.shrink_to_fit();
     ssa.value_sink_local.shrink_to_fit();
     ssa.const_pool.shrink_to_fit();
@@ -135,6 +173,8 @@ fn empty_program(semantic: &SemanticProgram) -> SsaProgram {
         result_types: semantic.result_types.clone(),
         local_slot_info: collections::vec![Default::default(); semantic.local_count as usize],
         block_entry_cached_slots: collections::Vec::new(),
+        block_entry_cache_requirements: collections::Vec::new(),
+        preferred_preserved: collections::Vec::new(),
         value_types: collections::Vec::new(),
         value_sink_local: collections::Vec::new(),
         const_pool: collections::Vec::new(),

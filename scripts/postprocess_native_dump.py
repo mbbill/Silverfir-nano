@@ -648,11 +648,15 @@ def analyze_function_pressure(
             return
         body = "\n".join(current_lines)
 
-        # Classify cached slots as GP/FP
+        # Classify cached slots as GP/FP. Each token leads with fp[slot] (the
+        # frame-slot index) and, since the middle owns lane assignment, carries an
+        # optional lane suffix @l<lane> with `*` (preserved-preference lane) and/or
+        # `?` (reserve, write-first) markers. The leading fp[slot] is what keys the
+        # GP/FP split, so the suffix is tolerated and ignored here.
         cached_gp = 0
         cached_fp = 0
         for slot_str in current_cached:
-            m = re.match(r"fp\[(\d+)\]", slot_str.strip())
+            m = re.match(r"fp\[(\d+)\](?:@l\d+\*?\??)?$", slot_str.strip())
             if m:
                 idx = int(m.group(1))
                 if idx < len(local_types) and is_fp_type(local_types[idx]):

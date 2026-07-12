@@ -5,7 +5,7 @@ use crate::{
     value_type::ValueType,
     vm::{
         backend::BackendConfig,
-        middle::{prepare_function, PrepareInput},
+        middle::{prepare_function, ModuleFacts, PrepareInput},
         wasm::{
             primitive_op::PrimitiveOpKind,
             semantic_ir::{SemanticOp, SemanticOpKind, SemanticProgram},
@@ -31,6 +31,10 @@ fn prepare_accepts_v128_locals() {
         PrepareInput {
             config: BackendConfig::new(8, 8, 8, 3),
             function_index: None,
+        },
+        ModuleFacts {
+            is_local_func: &[],
+            table_dispatch_modes: &[],
         },
         semantic,
     )
@@ -66,6 +70,10 @@ fn prepare_accepts_v128_primitives() {
         PrepareInput {
             config: BackendConfig::new(8, 8, 8, 3),
             function_index: None,
+        },
+        ModuleFacts {
+            is_local_func: &[],
+            table_dispatch_modes: &[],
         },
         semantic,
     )

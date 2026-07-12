@@ -582,6 +582,19 @@ pub(crate) struct SsaProgram {
     pub result_types: collections::Vec<ValueType>,
     pub local_slot_info: collections::Vec<LocalSlotInfo>,
     pub block_entry_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
+    /// Per-block entry-cache requirement, parallel 1:1 to
+    /// [`Self::block_entry_cached_slots`] (same outer index, same inner length and
+    /// order): each entry slot's `Ensure` (value must be materialized) vs
+    /// `Reserve` (write-first lane). Derived once by the middle (pass D) so the
+    /// machine reads it here instead of re-scanning ops. The machine owns the
+    /// physical lane layout; the plan owns only this context-free requirement.
+    /// Maintained positionally alongside `block_entry_cached_slots`.
+    pub block_entry_cache_requirements: collections::Vec<collections::Vec<EntryCacheRequirement>>,
+    /// Whole-function preserved-cache preference, per LOCAL slot (indexed by
+    /// `FrameSlot.0`): `true` when the local's local-JIT-call cross count reaches
+    /// the threshold (pass D). The machine's restored lane layout reads this
+    /// instead of recomputing the cross count itself.
+    pub preferred_preserved: collections::Vec<bool>,
     pub value_types: collections::Vec<ValueType>,
     pub value_sink_local: collections::Vec<Option<FrameSlot>>,
     /// Backing store for `SsaOperand::Const` — each entry is a 64-bit value.
@@ -690,15 +703,6 @@ pub(crate) fn entry_cache_requirement(
 ) -> Option<EntryCacheRequirement> {
     entry_cache_requirement_from_ops(ops, slot)
         .or_else(|| carried_through.then_some(EntryCacheRequirement::Ensure))
-}
-
-#[inline]
-pub(crate) fn block_entry_cache_requirement(
-    entry_slots: &[FrameSlot],
-    block: &SsaBlock,
-    slot: FrameSlot,
-) -> Option<EntryCacheRequirement> {
-    entry_cache_requirement(&block.ops, slot, entry_slots.contains(&slot))
 }
 
 /// One SSA-IR basic block.

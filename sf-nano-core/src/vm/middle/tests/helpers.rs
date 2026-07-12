@@ -11,7 +11,7 @@ use crate::vm::{
         joint_plan::{JointPlanner, LocalAccessDecision, LocalAccessQuery},
         prepare_function,
         ssa_ir::ir::{SsaBlock, SsaInst, SsaOp, SsaProgram, SsaTerminator},
-        PrepareInput, PreparedFunction,
+        ModuleFacts, PrepareInput, PreparedFunction,
     },
     wasm::{
         common::SemanticTarget,
@@ -113,6 +113,10 @@ pub(super) fn prepare_program(
         PrepareInput {
             config: host_config(gp_dynamic_budget, fp_dynamic_budget),
             function_index: None,
+        },
+        ModuleFacts {
+            is_local_func: &[],
+            table_dispatch_modes: &[],
         },
         semantic.clone(),
     )
