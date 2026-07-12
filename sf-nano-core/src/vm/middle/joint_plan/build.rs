@@ -29,6 +29,7 @@ use crate::{
 
 use super::{
     entry_region::analyze_block_local_summaries,
+    exact,
     facts::{BlockPlan, EntryState, FunctionPlan},
     region_solver::{solve_public_cache_sets, ResidencyPolicy},
 };
@@ -91,14 +92,19 @@ pub(crate) fn build_plan(
                 .get(block_index)
                 .cloned()
                 .unwrap_or_default(),
+            ..Default::default()
         })
         .collect();
-    let plan = FunctionPlan {
+    let mut plan = FunctionPlan {
         gp_unit_bytes: config.gp_unit_bytes,
         gp_dynamic_budget,
         fp_dynamic_budget,
         blocks,
+        repair_pool: collections::Vec::new(),
     };
+
+    // Pass D: exact per-block cache boundaries + per-edge repair actions.
+    exact::compute_exact_plan(semantic, cfg, frame, config, &mut plan)?;
 
     Ok(plan)
 }

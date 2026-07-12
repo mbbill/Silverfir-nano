@@ -8,29 +8,15 @@ use tracked_alloc::collections::BTreeMap;
 
 use crate::vm::middle::{
     frame::FrameSlot,
+    joint_plan::facts::{self, RepairActions},
     ssa_ir::{
         ir::{
-            entry_cache_requirement, EntryCacheRequirement, SsaBinding, SsaBlock, SsaEdge, SsaInst,
-            SsaProgram, SsaTerminator,
+            entry_cache_requirement, SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaProgram,
+            SsaTerminator,
         },
         target::SsaTarget,
     },
 };
-
-#[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
-struct RepairActions {
-    ensure_cached_locals: collections::Vec<FrameSlot>,
-    reserve_cached_locals: collections::Vec<FrameSlot>,
-    drop_cached_locals: collections::Vec<FrameSlot>,
-}
-
-impl RepairActions {
-    fn is_empty(&self) -> bool {
-        self.ensure_cached_locals.is_empty()
-            && self.reserve_cached_locals.is_empty()
-            && self.drop_cached_locals.is_empty()
-    }
-}
 
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct RepairBlockKey {
@@ -345,28 +331,18 @@ fn build_repair_ops(repair: &RepairActions) -> collections::Vec<SsaInst> {
     ops
 }
 
-fn derive_edge_repair(
+/// Emit-side edge-repair derivation: reads the successor's first-use
+/// requirement straight from its lowered ops. Kept for synthesized bridge-block
+/// edges (which never enter pass D's plan) and shared with pass D's action
+/// computation through [`facts::derive_edge_repair`] so the logic exists once.
+pub(super) fn derive_edge_repair(
     pred_exit: &[FrameSlot],
     succ_entry: &[FrameSlot],
     target_ops: &[SsaInst],
 ) -> RepairActions {
-    let mut repair = RepairActions::default();
-    for &slot in pred_exit {
-        if !succ_entry.contains(&slot) {
-            repair.drop_cached_locals.push(slot);
-        }
-    }
-    for &slot in succ_entry {
-        if pred_exit.contains(&slot) {
-            continue;
-        }
-        match entry_cache_requirement(target_ops, slot, succ_entry.contains(&slot)) {
-            Some(EntryCacheRequirement::Ensure) => repair.ensure_cached_locals.push(slot),
-            Some(EntryCacheRequirement::Reserve) => repair.reserve_cached_locals.push(slot),
-            None => {}
-        }
-    }
-    repair
+    facts::derive_edge_repair(pred_exit, succ_entry, |slot| {
+        entry_cache_requirement(target_ops, slot, succ_entry.contains(&slot))
+    })
 }
 
 #[cfg(test)]

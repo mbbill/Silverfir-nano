@@ -189,6 +189,33 @@ pub(crate) trait DisciplineDriver {
     fn on_call_boundary_scalar(&mut self, result: SsaValue);
 }
 
+/// Measure-side [`DisciplineDriver`] for pass D's exact-simulation walker.
+///
+/// The walker evolves only the typed [`Window`] (heights, spill depth, types,
+/// alias tags) and observes cache eviction through the resident set the engine
+/// mutates in place. It owns no `SsaValue` identity and emits nothing, so every
+/// hook is a no-op.
+pub(crate) struct NoEmit;
+
+impl DisciplineDriver for NoEmit {
+    fn on_spill(&mut self, _base_slot: FrameSlot, _count: usize) {}
+    fn on_fill(&mut self, _base_slot: FrameSlot, _types: &[ValueType]) {}
+    fn on_drop_cache(&mut self, _slot: FrameSlot) {}
+    fn on_call_boundary(&mut self) {}
+    fn on_call_boundary_scalar(&mut self, _result: SsaValue) {}
+}
+
+/// Whether a cached `local.get` / `local.tee` result can alias the cached slot
+/// instead of occupying its own dynamic-bank unit.
+///
+/// The one exception is a 64-bit local on a 32-bit GP bank: its cached copy is a
+/// real linear pair, so the loaded value needs its own registers and cannot be
+/// discounted against the resident cache.
+#[inline]
+pub(crate) fn cached_local_get_can_source_alias(ty: ValueType, gp_unit_bytes: u8) -> bool {
+    !(matches!(ty, ValueType::I64) && gp_unit_bytes == 4)
+}
+
 // --- Capacity mode -----------------------------------------------------------
 
 /// Whether the engine clamps the live window against the dynamic-bank budget.
@@ -643,5 +670,23 @@ fn emit_result_types(
             collections::vec![local_ty(*idx)]
         }
         _ => collections::Vec::new(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cached_local_get_can_source_alias;
+    use crate::value_type::ValueType;
+
+    #[test]
+    fn gp32_i64_cached_get_needs_real_linear_pair() {
+        assert!(!cached_local_get_can_source_alias(ValueType::I64, 4));
+    }
+
+    #[test]
+    fn gp64_and_non_i64_cached_gets_can_source_alias() {
+        assert!(cached_local_get_can_source_alias(ValueType::I64, 8));
+        assert!(cached_local_get_can_source_alias(ValueType::I32, 4));
+        assert!(cached_local_get_can_source_alias(ValueType::F64, 4));
     }
 }

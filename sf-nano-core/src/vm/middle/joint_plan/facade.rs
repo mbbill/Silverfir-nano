@@ -21,7 +21,7 @@ use crate::{
 use super::{
     block_open::{block_open_decision, finalize_block_entry_cached_locals, target_entry_decision},
     build,
-    facts::FunctionPlan,
+    facts::{FunctionPlan, RepairActions},
     interface::{
         BlockOpenDecision, FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery,
         TargetEntryDecision,
@@ -79,5 +79,34 @@ impl JointPlanner {
         actual_exit: &[FrameSlot],
     ) -> collections::Vec<FrameSlot> {
         finalize_block_entry_cached_locals(&self.plan, block, actual_exit)
+    }
+
+    /// Pass D exact entry cache row for `block` (rewrite-time drift assert).
+    #[inline]
+    pub(crate) fn exact_entry(&self, block: CfgBlockId) -> &[FrameSlot] {
+        &self.plan.blocks[block.as_usize()].exact_entry
+    }
+
+    /// Pass D exact exit cache row for `block` (rewrite-time drift assert).
+    #[inline]
+    pub(crate) fn exact_exit(&self, block: CfgBlockId) -> &[FrameSlot] {
+        &self.plan.blocks[block.as_usize()].exact_exit
+    }
+
+    /// Pass D repair actions for one out-edge of `block` (edge order
+    /// Goto | BranchThen, BranchElse | BrTable(idx)); `None` when the edge
+    /// needs no repair. Used by the rewrite-time drift assert.
+    #[inline]
+    pub(crate) fn exact_edge_repair(
+        &self,
+        block: CfgBlockId,
+        edge_ordinal: usize,
+    ) -> Option<&RepairActions> {
+        self.plan.blocks[block.as_usize()]
+            .repair
+            .get(edge_ordinal)
+            .copied()
+            .flatten()
+            .map(|idx| &self.plan.repair_pool[idx as usize])
     }
 }

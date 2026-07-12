@@ -209,6 +209,19 @@ pub(crate) fn rewrite_function(
             &lowered.ops,
         );
         let actual_exit = simulate_materialized_cache_exit(&final_entry, &lowered.ops);
+        // Pass D drift guard: the plan's exact walker must reproduce the rows
+        // the materializer finalizes here. If this fires, the walker is wrong —
+        // it is the one that must be corrected to match the shipped path.
+        debug_assert_eq!(
+            final_entry.as_slice(),
+            planner.exact_entry(cfg_block.id),
+            "block {block_index}: final entry cache set diverged from the plan's exact walker",
+        );
+        debug_assert_eq!(
+            actual_exit.as_slice(),
+            planner.exact_exit(cfg_block.id),
+            "block {block_index}: published exit cache set diverged from the plan's exact walker",
+        );
         let mut final_entry = final_entry;
         final_entry.shrink_to_fit();
         let mut actual_exit = actual_exit;
@@ -230,6 +243,18 @@ pub(crate) fn rewrite_function(
             shrink_ssa_block_storage(&mut block);
             extra_blocks.push(block);
         }
+    }
+    // Pass D drift guard for the per-edge boundary repair. Runs while `blocks`
+    // still holds only the semantic blocks (before bridges/repairs append), so
+    // an edge to an appended block is an emit-side bridge and is skipped.
+    if cfg!(debug_assertions) {
+        assert_plan_edge_repairs(
+            &planner,
+            cfg,
+            &blocks,
+            &block_entry_cached_slots,
+            &block_exit_cached_slots,
+        );
     }
     blocks.reserve_exact(extra_blocks.len());
     blocks.extend(extra_blocks);
@@ -314,6 +339,69 @@ fn simulate_materialized_cache_exit(
         }
     }
     materialized.into_iter().collect()
+}
+
+/// Pass D drift guard: for every out-edge of every semantic block whose target
+/// is also a semantic block, the plan's stored repair actions must equal what
+/// the emit-side derivation produces from the finalized rows. Edges to appended
+/// bridge/repair blocks (target id past the semantic count) derive emit-side and
+/// are skipped. Edge enumeration order matches `edge.rs` and the plan
+/// (Goto | BranchThen, BranchElse | BrTable(idx)).
+fn assert_plan_edge_repairs(
+    planner: &JointPlanner,
+    cfg: &RewriteCfg,
+    blocks: &[SsaBlock],
+    entry_cached: &[collections::Vec<FrameSlot>],
+    exit_cached: &[collections::Vec<FrameSlot>],
+) {
+    let semantic_count = blocks.len();
+    let mut edges: collections::Vec<(usize, SsaTarget)> = collections::Vec::new();
+    for (block_index, block) in blocks.iter().enumerate() {
+        edges.clear();
+        match &block.terminator {
+            SsaTerminator::Goto(edge) => edges.push((0, edge.target)),
+            SsaTerminator::Branch {
+                then_edge,
+                else_edge,
+                ..
+            } => {
+                edges.push((0, then_edge.target));
+                edges.push((1, else_edge.target));
+            }
+            SsaTerminator::BrTable { entries, .. } => {
+                for (ordinal, edge) in entries.iter().enumerate() {
+                    edges.push((ordinal, edge.target));
+                }
+            }
+            _ => {}
+        }
+        let pred_exit = exit_cached[block_index].as_slice();
+        let block_id = cfg.blocks[block_index].id;
+        for &(ordinal, target) in &edges {
+            let target_id = target.as_usize();
+            if target_id >= semantic_count {
+                continue;
+            }
+            let derived = super::edge::derive_edge_repair(
+                pred_exit,
+                &entry_cached[target_id],
+                &blocks[target_id].ops,
+            );
+            let plan = planner.exact_edge_repair(block_id, ordinal);
+            if derived.is_empty() {
+                debug_assert!(
+                    plan.is_none(),
+                    "block {block_index} edge {ordinal}: emit derives empty repair but plan stored {plan:?}",
+                );
+            } else {
+                debug_assert_eq!(
+                    Some(&derived),
+                    plan,
+                    "block {block_index} edge {ordinal}: emit-derived repair disagrees with the plan",
+                );
+            }
+        }
+    }
 }
 
 fn collect_local_slot_info(semantic: &SemanticProgram) -> collections::Vec<LocalSlotInfo> {
@@ -789,7 +877,7 @@ fn lower_local_get(
     state.ops.push(inst);
     let aliases = collections::vec![matches!(access, LocalAccessDecision::Cache)
         .then_some(slot)
-        .filter(|_| cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
+        .filter(|_| discipline::cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
     state.push_results_with_aliases(collections::vec![dst], collections::vec![ty], aliases)?;
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "local.get")
 }
@@ -870,7 +958,7 @@ fn lower_local_tee(
     state.ops.push(get_inst);
     let aliases = collections::vec![matches!(access, LocalAccessDecision::Cache)
         .then_some(slot)
-        .filter(|_| cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
+        .filter(|_| discipline::cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
     state.push_results_with_aliases(collections::vec![dst], collections::vec![ty], aliases)?;
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "local.tee")
 }
@@ -1172,11 +1260,6 @@ fn capture_operand_loc(
             SsaCallOperandLoc::Stack { slot }
         },
     )
-}
-
-#[inline]
-fn cached_local_get_can_source_alias(ty: ValueType, gp_unit_bytes: u8) -> bool {
-    !(matches!(ty, ValueType::I64) && gp_unit_bytes == 4)
 }
 
 fn emit_ref_is_null_condition(
@@ -2619,23 +2702,5 @@ fn canonicalize_return_results(
         state
             .ops
             .push(SsaInst::spill(dst.advance(offset as u16), value));
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::cached_local_get_can_source_alias;
-    use crate::value_type::ValueType;
-
-    #[test]
-    fn gp32_i64_cached_get_needs_real_linear_pair() {
-        assert!(!cached_local_get_can_source_alias(ValueType::I64, 4));
-    }
-
-    #[test]
-    fn gp64_and_non_i64_cached_gets_can_source_alias() {
-        assert!(cached_local_get_can_source_alias(ValueType::I64, 8));
-        assert!(cached_local_get_can_source_alias(ValueType::I32, 4));
-        assert!(cached_local_get_can_source_alias(ValueType::F64, 4));
     }
 }
