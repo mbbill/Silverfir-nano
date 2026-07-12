@@ -216,19 +216,6 @@ pub(crate) fn cached_local_get_can_source_alias(ty: ValueType, gp_unit_bytes: u8
     !(matches!(ty, ValueType::I64) && gp_unit_bytes == 4)
 }
 
-// --- Capacity mode -----------------------------------------------------------
-
-/// Whether the engine clamps the live window against the dynamic-bank budget.
-///
-/// `Off` is the planner's conservative measure (peak is a true upper bound, so
-/// the resident set passed to [`Window::ensure_capacity`] is ignored). `On`
-/// discounts and evicts against that resident cached-local set.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CapacityMode {
-    Off,
-    On,
-}
-
 /// Dynamic-bank budget configuration for capacity clamping.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct BankBudget {
@@ -492,21 +479,17 @@ impl Window {
     /// resident cached local) until the alias-discounted live window plus the
     /// resident cache plus `extra_gp`/`extra_fp` fits the dynamic-bank budget.
     ///
-    /// [`CapacityMode::Off`] returns immediately — the planner's measure pass is
-    /// a conservative upper bound and never clamps.
+    /// The planner's lightweight measure pass never clamps, but it also never
+    /// drives the engine — every engine consumer wants the clamp.
     pub(crate) fn ensure_capacity(
         &mut self,
         driver: &mut impl DisciplineDriver,
         frame: FrameLayoutPlan,
-        mode: CapacityMode,
         resident: &mut BTreeSet<FrameSlot>,
         local_slot_types: &[ValueType],
         budget: BankBudget,
         extra: (usize, usize),
     ) -> Result<(), WasmError> {
-        if mode == CapacityMode::Off {
-            return Ok(());
-        }
         let (extra_gp, extra_fp) = extra;
         loop {
             let (gp_live, fp_live) = self.effective_live_units(resident, budget.gp_unit_bytes);
@@ -605,15 +588,7 @@ pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
             // subsequent spill), reserving room for the pushed results.
             let result_types = emit_result_types(op, local_slot_types);
             let extra = window.required_capacity(pop, &result_types, budget.gp_unit_bytes);
-            window.ensure_capacity(
-                driver,
-                frame,
-                CapacityMode::On,
-                resident,
-                local_slot_types,
-                budget,
-                extra,
-            )?;
+            window.ensure_capacity(driver, frame, resident, local_slot_types, budget, extra)?;
             window.fill(driver, frame, pop);
         }
         StructuralAction::FillKeepSpillRest(keep) => {
@@ -631,15 +606,7 @@ pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
         }
         StructuralAction::ElsePlannerFill => {}
     }
-    window.ensure_capacity(
-        driver,
-        frame,
-        CapacityMode::On,
-        resident,
-        local_slot_types,
-        budget,
-        (0, 0),
-    )?;
+    window.ensure_capacity(driver, frame, resident, local_slot_types, budget, (0, 0))?;
     Ok(())
 }
 
