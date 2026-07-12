@@ -26,7 +26,7 @@ use crate::{
 use super::{
     entry_region::analyze_block_local_summaries,
     facts::{BlockPlan, EntryState, FunctionPlan},
-    region_solver::solve_public_cache_sets,
+    region_solver::{solve_public_cache_sets, ResidencyPolicy},
 };
 
 pub(crate) fn build_plan(
@@ -61,6 +61,7 @@ pub(crate) fn build_plan(
     }
     let block_local_summaries = analyze_block_local_summaries(semantic, cfg, frame);
 
+    let policy = ResidencyPolicy::from_env()?;
     let block_entry_cached_locals = solve_public_cache_sets(
         semantic,
         cfg,
@@ -70,6 +71,7 @@ pub(crate) fn build_plan(
         &lightweight.peak_gp,
         &lightweight.peak_fp,
         &block_local_summaries,
+        policy,
     );
     let LightweightPlanOutput {
         peak_gp: _,

@@ -41,6 +41,24 @@ FUNC_HEADER_RE = re.compile(r"^\[function (\d+)\]\s*$")
 WASM_FUNC_RE = re.compile(r"^[0-9a-f]+ func\[(\d+)\](?: <([^>]+)>)?:\s*$")
 WASM_FUNC_DETAIL_RE = re.compile(r"^\s*-\s*func\[(\d+)\]\s+sig=(\d+)(?:\s+<([^>]+)>)?")
 
+# Match real instructions in objdump output. `native_disasm.txt` is objdump-like:
+# "   0: d503201f      nop". Keep this local to the native-dump postprocessor so
+# policy comparisons can treat final machine instructions as first-class data,
+# not a private helper inside compare_llvm.py.
+_OBJDUMP_INSN_RE = re.compile(r"^\s+[0-9a-f]+:\s+[0-9a-f]+\s+\S+")
+_EMPTY_RE = re.compile(r"^\s*$")
+_ASM_COMMENT_RE = re.compile(r"^\s*(//|;|@)")
+
+
+def count_native_instructions(text: str) -> int:
+    count = 0
+    for line in text.splitlines():
+        if _EMPTY_RE.match(line) or _ASM_COMMENT_RE.match(line):
+            continue
+        if _OBJDUMP_INSN_RE.match(line):
+            count += 1
+    return count
+
 
 @dataclass
 class NativeFunctionDump:
@@ -1042,6 +1060,11 @@ def main() -> None:
                 module_elf,
                 args.arch,
             )
+            native_instruction_count = count_native_instructions(native_disasm)
+            ssa_metrics = section_metrics(native.ssa_ir, "ssa")
+            machine_metrics = section_metrics(native.machine_ir, "machine")
+            ssa_ops = sum(ssa_metrics.values())
+            machine_ops = sum(machine_metrics.values())
             summary = {
                 "function_index": index,
                 "wasm_name": wasm.name if wasm else None,
@@ -1050,8 +1073,21 @@ def main() -> None:
                 "total_frame_slots": parse_int_field(native.meta, "total_frame_slots"),
                 "code_file_off": f"0x{code_off:08x}" if code_off is not None else None,
                 "code_size": code_size,
-                "ssa_metrics": section_metrics(native.ssa_ir, "ssa"),
-                "machine_metrics": section_metrics(native.machine_ir, "machine"),
+                "native_metrics": {
+                    "instruction_count": native_instruction_count,
+                    "code_size_bytes": code_size,
+                    "instructions_per_machine_metric": (
+                        native_instruction_count / machine_ops if machine_ops else None
+                    ),
+                    "instructions_per_ssa_metric": (
+                        native_instruction_count / ssa_ops if ssa_ops else None
+                    ),
+                    "machine_metrics_per_ssa_metric": (
+                        machine_ops / ssa_ops if ssa_ops else None
+                    ),
+                },
+                "ssa_metrics": ssa_metrics,
+                "machine_metrics": machine_metrics,
             }
             rel_dir = Path("functions") / function_dir_name(index)
             function_map.append(
@@ -1060,6 +1096,11 @@ def main() -> None:
                     "dir": str(rel_dir),
                     "wasm_name": wasm.name if wasm else None,
                     "code_size": summary["code_size"],
+                    "native_instruction_count": native_instruction_count,
+                    "summary_path": str((out_dir / rel_dir / "summary.json").resolve()),
+                    "native_disasm_path": str((out_dir / rel_dir / "native_disasm.txt").resolve()),
+                    "ssa_ir_path": str((out_dir / rel_dir / "ssa_ir.txt").resolve()),
+                    "machine_ir_path": str((out_dir / rel_dir / "machine_ir.txt").resolve()),
                 }
             )
 
@@ -1087,7 +1128,33 @@ def main() -> None:
         "native_index": str(native_index_path),
         "function_count": len(indices),
     }
+    totals = {
+        "ssa_metrics": {},
+        "machine_metrics": {},
+    }
+    for item in function_map:
+        try:
+            summary = json.loads(Path(item["summary_path"]).read_text())
+        except (OSError, KeyError, json.JSONDecodeError):
+            continue
+        for group in ["ssa_metrics", "machine_metrics"]:
+            for key, value in summary.get(group, {}).items():
+                totals[group][key] = totals[group].get(key, 0) + int(value or 0)
+
+    module_metrics = {
+        "wasm": str(wasm_path),
+        "dump_dir": str(dump_dir),
+        "function_count": len(indices),
+        "native_instruction_count": sum(
+            item.get("native_instruction_count") or 0 for item in function_map
+        ),
+        "code_size_bytes": sum(item.get("code_size") or 0 for item in function_map),
+        "ssa_metrics": totals["ssa_metrics"],
+        "machine_metrics": totals["machine_metrics"],
+        "functions": function_map,
+    }
     write_json(out_dir / "module.json", module_summary)
+    write_json(out_dir / "module_metrics.json", module_metrics)
     write_json(out_dir / "function_map.json", function_map)
 
     # Pressure analysis report
