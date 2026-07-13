@@ -215,6 +215,15 @@
   live capture (selfsample dylib: thread_get_state + rwx-region dump) or
   pattern-match block bytes to derive per-function shifts (sourced).
 
+- 2026-07-13 measurement: this M4's sustained P-core frequency wanders
+  3.9-4.4 GHz (±6%) with chip temperature on an hours scale — no throttle
+  flag, plain DVFS — and compute-bound scores track it linearly (sha256 at a
+  stable ~66.4 MB/s per GHz across 260-275 MB/s sessions). Historical
+  "occasional high scores" were cool-machine sessions. Cross-session MB/s
+  comparisons within ±6% are meaningless; record a dependent-add frequency
+  probe alongside every capture and compare per-GHz (scripts/freqprobe.c),
+  or A/B interleaved within one session (sourced).
+
 ## Moves
 
 - 2026-04-06 (0b5d2ea0) replaced [[per-block-residency]]: choosing a resident set

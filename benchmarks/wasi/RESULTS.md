@@ -75,3 +75,10 @@ Run with `run_tests.py` on macOS (Apple M4).
   outright. Re-capture the full comparison table warm for the next revision.
 - CoreMark measured 36,271 ± 155 in the same session (vs 37,032 above,
   different machine state; V8 comparison needs a same-session re-run).
+- **Frequency caveat (applies to every absolute number in this file):** this
+  M4's sustained P-core clock drifts 3.9-4.4 GHz with chip temperature (no
+  throttle flag). sha256 tracks it at ~66-69 MB/s per GHz, so any
+  cross-session delta under ~6% may be pure frequency. The like-for-like
+  result (same-session interleaved, 5x5): counter-forwarding + preserved-class
+  beats the pre-campaign code by +2.5% cycles-normalized. Future captures:
+  record `scripts/freqprobe.c` output alongside and compare per-GHz.
