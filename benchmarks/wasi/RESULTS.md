@@ -2,6 +2,11 @@
 
 Run with `run_tests.py` on macOS (Apple M4).
 
+Three-way comparison table captured 2026-05 (pre middle-v2 campaign). For the
+current Silverfir numbers see the 2026-07-13 section at the bottom; Cranelift
+and V8 have not been re-run since 2026-05, so the ratio columns below are
+historical.
+
 ## Integer / Control Flow
 
 | Benchmark             | Silverfir (JIT) | Cranelift |       V8 |  SF/CL |  SF/V8 |
@@ -60,25 +65,49 @@ Run with `run_tests.py` on macOS (Apple M4).
 - Higher is better for score/MB/s metrics; lower is better for ms/s metrics
 - Internal tracking dashboard: https://mbbill.github.io/Silverfir-nano/dev/bench/
 
-## Addendum (2026-07-13)
+## Current HEAD (2026-07-13, post middle-v2 campaign)
 
-- **SHA-256: 277.3 ± 0.8 MB/s** after the preserved-class residency contract
-  + the bounded-counter forwarding pass (was 271.04 above; Cranelift 249.26).
-  The counter-forwarding pass removes clang's in-memory `ctx->datalen`
-  store→reload chain, which is also an Apple-M4 pipeline hazard (dispatch
-  stalls + exit-branch mispredicts) exposed whenever surrounding loads are
-  optimized away.
-- **STREAM numbers above are cold-machine captures.** Sustained-load runs ramp
+Full-suite capture after the middle-end v2 refactor + preserved-class
+residency contract + bounded-counter forwarding pass. Two back-to-back runs
+(run-to-run spread <1% everywhere); Silverfir only — Cranelift/V8 not re-run.
+
+| Benchmark             |   Run 1 |   Run 2 | vs 2026-05 SF |
+|-----------------------|--------:|--------:|--------------:|
+| CoreMark (score)      |  36,810 |  36,445 |         −1.1% |
+| SHA-256 (MB/s)        |  274.40 |  275.71 |         +1.5% |
+| bzip2 (MB/s)          |   20.47 |   20.48 |         +1.2% |
+| LZ4 compress (MB/s)   |  745.58 |  748.96 |         −2.7% |
+| LZ4 decompress (MB/s) | 3,216.8 | 3,184.6 |         −0.4% |
+| lua/fib38 (s)         |   2.270 |   2.250 |     **−9.9%** |
+| lua/sunfish (score)   |  10,959 |  10,947 |         +0.3% |
+| lua/json_bench (score)|  27,548 |  27,556 |         −1.2% |
+| mandelbrot (ms)       |  849.14 |  849.35 |         −0.6% |
+| c-ray (ms)            |   2,099 |   2,103 |         −1.8% |
+| STREAM C/S/A/T (MB/s) | 44,017 / 49,534 / 64,256 / 48,213 | 44,124 / 49,615 / 64,260 / 48,408 | level |
+| sqlite speedtest1 (s) |  29.852 |  29.962 |     new entry |
+
+Notes:
+
+- **lua/fib38 −9.9% wall clock** is the one shift clearly outside the
+  frequency band — consistent with the preserved-class contract's lua win
+  (−3.4k native instructions). Everything else is within ±3%.
+- **SHA-256** same-session interleaved record is **277.3 ± 0.8 MB/s** (vs
+  old code 267.9 ± 1.3, +2.5% cycles-normalized); the 274-276 here is the
+  same code in a different frequency session. The counter-forwarding pass
+  removes clang's in-memory `ctx->datalen` store→reload chain, an Apple-M4
+  pipeline hazard (dispatch stalls + exit-branch mispredicts) exposed
+  whenever surrounding loads are optimized away.
+- **sqlite speedtest1** is newly in the suite; no earlier baseline row.
+- **STREAM numbers are cold-machine captures.** Sustained-load runs ramp
   ~8-10% higher over the first ~4 minutes (memory-subsystem warm-up; no
   thermal cap involved): warm steady-state ≈ Copy 48.3k, Scale 52.5k,
   Add 67.5k, Triad 51.0k MB/s — which would take all four STREAM rows
-  outright. Re-capture the full comparison table warm for the next revision.
-- CoreMark measured 36,271 ± 155 in the same session (vs 37,032 above,
-  different machine state; V8 comparison needs a same-session re-run).
+  outright against the 2026-05 CL/V8 columns.
 - **Frequency caveat (applies to every absolute number in this file):** this
   M4's sustained P-core clock drifts 3.9-4.4 GHz with chip temperature (no
   throttle flag). sha256 tracks it at ~66-69 MB/s per GHz, so any
-  cross-session delta under ~6% may be pure frequency. The like-for-like
-  result (same-session interleaved, 5x5): counter-forwarding + preserved-class
-  beats the pre-campaign code by +2.5% cycles-normalized. Future captures:
-  record `scripts/freqprobe.c` output alongside and compare per-GHz.
+  cross-session delta under ~6% may be pure frequency. Future captures:
+  record `scripts/freqprobe.c` output alongside and compare per-GHz, or A/B
+  interleaved within one session.
+- Next revision: re-run Cranelift and V8 in the same session (warm) to
+  refresh the ratio columns above.
