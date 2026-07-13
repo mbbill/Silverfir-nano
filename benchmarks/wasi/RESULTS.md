@@ -66,28 +66,3 @@ Cranelift / V8 columns: 2026-05 capture, re-run pending (see Notes).
   Cranelift/V8 numbers; ratio shifts under ~6% may be machine-state, not
   code (see frequency caveat below). Re-run all three in one warm session
   for the next revision.
-
-## Addendum (2026-07-13)
-
-- **lua/fib38 2.507 → 2.260 s (−9.9%)** is the one shift from the 2026-05
-  capture clearly outside the frequency band — consistent with the
-  preserved-class residency contract's lua win (−3.4k native instructions).
-  Everything else moved less than ±3%.
-- **SHA-256** same-session interleaved record: **277.3 ± 0.8 MB/s** (old
-  code 267.9 ± 1.3, +2.5% cycles-normalized). The counter-forwarding pass
-  removes clang's in-memory `ctx->datalen` store→reload chain, an Apple-M4
-  pipeline hazard (dispatch stalls + exit-branch mispredicts) exposed
-  whenever surrounding loads are optimized away.
-- **sqlite speedtest1** newly tracked in the suite: 29.852 / 29.962 s
-  (TOTAL, two runs); no Cranelift/V8 comparison yet.
-- **STREAM numbers are cold-machine captures.** Sustained-load runs ramp
-  ~8-10% higher over the first ~4 minutes (memory-subsystem warm-up; no
-  thermal cap involved): warm steady-state ≈ Copy 48.3k, Scale 52.5k,
-  Add 67.5k, Triad 51.0k MB/s — which would take all four STREAM rows
-  outright.
-- **Frequency caveat (applies to every absolute number in this file):** this
-  M4's sustained P-core clock drifts 3.9-4.4 GHz with chip temperature (no
-  throttle flag). sha256 tracks it at ~66-69 MB/s per GHz, so any
-  cross-session delta under ~6% may be pure frequency. Record
-  `scripts/freqprobe.c` output alongside future captures and compare
-  per-GHz, or A/B interleaved within one session.
