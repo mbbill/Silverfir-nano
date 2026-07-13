@@ -91,29 +91,29 @@ def make_svg(title, subtitle, benchmarks, filename):
 # ══════════════════════════════════════════════════
 
 INTEGER_DATA = [
-    {'name': 'CoreMark',       'unit': 'score', 'data': {'sf': 37032,   'cl': 14669,   'v8': 37869  }},
-    {'name': 'SHA-256',        'unit': 'MB/s',  'data': {'sf': 271.04,  'cl': 249.26,  'v8': 201.20 }},
-    {'name': 'bzip2',          'unit': 'MB/s',  'data': {'sf': 20.23,   'cl': 19.41,   'v8': 19.88  }},
-    {'name': 'LZ4 compress',   'unit': 'MB/s',  'data': {'sf': 768.21,  'cl': 736.45,  'v8': 704.01 }},
-    {'name': 'LZ4 decompress', 'unit': 'MB/s',  'data': {'sf': 3214.90, 'cl': 3455.15, 'v8': 2908.07}},
+    {'name': 'CoreMark',       'unit': 'score', 'data': {'sf': 36628,   'cl': 14669,   'v8': 37869  }},
+    {'name': 'SHA-256',        'unit': 'MB/s',  'data': {'sf': 275.06,  'cl': 249.26,  'v8': 201.20 }},
+    {'name': 'bzip2',          'unit': 'MB/s',  'data': {'sf': 20.48,   'cl': 19.41,   'v8': 19.88  }},
+    {'name': 'LZ4 compress',   'unit': 'MB/s',  'data': {'sf': 747.27,  'cl': 736.45,  'v8': 704.01 }},
+    {'name': 'LZ4 decompress', 'unit': 'MB/s',  'data': {'sf': 3200.68, 'cl': 3455.15, 'v8': 2908.07}},
 ]
 
 LUA_DATA = [
-    {'name': 'lua / fib38',     'unit': 's',     'data': {'sf': 2.507, 'cl': 12.18, 'v8': 3.14}, 'inv': True},
-    {'name': 'lua / sunfish',   'unit': 'score', 'data': {'sf': 10924, 'cl': 2896,  'v8': 11101}},
-    {'name': 'lua / json_bench','unit': 'score', 'data': {'sf': 27884, 'cl': 9616,  'v8': 30179}},
+    {'name': 'lua / fib38',     'unit': 's',     'data': {'sf': 2.260, 'cl': 12.18, 'v8': 3.14}, 'inv': True},
+    {'name': 'lua / sunfish',   'unit': 'score', 'data': {'sf': 10953, 'cl': 2896,  'v8': 11101}},
+    {'name': 'lua / json_bench','unit': 'score', 'data': {'sf': 27552, 'cl': 9616,  'v8': 30179}},
 ]
 
 FP_DATA = [
-    {'name': 'mandelbrot', 'unit': 'ms', 'data': {'sf': 854,  'cl': 855,  'v8': 2035}, 'inv': True},
-    {'name': 'c-ray (4K)', 'unit': 'ms', 'data': {'sf': 2140, 'cl': 2055, 'v8': 1947}, 'inv': True},
+    {'name': 'mandelbrot', 'unit': 'ms', 'data': {'sf': 849,  'cl': 855,  'v8': 2035}, 'inv': True},
+    {'name': 'c-ray (4K)', 'unit': 'ms', 'data': {'sf': 2101, 'cl': 2055, 'v8': 1947}, 'inv': True},
 ]
 
 MEMORY_DATA = [
-    {'name': 'STREAM Copy',  'unit': 'MB/s', 'data': {'sf': 44124, 'cl': 44124, 'v8': 39714}},
-    {'name': 'STREAM Scale', 'unit': 'MB/s', 'data': {'sf': 49629, 'cl': 49692, 'v8': 18332}},
-    {'name': 'STREAM Add',   'unit': 'MB/s', 'data': {'sf': 64256, 'cl': 48398, 'v8': 29989}},
-    {'name': 'STREAM Triad', 'unit': 'MB/s', 'data': {'sf': 48387, 'cl': 47864, 'v8': 30869}},
+    {'name': 'STREAM Copy',  'unit': 'MB/s', 'data': {'sf': 44071, 'cl': 44124, 'v8': 39714}},
+    {'name': 'STREAM Scale', 'unit': 'MB/s', 'data': {'sf': 49574, 'cl': 49692, 'v8': 18332}},
+    {'name': 'STREAM Add',   'unit': 'MB/s', 'data': {'sf': 64258, 'cl': 48398, 'v8': 29989}},
+    {'name': 'STREAM Triad', 'unit': 'MB/s', 'data': {'sf': 48310, 'cl': 47864, 'v8': 30869}},
 ]
 
 # ══════════════════════════════════════════════════
