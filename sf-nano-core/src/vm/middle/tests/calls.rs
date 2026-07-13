@@ -228,3 +228,129 @@ fn hot_repeated_local_can_stay_public_across_call() {
         "repeated post-call uses should still be allowed to use the public cache form"
     );
 }
+
+/// The bounded-counter forwarding pattern: an in-memory counter stored as
+/// `k+1`, an intervening counter-indexed byte store, and the same-cell reload
+/// feeding the `!= B` exit compare. The pass must forward (recompute) the
+/// reload; breaking the bound (byte-store base too close to the cell) must
+/// leave the load alone.
+#[test]
+fn bounded_counter_reload_is_forwarded() {
+    use crate::vm::wasm::primitive_op::PrimitiveOpKind as P;
+
+    // locals: 0=ctx base, 2=counter, 3=buffer base alias (ctx+16).
+    // Layout: buffer at ctx+16..ctx+79 (64 bytes), cell at ctx+80.
+    let build = |cell_off: u32| {
+        i32_program(
+            4,
+            3,
+            0,
+            collections::vec![
+                // ctx = 1024; buffer alias = ctx+16; counter = 0.
+                op(SemanticOpKind::Primitive(P::I32Const { value: 1024 })),
+                op(SemanticOpKind::LocalSet { idx: 0 }),
+                op(SemanticOpKind::LocalGet { idx: 0 }),
+                op(SemanticOpKind::Primitive(P::I32Const { value: 16 })),
+                op(SemanticOpKind::Primitive(P::I32Add)),
+                op(SemanticOpKind::LocalSet { idx: 3 }),
+                op(SemanticOpKind::Primitive(P::I32Const { value: 0 })),
+                op(SemanticOpKind::LocalSet { idx: 2 }),
+                op(SemanticOpKind::Block {
+                    params: 0,
+                    results: 0,
+                }),
+                op(SemanticOpKind::Loop {
+                    params: 0,
+                    results: 0,
+                }),
+                // ctx->cell = k + 1
+                op(SemanticOpKind::LocalGet { idx: 0 }),
+                op(SemanticOpKind::LocalGet { idx: 2 }),
+                op(SemanticOpKind::Primitive(P::I32Const { value: 1 })),
+                op(SemanticOpKind::Primitive(P::I32Add)),
+                op(SemanticOpKind::Primitive(P::I32Store {
+                    offset: cell_off,
+                    memidx: 0,
+                })),
+                // buffer[k] = 7
+                op(SemanticOpKind::LocalGet { idx: 3 }),
+                op(SemanticOpKind::LocalGet { idx: 2 }),
+                op(SemanticOpKind::Primitive(P::I32Add)),
+                op(SemanticOpKind::Primitive(P::I32Const { value: 7 })),
+                op(SemanticOpKind::Primitive(P::I32Store8 {
+                    offset: 0,
+                    memidx: 0,
+                })),
+                // k = ctx->cell; if k != 64 continue
+                op(SemanticOpKind::LocalGet { idx: 0 }),
+                op(SemanticOpKind::Primitive(P::I32Load {
+                    offset: cell_off,
+                    memidx: 0,
+                })),
+                op(SemanticOpKind::LocalSet { idx: 2 }),
+                op(SemanticOpKind::LocalGet { idx: 2 }),
+                op(SemanticOpKind::Primitive(P::I32Const { value: 64 })),
+                op(SemanticOpKind::Primitive(P::I32Ne)),
+                op(SemanticOpKind::BrIf {
+                    stack_drop: 0,
+                    arity: 0,
+                    target: target(9),
+                }),
+                // reset: k = 0; ctx->cell = 0
+                op(SemanticOpKind::Primitive(P::I32Const { value: 0 })),
+                op(SemanticOpKind::LocalSet { idx: 2 }),
+                op(SemanticOpKind::LocalGet { idx: 0 }),
+                op(SemanticOpKind::Primitive(P::I32Const { value: 0 })),
+                op(SemanticOpKind::Primitive(P::I32Store {
+                    offset: cell_off,
+                    memidx: 0,
+                })),
+                op(SemanticOpKind::Primitive(P::I32Const { value: 1 })),
+                op(SemanticOpKind::BrIf {
+                    stack_drop: 0,
+                    arity: 0,
+                    target: target(35),
+                }),
+                op(SemanticOpKind::Br {
+                    stack_drop: 0,
+                    arity: 0,
+                    target: target(9),
+                }),
+                op(SemanticOpKind::End),
+                op(SemanticOpKind::ReturnVoid),
+            ],
+        )
+    };
+
+    let count_cell_loads = |ssa: &crate::vm::middle::ssa_ir::ir::SsaProgram, off: u32| {
+        let mut count = 0;
+        for block in &ssa.blocks {
+            for inst in &block.ops {
+                if let Some(pool_idx) = inst.op.as_primitive_idx() {
+                    if matches!(
+                        ssa.primitive_pool[pool_idx as usize],
+                        P::I32Load { offset, memidx: 0 } if offset == off
+                    ) {
+                        count += 1;
+                    }
+                }
+            }
+        }
+        count
+    };
+
+    // cell at ctx+80: buffer 16..79, delta 16 + B 64 = 80 <= 80 — forwards.
+    let forwarded = prepare_i32_program(&build(80), 6, 0);
+    assert_eq!(
+        count_cell_loads(&forwarded.ssa, 80),
+        0,
+        "the bounded-counter reload should be forwarded away"
+    );
+
+    // cell at ctx+76 (inside the byte-store range): must NOT forward.
+    let kept = prepare_i32_program(&build(76), 6, 0);
+    assert!(
+        count_cell_loads(&kept.ssa, 76) > 0,
+        "an in-range counter store must block forwarding"
+    );
+}

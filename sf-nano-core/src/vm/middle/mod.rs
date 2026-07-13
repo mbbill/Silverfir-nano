@@ -11,6 +11,7 @@ pub(crate) mod ssa_ir;
 mod budget;
 mod cfg;
 mod cleanup;
+mod counter_forward;
 mod discipline;
 mod final_signals;
 mod joint_plan;
@@ -117,6 +118,7 @@ pub(crate) fn prepare_function(
 
     let ssa_opt_phase = phase_span_with_function("ssa_opt", input.function_index);
     optimize::optimize_program(&mut ssa);
+    counter_forward::forward_bounded_counters(&mut ssa);
     drop(ssa_opt_phase);
 
     let ssa_sink_phase = phase_span_with_function("ssa_sink", input.function_index);
