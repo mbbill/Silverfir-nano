@@ -206,6 +206,15 @@
   1,751-2,089 across runs in the next; byte-identical builds A/B level inside
   a session while the absolute level moved 20%+ between sessions (sourced).
 
+- 2026-07-13 pitfall: the ir-dump file layout is NOT the executed layout —
+  live JIT code places each function at a different base than
+  native_code.bin's concatenation (per-function shifts of ~0x4d4-0x68c on the
+  sha256 module), so symbolizing sampled PCs against dump offsets attributed
+  every hot instruction to the wrong function and produced an entire
+  plausible-but-false stall analysis. Symbolize runtime samples against a
+  live capture (selfsample dylib: thread_get_state + rwx-region dump) or
+  pattern-match block bytes to derive per-function shifts (sourced).
+
 ## Moves
 
 - 2026-04-06 (0b5d2ea0) replaced [[per-block-residency]]: choosing a resident set

@@ -59,3 +59,19 @@ Run with `run_tests.py` on macOS (Apple M4).
 - V8: Node.js 25.4.0, V8 14.1.146.11 (`run_v8.mjs`)
 - Higher is better for score/MB/s metrics; lower is better for ms/s metrics
 - Internal tracking dashboard: https://mbbill.github.io/Silverfir-nano/dev/bench/
+
+## Addendum (2026-07-13)
+
+- **SHA-256: 277.3 ± 0.8 MB/s** after the preserved-class residency contract
+  + the bounded-counter forwarding pass (was 271.04 above; Cranelift 249.26).
+  The counter-forwarding pass removes clang's in-memory `ctx->datalen`
+  store→reload chain, which is also an Apple-M4 pipeline hazard (dispatch
+  stalls + exit-branch mispredicts) exposed whenever surrounding loads are
+  optimized away.
+- **STREAM numbers above are cold-machine captures.** Sustained-load runs ramp
+  ~8-10% higher over the first ~4 minutes (memory-subsystem warm-up; no
+  thermal cap involved): warm steady-state ≈ Copy 48.3k, Scale 52.5k,
+  Add 67.5k, Triad 51.0k MB/s — which would take all four STREAM rows
+  outright. Re-capture the full comparison table warm for the next revision.
+- CoreMark measured 36,271 ± 155 in the same session (vs 37,032 above,
+  different machine state; V8 comparison needs a same-session re-run).

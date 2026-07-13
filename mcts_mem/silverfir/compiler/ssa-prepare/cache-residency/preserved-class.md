@@ -82,6 +82,13 @@
   entry. armv7 and the planned RP2350 port are the main beneficiaries
   (sourced).
 
+- 2026-07-13 statement: the sha256 −16% regression this contract initially
+  shipped with was fully resolved — the cause was not the class contract but
+  the M4 same-address store→load pipeline hazard it exposed by removing a
+  covering frame reload; with [[counter-forwarding]] eliminating the chain,
+  sha256 reaches 277.3±0.8 MB/s under this contract (above the 271 pre-class
+  record) and the carried-register loop finally shows its win (sourced).
+
 ## Moves
 
 - 2026-07-13 (7db708a6) replaced [[static-cross-count-preference]]: the static
