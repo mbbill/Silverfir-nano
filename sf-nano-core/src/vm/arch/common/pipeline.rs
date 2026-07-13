@@ -104,8 +104,12 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
         b.core_mut().bind_label(label);
         #[cfg(sf_has_debug_regions)]
         let block_start = b.core().text.len();
+        b.begin_block(block)?;
+        for (op_index, inst) in block.ops.iter().enumerate() {
+            b.emit_inst_at(inst, op_index)?;
+        }
         let fallthrough = block_layout.get(index + 1).copied();
-        b.lower_block(block, fallthrough)?;
+        b.end_block(&block.terminator, fallthrough)?;
         #[cfg(sf_has_debug_regions)]
         {
             let block_end = b.core().text.len();

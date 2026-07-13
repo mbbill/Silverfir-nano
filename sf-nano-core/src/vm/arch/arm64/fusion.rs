@@ -5,8 +5,7 @@
 //! instruction encodings. No compiler state is accessed.
 
 use crate::vm::machine::machine_ir::{
-    MachineBlock, MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineMemWidth,
-    MachineReg, MachineValue,
+    MachineInstKind, MachineIntBinaryOp, MachineIntWidth, MachineMemWidth, MachineReg, MachineValue,
 };
 
 use super::{
@@ -220,11 +219,9 @@ pub(super) fn try_imm12_u64(value: u64) -> Option<u32> {
 /// Detect consecutive `Store { src: Imm64(0), width: U64 }` pairs with the same
 /// base register and adjacent 8-byte-aligned offsets → fuse into STP XZR, XZR.
 pub(super) fn zero_store_pair_fusion(
-    block: &MachineBlock,
-    index: usize,
+    a: &crate::vm::machine::machine_ir::MachineInst,
+    b: &crate::vm::machine::machine_ir::MachineInst,
 ) -> Option<(MachineReg, i32)> {
-    let a = block.ops.get(index)?;
-    let b = block.ops.get(index + 1)?;
     let (
         MachineInstKind::Store {
             addr: addr_a,

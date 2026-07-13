@@ -12,7 +12,7 @@ use crate::{
     error::WasmError,
     vm::{
         machine::machine_ir::{
-            MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
+            MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineInst,
             MachineIntWidth, MachineReg, MachineStorageType, MachineTerminator, MachineTrapKind,
             MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
             MACHINE_MEM0_SIZE_REG,
@@ -220,23 +220,21 @@ impl<'a> ArchBackend<'a> for X86_64Backend<'a> {
         self.lower_inst_dispatch(inst)
     }
 
-    fn lower_block(
+    fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
+        self.core.current_op_index = Some(index);
+        self.lower_inst(inst)?;
+        self.gp_scratch.assert_all_free();
+        self.fp_scratch.assert_all_free();
+        Ok(())
+    }
+
+    fn end_block(
         &mut self,
-        block: &MachineBlock,
+        term: &MachineTerminator,
         fallthrough: Option<MachineBlockId>,
     ) -> Result<(), WasmError> {
-        self.core.current_block = Some(block.id);
-        self.core.current_edge_target = None;
-        self.core.reset_block_fp_state(block)?;
-        for (index, inst) in block.ops.iter().enumerate() {
-            self.core.current_op_index = Some(index);
-            self.lower_inst(inst)?;
-            self.gp_scratch.assert_all_free();
-            self.fp_scratch.assert_all_free();
-        }
         self.core.current_op_index = None;
-
-        let result = self.lower_terminator(&block.terminator, fallthrough);
+        let result = self.lower_terminator(term, fallthrough);
         self.gp_scratch.assert_all_free();
         self.fp_scratch.assert_all_free();
         self.core.current_block = None;
