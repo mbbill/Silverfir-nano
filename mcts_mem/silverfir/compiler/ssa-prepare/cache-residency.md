@@ -181,6 +181,20 @@
   (trip/iters/edge/call) remains, so those dated sweep results are historical
   record and no longer reproducible by policy name (code).
 
+- 2026-07-12 measurement: objective-term ablations on the middle-v2 pipeline —
+  with the price-free solver, per-region adaptivity beats one global static
+  resident set by 3.4% on arm64 coremark and 1.5% on armv7 qemu coremark
+  (concentrated in multi-phase functions such as BZ2_compressBlock); removing
+  call tax adds ~156k native instructions across the 9-module corpus; removing
+  edge cost adds ~30k; disabling local caching entirely costs 43% of arm64
+  coremark — every objective term is load-bearing even where the pricing was
+  not (sourced).
+
+- 2026-07-12 (748c8416) statement: the `algorithm4:iters=` parameter was
+  retired with the pricing deletion recorded at
+  [[cache-residency/capacity-search]]; the parameterized policy form is now
+  trip/edge/call (code).
+
 ## Moves
 
 - 2026-04-06 (0b5d2ea0) replaced [[per-block-residency]]: choosing a resident set

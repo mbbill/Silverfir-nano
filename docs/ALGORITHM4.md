@@ -21,6 +21,19 @@ this work is not a new algorithm but a *good fit*: Wasm's structured control
 flow delivers the region tree for free, and JIT-scale problem sizes make
 Lagrangian iteration cheap enough to run per-function without amortization.
 
+> **Status (2026-07-12, commit 748c8416).** The Lagrangian price iterations
+> (Steps 3–5 below) were removed after a two-target measurement: they were
+> statically neutral on arm64 (net −9 native instructions across the 9-module
+> corpus) and actively harmful in the register-scarce regime they were designed
+> for (armv7 qemu coremark −3.99%). The shipped solver is the capacity-blind
+> per-local tree DP (Steps 1–2, 4 with `λ ≡ 0`) followed directly by the
+> feasibility projection (Step 6), with the projection's knapsack ordering
+> items by descending resident-subtree potential so value ties commit ancestor
+> continuity to the slot with the most downstream value — an ordering the price
+> noise had masked the need for. The `algorithm4:iters=` policy parameter is
+> gone. Sections describing prices are kept as the design record; see the
+> design tree node `cache-residency/capacity-search` for the measurements.
+
 ## 1. Introduction
 
 Silverfir-nano compiles WebAssembly through a three-stage pipeline: structured
@@ -297,7 +310,8 @@ The step is intentionally damped. With an undamped `1 / cap(R)` step, tiny
 regions can oscillate between overfull and empty and the final iteration can
 land on a zero-price state that ignores capacity competition.
 
-*Status.* The current implementation uses a fixed `PRICE_ITERS = 12`.
+*Status.* Removed 2026-07-12 (748c8416); see the note at the top. The
+implementation had used a fixed `PRICE_ITERS = 12`.
 
 ### 3.6 Step 6: Projection to feasibility
 
