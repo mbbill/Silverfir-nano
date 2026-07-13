@@ -82,6 +82,23 @@
   entry. armv7 and the planned RP2350 port are the main beneficiaries
   (sourced).
 
+- 2026-07-13 measurement: an instrumented compile of the nine-module arm64
+  corpus counted zero nominated-resident drops at the call-site physical
+  class re-check and zero scratch-lane evictions of live caches — the
+  class-mismatch lazy-reload safety net never fires in practice, so on this
+  corpus the plan's survival promise is de facto machine-guaranteed. The
+  soft layout bias (preference-mismatch cost + preferred-first ordering in
+  the layout sim) is sufficient alignment; the 32-bit i64-pair exposure is
+  theoretical until Phase C opens preserved classes there (sourced).
+
+- 2026-07-13 statement: the machine's dead-cache reload at a cache GET is
+  not only a divergence net — it is the plan's intended mid-block
+  first-touch establishment mechanism: the rewriter emits a cache GET with
+  no prior ensure when residency begins mid-block, and the machine
+  materializes the lane lazily from the frame at that GET (12-1069
+  establishment loads per corpus module, all plan-intended; zero were
+  divergence) (code).
+
 - 2026-07-13 statement: the sha256 −16% regression this contract initially
   shipped with was fully resolved — the cause was not the class contract but
   the M4 same-address store→load pipeline hazard it exposed by removing a
