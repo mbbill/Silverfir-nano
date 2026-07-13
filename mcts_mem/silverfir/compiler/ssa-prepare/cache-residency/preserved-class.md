@@ -91,6 +91,28 @@
   the layout sim) is sufficient alignment; the 32-bit i64-pair exposure is
   theoretical until Phase C opens preserved classes there (sourced).
 
+- 2026-07-13 measurement: a falsification experiment pinned WHY the
+  class-mismatch net never fires — it is arithmetically unreachable under
+  the shipped nomination clamp, not lucky. An adversarial module (15
+  simultaneously-live transients exhausting the volatile lanes, a
+  non-nominated hot local as preserved-lane squatter, six nominees crossing
+  a survivable call in an inner loop) fires it zero times; raising the GP
+  nomination clamp by one (7 nominees against 6 preserved lanes) fires it
+  exactly once per call site, and execution stays correct through the lazy
+  reload (sourced).
+
+- 2026-07-13 rationale: the unreachability is an identity, enforced from
+  three sides — the bank's plan budget equals its physical lane count
+  (volatile + preserved), the nomination clamp equals the preserved-lane
+  count, every lane-assignment point places preference-first, and the
+  block-entry preference gate un-squats non-nominees from preserved lanes
+  at every boundary — so a nominee can only be denied a preserved lane if
+  one of those invariants is broken. The net's standing value is as a
+  correctness tripwire for such breakage (today it recovers silently, with
+  no counter or assert) and as the forward path for Phase C, where 32-bit
+  i64 pairs need two adjacent preserved lanes and adjacency fragmentation
+  makes denial genuinely reachable by design (sourced).
+
 - 2026-07-13 statement: the machine's dead-cache reload at a cache GET is
   not only a divergence net — it is the plan's intended mid-block
   first-touch establishment mechanism: the rewriter emits a cache GET with
