@@ -21,7 +21,6 @@ use crate::{
 };
 
 const DEFAULT_ASSUMED_TRIP_COUNT: f64 = 8.0;
-const DEFAULT_PRICE_ITERS: usize = 12;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 enum Bank {
@@ -32,7 +31,6 @@ enum Bank {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub(super) struct Algorithm4Params {
     assumed_trip_count: f64,
-    price_iters: usize,
     edge_cost_scale: f64,
     call_tax_scale: f64,
 }
@@ -41,7 +39,6 @@ impl Default for Algorithm4Params {
     fn default() -> Self {
         Self {
             assumed_trip_count: DEFAULT_ASSUMED_TRIP_COUNT,
-            price_iters: DEFAULT_PRICE_ITERS,
             edge_cost_scale: 1.0,
             call_tax_scale: 1.0,
         }
@@ -83,9 +80,9 @@ impl ResidencyPolicy {
         if trimmed.is_empty() || trimmed == "algorithm4" {
             return Ok(Self::default());
         }
-        // Only `algorithm4` and its parameterized form (`algorithm4:trip/iters/
+        // Only `algorithm4` and its parameterized form (`algorithm4:trip/
         // edge/call=…`) are supported; the named diagnostic shorthands were
-        // retired — express them as `algorithm4:edge=0`, `algorithm4:iters=0`, etc.
+        // retired — express them as `algorithm4:edge=0`, etc.
         let Some(params) = trimmed.strip_prefix("algorithm4:") else {
             return Err(WasmError::internal("unknown SF_CACHE_POLICY"));
         };
@@ -103,12 +100,6 @@ impl ResidencyPolicy {
                     if cfg.assumed_trip_count <= 0.0 {
                         return Err(WasmError::internal("invalid SF_CACHE_POLICY trip value"));
                     }
-                }
-                "iters" => {
-                    cfg.price_iters = value
-                        .trim()
-                        .parse::<usize>()
-                        .map_err(|_| WasmError::internal("invalid SF_CACHE_POLICY iters value"))?;
                 }
                 "edge" => {
                     cfg.edge_cost_scale = value
@@ -310,55 +301,10 @@ fn solve_bank(
             Bank::Fp => region.fp_capacity,
         })
         .collect::<collections::Vec<_>>();
-    let mut lambdas = collections::vec![0.0; regions.nodes.len()];
     let mut slot_dps = slots
         .iter()
         .map(|_| SlotDp::new(regions.nodes.len()))
         .collect::<collections::Vec<_>>();
-    let mut slot_choice = slots
-        .iter()
-        .map(|_| collections::vec![false; regions.nodes.len()])
-        .collect::<collections::Vec<_>>();
-
-    for iter in 0..params.price_iters {
-        let mut demand = collections::vec![0usize; regions.nodes.len()];
-        for (slot_pos, &slot_index) in slots.iter().enumerate() {
-            compute_slot_dp(
-                slot_index,
-                local_meta[slot_index],
-                regions,
-                benefit,
-                call_tax,
-                params,
-                &lambdas,
-                &mut slot_dps[slot_pos],
-            );
-            extract_unconstrained_states(
-                0,
-                0,
-                regions,
-                &slot_dps[slot_pos],
-                &mut slot_choice[slot_pos],
-            );
-            for (region_id, chosen) in slot_choice[slot_pos].iter().copied().enumerate() {
-                if chosen {
-                    demand[region_id] += local_meta[slot_index].units;
-                }
-            }
-        }
-
-        for region_id in 0..regions.nodes.len() {
-            let cap = capacities[region_id];
-            let overload = demand[region_id] as isize - cap as isize;
-            let damping = 1.0 / (iter + 2) as f64;
-            let step = if cap == 0 {
-                damping
-            } else {
-                damping / cap as f64
-            };
-            lambdas[region_id] = (lambdas[region_id] + step * overload as f64).max(0.0);
-        }
-    }
 
     for (slot_pos, &slot_index) in slots.iter().enumerate() {
         compute_slot_dp(
@@ -368,7 +314,6 @@ fn solve_bank(
             benefit,
             call_tax,
             params,
-            &lambdas,
             &mut slot_dps[slot_pos],
         );
     }
@@ -393,15 +338,13 @@ fn compute_slot_dp(
     benefit: &[collections::Vec<f64>],
     call_tax: &[collections::Vec<f64>],
     params: &Algorithm4Params,
-    lambdas: &[f64],
     dp: &mut SlotDp,
 ) {
     let units = meta.units as f64;
     for region_id in (0..regions.nodes.len()).rev() {
         let region = &regions.nodes[region_id];
         let reward = benefit[region_id][slot_index] * params.benefit_scale()
-            - call_tax[region_id][slot_index] * params.call_tax_scale
-            - lambdas[region_id] * units;
+            - call_tax[region_id][slot_index] * params.call_tax_scale;
 
         let mut child_if_absent = 0.0;
         let mut child_if_resident = 0.0;
@@ -416,22 +359,6 @@ fn compute_slot_dp(
             dp.force_value[region_id][parent_state][1] = reward + child_if_resident
                 - edge_cost(regions, region_id, parent_state, 1, units, params);
         }
-    }
-}
-
-fn extract_unconstrained_states(
-    region_id: usize,
-    parent_state: usize,
-    regions: &RegionTree,
-    dp: &SlotDp,
-    out: &mut [bool],
-) {
-    let resident =
-        dp.force_value[region_id][parent_state][1] > dp.force_value[region_id][parent_state][0];
-    out[region_id] = resident;
-    let child_parent = usize::from(resident);
-    for &child in &regions.nodes[region_id].children {
-        extract_unconstrained_states(child, child_parent, regions, dp, out);
     }
 }
 
@@ -452,28 +379,48 @@ fn extract_feasible_states(
 
     values[0][0] = 0.0;
 
-    for (item_index, &slot_index) in bank_slots.iter().enumerate() {
-        let weight = local_meta[slot_index].units;
-        let parent_state = if region_id == 0 {
+    // Knapsack ties break toward the earliest item (`candidate > best` is
+    // strict), and a slot whose benefit sits deep in the subtree has the same
+    // resident-vs-absent gain here as a weaker sibling (the deep benefit
+    // appears in both branches). Order items by descending resident-subtree
+    // potential so a tie commits continuity to the slot with the most to lose
+    // downstream, then by slot index for determinism.
+    let parent_state_for = |slot_index: usize| {
+        if region_id == 0 {
             0
         } else {
             usize::from(parent_selection[slot_index])
-        };
+        }
+    };
+    let mut order = (0..bank_slots.len()).collect::<collections::Vec<_>>();
+    order.sort_by(|&a, &b| {
+        let pot_a = slot_dps[a].force_value[region_id][parent_state_for(bank_slots[a])][1];
+        let pot_b = slot_dps[b].force_value[region_id][parent_state_for(bank_slots[b])][1];
+        pot_b
+            .partial_cmp(&pot_a)
+            .unwrap_or(core::cmp::Ordering::Equal)
+            .then(bank_slots[a].cmp(&bank_slots[b]))
+    });
+
+    for (row, &item_index) in order.iter().enumerate() {
+        let slot_index = bank_slots[item_index];
+        let weight = local_meta[slot_index].units;
+        let parent_state = parent_state_for(slot_index);
         let absent = slot_dps[item_index].force_value[region_id][parent_state][0];
         let resident = slot_dps[item_index].force_value[region_id][parent_state][1];
 
         for used in 0..=cap {
-            let mut best = values[item_index][used] + absent;
+            let mut best = values[row][used] + absent;
             let mut choose_resident = false;
             if used >= weight {
-                let candidate = values[item_index][used - weight] + resident;
+                let candidate = values[row][used - weight] + resident;
                 if candidate > best {
                     best = candidate;
                     choose_resident = true;
                 }
             }
-            values[item_index + 1][used] = best;
-            take[item_index + 1][used] = choose_resident;
+            values[row + 1][used] = best;
+            take[row + 1][used] = choose_resident;
         }
     }
 
@@ -484,9 +431,9 @@ fn extract_feasible_states(
         }
     }
 
-    for item_index in (0..bank_slots.len()).rev() {
-        let slot_index = bank_slots[item_index];
-        let chose_resident = take[item_index + 1][used];
+    for row in (0..order.len()).rev() {
+        let slot_index = bank_slots[order[row]];
+        let chose_resident = take[row + 1][used];
         selected[region_id][slot_index] = chose_resident;
         if chose_resident {
             used = used.saturating_sub(local_meta[slot_index].units);
