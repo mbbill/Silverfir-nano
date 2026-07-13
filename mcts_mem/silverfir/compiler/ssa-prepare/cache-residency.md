@@ -195,6 +195,17 @@
   [[cache-residency/capacity-search]]; the parameterized policy form is now
   trip/edge/call (code).
 
+- 2026-07-13 pitfall: the policy-sweep harness (explore_cache_policies.py)
+  runs a prebuilt target/debug CLI and never rebuilds it; two captures taken
+  against a stale binary measured nothing and read as "corpus-neutral" until a
+  probe function traced the discrepancy. Rebuild the debug CLI before every
+  capture (sourced).
+
+- 2026-07-13 measurement: qemu-user scores are comparable only within one VM
+  session — the same armv7 binary scored 2,528±34 in one colima session and
+  1,751-2,089 across runs in the next; byte-identical builds A/B level inside
+  a session while the absolute level moved 20%+ between sessions (sourced).
+
 ## Moves
 
 - 2026-04-06 (0b5d2ea0) replaced [[per-block-residency]]: choosing a resident set

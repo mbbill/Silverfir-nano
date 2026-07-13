@@ -312,25 +312,26 @@ Why it belongs here:
 - later machine lowering only knows slots and registers, not the semantic read
   vs write intent
 
-MachineIR may further avoid the save/reload pair for compiled direct local
-calls. `lower_cache_layout` scans each function for non-ref cached locals that
-are needed after direct local calls. A cached local only receives a preserved
-lane preference after it crosses the backend-configured static call threshold;
-one isolated call is not enough to pay for a callee-saved register in the
-function prologue/epilogue.
+The volatile/preserved class of a cached local is decided by the residency
+solver as a whole-function nomination: a local is preserved-class when its
+trip-weighted survivable-call relief amortizes the backend's per-lane
+save/restore overhead (`preserved_lane_save_overhead`), clamped to the bank's
+preserved-lane capacity. Nominated residents pay a reduced call tax
+(`algorithm4:pkeep=`) at survivable (direct local-JIT) calls, and the plan's
+call model keeps them resident across those calls — no post-call re-ensures or
+backedge repair loads are scheduled for them. The nomination is published as
+`SsaProgram::preferred_preserved`.
 
-When a cached local is important enough, new cache homes prefer preserved
-dynamic lanes. Inherited block-entry layouts are not forced to switch banks just
-to satisfy this preference, because that would create extra edge-copy code.
-`lower_call_internal()` carries selected non-ref caches that are already
-resident in preserved dynamic lanes as explicit `Call.success` edge arguments.
-Dirty carried caches are frame-published before the call, then continue as
-clean preserved-lane values on the success edge. Ref-typed cached locals are
-never carried across the local-call safepoint.
-
-This is deliberately not a middle-end policy decision: the middle-end does not
-know which abstract lanes are preserved, and runtime/indirect/ref calls still
-require frame-publication semantics.
+Machine lowering executes the contract: new cache homes for nominated locals
+prefer preserved dynamic lanes (inherited block-entry layouts are not forced
+to switch banks, because that would create extra edge-copy code), and
+`lower_call_internal()` carries nominated non-ref caches that sit in preserved
+dynamic lanes as explicit `Call.success` edge arguments. Dirty carried caches
+are frame-published before the call, then continue as clean preserved-lane
+values on the success edge. Ref-typed cached locals are never carried across
+the local-call safepoint; a plan-kept cache the machine could not place in a
+preserved lane reloads lazily at its next use. Runtime/indirect/ref calls
+remain full cache barriers with frame-publication semantics.
 
 ### Optimization-enabling structure: explicit spill/fill planning
 
@@ -567,9 +568,9 @@ The GP and FP dynamic banks are ordered pools with an abstract volatility split
 supplied by `BackendConfig`: volatile lanes first, then preserved lanes (plus
 any backend-only scratch tail for GP). Cached-local residency and linear-value
 ownership are tracked in `BlockLowerContext` state rather than by register
-number. `BackendConfig` also supplies the static call-crossing threshold used
-before a cached local prefers preserved lanes. The bank order is an ABI
-preference, but ownership is authoritative.
+number. `BackendConfig` also supplies the per-lane preserved save overhead the
+residency solver prices preserved-class nominations with. The bank order is an
+ABI preference, but ownership is authoritative.
 
 Why that matters:
 

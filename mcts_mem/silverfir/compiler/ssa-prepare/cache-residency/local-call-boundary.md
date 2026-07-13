@@ -1,15 +1,13 @@
-- At a compiled local call the lowerer publishes or drops dirty and non-selected
-  cached locals, but carries selected clean non-ref cached locals that already sit
-  in preserved dynamic lanes across the `Call.success` edge as cached-local block
-  params; those values survive the call in their registers with no save/reload
-  while ref-typed and dirty caches still publish for root visibility and frame
+- At a compiled local call the lowerer publishes or drops dirty and
+  non-selected cached locals, but carries preserved-class nominated (see
+  [[preserved-class]]) clean non-ref cached locals that sit in preserved
+  dynamic lanes across the `Call.success` edge as cached-local block params;
+  those values survive the call in their registers with no save/reload while
+  ref-typed and dirty caches still publish for root visibility and frame
   authority (`prepare_cached_locals_for_local_call`).
 
-- A cached local earns a preserved-lane preference only after it crosses a
-  backend-configured number of direct local calls (default 7) — a preserved
-  dynamic lane carries a callee-saved register's prologue/epilogue save/restore
-  cost; one isolated call does not pay for it, and inherited block-entry layouts
-  are not forced to switch banks merely to satisfy the preference.
+- Inherited block-entry layouts are not forced to switch banks merely to
+  satisfy the preserved preference.
 
 ## Facts
 

@@ -49,12 +49,13 @@
   code for recompilation) if mutated at runtime (`lower_call_indirect`,
   `TableDispatchMode`).
 
-- Prepared SSA is dispatch-mode-specialized: the middle-end consumes the
-  per-table dispatch modes and the per-function locality flags when it computes
-  the preserved-lane preference; a runtime table mutation that reverts a
-  table's mode to generic clears native code and re-runs function preparation
-  under the reverted modes — prepared SSA is recomputed, never cached, across
-  the revert.
+- Prepared SSA is module-fact-specialized: the middle-end consumes the
+  per-function locality flags when it nominates preserved-class residents and
+  models call survival ([[preserved-class]]); the machine consumes the
+  per-table dispatch modes for indirect-dispatch specialization. A runtime
+  table mutation that reverts a table's mode to generic clears native code and
+  re-runs function preparation — prepared SSA is recomputed, never cached,
+  across the revert.
 
 - return_call / return_call_indirect / return_call_ref are lowered as tail
   terminators that repack arguments into the callee frame prefix from slot 0, reuse
