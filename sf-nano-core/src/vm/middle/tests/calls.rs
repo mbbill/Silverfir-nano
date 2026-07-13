@@ -5,10 +5,114 @@ use crate::vm::middle::ssa_ir::ir::SsaOp;
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 use crate::vm::wasm::semantic_ir::SemanticOpKind;
 
+use crate::vm::backend::BackendConfig;
+
 use super::helpers::{
-    all_inst_kinds, contains_ensure_cache, first_local_get_for, i32_program, op,
-    prepare_i32_program,
+    all_inst_kinds, contains_ensure_cache, count_ensure_cache, first_local_get_for, i32_program,
+    op, prepare_i32_program, prepare_program_with, target,
 };
+
+/// A config with preserved GP lanes and a zero nomination overhead, so any
+/// trip-weighted survivable crossing nominates its residents.
+fn preserved_config() -> BackendConfig {
+    BackendConfig::with_volatility(8, 6, 4, 1, 4, 0, 4, 4, false, 3)
+        .with_preserved_lane_save_overhead(0)
+}
+
+fn hot_loop_with_call(direct: bool) -> crate::vm::wasm::semantic_ir::SemanticProgram {
+    use crate::vm::wasm::primitive_op::PrimitiveOpKind;
+    let call = if direct {
+        op(SemanticOpKind::CallDirect {
+            callee: 0,
+            params: 0,
+            results: 0,
+        })
+    } else {
+        op(SemanticOpKind::CallIndirect {
+            type_idx: 0,
+            table_idx: 0,
+            params: 0,
+            results: 0,
+        })
+    };
+    i32_program(
+        2,
+        2,
+        0,
+        collections::vec![
+            op(SemanticOpKind::Primitive(PrimitiveOpKind::I32Const {
+                value: 7,
+            })),
+            op(SemanticOpKind::LocalSet { idx: 0 }),
+            op(SemanticOpKind::Block {
+                params: 0,
+                results: 0,
+            }),
+            op(SemanticOpKind::Loop {
+                params: 0,
+                results: 0,
+            }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            op(SemanticOpKind::LocalSet { idx: 0 }),
+            op(SemanticOpKind::LocalGet { idx: 0 }),
+            op(SemanticOpKind::LocalSet { idx: 0 }),
+            call,
+            op(SemanticOpKind::LocalGet { idx: 1 }),
+            op(SemanticOpKind::BrIf {
+                stack_drop: 0,
+                arity: 0,
+                target: target(13),
+            }),
+            op(SemanticOpKind::Br {
+                stack_drop: 0,
+                arity: 0,
+                target: target(3),
+            }),
+            op(SemanticOpKind::End),
+            op(SemanticOpKind::ReturnVoid),
+        ],
+    )
+}
+
+#[test]
+fn nominated_resident_survives_a_direct_local_call_in_the_plan() {
+    let semantic = hot_loop_with_call(true);
+
+    // Preserved-capable config + a local callee: the loop-hot local is
+    // nominated and the plan keeps it resident across the call, so the loop
+    // steady state needs no per-iteration re-ensure (at most the cold entry
+    // preload remains).
+    let surviving = prepare_program_with(&semantic, preserved_config(), &[true]);
+    let slot0 = surviving.frame.local_slot(0);
+    let surviving_ensures = count_ensure_cache(&surviving.ssa, slot0);
+
+    // Same program through a preserved-free config: every call kills the
+    // cache and the backedge must re-ensure per iteration.
+    let killed = prepare_program_with(
+        &semantic,
+        BackendConfig::with_volatility(8, 6, 0, 1, 4, 0, 4, 4, false, 3),
+        &[true],
+    );
+    let killed_ensures = count_ensure_cache(&killed.ssa, slot0);
+
+    assert!(
+        surviving_ensures < killed_ensures,
+        "plan-level call survival should remove the per-iteration re-ensure: surviving={surviving_ensures} killed={killed_ensures}"
+    );
+}
+
+#[test]
+fn barrier_calls_still_kill_nominated_residents() {
+    let direct = prepare_program_with(&hot_loop_with_call(true), preserved_config(), &[true]);
+    let indirect = prepare_program_with(&hot_loop_with_call(false), preserved_config(), &[true]);
+    let slot0 = indirect.frame.local_slot(0);
+
+    assert!(
+        count_ensure_cache(&indirect.ssa, slot0)
+            > count_ensure_cache(&direct.ssa, direct.frame.local_slot(0)),
+        "an indirect call is a barrier: nominated residents must not survive it in the plan"
+    );
+}
 
 #[test]
 fn entry_block_does_not_preload_local_used_only_after_call_barrier() {

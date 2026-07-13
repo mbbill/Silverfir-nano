@@ -5,6 +5,7 @@
 //! policy-focused helper modules.
 
 use crate::{
+    collections,
     error::WasmError,
     vm::{
         backend::BackendConfig,
@@ -32,6 +33,10 @@ use super::{
 #[derive(Clone, Debug)]
 pub(crate) struct JointPlanner {
     plan: FunctionPlan,
+    /// Module-fact copy: which function indices are local JIT bodies. A direct
+    /// call to one is survivable — preserved-class nominated residents ride it
+    /// out in their callee-saved registers.
+    is_local_func: collections::Vec<bool>,
 }
 
 impl JointPlanner {
@@ -40,10 +45,38 @@ impl JointPlanner {
         cfg: &SemanticCfg,
         frame: FrameLayoutPlan,
         config: BackendConfig,
+        is_local_func: &[bool],
     ) -> Result<Self, WasmError> {
-        let plan = build::build_plan(semantic, cfg, frame, config)?;
+        let plan = build::build_plan(semantic, cfg, frame, config, is_local_func)?;
         validate::validate_plan(cfg, &plan)?;
-        Ok(Self { plan })
+        Ok(Self {
+            plan,
+            is_local_func: is_local_func.iter().copied().collect(),
+        })
+    }
+
+    /// Whether a direct call to `callee` is survivable for preserved-class
+    /// nominated residents (the callee is a local JIT body).
+    #[inline]
+    pub(crate) fn direct_call_survivable(&self, callee: u32) -> bool {
+        self.is_local_func
+            .get(callee as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
+    /// The solver's function-scope preserved-class nomination, per local slot.
+    /// Published to the machine as `SsaProgram::preferred_preserved`.
+    #[inline]
+    pub(crate) fn preferred_preserved(&self) -> &[bool] {
+        &self.plan.preferred_preserved
+    }
+
+    /// Whether `slot` is preserved-class nominated: such a resident survives a
+    /// survivable (direct local-JIT) call instead of being killed by it.
+    #[inline]
+    pub(crate) fn is_preserved_nominated(&self, slot: FrameSlot) -> bool {
+        self.plan.is_preserved_nominated(slot)
     }
 
     #[inline]

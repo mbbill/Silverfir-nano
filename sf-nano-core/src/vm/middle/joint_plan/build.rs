@@ -39,6 +39,7 @@ pub(crate) fn build_plan(
     cfg: &SemanticCfg,
     frame: FrameLayoutPlan,
     config: BackendConfig,
+    is_local_func: &[bool],
 ) -> Result<FunctionPlan, WasmError> {
     let gp_dynamic_budget = config.allocatable_gp_dynamic_budget();
     let fp_dynamic_budget = config.fp_dynamic_budget;
@@ -70,15 +71,14 @@ pub(crate) fn build_plan(
     let solution = solve_public_cache_sets(
         semantic,
         cfg,
-        config.gp_unit_bytes,
-        gp_dynamic_budget,
-        fp_dynamic_budget,
+        config,
         &lightweight.peak_gp,
         &lightweight.peak_fp,
         &block_local_summaries,
+        is_local_func,
         policy,
     );
-    let block_entry_cached_locals = &solution;
+    let block_entry_cached_locals = &solution.block_residents;
     let LightweightPlanOutput {
         peak_gp: _,
         peak_fp: _,
@@ -118,13 +118,16 @@ pub(crate) fn build_plan(
         repair_slot_arena: collections::Vec::new(),
         row_arena: collections::Vec::new(),
         repair_index_arena: collections::Vec::new(),
+        preferred_preserved: solution.preferred_preserved,
     };
 
     // Pass D: exact per-block cache boundaries + per-edge repair actions. The
-    // machine-facing requirement + preferred-preserved rows are NOT derived here;
-    // they are computed over the FINAL SSA in `middle::final_signals` (a
+    // walker shares the solver's class model: preserved-nominated residents
+    // survive survivable (direct local-JIT) calls; every other call clears the
+    // resident cache. The machine-facing Ensure|Reserve requirement rows are
+    // still derived over the FINAL SSA in `middle::final_signals` (a
     // pre-cleanup classification cannot see block merges).
-    exact::compute_exact_plan(semantic, cfg, frame, config, &mut plan)?;
+    exact::compute_exact_plan(semantic, cfg, frame, config, is_local_func, &mut plan)?;
 
     Ok(plan)
 }

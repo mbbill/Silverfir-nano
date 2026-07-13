@@ -61,8 +61,10 @@ enum CacheEvent {
     Set(FrameSlot),
     /// `LOCAL_DROP_CACHE` (eviction): exit set remove; entry requirement None.
     Drop(FrameSlot),
-    /// `CALL`: exit set clear; entry requirement None.
-    Call,
+    /// `CALL`: kills every cached resident except, on a survivable (direct
+    /// local-JIT) call, the preserved-class nominated slots, which ride the
+    /// call out in their callee-saved registers.
+    Call { survivable: bool },
 }
 
 /// Per-block walk output. Holds only the exact rows plus a compact per-entry
@@ -84,6 +86,7 @@ pub(crate) fn compute_exact_plan(
     cfg: &SemanticCfg,
     frame: FrameLayoutPlan,
     config: BackendConfig,
+    is_local_func: &[bool],
     plan: &mut FunctionPlan,
 ) -> Result<(), WasmError> {
     if plan.blocks.is_empty() {
@@ -112,6 +115,7 @@ pub(crate) fn compute_exact_plan(
             cfg,
             frame,
             config,
+            is_local_func,
             plan,
             &mut scratch,
         )?;
@@ -273,6 +277,7 @@ fn walk_block(
     cfg: &SemanticCfg,
     frame: FrameLayoutPlan,
     config: BackendConfig,
+    is_local_func: &[bool],
     plan: &FunctionPlan,
     scratch: &mut WalkScratch,
 ) -> Result<BlockWalk, WasmError> {
@@ -426,14 +431,22 @@ fn walk_block(
                 window.push_core(&[ty], &[alias]);
             }
             SemanticOpKind::CallDirect {
-                params, results, ..
+                callee,
+                params,
+                results,
             } => {
-                events.push(CacheEvent::Call);
+                let survivable = is_local_func
+                    .get(*callee as usize)
+                    .copied()
+                    .unwrap_or(false);
+                events.push(CacheEvent::Call { survivable });
                 call_effect(
                     *params,
                     *results,
                     call_result_types(semantic, semantic_index),
                     config,
+                    survivable,
+                    plan,
                     &mut window,
                     &mut resident,
                 );
@@ -444,12 +457,14 @@ fn walk_block(
             | SemanticOpKind::CallRef {
                 params, results, ..
             } => {
-                events.push(CacheEvent::Call);
+                events.push(CacheEvent::Call { survivable: false });
                 call_effect(
                     params.saturating_add(1),
                     *results,
                     call_result_types(semantic, semantic_index),
                     config,
+                    false,
+                    plan,
                     &mut window,
                     &mut resident,
                 );
@@ -465,7 +480,7 @@ fn walk_block(
     // same filter the old rewriter applied with `entry_cache_requirement`,
     // seeded by the hint-materialized set (planned residents + cache decisions,
     // cleared on call, NOT reduced by eviction).
-    let hint = replay_hint(planned, events);
+    let hint = replay_hint(planned, events, plan);
     let exact_entry: collections::Vec<FrameSlot> = planned
         .iter()
         .copied()
@@ -474,7 +489,7 @@ fn walk_block(
     // The exact exit replays the recorded cache ops over the FINAL (filtered)
     // entry seed — the exit set the old post-hoc simulate pass computed, now the
     // authoritative published row checked against lowered reality.
-    let exact_exit = replay_exit(&exact_entry, events);
+    let exact_exit = replay_exit(&exact_entry, events, plan);
 
     // Compact the block's classification for the edge pass: each entry slot's
     // first-use requirement (Ensure when never touched by a cache op, since an
@@ -559,13 +574,17 @@ fn primitive_effect(
 }
 
 /// Apply a call's boundary effect, mirroring `lower_call_*`: run the engine's
-/// call finish and clear the resident cache. (The CALL event is recorded by the
-/// caller so the too-many-arguments budget stays clear.)
+/// call finish, then kill the resident cache — except that on a survivable
+/// (direct local-JIT) call, preserved-class nominated residents ride the call
+/// out in their callee-saved registers and stay resident. (The CALL event is
+/// recorded by the caller so the too-many-arguments budget stays clear.)
 fn call_effect(
     consumed: u16,
     results: u16,
     result_types: &[ValueType],
     config: BackendConfig,
+    survivable: bool,
+    plan: &FunctionPlan,
     window: &mut Window,
     resident: &mut BTreeSet<FrameSlot>,
 ) {
@@ -574,7 +593,16 @@ fn call_effect(
         Some(ty) => window.finish_call_scalar(&mut noemit, consumed, SsaValue::NONE, ty),
         None => window.finish_call(&mut noemit, consumed, results, result_types),
     }
-    resident.clear();
+    if survivable {
+        let survivors: BTreeSet<FrameSlot> = resident
+            .iter()
+            .copied()
+            .filter(|slot| plan.is_preserved_nominated(*slot))
+            .collect();
+        *resident = survivors;
+    } else {
+        resident.clear();
+    }
 }
 
 /// Result types published by a call at `semantic_index`, or an empty slice.
@@ -600,13 +628,20 @@ fn walker_live_scalar(
 }
 
 /// Mirror `entry_cache_requirement_from_ops` over the recorded event stream.
+/// Every call — survivable or not — stays a first-touch classification
+/// barrier. Class-aware survival governs which residents stay alive (the exit
+/// rows and replays below); it must NOT leak into requirement classification:
+/// the machine's published requirement rows are re-derived over the final SSA
+/// by `entry_cache_requirement`, which classifies conservatively at calls, and
+/// the two sides have to agree or an edge can hand a reserved (value-free)
+/// lane to a successor whose row demands a real value.
 fn events_first_touch(events: &[CacheEvent], slot: FrameSlot) -> Option<EntryCacheRequirement> {
     for event in events {
         match *event {
             CacheEvent::Get(s) if s == slot => return Some(EntryCacheRequirement::Ensure),
             CacheEvent::Set(s) if s == slot => return Some(EntryCacheRequirement::Reserve),
             CacheEvent::Drop(s) if s == slot => return None,
-            CacheEvent::Call => return None,
+            CacheEvent::Call { .. } => return None,
             _ => {}
         }
     }
@@ -625,7 +660,11 @@ fn events_entry_requirement(
 
 /// Replay the cache ops over `seed` to the block's true exit cache set (the
 /// drop-subtracted materialized state at block end).
-fn replay_exit(seed: &[FrameSlot], events: &[CacheEvent]) -> collections::Vec<FrameSlot> {
+fn replay_exit(
+    seed: &[FrameSlot],
+    events: &[CacheEvent],
+    plan: &FunctionPlan,
+) -> collections::Vec<FrameSlot> {
     let mut materialized: BTreeSet<FrameSlot> = seed.iter().copied().collect();
     for event in events {
         match *event {
@@ -635,7 +674,18 @@ fn replay_exit(seed: &[FrameSlot], events: &[CacheEvent]) -> collections::Vec<Fr
             CacheEvent::Drop(slot) => {
                 materialized.remove(&slot);
             }
-            CacheEvent::Call => materialized.clear(),
+            CacheEvent::Call { survivable } => {
+                if survivable {
+                    let survivors: BTreeSet<FrameSlot> = materialized
+                        .iter()
+                        .copied()
+                        .filter(|slot| plan.is_preserved_nominated(*slot))
+                        .collect();
+                    materialized = survivors;
+                } else {
+                    materialized.clear();
+                }
+            }
         }
     }
     materialized.into_iter().collect()
@@ -644,14 +694,29 @@ fn replay_exit(seed: &[FrameSlot], events: &[CacheEvent]) -> collections::Vec<Fr
 /// The old rewriter's `materialized_cache` at block end: planned-resident seed
 /// plus every cache decision, cleared on each call, and — unlike the exit set —
 /// never reduced by eviction.
-fn replay_hint(seed: &[FrameSlot], events: &[CacheEvent]) -> BTreeSet<FrameSlot> {
+fn replay_hint(
+    seed: &[FrameSlot],
+    events: &[CacheEvent],
+    plan: &FunctionPlan,
+) -> BTreeSet<FrameSlot> {
     let mut hint: BTreeSet<FrameSlot> = seed.iter().copied().collect();
     for event in events {
         match *event {
             CacheEvent::Get(slot) | CacheEvent::Set(slot) => {
                 hint.insert(slot);
             }
-            CacheEvent::Call => hint.clear(),
+            CacheEvent::Call { survivable } => {
+                if survivable {
+                    let survivors: BTreeSet<FrameSlot> = hint
+                        .iter()
+                        .copied()
+                        .filter(|slot| plan.is_preserved_nominated(*slot))
+                        .collect();
+                    hint = survivors;
+                } else {
+                    hint.clear();
+                }
+            }
             CacheEvent::Drop(_) => {}
         }
     }

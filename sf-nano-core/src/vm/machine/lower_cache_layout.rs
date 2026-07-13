@@ -86,7 +86,8 @@ pub(super) fn compute_block_entry_cache_params(
         .collect::<collections::Vec<_>>();
     let param_usage = compute_param_prefix_usage(program, gp_reg_width);
     // Preference is the whole-function `preferred_preserved` flag (per local
-    // slot, computed by the middle's `final_signals` over the final SSA).
+    // slot — the residency solver's preserved-class nomination, published
+    // through the plan).
     // Promote the per-slot flag to the per-block-per-cached-index shape the
     // layout consumes; the flag is already function-global, so every block gets
     // the same row.
@@ -309,7 +310,7 @@ fn compute_param_prefix_usage(
 }
 
 /// Promote the whole-function `preferred_preserved` flag (per local slot,
-/// computed by the middle's `final_signals`) to the per-block-per-cached-index
+/// the residency solver's nomination, published through the plan) to the per-block-per-cached-index
 /// shape the layout consumes. The flag is already function-global, so every
 /// block gets the same row.
 pub(super) fn promote_preferred_preserved(
@@ -329,6 +330,15 @@ pub(super) fn promote_preferred_preserved(
     collections::vec![per_cached; block_count]
 }
 
+/// Lane-stability classification for the layout sim: calls across which a
+/// cached local's LANE ASSIGNMENT may be kept (direct local-JIT calls, plus
+/// fixed-local-only indirect dispatch whose continuation resumes locally).
+/// This deliberately credits more calls than the value-carry gate
+/// (`is_direct_local_ssa_call` / the plan's survivable classification):
+/// keeping the lane assigned means the post-call reload lands in the same
+/// lane and spares cross-edge shuffles, even when the value itself dies at
+/// the boundary. Narrowing this to direct-only was measured at +1,314
+/// instructions on sqlite.
 pub(super) fn is_local_jit_call(
     program: &SsaProgram,
     is_local_func: &[bool],

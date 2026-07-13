@@ -83,7 +83,6 @@ fn host_backend_config_with_preserved(
         false,
         HOST_CALL_SCRATCH_SLOTS,
     );
-    config.preserved_cache_min_local_call_crosses = 2;
     config
 }
 

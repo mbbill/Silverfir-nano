@@ -3561,6 +3561,15 @@ fn simulate_block_cache_exit_state(
     (resident, dirty)
 }
 
+/// Value-carry classification: a call whose continuation can receive caches
+/// still holding their VALUES — a direct call to a local JIT body, matching
+/// the residency solver's nomination, the plan's call survival, and
+/// `prepare_cached_locals_for_local_call`'s emission. Distinct from the layout
+/// sim's `is_local_jit_call` (lower_cache_layout), which additionally credits
+/// fixed-local-only indirect calls: that one governs LANE-ASSIGNMENT stability
+/// (a lane kept assigned across the call so the post-call reload lands in the
+/// same lane), not value survival — measured worth 1.3k instructions on
+/// sqlite, so the two classifications diverge on purpose.
 fn is_direct_local_ssa_call(program: &SsaProgram, is_local_func: &[bool], call_index: u16) -> bool {
     match program.call_ops.get(call_index as usize) {
         Some(SsaCallOp::CallDirect { callee, .. }) => is_local_func

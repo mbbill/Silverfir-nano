@@ -598,10 +598,7 @@ fn compile_full_streaming_function(
             config: backend,
             function_index: Some(func_idx as u32),
         },
-        ModuleFacts {
-            is_local_func,
-            table_dispatch_modes,
-        },
+        ModuleFacts { is_local_func },
         semantic,
     )?;
     drop(ssa_lower_function_phase);
@@ -1081,7 +1078,6 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         .iter()
         .map(|func| func.spec().is_some())
         .collect();
-    let table_dispatch_modes = module.table_dispatch_modes();
     let mut prepared_functions: collections::Vec<LowerFunctionInput> = collections::Vec::new();
     for (func_idx, func) in module.functions.iter().enumerate() {
         let Some(spec) = func.spec() else {
@@ -1100,7 +1096,6 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
             },
             ModuleFacts {
                 is_local_func: &is_local_func,
-                table_dispatch_modes,
             },
             semantic,
         )?;

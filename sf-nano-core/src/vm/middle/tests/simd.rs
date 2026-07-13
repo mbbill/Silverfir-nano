@@ -32,10 +32,7 @@ fn prepare_accepts_v128_locals() {
             config: BackendConfig::new(8, 8, 8, 3),
             function_index: None,
         },
-        ModuleFacts {
-            is_local_func: &[],
-            table_dispatch_modes: &[],
-        },
+        ModuleFacts { is_local_func: &[] },
         semantic,
     )
     .expect("v128 locals should prepare cleanly when SIMD is enabled");
@@ -71,10 +68,7 @@ fn prepare_accepts_v128_primitives() {
             config: BackendConfig::new(8, 8, 8, 3),
             function_index: None,
         },
-        ModuleFacts {
-            is_local_func: &[],
-            table_dispatch_modes: &[],
-        },
+        ModuleFacts { is_local_func: &[] },
         semantic,
     )
     .expect("v128 primitives should prepare cleanly when SIMD is enabled");

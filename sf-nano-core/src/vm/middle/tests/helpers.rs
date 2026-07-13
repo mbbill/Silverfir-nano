@@ -114,10 +114,28 @@ pub(super) fn prepare_program(
             config: host_config(gp_dynamic_budget, fp_dynamic_budget),
             function_index: None,
         },
-        ModuleFacts {
-            is_local_func: &[],
-            table_dispatch_modes: &[],
+        ModuleFacts { is_local_func: &[] },
+        semantic.clone(),
+    )
+    .unwrap_or_else(|err| {
+        panic!(
+            "middle prepare_function should succeed for test semantic program: {}",
+            err.message()
+        )
+    })
+}
+
+pub(super) fn prepare_program_with(
+    semantic: &SemanticProgram,
+    config: BackendConfig,
+    is_local_func: &[bool],
+) -> PreparedFunction {
+    prepare_function(
+        PrepareInput {
+            config,
+            function_index: None,
         },
+        ModuleFacts { is_local_func },
         semantic.clone(),
     )
     .unwrap_or_else(|err| {
@@ -147,7 +165,7 @@ pub(super) fn plan_program(
         .unwrap_or_else(|err| panic!("test semantic program must validate: {}", err.message()));
     let frame = plan_frame_layout(semantic.local_count, semantic.max_stack_height, 3);
     let cfg = cfg::build_semantic_cfg(semantic);
-    let planner = JointPlanner::build(semantic, &cfg, frame, config).unwrap_or_else(|err| {
+    let planner = JointPlanner::build(semantic, &cfg, frame, config, &[]).unwrap_or_else(|err| {
         panic!(
             "joint planner should build for test semantic program: {}",
             err.message()

@@ -182,6 +182,12 @@ pub(crate) struct FunctionPlan {
     /// Flat arena of per-edge repair-pool indices (or [`NO_REPAIR`]); blocks
     /// index it via their `repair` span.
     pub repair_index_arena: collections::Vec<u32>,
+    /// Function-scope preserved-class nomination, per local slot (indexed by
+    /// `FrameSlot.0`): `true` when the residency solver priced the local's
+    /// call tax at the preserved rate. The walker and rewriter keep nominated
+    /// residents alive across survivable (direct local-JIT) calls, and the
+    /// machine reads the same bit as its preserved-lane placement preference.
+    pub preferred_preserved: collections::Vec<bool>,
 }
 
 impl FunctionPlan {
@@ -190,5 +196,15 @@ impl FunctionPlan {
     #[inline]
     pub(crate) fn planned_residents(&self, block_index: usize) -> &[FrameSlot] {
         &self.resident_arena[self.blocks[block_index].planned_residents.range()]
+    }
+
+    /// Whether `slot` is preserved-class nominated: such a resident survives a
+    /// survivable (direct local-JIT) call instead of being killed by it.
+    #[inline]
+    pub(crate) fn is_preserved_nominated(&self, slot: FrameSlot) -> bool {
+        self.preferred_preserved
+            .get(slot.0 as usize)
+            .copied()
+            .unwrap_or(false)
     }
 }

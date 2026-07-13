@@ -25,7 +25,7 @@ use crate::collections::{self, phase_span_with_function};
 
 use crate::{
     error::WasmError,
-    vm::{backend::BackendConfig, entities::TableDispatchMode, wasm::semantic_ir::SemanticProgram},
+    vm::{backend::BackendConfig, wasm::semantic_ir::SemanticProgram},
 };
 
 use self::{
@@ -42,22 +42,19 @@ pub(crate) struct PrepareInput {
 }
 
 /// Module-level facts the middle-end reads but semantic decode does not carry.
-/// Threaded into [`prepare_function`] for the final-SSA cache-signal derivation
-/// ([`final_signals`]): the preserved-cache preference classifies local-JIT-call
-/// crosses via `is_local_jit_call`, which needs both the callee locality flags
-/// and the per-table dispatch modes.
+/// Threaded into [`prepare_function`] for the residency solver's call-class
+/// split: a direct call to a local JIT body is survivable for preserved-class
+/// nominated residents, everything else is a cache barrier.
+///
+/// INVARIANT (design §5.b): the prepared SSA is DERIVED from module facts and
+/// must be RECOMPUTED, never cached, when those facts change (`instance.rs`
+/// clears native code on a table-mutation revert; the recompile re-runs
+/// `prepare_function`).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct ModuleFacts<'a> {
     /// Per-function-index locality: is callee `i` a locally-JIT-compiled
     /// function (vs an imported/host function)?
     pub is_local_func: &'a [bool],
-    /// Per-table dispatch mode.
-    ///
-    /// INVARIANT (design §5.b): the prepared SSA is DERIVED from these modes and
-    /// must be RECOMPUTED, never cached, across a table-mutation revert
-    /// (`instance.rs` reverts the modes to `Generic` and clears native code; the
-    /// recompile re-runs `prepare_function` with the reverted modes).
-    pub table_dispatch_modes: &'a [TableDispatchMode],
 }
 
 /// Shared frontend output consumed by interpreter and native backends.
@@ -93,7 +90,15 @@ pub(crate) fn prepare_function(
     drop(cfg_phase);
 
     let joint_plan_phase = phase_span_with_function("joint_plan", input.function_index);
-    let planner = JointPlanner::build(&semantic, &semantic_cfg, frame, input.config)?;
+    let planner = JointPlanner::build(
+        &semantic,
+        &semantic_cfg,
+        frame,
+        input.config,
+        facts.is_local_func,
+    )?;
+    let preferred_preserved: collections::Vec<bool> =
+        planner.preferred_preserved().iter().copied().collect();
     drop(joint_plan_phase);
 
     let rewrite_cfg = rewrite::RewriteCfg::from_semantic_cfg(&semantic_cfg);
@@ -118,18 +123,15 @@ pub(crate) fn prepare_function(
     sink_plan::plan_sinks(&mut ssa);
     drop(ssa_sink_phase);
 
-    // Derive the two machine-facing cache signals over the FINAL SSA (the exact
-    // program the machine lowers, after cleanup merges + optimize + sink), using
-    // the original algorithms the deleted machine-side dataflows ran. Deriving
-    // them at plan time is unfaithful: a goto-successor merge folds a slot's
-    // first-touch across the block boundary a per-plan-block row cannot see.
+    // Derive the machine-facing entry requirement rows over the FINAL SSA (the
+    // exact program the machine lowers, after cleanup merges + optimize +
+    // sink). Deriving them at plan time is unfaithful: a goto-successor merge
+    // folds a slot's first-touch across the block boundary a per-plan-block
+    // row cannot see. The preserved-class bit is different: it is the solver's
+    // own nomination (the residency was priced with it and the plan's call
+    // survival obeys it), so it is published from the plan, not re-derived.
     ssa.block_entry_cache_requirements = final_signals::derive_entry_cache_requirements(&ssa);
-    ssa.preferred_preserved = final_signals::derive_preferred_preserved(
-        &ssa,
-        facts.is_local_func,
-        facts.table_dispatch_modes,
-        u16::from(input.config.preserved_cache_min_local_call_crosses),
-    );
+    ssa.preferred_preserved = preferred_preserved;
 
     shrink_prepared_ssa_storage(&mut ssa);
 

@@ -48,11 +48,13 @@ pub(crate) struct BackendConfig {
     pub fp_arg_lanes: u8,
     pub scalar_return_lanes: bool,
     pub call_scratch_slots: u16,
-    /// Static call-crossing threshold before a cached local prefers preserved
-    /// dynamic lanes. Preserved lanes have a function-entry save/return-restore
-    /// cost, so the shared placer only uses them for locals that cross several
-    /// direct local calls.
-    pub preserved_cache_min_local_call_crosses: u8,
+    /// Estimated per-lane cost, in native instructions, of nominating one
+    /// preserved dynamic lane: the body's lazy save at entry plus restores at
+    /// its return paths. The residency solver weighs this one-time cost
+    /// against the trip-weighted call-crossing relief a preserved-class
+    /// resident earns. Backends whose prologue bulk-saves the physical
+    /// registers regardless (everyone but arm64 today) would price this 0.
+    pub preserved_lane_save_overhead: u8,
 }
 
 impl BackendConfig {
@@ -114,8 +116,17 @@ impl BackendConfig {
             fp_arg_lanes: min_u8(fp_arg_lanes, fp_volatile_dynamic),
             scalar_return_lanes,
             call_scratch_slots,
-            preserved_cache_min_local_call_crosses: 7,
+            preserved_lane_save_overhead: 0,
         }
+    }
+
+    /// Override the estimated per-lane preserved-nomination cost (see the
+    /// field docs). Chainable after `with_volatility` by backends with a lazy
+    /// per-body preserved save.
+    #[inline]
+    pub(crate) const fn with_preserved_lane_save_overhead(mut self, overhead: u8) -> Self {
+        self.preserved_lane_save_overhead = overhead;
+        self
     }
 
     #[inline]

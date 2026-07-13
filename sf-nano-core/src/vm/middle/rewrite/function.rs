@@ -612,6 +612,7 @@ fn lower_block_body_op(
                 rtypes,
                 frame,
                 state,
+                planner,
                 resident_cache,
                 materialized_cache,
                 values,
@@ -922,6 +923,7 @@ fn lower_call_direct(
     result_types: &[ValueType],
     frame: FrameLayoutPlan,
     state: &mut BlockState,
+    planner: &JointPlanner,
     resident_cache: &mut BTreeSet<FrameSlot>,
     materialized_cache: &mut BTreeSet<FrameSlot>,
     values: &mut ValueAlloc,
@@ -948,8 +950,22 @@ fn lower_call_direct(
             state.finish_call(values, params, results, result_types);
         }
     }
-    resident_cache.clear();
-    materialized_cache.clear();
+    // Mirror of the exact walker's `call_effect`: a survivable (direct
+    // local-JIT) call keeps preserved-class nominated residents alive in their
+    // callee-saved registers; everything else dies at the boundary.
+    if planner.direct_call_survivable(callee) {
+        let keep = |set: &BTreeSet<FrameSlot>| -> BTreeSet<FrameSlot> {
+            set.iter()
+                .copied()
+                .filter(|slot| planner.is_preserved_nominated(*slot))
+                .collect()
+        };
+        *resident_cache = keep(resident_cache);
+        *materialized_cache = keep(materialized_cache);
+    } else {
+        resident_cache.clear();
+        materialized_cache.clear();
+    }
     Ok(())
 }
 
@@ -2076,6 +2092,7 @@ fn lower_block_terminator(
                 rtypes,
                 frame,
                 state,
+                planner,
                 resident_cache,
                 materialized_cache,
                 values,

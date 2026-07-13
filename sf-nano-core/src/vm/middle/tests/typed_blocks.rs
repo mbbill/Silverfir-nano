@@ -210,7 +210,7 @@ fn structured_branch_target_keeps_exact_transient_entry_at_end_block_open() {
 
     let frame = plan_frame_layout(semantic.local_count, semantic.max_stack_height, 3);
     let cfg = cfg::build_semantic_cfg(&semantic);
-    let plan = joint_plan::build::build_plan(&semantic, &cfg, frame, host_config(7, 13))
+    let plan = joint_plan::build::build_plan(&semantic, &cfg, frame, host_config(7, 13), &[])
         .expect("joint plan should build for structured branch target regression");
     let join_block = block_for_semantic_index(&cfg, 6);
     let join_entry = plan.blocks[join_block.as_usize()].entry.clone();
