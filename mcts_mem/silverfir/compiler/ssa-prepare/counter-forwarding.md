@@ -67,6 +67,29 @@
   value-duplication mechanism to satisfy linearity. Both are recorded doors,
   not part of this pass (sourced).
 
+- 2026-07-13 measurement: live-JIT sample histograms over the sha256 copy
+  loop, three shapes side by side, close the causal chain at instruction
+  granularity. Without any covering load, the counter reload carries 1103
+  samples and a second 874-sample pile sits on the loop-exit fall-through
+  (the flush/replay signature); loop total ~2050 samples. The old shape's
+  covering frame reload (`ldr [x20,#8]`, every iteration) itself costs ~1
+  sample — a store-buffer/L1 hit — yet collapses the exit-glue pile to 133,
+  loop total ~1130, while the counter reload still costs 980. With the pass
+  there is no load of the counter cell anywhere in the module and samples
+  disperse onto the strb and loop head with no single pile; loop total
+  ~1100. The three loop totals match the session scores ~232 / 267.9±1.3 /
+  277.3±0.8 MB/s. So the accidental medicine works by suppressing the flush
+  storm, not by being cheap to replace — it still pays the reload every
+  iteration; the pass deletes the reload outright and is strictly better
+  (sourced).
+
+- 2026-07-13 pitfall: even between two LIVE captures, code layout shifts
+  with compile shape (the copy loop sat at 0xc50 in one binary, 0xcc0 and
+  0xc3c in others), so hot loops must be located per capture by instruction
+  pattern, never by reusing an offset from another capture — reusing one
+  displayed an unrelated constant-materialization block as "the loop"
+  (sourced).
+
 - 2026-07-13 pitfall: the middle SSA's linear single-use discipline is
   enforced by a debug-only validator (`validate_linear_op_uses`) and assumed
   by machine register ownership — release builds do not check it. The first
