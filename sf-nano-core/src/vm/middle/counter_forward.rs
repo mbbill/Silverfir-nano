@@ -5,7 +5,7 @@
 //! `buffer[counter]`, then reloads the counter from memory to compare against
 //! a bound `B`. The reload is redundant — the store dominates it in the same
 //! block — but eliminating it requires proving the intervening byte store
-//! cannot alias the counter cell, which needs the loop-invariant bound
+//! cannot alias the counter memloc, which needs the loop-invariant bound
 //! `counter < B`. On Apple M4 the redundant same-address store→load chain is
 //! also a measured pipeline hazard: the eagerly-issued reload waits on store
 //! data every iteration and the exit branch resolves from it (sha256: −16%
@@ -14,24 +14,24 @@
 //! This pass proves the bound with a closed induction and forwards the stored
 //! value to the reload:
 //!
-//! - A *cell* is `(root local R, constant offset, 4 bytes)`, addressed as
+//! - A *memloc* is `(root local R, constant offset, 4 bytes)`, addressed as
 //!   `i32.load/store {offset} (local.get R)`. `R` must never be reassigned in
 //!   the function.
-//! - The candidate window is `store cell, v` … `load cell` within one block
+//! - The candidate window is `store memloc, v` … `load memloc` within one block
 //!   with no call and no unclassifiable memory write in between.
 //! - An intervening store is admissible when its address resolves to a
-//!   constant offset from `R` whose byte range is disjoint from the cell, or
+//!   constant offset from `R` whose byte range is disjoint from the memloc, or
 //!   when it is the counter byte-store `i32.store8 (base + local.get C)`
 //!   where `base` resolves to `R + delta` and the *counter protocol* proves
-//!   `C < B` with `delta + B <= cell offset`.
+//!   `C < B` with `delta + B <= memloc offset`.
 //! - Counter protocol (all checked structurally, bail on any mismatch):
 //!   every assignment to `C` in the function is either a constant `< B`, or
-//!   the result of a candidate cell load that is immediately followed by
+//!   the result of a candidate memloc load that is immediately followed by
 //!   `set C` and a block terminator branching on `C != B`, whose `== B`
 //!   successor reassigns `C` to a constant `< B` before any use of `C` in a
 //!   counter byte-store. Induction: `C` starts `< B` (constant init), each
-//!   iteration stores `C+1 <= B` to the cell, the in-window byte store stays
-//!   below the cell, the reload therefore returns the stored value, and the
+//!   iteration stores `C+1 <= B` to the memloc, the in-window byte store stays
+//!   below the memloc, the reload therefore returns the stored value, and the
 //!   `!= B` guard filters `B` before the value can reach the next byte store.
 //!   Values of `C` are locals, so calls cannot alter them; the `== B` path
 //!   resets `C` regardless of what a callee writes to memory.
@@ -124,9 +124,9 @@ struct CounterProtocol {
     store8_index: usize,
 }
 
-/// Full-width memory-cell store kinds eligible as window openers:
+/// Full-width memory-memloc store kinds eligible as window openers:
 /// (class, offset, width). Class pairs a store with its same-kind load.
-fn cell_store(kind: &PrimitiveOpKind) -> Option<(u8, u32, u64)> {
+fn memloc_store(kind: &PrimitiveOpKind) -> Option<(u8, u32, u64)> {
     match kind {
         PrimitiveOpKind::I32Store { offset, memidx: 0 } => Some((0, *offset, 4)),
         PrimitiveOpKind::I64Store { offset, memidx: 0 } => Some((1, *offset, 8)),
@@ -136,7 +136,7 @@ fn cell_store(kind: &PrimitiveOpKind) -> Option<(u8, u32, u64)> {
     }
 }
 
-fn cell_load(kind: &PrimitiveOpKind) -> Option<(u8, u32, u64)> {
+fn memloc_load(kind: &PrimitiveOpKind) -> Option<(u8, u32, u64)> {
     match kind {
         PrimitiveOpKind::I32Load { offset, memidx: 0 } => Some((0, *offset, 4)),
         PrimitiveOpKind::I64Load { offset, memidx: 0 } => Some((1, *offset, 8)),
@@ -231,13 +231,13 @@ fn collect_block_rewrites(
                     PrimitiveOpKind::I32Const { value } => {
                         facts.insert(inst.result, ValueFact::Const(value as u32 as u64));
                     }
-                    ref kind if cell_store(kind).is_some() => {
-                        let (class, offset, width) = cell_store(kind).expect("checked by guard");
+                    ref kind if memloc_store(kind).is_some() => {
+                        let (class, offset, width) = memloc_store(kind).expect("checked by guard");
                         if let Some(root) = operand_root(&program.const_pool, &facts, inst.args[0])
                         {
                             // Close every window this store may alias: keep
                             // only same-root windows with provably disjoint
-                            // byte ranges (the store's own cell re-opens).
+                            // byte ranges (the store's own memloc re-opens).
                             let store_root = root.0;
                             open_stores = open_stores
                                 .into_iter()
@@ -257,8 +257,8 @@ fn collect_block_rewrites(
                             open_stores.clear();
                         }
                     }
-                    ref kind if cell_load(kind).is_some() => {
-                        let (class, offset, width) = cell_load(kind).expect("checked by guard");
+                    ref kind if memloc_load(kind).is_some() => {
+                        let (class, offset, width) = memloc_load(kind).expect("checked by guard");
                         if let Some(root) = operand_root(&program.const_pool, &facts, inst.args[0])
                         {
                             if let Some(&(store_index, stored, _)) =
@@ -415,8 +415,8 @@ fn window_admissible(
     store_index: usize,
     load_index: usize,
     root: FrameSlot,
-    cell_offset: u32,
-    cell_width: u64,
+    memloc_offset: u32,
+    memloc_width: u64,
 ) -> Option<Option<CounterProtocol>> {
     let mut protocol: Option<CounterProtocol> = None;
 
@@ -440,8 +440,8 @@ fn window_admissible(
                     if !ranges_disjoint(
                         u64::from(offset),
                         width,
-                        u64::from(cell_offset),
-                        cell_width,
+                        u64::from(memloc_offset),
+                        memloc_width,
                     ) {
                         return None;
                     }
@@ -452,8 +452,8 @@ fn window_admissible(
                 {
                     // The counter byte-store: address = base + counter where
                     // base is a stable alias of root + delta. At most one per
-                    // window, i32 cells only.
-                    if protocol.is_some() || cell_width != 4 {
+                    // window, i32 memlocs only.
+                    if protocol.is_some() || memloc_width != 4 {
                         return None;
                     }
                     let guard = load_guard(program, block, load_index)?;
@@ -467,7 +467,7 @@ fn window_admissible(
                         else {
                             continue;
                         };
-                        if delta + guard.bound + u64::from(offset) <= u64::from(cell_offset) {
+                        if delta + guard.bound + u64::from(offset) <= u64::from(memloc_offset) {
                             protocol = Some(CounterProtocol {
                                 counter,
                                 bound: guard.bound,
@@ -626,7 +626,7 @@ fn local_root_delta(
 }
 
 /// The counter protocol: every assignment to `counter` in the function is a
-/// constant `< bound`, or a guarded cell load (a load of `(root, offset)`
+/// constant `< bound`, or a guarded memloc load (a load of `(root, offset)`
 /// immediately stored to `counter` and compared `!= bound` by the block
 /// terminator, whose `== bound` successor re-assigns `counter` to a constant
 /// `< bound` before any `local.get counter`).
@@ -669,7 +669,7 @@ fn counter_protocol_holds(
                     }
                     continue;
                 }
-                if !guarded_cell_load_assignment(program, b, op, root, offset, counter, bound) {
+                if !guarded_memloc_load_assignment(program, b, op, root, offset, counter, bound) {
                     return false;
                 }
             }
@@ -705,7 +705,7 @@ fn same_block_const(
 }
 
 #[allow(clippy::too_many_arguments)]
-fn guarded_cell_load_assignment(
+fn guarded_memloc_load_assignment(
     program: &SsaProgram,
     site_block: usize,
     site_op: usize,
@@ -718,17 +718,17 @@ fn guarded_cell_load_assignment(
     if site_op == 0 {
         return false;
     }
-    // The set's source must be the immediately preceding cell load.
+    // The set's source must be the immediately preceding memloc load.
     let load = &block.ops[site_op - 1];
     let Some(pool_idx) = load.op.as_primitive_idx() else {
         return false;
     };
-    let is_cell_load = matches!(
+    let is_memloc_load = matches!(
         program.primitive_pool[pool_idx as usize],
         PrimitiveOpKind::I32Load { offset: o, memidx: 0 } if o == offset
     );
     let site_src = block.ops[site_op].args[0];
-    if !is_cell_load || site_src.as_value() != Some(load.result) {
+    if !is_memloc_load || site_src.as_value() != Some(load.result) {
         return false;
     }
     // The load's base must be a get of `root` earlier in the block with no
