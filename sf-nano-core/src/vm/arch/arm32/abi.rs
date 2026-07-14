@@ -77,12 +77,16 @@ const REG_PLAN: RegPlan = RegPlan {
 
     gp_unit_bytes: 4,
 
+    // Lane order groups by JIT-ABI class: volatile lanes first (caller-saved
+    // physicals), then the preserved-dynamic lanes (EABI callee-saved R9, R5
+    // — survive body-to-body calls via the per-body lazy save), then the
+    // internal-scratch tail (R6, R7).
     gp_dynamic: &[
         Arm32Reg::R3,
-        Arm32Reg::R9,
         Arm32Reg::R0,
         Arm32Reg::R1,
         Arm32Reg::R2,
+        Arm32Reg::R9,
         Arm32Reg::R5,
         Arm32Reg::R6,
         Arm32Reg::R7,
@@ -158,14 +162,29 @@ pub(super) fn new_fp_scratch_pool() -> ScratchPool<u32, 3> {
 
 // ── Derived config ───────────────────────────────────────────────────────────
 
+/// Dynamic-bank volatility split: 4 volatile + 2 preserved + 2 internal
+/// scratch = the 8 dynamic lanes. The preserved lanes (R9, R5) are EABI
+/// callee-saved; bodies that clobber them save/restore lazily in the body
+/// prelude (`preserved_lane_save_overhead` = 1 store + ~2 restores).
+const GP_VOLATILE_DYNAMIC: u8 = 4;
+const GP_PRESERVED_DYNAMIC: u8 = 2;
+const GP_INTERNAL_SCRATCH: u8 = 2;
+
 #[inline]
 pub(crate) const fn compile_backend_config() -> BackendConfig {
-    BackendConfig::new(
+    BackendConfig::with_volatility(
         GP_UNIT_BYTES,
-        REG_PLAN.gp_dynamic.len() as u8,
+        GP_VOLATILE_DYNAMIC,
+        GP_PRESERVED_DYNAMIC,
+        GP_INTERNAL_SCRATCH,
         REG_PLAN.fp_dynamic.len() as u8,
+        0,
+        4,
+        4,
+        false,
         8,
     )
+    .with_preserved_lane_save_overhead(3)
 }
 
 // ── Callee-saved sets (ARMv7-specific encoding) ─────────────────────────────

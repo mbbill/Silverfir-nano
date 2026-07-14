@@ -765,14 +765,23 @@ fn edge_preferred_gp_layout(
     }
     let mut ordered = cells.to_vec();
     ordered.sort_by_key(|&cell| {
+        // Preference before width: a preserved-nominated cell must never be
+        // displaced from the (single, contiguous) preserved run by a wider
+        // non-nominated cell — on gp32 an unnominated i64 pair placed first
+        // could otherwise take the run and strand a nominee in a volatile
+        // lane, which the survivable-call carry treats as a broken plan
+        // contract. Within each preference class, wider cells still place
+        // first so pairs seat before singletons fragment the run. On 64-bit
+        // targets every width is 1, so this order is identical to the old
+        // width-first key.
         (
-            Reverse(cell_meta[cell].width),
             Reverse(
                 call_preserve_preferences
                     .get(cell)
                     .copied()
                     .unwrap_or(false),
             ),
+            Reverse(cell_meta[cell].width),
             cell,
         )
     });
@@ -1146,14 +1155,23 @@ fn build_block_bank_layout(
     }
 
     additions.sort_by_key(|&cell| {
+        // Preference before width: a preserved-nominated cell must never be
+        // displaced from the (single, contiguous) preserved run by a wider
+        // non-nominated cell — on gp32 an unnominated i64 pair placed first
+        // could otherwise take the run and strand a nominee in a volatile
+        // lane, which the survivable-call carry treats as a broken plan
+        // contract. Within each preference class, wider cells still place
+        // first so pairs seat before singletons fragment the run. On 64-bit
+        // targets every width is 1, so this order is identical to the old
+        // width-first key.
         (
-            Reverse(cell_meta[cell].width),
             Reverse(
                 call_preserve_preferences
                     .get(cell)
                     .copied()
                     .unwrap_or(false),
             ),
+            Reverse(cell_meta[cell].width),
             cell,
         )
     });
@@ -1641,6 +1659,47 @@ mod tests {
         assert_eq!(
             layout[0], 2,
             "a call-crossing inherited cache must move out of volatile lanes"
+        );
+    }
+
+    #[test]
+    fn preferred_singleton_outranks_wider_unpreferred_pair_for_preserved_lanes() {
+        // gp32 shape: 6 lanes, prefix occupies 0..3, preserved run = lanes 4-5.
+        // Cell 0 is an unnominated i64 pair (width 2); cell 1 is a nominated
+        // width-1 cell. Preference must outrank width: the nominee takes a
+        // preserved lane, and the pair — which no longer fits the remaining
+        // free lanes contiguously — must not strand the nominee in volatile.
+        let cells = collections::vec![0usize, 1usize];
+        let cell_meta = collections::vec![
+            CellLayoutMeta {
+                bank: LayoutBank::Gp,
+                width: 2,
+                is_ref: false,
+            },
+            CellLayoutMeta {
+                bank: LayoutBank::Gp,
+                width: 1,
+                is_ref: false,
+            },
+        ];
+        let call_preserve_preferences = collections::vec![false, true];
+        let preserved_lanes = collections::vec![false, false, false, false, true, true];
+
+        let layout = build_block_bank_layout(
+            &cells,
+            None,
+            &cell_meta,
+            6,
+            3,
+            LayoutBank::Gp,
+            &call_preserve_preferences,
+            &preserved_lanes,
+        )
+        .expect("pair + nominee layout should be feasible");
+
+        assert!(
+            preserved_lanes[layout[1] as usize],
+            "the preserved-nominated cell must sit in a preserved lane"
         );
     }
 }

@@ -175,8 +175,10 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
     /// Body entry prelude. Reached via `bl` from either the public stub or
     /// another SF function. Pushes the live LR onto the host stack so the
     /// body can freely make nested `bl`s without losing the BL return
-    /// address that brought us here. The body's unified Return and
-    /// `body_local_error_label` both pop this save before the native return.
+    /// address that brought us here, then saves the preserved-dynamic
+    /// registers the body clobbers. The body's unified Return and
+    /// `body_local_error_label` both unwind these saves before the native
+    /// return.
     fn lower_body_prelude(&mut self) {
         // sub sp, sp, #8           ; preserve 8-byte alignment
         // str lr, [sp, #0]         ; save the BL return address
@@ -186,6 +188,7 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
         self.core
             .text
             .emit_u32(enc::str_imm(Arm32Reg::R14, Arm32Reg::SP, 0));
+        self.lower_preserved_dynamic_body_save();
     }
 
     /// Body-local error tail (`body_local_error_label`). Reached from trap
@@ -194,6 +197,10 @@ impl<'a> ArchBackend<'a> for Arm32Backend<'a> {
     /// to LR without touching R0 (which already holds the trap kind set by
     /// the trap stub or inherited from a trapped descendant's `bl`).
     fn lower_body_local_error_tail(&mut self) {
+        // Pop the preserved sub-frame first so the link-save / call-record
+        // offsets below match the prelude layout. R0 (trap kind) untouched:
+        // preserved lanes never map to R0.
+        self.lower_preserved_dynamic_body_restore();
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         // ldr lr, [sp, #0]
         self.core
@@ -1115,6 +1122,11 @@ impl<'a> Arm32Backend<'a> {
 
         emit_call_arg_lanes::<Self>(self, args)?;
 
+        // Arg lanes are volatile; restoring the preserved sub-frame after
+        // staging them (sources may live in preserved regs) and before the
+        // link pop keeps the callee's view identical to a fresh call.
+        self.lower_preserved_dynamic_body_restore();
+
         self.core
             .text
             .emit_u32(enc::ldr_imm(Arm32Reg::R14, Arm32Reg::SP, 0));
@@ -1146,6 +1158,64 @@ impl<'a> Arm32Backend<'a> {
         Ok(())
     }
 
+    /// Physical preserved-dynamic registers this body clobbers, in a fixed
+    /// order shared by save and restore. GP only: arm32 declares
+    /// `fp_preserved_dynamic = 0`.
+    fn preserved_dynamic_body_regs(&self) -> collections::Vec<Arm32Reg> {
+        self.core
+            .preserved_clobbers()
+            .iter()
+            .map(|reg| map_reg(*reg).expect("validated arm32 preserved GP clobber must map"))
+            .collect()
+    }
+
+    /// Byte size of the body's preserved-register sub-frame, padded to the
+    /// EABI 8-byte stack alignment. Zero when the body clobbers no
+    /// preserved lane.
+    fn preserved_dynamic_save_bytes(&self) -> u32 {
+        let used = self.preserved_dynamic_body_regs().len() as u32 * 4;
+        used.div_ceil(8) * 8
+    }
+
+    /// Save the preserved-dynamic registers this body clobbers into a
+    /// sub-frame below the link save. Callers that keep preserved-class
+    /// caches across a direct call rely on every body restoring these on
+    /// all return paths.
+    fn lower_preserved_dynamic_body_save(&mut self) {
+        let regs = self.preserved_dynamic_body_regs();
+        let total = self.preserved_dynamic_save_bytes();
+        if total == 0 {
+            return;
+        }
+        self.core
+            .text
+            .emit_u32(enc::sub_imm(Arm32Reg::SP, Arm32Reg::SP, total, 0));
+        for (index, reg) in regs.iter().copied().enumerate() {
+            self.core
+                .text
+                .emit_u32(enc::str_imm(reg, Arm32Reg::SP, index as i32 * 4));
+        }
+    }
+
+    /// Mirror of [`Self::lower_preserved_dynamic_body_save`]; runs first on
+    /// every return path (unified return, tail call, body-local error tail)
+    /// so the fixed link-save / call-record offsets behind it stay valid.
+    pub(super) fn lower_preserved_dynamic_body_restore(&mut self) {
+        let regs = self.preserved_dynamic_body_regs();
+        let total = self.preserved_dynamic_save_bytes();
+        if total == 0 {
+            return;
+        }
+        for (index, reg) in regs.iter().copied().enumerate() {
+            self.core
+                .text
+                .emit_u32(enc::ldr_imm(reg, Arm32Reg::SP, index as i32 * 4));
+        }
+        self.core
+            .text
+            .emit_u32(enc::add_imm(Arm32Reg::SP, Arm32Reg::SP, total, 0));
+    }
+
     /// Unified return sequence. Inline at every `MachineTerminator::Return`.
     /// Pops the body prelude link save and the caller's call record from
     /// the host stack, copies the function's `return_results` region into
@@ -1164,6 +1234,11 @@ impl<'a> Arm32Backend<'a> {
     /// LR for the final `bx lr`. We bypass the scratch pool here and pin
     /// the two physical registers directly so the ordering is explicit.
     pub(super) fn emit_return_sequence(&mut self) -> Result<(), WasmError> {
+        // Preserved sub-frame unwinds first; the fixed sp offsets below
+        // (link save at 0, call record at 8) assume it is gone. The result
+        // copy only reads frame memory, so the freshly restored preserved
+        // registers stay intact.
+        self.lower_preserved_dynamic_body_restore();
         let runtime = self.runtime_for(self.core.func_id)?.clone();
         let fp_reg = map_fixed_reg(MACHINE_FP_REG);
         // Allocate both GP scratches for the return sequence. They are
