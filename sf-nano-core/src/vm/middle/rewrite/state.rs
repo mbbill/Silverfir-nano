@@ -17,6 +17,7 @@ use crate::{
     vm::{
         middle::{
             budget::count_live_bank_budget_units,
+            cell::CellId,
             discipline::{self, BankBudget, DisciplineDriver, Window},
             frame::{FrameLayoutPlan, FrameSlot},
             joint_plan::TransientContract,
@@ -94,8 +95,8 @@ impl DisciplineDriver for EmitDriver<'_> {
         *self.live = new_live;
     }
 
-    fn on_drop_cache(&mut self, slot: FrameSlot) {
-        self.ops.push(SsaInst::local_drop_cache(slot));
+    fn on_drop_cache(&mut self, slot: CellId) {
+        self.ops.push(SsaInst::cell_drop_cache(slot));
     }
 
     fn on_call_boundary(&mut self) {
@@ -217,7 +218,7 @@ impl BlockState {
         &mut self,
         results: collections::Vec<SsaValue>,
         result_types: collections::Vec<ValueType>,
-        result_aliases: collections::Vec<Option<FrameSlot>>,
+        result_aliases: collections::Vec<Option<CellId>>,
     ) -> Result<(), WasmError> {
         debug_assert_eq!(results.len(), result_types.len());
         debug_assert_eq!(results.len(), result_aliases.len());
@@ -236,7 +237,7 @@ impl BlockState {
         self.window.type_at_stack_index(stack_index)
     }
 
-    pub(super) fn live_aliases(&self) -> &[Option<FrameSlot>] {
+    pub(super) fn live_aliases(&self) -> &[Option<CellId>] {
         self.window.live_aliases()
     }
 
@@ -253,8 +254,8 @@ impl BlockState {
         &mut self,
         op: &SemanticOpKind,
         frame: FrameLayoutPlan,
-        resident: &mut BTreeSet<FrameSlot>,
-        local_slot_types: &[ValueType],
+        resident: &mut BTreeSet<CellId>,
+        cell_types: &[ValueType],
         values: &mut ValueAlloc,
     ) -> Result<(), WasmError> {
         let budget = BankBudget {
@@ -272,7 +273,7 @@ impl BlockState {
             &mut driver,
             frame,
             resident,
-            local_slot_types,
+            cell_types,
             budget,
         )
     }

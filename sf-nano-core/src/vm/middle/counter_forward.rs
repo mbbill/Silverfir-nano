@@ -44,7 +44,7 @@ use crate::collections;
 use tracked_alloc::collections::BTreeMap;
 
 use crate::vm::middle::{
-    frame::FrameSlot,
+    cell::CellId,
     ssa_ir::ir::{DecodedOperand, SsaInst, SsaOp, SsaOperand, SsaProgram, SsaTerminator, SsaValue},
 };
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
@@ -104,11 +104,11 @@ struct Rewrite {
     /// The stored value's recipe: `local.get inc_slot` (via `inc_get_op`,
     /// preserving the cache/slot access kind) + `inc_const`. The rewrite
     /// recomputes it instead of forwarding, keeping every value single-use.
-    inc_slot: FrameSlot,
+    inc_slot: CellId,
     inc_get_op: SsaOp,
     inc_add_op: SsaOp,
     inc_const: SsaOperand,
-    root: FrameSlot,
+    root: CellId,
     offset: u32,
     /// `None`: every intervening store was provably disjoint — forwarding is
     /// unconditional. `Some`: a counter byte-store was admitted under the
@@ -118,7 +118,7 @@ struct Rewrite {
 
 #[derive(Clone, Copy)]
 struct CounterProtocol {
-    counter: FrameSlot,
+    counter: CellId,
     bound: u64,
     /// Op index of the counter byte-store in the window.
     store8_index: usize,
@@ -173,11 +173,11 @@ fn ranges_disjoint(a_start: u64, a_width: u64, b_start: u64, b_width: u64) -> bo
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ValueFact {
     /// `local.get slot`, still valid (no later `local.set slot` seen).
-    GetLocal(FrameSlot),
+    GetLocal(CellId),
     /// `local.get slot` + constant.
-    LocalPlusConst(FrameSlot, u64),
+    LocalPlusConst(CellId, u64),
     /// `local.get a` + `local.get b` (either order).
-    LocalPlusLocal(FrameSlot, FrameSlot),
+    LocalPlusLocal(CellId, CellId),
     /// Constant.
     Const(u64),
     Opaque,
@@ -197,11 +197,11 @@ fn collect_block_rewrites(
 
     for (op_index, inst) in block.ops.iter().enumerate() {
         match inst.op {
-            SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE => {
-                facts.insert(inst.result, ValueFact::GetLocal(FrameSlot(inst.meta)));
+            SsaOp::CELL_GET_SLOT | SsaOp::CELL_GET_CACHE => {
+                facts.insert(inst.result, ValueFact::GetLocal(CellId(inst.meta)));
             }
-            SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE => {
-                let slot = FrameSlot(inst.meta);
+            SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE => {
+                let slot = CellId(inst.meta);
                 // A reassigned root/base invalidates address facts derived
                 // from it and any open window rooted at it.
                 facts = facts
@@ -324,7 +324,7 @@ fn collect_block_rewrites(
     }
 }
 
-fn fact_mentions(fact: &ValueFact, slot: FrameSlot) -> bool {
+fn fact_mentions(fact: &ValueFact, slot: CellId) -> bool {
     match *fact {
         ValueFact::GetLocal(s) => s == slot,
         ValueFact::LocalPlusConst(s, _) => s == slot,
@@ -373,7 +373,7 @@ fn operand_root(
     const_pool: &[u64],
     facts: &BTreeMap<SsaValue, ValueFact>,
     operand: SsaOperand,
-) -> Option<FrameSlot> {
+) -> Option<CellId> {
     match operand_fact(const_pool, facts, operand) {
         ValueFact::GetLocal(slot) => Some(slot),
         _ => None,
@@ -414,7 +414,7 @@ fn window_admissible(
     facts: &BTreeMap<SsaValue, ValueFact>,
     store_index: usize,
     load_index: usize,
-    root: FrameSlot,
+    root: CellId,
     memloc_offset: u32,
     memloc_width: u64,
 ) -> Option<Option<CounterProtocol>> {
@@ -493,7 +493,7 @@ fn window_admissible(
 
 #[derive(Clone, Copy)]
 struct LoadGuard {
-    counter: FrameSlot,
+    counter: CellId,
     bound: u64,
 }
 
@@ -507,13 +507,13 @@ fn load_guard(
 ) -> Option<LoadGuard> {
     let loaded = block.ops[load_index].result;
     let set = block.ops.get(load_index + 1)?;
-    if !matches!(set.op, SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE) {
+    if !matches!(set.op, SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE) {
         return None;
     }
     if set.args[0].as_value() != Some(loaded) {
         return None;
     }
-    let counter = FrameSlot(set.meta);
+    let counter = CellId(set.meta);
 
     // Find the Ne against a constant whose input is a fresh get of `counter`
     // (or the loaded value directly), and require the block terminator to
@@ -522,13 +522,13 @@ fn load_guard(
     let mut counter_reads: collections::Vec<SsaValue> = collections::vec![loaded];
     for inst in &block.ops[load_index + 2..] {
         match inst.op {
-            SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE => {
-                if FrameSlot(inst.meta) == counter {
+            SsaOp::CELL_GET_SLOT | SsaOp::CELL_GET_CACHE => {
+                if CellId(inst.meta) == counter {
                     counter_reads.push(inst.result);
                 }
             }
-            SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE => {
-                if FrameSlot(inst.meta) == counter {
+            SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE => {
+                if CellId(inst.meta) == counter {
                     return None;
                 }
             }
@@ -571,8 +571,8 @@ fn const_operand(program: &SsaProgram, operand: SsaOperand) -> Option<u64> {
 /// `before_op` take precedence over entry-reaching defs).
 fn local_root_delta(
     program: &SsaProgram,
-    slot: FrameSlot,
-    root: FrameSlot,
+    slot: CellId,
+    root: CellId,
     block_index: usize,
     before_op: usize,
 ) -> Option<u64> {
@@ -582,8 +582,8 @@ fn local_root_delta(
     let mut root_sets = 0usize;
     for (bi, block) in program.blocks.iter().enumerate() {
         for inst in &block.ops {
-            if matches!(inst.op, SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE)
-                && FrameSlot(inst.meta) == root
+            if matches!(inst.op, SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE)
+                && CellId(inst.meta) == root
             {
                 root_sets += 1;
                 if root_sets > 1 || bi != entry {
@@ -632,9 +632,9 @@ fn local_root_delta(
 /// `< bound` before any `local.get counter`).
 fn counter_protocol_holds(
     program: &SsaProgram,
-    root: FrameSlot,
+    root: CellId,
     offset: u32,
-    counter: FrameSlot,
+    counter: CellId,
     bound: u64,
     window_block: usize,
     window_store8_op: usize,
@@ -709,9 +709,9 @@ fn guarded_memloc_load_assignment(
     program: &SsaProgram,
     site_block: usize,
     site_op: usize,
-    root: FrameSlot,
+    root: CellId,
     offset: u32,
-    counter: FrameSlot,
+    counter: CellId,
     bound: u64,
 ) -> bool {
     let block = &program.blocks[site_block];
@@ -740,8 +740,8 @@ fn guarded_memloc_load_assignment(
             .rev()
             .find(|inst| inst.result == base)
             .is_some_and(|inst| {
-                matches!(inst.op, SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE)
-                    && FrameSlot(inst.meta) == root
+                matches!(inst.op, SsaOp::CELL_GET_SLOT | SsaOp::CELL_GET_CACHE)
+                    && CellId(inst.meta) == root
             })
     });
     if !base_ok {
@@ -764,13 +764,13 @@ fn guarded_memloc_load_assignment(
     };
     for (op_index, inst) in else_block.ops.iter().enumerate() {
         match inst.op {
-            SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE => {
-                if FrameSlot(inst.meta) == counter {
+            SsaOp::CELL_GET_SLOT | SsaOp::CELL_GET_CACHE => {
+                if CellId(inst.meta) == counter {
                     return false;
                 }
             }
-            SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE => {
-                if FrameSlot(inst.meta) == counter {
+            SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE => {
+                if CellId(inst.meta) == counter {
                     return same_block_const(program, else_block, op_index, inst.args[0])
                         .is_some_and(|value| value < bound);
                 }
@@ -793,7 +793,7 @@ fn single_local_set_use(
     let mut set_index: Option<usize> = None;
     for (offset, inst) in block.ops[load_index + 1..].iter().enumerate() {
         let abs_index = load_index + 1 + offset;
-        let is_local_set = matches!(inst.op, SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE);
+        let is_local_set = matches!(inst.op, SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE);
         for arg in inst.args.iter() {
             if arg.as_value() == Some(loaded) {
                 if !is_local_set || set_index.is_some() {
@@ -838,7 +838,7 @@ fn increment_recipe(
     store_index: usize,
     load_index: usize,
     stored: SsaOperand,
-) -> Option<(FrameSlot, SsaOp, SsaOp, SsaOperand)> {
+) -> Option<(CellId, SsaOp, SsaOp, SsaOperand)> {
     let stored_value = stored.as_value()?;
     // Find the defining Add before the store.
     let (add_index, add_inst) = block.ops[..store_index]
@@ -854,7 +854,7 @@ fn increment_recipe(
         return None;
     }
     // One operand is a local.get result, the other a constant.
-    let mut slot_and_op: Option<(FrameSlot, SsaOp)> = None;
+    let mut slot_and_op: Option<(CellId, SsaOp)> = None;
     let mut const_operand: Option<SsaOperand> = None;
     for arg in add_inst.args.iter() {
         match arg.decode() {
@@ -863,13 +863,13 @@ fn increment_recipe(
                     .iter()
                     .rev()
                     .find(|inst| inst.result == value)?;
-                if !matches!(get.op, SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE) {
+                if !matches!(get.op, SsaOp::CELL_GET_SLOT | SsaOp::CELL_GET_CACHE) {
                     return None;
                 }
                 if slot_and_op.is_some() {
                     return None;
                 }
-                slot_and_op = Some((FrameSlot(get.meta), get.op));
+                slot_and_op = Some((CellId(get.meta), get.op));
             }
             DecodedOperand::Const(_) => {
                 if const_operand.is_some() {
@@ -886,8 +886,8 @@ fn increment_recipe(
     // `slot` must not be reassigned between the get and the load.
     let _ = facts;
     for inst in &block.ops[add_index..load_index] {
-        if matches!(inst.op, SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE)
-            && FrameSlot(inst.meta) == slot
+        if matches!(inst.op, SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE)
+            && CellId(inst.meta) == slot
         {
             return None;
         }
@@ -915,7 +915,7 @@ fn successors(terminator: &SsaTerminator) -> collections::Vec<usize> {
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum DefFact {
     Const(u64),
-    RootPlusConst(FrameSlot, u64),
+    RootPlusConst(CellId, u64),
     /// Anything else; poisons whichever property is being checked.
     Other,
 }
@@ -931,7 +931,7 @@ struct SlotDefs {
 /// Compute reaching definitions of `slot` (classified per site). Returns
 /// `None` when the slot has more than 63 def sites (bitmask limit) — callers
 /// bail conservatively.
-fn slot_reaching_defs(program: &SsaProgram, slot: FrameSlot) -> Option<SlotDefs> {
+fn slot_reaching_defs(program: &SsaProgram, slot: CellId) -> Option<SlotDefs> {
     let mut sites: collections::Vec<(usize, usize, DefFact)> = collections::Vec::new();
     // Implicit zero-init reaches the entry.
     sites.push((usize::MAX, 0, DefFact::Const(0)));
@@ -939,11 +939,11 @@ fn slot_reaching_defs(program: &SsaProgram, slot: FrameSlot) -> Option<SlotDefs>
         let mut facts: BTreeMap<SsaValue, ValueFact> = BTreeMap::new();
         for (op_index, inst) in block.ops.iter().enumerate() {
             match inst.op {
-                SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE => {
-                    facts.insert(inst.result, ValueFact::GetLocal(FrameSlot(inst.meta)));
+                SsaOp::CELL_GET_SLOT | SsaOp::CELL_GET_CACHE => {
+                    facts.insert(inst.result, ValueFact::GetLocal(CellId(inst.meta)));
                 }
-                SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE => {
-                    let set_slot = FrameSlot(inst.meta);
+                SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE => {
+                    let set_slot = CellId(inst.meta);
                     if set_slot == slot {
                         let fact = match operand_fact(&program.const_pool, &facts, inst.args[0]) {
                             ValueFact::Const(value) => DefFact::Const(value),
@@ -1028,10 +1028,10 @@ fn apply_rewrite(program: &mut SsaProgram, rewrite: &Rewrite) {
     // recomputed sum. The counter is i32 by construction.
     let get_value = SsaValue(program.value_types.len() as u32);
     program.value_types.push(crate::value_type::ValueType::I32);
-    program.value_sink_local.push(None);
+    program.value_sink_cell.push(None);
     let add_value = SsaValue(program.value_types.len() as u32);
     program.value_types.push(crate::value_type::ValueType::I32);
-    program.value_sink_local.push(None);
+    program.value_sink_cell.push(None);
 
     let block = &mut program.blocks[rewrite.block];
     // Replace the load with the fresh get, insert the Add after it, and
@@ -1057,7 +1057,7 @@ fn apply_rewrite(program: &mut SsaProgram, rewrite: &Rewrite) {
         .expect("collection guaranteed a single local.set consumer");
     debug_assert!(matches!(
         set.op,
-        SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE
+        SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE
     ));
     set.args[0] = SsaOperand::value(add_value);
 }

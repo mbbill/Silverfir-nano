@@ -107,7 +107,7 @@ impl MachineProgram {
                 "machine block param has mismatched storage type for its register bank",
             ));
         }
-        if matches!(param.owner, MachineRegOwner::CachedLocal) && !is_dynamic_reg(param.reg, config)
+        if matches!(param.owner, MachineRegOwner::CachedCell) && !is_dynamic_reg(param.reg, config)
         {
             return Err(WasmError::internal(
                 "cached-local block param must use a dynamic register",
@@ -126,7 +126,7 @@ impl MachineProgram {
                 if matches!(
                     &inst.kind,
                     MachineInstKind::Move {
-                        owner: MachineRegOwner::CachedLocal,
+                        owner: MachineRegOwner::CachedCell,
                         ..
                     }
                 ) && !is_dynamic_reg(*dst, config)
@@ -168,7 +168,7 @@ impl MachineProgram {
                 if matches!(
                     &inst.kind,
                     MachineInstKind::Load {
-                        owner: MachineRegOwner::CachedLocal,
+                        owner: MachineRegOwner::CachedCell,
                         ..
                     }
                 ) && !is_dynamic_reg(*dst, config)
@@ -1017,7 +1017,7 @@ impl MachineProgram {
             .zip(edge.args.iter())
         {
             if let MachineValue::ReservedReg(reg) = arg {
-                if !matches!(param.owner, MachineRegOwner::CachedLocal) {
+                if !matches!(param.owner, MachineRegOwner::CachedCell) {
                     return Err(WasmError::internal(
                         "machine block -> uses ReservedReg for non-cached-local param",
                     ));

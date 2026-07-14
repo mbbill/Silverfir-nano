@@ -445,11 +445,11 @@ impl<'a> BlockLowerContext<'a> {
             }
         });
 
-        for index in 0..self.cached_locals().len() {
+        for index in 0..self.cached_cells().len() {
             if !self.is_cache_live(index) {
                 continue;
             }
-            let Some(bound) = self.bound_cached_local(index) else {
+            let Some(bound) = self.bound_cached_cell(index) else {
                 continue;
             };
             push_unique_param(
@@ -457,7 +457,7 @@ impl<'a> BlockLowerContext<'a> {
                 machine_block_param_with_owner(
                     bound.reg,
                     self.storage_type_for_reg(bound.reg),
-                    MachineRegOwner::CachedLocal,
+                    MachineRegOwner::CachedCell,
                 ),
             );
             if let Some(hi_reg) = bound.hi_reg {
@@ -466,7 +466,7 @@ impl<'a> BlockLowerContext<'a> {
                     machine_block_param_with_owner(
                         hi_reg,
                         self.storage_type_for_reg(hi_reg),
-                        MachineRegOwner::CachedLocal,
+                        MachineRegOwner::CachedCell,
                     ),
                 );
             }
@@ -713,7 +713,7 @@ impl<'a> BlockLowerContext<'a> {
                 .linear_value_storage_type(index)
                 .unwrap_or(MachineStorageType::GpWord);
         }
-        self.cached_local_storage_type_for_reg(reg)
+        self.cached_cell_storage_type_for_reg(reg)
             .unwrap_or(MachineStorageType::GpWord)
     }
 
@@ -863,7 +863,7 @@ fn preferred_fp_dynamic_reg(regfile: &MachineRegFile, ordinal: usize) -> Option<
     regfile.ordered_fp_allocatable(ordinal)
 }
 
-pub(super) fn canonical_cached_local_mem_width(ty: MachineStorageType) -> MachineMemWidth {
+pub(super) fn canonical_cached_cell_mem_width(ty: MachineStorageType) -> MachineMemWidth {
     canonical_storage_mem_width(ty)
 }
 
@@ -1484,6 +1484,7 @@ mod tests {
 
     fn make_test_context(value_types: collections::Vec<ValueType>) -> BlockLowerContext<'static> {
         let program = Box::leak(Box::new(SsaProgram {
+            cell_homes: (0..4u16).map(crate::vm::middle::frame::FrameSlot).collect(),
             entry: SsaTarget(0),
             blocks: collections::vec![SsaBlock {
                 id: SsaTarget(0),
@@ -1492,14 +1493,14 @@ mod tests {
                 extra_args: collections::Vec::new(),
                 terminator: SsaTerminator::Return { results: None },
             }],
-            local_slot_types: collections::Vec::new(),
+            cell_types: collections::Vec::new(),
             result_types: collections::Vec::new(),
-            local_slot_info: collections::Vec::new(),
-            block_entry_cached_slots: collections::vec![collections::vec![]],
+            cell_info: collections::Vec::new(),
+            block_entry_cached_cells: collections::vec![collections::vec![]],
             block_entry_cache_requirements: collections::vec![collections::vec![]],
             preferred_preserved: collections::Vec::new(),
             value_types,
-            value_sink_local: collections::vec![],
+            value_sink_cell: collections::vec![],
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
@@ -1510,7 +1511,7 @@ mod tests {
         let runtime = MachineFunctionAbi::default();
         let all_runtime = Box::leak(Box::new(collections::vec![runtime]));
         let explicit_cache = Box::leak(Box::new(
-            super::super::lower_context::explicit_cached_locals(program),
+            super::super::lower_context::explicit_cached_cells(program).expect("explicit cells"),
         ));
         let entry_cache_params = Box::leak(Box::new(
             super::super::lower_cache_layout::compute_block_entry_cache_params(

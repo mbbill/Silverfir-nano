@@ -12,25 +12,25 @@ use crate::{
 };
 
 use super::{
-    lower_context::{BlockLowerContext, BoundCachedLocal, ValueRegs},
+    lower_context::{BlockLowerContext, BoundCachedCell, ValueRegs},
     lower_module::slot_offset_bytes,
-    lower_regalloc::{canonical_cached_local_mem_width, machine_block_params_for_value},
+    lower_regalloc::{canonical_cached_cell_mem_width, machine_block_params_for_value},
 };
 
 impl<'a> BlockLowerContext<'a> {
     /// Save only cached locals that have been written since the last save.
-    pub(super) fn emit_save_dirty_cached_locals(&mut self) -> Result<(), WasmError> {
-        for index in 0..self.cached_locals().len() {
+    pub(super) fn emit_save_dirty_cached_cells(&mut self) -> Result<(), WasmError> {
+        for index in 0..self.cached_cells().len() {
             if !self.is_cache_live(index) {
                 continue;
             }
             if !self.is_cache_dirty(index) {
                 continue;
             }
-            let cached = self.bound_cached_local(index).ok_or_else(|| {
+            let cached = self.bound_cached_cell(index).ok_or_else(|| {
                 WasmError::internal("cached local binding missing during cache save")
             })?;
-            self.emit_save_bound_cached_local(&cached)?;
+            self.emit_save_bound_cached_cell(&cached)?;
         }
         self.clear_cache_dirty();
         self.clear_cache_live();
@@ -46,7 +46,7 @@ impl<'a> BlockLowerContext<'a> {
     /// are published once before the call so the frame is authoritative at
     /// the safepoint, then continue in the preserved lane on the success
     /// edge.
-    pub(super) fn prepare_cached_locals_for_local_call(
+    pub(super) fn prepare_cached_cells_for_local_call(
         &mut self,
     ) -> Result<
         (
@@ -58,29 +58,29 @@ impl<'a> BlockLowerContext<'a> {
         let mut success_args = crate::collections::Vec::new();
         let mut continuation_params = crate::collections::Vec::new();
 
-        for index in 0..self.cached_locals().len() {
+        for index in 0..self.cached_cells().len() {
             if !self.is_cache_live(index) {
                 continue;
             }
-            let cached = self.bound_cached_local(index).ok_or_else(|| {
+            let cached = self.bound_cached_cell(index).ok_or_else(|| {
                 WasmError::internal("cached local binding missing during local-call cache prep")
             })?;
-            if self.plan_carries_cached_local_across_local_call(index, &cached) {
-                if !self.cached_local_regs_are_preserved(&cached) {
+            if self.plan_carries_cached_cell_across_local_call(index, &cached) {
+                if !self.cached_cell_regs_are_preserved(&cached) {
                     return Err(WasmError::internal(
                         "preserved-nominated cache sits in a volatile lane at a survivable call",
                     ));
                 }
                 if self.is_cache_dirty(index) {
-                    self.emit_save_bound_cached_local(&cached)?;
+                    self.emit_save_bound_cached_cell(&cached)?;
                     self.set_cache_dirty(index, false);
                 }
-                success_args.extend(cached_local_success_args(&cached));
-                continuation_params.extend(cached_local_continuation_params(&cached));
+                success_args.extend(cached_cell_success_args(&cached));
+                continuation_params.extend(cached_cell_continuation_params(&cached));
                 continue;
             }
             if self.is_cache_dirty(index) {
-                self.emit_save_bound_cached_local(&cached)?;
+                self.emit_save_bound_cached_cell(&cached)?;
             }
             self.set_cache_live(index, false);
             self.set_cache_has_value(index, false);
@@ -91,19 +91,19 @@ impl<'a> BlockLowerContext<'a> {
         Ok((success_args, continuation_params))
     }
 
-    pub(super) fn emit_drop_cached_local(&mut self, index: usize) -> Result<(), WasmError> {
+    pub(super) fn emit_drop_cached_cell(&mut self, index: usize) -> Result<(), WasmError> {
         if !self.is_cache_live(index) {
             return Ok(());
         }
         let cached = self
-            .bound_cached_local(index)
+            .bound_cached_cell(index)
             .ok_or_else(|| WasmError::internal("cached local binding missing during cache drop"))?;
         self.materialize_cache_aliases(cached.reg, &[])?;
         if let Some(hi_reg) = cached.hi_reg {
             self.materialize_cache_aliases(hi_reg, &[])?;
         }
         if self.is_cache_dirty(index) {
-            self.emit_save_bound_cached_local(&cached)?;
+            self.emit_save_bound_cached_cell(&cached)?;
         }
         self.set_cache_live(index, false);
         self.set_cache_has_value(index, false);
@@ -112,15 +112,15 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    pub(super) fn evict_cached_locals_in_gp_regs(
+    pub(super) fn evict_cached_cells_in_gp_regs(
         &mut self,
         regs: &[crate::vm::machine::machine_ir::MachineReg],
     ) -> Result<(), WasmError> {
-        for index in 0..self.cached_locals().len() {
+        for index in 0..self.cached_cells().len() {
             if !self.is_cache_live(index) {
                 continue;
             }
-            let Some(cached) = self.bound_cached_local(index) else {
+            let Some(cached) = self.bound_cached_cell(index) else {
                 continue;
             };
             if regs.contains(&cached.reg)
@@ -129,7 +129,7 @@ impl<'a> BlockLowerContext<'a> {
                     .map(|reg| regs.contains(&reg))
                     .unwrap_or(false)
             {
-                self.emit_drop_cached_local(index)?;
+                self.emit_drop_cached_cell(index)?;
             }
         }
         Ok(())
@@ -216,17 +216,17 @@ impl<'a> BlockLowerContext<'a> {
         });
     }
 
-    fn plan_carries_cached_local_across_local_call(
+    fn plan_carries_cached_cell_across_local_call(
         &self,
         index: usize,
-        cached: &BoundCachedLocal,
+        cached: &BoundCachedCell,
     ) -> bool {
         self.cache_has_value(index)
             && self.prefers_preserved_cache_binding(index)
             && !cached.value_ty.is_ref()
     }
 
-    fn cached_local_regs_are_preserved(&self, cached: &BoundCachedLocal) -> bool {
+    fn cached_cell_regs_are_preserved(&self, cached: &BoundCachedCell) -> bool {
         self.regfile().is_preserved_dynamic_reg(cached.reg)
             && cached
                 .hi_reg
@@ -234,7 +234,7 @@ impl<'a> BlockLowerContext<'a> {
                 .unwrap_or(true)
     }
 
-    fn emit_save_bound_cached_local(&mut self, cached: &BoundCachedLocal) -> Result<(), WasmError> {
+    fn emit_save_bound_cached_cell(&mut self, cached: &BoundCachedCell) -> Result<(), WasmError> {
         if matches!(cached.ty, MachineStorageType::GpI64) {
             let ops = self.i64_ops();
             ops.emit_save_cached_i64(self, cached)?;
@@ -242,14 +242,14 @@ impl<'a> BlockLowerContext<'a> {
         }
         #[cfg(sf_has_simd)]
         if matches!(cached.ty, MachineStorageType::V128) {
-            self.emit_store_frame_v128(cached.slot, cached.reg)?;
+            self.emit_store_frame_v128(cached.home, cached.reg)?;
             return Ok(());
         }
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
                 ty: cached.ty,
-                addr: self.frame_addr(cached.slot)?,
-                width: canonical_cached_local_mem_width(cached.ty),
+                addr: self.frame_addr(cached.home)?,
+                width: canonical_cached_cell_mem_width(cached.ty),
                 src: MachineValue::Reg(cached.reg),
             },
         });
@@ -257,7 +257,7 @@ impl<'a> BlockLowerContext<'a> {
     }
 }
 
-fn cached_local_success_args(cached: &BoundCachedLocal) -> crate::collections::Vec<MachineValue> {
+fn cached_cell_success_args(cached: &BoundCachedCell) -> crate::collections::Vec<MachineValue> {
     let mut args = crate::collections::Vec::with_capacity(1 + usize::from(cached.hi_reg.is_some()));
     args.push(MachineValue::Reg(cached.reg));
     if let Some(hi_reg) = cached.hi_reg {
@@ -266,8 +266,8 @@ fn cached_local_success_args(cached: &BoundCachedLocal) -> crate::collections::V
     args
 }
 
-fn cached_local_continuation_params(
-    cached: &BoundCachedLocal,
+fn cached_cell_continuation_params(
+    cached: &BoundCachedCell,
 ) -> crate::collections::Vec<MachineBlockParam> {
     machine_block_params_for_value(
         ValueRegs {
@@ -277,6 +277,6 @@ fn cached_local_continuation_params(
         cached.ty,
     )
     .into_iter()
-    .map(|param| param.with_owner(MachineRegOwner::CachedLocal))
+    .map(|param| param.with_owner(MachineRegOwner::CachedCell))
     .collect()
 }

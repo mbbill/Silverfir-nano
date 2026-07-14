@@ -190,7 +190,7 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
             }
         } else {
             match inst.op {
-                SsaOp::SPILL | SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE => {
+                SsaOp::SPILL | SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE => {
                     if let Some(value) = inst.args[0].as_value() {
                         still_used[value.0 as usize] = true;
                     }
@@ -1082,17 +1082,15 @@ fn max_value_index_parts(
             let _ = program;
         } else {
             match inst.op {
-                SsaOp::FILL | SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE => {
+                SsaOp::FILL | SsaOp::CELL_GET_SLOT | SsaOp::CELL_GET_CACHE => {
                     max_value = max_value.max(Some(inst.result));
                 }
-                SsaOp::SPILL | SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE => {
+                SsaOp::SPILL | SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE => {
                     if let Some(value) = inst.args[0].as_value() {
                         max_value = max_value.max(Some(value));
                     }
                 }
-                SsaOp::LOCAL_ENSURE_CACHE
-                | SsaOp::LOCAL_RESERVE_CACHE
-                | SsaOp::LOCAL_DROP_CACHE => {}
+                SsaOp::CELL_ENSURE_CACHE | SsaOp::CELL_RESERVE_CACHE | SsaOp::CELL_DROP_CACHE => {}
                 SsaOp::CALL => {
                     if inst.result.is_some() {
                         max_value = max_value.max(Some(inst.result));
@@ -1205,16 +1203,17 @@ mod tests {
 
     fn empty_program() -> SsaProgram {
         SsaProgram {
+            cell_homes: collections::Vec::new(),
             entry: SsaTarget(0),
             blocks: collections::Vec::new(),
-            local_slot_types: collections::Vec::new(),
+            cell_types: collections::Vec::new(),
             result_types: collections::Vec::new(),
-            local_slot_info: collections::Vec::new(),
-            block_entry_cached_slots: collections::Vec::new(),
+            cell_info: collections::Vec::new(),
+            block_entry_cached_cells: collections::Vec::new(),
             block_entry_cache_requirements: collections::Vec::new(),
             preferred_preserved: collections::Vec::new(),
             value_types: collections::Vec::new(),
-            value_sink_local: collections::Vec::new(),
+            value_sink_cell: collections::Vec::new(),
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
@@ -1253,7 +1252,7 @@ mod tests {
         };
         program.blocks.push(block);
         program
-            .block_entry_cached_slots
+            .block_entry_cached_cells
             .push(collections::Vec::new());
         program
             .block_entry_cache_requirements
@@ -1311,7 +1310,7 @@ mod tests {
             },
         });
         program
-            .block_entry_cached_slots
+            .block_entry_cached_cells
             .push(collections::Vec::new());
         program
             .block_entry_cache_requirements
@@ -1374,7 +1373,7 @@ mod tests {
             terminator: SsaTerminator::Return { results: None },
         });
         program
-            .block_entry_cached_slots
+            .block_entry_cached_cells
             .push(collections::Vec::new());
         program
             .block_entry_cache_requirements

@@ -3,7 +3,7 @@
 use crate::collections;
 
 use crate::value_type::ValueType;
-use crate::vm::middle::frame::FrameSlot;
+use crate::vm::middle::cell::CellId;
 use crate::vm::middle::ssa_ir::ir::EntryCacheRequirement;
 /// Exact transient entry state at one CFG block entry.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -27,14 +27,14 @@ impl EntryState {
 
 /// Compact per-block local summary retained for the public-cache solver.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
-pub(crate) struct BlockLocalSummary {
-    pub slot_scores: collections::Vec<LocalSlotScore>,
+pub(crate) struct BlockCellSummary {
+    pub slot_scores: collections::Vec<CellScore>,
 }
 
 /// Compact per-slot access count for one CFG block.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct LocalSlotScore {
-    pub slot: FrameSlot,
+pub(crate) struct CellScore {
+    pub slot: CellId,
     pub access_count: u16,
 }
 
@@ -55,16 +55,16 @@ pub(crate) struct LocalSlotScore {
 /// [`derive_edge_repair`] so the logic exists once.
 #[derive(Clone, Debug, Default, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct RepairActions {
-    pub ensure_cached_locals: collections::Vec<FrameSlot>,
-    pub reserve_cached_locals: collections::Vec<FrameSlot>,
-    pub drop_cached_locals: collections::Vec<FrameSlot>,
+    pub ensure_cached_cells: collections::Vec<CellId>,
+    pub reserve_cached_cells: collections::Vec<CellId>,
+    pub drop_cached_cells: collections::Vec<CellId>,
 }
 
 impl RepairActions {
     pub(crate) fn is_empty(&self) -> bool {
-        self.ensure_cached_locals.is_empty()
-            && self.reserve_cached_locals.is_empty()
-            && self.drop_cached_locals.is_empty()
+        self.ensure_cached_cells.is_empty()
+            && self.reserve_cached_cells.is_empty()
+            && self.drop_cached_cells.is_empty()
     }
 }
 
@@ -87,14 +87,14 @@ pub(crate) struct RepairActionsSpans {
 /// derivation reads it from the target block's lowered ops. Both call this one
 /// function so the drop/ensure/reserve grouping cannot drift.
 pub(crate) fn derive_edge_repair(
-    pred_exit: &[FrameSlot],
-    succ_entry: &[FrameSlot],
-    mut classify: impl FnMut(FrameSlot) -> Option<EntryCacheRequirement>,
+    pred_exit: &[CellId],
+    succ_entry: &[CellId],
+    mut classify: impl FnMut(CellId) -> Option<EntryCacheRequirement>,
 ) -> RepairActions {
     let mut repair = RepairActions::default();
     for &slot in pred_exit {
         if !succ_entry.contains(&slot) {
-            repair.drop_cached_locals.push(slot);
+            repair.drop_cached_cells.push(slot);
         }
     }
     for &slot in succ_entry {
@@ -102,8 +102,8 @@ pub(crate) fn derive_edge_repair(
             continue;
         }
         match classify(slot) {
-            Some(EntryCacheRequirement::Ensure) => repair.ensure_cached_locals.push(slot),
-            Some(EntryCacheRequirement::Reserve) => repair.reserve_cached_locals.push(slot),
+            Some(EntryCacheRequirement::Ensure) => repair.ensure_cached_cells.push(slot),
+            Some(EntryCacheRequirement::Reserve) => repair.reserve_cached_cells.push(slot),
             None => {}
         }
     }
@@ -138,7 +138,7 @@ pub(crate) struct BlockPlan {
     /// The block's planned cache residents (the region solver's public set), as
     /// a span into [`FunctionPlan::resident_arena`].
     ///
-    /// This is the ADMISSION policy, not the published entry row. `local_access`
+    /// This is the ADMISSION policy, not the published entry row. `cell_access`
     /// admits a local to cache exactly when it is a planned resident, so a hot
     /// local re-accessed after a call is re-cached even though the exact entry
     /// row trimmed it — the call invalidated entry residency but not admission.
@@ -168,22 +168,22 @@ pub(crate) struct FunctionPlan {
     /// Flat arena for every block's planned-resident set; blocks index it via
     /// their `planned_residents` span. Built in `build_plan` before pass D (the
     /// walker reads it), so it is a separate arena from `row_arena`.
-    pub resident_arena: collections::Vec<FrameSlot>,
+    pub resident_arena: collections::Vec<CellId>,
     /// Content-deduped boundary-repair action lists (pass D), indexed by the
     /// entries of `repair_index_arena`. Each entry's slot groups live in
     /// `repair_slot_arena`. Consumed only by rewrite.
     pub repair_pool: collections::Vec<RepairActionsSpans>,
     /// Flat arena of the repair pool's drop/ensure/reserve slot groups; pool
     /// entries index it via their [`RepairActionsSpans`] spans.
-    pub repair_slot_arena: collections::Vec<FrameSlot>,
+    pub repair_slot_arena: collections::Vec<CellId>,
     /// Flat arena for every block's exact entry/exit cache rows; blocks index it
     /// via their `exact_entry` / `exact_exit` spans.
-    pub row_arena: collections::Vec<FrameSlot>,
+    pub row_arena: collections::Vec<CellId>,
     /// Flat arena of per-edge repair-pool indices (or [`NO_REPAIR`]); blocks
     /// index it via their `repair` span.
     pub repair_index_arena: collections::Vec<u32>,
     /// Function-scope preserved-class nomination, per local slot (indexed by
-    /// `FrameSlot.0`): `true` when the residency solver priced the local's
+    /// `CellId.0`): `true` when the residency solver priced the local's
     /// call tax at the preserved rate. The walker and rewriter keep nominated
     /// residents alive across survivable (direct local-JIT) calls, and the
     /// machine reads the same bit as its preserved-lane placement preference.
@@ -194,14 +194,14 @@ impl FunctionPlan {
     /// `block`'s planned-resident set (admission policy): a slice into
     /// [`Self::resident_arena`].
     #[inline]
-    pub(crate) fn planned_residents(&self, block_index: usize) -> &[FrameSlot] {
+    pub(crate) fn planned_residents(&self, block_index: usize) -> &[CellId] {
         &self.resident_arena[self.blocks[block_index].planned_residents.range()]
     }
 
     /// Whether `slot` is preserved-class nominated: such a resident survives a
     /// survivable (direct local-JIT) call instead of being killed by it.
     #[inline]
-    pub(crate) fn is_preserved_nominated(&self, slot: FrameSlot) -> bool {
+    pub(crate) fn is_preserved_nominated(&self, slot: CellId) -> bool {
         self.preferred_preserved
             .get(slot.0 as usize)
             .copied()

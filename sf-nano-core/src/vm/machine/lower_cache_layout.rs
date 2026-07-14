@@ -9,7 +9,7 @@ use crate::{
         entities::TableDispatchMode,
         machine::machine_ir::MachineStorageType,
         middle::{
-            frame::FrameSlot,
+            cell::CellId,
             ssa_ir::{
                 ir::{
                     EntryCacheRequirement, SsaBlock, SsaCallOp, SsaOp, SsaProgram, SsaTerminator,
@@ -21,12 +21,12 @@ use crate::{
 };
 
 use super::{
-    lower_context::{CachedLocal, EntryCacheParam, ValueRegs},
+    lower_context::{CachedCell, EntryCacheParam, ValueRegs},
     lower_module::{preferred_fp_dynamic_reg, preferred_gp_dynamic_reg},
     lower_regalloc::MachineRegFile,
 };
 
-/// Sentinel for "no lane assigned" in the slot->lane layout matrices.
+/// Sentinel for "no lane assigned" in the cell->lane layout matrices.
 /// Replaces `None` in what was previously `Option<usize>` (halves the
 /// per-element size from 16 to 4 bytes).
 const LANE_UNASSIGNED: u32 = u32::MAX;
@@ -38,7 +38,7 @@ enum LayoutBank {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct SlotLayoutMeta {
+struct CellLayoutMeta {
     bank: LayoutBank,
     width: usize,
     is_ref: bool,
@@ -53,24 +53,24 @@ struct ParamPrefixUsage {
 pub(super) fn compute_block_entry_cache_params(
     regfile: &MachineRegFile,
     program: &SsaProgram,
-    cached_locals: &[CachedLocal],
+    cached_cells: &[CachedCell],
     gp_reg_width: u8,
     is_local_func: &[bool],
     table_dispatch_modes: &[TableDispatchMode],
     preferred_preserved: &[bool],
 ) -> Result<collections::Vec<collections::Vec<EntryCacheParam>>, WasmError> {
-    if program.blocks.is_empty() || cached_locals.is_empty() {
+    if program.blocks.is_empty() || cached_cells.is_empty() {
         return Ok(collections::vec![collections::Vec::new(); program.blocks.len()]);
     }
 
-    let slot_to_cached_index = cached_locals
+    let cell_to_cached_index = cached_cells
         .iter()
         .enumerate()
-        .map(|(cached_index, cached)| (cached.slot, cached_index))
+        .map(|(cached_index, cached)| (cached.cell, cached_index))
         .collect::<BTreeMap<_, _>>();
-    let slot_meta = cached_locals
+    let cell_meta = cached_cells
         .iter()
-        .map(|cached| SlotLayoutMeta {
+        .map(|cached| CellLayoutMeta {
             bank: if cached.ty.is_fp() {
                 LayoutBank::Fp
             } else {
@@ -86,21 +86,21 @@ pub(super) fn compute_block_entry_cache_params(
         .collect::<collections::Vec<_>>();
     let param_usage = compute_param_prefix_usage(program, gp_reg_width);
     // Preference is the whole-function `preferred_preserved` flag (per local
-    // slot — the residency solver's preserved-class nomination, published
+    // cell — the residency solver's preserved-class nomination, published
     // through the plan).
-    // Promote the per-slot flag to the per-block-per-cached-index shape the
+    // Promote the per-cell flag to the per-block-per-cached-index shape the
     // layout consumes; the flag is already function-global, so every block gets
     // the same row.
     let call_preserve_preferences =
-        promote_preferred_preserved(cached_locals, preferred_preserved, program.blocks.len());
+        promote_preferred_preserved(cached_cells, preferred_preserved, program.blocks.len());
     let predecessors = compute_predecessors(program);
     let rpo = compute_reverse_postorder(program);
     let idom =
         compute_immediate_dominators(program.blocks.len(), program.entry, &predecessors, &rpo);
     let idom_children = build_idom_children(program.blocks.len(), program.entry.as_usize(), &idom);
-    let bank_slots = compute_block_bank_slots(program, &slot_to_cached_index, &slot_meta);
+    let bank_cells = compute_block_bank_slots(program, &cell_to_cached_index, &cell_meta);
 
-    let lanes = cached_locals.len();
+    let lanes = cached_cells.len();
     let n_blocks = program.blocks.len();
     let mut gp_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
     let mut fp_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
@@ -114,10 +114,10 @@ pub(super) fn compute_block_entry_cache_params(
             LayoutBank::Gp,
             regfile.gp_allocatable_count(),
             program,
-            &slot_to_cached_index,
+            &cell_to_cached_index,
             &idom_children,
-            &bank_slots,
-            &slot_meta,
+            &bank_cells,
+            &cell_meta,
             &param_usage,
             is_local_func,
             table_dispatch_modes,
@@ -134,10 +134,10 @@ pub(super) fn compute_block_entry_cache_params(
             LayoutBank::Fp,
             regfile.fp_dynamic_count(),
             program,
-            &slot_to_cached_index,
+            &cell_to_cached_index,
             &idom_children,
-            &bank_slots,
-            &slot_meta,
+            &bank_cells,
+            &cell_meta,
             &param_usage,
             is_local_func,
             table_dispatch_modes,
@@ -160,10 +160,10 @@ pub(super) fn compute_block_entry_cache_params(
             LayoutBank::Gp,
             regfile.gp_allocatable_count(),
             program,
-            &slot_to_cached_index,
+            &cell_to_cached_index,
             &idom_children,
-            &bank_slots,
-            &slot_meta,
+            &bank_cells,
+            &cell_meta,
             &param_usage,
             is_local_func,
             table_dispatch_modes,
@@ -189,10 +189,10 @@ pub(super) fn compute_block_entry_cache_params(
             LayoutBank::Fp,
             regfile.fp_dynamic_count(),
             program,
-            &slot_to_cached_index,
+            &cell_to_cached_index,
             &idom_children,
-            &bank_slots,
-            &slot_meta,
+            &bank_cells,
+            &cell_meta,
             &param_usage,
             is_local_func,
             table_dispatch_modes,
@@ -208,9 +208,9 @@ pub(super) fn compute_block_entry_cache_params(
     improve_gp_layouts_for_incoming_edges(
         program,
         &predecessors,
-        &slot_to_cached_index,
-        &bank_slots,
-        &slot_meta,
+        &cell_to_cached_index,
+        &bank_cells,
+        &cell_meta,
         &param_usage,
         is_local_func,
         table_dispatch_modes,
@@ -225,7 +225,7 @@ pub(super) fn compute_block_entry_cache_params(
     let mut layouts = collections::vec![collections::Vec::new(); program.blocks.len()];
     for block_index in 0..program.blocks.len() {
         let entry_slots = program
-            .block_entry_cached_slots
+            .block_entry_cached_cells
             .get(block_index)
             .map(|s| s.as_slice())
             .unwrap_or(&[]);
@@ -234,39 +234,39 @@ pub(super) fn compute_block_entry_cache_params(
             .get(block_index)
             .map(|r| r.as_slice())
             .unwrap_or(&[]);
-        // Upper bound: one entry per entry slot, minus any that miss
-        // slot_to_cached_index. Sizing tight avoids ~2x push-growth overallocation
+        // Upper bound: one entry per entry cell, minus any that miss
+        // cell_to_cached_index. Sizing tight avoids ~2x push-growth overallocation
         // on the per-block Vec, which otherwise dominates mir_lower peak memory.
         let mut entries =
             collections::Vec::<(u16, u16, EntryCacheParam)>::with_capacity(entry_slots.len());
-        for (position, &slot) in entry_slots.iter().enumerate() {
-            let Some(&cached_index) = slot_to_cached_index.get(&slot) else {
+        for (position, &cell) in entry_slots.iter().enumerate() {
+            let Some(&cached_index) = cell_to_cached_index.get(&cell) else {
                 continue;
             };
             let cached_index_u16 = u16::try_from(cached_index).map_err(|_| {
                 WasmError::internal("cached local index overflowed entry-cache metadata")
             })?;
             let row_base = block_index * lanes;
-            let lane_val = match slot_meta[cached_index].bank {
+            let lane_val = match cell_meta[cached_index].bank {
                 LayoutBank::Gp => gp_layouts[row_base + cached_index],
                 LayoutBank::Fp => fp_layouts[row_base + cached_index],
             };
             if lane_val == LANE_UNASSIGNED {
                 return Err(WasmError::internal(
-                    "cache lane layout missing for slot in block b",
+                    "cache lane layout missing for cell in block b",
                 ));
             }
             let start = lane_val as usize;
             let regs = regs_for_segment(
                 regfile,
-                slot_meta[cached_index].bank,
+                cell_meta[cached_index].bank,
                 start,
-                slot_meta[cached_index].width,
+                cell_meta[cached_index].width,
             )?;
             // needs_value comes from the plan's row requirement (Ensure vs
             // Reserve), not a machine op re-scan.
             let requirement = entry_requirements.get(position).copied().ok_or_else(|| {
-                WasmError::internal("entry cache slot in block b has no entry requirement")
+                WasmError::internal("entry cache cell in block b has no entry requirement")
             })?;
             entries.push((
                 regs.lo.0,
@@ -309,20 +309,20 @@ fn compute_param_prefix_usage(
         .collect()
 }
 
-/// Promote the whole-function `preferred_preserved` flag (per local slot,
+/// Promote the whole-function `preferred_preserved` flag (per local cell,
 /// the residency solver's nomination, published through the plan) to the per-block-per-cached-index
 /// shape the layout consumes. The flag is already function-global, so every
 /// block gets the same row.
 pub(super) fn promote_preferred_preserved(
-    cached_locals: &[CachedLocal],
+    cached_cells: &[CachedCell],
     preferred_preserved: &[bool],
     block_count: usize,
 ) -> collections::Vec<collections::Vec<bool>> {
-    let per_cached: collections::Vec<bool> = cached_locals
+    let per_cached: collections::Vec<bool> = cached_cells
         .iter()
         .map(|cached| {
             preferred_preserved
-                .get(cached.slot.0 as usize)
+                .get(cached.cell.0 as usize)
                 .copied()
                 .unwrap_or(false)
         })
@@ -493,23 +493,23 @@ fn mark_idom_reachable(block_index: usize, children: &[collections::Vec<usize>],
 
 fn compute_block_bank_slots(
     program: &SsaProgram,
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    slot_meta: &[SlotLayoutMeta],
+    cell_to_cached_index: &BTreeMap<CellId, usize>,
+    cell_meta: &[CellLayoutMeta],
 ) -> collections::Vec<[collections::Vec<usize>; 2]> {
     (0..program.blocks.len())
         .map(|block_index| {
             let mut gp = collections::Vec::new();
             let mut fp = collections::Vec::new();
-            let slots = program
-                .block_entry_cached_slots
+            let cells = program
+                .block_entry_cached_cells
                 .get(block_index)
-                .map(|slots| slots.as_slice())
+                .map(|cells| cells.as_slice())
                 .unwrap_or(&[]);
-            for slot in slots {
-                let Some(&cached_index) = slot_to_cached_index.get(slot) else {
+            for cell in cells {
+                let Some(&cached_index) = cell_to_cached_index.get(cell) else {
                     continue;
                 };
-                match slot_meta[cached_index].bank {
+                match cell_meta[cached_index].bank {
                     LayoutBank::Gp => gp.push(cached_index),
                     LayoutBank::Fp => fp.push(cached_index),
                 }
@@ -525,10 +525,10 @@ fn assign_bank_layouts_from_root(
     bank: LayoutBank,
     lane_count: usize,
     program: &SsaProgram,
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
+    cell_to_cached_index: &BTreeMap<CellId, usize>,
     idom_children: &[collections::Vec<usize>],
-    bank_slots: &[[collections::Vec<usize>; 2]],
-    slot_meta: &[SlotLayoutMeta],
+    bank_cells: &[[collections::Vec<usize>; 2]],
+    cell_meta: &[CellLayoutMeta],
     param_usage: &[ParamPrefixUsage],
     is_local_func: &[bool],
     table_dispatch_modes: &[TableDispatchMode],
@@ -546,9 +546,9 @@ fn assign_bank_layouts_from_root(
             continue;
         }
         visited[block_index] = true;
-        let slots = match bank {
-            LayoutBank::Gp => &bank_slots[block_index][0],
-            LayoutBank::Fp => &bank_slots[block_index][1],
+        let cells = match bank {
+            LayoutBank::Gp => &bank_cells[block_index][0],
+            LayoutBank::Fp => &bank_cells[block_index][1],
         };
         let prefix = match bank {
             LayoutBank::Gp => param_usage[block_index].gp,
@@ -556,9 +556,9 @@ fn assign_bank_layouts_from_root(
         };
         let row_base = block_index * lanes;
         let entry_row = build_block_bank_layout(
-            slots,
+            cells,
             parent_layout.as_deref(),
-            slot_meta,
+            cell_meta,
             lane_count,
             prefix,
             bank,
@@ -572,8 +572,8 @@ fn assign_bank_layouts_from_root(
         let exit_row = simulate_block_exit_layout(
             &program.blocks[block_index],
             &layouts[row_base..row_base + lanes],
-            slot_to_cached_index,
-            slot_meta,
+            cell_to_cached_index,
+            cell_meta,
             bank,
             lane_count,
             prefix,
@@ -597,9 +597,9 @@ fn assign_bank_layouts_from_root(
 fn improve_gp_layouts_for_incoming_edges(
     program: &SsaProgram,
     predecessors: &[collections::Vec<usize>],
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    bank_slots: &[[collections::Vec<usize>; 2]],
-    slot_meta: &[SlotLayoutMeta],
+    cell_to_cached_index: &BTreeMap<CellId, usize>,
+    bank_cells: &[[collections::Vec<usize>; 2]],
+    cell_meta: &[CellLayoutMeta],
     param_usage: &[ParamPrefixUsage],
     is_local_func: &[bool],
     table_dispatch_modes: &[TableDispatchMode],
@@ -619,8 +619,8 @@ fn improve_gp_layouts_for_incoming_edges(
             if preds.is_empty() {
                 continue;
             }
-            let slots = &bank_slots[block_index][0];
-            if slots.is_empty() {
+            let cells = &bank_cells[block_index][0];
+            if cells.is_empty() {
                 continue;
             }
             let row_base = block_index * lanes;
@@ -645,15 +645,15 @@ fn improve_gp_layouts_for_incoming_edges(
             let needs_value = entry_cache_needs_value(
                 program,
                 block_index,
-                slot_to_cached_index,
-                slot_meta.len(),
+                cell_to_cached_index,
+                cell_meta.len(),
             );
             let Some(candidate) = edge_preferred_gp_layout(
-                slots,
+                cells,
                 current,
                 &pred_layout_refs,
                 &needs_value,
-                slot_meta,
+                cell_meta,
                 lane_count,
                 param_usage[block_index].gp,
                 call_preserve_preferences
@@ -665,11 +665,11 @@ fn improve_gp_layouts_for_incoming_edges(
                 continue;
             };
             let current_cost = incoming_edge_layout_cost(
-                slots,
+                cells,
                 current,
                 &pred_layout_refs,
                 &needs_value,
-                slot_meta,
+                cell_meta,
                 call_preserve_preferences
                     .get(block_index)
                     .map(|bits| bits.as_slice())
@@ -677,11 +677,11 @@ fn improve_gp_layouts_for_incoming_edges(
                 preserved_lanes,
             );
             let candidate_cost = incoming_edge_layout_cost(
-                slots,
+                cells,
                 &candidate,
                 &pred_layout_refs,
                 &needs_value,
-                slot_meta,
+                cell_meta,
                 call_preserve_preferences
                     .get(block_index)
                     .map(|bits| bits.as_slice())
@@ -695,8 +695,8 @@ fn improve_gp_layouts_for_incoming_edges(
             let exit_row = simulate_block_exit_layout(
                 &program.blocks[block_index],
                 &layouts[row_base..row_base + lanes],
-                slot_to_cached_index,
-                slot_meta,
+                cell_to_cached_index,
+                cell_meta,
                 LayoutBank::Gp,
                 lane_count,
                 param_usage[block_index].gp,
@@ -722,11 +722,11 @@ fn improve_gp_layouts_for_incoming_edges(
 fn entry_cache_needs_value(
     program: &SsaProgram,
     block_index: usize,
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    slot_count: usize,
+    cell_to_cached_index: &BTreeMap<CellId, usize>,
+    cell_count: usize,
 ) -> collections::Vec<bool> {
-    let mut needs = collections::vec![false; slot_count];
-    let Some(entry_slots) = program.block_entry_cached_slots.get(block_index) else {
+    let mut needs = collections::vec![false; cell_count];
+    let Some(entry_slots) = program.block_entry_cached_cells.get(block_index) else {
         return needs;
     };
     let entry_requirements = program
@@ -734,11 +734,11 @@ fn entry_cache_needs_value(
         .get(block_index)
         .map(|r| r.as_slice())
         .unwrap_or(&[]);
-    for (position, &slot) in entry_slots.iter().enumerate() {
+    for (position, &cell) in entry_slots.iter().enumerate() {
         if entry_requirements.get(position).copied() != Some(EntryCacheRequirement::Ensure) {
             continue;
         }
-        if let Some(&cached_index) = slot_to_cached_index.get(&slot) {
+        if let Some(&cached_index) = cell_to_cached_index.get(&cell) {
             if let Some(bit) = needs.get_mut(cached_index) {
                 *bit = true;
             }
@@ -748,39 +748,39 @@ fn entry_cache_needs_value(
 }
 
 fn edge_preferred_gp_layout(
-    slots: &[usize],
+    cells: &[usize],
     current_layout: &[u32],
     pred_layouts: &[&[u32]],
     needs_value: &[bool],
-    slot_meta: &[SlotLayoutMeta],
+    cell_meta: &[CellLayoutMeta],
     lane_count: usize,
     prefix_occupied: usize,
     call_preserve_preferences: &[bool],
     preserved_lanes: &[bool],
 ) -> Option<collections::Vec<u32>> {
-    let mut layout = collections::vec![LANE_UNASSIGNED; slot_meta.len()];
+    let mut layout = collections::vec![LANE_UNASSIGNED; cell_meta.len()];
     let mut occupied = collections::vec![false; lane_count];
     for lane in 0..prefix_occupied.min(lane_count) {
         occupied[lane] = true;
     }
-    let mut ordered = slots.to_vec();
-    ordered.sort_by_key(|&slot| {
+    let mut ordered = cells.to_vec();
+    ordered.sort_by_key(|&cell| {
         (
-            Reverse(slot_meta[slot].width),
+            Reverse(cell_meta[cell].width),
             Reverse(
                 call_preserve_preferences
-                    .get(slot)
+                    .get(cell)
                     .copied()
                     .unwrap_or(false),
             ),
-            slot,
+            cell,
         )
     });
 
-    for slot in ordered {
-        let width = slot_meta[slot].width;
+    for cell in ordered {
+        let width = cell_meta[cell].width;
         let prefer_preserved = call_preserve_preferences
-            .get(slot)
+            .get(cell)
             .copied()
             .unwrap_or(false);
         let mut best: Option<(usize, usize)> = None;
@@ -789,7 +789,7 @@ fn edge_preferred_gp_layout(
                 continue;
             }
             let cost = edge_slot_layout_cost(
-                slot,
+                cell,
                 start,
                 width,
                 pred_layouts,
@@ -799,7 +799,7 @@ fn edge_preferred_gp_layout(
             )
             .saturating_add(
                 current_layout
-                    .get(slot)
+                    .get(cell)
                     .copied()
                     .filter(|current| *current != LANE_UNASSIGNED && *current as usize != start)
                     .map(|_| 1)
@@ -816,38 +816,38 @@ fn edge_preferred_gp_layout(
         }
         let (_, start) = best?;
         occupy_segment(&mut occupied, start, width, true);
-        layout[slot] = start as u32;
+        layout[cell] = start as u32;
     }
     Some(layout)
 }
 
 fn incoming_edge_layout_cost(
-    slots: &[usize],
+    cells: &[usize],
     layout: &[u32],
     pred_layouts: &[&[u32]],
     needs_value: &[bool],
-    slot_meta: &[SlotLayoutMeta],
+    cell_meta: &[CellLayoutMeta],
     call_preserve_preferences: &[bool],
     preserved_lanes: &[bool],
 ) -> usize {
-    slots
+    cells
         .iter()
         .copied()
-        .map(|slot| {
-            let start = layout[slot];
+        .map(|cell| {
+            let start = layout[cell];
             if start == LANE_UNASSIGNED {
                 return usize::MAX / 4;
             }
-            let width = slot_meta[slot].width;
+            let width = cell_meta[cell].width;
             edge_slot_layout_cost(
-                slot,
+                cell,
                 start as usize,
                 width,
                 pred_layouts,
                 needs_value,
                 preserved_lanes,
                 call_preserve_preferences
-                    .get(slot)
+                    .get(cell)
                     .copied()
                     .unwrap_or(false),
             )
@@ -856,7 +856,7 @@ fn incoming_edge_layout_cost(
 }
 
 fn edge_slot_layout_cost(
-    slot: usize,
+    cell: usize,
     start: usize,
     width: usize,
     pred_layouts: &[&[u32]],
@@ -865,9 +865,9 @@ fn edge_slot_layout_cost(
     prefer_preserved: bool,
 ) -> usize {
     let mut cost = preference_mismatch_cost(preserved_lanes, start, width, prefer_preserved);
-    if needs_value.get(slot).copied().unwrap_or(true) {
+    if needs_value.get(cell).copied().unwrap_or(true) {
         for pred in pred_layouts {
-            match pred.get(slot).copied().unwrap_or(LANE_UNASSIGNED) {
+            match pred.get(cell).copied().unwrap_or(LANE_UNASSIGNED) {
                 LANE_UNASSIGNED => cost = cost.saturating_add(width.saturating_mul(2)),
                 pred_start if pred_start as usize != start => {
                     cost = cost.saturating_add(width);
@@ -882,8 +882,8 @@ fn edge_slot_layout_cost(
 fn simulate_block_exit_layout(
     block: &SsaBlock,
     entry_layout: &[u32],
-    slot_to_cached_index: &BTreeMap<FrameSlot, usize>,
-    slot_meta: &[SlotLayoutMeta],
+    cell_to_cached_index: &BTreeMap<CellId, usize>,
+    cell_meta: &[CellLayoutMeta],
     bank: LayoutBank,
     lane_count: usize,
     prefix_occupied: usize,
@@ -898,15 +898,15 @@ fn simulate_block_exit_layout(
     for lane in 0..prefix_occupied.min(lane_count) {
         occupied[lane] = true;
     }
-    for (slot_index, start) in layout.iter().copied().enumerate() {
-        if slot_meta.get(slot_index).map(|meta| meta.bank) != Some(bank) {
+    for (cell_index, start) in layout.iter().copied().enumerate() {
+        if cell_meta.get(cell_index).map(|meta| meta.bank) != Some(bank) {
             continue;
         }
         if start != LANE_UNASSIGNED {
             occupy_segment(
                 &mut occupied,
                 start as usize,
-                slot_meta[slot_index].width,
+                cell_meta[cell_index].width,
                 true,
             );
         }
@@ -914,42 +914,42 @@ fn simulate_block_exit_layout(
 
     for inst in &block.ops {
         match inst.op {
-            SsaOp::LOCAL_ENSURE_CACHE => {
-                let slot = FrameSlot(inst.meta);
-                let Some(&slot_index) = slot_to_cached_index.get(&slot) else {
+            SsaOp::CELL_ENSURE_CACHE => {
+                let cell = CellId(inst.meta);
+                let Some(&cell_index) = cell_to_cached_index.get(&cell) else {
                     continue;
                 };
-                if slot_meta[slot_index].bank != bank {
+                if cell_meta[cell_index].bank != bank {
                     continue;
                 }
-                if layout[slot_index] != LANE_UNASSIGNED {
+                if layout[cell_index] != LANE_UNASSIGNED {
                     continue;
                 }
-                let width = slot_meta[slot_index].width;
+                let width = cell_meta[cell_index].width;
                 let prefer_preserved = call_preserve_preferences
-                    .get(slot_index)
+                    .get(cell_index)
                     .copied()
                     .unwrap_or(false);
                 if let Some(start) =
                     choose_hole_start(&occupied, width, preserved_lanes, prefer_preserved)
                 {
                     occupy_segment(&mut occupied, start, width, true);
-                    layout[slot_index] = start as u32;
+                    layout[cell_index] = start as u32;
                 } else if bank == LayoutBank::Gp {
                     let preserve = layout.clone();
                     let mut active = layout
                         .iter()
                         .enumerate()
                         .filter_map(|(cached_index, start)| {
-                            (slot_meta[cached_index].bank == bank && *start != LANE_UNASSIGNED)
+                            (cell_meta[cached_index].bank == bank && *start != LANE_UNASSIGNED)
                                 .then_some(cached_index)
                         })
                         .collect::<collections::Vec<_>>();
-                    active.push(slot_index);
+                    active.push(cell_index);
                     layout = exact_gp_layout(
                         &active,
                         Some(&preserve),
-                        slot_meta,
+                        cell_meta,
                         lane_count,
                         prefix_occupied,
                         call_preserve_preferences,
@@ -960,14 +960,14 @@ fn simulate_block_exit_layout(
                         occupied[lane] = true;
                     }
                     for (cached_index, start) in layout.iter().copied().enumerate() {
-                        if slot_meta.get(cached_index).map(|meta| meta.bank) != Some(bank) {
+                        if cell_meta.get(cached_index).map(|meta| meta.bank) != Some(bank) {
                             continue;
                         }
                         if start != LANE_UNASSIGNED {
                             occupy_segment(
                                 &mut occupied,
                                 start as usize,
-                                slot_meta[cached_index].width,
+                                cell_meta[cached_index].width,
                                 true,
                             );
                         }
@@ -978,40 +978,40 @@ fn simulate_block_exit_layout(
                     ));
                 }
             }
-            SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_SET_CACHE => {
-                let slot = FrameSlot(inst.meta);
-                let Some(&slot_index) = slot_to_cached_index.get(&slot) else {
+            SsaOp::CELL_RESERVE_CACHE | SsaOp::CELL_SET_CACHE => {
+                let cell = CellId(inst.meta);
+                let Some(&cell_index) = cell_to_cached_index.get(&cell) else {
                     continue;
                 };
-                if slot_meta[slot_index].bank != bank {
+                if cell_meta[cell_index].bank != bank {
                     continue;
                 }
-                if layout[slot_index] == LANE_UNASSIGNED {
-                    let width = slot_meta[slot_index].width;
+                if layout[cell_index] == LANE_UNASSIGNED {
+                    let width = cell_meta[cell_index].width;
                     let prefer_preserved = call_preserve_preferences
-                        .get(slot_index)
+                        .get(cell_index)
                         .copied()
                         .unwrap_or(false);
                     if let Some(start) =
                         choose_hole_start(&occupied, width, preserved_lanes, prefer_preserved)
                     {
                         occupy_segment(&mut occupied, start, width, true);
-                        layout[slot_index] = start as u32;
+                        layout[cell_index] = start as u32;
                     } else if bank == LayoutBank::Gp {
                         let preserve = layout.clone();
                         let mut active = layout
                             .iter()
                             .enumerate()
                             .filter_map(|(cached_index, start)| {
-                                (slot_meta[cached_index].bank == bank && *start != LANE_UNASSIGNED)
+                                (cell_meta[cached_index].bank == bank && *start != LANE_UNASSIGNED)
                                     .then_some(cached_index)
                             })
                             .collect::<collections::Vec<_>>();
-                        active.push(slot_index);
+                        active.push(cell_index);
                         layout = exact_gp_layout(
                             &active,
                             Some(&preserve),
-                            slot_meta,
+                            cell_meta,
                             lane_count,
                             prefix_occupied,
                             call_preserve_preferences,
@@ -1022,14 +1022,14 @@ fn simulate_block_exit_layout(
                             occupied[lane] = true;
                         }
                         for (cached_index, start) in layout.iter().copied().enumerate() {
-                            if slot_meta.get(cached_index).map(|meta| meta.bank) != Some(bank) {
+                            if cell_meta.get(cached_index).map(|meta| meta.bank) != Some(bank) {
                                 continue;
                             }
                             if start != LANE_UNASSIGNED {
                                 occupy_segment(
                                     &mut occupied,
                                     start as usize,
-                                    slot_meta[cached_index].width,
+                                    cell_meta[cached_index].width,
                                     true,
                                 );
                             }
@@ -1042,20 +1042,20 @@ fn simulate_block_exit_layout(
                     }
                 }
             }
-            SsaOp::LOCAL_DROP_CACHE => {
-                let slot = FrameSlot(inst.meta);
-                let Some(&slot_index) = slot_to_cached_index.get(&slot) else {
+            SsaOp::CELL_DROP_CACHE => {
+                let cell = CellId(inst.meta);
+                let Some(&cell_index) = cell_to_cached_index.get(&cell) else {
                     continue;
                 };
-                if slot_meta[slot_index].bank != bank {
+                if cell_meta[cell_index].bank != bank {
                     continue;
                 }
-                let prev = core::mem::replace(&mut layout[slot_index], LANE_UNASSIGNED);
+                let prev = core::mem::replace(&mut layout[cell_index], LANE_UNASSIGNED);
                 if prev != LANE_UNASSIGNED {
                     occupy_segment(
                         &mut occupied,
                         prev as usize,
-                        slot_meta[slot_index].width,
+                        cell_meta[cell_index].width,
                         false,
                     );
                 }
@@ -1063,8 +1063,8 @@ fn simulate_block_exit_layout(
             SsaOp::CALL => {
                 let local_jit_call =
                     is_local_jit_call(program, is_local_func, table_dispatch_modes, inst.meta);
-                for (slot_index, lane) in layout.iter_mut().enumerate() {
-                    if slot_meta.get(slot_index).map(|meta| meta.bank) != Some(bank) {
+                for (cell_index, lane) in layout.iter_mut().enumerate() {
+                    if cell_meta.get(cell_index).map(|meta| meta.bank) != Some(bank) {
                         continue;
                     }
                     if *lane == LANE_UNASSIGNED {
@@ -1072,13 +1072,13 @@ fn simulate_block_exit_layout(
                     }
                     if local_jit_call
                         && call_preserve_preferences
-                            .get(slot_index)
+                            .get(cell_index)
                             .copied()
                             .unwrap_or(false)
-                        && !slot_meta[slot_index].is_ref
+                        && !cell_meta[cell_index].is_ref
                     {
                         let start = *lane as usize;
-                        let width = slot_meta[slot_index].width;
+                        let width = cell_meta[cell_index].width;
                         if segment_is_preserved(preserved_lanes, start, width) {
                             continue;
                         }
@@ -1086,14 +1086,14 @@ fn simulate_block_exit_layout(
                     occupy_segment(
                         &mut occupied,
                         *lane as usize,
-                        slot_meta[slot_index].width,
+                        cell_meta[cell_index].width,
                         false,
                     );
                     *lane = LANE_UNASSIGNED;
                 }
             }
-            // Value (primitive) / Fill / Spill / LocalGetSlot / LocalGetCache /
-            // LocalSetSlot: no cache layout effects.
+            // Value (primitive) / Fill / Spill / CellGetSlot / CellGetCache /
+            // CellSetSlot: no cache layout effects.
             _ => {}
         }
     }
@@ -1102,17 +1102,17 @@ fn simulate_block_exit_layout(
 }
 
 fn build_block_bank_layout(
-    slots: &[usize],
+    cells: &[usize],
     parent_layout: Option<&[u32]>,
-    slot_meta: &[SlotLayoutMeta],
+    cell_meta: &[CellLayoutMeta],
     lane_count: usize,
     prefix_occupied: usize,
     bank: LayoutBank,
     call_preserve_preferences: &[bool],
     preserved_lanes: &[bool],
 ) -> Result<collections::Vec<u32>, WasmError> {
-    let mut layout = collections::vec![LANE_UNASSIGNED; slot_meta.len()];
-    if slots.is_empty() {
+    let mut layout = collections::vec![LANE_UNASSIGNED; cell_meta.len()];
+    if cells.is_empty() {
         return Ok(layout);
     }
     let mut occupied = collections::vec![false; lane_count];
@@ -1122,52 +1122,52 @@ fn build_block_bank_layout(
 
     let mut additions = collections::Vec::new();
     if let Some(parent_layout) = parent_layout {
-        for &slot in slots {
-            let parent_start = parent_layout[slot];
+        for &cell in cells {
+            let parent_start = parent_layout[cell];
             if parent_start != LANE_UNASSIGNED {
                 let start = parent_start as usize;
-                let width = slot_meta[slot].width;
+                let width = cell_meta[cell].width;
                 let prefer_preserved = call_preserve_preferences
-                    .get(slot)
+                    .get(cell)
                     .copied()
                     .unwrap_or(false);
                 if segment_available(&occupied, start, width)
                     && segment_matches_preference(preserved_lanes, start, width, prefer_preserved)
                 {
                     occupy_segment(&mut occupied, start, width, true);
-                    layout[slot] = parent_start;
+                    layout[cell] = parent_start;
                     continue;
                 }
             }
-            additions.push(slot);
+            additions.push(cell);
         }
     } else {
-        additions.extend_from_slice(slots);
+        additions.extend_from_slice(cells);
     }
 
-    additions.sort_by_key(|&slot| {
+    additions.sort_by_key(|&cell| {
         (
-            Reverse(slot_meta[slot].width),
+            Reverse(cell_meta[cell].width),
             Reverse(
                 call_preserve_preferences
-                    .get(slot)
+                    .get(cell)
                     .copied()
                     .unwrap_or(false),
             ),
-            slot,
+            cell,
         )
     });
     let mut needs_repack = false;
-    for slot in additions {
-        let width = slot_meta[slot].width;
+    for cell in additions {
+        let width = cell_meta[cell].width;
         let prefer_preserved = call_preserve_preferences
-            .get(slot)
+            .get(cell)
             .copied()
             .unwrap_or(false);
         if let Some(start) = choose_hole_start(&occupied, width, preserved_lanes, prefer_preserved)
         {
             occupy_segment(&mut occupied, start, width, true);
-            layout[slot] = start as u32;
+            layout[cell] = start as u32;
         } else {
             needs_repack = true;
             break;
@@ -1185,9 +1185,9 @@ fn build_block_bank_layout(
     }
 
     exact_gp_layout(
-        slots,
+        cells,
         parent_layout,
-        slot_meta,
+        cell_meta,
         lane_count,
         prefix_occupied,
         call_preserve_preferences,
@@ -1196,37 +1196,37 @@ fn build_block_bank_layout(
 }
 
 fn exact_gp_layout(
-    slots: &[usize],
+    cells: &[usize],
     parent_layout: Option<&[u32]>,
-    slot_meta: &[SlotLayoutMeta],
+    cell_meta: &[CellLayoutMeta],
     lane_count: usize,
     prefix_occupied: usize,
     call_preserve_preferences: &[bool],
     preserved_lanes: &[bool],
 ) -> Result<collections::Vec<u32>, WasmError> {
-    let mut ordered = slots.to_vec();
-    ordered.sort_by_key(|&slot| {
+    let mut ordered = cells.to_vec();
+    ordered.sort_by_key(|&cell| {
         (
-            Reverse(slot_meta[slot].width),
+            Reverse(cell_meta[cell].width),
             Reverse(
                 parent_layout
-                    .map(|layout| layout[slot] != LANE_UNASSIGNED)
+                    .map(|layout| layout[cell] != LANE_UNASSIGNED)
                     .unwrap_or(false),
             ),
-            slot,
+            cell,
         )
     });
     let mut occupied = collections::vec![false; lane_count];
     for lane in 0..prefix_occupied.min(lane_count) {
         occupied[lane] = true;
     }
-    let mut current = collections::vec![LANE_UNASSIGNED; slot_meta.len()];
+    let mut current = collections::vec![LANE_UNASSIGNED; cell_meta.len()];
     let mut best: Option<(usize, collections::Vec<u32>)> = None;
     search_exact_gp_layout(
         &ordered,
         0,
         parent_layout,
-        slot_meta,
+        cell_meta,
         call_preserve_preferences,
         preserved_lanes,
         &mut occupied,
@@ -1243,7 +1243,7 @@ fn search_exact_gp_layout(
     ordered: &[usize],
     index: usize,
     parent_layout: Option<&[u32]>,
-    slot_meta: &[SlotLayoutMeta],
+    cell_meta: &[CellLayoutMeta],
     call_preserve_preferences: &[bool],
     preserved_lanes: &[bool],
     occupied: &mut [bool],
@@ -1271,15 +1271,15 @@ fn search_exact_gp_layout(
         return;
     }
 
-    let slot = ordered[index];
-    let width = slot_meta[slot].width;
+    let cell = ordered[index];
+    let width = cell_meta[cell].width;
     let prefer_preserved = call_preserve_preferences
-        .get(slot)
+        .get(cell)
         .copied()
         .unwrap_or(false);
     let mut starts = feasible_starts(occupied, width, preserved_lanes, prefer_preserved);
     let parent_start_opt = parent_layout.and_then(|layout| {
-        let v = layout[slot];
+        let v = layout[cell];
         if v != LANE_UNASSIGNED {
             Some(v as usize)
         } else {
@@ -1295,7 +1295,7 @@ fn search_exact_gp_layout(
     }
     for start in starts {
         occupy_segment(occupied, start, width, true);
-        current[slot] = start as u32;
+        current[cell] = start as u32;
         let move_cost = match parent_start_opt {
             Some(parent_start) if parent_start != start => width,
             _ => 0,
@@ -1307,7 +1307,7 @@ fn search_exact_gp_layout(
             ordered,
             index + 1,
             parent_layout,
-            slot_meta,
+            cell_meta,
             call_preserve_preferences,
             preserved_lanes,
             occupied,
@@ -1315,7 +1315,7 @@ fn search_exact_gp_layout(
             current_cost + added_cost,
             best,
         );
-        current[slot] = LANE_UNASSIGNED;
+        current[cell] = LANE_UNASSIGNED;
         occupy_segment(occupied, start, width, false);
     }
 }
@@ -1579,11 +1579,11 @@ mod tests {
         for index in 0..block_count - 1 {
             idom_children[index].push(index + 1);
         }
-        let bank_slots = (0..block_count)
+        let bank_cells = (0..block_count)
             .map(|_| [collections::Vec::new(), collections::Vec::new()])
             .collect::<collections::Vec<_>>();
-        let slot_to_cached_index = BTreeMap::new();
-        let slot_meta = collections::Vec::new();
+        let cell_to_cached_index = BTreeMap::new();
+        let cell_meta = collections::Vec::new();
         let param_usage = collections::vec![ParamPrefixUsage::default(); block_count];
         let mut layouts = collections::Vec::new();
         let mut exit_layouts = collections::Vec::new();
@@ -1595,10 +1595,10 @@ mod tests {
             LayoutBank::Gp,
             1,
             &program,
-            &slot_to_cached_index,
+            &cell_to_cached_index,
             &idom_children,
-            &bank_slots,
-            &slot_meta,
+            &bank_cells,
+            &cell_meta,
             &param_usage,
             &[],
             &[],
@@ -1616,9 +1616,9 @@ mod tests {
 
     #[test]
     fn inherited_call_preserved_cache_moves_to_preserved_lane() {
-        let slots = collections::vec![0usize];
+        let cells = collections::vec![0usize];
         let parent_layout = collections::vec![0u32];
-        let slot_meta = collections::vec![SlotLayoutMeta {
+        let cell_meta = collections::vec![CellLayoutMeta {
             bank: LayoutBank::Gp,
             width: 1,
             is_ref: false,
@@ -1627,16 +1627,16 @@ mod tests {
         let preserved_lanes = collections::vec![false, false, true];
 
         let layout = build_block_bank_layout(
-            &slots,
+            &cells,
             Some(&parent_layout),
-            &slot_meta,
+            &cell_meta,
             3,
             0,
             LayoutBank::Gp,
             &call_preserve_preferences,
             &preserved_lanes,
         )
-        .expect("one-slot preserved layout should be feasible");
+        .expect("one-cell preserved layout should be feasible");
 
         assert_eq!(
             layout[0], 2,

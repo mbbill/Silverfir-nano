@@ -11,7 +11,7 @@ use crate::vm::middle::ssa_ir::ir::{SsaOperand, SsaValue};
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
 use super::{
-    lower_context::{BlockLowerContext, BoundCachedLocal},
+    lower_context::{BlockLowerContext, BoundCachedCell},
     lower_i64::I64Lowering,
     lower_inst::LeafLowering,
     lower_leaf_special::{MemoryLoadSpec, MemoryStoreSpec},
@@ -95,27 +95,27 @@ impl I64Lowering for Gp32Lowering {
     fn emit_reload_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &BoundCachedLocal,
+        cached: &BoundCachedCell,
     ) -> Result<(), WasmError> {
         let cached_hi = cached.hi_reg.ok_or_else(|| {
             WasmError::internal("cached i64 local is missing a high-half register")
         })?;
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedCell,
                 ty: MachineStorageType::GpWord,
                 dst: cached.reg,
-                addr: ctx.frame_addr_offset(cached.slot, 0)?,
+                addr: ctx.frame_addr_offset(cached.home, 0)?,
                 width: MachineMemWidth::U32,
                 extension: MachineLoadExtension::None,
             },
         });
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedCell,
                 ty: MachineStorageType::GpWord,
                 dst: cached_hi,
-                addr: ctx.frame_addr_offset(cached.slot, 4)?,
+                addr: ctx.frame_addr_offset(cached.home, 4)?,
                 width: MachineMemWidth::U32,
                 extension: MachineLoadExtension::None,
             },
@@ -126,7 +126,7 @@ impl I64Lowering for Gp32Lowering {
     fn emit_save_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &BoundCachedLocal,
+        cached: &BoundCachedCell,
     ) -> Result<(), WasmError> {
         let cached_hi = cached.hi_reg.ok_or_else(|| {
             WasmError::internal("cached i64 local is missing a high-half register")
@@ -134,7 +134,7 @@ impl I64Lowering for Gp32Lowering {
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
                 ty: MachineStorageType::GpWord,
-                addr: ctx.frame_addr_offset(cached.slot, 0)?,
+                addr: ctx.frame_addr_offset(cached.home, 0)?,
                 width: MachineMemWidth::U32,
                 src: MachineValue::Reg(cached.reg),
             },
@@ -142,7 +142,7 @@ impl I64Lowering for Gp32Lowering {
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
                 ty: MachineStorageType::GpWord,
-                addr: ctx.frame_addr_offset(cached.slot, 4)?,
+                addr: ctx.frame_addr_offset(cached.home, 4)?,
                 width: MachineMemWidth::U32,
                 src: MachineValue::Reg(cached_hi),
             },

@@ -23,6 +23,7 @@ use crate::{
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::{
+            cell::CellId,
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             ssa_ir::{
                 ir::{
@@ -48,7 +49,7 @@ use super::{
     lower_cache_layout::{compute_block_entry_cache_params, promote_preferred_preserved},
     lower_const_pool::ConstPoolBuilder,
     lower_context::{
-        explicit_cached_locals, BlockLowerContext, CachedLocal, EntryCacheParam, ValueRegs,
+        explicit_cached_cells, BlockLowerContext, CachedCell, EntryCacheParam, ValueRegs,
     },
     lower_i64::I64Lowering,
     lower_i64_gp64::Gp64Lowering,
@@ -269,7 +270,7 @@ fn lower_function_runtime(
 
     let init_locals = input
         .ssa
-        .local_slot_info
+        .cell_info
         .iter()
         .enumerate()
         .filter(|(_, info)| !info.is_param && info.reads_before_write)
@@ -293,7 +294,7 @@ fn derive_param_locs(
     config: BackendConfig,
 ) -> collections::Vec<MachineParamLoc> {
     let param_count = program
-        .local_slot_info
+        .cell_info
         .iter()
         .take_while(|info| info.is_param)
         .count()
@@ -301,7 +302,7 @@ fn derive_param_locs(
     let param_types = (0..param_count)
         .map(|param_index| {
             program
-                .local_slot_types
+                .cell_types
                 .get(param_index as usize)
                 .copied()
                 .unwrap_or(ValueType::I64)
@@ -420,7 +421,7 @@ fn lower_function(
     } else {
         &Gp64Lowering
     };
-    let explicit_cache = explicit_cached_locals(&input.ssa);
+    let explicit_cache = explicit_cached_cells(&input.ssa)?;
     let current_abi = runtime
         .get(input.id.0 as usize)
         .ok_or_else(|| WasmError::internal("runtime metadata missing for current function"))?;
@@ -940,18 +941,18 @@ fn lower_function(
 }
 
 fn release_cache_planning_only_ssa_storage(ssa: &mut SsaProgram) {
-    drop(core::mem::take(&mut ssa.local_slot_types));
-    drop(core::mem::take(&mut ssa.local_slot_info));
-    drop(core::mem::take(&mut ssa.block_entry_cached_slots));
+    drop(core::mem::take(&mut ssa.cell_types));
+    drop(core::mem::take(&mut ssa.cell_info));
+    drop(core::mem::take(&mut ssa.block_entry_cached_cells));
 }
 
 fn release_prepared_ssa_storage(ssa: &mut SsaProgram) {
     drop(core::mem::take(&mut ssa.blocks));
-    drop(core::mem::take(&mut ssa.local_slot_types));
-    drop(core::mem::take(&mut ssa.local_slot_info));
-    drop(core::mem::take(&mut ssa.block_entry_cached_slots));
+    drop(core::mem::take(&mut ssa.cell_types));
+    drop(core::mem::take(&mut ssa.cell_info));
+    drop(core::mem::take(&mut ssa.block_entry_cached_cells));
     drop(core::mem::take(&mut ssa.value_types));
-    drop(core::mem::take(&mut ssa.value_sink_local));
+    drop(core::mem::take(&mut ssa.value_sink_cell));
     drop(core::mem::take(&mut ssa.const_pool));
     drop(core::mem::take(&mut ssa.primitive_pool));
     drop(core::mem::take(&mut ssa.call_ops));
@@ -1685,7 +1686,7 @@ fn lower_indirect_dispatch_cluster(
     let local_call_target_param = indirect_temps.lane0;
     let local_call_entry_param = indirect_temps.lane2;
 
-    lower.emit_save_dirty_cached_locals()?;
+    lower.emit_save_dirty_cached_cells()?;
     if transfer.is_tail() {
         lower.emit_repack_tail_call_args_to_frame_prefix(transfer.source_args())?;
     }
@@ -2325,14 +2326,14 @@ fn fp_reg_init_widths(
 fn append_entry_cache_params(
     params: &mut collections::Vec<MachineBlockParam>,
     entry_cache_params: &[EntryCacheParam],
-    cached_locals: &[super::lower_context::CachedLocal],
+    cached_cells: &[super::lower_context::CachedCell],
 ) {
     for entry in entry_cache_params {
-        if let Some(cached) = cached_locals.get(usize::from(entry.cached_index)) {
+        if let Some(cached) = cached_cells.get(usize::from(entry.cached_index)) {
             params.extend(
                 machine_block_params_for_value(entry.regs, cached.ty)
                     .into_iter()
-                    .map(|param| param.with_owner(MachineRegOwner::CachedLocal)),
+                    .map(|param| param.with_owner(MachineRegOwner::CachedCell)),
             );
         }
     }
@@ -2438,7 +2439,7 @@ fn evict_call_indirect_control_gp_caches(
     lower: &mut BlockLowerContext<'_>,
 ) -> Result<(), WasmError> {
     let temps = call_indirect_gp_temps(lower)?;
-    lower.evict_cached_locals_in_gp_regs(&[temps.lane0, temps.lane1, temps.lane2, temps.lane3])
+    lower.evict_cached_cells_in_gp_regs(&[temps.lane0, temps.lane1, temps.lane2, temps.lane3])
 }
 
 fn prepare_call_indirect_index_in_lane(
@@ -3329,24 +3330,24 @@ fn indexed_const_addr(
 
 fn compute_block_entry_cache_dirty(
     program: &SsaProgram,
-    cached_locals: &[CachedLocal],
+    cached_cells: &[CachedCell],
     abi: &MachineFunctionAbi,
     entry_cache_params: &[collections::Vec<EntryCacheParam>],
     is_local_func: &[bool],
     call_preserved_cache_candidates: &[collections::Vec<bool>],
 ) -> collections::Vec<collections::Vec<bool>> {
-    if program.blocks.is_empty() || cached_locals.is_empty() {
+    if program.blocks.is_empty() || cached_cells.is_empty() {
         return collections::vec![collections::Vec::new(); program.blocks.len()];
     }
 
     let predecessors = compute_ssa_predecessors(program);
-    let slot_to_index = cached_locals
+    let slot_to_index = cached_cells
         .iter()
         .enumerate()
-        .map(|(index, cached)| (cached.slot, index))
-        .collect::<BTreeMap<FrameSlot, usize>>();
+        .map(|(index, cached)| (cached.cell, index))
+        .collect::<BTreeMap<CellId, usize>>();
     let mut entry_dirty =
-        collections::vec![collections::vec![false; cached_locals.len()]; program.blocks.len()];
+        collections::vec![collections::vec![false; cached_cells.len()]; program.blocks.len()];
     let register_param_slots = register_param_slots(&abi.param_locs);
     let entry_index = program.entry.as_usize();
     if let Some(entries) = entry_cache_params.get(entry_index) {
@@ -3355,10 +3356,10 @@ fn compute_block_entry_cache_dirty(
                 continue;
             }
             let cached_index = usize::from(entry.cached_index);
-            let Some(cached) = cached_locals.get(cached_index) else {
+            let Some(cached) = cached_cells.get(cached_index) else {
                 continue;
             };
-            if register_param_slots.contains(&cached.slot) {
+            if register_param_slots.contains(&cached.cell) {
                 if let Some(bits) = entry_dirty.get_mut(entry_index) {
                     if let Some(bit) = bits.get_mut(cached_index) {
                         *bit = true;
@@ -3375,14 +3376,14 @@ fn compute_block_entry_cache_dirty(
                 continue;
             }
             let block_index = block.id.as_usize();
-            let Some(entry_slots) = program.block_entry_cached_slots.get(block_index) else {
+            let Some(entry_slots) = program.block_entry_cached_cells.get(block_index) else {
                 continue;
             };
             if entry_slots.is_empty() {
                 continue;
             }
 
-            let mut next_dirty = collections::vec![false; cached_locals.len()];
+            let mut next_dirty = collections::vec![false; cached_cells.len()];
             for &pred_index in &predecessors[block_index] {
                 let (_, pred_exit_dirty) = simulate_block_cache_exit_state(
                     program,
@@ -3417,7 +3418,7 @@ fn compute_block_entry_cache_dirty(
     entry_dirty
 }
 
-fn register_param_slots(param_locs: &[MachineParamLoc]) -> collections::Vec<FrameSlot> {
+fn register_param_slots(param_locs: &[MachineParamLoc]) -> collections::Vec<CellId> {
     let mut slots = collections::Vec::new();
     for loc in param_locs {
         match *loc {
@@ -3425,7 +3426,7 @@ fn register_param_slots(param_locs: &[MachineParamLoc]) -> collections::Vec<Fram
             MachineParamLoc::GpArg { param_index, .. }
             | MachineParamLoc::GpArgPair { param_index, .. }
             | MachineParamLoc::FpArg { param_index, .. } => {
-                slots.push(FrameSlot(param_index));
+                slots.push(CellId(param_index));
             }
         }
     }
@@ -3483,15 +3484,15 @@ fn simulate_block_cache_exit_state(
     program: &SsaProgram,
     block: &SsaBlock,
     entry_dirty: &[bool],
-    slot_to_index: &BTreeMap<FrameSlot, usize>,
-    register_param_slots: &[FrameSlot],
+    slot_to_index: &BTreeMap<CellId, usize>,
+    register_param_slots: &[CellId],
     is_local_func: &[bool],
     call_preserved_cache_candidates: &[bool],
 ) -> (collections::Vec<bool>, collections::Vec<bool>) {
     let mut resident = collections::vec![false; slot_to_index.len()];
     let mut dirty = collections::vec![false; slot_to_index.len()];
 
-    if let Some(entry_slots) = program.block_entry_cached_slots.get(block.id.as_usize()) {
+    if let Some(entry_slots) = program.block_entry_cached_cells.get(block.id.as_usize()) {
         for &slot in entry_slots {
             if let Some(&cached_index) = slot_to_index.get(&slot) {
                 resident[cached_index] = true;
@@ -3502,8 +3503,8 @@ fn simulate_block_cache_exit_state(
 
     for inst in &block.ops {
         match inst.op {
-            SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_ENSURE_CACHE => {
-                let slot = FrameSlot(inst.meta);
+            SsaOp::CELL_GET_CACHE | SsaOp::CELL_ENSURE_CACHE => {
+                let slot = CellId(inst.meta);
                 if let Some(&cached_index) = slot_to_index.get(&slot) {
                     if !resident[cached_index] {
                         resident[cached_index] = true;
@@ -3512,8 +3513,8 @@ fn simulate_block_cache_exit_state(
                     }
                 }
             }
-            SsaOp::LOCAL_RESERVE_CACHE => {
-                let slot = FrameSlot(inst.meta);
+            SsaOp::CELL_RESERVE_CACHE => {
+                let slot = CellId(inst.meta);
                 if let Some(&cached_index) = slot_to_index.get(&slot) {
                     if !resident[cached_index] {
                         resident[cached_index] = true;
@@ -3521,15 +3522,15 @@ fn simulate_block_cache_exit_state(
                     }
                 }
             }
-            SsaOp::LOCAL_SET_CACHE => {
-                let slot = FrameSlot(inst.meta);
+            SsaOp::CELL_SET_CACHE => {
+                let slot = CellId(inst.meta);
                 if let Some(&cached_index) = slot_to_index.get(&slot) {
                     resident[cached_index] = true;
                     dirty[cached_index] = true;
                 }
             }
-            SsaOp::LOCAL_DROP_CACHE => {
-                let slot = FrameSlot(inst.meta);
+            SsaOp::CELL_DROP_CACHE => {
+                let slot = CellId(inst.meta);
                 if let Some(&cached_index) = slot_to_index.get(&slot) {
                     resident[cached_index] = false;
                     dirty[cached_index] = false;
@@ -3564,7 +3565,7 @@ fn simulate_block_cache_exit_state(
 /// Value-carry classification: a call whose continuation can receive caches
 /// still holding their VALUES — a direct call to a local JIT body, matching
 /// the residency solver's nomination, the plan's call survival, and
-/// `prepare_cached_locals_for_local_call`'s emission. Distinct from the layout
+/// `prepare_cached_cells_for_local_call`'s emission. Distinct from the layout
 /// sim's `is_local_jit_call` (lower_cache_layout), which additionally credits
 /// fixed-local-only indirect calls: that one governs LANE-ASSIGNMENT stability
 /// (a lane kept assigned across the call so the post-call reload lands in the

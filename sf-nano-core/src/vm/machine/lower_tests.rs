@@ -20,12 +20,13 @@ use crate::vm::{
         LowerFunctionInput, LowerModuleInput,
     },
     middle::{
-        frame::{plan_frame_layout, FrameSpan},
+        cell::CellId,
+        frame::{plan_frame_layout, FrameSlot, FrameSpan},
         ssa_ir::{
             ir::{
-                entry_cache_requirement_from_ops, EntryCacheRequirement, LocalSlotInfo, SsaBinding,
+                entry_cache_requirement_from_ops, CellInfo, EntryCacheRequirement, SsaBinding,
                 SsaBlock, SsaCallArgs, SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge,
-                SsaInst, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
+                SsaInst, SsaOp, SsaOperand, SsaProgram, SsaTerminator, SsaValue,
             },
             target::SsaTarget,
         },
@@ -71,7 +72,7 @@ fn host_backend_config_with_preserved(
     gp_preserved_dynamic: u8,
     gp_internal_scratch: u8,
 ) -> BackendConfig {
-    let mut config = BackendConfig::with_volatility(
+    let config = BackendConfig::with_volatility(
         HOST_GP_UNIT_BYTES,
         gp_volatile_dynamic,
         gp_preserved_dynamic,
@@ -86,14 +87,45 @@ fn host_backend_config_with_preserved(
     config
 }
 
-/// Fill `block_entry_cache_requirements` (parallel to `block_entry_cached_slots`,
+/// Fill `block_entry_cache_requirements` (parallel to `block_entry_cached_cells`,
 /// derived from each block's first-use ops) and `preferred_preserved` (none
 /// preferred) for a machine test that builds its own SSA. The machine computes
 /// the physical lane layout itself; tests needing a preserved cache set the
 /// slot's `preferred_preserved` flag explicitly instead.
+/// Identity homes for every cell a test references: hand-built programs
+/// often leave `cell_types` sparse, so size the table by the highest cell
+/// id any cache/slot op or entry row names.
+fn fill_identity_cell_homes(ssa: &mut SsaProgram) {
+    let mut home_count = ssa.cell_types.len() as u16;
+    for block in &ssa.blocks {
+        for inst in &block.ops {
+            let is_cell_op = matches!(
+                inst.op,
+                SsaOp::CELL_GET_SLOT
+                    | SsaOp::CELL_GET_CACHE
+                    | SsaOp::CELL_SET_SLOT
+                    | SsaOp::CELL_SET_CACHE
+                    | SsaOp::CELL_ENSURE_CACHE
+                    | SsaOp::CELL_RESERVE_CACHE
+                    | SsaOp::CELL_DROP_CACHE
+            );
+            if is_cell_op {
+                home_count = home_count.max(inst.meta + 1);
+            }
+        }
+    }
+    for entry in &ssa.block_entry_cached_cells {
+        for cell in entry {
+            home_count = home_count.max(cell.0 + 1);
+        }
+    }
+    ssa.cell_homes = (0..home_count).map(FrameSlot).collect();
+}
+
 fn set_default_entry_cache_metadata(ssa: &mut SsaProgram) {
+    fill_identity_cell_homes(ssa);
     let requirements: collections::Vec<collections::Vec<EntryCacheRequirement>> = ssa
-        .block_entry_cached_slots
+        .block_entry_cached_cells
         .iter()
         .enumerate()
         .map(|(block_index, slots)| {
@@ -110,7 +142,7 @@ fn set_default_entry_cache_metadata(ssa: &mut SsaProgram) {
         })
         .collect();
     ssa.block_entry_cache_requirements = requirements;
-    ssa.preferred_preserved = collections::vec![false; ssa.local_slot_types.len()];
+    ssa.preferred_preserved = collections::vec![false; ssa.cell_types.len()];
 }
 
 fn gp32_backend_config(
@@ -160,11 +192,11 @@ fn lowers_simple_slot_and_add_block() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -174,7 +206,7 @@ fn lowers_simple_slot_and_add_block() {
         };
         __blk0
             .ops
-            .push(SsaInst::local_get_cache(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_get_cache(CellId(0), SsaValue(0)));
         {
             let __pidx = ssa
                 .intern_primitive(PrimitiveOpKind::I32Const { value: 1 })
@@ -200,7 +232,7 @@ fn lowers_simple_slot_and_add_block() {
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_slot(frame.local_slot(0), SsaValue(2)));
+            .push(SsaInst::cell_set_slot(CellId(0), SsaValue(2)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -249,7 +281,7 @@ fn lowers_simple_slot_and_add_block() {
         program.blocks[0].terminator,
         MachineTerminator::Return
     ));
-    // LocalGetCache now source-aliases the value to the cache register
+    // CellGetCache now source-aliases the value to the cache register
     // without emitting a Move, so the block is one op shorter.
     assert_eq!(program.blocks[0].ops.len(), 4);
     assert!(matches!(
@@ -282,11 +314,11 @@ fn lowers_select_with_wasm_operand_order() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -383,14 +415,14 @@ fn lowers_select_with_wasm_operand_order() {
 #[test]
 fn lowers_v128_binary_and_publishes_raw_slot_handle() {
     let frame = plan_frame_layout(1, 0, HOST_CALL_SCRATCH_SLOTS);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let mut ssa = SsaProgram::default();
     ssa.entry = SsaTarget(0);
-    ssa.local_slot_types = collections::vec![ValueType::V128];
-    ssa.local_slot_info = collections::vec![LocalSlotInfo::default()];
-    ssa.block_entry_cached_slots = collections::vec![collections::Vec::new()];
+    ssa.cell_types = collections::vec![ValueType::V128];
+    ssa.cell_info = collections::vec![CellInfo::default()];
+    ssa.block_entry_cached_cells = collections::vec![collections::Vec::new()];
     ssa.value_types = collections::vec![ValueType::V128, ValueType::V128, ValueType::V128];
-    ssa.value_sink_local = collections::vec![];
+    ssa.value_sink_cell = collections::vec![];
 
     let lhs = ssa
         .intern_primitive(PrimitiveOpKind::V128Const { value: [1; 16] })
@@ -417,12 +449,14 @@ fn lowers_v128_binary_and_publishes_raw_slot_handle() {
                 ],
                 0,
             ),
-            SsaInst::local_set_slot(slot, SsaValue(2)),
+            SsaInst::cell_set_slot(slot, SsaValue(2)),
         ],
         extra_args: collections::Vec::new(),
         terminator: SsaTerminator::Return { results: None },
     });
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 6),
         #[cfg(sf_has_guard_pages)]
@@ -479,14 +513,14 @@ fn lowers_v128_binary_and_publishes_raw_slot_handle() {
 #[test]
 fn lowers_v128_local_get_slot_through_raw_handle_boundary() {
     let frame = plan_frame_layout(1, 0, HOST_CALL_SCRATCH_SLOTS);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let mut ssa = SsaProgram::default();
     ssa.entry = SsaTarget(0);
-    ssa.local_slot_types = collections::vec![ValueType::V128];
-    ssa.local_slot_info = collections::vec![LocalSlotInfo::default()];
-    ssa.block_entry_cached_slots = collections::vec![collections::Vec::new()];
+    ssa.cell_types = collections::vec![ValueType::V128];
+    ssa.cell_info = collections::vec![CellInfo::default()];
+    ssa.block_entry_cached_cells = collections::vec![collections::Vec::new()];
     ssa.value_types = collections::vec![ValueType::V128, ValueType::V128];
-    ssa.value_sink_local = collections::vec![];
+    ssa.value_sink_cell = collections::vec![];
 
     let not = ssa
         .intern_primitive(PrimitiveOpKind::V128Not)
@@ -495,19 +529,21 @@ fn lowers_v128_local_get_slot_through_raw_handle_boundary() {
         id: SsaTarget(0),
         params: collections::Vec::new(),
         ops: collections::vec![
-            SsaInst::local_get_slot(slot, SsaValue(0)),
+            SsaInst::cell_get_slot(slot, SsaValue(0)),
             SsaInst::primitive(
                 not,
                 SsaValue(1),
                 [SsaOperand::value(SsaValue(0)), SsaOperand::NONE],
                 0,
             ),
-            SsaInst::local_set_slot(slot, SsaValue(1)),
+            SsaInst::cell_set_slot(slot, SsaValue(1)),
         ],
         extra_args: collections::Vec::new(),
         terminator: SsaTerminator::Return { results: None },
     });
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 6),
         #[cfg(sf_has_guard_pages)]
@@ -565,11 +601,11 @@ fn native_backend_requires_at_least_one_gp_linear_value_register() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -609,11 +645,11 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -628,6 +664,10 @@ fn projects_return_results_and_helper_scratch_from_frame_plan() {
         ssa
     };
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
@@ -669,11 +709,11 @@ fn rejects_inconsistent_return_result_spans() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -721,11 +761,11 @@ fn rejects_mixed_void_and_value_returns() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -770,11 +810,11 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![SsaValue(0), SsaValue(1)],
@@ -807,6 +847,8 @@ fn lowers_branch_edge_bindings_into_machine_edge_args() {
         ssa
     };
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
@@ -837,11 +879,11 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64, ValueType::I64];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![SsaValue(0)],
@@ -868,6 +910,8 @@ fn lowers_i64_branch_params_and_edge_args_as_gp_word_pairs_on_32bit_targets() {
         ssa
     };
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
@@ -926,16 +970,16 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![
             ValueType::I64,
             ValueType::I64,
             ValueType::I64,
             ValueType::I64
         ];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -958,10 +1002,10 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_slot(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_set_slot(CellId(0), SsaValue(0)));
         __blk0
             .ops
-            .push(SsaInst::local_get_slot(frame.local_slot(0), SsaValue(1)));
+            .push(SsaInst::cell_get_slot(CellId(0), SsaValue(1)));
         {
             let __pidx = ssa
                 .intern_primitive(PrimitiveOpKind::I64Const {
@@ -1024,18 +1068,18 @@ fn lowers_i64_slot_and_pair_arithmetic_directly_to_legal_32bit_machineir() {
 fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
     let backend = gp32_backend_config(1, 4, 0, 2);
     let frame = plan_frame_layout(1, 2, 4);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I64];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I64];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: true,
         }];
-        ssa.block_entry_cached_slots = collections::vec![collections::vec![]];
+        ssa.block_entry_cached_cells = collections::vec![collections::vec![]];
         ssa.value_types = collections::vec![ValueType::I64];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1043,11 +1087,11 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk0.ops.push(SsaInst::local_get_slot(slot, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_get_slot(slot, SsaValue(0)));
         __blk0
             .ops
             .push(SsaInst::spill(frame.operand_slot(0), SsaValue(0)));
-        __blk0.ops.push(SsaInst::local_reserve_cache(slot));
+        __blk0.ops.push(SsaInst::cell_reserve_cache(slot));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -1093,18 +1137,18 @@ fn gp32_i64_slot_get_stays_frame_based_for_explicit_cache_candidate() {
 fn gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate() {
     let backend = gp32_backend_config(1, 4, 0, 2);
     let frame = plan_frame_layout(1, 1, 4);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I64];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I64];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: false,
         }];
-        ssa.block_entry_cached_slots = collections::vec![collections::vec![]];
+        ssa.block_entry_cached_cells = collections::vec![collections::vec![]];
         ssa.value_types = collections::vec![ValueType::I64];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1125,8 +1169,8 @@ fn gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate() {
                 0u16,
             ));
         }
-        __blk0.ops.push(SsaInst::local_set_slot(slot, SsaValue(0)));
-        __blk0.ops.push(SsaInst::local_reserve_cache(slot));
+        __blk0.ops.push(SsaInst::cell_set_slot(slot, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_reserve_cache(slot));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -1165,18 +1209,18 @@ fn gp32_i64_slot_set_stays_frame_based_for_explicit_cache_candidate() {
 fn gp32_i64_local_get_set_cache_same_slot_emits_no_self_moves() {
     let backend = gp32_backend_config(1, 4, 0, 2);
     let frame = plan_frame_layout(1, 1, 2);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I64];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I64];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: true,
             reads_before_write: true,
         }];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1184,8 +1228,8 @@ fn gp32_i64_local_get_set_cache_same_slot_emits_no_self_moves() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk0.ops.push(SsaInst::local_get_cache(slot, SsaValue(0)));
-        __blk0.ops.push(SsaInst::local_set_cache(slot, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_get_cache(slot, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_set_cache(slot, SsaValue(0)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -1211,36 +1255,36 @@ fn gp32_i64_local_get_set_cache_same_slot_emits_no_self_moves() {
     assert!(!ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::Move {
-            owner: MachineRegOwner::CachedLocal,
+            owner: MachineRegOwner::CachedCell,
             src: MachineValue::Reg(_),
             ..
         }
-    )), "i64 LocalGetCache -> LocalSetCache of the same slot should not emit cache self moves; ops={ops:?}");
+    )), "i64 CellGetCache -> CellSetCache of the same slot should not emit cache self moves; ops={ops:?}");
 }
 
 #[test]
 fn gp32_i64_local_set_cache_materializes_live_pair_alias_before_overwrite() {
     let backend = gp32_backend_config(1, 6, 0, 2);
     let frame = plan_frame_layout(2, 2, 2);
-    let slot0 = frame.local_slot(0);
-    let slot1 = frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I64, ValueType::I64];
-        ssa.local_slot_info = collections::vec![
-            LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I64, ValueType::I64];
+        ssa.cell_info = collections::vec![
+            CellInfo {
                 is_param: false,
                 reads_before_write: true,
             },
-            LocalSlotInfo {
+            CellInfo {
                 is_param: false,
                 reads_before_write: false,
             },
         ];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64, ValueType::I64];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1248,9 +1292,7 @@ fn gp32_i64_local_set_cache_materializes_live_pair_alias_before_overwrite() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk0
-            .ops
-            .push(SsaInst::local_get_cache(slot0, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_get_cache(slot0, SsaValue(0)));
         {
             let __pidx = ssa
                 .intern_primitive(PrimitiveOpKind::I64Const { value: 7 })
@@ -1262,10 +1304,8 @@ fn gp32_i64_local_set_cache_materializes_live_pair_alias_before_overwrite() {
                 0u16,
             ));
         }
-        __blk0
-            .ops
-            .push(SsaInst::local_set_cache(slot0, SsaValue(1)));
-        __blk0.ops.push(SsaInst::local_set_slot(slot1, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_set_cache(slot0, SsaValue(1)));
+        __blk0.ops.push(SsaInst::cell_set_slot(slot1, SsaValue(0)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -1292,7 +1332,7 @@ fn gp32_i64_local_set_cache_materializes_live_pair_alias_before_overwrite() {
         .iter()
         .filter_map(|inst| match inst.kind {
             MachineInstKind::Load {
-                owner: MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedCell,
                 dst,
                 ..
             } => Some(dst),
@@ -1330,11 +1370,11 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64, ValueType::I64];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1405,16 +1445,16 @@ fn lowers_i64_memory_load_store_directly_to_legal_32bit_machineir() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![
             ValueType::I32,
             ValueType::I64,
             ValueType::I32,
             ValueType::I64
         ];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1520,11 +1560,11 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
     let caller = {
         let mut caller = SsaProgram::default();
         caller.entry = SsaTarget(0);
-        caller.local_slot_types = collections::vec![];
-        caller.local_slot_info = collections::vec![];
-        caller.block_entry_cached_slots = collections::vec![];
+        caller.cell_types = collections::vec![];
+        caller.cell_info = collections::vec![];
+        caller.block_entry_cached_cells = collections::vec![];
         caller.value_types = collections::vec![];
-        caller.value_sink_local = collections::vec![];
+        caller.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1547,11 +1587,11 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
     let callee = {
         let mut callee = SsaProgram::default();
         callee.entry = SsaTarget(0);
-        callee.local_slot_types = collections::vec![];
-        callee.local_slot_info = collections::vec![];
-        callee.block_entry_cached_slots = collections::vec![];
+        callee.cell_types = collections::vec![];
+        callee.cell_info = collections::vec![];
+        callee.block_entry_cached_cells = collections::vec![];
         callee.value_types = collections::vec![];
-        callee.value_sink_local = collections::vec![];
+        callee.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1592,19 +1632,19 @@ fn lowers_direct_local_call_to_legal_32bit_machineir() {
 }
 
 #[test]
-fn lowers_cached_local_reads_and_writes_through_cache_regs() {
+fn lowers_cached_cell_reads_and_writes_through_cache_regs() {
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: false
         }];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1614,7 +1654,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
         };
         __blk0
             .ops
-            .push(SsaInst::local_get_cache(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_get_cache(CellId(0), SsaValue(0)));
         {
             let __pidx = ssa.intern_primitive(PrimitiveOpKind::Drop).unwrap();
             __blk0.ops.push(SsaInst::primitive(
@@ -1637,7 +1677,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(1)));
+            .push(SsaInst::cell_set_cache(CellId(0), SsaValue(1)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -1665,8 +1705,8 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
             MachineInstKind::Load { dst, .. } => Some(dst),
             _ => None,
         })
-        .expect("expected LocalGetCache to load the local into a cache reg");
-    // LocalGetCache now source-aliases the value to the cache register
+        .expect("expected CellGetCache to load the local into a cache reg");
+    // CellGetCache now source-aliases the value to the cache register
     // without emitting a Move — no snapshot_reg to find.
     let const_reg = ops
         .iter()
@@ -1688,7 +1728,7 @@ fn lowers_cached_local_reads_and_writes_through_cache_regs() {
                 ..
             } if dst == cache_reg && src == const_reg
         )),
-        "expected LocalSetCache to write the new value back into the cache reg"
+        "expected CellSetCache to write the new value back into the cache reg"
     );
 }
 
@@ -1698,11 +1738,11 @@ fn local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free() 
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1723,7 +1763,7 @@ fn local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free() 
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_set_cache(CellId(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -1742,7 +1782,7 @@ fn local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free() 
             result_count: 0,
         }],
     })
-    .expect("LocalSetCache should be able to bind the dying source reg as cache");
+    .expect("CellSetCache should be able to bind the dying source reg as cache");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(ops.len(), 1, "no extra cache copy should be needed");
@@ -1756,20 +1796,20 @@ fn local_set_cache_reuses_dying_source_linear_value_when_no_extra_reg_is_free() 
 }
 
 #[test]
-fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
+fn does_not_zero_unread_cached_cells_at_entry_on_32bit_targets() {
     let backend = gp32_backend_config(1, 4, 0, 2);
     let frame = plan_frame_layout(1, 2, 2);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: false
         }];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1790,7 +1830,7 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_set_cache(CellId(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -1815,7 +1855,7 @@ fn does_not_zero_unread_cached_locals_at_entry_on_32bit_targets() {
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(ops.len(), 1);
-    // LocalSetCache should be able to bind the dying const reg directly as the cache reg.
+    // CellSetCache should be able to bind the dying const reg directly as the cache reg.
     assert!(matches!(
         ops[0].kind,
         MachineInstKind::Move {
@@ -1831,11 +1871,11 @@ fn lowers_call_runtime_through_frame_metadata_without_helper_scratch() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1891,11 +1931,11 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I64];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1918,7 +1958,7 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_slot(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_set_slot(CellId(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -1952,19 +1992,19 @@ fn coalesces_dead_i64_const_directly_into_uncached_store_slot() {
 }
 
 #[test]
-fn flushes_and_reloads_cached_locals_around_call_runtime() {
+fn flushes_and_reloads_cached_cells_around_call_runtime() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: false
         }];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -1985,10 +2025,8 @@ fn flushes_and_reloads_cached_locals_around_call_runtime() {
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(0)));
-        __blk0
-            .ops
-            .push(SsaInst::local_drop_cache(frame.local_slot(0)));
+            .push(SsaInst::cell_set_cache(CellId(0), SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_drop_cache(CellId(0)));
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
@@ -2028,7 +2066,7 @@ fn flushes_and_reloads_cached_locals_around_call_runtime() {
             ..
         }
     ));
-    // ops[1]: explicit LocalDropCache flushes cache to frame before the call
+    // ops[1]: explicit CellDropCache flushes cache to frame before the call
     assert!(matches!(ops[1].kind, MachineInstKind::Store { .. }));
     // ops[2]: runtime call
     assert!(matches!(ops[2].kind, MachineInstKind::CallRuntime(_)));
@@ -2038,19 +2076,19 @@ fn flushes_and_reloads_cached_locals_around_call_runtime() {
 }
 
 #[test]
-fn skips_dead_cached_local_reload_after_direct_runtime_call() {
+fn skips_dead_cached_cell_reload_after_direct_runtime_call() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: true,
             reads_before_write: true
         }];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2071,10 +2109,8 @@ fn skips_dead_cached_local_reload_after_direct_runtime_call() {
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(0)));
-        __blk0
-            .ops
-            .push(SsaInst::local_drop_cache(frame.local_slot(0)));
+            .push(SsaInst::cell_set_cache(CellId(0), SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_drop_cache(CellId(0)));
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
@@ -2114,19 +2150,19 @@ fn skips_dead_cached_local_reload_after_direct_runtime_call() {
 }
 
 #[test]
-fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
+fn flushes_and_reloads_cached_cells_around_runtime_helpers() {
     let frame = plan_frame_layout(1, 2, 3);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: true,
             reads_before_write: true
         }];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2147,10 +2183,8 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(0)));
-        __blk0
-            .ops
-            .push(SsaInst::local_drop_cache(frame.local_slot(0)));
+            .push(SsaInst::cell_set_cache(CellId(0), SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_drop_cache(CellId(0)));
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
@@ -2190,7 +2224,7 @@ fn flushes_and_reloads_cached_locals_around_runtime_helpers() {
             ..
         }
     ));
-    // ops[1]: explicit LocalDropCache flushes before the runtime helper call
+    // ops[1]: explicit CellDropCache flushes before the runtime helper call
     assert!(matches!(ops[1].kind, MachineInstKind::Store { .. }));
     // ops[2]: call helper (call_runtime)
     assert!(matches!(ops[2].kind, MachineInstKind::CallRuntime(_)));
@@ -2207,11 +2241,11 @@ fn lowers_direct_local_call_with_continuation_block() {
     let caller = {
         let mut caller = SsaProgram::default();
         caller.entry = SsaTarget(0);
-        caller.local_slot_types = collections::vec![];
-        caller.local_slot_info = collections::vec![];
-        caller.block_entry_cached_slots = collections::vec![];
+        caller.cell_types = collections::vec![];
+        caller.cell_info = collections::vec![];
+        caller.block_entry_cached_cells = collections::vec![];
         caller.value_types = collections::vec![];
-        caller.value_sink_local = collections::vec![];
+        caller.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2234,11 +2268,11 @@ fn lowers_direct_local_call_with_continuation_block() {
     let callee = {
         let mut callee = SsaProgram::default();
         callee.entry = SsaTarget(0);
-        callee.local_slot_types = collections::vec![];
-        callee.local_slot_info = collections::vec![];
-        callee.block_entry_cached_slots = collections::vec![];
+        callee.cell_types = collections::vec![];
+        callee.cell_info = collections::vec![];
+        callee.block_entry_cached_cells = collections::vec![];
         callee.value_types = collections::vec![];
-        callee.value_sink_local = collections::vec![];
+        callee.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2338,21 +2372,21 @@ fn lowers_direct_local_call_with_continuation_block() {
 }
 
 #[test]
-fn flushes_cached_local_before_second_direct_call() {
+fn flushes_cached_cell_before_second_direct_call() {
     let caller_frame = plan_frame_layout(2, 1, 4);
     let callee_frame = plan_frame_layout(0, 1, 4);
 
     let caller = {
         let mut caller = SsaProgram::default();
         caller.entry = SsaTarget(0);
-        caller.local_slot_types = collections::vec![ValueType::I32];
-        caller.local_slot_info = collections::vec![LocalSlotInfo {
+        caller.cell_types = collections::vec![ValueType::I32];
+        caller.cell_info = collections::vec![CellInfo {
             is_param: true,
             reads_before_write: true
         }];
-        caller.block_entry_cached_slots = collections::vec![];
+        caller.block_entry_cached_cells = collections::vec![];
         caller.value_types = collections::vec![];
-        caller.value_sink_local = collections::vec![];
+        caller.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2372,13 +2406,10 @@ fn flushes_cached_local_before_second_direct_call() {
         __blk0
             .ops
             .push(SsaInst::fill(caller_frame.operand_slot(0), SsaValue(0)));
-        __blk0.ops.push(SsaInst::local_set_cache(
-            caller_frame.local_slot(0),
-            SsaValue(0),
-        ));
         __blk0
             .ops
-            .push(SsaInst::local_drop_cache(caller_frame.local_slot(0)));
+            .push(SsaInst::cell_set_cache(CellId(0), SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_drop_cache(CellId(0)));
         {
             let __idx = caller.push_call_op(SsaCallOp::CallDirect {
                 callee: 1,
@@ -2394,11 +2425,11 @@ fn flushes_cached_local_before_second_direct_call() {
     let callee = {
         let mut callee = SsaProgram::default();
         callee.entry = SsaTarget(0);
-        callee.local_slot_types = collections::vec![];
-        callee.local_slot_info = collections::vec![];
-        callee.block_entry_cached_slots = collections::vec![];
+        callee.cell_types = collections::vec![];
+        callee.cell_info = collections::vec![];
+        callee.block_entry_cached_cells = collections::vec![];
         callee.value_types = collections::vec![];
-        callee.value_sink_local = collections::vec![];
+        callee.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2412,6 +2443,10 @@ fn flushes_cached_local_before_second_direct_call() {
         callee
     };
 
+    let mut callee = callee;
+    fill_identity_cell_homes(&mut callee);
+    let mut caller = caller;
+    fill_identity_cell_homes(&mut caller);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
@@ -2440,7 +2475,7 @@ fn flushes_cached_local_before_second_direct_call() {
 
     let second_call_block = &caller_program.blocks[1];
     let result_slot_offset = i32::from(caller_frame.operand_slot(0).0) * 8;
-    let local_slot_offset = i32::from(caller_frame.local_slot(0).0) * 8;
+    let local_slot_offset = i32::from(CellId(0).0) * 8;
     let result_reload_indices = second_call_block
         .ops
         .iter()
@@ -2513,19 +2548,19 @@ fn flushes_cached_local_before_second_direct_call() {
 fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
     let caller_frame = plan_frame_layout(1, 1, 4);
     let callee_frame = plan_frame_layout(0, 0, 4);
-    let slot = caller_frame.local_slot(0);
+    let slot = CellId(0);
 
     let caller = {
         let mut caller = SsaProgram::default();
         caller.entry = SsaTarget(0);
-        caller.local_slot_types = collections::vec![ValueType::I32];
-        caller.local_slot_info = collections::vec![LocalSlotInfo {
+        caller.cell_types = collections::vec![ValueType::I32];
+        caller.cell_info = collections::vec![CellInfo {
             is_param: true,
             reads_before_write: true,
         }];
-        caller.block_entry_cached_slots = collections::vec![];
+        caller.block_entry_cached_cells = collections::vec![];
         caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
-        caller.value_sink_local = collections::vec![];
+        caller.value_sink_cell = collections::vec![];
         let mut block = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2533,7 +2568,7 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(0)));
+        block.ops.push(SsaInst::cell_get_cache(slot, SsaValue(0)));
         let drop_idx = caller.intern_primitive(PrimitiveOpKind::Drop).unwrap();
         block.ops.push(SsaInst::primitive(
             drop_idx,
@@ -2548,7 +2583,7 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
             result_types: collections::Vec::new(),
         });
         block.ops.push(SsaInst::call(call_idx));
-        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
+        block.ops.push(SsaInst::cell_get_cache(slot, SsaValue(1)));
         block.ops.push(SsaInst::primitive(
             drop_idx,
             SsaValue::NONE,
@@ -2562,7 +2597,7 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
             result_types: collections::Vec::new(),
         });
         block.ops.push(SsaInst::call(second_call_idx));
-        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(2)));
+        block.ops.push(SsaInst::cell_get_cache(slot, SsaValue(2)));
         block.ops.push(SsaInst::primitive(
             drop_idx,
             SsaValue::NONE,
@@ -2579,11 +2614,11 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
     let callee = {
         let mut callee = SsaProgram::default();
         callee.entry = SsaTarget(0);
-        callee.local_slot_types = collections::vec![];
-        callee.local_slot_info = collections::vec![];
-        callee.block_entry_cached_slots = collections::vec![];
+        callee.cell_types = collections::vec![];
+        callee.cell_info = collections::vec![];
+        callee.block_entry_cached_cells = collections::vec![];
         callee.value_types = collections::vec![];
-        callee.value_sink_local = collections::vec![];
+        callee.value_sink_cell = collections::vec![];
         callee.blocks.push(SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2595,6 +2630,10 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
     };
 
     let backend = host_backend_config_with_preserved(0, 3, 2);
+    let mut callee = callee;
+    fill_identity_cell_homes(&mut callee);
+    let mut caller = caller;
+    fill_identity_cell_homes(&mut caller);
     let lowered = lower_module(LowerModuleInput {
         backend,
         #[cfg(sf_has_guard_pages)]
@@ -2638,7 +2677,7 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
         matches!(success.args[0], MachineValue::Reg(reg) if backend.gp_preserved_dynamic > 0 && reg.0 == MACHINE_FIXED_REG_COUNT)
     );
     assert_eq!(continuation.params.len(), 1);
-    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedLocal);
+    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedCell);
     assert!(
         call_block
             .ops
@@ -2654,7 +2693,7 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
         continuation.ops.iter().all(|inst| !matches!(
             inst.kind,
             MachineInstKind::Load {
-                owner: MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedCell,
                 ..
             }
         )),
@@ -2667,20 +2706,20 @@ fn direct_local_call_carries_clean_non_ref_cache_in_preserved_reg() {
 fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_available() {
     let caller_frame = plan_frame_layout(1, 0, 4);
     let callee_frame = plan_frame_layout(0, 0, 4);
-    let slot = caller_frame.local_slot(0);
+    let slot = CellId(0);
 
     let caller = {
         let mut caller = SsaProgram::default();
         caller.entry = SsaTarget(0);
-        caller.local_slot_types = collections::vec![ValueType::I32];
-        caller.local_slot_info = collections::vec![LocalSlotInfo {
+        caller.cell_types = collections::vec![ValueType::I32];
+        caller.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: true,
         }];
-        caller.block_entry_cached_slots = collections::vec![];
+        caller.block_entry_cached_cells = collections::vec![];
         caller.preferred_preserved = collections::vec![true];
         caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
-        caller.value_sink_local = collections::vec![];
+        caller.value_sink_cell = collections::vec![];
         let mut block = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2688,7 +2727,7 @@ fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_availabl
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(0)));
+        block.ops.push(SsaInst::cell_get_cache(slot, SsaValue(0)));
         let drop_idx = caller.intern_primitive(PrimitiveOpKind::Drop).unwrap();
         block.ops.push(SsaInst::primitive(
             drop_idx,
@@ -2703,7 +2742,7 @@ fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_availabl
             result_types: collections::Vec::new(),
         });
         block.ops.push(SsaInst::call(call_idx));
-        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
+        block.ops.push(SsaInst::cell_get_cache(slot, SsaValue(1)));
         block.ops.push(SsaInst::primitive(
             drop_idx,
             SsaValue::NONE,
@@ -2717,7 +2756,7 @@ fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_availabl
             result_types: collections::Vec::new(),
         });
         block.ops.push(SsaInst::call(second_call_idx));
-        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(2)));
+        block.ops.push(SsaInst::cell_get_cache(slot, SsaValue(2)));
         block.ops.push(SsaInst::primitive(
             drop_idx,
             SsaValue::NONE,
@@ -2730,11 +2769,11 @@ fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_availabl
     let callee = {
         let mut callee = SsaProgram::default();
         callee.entry = SsaTarget(0);
-        callee.local_slot_types = collections::vec![];
-        callee.local_slot_info = collections::vec![];
-        callee.block_entry_cached_slots = collections::vec![];
+        callee.cell_types = collections::vec![];
+        callee.cell_info = collections::vec![];
+        callee.block_entry_cached_cells = collections::vec![];
         callee.value_types = collections::vec![];
-        callee.value_sink_local = collections::vec![];
+        callee.value_sink_cell = collections::vec![];
         callee.blocks.push(SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2745,6 +2784,10 @@ fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_availabl
         callee
     };
 
+    let mut callee = callee;
+    fill_identity_cell_homes(&mut callee);
+    let mut caller = caller;
+    fill_identity_cell_homes(&mut caller);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config_with_preserved(3, 3, 0),
         #[cfg(sf_has_guard_pages)]
@@ -2792,12 +2835,12 @@ fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_availabl
         MachineValue::Reg(MachineReg(reg)) if reg == MACHINE_FIXED_REG_COUNT + 3
     ));
     assert_eq!(continuation.params.len(), 1);
-    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedLocal);
+    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedCell);
     assert!(
         continuation.ops.iter().all(|inst| !matches!(
             inst.kind,
             MachineInstKind::Load {
-                owner: MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedCell,
                 ..
             }
         )),
@@ -2809,20 +2852,20 @@ fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_availabl
 fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_home() {
     let caller_frame = plan_frame_layout(1, 0, 4);
     let callee_frame = plan_frame_layout(0, 0, 4);
-    let slot = caller_frame.local_slot(0);
+    let slot = CellId(0);
 
     let caller = {
         let mut caller = SsaProgram::default();
         caller.entry = SsaTarget(0);
-        caller.local_slot_types = collections::vec![ValueType::I32];
-        caller.local_slot_info = collections::vec![LocalSlotInfo {
+        caller.cell_types = collections::vec![ValueType::I32];
+        caller.cell_info = collections::vec![CellInfo {
             is_param: true,
             reads_before_write: true,
         }];
-        caller.block_entry_cached_slots = collections::vec![];
+        caller.block_entry_cached_cells = collections::vec![];
         caller.preferred_preserved = collections::vec![true];
         caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
-        caller.value_sink_local = collections::vec![];
+        caller.value_sink_cell = collections::vec![];
         let mut block = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2830,7 +2873,7 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(0)));
+        block.ops.push(SsaInst::cell_get_cache(slot, SsaValue(0)));
         let drop_idx = caller.intern_primitive(PrimitiveOpKind::Drop).unwrap();
         block.ops.push(SsaInst::primitive(
             drop_idx,
@@ -2845,7 +2888,7 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
             result_types: collections::Vec::new(),
         });
         block.ops.push(SsaInst::call(call_idx));
-        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
+        block.ops.push(SsaInst::cell_get_cache(slot, SsaValue(1)));
         block.ops.push(SsaInst::primitive(
             drop_idx,
             SsaValue::NONE,
@@ -2859,7 +2902,7 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
             result_types: collections::Vec::new(),
         });
         block.ops.push(SsaInst::call(second_call_idx));
-        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(2)));
+        block.ops.push(SsaInst::cell_get_cache(slot, SsaValue(2)));
         block.ops.push(SsaInst::primitive(
             drop_idx,
             SsaValue::NONE,
@@ -2872,11 +2915,11 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
     let callee = {
         let mut callee = SsaProgram::default();
         callee.entry = SsaTarget(0);
-        callee.local_slot_types = collections::vec![];
-        callee.local_slot_info = collections::vec![];
-        callee.block_entry_cached_slots = collections::vec![];
+        callee.cell_types = collections::vec![];
+        callee.cell_info = collections::vec![];
+        callee.block_entry_cached_cells = collections::vec![];
         callee.value_types = collections::vec![];
-        callee.value_sink_local = collections::vec![];
+        callee.value_sink_cell = collections::vec![];
         callee.blocks.push(SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2887,6 +2930,10 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
         callee
     };
 
+    let mut callee = callee;
+    fill_identity_cell_homes(&mut callee);
+    let mut caller = caller;
+    fill_identity_cell_homes(&mut caller);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config_with_preserved(3, 3, 0),
         #[cfg(sf_has_guard_pages)]
@@ -2921,7 +2968,7 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
             matches!(
                 inst.kind,
                 MachineInstKind::Move {
-                    owner: MachineRegOwner::CachedLocal,
+                    owner: MachineRegOwner::CachedCell,
                     dst,
                     src: MachineValue::Reg(MachineReg(src)),
                     ..
@@ -2942,7 +2989,7 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
         collections::vec![MachineValue::Reg(preserved)]
     );
     assert_eq!(continuation.params.len(), 1);
-    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedLocal);
+    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedCell);
     assert!(
         call_block
             .ops
@@ -2954,7 +3001,7 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
         continuation.ops.iter().all(|inst| !matches!(
             inst.kind,
             MachineInstKind::Load {
-                owner: MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedCell,
                 ..
             }
         )),
@@ -2966,20 +3013,20 @@ fn direct_local_call_materializes_call_live_register_param_cache_in_preserved_ho
 fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
     let caller_frame = plan_frame_layout(1, 1, 4);
     let callee_frame = plan_frame_layout(0, 0, 4);
-    let slot = caller_frame.local_slot(0);
+    let slot = CellId(0);
 
     let caller = {
         let mut caller = SsaProgram::default();
         caller.entry = SsaTarget(0);
-        caller.local_slot_types = collections::vec![ValueType::I32];
-        caller.local_slot_info = collections::vec![LocalSlotInfo {
+        caller.cell_types = collections::vec![ValueType::I32];
+        caller.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: false,
         }];
-        caller.block_entry_cached_slots = collections::vec![];
+        caller.block_entry_cached_cells = collections::vec![];
         caller.preferred_preserved = collections::vec![true];
         caller.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
-        caller.value_sink_local = collections::vec![];
+        caller.value_sink_cell = collections::vec![];
         let mut block = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -2996,7 +3043,7 @@ fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
             [SsaOperand::NONE, SsaOperand::NONE],
             0,
         ));
-        block.ops.push(SsaInst::local_set_cache(slot, SsaValue(0)));
+        block.ops.push(SsaInst::cell_set_cache(slot, SsaValue(0)));
         let call_idx = caller.push_call_op(SsaCallOp::CallDirect {
             callee: 1,
             args: test_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0), &[]),
@@ -3004,7 +3051,7 @@ fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
             result_types: collections::Vec::new(),
         });
         block.ops.push(SsaInst::call(call_idx));
-        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
+        block.ops.push(SsaInst::cell_get_cache(slot, SsaValue(1)));
         let drop_idx = caller.intern_primitive(PrimitiveOpKind::Drop).unwrap();
         block.ops.push(SsaInst::primitive(
             drop_idx,
@@ -3019,7 +3066,7 @@ fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
             result_types: collections::Vec::new(),
         });
         block.ops.push(SsaInst::call(second_call_idx));
-        block.ops.push(SsaInst::local_get_cache(slot, SsaValue(2)));
+        block.ops.push(SsaInst::cell_get_cache(slot, SsaValue(2)));
         block.ops.push(SsaInst::primitive(
             drop_idx,
             SsaValue::NONE,
@@ -3032,11 +3079,11 @@ fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
     let callee = {
         let mut callee = SsaProgram::default();
         callee.entry = SsaTarget(0);
-        callee.local_slot_types = collections::vec![];
-        callee.local_slot_info = collections::vec![];
-        callee.block_entry_cached_slots = collections::vec![];
+        callee.cell_types = collections::vec![];
+        callee.cell_info = collections::vec![];
+        callee.block_entry_cached_cells = collections::vec![];
         callee.value_types = collections::vec![];
-        callee.value_sink_local = collections::vec![];
+        callee.value_sink_cell = collections::vec![];
         callee.blocks.push(SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -3047,6 +3094,10 @@ fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
         callee
     };
 
+    let mut callee = callee;
+    fill_identity_cell_homes(&mut callee);
+    let mut caller = caller;
+    fill_identity_cell_homes(&mut caller);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config_with_preserved(1, 3, 2),
         #[cfg(sf_has_guard_pages)]
@@ -3086,7 +3137,7 @@ fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
         MachineValue::Reg(MachineReg(reg)) if reg == MACHINE_FIXED_REG_COUNT + 1
     ));
     assert_eq!(continuation.params.len(), 1);
-    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedLocal);
+    assert_eq!(continuation.params[0].owner, MachineRegOwner::CachedCell);
     assert!(
         call_block
             .ops
@@ -3099,7 +3150,7 @@ fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
         continuation.ops.iter().all(|inst| !matches!(
             inst.kind,
             MachineInstKind::Load {
-                owner: MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedCell,
                 ..
             }
         )),
@@ -3112,19 +3163,19 @@ fn direct_local_call_carries_dirty_non_ref_cache_after_publishing_it() {
 fn direct_local_call_publishes_dirty_ref_cache_even_in_preserved_reg() {
     let caller_frame = plan_frame_layout(1, 1, 4);
     let callee_frame = plan_frame_layout(0, 0, 4);
-    let slot = caller_frame.local_slot(0);
+    let slot = CellId(0);
 
     let caller = {
         let mut caller = SsaProgram::default();
         caller.entry = SsaTarget(0);
-        caller.local_slot_types = collections::vec![ValueType::funcref()];
-        caller.local_slot_info = collections::vec![LocalSlotInfo {
+        caller.cell_types = collections::vec![ValueType::funcref()];
+        caller.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: false,
         }];
-        caller.block_entry_cached_slots = collections::vec![];
+        caller.block_entry_cached_cells = collections::vec![];
         caller.value_types = collections::vec![ValueType::funcref()];
-        caller.value_sink_local = collections::vec![];
+        caller.value_sink_cell = collections::vec![];
         let mut block = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -3141,7 +3192,7 @@ fn direct_local_call_publishes_dirty_ref_cache_even_in_preserved_reg() {
             [SsaOperand::NONE, SsaOperand::NONE],
             0,
         ));
-        block.ops.push(SsaInst::local_set_cache(slot, SsaValue(0)));
+        block.ops.push(SsaInst::cell_set_cache(slot, SsaValue(0)));
         let call_idx = caller.push_call_op(SsaCallOp::CallDirect {
             callee: 1,
             args: test_call_args(FrameSpan::new(caller_frame.operand_slot(0), 0), &[]),
@@ -3155,11 +3206,11 @@ fn direct_local_call_publishes_dirty_ref_cache_even_in_preserved_reg() {
     let callee = {
         let mut callee = SsaProgram::default();
         callee.entry = SsaTarget(0);
-        callee.local_slot_types = collections::vec![];
-        callee.local_slot_info = collections::vec![];
-        callee.block_entry_cached_slots = collections::vec![];
+        callee.cell_types = collections::vec![];
+        callee.cell_info = collections::vec![];
+        callee.block_entry_cached_cells = collections::vec![];
         callee.value_types = collections::vec![];
-        callee.value_sink_local = collections::vec![];
+        callee.value_sink_cell = collections::vec![];
         callee.blocks.push(SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -3170,6 +3221,10 @@ fn direct_local_call_publishes_dirty_ref_cache_even_in_preserved_reg() {
         callee
     };
 
+    let mut callee = callee;
+    fill_identity_cell_homes(&mut callee);
+    let mut caller = caller;
+    fill_identity_cell_homes(&mut caller);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config_with_preserved(0, 3, 2),
         #[cfg(sf_has_guard_pages)]
@@ -3216,19 +3271,19 @@ fn direct_local_call_publishes_dirty_ref_cache_even_in_preserved_reg() {
 }
 
 #[test]
-fn preserves_cached_locals_across_block_edges() {
+fn preserves_cached_cells_across_block_edges() {
     let frame = plan_frame_layout(1, 1, 4);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: true,
             reads_before_write: true
         }];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -3252,10 +3307,8 @@ fn preserves_cached_locals_across_block_edges() {
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(0)));
-        __blk0
-            .ops
-            .push(SsaInst::local_drop_cache(frame.local_slot(0)));
+            .push(SsaInst::cell_set_cache(CellId(0), SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_drop_cache(CellId(0)));
         ssa.blocks.push(__blk0);
         let mut __blk1 = SsaBlock {
             id: SsaTarget(1),
@@ -3266,15 +3319,17 @@ fn preserves_cached_locals_across_block_edges() {
         };
         __blk1
             .ops
-            .push(SsaInst::local_get_cache(frame.local_slot(0), SsaValue(1)));
+            .push(SsaInst::cell_get_cache(CellId(0), SsaValue(1)));
         __blk1
             .ops
-            .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(1)));
+            .push(SsaInst::cell_set_cache(CellId(0), SsaValue(1)));
         ssa.blocks.push(__blk1);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
@@ -3320,7 +3375,7 @@ fn preserves_cached_locals_across_block_edges() {
         MachineTerminator::Jump(_)
     ));
     // Block 1: cache is re-established explicitly from the frame slot.
-    // Then LocalGetCache aliases v1 to the cache register, and LocalSetCache
+    // Then CellGetCache aliases v1 to the cache register, and CellSetCache
     // of v1 back to the same slot is a no-op (value already in cache_reg).
     let block1 = &program.blocks[1];
     let (_load_idx, _cache_reg) = block1
@@ -3329,14 +3384,14 @@ fn preserves_cached_locals_across_block_edges() {
         .enumerate()
         .find_map(|(idx, inst)| match inst.kind {
             MachineInstKind::Load {
-                owner: MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedCell,
                 dst,
                 ..
             } => Some((idx, dst)),
             _ => None,
         })
-        .expect("block 1 should re-establish the cached local with one CachedLocal load");
-    // With source-aliasing, LocalGetCache+LocalSetCache of the same slot
+        .expect("block 1 should re-establish the cached local with one CachedCell load");
+    // With source-aliasing, CellGetCache+CellSetCache of the same slot
     // produces zero additional Move ops beyond the initial Load.
     assert!(
         !block1.ops.iter().any(|inst| matches!(
@@ -3352,21 +3407,21 @@ fn preserves_cached_locals_across_block_edges() {
 }
 
 #[test]
-fn threads_cached_locals_through_block_edge_params() {
+fn threads_cached_cells_through_block_edge_params() {
     let frame = plan_frame_layout(1, 1, 4);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: true,
             reads_before_write: true
         }];
-        ssa.block_entry_cached_slots =
+        ssa.block_entry_cached_cells =
             collections::vec![collections::vec![], collections::vec![slot]];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -3388,7 +3443,7 @@ fn threads_cached_locals_through_block_edge_params() {
                 0u16,
             ));
         }
-        __blk0.ops.push(SsaInst::local_set_cache(slot, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_set_cache(slot, SsaValue(0)));
         ssa.blocks.push(__blk0);
         let mut __blk1 = SsaBlock {
             id: SsaTarget(1),
@@ -3397,13 +3452,15 @@ fn threads_cached_locals_through_block_edge_params() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk1.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
-        __blk1.ops.push(SsaInst::local_set_cache(slot, SsaValue(1)));
+        __blk1.ops.push(SsaInst::cell_get_cache(slot, SsaValue(1)));
+        __blk1.ops.push(SsaInst::cell_set_cache(slot, SsaValue(1)));
         ssa.blocks.push(__blk1);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
     };
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(1, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
@@ -3438,8 +3495,8 @@ fn threads_cached_locals_through_block_edge_params() {
         other => panic!("expected jump terminator, got {other:?}"),
     };
     assert_eq!(program.blocks[1].params.len(), 1);
-    // With source-aliasing, LocalGetCache aliases v1 to the carried cache
-    // register (block param), and the subsequent LocalSetCache of v1 back to
+    // With source-aliasing, CellGetCache aliases v1 to the carried cache
+    // register (block param), and the subsequent CellSetCache of v1 back to
     // the same slot is a no-op. Block 1 should have zero Move ops.
     assert!(
         program.blocks[1].ops.iter().all(|inst| !matches!(
@@ -3465,26 +3522,26 @@ fn threads_cached_locals_through_block_edge_params() {
 #[test]
 fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
     let frame = plan_frame_layout(2, 1, 4);
-    let slot0 = frame.local_slot(0);
-    let slot1 = frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32, ValueType::I32];
-        ssa.local_slot_info = collections::vec![
-            LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32, ValueType::I32];
+        ssa.cell_info = collections::vec![
+            CellInfo {
                 is_param: false,
                 reads_before_write: false,
             },
-            LocalSlotInfo {
+            CellInfo {
                 is_param: false,
                 reads_before_write: false,
             },
         ];
-        ssa.block_entry_cached_slots =
+        ssa.block_entry_cached_cells =
             collections::vec![collections::vec![], collections::vec![slot1]];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -3506,9 +3563,7 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
                 0u16,
             ));
         }
-        __blk0
-            .ops
-            .push(SsaInst::local_set_cache(slot0, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_set_cache(slot0, SsaValue(0)));
         {
             let __pidx = ssa
                 .intern_primitive(PrimitiveOpKind::I32Const { value: 2 })
@@ -3520,9 +3575,7 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
                 0u16,
             ));
         }
-        __blk0
-            .ops
-            .push(SsaInst::local_set_cache(slot1, SsaValue(1)));
+        __blk0.ops.push(SsaInst::cell_set_cache(slot1, SsaValue(1)));
         ssa.blocks.push(__blk0);
         let mut __blk1 = SsaBlock {
             id: SsaTarget(1),
@@ -3531,12 +3584,8 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk1
-            .ops
-            .push(SsaInst::local_get_cache(slot1, SsaValue(2)));
-        __blk1
-            .ops
-            .push(SsaInst::local_set_cache(slot1, SsaValue(2)));
+        __blk1.ops.push(SsaInst::cell_get_cache(slot1, SsaValue(2)));
+        __blk1.ops.push(SsaInst::cell_set_cache(slot1, SsaValue(2)));
         ssa.blocks.push(__blk1);
         // The machine's edge improver keeps slot1 in its block-0 exit register
         // (lane 1) across the edge, leaving the hole where slot0 (lane 0) dropped
@@ -3583,18 +3632,18 @@ fn keeps_shared_cache_lane_when_earlier_local_drops_on_edge() {
 #[test]
 fn local_reserve_cache_does_not_reload_old_slot_value() {
     let frame = plan_frame_layout(1, 1, 4);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: false,
         }];
-        ssa.block_entry_cached_slots = collections::vec![collections::vec![]];
+        ssa.block_entry_cached_cells = collections::vec![collections::vec![]];
         ssa.value_types = collections::vec![ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -3602,7 +3651,7 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk0.ops.push(SsaInst::local_reserve_cache(slot));
+        __blk0.ops.push(SsaInst::cell_reserve_cache(slot));
         {
             let __pidx = ssa
                 .intern_primitive(PrimitiveOpKind::I32Const { value: 9 })
@@ -3614,7 +3663,7 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
                 0u16,
             ));
         }
-        __blk0.ops.push(SsaInst::local_set_cache(slot, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_set_cache(slot, SsaValue(0)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -3633,7 +3682,7 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
             result_count: 0,
         }],
     })
-    .expect("LocalReserveCache should lower without reloading the old slot value");
+    .expect("CellReserveCache should lower without reloading the old slot value");
 
     let block = &lowered.module.functions[0].program.blocks[0];
     assert!(
@@ -3641,7 +3690,7 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
             .ops
             .iter()
             .all(|inst| !matches!(inst.kind, MachineInstKind::Load { .. })),
-        "LocalReserveCache should not trigger a frame reload before the later LocalSetCache; ops={:?}",
+        "CellReserveCache should not trigger a frame reload before the later CellSetCache; ops={:?}",
         block.ops
     );
     assert!(
@@ -3649,34 +3698,34 @@ fn local_reserve_cache_does_not_reload_old_slot_value() {
             matches!(
                 inst.kind,
                 MachineInstKind::Move {
-                    owner: MachineRegOwner::CachedLocal,
+                    owner: MachineRegOwner::CachedCell,
                     ..
                 }
             )
         }),
-        "the later LocalSetCache should still materialize cached-local ownership"
+        "the later CellSetCache should still materialize cached-local ownership"
     );
 }
 
 #[test]
 fn reserved_cache_edge_threads_without_reload_into_target_block() {
     let frame = plan_frame_layout(1, 1, 4);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: false,
         }];
-        ssa.block_entry_cached_slots = collections::vec![
+        ssa.block_entry_cached_cells = collections::vec![
             collections::vec![],
             collections::vec![],
             collections::vec![slot]
         ];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -3698,7 +3747,7 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
                 bindings: collections::vec![],
             }),
         };
-        __blk1.ops.push(SsaInst::local_reserve_cache(slot));
+        __blk1.ops.push(SsaInst::cell_reserve_cache(slot));
         ssa.blocks.push(__blk1);
         let mut __blk2 = SsaBlock {
             id: SsaTarget(2),
@@ -3718,9 +3767,9 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
                 0u16,
             ));
         }
-        __blk2.ops.push(SsaInst::local_set_cache(slot, SsaValue(0)));
-        __blk2.ops.push(SsaInst::local_get_cache(slot, SsaValue(1)));
-        __blk2.ops.push(SsaInst::local_set_cache(slot, SsaValue(1)));
+        __blk2.ops.push(SsaInst::cell_set_cache(slot, SsaValue(0)));
+        __blk2.ops.push(SsaInst::cell_get_cache(slot, SsaValue(1)));
+        __blk2.ops.push(SsaInst::cell_set_cache(slot, SsaValue(1)));
         ssa.blocks.push(__blk2);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -3750,7 +3799,7 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
             .ops
             .iter()
             .all(|inst| !matches!(inst.kind, MachineInstKind::Load { .. })),
-        "LocalReserveCache edge block should not reload the old slot value; ops={:?}",
+        "CellReserveCache edge block should not reload the old slot value; ops={:?}",
         reserve_block.ops
     );
     match &reserve_block.terminator {
@@ -3778,31 +3827,31 @@ fn reserved_cache_edge_threads_without_reload_into_target_block() {
 #[test]
 fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
     let frame = plan_frame_layout(3, 1, 6);
-    let slot0 = frame.local_slot(0);
-    let slot1 = frame.local_slot(1);
-    let slot2 = frame.local_slot(2);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
+    let slot2 = CellId(2);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
-        ssa.local_slot_info = collections::vec![
-            LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
+        ssa.cell_info = collections::vec![
+            CellInfo {
                 is_param: false,
                 reads_before_write: false,
             },
-            LocalSlotInfo {
+            CellInfo {
                 is_param: false,
                 reads_before_write: false,
             },
-            LocalSlotInfo {
+            CellInfo {
                 is_param: false,
                 reads_before_write: false,
             },
         ];
-        ssa.block_entry_cached_slots =
+        ssa.block_entry_cached_cells =
             collections::vec![collections::vec![], collections::vec![slot0, slot1, slot2],];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32, ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -3813,9 +3862,9 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
                 bindings: collections::vec![],
             }),
         };
-        __blk0.ops.push(SsaInst::local_reserve_cache(slot2));
-        __blk0.ops.push(SsaInst::local_reserve_cache(slot1));
-        __blk0.ops.push(SsaInst::local_reserve_cache(slot0));
+        __blk0.ops.push(SsaInst::cell_reserve_cache(slot2));
+        __blk0.ops.push(SsaInst::cell_reserve_cache(slot1));
+        __blk0.ops.push(SsaInst::cell_reserve_cache(slot0));
         ssa.blocks.push(__blk0);
         let mut __blk1 = SsaBlock {
             id: SsaTarget(1),
@@ -3835,9 +3884,7 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
                 0u16,
             ));
         }
-        __blk1
-            .ops
-            .push(SsaInst::local_set_cache(slot0, SsaValue(0)));
+        __blk1.ops.push(SsaInst::cell_set_cache(slot0, SsaValue(0)));
         {
             let __pidx = ssa
                 .intern_primitive(PrimitiveOpKind::I32Const { value: 2 })
@@ -3849,9 +3896,7 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
                 0u16,
             ));
         }
-        __blk1
-            .ops
-            .push(SsaInst::local_set_cache(slot1, SsaValue(1)));
+        __blk1.ops.push(SsaInst::cell_set_cache(slot1, SsaValue(1)));
         {
             let __pidx = ssa
                 .intern_primitive(PrimitiveOpKind::I32Const { value: 3 })
@@ -3863,9 +3908,7 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
                 0u16,
             ));
         }
-        __blk1
-            .ops
-            .push(SsaInst::local_set_cache(slot2, SsaValue(2)));
+        __blk1.ops.push(SsaInst::cell_set_cache(slot2, SsaValue(2)));
         ssa.blocks.push(__blk1);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -3906,18 +3949,18 @@ fn reserved_cache_edge_aligns_each_reserved_arg_with_target_param_reg() {
 #[test]
 fn local_drop_cache_skips_writeback_when_cache_is_clean() {
     let frame = plan_frame_layout(1, 1, 4);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: true,
         }];
-        ssa.block_entry_cached_slots = collections::vec![collections::vec![]];
+        ssa.block_entry_cached_cells = collections::vec![collections::vec![]];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -3925,8 +3968,8 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk0.ops.push(SsaInst::local_ensure_cache(slot));
-        __blk0.ops.push(SsaInst::local_drop_cache(slot));
+        __blk0.ops.push(SsaInst::cell_ensure_cache(slot));
+        __blk0.ops.push(SsaInst::cell_drop_cache(slot));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -3945,7 +3988,7 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
             result_count: 0,
         }],
     })
-    .expect("clean LocalDropCache should not write back");
+    .expect("clean CellDropCache should not write back");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     assert_eq!(
@@ -3953,7 +3996,7 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
             .filter(|inst| matches!(inst.kind, MachineInstKind::Load { .. }))
             .count(),
         1,
-        "LocalEnsureCache should materialize one frame load"
+        "CellEnsureCache should materialize one frame load"
     );
     assert!(
         ops.iter().all(|inst| !matches!(
@@ -3970,19 +4013,19 @@ fn local_drop_cache_skips_writeback_when_cache_is_clean() {
 #[test]
 fn does_not_save_clean_carried_cache_before_runtime_call() {
     let frame = plan_frame_layout(1, 1, 4);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: true
         }];
-        ssa.block_entry_cached_slots =
+        ssa.block_entry_cached_cells =
             collections::vec![collections::vec![], collections::vec![slot]];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -3993,7 +4036,7 @@ fn does_not_save_clean_carried_cache_before_runtime_call() {
                 bindings: collections::vec![],
             }),
         };
-        __blk0.ops.push(SsaInst::local_ensure_cache(slot));
+        __blk0.ops.push(SsaInst::cell_ensure_cache(slot));
         ssa.blocks.push(__blk0);
         let mut __blk1 = SsaBlock {
             id: SsaTarget(1),
@@ -4055,26 +4098,26 @@ fn does_not_save_clean_carried_cache_before_runtime_call() {
 #[test]
 fn preserved_call_keeps_carried_cache_live_across_edge() {
     let frame = plan_frame_layout(2, 1, 4);
-    let slot0 = frame.local_slot(0);
-    let slot1 = frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32, ValueType::funcref()];
-        ssa.local_slot_info = collections::vec![
-            LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32, ValueType::funcref()];
+        ssa.cell_info = collections::vec![
+            CellInfo {
                 is_param: true,
                 reads_before_write: true,
             },
-            LocalSlotInfo {
+            CellInfo {
                 is_param: false,
                 reads_before_write: false,
             },
         ];
-        ssa.block_entry_cached_slots =
+        ssa.block_entry_cached_cells =
             collections::vec![collections::vec![slot0], collections::vec![slot0]];
         ssa.value_types = collections::vec![ValueType::funcref(), ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -4096,7 +4139,7 @@ fn preserved_call_keeps_carried_cache_live_across_edge() {
                 0u16,
             ));
         }
-        __blk0.ops.push(SsaInst::local_set_slot(slot1, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_set_slot(slot1, SsaValue(0)));
         ssa.blocks.push(__blk0);
         let mut __blk1 = SsaBlock {
             id: SsaTarget(1),
@@ -4105,9 +4148,7 @@ fn preserved_call_keeps_carried_cache_live_across_edge() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk1
-            .ops
-            .push(SsaInst::local_get_cache(slot0, SsaValue(1)));
+        __blk1.ops.push(SsaInst::cell_get_cache(slot0, SsaValue(1)));
         {
             let __pidx = ssa.intern_primitive(PrimitiveOpKind::Drop).unwrap();
             __blk1.ops.push(SsaInst::primitive(
@@ -4169,28 +4210,28 @@ fn preserved_call_keeps_carried_cache_live_across_edge() {
 }
 
 #[test]
-fn saves_only_dirty_cached_locals_before_runtime_call() {
+fn saves_only_dirty_cached_cells_before_runtime_call() {
     let frame = plan_frame_layout(2, 1, 4);
-    let dirty_slot = frame.local_slot(0);
-    let clean_slot = frame.local_slot(1);
+    let dirty_slot = CellId(0);
+    let clean_slot = CellId(1);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32, ValueType::I32];
-        ssa.local_slot_info = collections::vec![
-            LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32, ValueType::I32];
+        ssa.cell_info = collections::vec![
+            CellInfo {
                 is_param: false,
                 reads_before_write: false,
             },
-            LocalSlotInfo {
+            CellInfo {
                 is_param: true,
                 reads_before_write: true,
             },
         ];
-        ssa.block_entry_cached_slots =
+        ssa.block_entry_cached_cells =
             collections::vec![collections::vec![], collections::vec![clean_slot]];
         ssa.value_types = collections::vec![ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -4201,7 +4242,7 @@ fn saves_only_dirty_cached_locals_before_runtime_call() {
                 bindings: collections::vec![],
             }),
         };
-        __blk0.ops.push(SsaInst::local_ensure_cache(clean_slot));
+        __blk0.ops.push(SsaInst::cell_ensure_cache(clean_slot));
         ssa.blocks.push(__blk0);
         let mut __blk1 = SsaBlock {
             id: SsaTarget(1),
@@ -4223,7 +4264,7 @@ fn saves_only_dirty_cached_locals_before_runtime_call() {
         }
         __blk1
             .ops
-            .push(SsaInst::local_set_cache(dirty_slot, SsaValue(0)));
+            .push(SsaInst::cell_set_cache(dirty_slot, SsaValue(0)));
         {
             let __idx = ssa.push_call_op(SsaCallOp::CallDirect {
                 callee: 7,
@@ -4270,20 +4311,20 @@ fn saves_only_dirty_cached_locals_before_runtime_call() {
 }
 
 #[test]
-fn entry_block_cached_locals_are_loaded_in_prologue_not_passed_as_params() {
+fn entry_block_cached_cells_are_loaded_in_prologue_not_passed_as_params() {
     let frame = plan_frame_layout(1, 1, 4);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: true,
             reads_before_write: true,
         }];
-        ssa.block_entry_cached_slots = collections::vec![collections::vec![slot]];
+        ssa.block_entry_cached_cells = collections::vec![collections::vec![slot]];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -4291,7 +4332,7 @@ fn entry_block_cached_locals_are_loaded_in_prologue_not_passed_as_params() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk0.ops.push(SsaInst::local_ensure_cache(slot));
+        __blk0.ops.push(SsaInst::cell_ensure_cache(slot));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -4326,19 +4367,19 @@ fn entry_block_cached_locals_are_loaded_in_prologue_not_passed_as_params() {
 #[test]
 fn register_passed_entry_param_cache_stays_dirty_across_edges() {
     let frame = plan_frame_layout(1, 1, 4);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: true,
             reads_before_write: true,
         }];
-        ssa.block_entry_cached_slots =
+        ssa.block_entry_cached_cells =
             collections::vec![collections::vec![slot], collections::vec![slot]];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut entry = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -4349,7 +4390,7 @@ fn register_passed_entry_param_cache_stays_dirty_across_edges() {
                 bindings: collections::vec![],
             }),
         };
-        entry.ops.push(SsaInst::local_ensure_cache(slot));
+        entry.ops.push(SsaInst::cell_ensure_cache(slot));
         ssa.blocks.push(entry);
         let mut call_block = SsaBlock {
             id: SsaTarget(1),
@@ -4411,14 +4452,14 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: false
         }];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I64];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -4428,7 +4469,7 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
         };
         __blk0
             .ops
-            .push(SsaInst::local_get_cache(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_get_cache(CellId(0), SsaValue(0)));
         {
             let __pidx = ssa
                 .intern_primitive(PrimitiveOpKind::I64Const { value: 9 })
@@ -4442,7 +4483,7 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_cache(frame.local_slot(0), SsaValue(1)));
+            .push(SsaInst::cell_set_cache(CellId(0), SsaValue(1)));
         ssa.blocks.push(__blk0);
         ssa
     };
@@ -4464,7 +4505,7 @@ fn rejects_cache_store_with_incompatible_gp_storage_types() {
 
     let message = err.message();
     assert!(
-        message.contains("LocalSetCache src for cached local slot FrameSlot(0)")
+        message.contains("CellSetCache src for cached local slot FrameSlot(0)")
             || message.contains("typed SSA-IR store to cached local slot")
             || message.contains("cached local slot uses incompatible value type"),
         "unexpected error: {message}"
@@ -4479,11 +4520,11 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
     let caller = {
         let mut caller = SsaProgram::default();
         caller.entry = SsaTarget(0);
-        caller.local_slot_types = collections::vec![];
-        caller.local_slot_info = collections::vec![];
-        caller.block_entry_cached_slots = collections::vec![];
+        caller.cell_types = collections::vec![];
+        caller.cell_info = collections::vec![];
+        caller.block_entry_cached_cells = collections::vec![];
         caller.value_types = collections::vec![];
-        caller.value_sink_local = collections::vec![];
+        caller.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -4506,11 +4547,11 @@ fn lowers_direct_local_call_with_sparse_machine_function_ids() {
     let callee = {
         let mut callee = SsaProgram::default();
         callee.entry = SsaTarget(0);
-        callee.local_slot_types = collections::vec![];
-        callee.local_slot_info = collections::vec![];
-        callee.block_entry_cached_slots = collections::vec![];
+        callee.cell_types = collections::vec![];
+        callee.cell_info = collections::vec![];
+        callee.block_entry_cached_cells = collections::vec![];
         callee.value_types = collections::vec![];
-        callee.value_sink_local = collections::vec![];
+        callee.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -4570,11 +4611,11 @@ fn lowers_memory_size_without_helper_boundary() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -4633,11 +4674,11 @@ fn lowers_memory_size_with_gp_word_width_on_32_bit_target() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -4710,11 +4751,11 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -4922,16 +4963,16 @@ fn lowers_call_indirect_local_path_with_live_register_args() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![
             ValueType::I32,
             ValueType::I32,
             ValueType::I32,
             ValueType::I32,
         ];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut block = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -5095,16 +5136,16 @@ fn lowers_call_indirect_local_path_with_live_register_args() {
 fn lowers_call_indirect_live_scalar_result_through_register_continuation() {
     let frame = plan_frame_layout(1, 8, 4);
     let call_base = frame.operand_slot(0);
-    let result_slot = frame.local_slot(0);
+    let result_slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: false,
         }];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![
             ValueType::I32,
             ValueType::I32,
@@ -5112,7 +5153,7 @@ fn lowers_call_indirect_live_scalar_result_through_register_continuation() {
             ValueType::I32,
             ValueType::I32,
         ];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut block = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -5181,7 +5222,7 @@ fn lowers_call_indirect_live_scalar_result_through_register_continuation() {
         block.ops.push(SsaInst::call_result(call_idx, SsaValue(4)));
         block
             .ops
-            .push(SsaInst::local_set_slot(result_slot, SsaValue(4)));
+            .push(SsaInst::cell_set_slot(result_slot, SsaValue(4)));
         ssa.blocks.push(block);
         ssa
     };
@@ -5200,6 +5241,8 @@ fn lowers_call_indirect_live_scalar_result_through_register_continuation() {
         true,
         HOST_CALL_SCRATCH_SLOTS,
     );
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend,
         #[cfg(sf_has_guard_pages)]
@@ -5287,11 +5330,11 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -5316,6 +5359,8 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
         ssa
     };
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 8, 0, 2),
         #[cfg(sf_has_guard_pages)]
@@ -5406,11 +5451,11 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -5436,6 +5481,8 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
         ssa
     };
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 8, 0, 2),
         #[cfg(sf_has_guard_pages)]
@@ -5496,15 +5543,15 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
 #[test]
 fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
     let frame = plan_frame_layout(0, 1, 2);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -5523,8 +5570,8 @@ fn uses_canonical_u64_width_for_gp_word_frame_slots_on_32bit_targets() {
                 0u16,
             ));
         }
-        __blk0.ops.push(SsaInst::local_set_slot(slot, SsaValue(0)));
-        __blk0.ops.push(SsaInst::local_get_slot(slot, SsaValue(1)));
+        __blk0.ops.push(SsaInst::cell_set_slot(slot, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_get_slot(slot, SsaValue(1)));
         {
             let __pidx = ssa.intern_primitive(PrimitiveOpKind::Drop).unwrap();
             __blk0.ops.push(SsaInst::primitive(
@@ -5579,11 +5626,11 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
     let caller = {
         let mut caller = SsaProgram::default();
         caller.entry = SsaTarget(0);
-        caller.local_slot_types = collections::vec![];
-        caller.local_slot_info = collections::vec![];
-        caller.block_entry_cached_slots = collections::vec![];
+        caller.cell_types = collections::vec![];
+        caller.cell_info = collections::vec![];
+        caller.block_entry_cached_cells = collections::vec![];
         caller.value_types = collections::vec![];
-        caller.value_sink_local = collections::vec![];
+        caller.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -5606,11 +5653,11 @@ fn lowers_direct_local_call_call_link_with_canonical_frame_width_on_32bit_target
     let callee = {
         let mut callee = SsaProgram::default();
         callee.entry = SsaTarget(0);
-        callee.local_slot_types = collections::vec![];
-        callee.local_slot_info = collections::vec![];
-        callee.block_entry_cached_slots = collections::vec![];
+        callee.cell_types = collections::vec![];
+        callee.cell_info = collections::vec![];
+        callee.block_entry_cached_cells = collections::vec![];
         callee.value_types = collections::vec![];
-        callee.value_sink_local = collections::vec![];
+        callee.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -5672,11 +5719,11 @@ fn lowers_global_get_and_set_without_helpers() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -5764,11 +5811,11 @@ fn lowers_table_get_with_explicit_oob_trap_block() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -5846,11 +5893,11 @@ fn lowers_i32_load_with_inline_trap_if() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -5947,11 +5994,11 @@ fn lowers_i32_load_with_gp_word_bounds_ops_on_32_bit_target() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6038,11 +6085,11 @@ fn lowers_32bit_memory_bounds_checks_with_wraparound_traps() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6129,11 +6176,11 @@ fn gp32_mem0_store_does_not_reuse_live_source_as_address_scratch() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut block = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6204,12 +6251,14 @@ fn gp32_mem0_store_does_not_reuse_live_source_as_address_scratch() {
         ));
         block
             .ops
-            .push(SsaInst::local_set_slot(frame.local_slot(0), SsaValue(8)));
+            .push(SsaInst::cell_set_slot(CellId(0), SsaValue(8)));
         ssa.blocks.push(block);
         ssa
     };
 
     let backend = gp32_backend_config(0, 6, 0, 2);
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend,
         #[cfg(sf_has_guard_pages)]
@@ -6271,11 +6320,11 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6329,6 +6378,10 @@ fn keeps_explicit_mem0_bounds_checks_for_32bit_multiword_gp_accesses_with_guard_
         ssa
     };
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         use_guard_pages: true,
@@ -6387,11 +6440,11 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6422,6 +6475,8 @@ fn lowers_ref_null_and_is_null_with_gp_word_width_on_32_bit_target() {
         ssa
     };
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: gp32_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
@@ -6463,11 +6518,11 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6505,6 +6560,8 @@ fn omits_zero_offset_add_in_bounds_check_setup() {
         ssa
     };
 
+    let mut ssa = ssa;
+    fill_identity_cell_homes(&mut ssa);
     let lowered = lower_module(LowerModuleInput {
         backend: host_backend_config(0, 4, 0, 2),
         #[cfg(sf_has_guard_pages)]
@@ -6539,11 +6596,11 @@ fn threads_live_linear_values_through_split_continuation_params() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6598,7 +6655,7 @@ fn threads_live_linear_values_through_split_continuation_params() {
         }
         __blk0
             .ops
-            .push(SsaInst::local_set_slot(frame.local_slot(0), SsaValue(3)));
+            .push(SsaInst::cell_set_slot(CellId(0), SsaValue(3)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -6652,11 +6709,11 @@ fn lowers_f32_store_inline_with_trap_if_preserving_fp_linear_value_width() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6766,11 +6823,11 @@ fn lowers_f32_const_to_fp_machine_const() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::F32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6843,11 +6900,11 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::F64];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6859,7 +6916,7 @@ fn float_slot_load_routes_to_fp_bank_when_typed() {
         };
         __blk0
             .ops
-            .push(SsaInst::local_get_slot(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_get_slot(CellId(0), SsaValue(0)));
         __blk0
             .ops
             .push(SsaInst::spill(frame.operand_slot(0), SsaValue(0)));
@@ -6906,11 +6963,11 @@ fn untyped_slot_load_stays_in_gp_bank() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6922,7 +6979,7 @@ fn untyped_slot_load_stays_in_gp_bank() {
         };
         __blk0
             .ops
-            .push(SsaInst::local_get_slot(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_get_slot(CellId(0), SsaValue(0)));
         __blk0
             .ops
             .push(SsaInst::spill(frame.operand_slot(0), SsaValue(0)));
@@ -6970,11 +7027,11 @@ fn f32_block_params_keep_f32_width() {
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![];
-        ssa.local_slot_info = collections::vec![];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::F32, ValueType::F32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -6990,7 +7047,7 @@ fn f32_block_params_keep_f32_width() {
         };
         __blk0
             .ops
-            .push(SsaInst::local_get_slot(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_get_slot(CellId(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
         let mut __blk1 = SsaBlock {
             id: SsaTarget(1),
@@ -7025,21 +7082,21 @@ fn f32_block_params_keep_f32_width() {
 }
 
 #[test]
-fn f32_cached_locals_use_f32_slot_widths() {
+fn f32_cached_cells_use_f32_slot_widths() {
     use ValueType;
 
     let frame = plan_frame_layout(1, 1, 2);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::F32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::F32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: false,
             reads_before_write: true
         }];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::F32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -7049,10 +7106,10 @@ fn f32_cached_locals_use_f32_slot_widths() {
         };
         __blk0
             .ops
-            .push(SsaInst::local_get_slot(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_get_slot(CellId(0), SsaValue(0)));
         __blk0
             .ops
-            .push(SsaInst::local_set_slot(frame.local_slot(0), SsaValue(0)));
+            .push(SsaInst::cell_set_slot(CellId(0), SsaValue(0)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -7100,23 +7157,23 @@ fn f32_cached_locals_use_f32_slot_widths() {
 
 // --- Source-aliasing regression tests ---
 
-/// LocalGetCache should NOT emit a Move — the SSA value should alias the
+/// CellGetCache should NOT emit a Move — the SSA value should alias the
 /// cache register directly so that downstream ops use it without a copy.
 #[test]
 fn local_get_cache_source_aliases_without_move() {
     let frame = plan_frame_layout(1, 2, 2);
-    let slot = frame.local_slot(0);
+    let slot = CellId(0);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32];
-        ssa.local_slot_info = collections::vec![LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32];
+        ssa.cell_info = collections::vec![CellInfo {
             is_param: true,
             reads_before_write: true,
         }];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -7124,7 +7181,7 @@ fn local_get_cache_source_aliases_without_move() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk0.ops.push(SsaInst::local_get_cache(slot, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_get_cache(slot, SsaValue(0)));
         {
             let __c1 = ssa.intern_const((1) as u64);
             let __pidx = ssa.intern_primitive(PrimitiveOpKind::I32Add).unwrap();
@@ -7135,7 +7192,7 @@ fn local_get_cache_source_aliases_without_move() {
                 0u16,
             ));
         }
-        __blk0.ops.push(SsaInst::local_set_slot(slot, SsaValue(1)));
+        __blk0.ops.push(SsaInst::cell_set_slot(slot, SsaValue(1)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -7158,7 +7215,7 @@ fn local_get_cache_source_aliases_without_move() {
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
     // Expected: Load(ensure cache) + Move(const 1) + IntBinary(Add) + Store
-    // NO Move from cache→linear for LocalGetCache.
+    // NO Move from cache→linear for CellGetCache.
     let cache_to_linear_moves: collections::Vec<_> = ops
         .iter()
         .filter(|inst| {
@@ -7174,7 +7231,7 @@ fn local_get_cache_source_aliases_without_move() {
         .collect();
     assert!(
         cache_to_linear_moves.is_empty(),
-        "LocalGetCache must source-alias without emitting a cache-to-linear Move; found {:?}",
+        "CellGetCache must source-alias without emitting a cache-to-linear Move; found {:?}",
         cache_to_linear_moves
             .iter()
             .map(|i| &i.kind)
@@ -7182,30 +7239,30 @@ fn local_get_cache_source_aliases_without_move() {
     );
 }
 
-/// When LocalSetCache overwrites a cache register that still has a live
+/// When CellSetCache overwrites a cache register that still has a live
 /// aliased value, materialize_cache_aliases must copy the alias out first.
 #[test]
 fn local_set_cache_materializes_live_alias_before_overwrite() {
     let frame = plan_frame_layout(2, 2, 2);
-    let slot0 = frame.local_slot(0);
-    let slot1 = frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32, ValueType::I32];
-        ssa.local_slot_info = collections::vec![
-            LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32, ValueType::I32];
+        ssa.cell_info = collections::vec![
+            CellInfo {
                 is_param: true,
                 reads_before_write: true
             },
-            LocalSlotInfo {
+            CellInfo {
                 is_param: true,
                 reads_before_write: true
             },
         ];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32, ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -7213,16 +7270,10 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk0
-            .ops
-            .push(SsaInst::local_get_cache(slot0, SsaValue(0)));
-        __blk0
-            .ops
-            .push(SsaInst::local_get_cache(slot1, SsaValue(1)));
-        __blk0
-            .ops
-            .push(SsaInst::local_set_cache(slot0, SsaValue(1)));
-        __blk0.ops.push(SsaInst::local_set_slot(slot1, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_get_cache(slot0, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_get_cache(slot1, SsaValue(1)));
+        __blk0.ops.push(SsaInst::cell_set_cache(slot0, SsaValue(1)));
+        __blk0.ops.push(SsaInst::cell_set_slot(slot1, SsaValue(0)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -7272,25 +7323,25 @@ fn local_set_cache_materializes_live_alias_before_overwrite() {
 #[test]
 fn local_get_cache_to_set_cache_different_slot_single_move() {
     let frame = plan_frame_layout(2, 2, 2);
-    let slot0 = frame.local_slot(0);
-    let slot1 = frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let ssa = {
         let mut ssa = SsaProgram::default();
         ssa.entry = SsaTarget(0);
-        ssa.local_slot_types = collections::vec![ValueType::I32, ValueType::I32];
-        ssa.local_slot_info = collections::vec![
-            LocalSlotInfo {
+        ssa.cell_types = collections::vec![ValueType::I32, ValueType::I32];
+        ssa.cell_info = collections::vec![
+            CellInfo {
                 is_param: true,
                 reads_before_write: true
             },
-            LocalSlotInfo {
+            CellInfo {
                 is_param: true,
                 reads_before_write: true
             },
         ];
-        ssa.block_entry_cached_slots = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
         ssa.value_types = collections::vec![ValueType::I32];
-        ssa.value_sink_local = collections::vec![];
+        ssa.value_sink_cell = collections::vec![];
         let mut __blk0 = SsaBlock {
             id: SsaTarget(0),
             params: collections::vec![],
@@ -7298,12 +7349,8 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
             extra_args: collections::vec![],
             terminator: SsaTerminator::Return { results: None },
         };
-        __blk0
-            .ops
-            .push(SsaInst::local_get_cache(slot0, SsaValue(0)));
-        __blk0
-            .ops
-            .push(SsaInst::local_set_cache(slot1, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_get_cache(slot0, SsaValue(0)));
+        __blk0.ops.push(SsaInst::cell_set_cache(slot1, SsaValue(0)));
         ssa.blocks.push(__blk0);
         set_default_entry_cache_metadata(&mut ssa);
         ssa
@@ -7325,8 +7372,8 @@ fn local_get_cache_to_set_cache_different_slot_single_move() {
     .expect("lowering should succeed");
 
     let ops = &lowered.module.functions[0].program.blocks[0].ops;
-    // Expected: Load(fp[0]) + Load(fp[1]) + Move(CachedLocal, cache1 <- cache0)
-    // The Move from LocalGetCache→LocalSetCache should be a single CachedLocal move.
+    // Expected: Load(fp[0]) + Load(fp[1]) + Move(CachedCell, cache1 <- cache0)
+    // The Move from CellGetCache→CellSetCache should be a single CachedCell move.
     let reg_moves: collections::Vec<_> = ops
         .iter()
         .filter(|inst| {

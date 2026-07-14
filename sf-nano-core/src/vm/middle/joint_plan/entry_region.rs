@@ -8,9 +8,9 @@ use crate::collections;
 
 use crate::vm::{
     middle::{
+        cell::CellId,
         cfg::SemanticCfg,
-        frame::FrameLayoutPlan,
-        joint_plan::facts::{BlockLocalSummary, LocalSlotScore},
+        joint_plan::facts::{BlockCellSummary, CellScore},
     },
     wasm::semantic_ir::{SemanticOpKind, SemanticProgram},
 };
@@ -18,8 +18,7 @@ use crate::vm::{
 pub(crate) fn analyze_block_local_summaries(
     semantic: &SemanticProgram,
     cfg: &SemanticCfg,
-    frame: FrameLayoutPlan,
-) -> collections::Vec<BlockLocalSummary> {
+) -> collections::Vec<BlockCellSummary> {
     let mut local_counts = collections::vec![0u16; semantic.local_count as usize];
     let mut touched_locals = collections::Vec::<u16>::new();
     let mut summaries = collections::Vec::with_capacity(cfg.blocks.len());
@@ -43,13 +42,13 @@ pub(crate) fn analyze_block_local_summaries(
             let local_index = local_idx as usize;
             let access_count = local_counts[local_index];
             local_counts[local_index] = 0;
-            slot_scores.push(LocalSlotScore {
-                slot: frame.local_slot(local_idx),
+            slot_scores.push(CellScore {
+                slot: CellId(local_idx),
                 access_count,
             });
         }
 
-        summaries.push(BlockLocalSummary { slot_scores });
+        summaries.push(BlockCellSummary { slot_scores });
     }
 
     summaries

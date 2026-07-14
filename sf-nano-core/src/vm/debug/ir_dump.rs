@@ -21,7 +21,8 @@ use crate::{
             MachineModuleAbi, MachineParamLoc, MachineRegOwner, MachineSign, MachineStorageType,
             MachineTerminator, MachineValue,
         },
-        middle::frame::{FrameSlot, FrameSpan},
+        middle::cell::CellId,
+        middle::frame::FrameSpan,
         middle::ssa_ir::ir::{
             DecodedOperand, EntryCacheRequirement, SsaBinding, SsaBlock, SsaCallOp, SsaInst,
             SsaInstView, SsaOperand, SsaProgram, SsaTerminator,
@@ -237,11 +238,11 @@ fn write_dump_impl(
 
 fn render_lir_program(out: &mut String, program: &SsaProgram) {
     let _ = writeln!(out, "  entry=b{}", program.entry.0);
-    let _ = writeln!(out, "  local_slots={}", program.local_slot_types.len());
+    let _ = writeln!(out, "  local_slots={}", program.cell_types.len());
     // Emit local types so analysis tools can compute GP/FP pressure split.
-    if !program.local_slot_types.is_empty() {
+    if !program.cell_types.is_empty() {
         let _ = write!(out, "  local_types=[");
-        for (i, ty) in program.local_slot_types.iter().enumerate() {
+        for (i, ty) in program.cell_types.iter().enumerate() {
             if i > 0 {
                 let _ = write!(out, ", ");
             }
@@ -251,7 +252,7 @@ fn render_lir_program(out: &mut String, program: &SsaProgram) {
     }
     for block in &program.blocks {
         let cached = program
-            .block_entry_cached_slots
+            .block_entry_cached_cells
             .get(block.id.0 as usize)
             .cloned()
             .unwrap_or_default();
@@ -305,7 +306,7 @@ fn render_param_locs(out: &mut String, locs: &[MachineParamLoc]) {
 /// off it); the middle's entry requirement is appended as `?` for a `Reserve`
 /// (write-first, no incoming value) entry — `Ensure` adds nothing. The machine
 /// owns the physical lane, so no lane is shown here.
-fn render_cached_slot(slot: FrameSlot, requirement: Option<EntryCacheRequirement>) -> String {
+fn render_cached_slot(slot: CellId, requirement: Option<EntryCacheRequirement>) -> String {
     let reserve = matches!(requirement, Some(EntryCacheRequirement::Reserve));
     format!("fp[{}]{}", slot.0, if reserve { "?" } else { "" })
 }
@@ -313,7 +314,7 @@ fn render_cached_slot(slot: FrameSlot, requirement: Option<EntryCacheRequirement
 fn render_lir_block(
     out: &mut String,
     block: &SsaBlock,
-    cached: &[FrameSlot],
+    cached: &[CellId],
     cached_reqs: &[EntryCacheRequirement],
     program: &SsaProgram,
 ) {
@@ -374,28 +375,28 @@ fn render_lir_inst(inst: &SsaInst, block: &SsaBlock, program: &SsaProgram) -> St
                 result_str,
             )
         }
-        SsaInstView::LocalGetSlot { slot, dst } => {
+        SsaInstView::CellGetSlot { cell: slot, dst } => {
             format!("local.get_slot v{} <- fp[{}]", dst.0, slot.0)
         }
-        SsaInstView::LocalGetCache { slot, dst } => {
+        SsaInstView::CellGetCache { cell: slot, dst } => {
             format!("local.get_cache v{} <- fp[{}]", dst.0, slot.0)
         }
         SsaInstView::Fill { slot, dst } => {
             format!("fill v{} <- fp[{}]", dst.0, slot.0)
         }
-        SsaInstView::LocalSetSlot { slot, src } => {
+        SsaInstView::CellSetSlot { cell: slot, src } => {
             format!("local.set_slot fp[{}] <- v{}", slot.0, src.0)
         }
-        SsaInstView::LocalSetCache { slot, src } => {
+        SsaInstView::CellSetCache { cell: slot, src } => {
             format!("local.set_cache fp[{}] <- v{}", slot.0, src.0)
         }
-        SsaInstView::LocalEnsureCache { slot } => {
+        SsaInstView::CellEnsureCache { cell: slot } => {
             format!("local.ensure_cache fp[{}]", slot.0)
         }
-        SsaInstView::LocalReserveCache { slot } => {
+        SsaInstView::CellReserveCache { cell: slot } => {
             format!("local.reserve_cache fp[{}]", slot.0)
         }
-        SsaInstView::LocalDropCache { slot } => {
+        SsaInstView::CellDropCache { cell: slot } => {
             format!("local.drop_cache fp[{}]", slot.0)
         }
         SsaInstView::Spill { slot, src } => {
@@ -1651,7 +1652,7 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
 fn owner_tag(owner: MachineRegOwner) -> &'static str {
     match owner {
         MachineRegOwner::LinearValue => "linear",
-        MachineRegOwner::CachedLocal => "cache",
+        MachineRegOwner::CachedCell => "cache",
     }
 }
 

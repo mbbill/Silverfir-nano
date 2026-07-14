@@ -17,16 +17,17 @@ use crate::{
         backend::BackendConfig,
         middle::{
             budget::count_live_bank_budget_units,
+            cell::CellId,
             cfg::{CfgBlockId, SemanticCfg},
             discipline,
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
-                facts::RowSpan, init_locals::locals_reads_before_write, JointPlanner,
-                LocalAccessDecision, LocalAccessQuery,
+                facts::RowSpan, init_locals::locals_reads_before_write, CellAccessDecision,
+                CellAccessQuery, JointPlanner,
             },
             ssa_ir::{
                 ir::{
-                    EntryCacheRequirement, LocalSlotInfo, SsaBinding, SsaBlock, SsaCallArgs,
+                    CellInfo, EntryCacheRequirement, SsaBinding, SsaBlock, SsaCallArgs,
                     SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInst, SsaOp,
                     SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator, SsaValue,
                 },
@@ -138,21 +139,25 @@ pub(crate) fn rewrite_function(
     config: BackendConfig,
 ) -> Result<SsaProgram, WasmError> {
     if semantic.ops.is_empty() {
-        let local_slot_info = collect_local_slot_info(&semantic);
-        let local_slot_types = core::mem::take(&mut semantic.local_types);
+        let cell_info = collect_local_slot_info(&semantic);
+        let cell_types = core::mem::take(&mut semantic.local_types);
         let result_types = core::mem::take(&mut semantic.result_types);
         drop(semantic);
+        let cell_homes = (0..cell_types.len() as u16)
+            .map(|i| frame.local_slot(i))
+            .collect();
         return Ok(SsaProgram {
             entry: SsaTarget(0),
             blocks: collections::Vec::new(),
-            local_slot_types,
+            cell_types,
             result_types,
-            local_slot_info,
-            block_entry_cached_slots: collections::Vec::new(),
+            cell_info,
+            block_entry_cached_cells: collections::Vec::new(),
             block_entry_cache_requirements: collections::Vec::new(),
             preferred_preserved: collections::Vec::new(),
             value_types: collections::Vec::new(),
-            value_sink_local: collections::Vec::new(),
+            value_sink_cell: collections::Vec::new(),
+            cell_homes,
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
@@ -173,7 +178,7 @@ pub(crate) fn rewrite_function(
     let original_block_count = cfg.blocks.len();
     let mut builder = ProgramBuilder::default();
     let mut blocks = collections::Vec::with_capacity(original_block_count);
-    let mut block_entry_cached_slots = collections::Vec::with_capacity(original_block_count);
+    let mut block_entry_cached_cells = collections::Vec::with_capacity(original_block_count);
     let mut block_entry_cache_requirements = collections::Vec::with_capacity(original_block_count);
     let mut block_exit_cached_slots = collections::Vec::with_capacity(original_block_count);
     let mut extra_blocks = collections::Vec::new();
@@ -202,7 +207,7 @@ pub(crate) fn rewrite_function(
             &block_params,
             // Pass D authority: lowering seeds the resident/materialized cache
             // from the plan's exact entry row (a slice into the plan arena), not
-            // the tentative public set. Admission (`local_access`) still
+            // the tentative public set. Admission (`cell_access`) still
             // consults the planned set, so a hot local re-accessed after a call
             // is re-cached even though it was trimmed from the entry row.
             planner.exact_entry(cfg_block.id),
@@ -231,7 +236,7 @@ pub(crate) fn rewrite_function(
         // (cleanup's re-index, validate's length check) holds.
         block_entry_cache_requirements
             .push(collections::vec![EntryCacheRequirement::Ensure; entry_slots.len()]);
-        block_entry_cached_slots.push(entry_slots.to_vec().into());
+        block_entry_cached_cells.push(entry_slots.to_vec().into());
         block_exit_cached_slots.push(planner.exact_exit(cfg_block.id).to_vec().into());
         let mut block = SsaBlock {
             id: SsaTarget(block_index as u32),
@@ -258,32 +263,36 @@ pub(crate) fn rewrite_function(
     }
     blocks.reserve_exact(extra_blocks.len());
     blocks.extend(extra_blocks);
-    block_entry_cached_slots.reserve_exact(extra_block_cached_slots.len());
-    block_entry_cached_slots.extend(extra_block_cached_slots);
+    block_entry_cached_cells.reserve_exact(extra_block_cached_slots.len());
+    block_entry_cached_cells.extend(extra_block_cached_slots);
     block_entry_cache_requirements.reserve_exact(extra_block_cache_requirements.len());
     block_entry_cache_requirements.extend(extra_block_cache_requirements);
     block_exit_cached_slots.reserve_exact(extra_block_exit_cached_slots.len());
     block_exit_cached_slots.extend(extra_block_exit_cached_slots);
 
     drop(block_params);
-    let local_slot_info = collect_local_slot_info(&semantic);
-    let local_slot_types = core::mem::take(&mut semantic.local_types);
+    let cell_info = collect_local_slot_info(&semantic);
+    let cell_types = core::mem::take(&mut semantic.local_types);
     let result_types = core::mem::take(&mut semantic.result_types);
     drop(semantic);
 
+    let cell_homes = (0..cell_types.len() as u16)
+        .map(|i| frame.local_slot(i))
+        .collect();
     let mut program = SsaProgram {
         entry: SsaTarget(cfg.entry.0),
-        local_slot_types,
+        cell_types,
         result_types,
-        local_slot_info,
-        block_entry_cached_slots,
+        cell_info,
+        block_entry_cached_cells,
         block_entry_cache_requirements,
         // Finalized in `prepare_function` over the FINAL SSA (the literal 2c2e010
         // cross-count dataflow); empty here.
         preferred_preserved: collections::Vec::new(),
         blocks,
         value_types: values.take_types(),
-        value_sink_local: collections::Vec::new(),
+        value_sink_cell: collections::Vec::new(),
+        cell_homes,
         const_pool: collections::Vec::new(),
         primitive_pool: builder.primitive_pool,
         call_ops: builder.call_ops,
@@ -326,7 +335,7 @@ pub(crate) fn rewrite_function(
     // desync these.
     debug_assert_eq!(
         program.blocks.len(),
-        program.block_entry_cached_slots.len(),
+        program.block_entry_cached_cells.len(),
         "block vector and entry-cache-row vector desynced after repair insertion",
     );
     debug_assert_eq!(
@@ -351,10 +360,10 @@ fn shrink_ssa_block_storage(block: &mut SsaBlock) {
     block.extra_args.shrink_to_fit();
 }
 
-fn collect_local_slot_info(semantic: &SemanticProgram) -> collections::Vec<LocalSlotInfo> {
+fn collect_local_slot_info(semantic: &SemanticProgram) -> collections::Vec<CellInfo> {
     let reads_before_write = locals_reads_before_write(semantic);
     (0..semantic.local_count as usize)
-        .map(|idx| LocalSlotInfo {
+        .map(|idx| CellInfo {
             is_param: (idx as u16) < semantic.params,
             reads_before_write: reads_before_write.get(idx).copied().unwrap_or(true),
         })
@@ -365,10 +374,10 @@ struct LoweredBlock {
     ops: collections::Vec<SsaInst>,
     extra_args: collections::Vec<SsaOperand>,
     terminator: SsaTerminator,
-    actual_exit_cached_slots: collections::Vec<FrameSlot>,
+    actual_exit_cached_slots: collections::Vec<CellId>,
     extra_blocks: collections::Vec<SsaBlock>,
-    extra_block_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
-    extra_block_exit_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
+    extra_block_cached_slots: collections::Vec<collections::Vec<CellId>>,
+    extra_block_exit_cached_slots: collections::Vec<collections::Vec<CellId>>,
 }
 
 /// Lower one CFG block exactly once from the planner-chosen entry state.
@@ -387,14 +396,14 @@ fn lower_block_range(
     frame: FrameLayoutPlan,
     rewrite_cfg: &RewriteCfg,
     block_params: &[collections::Vec<SsaValue>],
-    entry_cached_locals: &[FrameSlot],
+    entry_cached_cells: &[CellId],
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
     original_block_count: usize,
     extra_blocks_len: usize,
     config: BackendConfig,
 ) -> Result<LoweredBlock, WasmError> {
-    let mut resident_cache = entry_cached_locals.iter().copied().collect::<BTreeSet<_>>();
+    let mut resident_cache = entry_cached_cells.iter().copied().collect::<BTreeSet<_>>();
     let mut materialized_cache = resident_cache.clone();
     ensure_state_fits_with_cache(
         &state,
@@ -475,8 +484,8 @@ fn lower_block_range(
 /// budgets at every rewrite point.
 fn ensure_state_fits_with_cache(
     state: &BlockState,
-    resident_cache: &BTreeSet<FrameSlot>,
-    local_slot_types: &[ValueType],
+    resident_cache: &BTreeSet<CellId>,
+    cell_types: &[ValueType],
     _context: &str,
 ) -> Result<(), WasmError> {
     let effective_live_types = state
@@ -492,11 +501,8 @@ fn ensure_state_fits_with_cache(
         .collect::<collections::Vec<_>>();
     let (gp_live, fp_live) =
         count_live_bank_budget_units(&effective_live_types, state.gp_unit_bytes);
-    let (gp_cache, fp_cache) = discipline::count_cached_local_budget_units(
-        resident_cache,
-        local_slot_types,
-        state.gp_unit_bytes,
-    );
+    let (gp_cache, fp_cache) =
+        discipline::count_cached_cell_budget_units(resident_cache, cell_types, state.gp_unit_bytes);
     if gp_live + gp_cache > state.gp_live_budget as usize
         || fp_live + fp_cache > state.fp_live_budget as usize
     {
@@ -517,13 +523,13 @@ fn apply_inline_prefix(
     op: &SemanticOpKind,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
-    local_slot_types: &[ValueType],
-    resident_cache: &mut BTreeSet<FrameSlot>,
+    cell_types: &[ValueType],
+    resident_cache: &mut BTreeSet<CellId>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
     // Route through the shared engine dispatch — the exact same path pass D's
     // measure walker uses, so the rewriter and the walker cannot drift.
-    state.apply_op_discipline(op, frame, resident_cache, local_slot_types, values)
+    state.apply_op_discipline(op, frame, resident_cache, cell_types, values)
 }
 
 fn lower_block_body_op(
@@ -533,9 +539,9 @@ fn lower_block_body_op(
     planner: &JointPlanner,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
-    local_slot_types: &[ValueType],
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
+    cell_types: &[ValueType],
+    resident_cache: &mut BTreeSet<CellId>,
+    materialized_cache: &mut BTreeSet<CellId>,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
     config: BackendConfig,
@@ -544,7 +550,7 @@ fn lower_block_body_op(
         &semantic.ops[semantic_index].kind,
         state,
         frame,
-        local_slot_types,
+        cell_types,
         resident_cache,
         values,
     )?;
@@ -569,7 +575,6 @@ fn lower_block_body_op(
             planner,
             block_id,
             state,
-            frame,
             resident_cache,
             materialized_cache,
             values,
@@ -579,8 +584,7 @@ fn lower_block_body_op(
             planner,
             block_id,
             state,
-            frame,
-            local_slot_types,
+            cell_types,
             resident_cache,
             materialized_cache,
         ),
@@ -590,7 +594,6 @@ fn lower_block_body_op(
             planner,
             block_id,
             state,
-            frame,
             resident_cache,
             materialized_cache,
             values,
@@ -713,8 +716,8 @@ fn lower_primitive(
     semantic_index: usize,
     state: &mut BlockState,
     _planner: &JointPlanner,
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    _materialized_cache: &mut BTreeSet<FrameSlot>,
+    resident_cache: &mut BTreeSet<CellId>,
+    _materialized_cache: &mut BTreeSet<CellId>,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
 ) -> Result<(), WasmError> {
@@ -800,9 +803,8 @@ fn lower_local_get(
     planner: &JointPlanner,
     block_id: CfgBlockId,
     state: &mut BlockState,
-    frame: FrameLayoutPlan,
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
+    resident_cache: &mut BTreeSet<CellId>,
+    materialized_cache: &mut BTreeSet<CellId>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
     // `local.get` always needs one SSA result. The current planner decides
@@ -812,25 +814,25 @@ fn lower_local_get(
         .get(local_idx as usize)
         .copied()
         .unwrap_or(ValueType::I64);
-    let slot = frame.local_slot(local_idx);
-    let access = planner.local_access(LocalAccessQuery {
+    let slot = CellId(local_idx);
+    let access = planner.cell_access(CellAccessQuery {
         block: block_id,
         slot,
         resident_cache,
     });
     let dst = values.fresh_typed(ty);
     let inst = match access {
-        LocalAccessDecision::Slot => SsaInst::local_get_slot(slot, dst),
-        LocalAccessDecision::Cache => {
+        CellAccessDecision::Slot => SsaInst::cell_get_slot(slot, dst),
+        CellAccessDecision::Cache => {
             resident_cache.insert(slot);
             materialized_cache.insert(slot);
-            SsaInst::local_get_cache(slot, dst)
+            SsaInst::cell_get_cache(slot, dst)
         }
     };
     state.ops.push(inst);
-    let aliases = collections::vec![matches!(access, LocalAccessDecision::Cache)
+    let aliases = collections::vec![matches!(access, CellAccessDecision::Cache)
         .then_some(slot)
-        .filter(|_| discipline::cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
+        .filter(|_| discipline::cached_cell_get_can_source_alias(ty, state.gp_unit_bytes))];
     state.push_results_with_aliases(collections::vec![dst], collections::vec![ty], aliases)?;
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "local.get")
 }
@@ -840,28 +842,27 @@ fn lower_local_set(
     planner: &JointPlanner,
     block_id: CfgBlockId,
     state: &mut BlockState,
-    frame: FrameLayoutPlan,
-    local_slot_types: &[ValueType],
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
+    cell_types: &[ValueType],
+    resident_cache: &mut BTreeSet<CellId>,
+    materialized_cache: &mut BTreeSet<CellId>,
 ) -> Result<(), WasmError> {
     let src = state.pop_one()?;
-    let slot = frame.local_slot(local_idx);
-    let access = planner.local_access(LocalAccessQuery {
+    let slot = CellId(local_idx);
+    let access = planner.cell_access(CellAccessQuery {
         block: block_id,
         slot,
         resident_cache,
     });
     let inst = match access {
-        LocalAccessDecision::Slot => SsaInst::local_set_slot(slot, src),
-        LocalAccessDecision::Cache => {
+        CellAccessDecision::Slot => SsaInst::cell_set_slot(slot, src),
+        CellAccessDecision::Cache => {
             resident_cache.insert(slot);
             materialized_cache.insert(slot);
-            SsaInst::local_set_cache(slot, src)
+            SsaInst::cell_set_cache(slot, src)
         }
     };
     state.ops.push(inst);
-    ensure_state_fits_with_cache(state, resident_cache, local_slot_types, "local.set")
+    ensure_state_fits_with_cache(state, resident_cache, cell_types, "local.set")
 }
 
 fn lower_local_tee(
@@ -870,48 +871,47 @@ fn lower_local_tee(
     planner: &JointPlanner,
     block_id: CfgBlockId,
     state: &mut BlockState,
-    frame: FrameLayoutPlan,
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
+    resident_cache: &mut BTreeSet<CellId>,
+    materialized_cache: &mut BTreeSet<CellId>,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
     // `local.tee` is the same admission question as `local.get`, except stack
     // height stays flat: the source value stays logically available while we
     // decide whether the local also deserves cache residency.
     let src = state.pop_one()?;
-    let slot = frame.local_slot(local_idx);
+    let slot = CellId(local_idx);
     let ty = semantic
         .local_types
         .get(local_idx as usize)
         .copied()
         .unwrap_or(ValueType::I64);
-    let access = planner.local_access(LocalAccessQuery {
+    let access = planner.cell_access(CellAccessQuery {
         block: block_id,
         slot,
         resident_cache,
     });
     let set_inst = match access {
-        LocalAccessDecision::Slot => SsaInst::local_set_slot(slot, src),
-        LocalAccessDecision::Cache => {
+        CellAccessDecision::Slot => SsaInst::cell_set_slot(slot, src),
+        CellAccessDecision::Cache => {
             resident_cache.insert(slot);
             materialized_cache.insert(slot);
-            SsaInst::local_set_cache(slot, src)
+            SsaInst::cell_set_cache(slot, src)
         }
     };
     state.ops.push(set_inst);
     let dst = values.fresh_typed(ty);
     let get_inst = match access {
-        LocalAccessDecision::Slot => SsaInst::local_get_slot(slot, dst),
-        LocalAccessDecision::Cache => {
+        CellAccessDecision::Slot => SsaInst::cell_get_slot(slot, dst),
+        CellAccessDecision::Cache => {
             resident_cache.insert(slot);
             materialized_cache.insert(slot);
-            SsaInst::local_get_cache(slot, dst)
+            SsaInst::cell_get_cache(slot, dst)
         }
     };
     state.ops.push(get_inst);
-    let aliases = collections::vec![matches!(access, LocalAccessDecision::Cache)
+    let aliases = collections::vec![matches!(access, CellAccessDecision::Cache)
         .then_some(slot)
-        .filter(|_| discipline::cached_local_get_can_source_alias(ty, state.gp_unit_bytes))];
+        .filter(|_| discipline::cached_cell_get_can_source_alias(ty, state.gp_unit_bytes))];
     state.push_results_with_aliases(collections::vec![dst], collections::vec![ty], aliases)?;
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "local.tee")
 }
@@ -924,8 +924,8 @@ fn lower_call_direct(
     frame: FrameLayoutPlan,
     state: &mut BlockState,
     planner: &JointPlanner,
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
+    resident_cache: &mut BTreeSet<CellId>,
+    materialized_cache: &mut BTreeSet<CellId>,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
     config: BackendConfig,
@@ -954,7 +954,7 @@ fn lower_call_direct(
     // local-JIT) call keeps preserved-class nominated residents alive in their
     // callee-saved registers; everything else dies at the boundary.
     if planner.direct_call_survivable(callee) {
-        let keep = |set: &BTreeSet<FrameSlot>| -> BTreeSet<FrameSlot> {
+        let keep = |set: &BTreeSet<CellId>| -> BTreeSet<CellId> {
             set.iter()
                 .copied()
                 .filter(|slot| planner.is_preserved_nominated(*slot))
@@ -977,8 +977,8 @@ fn lower_call_indirect(
     result_types: &[ValueType],
     frame: FrameLayoutPlan,
     state: &mut BlockState,
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
+    resident_cache: &mut BTreeSet<CellId>,
+    materialized_cache: &mut BTreeSet<CellId>,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
     config: BackendConfig,
@@ -1023,8 +1023,8 @@ fn lower_call_ref(
     result_types: &[ValueType],
     frame: FrameLayoutPlan,
     state: &mut BlockState,
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
+    resident_cache: &mut BTreeSet<CellId>,
+    materialized_cache: &mut BTreeSet<CellId>,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
     config: BackendConfig,
@@ -1080,8 +1080,8 @@ fn lower_alloc_exn_ref(
     semantic_index: usize,
     state: &mut BlockState,
     planner: &JointPlanner,
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
+    resident_cache: &mut BTreeSet<CellId>,
+    materialized_cache: &mut BTreeSet<CellId>,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
 ) -> Result<(), WasmError> {
@@ -1325,8 +1325,8 @@ fn return_results(frame: FrameLayoutPlan, results: u16) -> Option<FrameSpan> {
 struct LoweredTerminator {
     terminator: SsaTerminator,
     extra_blocks: collections::Vec<SsaBlock>,
-    extra_block_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
-    extra_block_exit_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
+    extra_block_cached_slots: collections::Vec<collections::Vec<CellId>>,
+    extra_block_exit_cached_slots: collections::Vec<collections::Vec<CellId>>,
 }
 
 impl LoweredTerminator {
@@ -1348,9 +1348,9 @@ fn lower_block_terminator(
     planner: &JointPlanner,
     state: &mut BlockState,
     frame: FrameLayoutPlan,
-    local_slot_types: &[ValueType],
-    resident_cache: &mut BTreeSet<FrameSlot>,
-    materialized_cache: &mut BTreeSet<FrameSlot>,
+    cell_types: &[ValueType],
+    resident_cache: &mut BTreeSet<CellId>,
+    materialized_cache: &mut BTreeSet<CellId>,
     rewrite_cfg: &RewriteCfg,
     block_params: &[collections::Vec<SsaValue>],
     values: &mut ValueAlloc,
@@ -1363,7 +1363,7 @@ fn lower_block_terminator(
         &semantic.ops[semantic_index].kind,
         state,
         frame,
-        local_slot_types,
+        cell_types,
         resident_cache,
         values,
     )?;
@@ -1408,7 +1408,6 @@ fn lower_block_terminator(
                 planner,
                 block_id,
                 state,
-                frame,
                 resident_cache,
                 materialized_cache,
                 values,
@@ -1437,8 +1436,7 @@ fn lower_block_terminator(
                 planner,
                 block_id,
                 state,
-                frame,
-                local_slot_types,
+                cell_types,
                 resident_cache,
                 materialized_cache,
             )?;
@@ -1467,7 +1465,6 @@ fn lower_block_terminator(
                 planner,
                 block_id,
                 state,
-                frame,
                 resident_cache,
                 materialized_cache,
                 values,

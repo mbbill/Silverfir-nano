@@ -14,6 +14,7 @@ use crate::{
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
         },
         middle::{
+            cell::CellId,
             frame::FrameSlot,
             ssa_ir::ir::{
                 DecodedOperand, SsaEdge, SsaInst, SsaInstView, SsaOp, SsaOperand,
@@ -293,14 +294,14 @@ impl<'a> BlockLowerContext<'a> {
         let Some(sink_slot) = self.program().value_sink(result) else {
             return Ok(());
         };
-        let Some(cached_index) = self.cached_local_index(sink_slot) else {
+        let Some(cached_index) = self.cached_cell_index(sink_slot) else {
             return Ok(());
         };
         // Only premap when the cache is already bound. If not yet bound,
-        // skip — the later LocalSetCache will handle binding via
-        // try_bind_cached_local_from_dying_value without needing an
+        // skip — the later CellSetCache will handle binding via
+        // try_bind_cached_cell_from_dying_value without needing an
         // extra register.
-        let Some(cached) = self.bound_cached_local(cached_index) else {
+        let Some(cached) = self.bound_cached_cell(cached_index) else {
             return Ok(());
         };
         let cache_reg = cached.reg;
@@ -328,42 +329,42 @@ impl<'a> BlockLowerContext<'a> {
         // each arm without fighting the view borrow (`SsaInstView` for `Call`
         // and `Value` borrows both `&SsaProgram` and `&SsaBlock`).
         match inst.op {
-            SsaOp::LOCAL_GET_SLOT => {
-                let slot = FrameSlot(inst.meta);
+            SsaOp::CELL_GET_SLOT => {
+                let cell = CellId(inst.meta);
                 let dst = inst.result;
-                self.lower_local_get_slot(slot, dst)?;
+                self.lower_cell_get_slot(cell, dst)?;
             }
-            SsaOp::LOCAL_GET_CACHE => {
-                let slot = FrameSlot(inst.meta);
+            SsaOp::CELL_GET_CACHE => {
+                let cell = CellId(inst.meta);
                 let dst = inst.result;
-                self.lower_local_get_cache(slot, dst)?;
+                self.lower_cell_get_cache(cell, dst)?;
             }
-            SsaOp::LOCAL_SET_SLOT => {
-                let slot = FrameSlot(inst.meta);
+            SsaOp::CELL_SET_SLOT => {
+                let cell = CellId(inst.meta);
                 let src = inst.args[0]
                     .as_value()
-                    .expect("LocalSetSlot src must be a Value");
-                self.lower_local_set_slot(slot, src)?;
+                    .expect("CellSetSlot src must be a Value");
+                self.lower_cell_set_slot(cell, src)?;
             }
-            SsaOp::LOCAL_SET_CACHE => {
-                let slot = FrameSlot(inst.meta);
+            SsaOp::CELL_SET_CACHE => {
+                let cell = CellId(inst.meta);
                 let src = inst.args[0]
                     .as_value()
-                    .expect("LocalSetCache src must be a Value");
-                self.lower_local_set_cache(slot, src)?;
+                    .expect("CellSetCache src must be a Value");
+                self.lower_cell_set_cache(cell, src)?;
             }
-            SsaOp::LOCAL_ENSURE_CACHE => {
-                let slot = FrameSlot(inst.meta);
-                self.lower_local_ensure_cache(slot)?;
+            SsaOp::CELL_ENSURE_CACHE => {
+                let cell = CellId(inst.meta);
+                self.lower_cell_ensure_cache(cell)?;
             }
-            SsaOp::LOCAL_RESERVE_CACHE => {
-                let slot = FrameSlot(inst.meta);
-                self.lower_local_reserve_cache(slot)?;
+            SsaOp::CELL_RESERVE_CACHE => {
+                let cell = CellId(inst.meta);
+                self.lower_cell_reserve_cache(cell)?;
             }
-            SsaOp::LOCAL_DROP_CACHE => {
-                let slot = FrameSlot(inst.meta);
-                if let Some(index) = self.cached_local_index(slot) {
-                    self.emit_drop_cached_local(index)?;
+            SsaOp::CELL_DROP_CACHE => {
+                let cell = CellId(inst.meta);
+                if let Some(index) = self.cached_cell_index(cell) {
+                    self.emit_drop_cached_cell(index)?;
                 }
             }
             SsaOp::FILL => {
@@ -458,31 +459,31 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn ensure_cached_local_loaded(
+    fn ensure_cached_cell_loaded(
         &mut self,
-        slot: FrameSlot,
+        cell: CellId,
         cached_index: usize,
         ty: MachineStorageType,
     ) -> Result<(), WasmError> {
         if self.is_cache_live(cached_index) && self.cache_has_value(cached_index) {
             return Ok(());
         }
-        if let Some((lo, hi, param_ty)) = self.register_param_state(slot) {
+        if let Some((lo, hi, param_ty)) = self.register_param_state(cell) {
             if param_ty != ty {
                 return Err(WasmError::internal(
                     "register-passed parameter type does not match cached local type",
                 ));
             }
-            self.bind_register_param_cached_local(cached_index, lo, hi)?;
+            self.bind_register_param_cached_cell(cached_index, lo, hi)?;
             self.set_cache_live(cached_index, true);
             self.set_cache_has_value(cached_index, true);
             // The frame slot is not authoritative yet. Mark dirty so any
             // boundary/drop that needs a frame view publishes the incoming arg.
             self.set_cache_dirty(cached_index, true);
-            self.mark_param_frame_authoritative(slot);
+            self.mark_param_frame_authoritative(cell);
             return Ok(());
         }
-        let cached = self.ensure_bound_cached_local(cached_index)?;
+        let cached = self.ensure_bound_cached_cell(cached_index)?;
         if cached.ty != ty {
             return Err(WasmError::internal(
                 "typed SSA-IR cache load from local slot expects , but cached local is",
@@ -494,15 +495,15 @@ impl<'a> BlockLowerContext<'a> {
         } else {
             #[cfg(sf_has_simd)]
             if matches!(cached.ty, MachineStorageType::V128) {
-                self.emit_load_frame_v128(cached.slot, cached.reg, MachineRegOwner::CachedLocal)?;
+                self.emit_load_frame_v128(cached.home, cached.reg, MachineRegOwner::CachedCell)?;
             } else {
                 self.emit_machine_inst(MachineInst {
                     kind: MachineInstKind::Load {
-                        owner: MachineRegOwner::CachedLocal,
+                        owner: MachineRegOwner::CachedCell,
                         ty: cached.ty,
                         dst: cached.reg,
-                        addr: self.frame_addr(cached.slot)?,
-                        width: super::lower_regalloc::canonical_cached_local_mem_width(cached.ty),
+                        addr: self.frame_addr(cached.home)?,
+                        width: super::lower_regalloc::canonical_cached_cell_mem_width(cached.ty),
                         extension: MachineLoadExtension::None,
                     },
                 });
@@ -510,11 +511,11 @@ impl<'a> BlockLowerContext<'a> {
             #[cfg(not(sf_has_simd))]
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Load {
-                    owner: MachineRegOwner::CachedLocal,
+                    owner: MachineRegOwner::CachedCell,
                     ty: cached.ty,
                     dst: cached.reg,
-                    addr: self.frame_addr(cached.slot)?,
-                    width: super::lower_regalloc::canonical_cached_local_mem_width(cached.ty),
+                    addr: self.frame_addr(cached.home)?,
+                    width: super::lower_regalloc::canonical_cached_cell_mem_width(cached.ty),
                     extension: MachineLoadExtension::None,
                 },
             });
@@ -525,9 +526,10 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_local_get_slot(&mut self, slot: FrameSlot, dst: SsaValue) -> Result<(), WasmError> {
+    fn lower_cell_get_slot(&mut self, cell: CellId, dst: SsaValue) -> Result<(), WasmError> {
         let ty = lir_value_storage_type(self.program(), dst);
-        if let Some((lo, hi, param_ty)) = self.register_param_state(slot) {
+        let home = self.cell_home(cell)?;
+        if let Some((lo, hi, param_ty)) = self.register_param_state(cell) {
             if param_ty == ty {
                 self.push_value_location(dst, lo, hi);
                 return Ok(());
@@ -535,13 +537,13 @@ impl<'a> BlockLowerContext<'a> {
         }
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let ops = self.i64_ops();
-            ops.emit_load_slot_i64(self, slot, dst)?;
+            ops.emit_load_slot_i64(self, home, dst)?;
             return Ok(());
         }
         let dst_reg = self.alloc_slot_load_value(dst)?;
         #[cfg(sf_has_simd)]
         if matches!(ty, MachineStorageType::V128) {
-            self.emit_load_frame_v128(slot, dst_reg, MachineRegOwner::LinearValue)?;
+            self.emit_load_frame_v128(home, dst_reg, MachineRegOwner::LinearValue)?;
             return Ok(());
         }
         let width = canonical_value_mem_width_for_value(self.program(), dst);
@@ -550,7 +552,7 @@ impl<'a> BlockLowerContext<'a> {
                 owner: MachineRegOwner::LinearValue,
                 ty,
                 dst: dst_reg,
-                addr: self.frame_addr(slot)?,
+                addr: self.frame_addr(home)?,
                 width,
                 extension: MachineLoadExtension::None,
             },
@@ -558,15 +560,13 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    fn lower_local_get_cache(&mut self, slot: FrameSlot, dst: SsaValue) -> Result<(), WasmError> {
+    fn lower_cell_get_cache(&mut self, cell: CellId, dst: SsaValue) -> Result<(), WasmError> {
         let ty = lir_value_storage_type(self.program(), dst);
-        let Some(cached_index) = self.cached_local_index(slot) else {
-            return Err(WasmError::internal(
-                "LocalGetCache on non-cached local slot",
-            ));
+        let Some(cached_index) = self.cached_cell_index(cell) else {
+            return Err(WasmError::internal("CellGetCache on non-cached local slot"));
         };
-        self.ensure_cached_local_loaded(slot, cached_index, ty)?;
-        let cached = self.ensure_bound_cached_local(cached_index)?;
+        self.ensure_cached_cell_loaded(cell, cached_index, ty)?;
+        let cached = self.ensure_bound_cached_cell(cached_index)?;
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let cached_hi = cached.hi_reg.ok_or_else(|| {
                 WasmError::internal("cached i64 local is missing a high-half register")
@@ -577,57 +577,58 @@ impl<'a> BlockLowerContext<'a> {
 
         // Source-alias: map value directly to cache register, no emit.
         // materialize_cache_aliases will copy aliased values out before the
-        // cache register is overwritten by a later LocalSetCache or drop.
+        // cache register is overwritten by a later CellSetCache or drop.
         self.push_value_location(dst, cached.reg, None);
         Ok(())
     }
 
-    fn lower_local_ensure_cache(&mut self, slot: FrameSlot) -> Result<(), WasmError> {
-        let Some(cached_index) = self.cached_local_index(slot) else {
+    fn lower_cell_ensure_cache(&mut self, cell: CellId) -> Result<(), WasmError> {
+        let Some(cached_index) = self.cached_cell_index(cell) else {
             return Err(WasmError::internal(
-                "LocalEnsureCache on non-cached local slot",
+                "CellEnsureCache on non-cached local slot",
             ));
         };
         let ty = self
-            .bound_cached_local(cached_index)
+            .bound_cached_cell(cached_index)
             .map(|cached| cached.ty)
-            .unwrap_or_else(|| self.cached_locals()[cached_index].ty);
-        self.ensure_cached_local_loaded(slot, cached_index, ty)
+            .unwrap_or_else(|| self.cached_cells()[cached_index].ty);
+        self.ensure_cached_cell_loaded(cell, cached_index, ty)
     }
 
-    fn lower_local_reserve_cache(&mut self, slot: FrameSlot) -> Result<(), WasmError> {
-        let Some(cached_index) = self.cached_local_index(slot) else {
+    fn lower_cell_reserve_cache(&mut self, cell: CellId) -> Result<(), WasmError> {
+        let Some(cached_index) = self.cached_cell_index(cell) else {
             return Err(WasmError::internal(
-                "LocalReserveCache on non-cached local slot",
+                "CellReserveCache on non-cached local slot",
             ));
         };
-        self.ensure_bound_cached_local(cached_index)?;
-        self.mark_param_frame_authoritative(slot);
+        self.ensure_bound_cached_cell(cached_index)?;
+        self.mark_param_frame_authoritative(cell);
         self.set_cache_live(cached_index, true);
         self.set_cache_has_value(cached_index, false);
         self.set_cache_dirty(cached_index, false);
         Ok(())
     }
 
-    fn lower_local_set_slot(&mut self, slot: FrameSlot, src: SsaValue) -> Result<(), WasmError> {
+    fn lower_cell_set_slot(&mut self, cell: CellId, src: SsaValue) -> Result<(), WasmError> {
         let ty = lir_value_storage_type(self.program(), src);
+        let home = self.cell_home(cell)?;
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let ops = self.i64_ops();
-            ops.emit_store_slot_i64(self, slot, src)?;
-            self.mark_param_frame_authoritative(slot);
+            ops.emit_store_slot_i64(self, home, src)?;
+            self.mark_param_frame_authoritative(cell);
             return Ok(());
         }
         #[cfg(sf_has_simd)]
         if matches!(ty, MachineStorageType::V128) {
             let src_reg = self.use_value(src)?;
-            self.emit_store_frame_v128(slot, src_reg)?;
+            self.emit_store_frame_v128(home, src_reg)?;
             self.release_dead_values()?;
-            self.mark_param_frame_authoritative(slot);
+            self.mark_param_frame_authoritative(cell);
             return Ok(());
         }
         let src_reg = self.use_value(src)?;
         let width = canonical_value_mem_width_for_value(self.program(), src);
-        let addr = self.frame_addr(slot)?;
+        let addr = self.frame_addr(home)?;
         if !self.try_coalesce_last_store_immediate(src, src_reg, ty, addr, width) {
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Store {
@@ -639,24 +640,22 @@ impl<'a> BlockLowerContext<'a> {
             });
         }
         self.release_dead_values()?;
-        self.mark_param_frame_authoritative(slot);
+        self.mark_param_frame_authoritative(cell);
         Ok(())
     }
 
-    fn lower_local_set_cache(&mut self, slot: FrameSlot, src: SsaValue) -> Result<(), WasmError> {
+    fn lower_cell_set_cache(&mut self, cell: CellId, src: SsaValue) -> Result<(), WasmError> {
         let ty = lir_value_storage_type(self.program(), src);
-        let Some(cached_index) = self.cached_local_index(slot) else {
-            return Err(WasmError::internal(
-                "LocalSetCache on non-cached local slot",
-            ));
+        let Some(cached_index) = self.cached_cell_index(cell) else {
+            return Err(WasmError::internal("CellSetCache on non-cached local slot"));
         };
         let cached = self
-            .try_bind_cached_local_from_dying_value(cached_index, src, ty)?
+            .try_bind_cached_cell_from_dying_value(cached_index, src, ty)?
             .unwrap_or(
-                self.ensure_bound_cached_local(cached_index)
+                self.ensure_bound_cached_cell(cached_index)
                     .map_err(|_err| {
                         WasmError::internal(
-                            "LocalSetCache(slot=, src=, remaining_uses=) in block b failed",
+                            "CellSetCache(slot=, src=, remaining_uses=) in block b failed",
                         )
                     })?,
             );
@@ -668,7 +667,7 @@ impl<'a> BlockLowerContext<'a> {
         self.set_cache_live(cached_index, true);
         self.set_cache_has_value(cached_index, true);
         self.mark_cache_dirty(cached_index);
-        self.mark_param_frame_authoritative(slot);
+        self.mark_param_frame_authoritative(cell);
 
         if matches!(ty, MachineStorageType::GpI64) && self.gp_reg_width() == 4 {
             let cached_hi = cached.hi_reg.ok_or_else(|| {
@@ -682,7 +681,7 @@ impl<'a> BlockLowerContext<'a> {
             }
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: MachineRegOwner::CachedLocal,
+                    owner: MachineRegOwner::CachedCell,
                     ty: MachineStorageType::GpWord,
                     dst: cached.reg,
                     src: MachineValue::Reg(src_lo),
@@ -690,7 +689,7 @@ impl<'a> BlockLowerContext<'a> {
             });
             self.emit_machine_inst(MachineInst {
                 kind: MachineInstKind::Move {
-                    owner: MachineRegOwner::CachedLocal,
+                    owner: MachineRegOwner::CachedCell,
                     ty: MachineStorageType::GpWord,
                     dst: cached_hi,
                     src: MachineValue::Reg(src_hi),
@@ -710,7 +709,7 @@ impl<'a> BlockLowerContext<'a> {
         let src_reg = self.use_value(src)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Move {
-                owner: MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedCell,
                 ty: cached.ty,
                 dst: cache_reg,
                 src: MachineValue::Reg(src_reg),
@@ -1783,11 +1782,11 @@ impl<'a> BlockLowerContext<'a> {
         }
         for entry in cache_entries.iter().copied() {
             let cached_index = usize::from(entry.cached_index);
-            let cached = self.bound_cached_local(cached_index).ok_or_else(|| {
-                let _slot = self.cached_locals()[cached_index].slot;
+            let cached = self.bound_cached_cell(cached_index).ok_or_else(|| {
+                let _cell = self.cached_cells()[cached_index].cell;
                 WasmError::internal("edge to b expects cached local slot to stay resident, but source block b has no binding")
             })?;
-            let _slot = cached.slot;
+            let _cell = cached.cell;
             if !self.is_cache_live(cached_index) {
                 return Err(WasmError::internal("edge to b expects cached local slot to stay resident, but source block b marked it dead"));
             }

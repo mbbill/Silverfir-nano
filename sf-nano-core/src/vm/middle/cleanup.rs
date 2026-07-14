@@ -51,16 +51,16 @@ struct CacheRunState {
 impl CacheRunState {
     fn apply(&mut self, op: SsaOp) {
         match op {
-            SsaOp::LOCAL_DROP_CACHE => {
+            SsaOp::CELL_DROP_CACHE => {
                 self.needs_drop = true;
                 self.present = None;
             }
-            SsaOp::LOCAL_RESERVE_CACHE => {
+            SsaOp::CELL_RESERVE_CACHE => {
                 if self.present != Some(CachePresence::Ensured) {
                     self.present = Some(CachePresence::Reserved);
                 }
             }
-            SsaOp::LOCAL_ENSURE_CACHE => {
+            SsaOp::CELL_ENSURE_CACHE => {
                 self.present = Some(CachePresence::Ensured);
             }
             _ => {}
@@ -140,16 +140,16 @@ fn flush_cache_run(
     }
     by_slot.sort_unstable_by_key(|(slot_index, _)| *slot_index);
     for &(slot_index, state) in by_slot.iter() {
-        let slot = super::frame::FrameSlot(slot_index);
+        let slot = super::cell::CellId(slot_index);
         if state.needs_drop {
-            out.push(SsaInst::local_drop_cache(slot));
+            out.push(SsaInst::cell_drop_cache(slot));
         }
     }
     for &(slot_index, state) in by_slot.iter() {
-        let slot = super::frame::FrameSlot(slot_index);
+        let slot = super::cell::CellId(slot_index);
         match state.present {
-            Some(CachePresence::Ensured) => out.push(SsaInst::local_ensure_cache(slot)),
-            Some(CachePresence::Reserved) => out.push(SsaInst::local_reserve_cache(slot)),
+            Some(CachePresence::Ensured) => out.push(SsaInst::cell_ensure_cache(slot)),
+            Some(CachePresence::Reserved) => out.push(SsaInst::cell_reserve_cache(slot)),
             None => {}
         }
     }
@@ -160,15 +160,15 @@ fn flush_cache_run(
 fn is_cache_only_op(op: SsaOp) -> bool {
     matches!(
         op,
-        SsaOp::LOCAL_ENSURE_CACHE | SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_DROP_CACHE
+        SsaOp::CELL_ENSURE_CACHE | SsaOp::CELL_RESERVE_CACHE | SsaOp::CELL_DROP_CACHE
     )
 }
 
 #[inline]
-fn cache_run_slot(inst: &SsaInst) -> Option<super::frame::FrameSlot> {
+fn cache_run_slot(inst: &SsaInst) -> Option<super::cell::CellId> {
     match inst.op {
-        SsaOp::LOCAL_ENSURE_CACHE | SsaOp::LOCAL_RESERVE_CACHE | SsaOp::LOCAL_DROP_CACHE => {
-            Some(super::frame::FrameSlot(inst.meta))
+        SsaOp::CELL_ENSURE_CACHE | SsaOp::CELL_RESERVE_CACHE | SsaOp::CELL_DROP_CACHE => {
+            Some(super::cell::CellId(inst.meta))
         }
         _ => None,
     }
@@ -191,7 +191,7 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
                 continue;
             }
             if program
-                .block_entry_cached_slots
+                .block_entry_cached_cells
                 .get(target.as_usize())
                 .map(|slots| !slots.is_empty())
                 .unwrap_or(false)
@@ -256,7 +256,7 @@ fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
         }
 
         // Boundary-repair blocks emitted by `rewrite/edge.rs` contain only
-        // cache-only ops (LocalEnsureCache / LocalReserveCache / LocalDropCache).
+        // cache-only ops (CellEnsureCache / CellReserveCache / CellDropCache).
         // They exist precisely to give the machine layer a fresh
         // `cache_bindings` slate when crossing a region boundary: each new
         // block starts with all cache bindings = None. Merging such a
@@ -508,15 +508,15 @@ fn substitute_inst(
     }
 
     match inst.op {
-        SsaOp::SPILL | SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_SET_CACHE => {
+        SsaOp::SPILL | SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE => {
             inst.args[0] = substitute_operand(inst.args[0], subst);
         }
         SsaOp::FILL
-        | SsaOp::LOCAL_GET_SLOT
-        | SsaOp::LOCAL_GET_CACHE
-        | SsaOp::LOCAL_ENSURE_CACHE
-        | SsaOp::LOCAL_RESERVE_CACHE
-        | SsaOp::LOCAL_DROP_CACHE
+        | SsaOp::CELL_GET_SLOT
+        | SsaOp::CELL_GET_CACHE
+        | SsaOp::CELL_ENSURE_CACHE
+        | SsaOp::CELL_RESERVE_CACHE
+        | SsaOp::CELL_DROP_CACHE
         | SsaOp::CALL => {}
         _ => {}
     }
@@ -666,7 +666,7 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
     }
 
     let old_blocks = core::mem::take(&mut program.blocks);
-    let old_entries = core::mem::take(&mut program.block_entry_cached_slots);
+    let old_entries = core::mem::take(&mut program.block_entry_cached_cells);
     let old_entry_reqs = core::mem::take(&mut program.block_entry_cache_requirements);
     let kept_blocks = block_len.saturating_sub(removed.len());
     let mut new_blocks = collections::Vec::with_capacity(kept_blocks);
@@ -694,7 +694,7 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
     debug_assert!(removed_mask.get(program.entry.as_usize()).copied() != Some(true));
     program.entry = mapping[program.entry.as_usize()];
     program.blocks = new_blocks;
-    program.block_entry_cached_slots = new_entries;
+    program.block_entry_cached_cells = new_entries;
     program.block_entry_cache_requirements = new_entry_reqs;
 }
 
@@ -706,7 +706,7 @@ fn remove_one_block(program: &mut SsaProgram, removed_index: usize) {
     debug_assert_ne!(program.entry.as_usize(), removed_index);
 
     program.blocks.remove(removed_index);
-    program.block_entry_cached_slots.remove(removed_index);
+    program.block_entry_cached_cells.remove(removed_index);
     program.block_entry_cache_requirements.remove(removed_index);
 
     if program.entry.as_usize() > removed_index {
@@ -868,7 +868,7 @@ mod tests {
     use super::*;
     use crate::value_type::ValueType;
     use crate::vm::middle::{
-        frame::FrameSlot,
+        cell::CellId,
         ssa_ir::{
             ir::{EntryCacheRequirement, SsaBlock},
             validate::validate_program,
@@ -891,10 +891,10 @@ mod tests {
     #[test]
     fn simplify_cache_run_keeps_required_drop_then_materialization() {
         let run = collections::vec![
-            SsaInst::local_reserve_cache(FrameSlot(0)),
-            SsaInst::local_drop_cache(FrameSlot(0)),
-            SsaInst::local_ensure_cache(FrameSlot(0)),
-            SsaInst::local_ensure_cache(FrameSlot(0)),
+            SsaInst::cell_reserve_cache(CellId(0)),
+            SsaInst::cell_drop_cache(CellId(0)),
+            SsaInst::cell_ensure_cache(CellId(0)),
+            SsaInst::cell_ensure_cache(CellId(0)),
         ];
         let simplified = simplify_cache_run(&run);
         assert_eq!(
@@ -902,7 +902,7 @@ mod tests {
                 .iter()
                 .map(|inst| inst.op)
                 .collect::<collections::Vec<_>>(),
-            collections::vec![SsaOp::LOCAL_DROP_CACHE, SsaOp::LOCAL_ENSURE_CACHE]
+            collections::vec![SsaOp::CELL_DROP_CACHE, SsaOp::CELL_ENSURE_CACHE]
         );
         assert!(simplified.iter().all(|inst| inst.meta == 0));
     }
@@ -910,6 +910,7 @@ mod tests {
     #[test]
     fn threads_empty_goto_block_and_composes_bindings() {
         let mut program = SsaProgram {
+            cell_homes: collections::Vec::new(),
             entry: SsaTarget(0),
             blocks: collections::vec![
                 SsaBlock {
@@ -946,10 +947,10 @@ mod tests {
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
-            local_slot_types: collections::Vec::new(),
+            cell_types: collections::Vec::new(),
             result_types: collections::Vec::new(),
-            local_slot_info: collections::Vec::new(),
-            block_entry_cached_slots: collections::vec![
+            cell_info: collections::Vec::new(),
+            block_entry_cached_cells: collections::vec![
                 collections::Vec::new(),
                 collections::Vec::new(),
                 collections::Vec::new()
@@ -957,7 +958,7 @@ mod tests {
             block_entry_cache_requirements: collections::vec![collections::Vec::new(); 3],
             preferred_preserved: collections::Vec::new(),
             value_types: collections::vec![ValueType::I32; 32],
-            value_sink_local: collections::vec![None; 32],
+            value_sink_cell: collections::vec![None; 32],
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
@@ -983,19 +984,20 @@ mod tests {
     #[test]
     fn merges_goto_successor_with_param_substitution() {
         let mut program = SsaProgram {
+            cell_homes: collections::Vec::new(),
             entry: SsaTarget(0),
             blocks: collections::Vec::new(),
-            local_slot_types: collections::vec![ValueType::I32],
+            cell_types: collections::vec![ValueType::I32],
             result_types: collections::Vec::new(),
-            local_slot_info: collections::vec![Default::default()],
-            block_entry_cached_slots: collections::vec![
+            cell_info: collections::vec![Default::default()],
+            block_entry_cached_cells: collections::vec![
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
             block_entry_cache_requirements: collections::vec![collections::Vec::new(); 2],
             preferred_preserved: collections::Vec::new(),
             value_types: collections::vec![ValueType::I32; 16],
-            value_sink_local: collections::vec![None; 16],
+            value_sink_cell: collections::vec![None; 16],
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
@@ -1018,7 +1020,7 @@ mod tests {
             SsaBlock {
                 id: SsaTarget(1),
                 params: collections::vec![SsaValue(10)],
-                ops: collections::vec![SsaInst::local_set_cache(FrameSlot(0), SsaValue(10))],
+                ops: collections::vec![SsaInst::cell_set_cache(CellId(0), SsaValue(10))],
                 extra_args: collections::Vec::new(),
                 terminator: SsaTerminator::Return { results: None },
             },
@@ -1028,7 +1030,7 @@ mod tests {
         assert_eq!(program.blocks.len(), 1);
         assert_eq!(program.blocks[0].ops.len(), 2);
         let set_cache = &program.blocks[0].ops[1];
-        assert_eq!(set_cache.op, SsaOp::LOCAL_SET_CACHE);
+        assert_eq!(set_cache.op, SsaOp::CELL_SET_CACHE);
         assert_eq!(set_cache.args[0].as_value(), Some(SsaValue(0)));
         assert!(matches!(
             program.blocks[0].terminator,
@@ -1040,6 +1042,7 @@ mod tests {
     #[test]
     fn remove_unreachable_blocks_prunes_dead_chain() {
         let mut program = SsaProgram {
+            cell_homes: collections::Vec::new(),
             entry: SsaTarget(0),
             blocks: collections::vec![
                 SsaBlock {
@@ -1067,10 +1070,10 @@ mod tests {
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
-            local_slot_types: collections::Vec::new(),
+            cell_types: collections::Vec::new(),
             result_types: collections::Vec::new(),
-            local_slot_info: collections::Vec::new(),
-            block_entry_cached_slots: collections::vec![
+            cell_info: collections::Vec::new(),
+            block_entry_cached_cells: collections::vec![
                 collections::Vec::new(),
                 collections::Vec::new(),
                 collections::Vec::new()
@@ -1078,7 +1081,7 @@ mod tests {
             block_entry_cache_requirements: collections::vec![collections::Vec::new(); 3],
             preferred_preserved: collections::Vec::new(),
             value_types: collections::Vec::new(),
-            value_sink_local: collections::Vec::new(),
+            value_sink_cell: collections::Vec::new(),
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
@@ -1092,19 +1095,20 @@ mod tests {
     #[test]
     fn does_not_merge_unreachable_predecessor_into_entry() {
         let mut program = SsaProgram {
+            cell_homes: collections::Vec::new(),
             entry: SsaTarget(1),
             blocks: collections::Vec::new(),
-            local_slot_types: collections::Vec::new(),
+            cell_types: collections::Vec::new(),
             result_types: collections::Vec::new(),
-            local_slot_info: collections::Vec::new(),
-            block_entry_cached_slots: collections::vec![
+            cell_info: collections::Vec::new(),
+            block_entry_cached_cells: collections::vec![
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
             block_entry_cache_requirements: collections::vec![collections::Vec::new(); 2],
             preferred_preserved: collections::Vec::new(),
             value_types: collections::vec![ValueType::I32; 2],
-            value_sink_local: collections::vec![None; 2],
+            value_sink_cell: collections::vec![None; 2],
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
@@ -1146,6 +1150,7 @@ mod tests {
     #[test]
     fn remove_single_block_reindexes_targets_and_entry() {
         let mut program = SsaProgram {
+            cell_homes: collections::Vec::new(),
             entry: SsaTarget(2),
             blocks: collections::vec![
                 SsaBlock {
@@ -1183,14 +1188,14 @@ mod tests {
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
-            local_slot_types: collections::Vec::new(),
+            cell_types: collections::Vec::new(),
             result_types: collections::Vec::new(),
-            local_slot_info: collections::Vec::new(),
-            block_entry_cached_slots: collections::vec![
-                collections::vec![FrameSlot(0)],
-                collections::vec![FrameSlot(1)],
-                collections::vec![FrameSlot(2)],
-                collections::vec![FrameSlot(3)],
+            cell_info: collections::Vec::new(),
+            block_entry_cached_cells: collections::vec![
+                collections::vec![CellId(0)],
+                collections::vec![CellId(1)],
+                collections::vec![CellId(2)],
+                collections::vec![CellId(3)],
             ],
             block_entry_cache_requirements: collections::vec![
                 collections::vec![EntryCacheRequirement::Ensure],
@@ -1200,7 +1205,7 @@ mod tests {
             ],
             preferred_preserved: collections::Vec::new(),
             value_types: collections::Vec::new(),
-            value_sink_local: collections::Vec::new(),
+            value_sink_cell: collections::Vec::new(),
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
@@ -1233,11 +1238,11 @@ mod tests {
             SsaTarget(2)
         );
         assert_eq!(
-            program.block_entry_cached_slots,
+            program.block_entry_cached_cells,
             collections::vec![
-                collections::vec![FrameSlot(0)],
-                collections::vec![FrameSlot(2)],
-                collections::vec![FrameSlot(3)],
+                collections::vec![CellId(0)],
+                collections::vec![CellId(2)],
+                collections::vec![CellId(3)],
             ]
         );
         validate_program(&program).unwrap();

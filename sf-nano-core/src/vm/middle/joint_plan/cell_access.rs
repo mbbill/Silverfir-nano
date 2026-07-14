@@ -7,24 +7,24 @@
 
 use super::{
     facts::FunctionPlan,
-    interface::{LocalAccessDecision, LocalAccessQuery},
+    interface::{CellAccessDecision, CellAccessQuery},
 };
 
 #[inline]
 pub(crate) fn decide_local_access(
     plan: &FunctionPlan,
-    query: LocalAccessQuery<'_>,
-) -> LocalAccessDecision {
+    query: CellAccessQuery<'_>,
+) -> CellAccessDecision {
     if query.resident_cache.contains(&query.slot) {
-        return LocalAccessDecision::Cache;
+        return CellAccessDecision::Cache;
     }
 
     if plan
         .planned_residents(query.block.as_usize())
         .contains(&query.slot)
     {
-        LocalAccessDecision::Cache
+        CellAccessDecision::Cache
     } else {
-        LocalAccessDecision::Slot
+        CellAccessDecision::Slot
     }
 }

@@ -21,7 +21,7 @@ use crate::vm::middle::ssa_ir::ir::{entry_cache_requirement, EntryCacheRequireme
 
 /// (A) Per-block, per-entry-slot requirement (`Ensure` | `Reserve`) from the
 /// original `entry_cache_requirement` scan over each FINAL block's emitted ops.
-/// Parallel 1:1 with `program.block_entry_cached_slots`.
+/// Parallel 1:1 with `program.block_entry_cached_cells`.
 pub(super) fn derive_entry_cache_requirements(
     program: &SsaProgram,
 ) -> collections::Vec<collections::Vec<EntryCacheRequirement>> {
@@ -31,7 +31,7 @@ pub(super) fn derive_entry_cache_requirements(
         .enumerate()
         .map(|(block_index, block)| {
             let entry_slots = program
-                .block_entry_cached_slots
+                .block_entry_cached_cells
                 .get(block_index)
                 .map(|slots| slots.as_slice())
                 .unwrap_or(&[]);

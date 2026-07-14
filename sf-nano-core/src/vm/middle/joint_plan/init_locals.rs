@@ -5,7 +5,7 @@
 //! path before its first read. This module computes that set.
 //!
 //! The result is consumed by:
-//! - `SsaProgram.local_slot_info[i].reads_before_write` (one bit per slot)
+//! - `SsaProgram.cell_info[i].reads_before_write` (one bit per slot)
 //! - machine lowering, which emits zero stores at the callee entry only for
 //!   slots that need them
 //!

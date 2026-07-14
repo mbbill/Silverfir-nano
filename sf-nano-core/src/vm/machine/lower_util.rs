@@ -23,8 +23,8 @@ pub(super) fn compute_remaining_uses(
     for inst_idx in 0..block.ops.len() {
         match block.view(inst_idx, program) {
             SsaInstView::Spill { src, .. }
-            | SsaInstView::LocalSetSlot { src, .. }
-            | SsaInstView::LocalSetCache { src, .. } => {
+            | SsaInstView::CellSetSlot { src, .. }
+            | SsaInstView::CellSetCache { src, .. } => {
                 *uses.entry(src).or_insert(0) += 1;
             }
             SsaInstView::Value { args, .. } => {
@@ -33,11 +33,11 @@ pub(super) fn compute_remaining_uses(
                 }
             }
             SsaInstView::Fill { .. }
-            | SsaInstView::LocalGetSlot { .. }
-            | SsaInstView::LocalGetCache { .. }
-            | SsaInstView::LocalEnsureCache { .. }
-            | SsaInstView::LocalReserveCache { .. }
-            | SsaInstView::LocalDropCache { .. } => {}
+            | SsaInstView::CellGetSlot { .. }
+            | SsaInstView::CellGetCache { .. }
+            | SsaInstView::CellEnsureCache { .. }
+            | SsaInstView::CellReserveCache { .. }
+            | SsaInstView::CellDropCache { .. } => {}
             SsaInstView::Call(call) => count_call_uses(call, &mut uses),
         }
     }
@@ -89,8 +89,8 @@ pub(super) fn compute_remaining_uses(
         for inst_idx in 0..block.ops.len() {
             match block.view(inst_idx, program) {
                 SsaInstView::Spill { src, .. }
-                | SsaInstView::LocalSetSlot { src, .. }
-                | SsaInstView::LocalSetCache { src, .. } => {
+                | SsaInstView::CellSetSlot { src, .. }
+                | SsaInstView::CellSetCache { src, .. } => {
                     *op_uses.entry(src).or_insert(0) += 1;
                 }
                 SsaInstView::Value { args, .. } => {

@@ -10,8 +10,9 @@ use crate::{
     vm::{
         backend::BackendConfig,
         middle::{
+            cell::CellId,
             cfg::{CfgBlockId, SemanticCfg},
-            frame::{FrameLayoutPlan, FrameSlot},
+            frame::FrameLayoutPlan,
         },
         wasm::semantic_ir::SemanticProgram,
     },
@@ -20,12 +21,12 @@ use crate::{
 use super::{
     block_open::{block_open_decision, target_entry_decision},
     build,
+    cell_access::decide_local_access,
     facts::{FunctionPlan, RepairActionsSpans, RowSpan},
     interface::{
-        BlockOpenDecision, FunctionSetupDecision, LocalAccessDecision, LocalAccessQuery,
+        BlockOpenDecision, CellAccessDecision, CellAccessQuery, FunctionSetupDecision,
         TargetEntryDecision,
     },
-    local_access::decide_local_access,
     validate,
 };
 
@@ -75,7 +76,7 @@ impl JointPlanner {
     /// Whether `slot` is preserved-class nominated: such a resident survives a
     /// survivable (direct local-JIT) call instead of being killed by it.
     #[inline]
-    pub(crate) fn is_preserved_nominated(&self, slot: FrameSlot) -> bool {
+    pub(crate) fn is_preserved_nominated(&self, slot: CellId) -> bool {
         self.plan.is_preserved_nominated(slot)
     }
 
@@ -99,7 +100,7 @@ impl JointPlanner {
     }
 
     #[inline]
-    pub(crate) fn local_access(&self, query: LocalAccessQuery<'_>) -> LocalAccessDecision {
+    pub(crate) fn cell_access(&self, query: CellAccessQuery<'_>) -> CellAccessDecision {
         decide_local_access(&self.plan, query)
     }
 
@@ -107,7 +108,7 @@ impl JointPlanner {
     /// and the seed the rewriter opens the block with. A slice into the plan's
     /// flat `row_arena`; rewrite copies it into the program's published row.
     #[inline]
-    pub(crate) fn exact_entry(&self, block: CfgBlockId) -> &[FrameSlot] {
+    pub(crate) fn exact_entry(&self, block: CfgBlockId) -> &[CellId] {
         &self.plan.row_arena[self.plan.blocks[block.as_usize()].exact_entry.range()]
     }
 
@@ -115,7 +116,7 @@ impl JointPlanner {
     /// checked against lowered reality by the standing guard. Slice into
     /// `row_arena`.
     #[inline]
-    pub(crate) fn exact_exit(&self, block: CfgBlockId) -> &[FrameSlot] {
+    pub(crate) fn exact_exit(&self, block: CfgBlockId) -> &[CellId] {
         &self.plan.row_arena[self.plan.blocks[block.as_usize()].exact_exit.range()]
     }
 
@@ -128,7 +129,7 @@ impl JointPlanner {
 
     /// The flat arena holding the repair pool's drop/ensure/reserve slot groups.
     #[inline]
-    pub(crate) fn repair_slot_arena(&self) -> &[FrameSlot] {
+    pub(crate) fn repair_slot_arena(&self) -> &[CellId] {
         &self.plan.repair_slot_arena
     }
 

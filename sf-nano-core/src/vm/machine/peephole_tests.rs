@@ -168,7 +168,7 @@ fn copy_propagate_drops_self_move_and_advances() {
 }
 
 #[test]
-fn does_not_copy_propagate_move_from_cached_local_block_param() {
+fn does_not_copy_propagate_move_from_cached_cell_block_param() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         fp_reg_init_widths: collections::vec![],
@@ -179,7 +179,7 @@ fn does_not_copy_propagate_move_from_cached_local_block_param() {
                 // been treated as a plain "transient" number. The explicit
                 // owner says otherwise, and the peephole must obey the owner.
                 params: collections::vec![MachineBlockParam::gp_word(MachineReg(7))
-                    .with_owner(MachineRegOwner::CachedLocal,)],
+                    .with_owner(MachineRegOwner::CachedCell,)],
                 ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Move {
@@ -332,7 +332,7 @@ fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
 }
 
 #[test]
-fn does_not_copy_propagate_cached_local_load_defs() {
+fn does_not_copy_propagate_cached_cell_load_defs() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         fp_reg_init_widths: collections::vec![],
@@ -343,7 +343,7 @@ fn does_not_copy_propagate_cached_local_load_defs() {
                 ops: collections::vec![
                     MachineInst {
                         kind: MachineInstKind::Load {
-                            owner: MachineRegOwner::CachedLocal,
+                            owner: MachineRegOwner::CachedCell,
                             ty: MachineStorageType::GpWord,
                             dst: MachineReg(7),
                             addr: MachineAddr {
@@ -391,7 +391,7 @@ fn does_not_copy_propagate_cached_local_load_defs() {
     assert_eq!(
         block.ops.len(),
         3,
-        "a load tagged as CachedLocal must not be treated as a linear alias source; ops={:?}",
+        "a load tagged as CachedCell must not be treated as a linear alias source; ops={:?}",
         block.ops
     );
     assert!(matches!(
@@ -1725,7 +1725,7 @@ fn preserves_linear_value_move_when_linear_source_reg_is_redefined_before_termin
 }
 
 #[test]
-fn copy_propagates_linear_copies_of_cached_local_snapshots() {
+fn copy_propagates_linear_copies_of_cached_cell_snapshots() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         fp_reg_init_widths: collections::vec![],
@@ -1859,7 +1859,7 @@ fn preserves_linear_value_move_live_across_helper_barrier() {
 }
 
 #[test]
-fn does_not_copy_propagate_cached_local_snapshots_into_integer_uses_or_edges() {
+fn does_not_copy_propagate_cached_cell_snapshots_into_integer_uses_or_edges() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         fp_reg_init_widths: collections::vec![],
@@ -2016,7 +2016,7 @@ fn rewrites_u64_store_of_gp_float_alias_back_to_fp_reg() {
 }
 
 #[test]
-fn preserves_moves_into_fp_cached_locals() {
+fn preserves_moves_into_fp_cached_cells() {
     let mut program = MachineProgram {
         entry: MachineBlockId(0),
         fp_reg_init_widths: collections::vec![
@@ -2031,7 +2031,7 @@ fn preserves_moves_into_fp_cached_locals() {
             ops: collections::vec![
                 MachineInst {
                     kind: MachineInstKind::Move {
-                        owner: MachineRegOwner::CachedLocal,
+                        owner: MachineRegOwner::CachedCell,
                         ty: MachineStorageType::Fp32,
                         dst: MachineReg(13),
                         src: MachineValue::Reg(MachineReg(11)),

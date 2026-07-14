@@ -23,6 +23,7 @@ use crate::{
     vm::{
         middle::{
             budget::count_live_bank_budget_units,
+            cell::CellId,
             frame::{FrameLayoutPlan, FrameSlot},
             ssa_ir::ir::SsaValue,
         },
@@ -175,9 +176,9 @@ pub(crate) trait DisciplineDriver {
     /// driver does nothing. Called in bottom-to-top slot order.
     fn on_fill(&mut self, base_slot: FrameSlot, types: &[ValueType]);
 
-    /// Drop a cached local. The emitter pushes `LocalDropCache`; the measure
+    /// Drop a cached local. The emitter pushes `CellDropCache`; the measure
     /// driver does nothing.
-    fn on_drop_cache(&mut self, slot: FrameSlot);
+    fn on_drop_cache(&mut self, slot: CellId);
 
     /// A call boundary consumed the whole live window (results return in frame
     /// slots). The emitter clears its live-value window; the measure driver does
@@ -200,7 +201,7 @@ pub(crate) struct NoEmit;
 impl DisciplineDriver for NoEmit {
     fn on_spill(&mut self, _base_slot: FrameSlot, _count: usize) {}
     fn on_fill(&mut self, _base_slot: FrameSlot, _types: &[ValueType]) {}
-    fn on_drop_cache(&mut self, _slot: FrameSlot) {}
+    fn on_drop_cache(&mut self, _slot: CellId) {}
     fn on_call_boundary(&mut self) {}
     fn on_call_boundary_scalar(&mut self, _result: SsaValue) {}
 }
@@ -212,7 +213,7 @@ impl DisciplineDriver for NoEmit {
 /// real linear pair, so the loaded value needs its own registers and cannot be
 /// discounted against the resident cache.
 #[inline]
-pub(crate) fn cached_local_get_can_source_alias(ty: ValueType, gp_unit_bytes: u8) -> bool {
+pub(crate) fn cached_cell_get_can_source_alias(ty: ValueType, gp_unit_bytes: u8) -> bool {
     !(matches!(ty, ValueType::I64) && gp_unit_bytes == 4)
 }
 
@@ -237,7 +238,7 @@ pub(crate) struct Window {
     spill_depth: u16,
     type_stack: collections::Vec<ValueType>,
     live_types: collections::Vec<ValueType>,
-    live_aliases: collections::Vec<Option<FrameSlot>>,
+    live_aliases: collections::Vec<Option<CellId>>,
 }
 
 impl Window {
@@ -246,7 +247,7 @@ impl Window {
         spill_depth: u16,
         type_stack: collections::Vec<ValueType>,
         live_types: collections::Vec<ValueType>,
-        live_aliases: collections::Vec<Option<FrameSlot>>,
+        live_aliases: collections::Vec<Option<CellId>>,
     ) -> Self {
         Self {
             stack_height,
@@ -273,7 +274,7 @@ impl Window {
     }
 
     #[inline]
-    pub(crate) fn live_aliases(&self) -> &[Option<FrameSlot>] {
+    pub(crate) fn live_aliases(&self) -> &[Option<CellId>] {
         &self.live_aliases
     }
 
@@ -314,7 +315,7 @@ impl Window {
     }
 
     /// Push `types` results with matching `aliases` onto the live window.
-    pub(crate) fn push_core(&mut self, types: &[ValueType], aliases: &[Option<FrameSlot>]) {
+    pub(crate) fn push_core(&mut self, types: &[ValueType], aliases: &[Option<CellId>]) {
         debug_assert_eq!(types.len(), aliases.len());
         self.stack_height = self.stack_height.saturating_add(types.len() as u16);
         self.type_stack.extend_from_slice(types);
@@ -485,8 +486,8 @@ impl Window {
         &mut self,
         driver: &mut impl DisciplineDriver,
         frame: FrameLayoutPlan,
-        resident: &mut BTreeSet<FrameSlot>,
-        local_slot_types: &[ValueType],
+        resident: &mut BTreeSet<CellId>,
+        cell_types: &[ValueType],
         budget: BankBudget,
         extra: (usize, usize),
     ) -> Result<(), WasmError> {
@@ -494,7 +495,7 @@ impl Window {
         loop {
             let (gp_live, fp_live) = self.effective_live_units(resident, budget.gp_unit_bytes);
             let (gp_cache, fp_cache) =
-                count_cached_local_budget_units(resident, local_slot_types, budget.gp_unit_bytes);
+                count_cached_cell_budget_units(resident, cell_types, budget.gp_unit_bytes);
             if gp_live + gp_cache + extra_gp <= budget.gp_live_budget as usize
                 && fp_live + fp_cache + extra_fp <= budget.fp_live_budget as usize
             {
@@ -521,7 +522,7 @@ impl Window {
     /// cached local do not count against the dynamic bank.
     fn effective_live_units(
         &self,
-        resident_cache: &BTreeSet<FrameSlot>,
+        resident_cache: &BTreeSet<CellId>,
         gp_unit_bytes: u8,
     ) -> (usize, usize) {
         let effective = self
@@ -540,15 +541,15 @@ impl Window {
 }
 
 /// GP/FP budget units held by a resident cached-local set.
-pub(crate) fn count_cached_local_budget_units(
-    resident_cache: &BTreeSet<FrameSlot>,
-    local_slot_types: &[ValueType],
+pub(crate) fn count_cached_cell_budget_units(
+    resident_cache: &BTreeSet<CellId>,
+    cell_types: &[ValueType],
     gp_unit_bytes: u8,
 ) -> (usize, usize) {
     let mut gp = 0usize;
     let mut fp = 0usize;
     for &slot in resident_cache {
-        let ty = local_slot_types
+        let ty = cell_types
             .get(slot.0 as usize)
             .copied()
             .unwrap_or(ValueType::I64);
@@ -574,8 +575,8 @@ pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
     window: &mut Window,
     driver: &mut D,
     frame: FrameLayoutPlan,
-    resident: &mut BTreeSet<FrameSlot>,
-    local_slot_types: &[ValueType],
+    resident: &mut BTreeSet<CellId>,
+    cell_types: &[ValueType],
     budget: BankBudget,
 ) -> Result<(), WasmError> {
     if matches!(op, SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)) {
@@ -586,9 +587,9 @@ pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
         StructuralAction::PrimitiveFill { pop, .. } => {
             // Ensure capacity BEFORE filling (the fill must not be undone by a
             // subsequent spill), reserving room for the pushed results.
-            let result_types = emit_result_types(op, local_slot_types);
+            let result_types = emit_result_types(op, cell_types);
             let extra = window.required_capacity(pop, &result_types, budget.gp_unit_bytes);
-            window.ensure_capacity(driver, frame, resident, local_slot_types, budget, extra)?;
+            window.ensure_capacity(driver, frame, resident, cell_types, budget, extra)?;
             window.fill(driver, frame, pop);
         }
         StructuralAction::FillKeepSpillRest(keep) => {
@@ -606,19 +607,16 @@ pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
         }
         StructuralAction::ElsePlannerFill => {}
     }
-    window.ensure_capacity(driver, frame, resident, local_slot_types, budget, (0, 0))?;
+    window.ensure_capacity(driver, frame, resident, cell_types, budget, (0, 0))?;
     Ok(())
 }
 
 /// Result types the emit-side capacity reservation charges for an op's pushed
 /// results: primitive result type(s), or the accessed local's type for
 /// `local.get` / `local.tee`, or none otherwise.
-fn emit_result_types(
-    op: &SemanticOpKind,
-    local_slot_types: &[ValueType],
-) -> collections::Vec<ValueType> {
+fn emit_result_types(op: &SemanticOpKind, cell_types: &[ValueType]) -> collections::Vec<ValueType> {
     let local_ty = |idx: u16| {
-        local_slot_types
+        cell_types
             .get(idx as usize)
             .copied()
             .unwrap_or(ValueType::I64)
@@ -642,18 +640,18 @@ fn emit_result_types(
 
 #[cfg(test)]
 mod tests {
-    use super::cached_local_get_can_source_alias;
+    use super::cached_cell_get_can_source_alias;
     use crate::value_type::ValueType;
 
     #[test]
     fn gp32_i64_cached_get_needs_real_linear_pair() {
-        assert!(!cached_local_get_can_source_alias(ValueType::I64, 4));
+        assert!(!cached_cell_get_can_source_alias(ValueType::I64, 4));
     }
 
     #[test]
     fn gp64_and_non_i64_cached_gets_can_source_alias() {
-        assert!(cached_local_get_can_source_alias(ValueType::I64, 8));
-        assert!(cached_local_get_can_source_alias(ValueType::I32, 4));
-        assert!(cached_local_get_can_source_alias(ValueType::F64, 4));
+        assert!(cached_cell_get_can_source_alias(ValueType::I64, 8));
+        assert!(cached_cell_get_can_source_alias(ValueType::I32, 4));
+        assert!(cached_cell_get_can_source_alias(ValueType::F64, 4));
     }
 }

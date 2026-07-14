@@ -117,11 +117,11 @@ impl<'a> BlockLowerContext<'a> {
             "prepared SSA-IR call reached native lowering with live linear SSA values; values must be published before the call",
         )?;
         let (cache_success_args, cache_continuation_params) =
-            self.prepare_cached_locals_for_local_call()?;
+            self.prepare_cached_cells_for_local_call()?;
 
         // Note: zero-init of the callee's non-param locals is performed by
         // the callee itself at function entry, only for slots flagged by the
-        // SsaProgram's `local_slot_info.reads_before_write` analysis. Locals
+        // SsaProgram's `cell_info.reads_before_write` analysis. Locals
         // that are guaranteed to be written before any read need no init.
 
         let (results, mut success_args, mut continuation_params) =
@@ -184,7 +184,7 @@ impl<'a> BlockLowerContext<'a> {
             ));
         }
 
-        self.emit_save_dirty_cached_locals()?;
+        self.emit_save_dirty_cached_cells()?;
 
         self.emit_repack_tail_call_args_to_frame_prefix(arg_span)?;
         let param_locs = self.runtime_for_func(callee_id)?.param_locs.clone();
@@ -565,7 +565,7 @@ impl<'a> BlockLowerContext<'a> {
         // slots before the call. Re-caching after the call is explicit in
         // SSA-IR.
         self.publish_register_params_to_frame()?;
-        self.emit_save_dirty_cached_locals()?;
+        self.emit_save_dirty_cached_cells()?;
         self.emit_machine_ops(self.build_runtime_call_ops(metadata));
         Ok(())
     }

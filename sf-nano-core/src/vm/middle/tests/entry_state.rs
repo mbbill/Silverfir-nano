@@ -1,5 +1,6 @@
 use crate::collections;
 use crate::value_type::ValueType;
+use crate::vm::middle::cell::CellId;
 
 use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind};
 
@@ -45,8 +46,8 @@ fn block_open_prefers_hotter_local_when_only_one_cache_slot_remains_after_entry_
 
     let pipeline = plan_i32_program(&semantic, 3, 0);
     let block = block_for_semantic_index(&pipeline.cfg, 3);
-    let slot0 = pipeline.frame.local_slot(0);
-    let slot1 = pipeline.frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let block_open = pipeline.planner.block_open(block);
 
     assert_eq!(block_open.transient.spill_depth, 0);
@@ -94,7 +95,7 @@ fn block_open_keeps_structural_entry_stack_even_when_that_leaves_no_room_for_loc
 
     let pipeline = plan_i32_program(&semantic, 2, 0);
     let block = block_for_semantic_index(&pipeline.cfg, 4);
-    let slot0 = pipeline.frame.local_slot(0);
+    let slot0 = CellId(0);
     let block_open = pipeline.planner.block_open(block);
 
     assert_eq!(block_open.transient.stack_height, 2);
@@ -140,7 +141,7 @@ fn block_open_uses_per_bank_budget_so_gp_pressure_does_not_block_hot_fp_local() 
 
     let pipeline = plan_program(&semantic, 1, 3);
     let block = block_for_semantic_index(&pipeline.cfg, 3);
-    let slot0 = pipeline.frame.local_slot(0);
+    let slot0 = CellId(0);
     let block_open = pipeline.planner.block_open(block);
 
     assert_eq!(block_open.transient.spill_depth, 0);

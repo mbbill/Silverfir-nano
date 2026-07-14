@@ -1,43 +1,43 @@
 //! Backward per-block sink planner.
 //!
-//! For each `LocalSetCache { slot, src }`, this pass checks whether the
+//! For each `CellSetCache { slot, src }`, this pass checks whether the
 //! producer of `src` can write its result directly into the local's cache
 //! register instead of a transient linear-value register. The machine
-//! lowering layer uses the resulting `value_sink_local` annotations via
+//! lowering layer uses the resulting `value_sink_cell` annotations via
 //! `apply_sink_premap` to place results directly into cache registers.
 //!
 //! The sink is legal when:
 //! - `src` is produced by a single-result `Value` or scalar-result `Call`
 //!   instruction in the same block
-//! - No barrier (Call) exists between the producer and the LocalSetCache
-//! - No `LocalGetCache` or `LocalGetSlot` of the same slot exists between
+//! - No barrier (Call) exists between the producer and the CellSetCache
+//! - No `CellGetCache` or `CellGetSlot` of the same slot exists between
 //!   the producer and the set (i.e., the old cached value is not read)
 
 use crate::collections;
 
 use crate::vm::middle::{
-    frame::FrameSlot,
+    cell::CellId,
     ssa_ir::ir::{SsaBlock, SsaOp, SsaProgram},
 };
 
 /// Run the sink planner over all blocks in the program.
-/// Populates `program.value_sink_local` with sink annotations.
+/// Populates `program.value_sink_cell` with sink annotations.
 pub(super) fn plan_sinks(program: &mut SsaProgram) {
     let value_count = program.value_types.len();
     if value_count == 0 {
         return;
     }
-    let mut sinks: collections::Vec<Option<FrameSlot>> = collections::vec![None; value_count];
+    let mut sinks: collections::Vec<Option<CellId>> = collections::vec![None; value_count];
 
     for block in &program.blocks {
         plan_block_sinks(block, &mut sinks);
     }
 
-    program.value_sink_local = sinks;
+    program.value_sink_cell = sinks;
 }
 
 /// Analyze one block for sink opportunities.
-fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
+fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<CellId>]) {
     let ops = &block.ops;
     if ops.is_empty() {
         return;
@@ -54,7 +54,7 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
             }
         } else {
             match inst.op {
-                SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_GET_SLOT | SsaOp::FILL => {
+                SsaOp::CELL_GET_CACHE | SsaOp::CELL_GET_SLOT | SsaOp::FILL => {
                     let dst = inst.result;
                     if dst.is_some() && dst.0 >= max_val {
                         max_val = dst.0 + 1;
@@ -93,15 +93,15 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
         }
     }
 
-    // Step 2: For each LocalSetCache, check sink legality.
+    // Step 2: For each CellSetCache, check sink legality.
     for (set_pos, inst) in ops.iter().enumerate() {
-        if inst.op != SsaOp::LOCAL_SET_CACHE {
+        if inst.op != SsaOp::CELL_SET_CACHE {
             continue;
         }
-        let slot = FrameSlot(inst.meta);
+        let slot = CellId(inst.meta);
         let src = inst.args[0]
             .as_value()
-            .expect("LocalSetCache src must be an SsaValue");
+            .expect("CellSetCache src must be an SsaValue");
 
         let src_idx = src.0 as usize;
         if src_idx >= producer_pos.len() || !is_single_result[src_idx] {
@@ -131,8 +131,7 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<FrameSlot>]) {
 
         // Old value of this local must not be read between producer and set.
         let old_value_live = ops[prod_pos + 1..set_pos].iter().any(|i| {
-            matches!(i.op, SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_GET_SLOT)
-                && FrameSlot(i.meta) == slot
+            matches!(i.op, SsaOp::CELL_GET_CACHE | SsaOp::CELL_GET_SLOT) && CellId(i.meta) == slot
         });
         if old_value_live {
             continue;
@@ -150,10 +149,11 @@ mod tests {
     use crate::value_type::ValueType;
 
     use crate::vm::middle::{
-        frame::{FrameSlot, FrameSpan},
+        cell::CellId,
+        frame::FrameSpan,
         ssa_ir::{
             ir::{
-                LocalSlotInfo, SsaBlock, SsaCallArgs, SsaCallOp, SsaInst, SsaOperand, SsaProgram,
+                CellInfo, SsaBlock, SsaCallArgs, SsaCallOp, SsaInst, SsaOperand, SsaProgram,
                 SsaTerminator, SsaValue,
             },
             target::SsaTarget,
@@ -162,14 +162,16 @@ mod tests {
     use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
     use super::plan_sinks;
+    use crate::vm::middle::frame::FrameSlot;
 
     fn make_program(ops: collections::Vec<SsaInst>, value_count: usize) -> SsaProgram {
         SsaProgram {
+            cell_homes: collections::Vec::new(),
             entry: SsaTarget(0),
-            local_slot_types: collections::vec![ValueType::I32; 2],
+            cell_types: collections::vec![ValueType::I32; 2],
             result_types: collections::Vec::new(),
-            local_slot_info: collections::vec![
-                LocalSlotInfo {
+            cell_info: collections::vec![
+                CellInfo {
                     is_param: true,
                     reads_before_write: true,
                 };
@@ -183,8 +185,8 @@ mod tests {
                 terminator: SsaTerminator::Return { results: None },
             }],
             value_types: collections::vec![ValueType::I32; value_count],
-            value_sink_local: collections::vec![None; value_count],
-            block_entry_cached_slots: collections::vec![],
+            value_sink_cell: collections::vec![None; value_count],
+            block_entry_cached_cells: collections::vec![],
             block_entry_cache_requirements: collections::vec![],
             preferred_preserved: collections::Vec::new(),
             const_pool: collections::Vec::new(),
@@ -214,11 +216,11 @@ mod tests {
             SsaValue(0),
             [SsaOperand::NONE, SsaOperand::NONE],
         );
-        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));
+        let set_cache = SsaInst::cell_set_cache(CellId(0), SsaValue(0));
         program.blocks[0].ops = collections::vec![i32_const, set_cache];
 
         plan_sinks(&mut program);
-        assert_eq!(program.value_sink_local[0], Some(FrameSlot(0)));
+        assert_eq!(program.value_sink_cell[0], Some(CellId(0)));
     }
 
     #[test]
@@ -240,11 +242,11 @@ mod tests {
             result_types: collections::vec![ValueType::I32],
         });
         let call = SsaInst::call_result(call_idx, SsaValue(0));
-        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));
+        let set_cache = SsaInst::cell_set_cache(CellId(0), SsaValue(0));
         program.blocks[0].ops = collections::vec![call, set_cache];
 
         plan_sinks(&mut program);
-        assert_eq!(program.value_sink_local[0], Some(FrameSlot(0)));
+        assert_eq!(program.value_sink_cell[0], Some(CellId(0)));
     }
 
     #[test]
@@ -257,12 +259,12 @@ mod tests {
             [SsaOperand::NONE, SsaOperand::NONE],
         );
         // Read of fp[0] between producer and set — old value is live.
-        let get_cache = SsaInst::local_get_cache(FrameSlot(0), SsaValue(1));
-        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));
+        let get_cache = SsaInst::cell_get_cache(CellId(0), SsaValue(1));
+        let set_cache = SsaInst::cell_set_cache(CellId(0), SsaValue(0));
         program.blocks[0].ops = collections::vec![i32_const, get_cache, set_cache];
 
         plan_sinks(&mut program);
-        assert_eq!(program.value_sink_local[0], None);
+        assert_eq!(program.value_sink_cell[0], None);
     }
 
     #[test]
@@ -290,11 +292,11 @@ mod tests {
             result_types: collections::Vec::new(),
         });
         let call = SsaInst::call(call_idx);
-        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));
+        let set_cache = SsaInst::cell_set_cache(CellId(0), SsaValue(0));
         program.blocks[0].ops = collections::vec![i32_const, call, set_cache];
 
         plan_sinks(&mut program);
-        assert_eq!(program.value_sink_local[0], None);
+        assert_eq!(program.value_sink_cell[0], None);
     }
 
     #[test]
@@ -307,12 +309,12 @@ mod tests {
             [SsaOperand::NONE, SsaOperand::NONE],
         );
         // Read of fp[1] (different slot) — does not block sinking into fp[0].
-        let get_cache = SsaInst::local_get_cache(FrameSlot(1), SsaValue(1));
-        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(0));
+        let get_cache = SsaInst::cell_get_cache(CellId(1), SsaValue(1));
+        let set_cache = SsaInst::cell_set_cache(CellId(0), SsaValue(0));
         program.blocks[0].ops = collections::vec![i32_const, get_cache, set_cache];
 
         plan_sinks(&mut program);
-        assert_eq!(program.value_sink_local[0], Some(FrameSlot(0)));
+        assert_eq!(program.value_sink_cell[0], Some(CellId(0)));
     }
 
     #[test]
@@ -320,7 +322,7 @@ mod tests {
         // get_cache fp[0] → v0, i32.add(v0, #1) → v1, set_cache fp[0] ← v1
         // v1 should sink into fp[0].
         let mut program = make_program(collections::Vec::new(), 2);
-        let get_cache = SsaInst::local_get_cache(FrameSlot(0), SsaValue(0));
+        let get_cache = SsaInst::cell_get_cache(CellId(0), SsaValue(0));
         let const_one = program.intern_const(1_u64);
         let add = prim_inst(
             &mut program,
@@ -328,15 +330,15 @@ mod tests {
             SsaValue(1),
             [SsaOperand::value(SsaValue(0)), const_one],
         );
-        let set_cache = SsaInst::local_set_cache(FrameSlot(0), SsaValue(1));
+        let set_cache = SsaInst::cell_set_cache(CellId(0), SsaValue(1));
         program.blocks[0].ops = collections::vec![get_cache, add, set_cache];
 
         plan_sinks(&mut program);
-        // v0 is a LocalGetCache, not a single-result Value — not sinkable.
-        assert_eq!(program.value_sink_local[0], None);
-        // v1 is the add result — sinkable into fp[0]. The LocalGetCache of
+        // v0 is a CellGetCache, not a single-result Value — not sinkable.
+        assert_eq!(program.value_sink_cell[0], None);
+        // v1 is the add result — sinkable into fp[0]. The CellGetCache of
         // fp[0] before the producer reads the OLD value of fp[0], but it's
         // before the producer, not between producer and set.
-        assert_eq!(program.value_sink_local[1], Some(FrameSlot(0)));
+        assert_eq!(program.value_sink_cell[1], Some(CellId(0)));
     }
 }

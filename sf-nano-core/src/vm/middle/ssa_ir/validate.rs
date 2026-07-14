@@ -35,14 +35,14 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
         ));
     }
 
-    if program.local_slot_types.len() != program.local_slot_info.len() {
+    if program.cell_types.len() != program.cell_info.len() {
         return Err(WasmError::internal(
             "SSA-IR local slot facts contain types but info entries",
         ));
     }
 
-    if !program.block_entry_cached_slots.is_empty()
-        && program.blocks.len() != program.block_entry_cached_slots.len()
+    if !program.block_entry_cached_cells.is_empty()
+        && program.blocks.len() != program.block_entry_cached_cells.len()
     {
         return Err(WasmError::internal(
             "SSA-IR has blocks but block-entry cache rows",
@@ -59,9 +59,9 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
 
     // The lane row is parallel 1:1 with the cached-slot row per block; the machine
     // reader indexes them together, so a length divergence is a hard error.
-    if program.block_entry_cached_slots.len() == program.block_entry_cache_requirements.len() {
+    if program.block_entry_cached_cells.len() == program.block_entry_cache_requirements.len() {
         for (slots, lanes) in program
-            .block_entry_cached_slots
+            .block_entry_cached_cells
             .iter()
             .zip(program.block_entry_cache_requirements.iter())
         {
@@ -106,7 +106,7 @@ pub(crate) fn validate_program(program: &SsaProgram) -> Result<(), WasmError> {
 
     if !program.value_types.is_empty() {
         validate_value_type_coverage(program)?;
-        validate_cached_local_slot_types(program)?;
+        validate_cached_cell_slot_types(program)?;
     }
 
     Ok(())
@@ -140,13 +140,13 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
                         check(result)?;
                     }
                 }
-                SsaInstView::LocalGetSlot { dst, .. }
-                | SsaInstView::LocalGetCache { dst, .. }
+                SsaInstView::CellGetSlot { dst, .. }
+                | SsaInstView::CellGetCache { dst, .. }
                 | SsaInstView::Fill { dst, .. } => {
                     check(dst)?;
                 }
-                SsaInstView::LocalSetSlot { src, .. }
-                | SsaInstView::LocalSetCache { src, .. }
+                SsaInstView::CellSetSlot { src, .. }
+                | SsaInstView::CellSetCache { src, .. }
                 | SsaInstView::Spill { src, .. } => {
                     check(src)?;
                 }
@@ -156,9 +156,9 @@ fn validate_value_type_coverage(program: &SsaProgram) -> Result<(), WasmError> {
                         check(inst.result)?;
                     }
                 }
-                SsaInstView::LocalEnsureCache { .. }
-                | SsaInstView::LocalReserveCache { .. }
-                | SsaInstView::LocalDropCache { .. } => {}
+                SsaInstView::CellEnsureCache { .. }
+                | SsaInstView::CellReserveCache { .. }
+                | SsaInstView::CellDropCache { .. } => {}
             }
         }
         match &block.terminator {
@@ -217,23 +217,23 @@ fn validate_edge_values(
 }
 
 #[cfg(any(debug_assertions, test))]
-fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmError> {
+fn validate_cached_cell_slot_types(program: &SsaProgram) -> Result<(), WasmError> {
     let mut cached_slot_types = BTreeMap::<FrameSlot, ValueType>::new();
     for block in &program.blocks {
         for inst in &block.ops {
             match inst.op {
-                SsaOp::LOCAL_GET_CACHE => {
+                SsaOp::CELL_GET_CACHE => {
                     let slot = FrameSlot(inst.meta);
                     let dst = inst.result;
                     if let Some(ty) = program.value_types.get(dst.0 as usize).copied() {
                         cached_slot_types.entry(slot).or_insert(ty);
                     }
                 }
-                SsaOp::LOCAL_SET_CACHE => {
+                SsaOp::CELL_SET_CACHE => {
                     let slot = FrameSlot(inst.meta);
                     let src = inst.args[0]
                         .as_value()
-                        .expect("LocalSetCache src must be a value");
+                        .expect("CellSetCache src must be a value");
                     if let Some(ty) = program.value_types.get(src.0 as usize).copied() {
                         cached_slot_types.entry(slot).or_insert(ty);
                     }
@@ -246,7 +246,7 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
     for (block_idx, block) in program.blocks.iter().enumerate() {
         for (op_idx, inst) in block.ops.iter().enumerate() {
             match inst.op {
-                SsaOp::LOCAL_GET_CACHE => {
+                SsaOp::CELL_GET_CACHE => {
                     let slot = FrameSlot(inst.meta);
                     let dst = inst.result;
                     validate_cached_slot_value_type(
@@ -256,14 +256,14 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
                         dst,
                         block_idx,
                         op_idx,
-                        "LocalGetCache dst",
+                        "CellGetCache dst",
                     )?;
                 }
-                SsaOp::LOCAL_SET_CACHE => {
+                SsaOp::CELL_SET_CACHE => {
                     let slot = FrameSlot(inst.meta);
                     let src = inst.args[0]
                         .as_value()
-                        .expect("LocalSetCache src must be a value");
+                        .expect("CellSetCache src must be a value");
                     validate_cached_slot_value_type(
                         program,
                         &cached_slot_types,
@@ -271,7 +271,7 @@ fn validate_cached_local_slot_types(program: &SsaProgram) -> Result<(), WasmErro
                         src,
                         block_idx,
                         op_idx,
-                        "LocalSetCache src",
+                        "CellSetCache src",
                     )?;
                 }
                 _ => {}
@@ -314,8 +314,8 @@ fn validate_linear_op_uses(program: &SsaProgram, block: &SsaBlock) -> Result<(),
     for op_idx in 0..block.ops.len() {
         match block.view(op_idx, program) {
             SsaInstView::Spill { src, .. }
-            | SsaInstView::LocalSetSlot { src, .. }
-            | SsaInstView::LocalSetCache { src, .. } => {
+            | SsaInstView::CellSetSlot { src, .. }
+            | SsaInstView::CellSetCache { src, .. } => {
                 *uses.entry(src).or_insert(0) += 1;
             }
             SsaInstView::Value { args, .. } => {
@@ -326,11 +326,11 @@ fn validate_linear_op_uses(program: &SsaProgram, block: &SsaBlock) -> Result<(),
                 }
             }
             SsaInstView::Fill { .. }
-            | SsaInstView::LocalGetSlot { .. }
-            | SsaInstView::LocalGetCache { .. }
-            | SsaInstView::LocalEnsureCache { .. }
-            | SsaInstView::LocalReserveCache { .. }
-            | SsaInstView::LocalDropCache { .. }
+            | SsaInstView::CellGetSlot { .. }
+            | SsaInstView::CellGetCache { .. }
+            | SsaInstView::CellEnsureCache { .. }
+            | SsaInstView::CellReserveCache { .. }
+            | SsaInstView::CellDropCache { .. }
             | SsaInstView::Call(_) => {}
         }
     }
@@ -353,8 +353,8 @@ fn cached_slot_value_type_matches(role: &str, value_ty: ValueType, cached_ty: Va
         return true;
     }
     match role {
-        "LocalSetCache src" => value_ty.is_compatible_with(&cached_ty),
-        "LocalGetCache dst" => cached_ty.is_compatible_with(&value_ty),
+        "CellSetCache src" => value_ty.is_compatible_with(&cached_ty),
+        "CellGetCache dst" => cached_ty.is_compatible_with(&value_ty),
         _ => value_ty == cached_ty,
     }
 }

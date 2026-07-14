@@ -1,5 +1,5 @@
 use crate::collections;
-use crate::vm::middle::frame::FrameSlot;
+use crate::vm::middle::cell::CellId;
 use crate::vm::middle::ssa_ir::ir::SsaOp;
 
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
@@ -83,7 +83,7 @@ fn nominated_resident_survives_a_direct_local_call_in_the_plan() {
     // steady state needs no per-iteration re-ensure (at most the cold entry
     // preload remains).
     let surviving = prepare_program_with(&semantic, preserved_config(), &[true]);
-    let slot0 = surviving.frame.local_slot(0);
+    let slot0 = CellId(0);
     let surviving_ensures = count_ensure_cache(&surviving.ssa, slot0);
 
     // Same program through a preserved-free config: every call kills the
@@ -105,11 +105,10 @@ fn nominated_resident_survives_a_direct_local_call_in_the_plan() {
 fn barrier_calls_still_kill_nominated_residents() {
     let direct = prepare_program_with(&hot_loop_with_call(true), preserved_config(), &[true]);
     let indirect = prepare_program_with(&hot_loop_with_call(false), preserved_config(), &[true]);
-    let slot0 = indirect.frame.local_slot(0);
+    let slot0 = CellId(0);
 
     assert!(
-        count_ensure_cache(&indirect.ssa, slot0)
-            > count_ensure_cache(&direct.ssa, direct.frame.local_slot(0)),
+        count_ensure_cache(&indirect.ssa, slot0) > count_ensure_cache(&direct.ssa, CellId(0)),
         "an indirect call is a barrier: nominated residents must not survive it in the plan"
     );
 }
@@ -136,12 +135,12 @@ fn entry_block_does_not_preload_local_used_only_after_call_barrier() {
     );
 
     let prepared = prepare_i32_program(&semantic, 3, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
 
     assert!(
         prepared
             .ssa
-            .block_entry_cached_slots
+            .block_entry_cached_cells
             .first()
             .map(|slots| !slots.contains(&slot0))
             .unwrap_or(true),
@@ -175,18 +174,18 @@ fn call_barrier_rebuilds_local_access_after_flush() {
     );
 
     let prepared = prepare_i32_program(&semantic, 1, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let ops = all_inst_kinds(&prepared.ssa);
     let post_call_get = ops
         .iter()
         .find(|inst| {
-            matches!(inst.op, SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE)
-                && FrameSlot(inst.meta) == slot0
+            matches!(inst.op, SsaOp::CELL_GET_SLOT | SsaOp::CELL_GET_CACHE)
+                && CellId(inst.meta) == slot0
         })
         .expect("expected one local.get after the call");
 
     assert!(
-        post_call_get.op == SsaOp::LOCAL_GET_SLOT,
+        post_call_get.op == SsaOp::CELL_GET_SLOT,
         "a one-shot local.get after a call should stay slot-based when the public set does not keep that local resident"
     );
 }
@@ -219,12 +218,12 @@ fn hot_repeated_local_can_stay_public_across_call() {
     );
 
     let prepared = prepare_i32_program(&semantic, 4, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let first_get =
         first_local_get_for(&prepared.ssa, slot0).expect("expected one local.get after the call");
 
     assert!(
-        first_get.op == SsaOp::LOCAL_GET_CACHE,
+        first_get.op == SsaOp::CELL_GET_CACHE,
         "repeated post-call uses should still be allowed to use the public cache form"
     );
 }

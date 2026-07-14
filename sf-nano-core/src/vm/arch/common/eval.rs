@@ -93,7 +93,7 @@ pub(crate) fn eval(
         }
         // Note: zero-init of non-param locals is performed by the callee
         // itself at function entry, only for slots flagged by the SsaProgram's
-        // `local_slot_info.reads_before_write` analysis. The C entry path no
+        // `cell_info.reads_before_write` analysis. The C entry path no
         // longer needs to pre-zero the frame prefix.
     }
     ensure_stack_capacity(stack_base, stack_end, runtime.total_frame_slots)?;

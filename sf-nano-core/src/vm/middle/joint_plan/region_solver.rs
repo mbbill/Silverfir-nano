@@ -14,8 +14,8 @@ use crate::{
     vm::{
         backend::BackendConfig,
         middle::{
-            budget::gp_value_budget_units, cfg::SemanticCfg, frame::FrameSlot,
-            joint_plan::facts::BlockLocalSummary,
+            budget::gp_value_budget_units, cell::CellId, cfg::SemanticCfg,
+            joint_plan::facts::BlockCellSummary,
         },
         wasm::semantic_ir::{SemanticOpKind, SemanticProgram},
     },
@@ -149,7 +149,7 @@ impl Default for ResidencyPolicy {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-struct LocalMeta {
+struct CellMeta {
     bank: Bank,
     units: usize,
     is_ref: bool,
@@ -201,7 +201,7 @@ impl SlotDp {
 /// The residency solver's output: per-block resident sets plus the
 /// function-scope preserved-class nomination the residency was priced with.
 pub(super) struct ResidencySolution {
-    pub block_residents: collections::Vec<collections::Vec<FrameSlot>>,
+    pub block_residents: collections::Vec<collections::Vec<CellId>>,
     pub preferred_preserved: collections::Vec<bool>,
 }
 
@@ -211,7 +211,7 @@ pub(super) fn solve_public_cache_sets(
     config: BackendConfig,
     block_peak_gp: &[usize],
     block_peak_fp: &[usize],
-    block_local_summaries: &[BlockLocalSummary],
+    block_local_summaries: &[BlockCellSummary],
     is_local_func: &[bool],
     policy: ResidencyPolicy,
 ) -> ResidencySolution {
@@ -227,7 +227,7 @@ pub(super) fn solve_public_cache_sets(
 
     let ResidencyPolicy::Algorithm4(policy_params) = policy;
     let mut regions = build_region_tree(semantic, cfg, &policy_params);
-    let local_meta = build_local_meta(&semantic.local_types, local_count, config.gp_unit_bytes);
+    let cell_meta = build_cell_meta(&semantic.local_types, local_count, config.gp_unit_bytes);
     let block_weights = compute_block_weights(&regions, &policy_params);
     let call_counts = compute_block_call_counts(semantic, cfg, is_local_func);
     let (peak_gp, peak_fp) = (block_peak_gp, block_peak_fp);
@@ -263,7 +263,7 @@ pub(super) fn solve_public_cache_sets(
     }
 
     let preferred_preserved = nominate_preserved(
-        &local_meta,
+        &cell_meta,
         &benefit,
         &survivable_call_weight,
         config,
@@ -277,7 +277,7 @@ pub(super) fn solve_public_cache_sets(
     // safepoint-publish factor.
     let mut call_tax = collections::vec![collections::vec![0.0; local_count]; region_count];
     for region_id in 0..region_count {
-        for (slot_index, meta) in local_meta.iter().copied().enumerate() {
+        for (slot_index, meta) in cell_meta.iter().copied().enumerate() {
             let survivable_factor = if preferred_preserved[slot_index] {
                 policy_params.preserved_keep_factor
             } else {
@@ -293,7 +293,7 @@ pub(super) fn solve_public_cache_sets(
     solve_bank(
         Bank::Gp,
         &regions,
-        &local_meta,
+        &cell_meta,
         &benefit,
         &call_tax,
         &policy_params,
@@ -302,7 +302,7 @@ pub(super) fn solve_public_cache_sets(
     solve_bank(
         Bank::Fp,
         &regions,
-        &local_meta,
+        &cell_meta,
         &benefit,
         &call_tax,
         &policy_params,
@@ -318,7 +318,7 @@ pub(super) fn solve_public_cache_sets(
             let mut slots = collections::Vec::new();
             for (slot_index, is_selected) in selected[owner].iter().copied().enumerate() {
                 if is_selected {
-                    slots.push(FrameSlot(slot_index as u16));
+                    slots.push(CellId(slot_index as u16));
                 }
             }
             slots
@@ -341,13 +341,13 @@ pub(super) fn solve_public_cache_sets(
 /// Reference-typed locals are never nominated: they must be frame-visible
 /// across every call boundary for GC-root visibility.
 fn nominate_preserved(
-    local_meta: &[LocalMeta],
+    cell_meta: &[CellMeta],
     benefit: &[collections::Vec<f64>],
     survivable_call_weight: &[f64],
     config: BackendConfig,
     params: &Algorithm4Params,
 ) -> collections::Vec<bool> {
-    let mut preferred = collections::vec![false; local_meta.len()];
+    let mut preferred = collections::vec![false; cell_meta.len()];
     let relief_factor = 1.0 - params.preserved_keep_factor;
     if relief_factor <= 0.0 {
         return preferred;
@@ -362,7 +362,7 @@ fn nominate_preserved(
         }
         let overhead = f64::from(config.preserved_lane_save_overhead);
         let mut candidates: collections::Vec<(f64, usize)> = collections::Vec::new();
-        for (slot_index, meta) in local_meta.iter().copied().enumerate() {
+        for (slot_index, meta) in cell_meta.iter().copied().enumerate() {
             if meta.bank != bank || meta.is_ref {
                 continue;
             }
@@ -383,7 +383,7 @@ fn nominate_preserved(
         });
         let mut used = 0usize;
         for (_, slot_index) in candidates {
-            let units = local_meta[slot_index].units;
+            let units = cell_meta[slot_index].units;
             if used + units > capacity {
                 continue;
             }
@@ -400,13 +400,13 @@ fn nominate_preserved(
 fn solve_bank(
     bank: Bank,
     regions: &RegionTree,
-    local_meta: &[LocalMeta],
+    cell_meta: &[CellMeta],
     benefit: &[collections::Vec<f64>],
     call_tax: &[collections::Vec<f64>],
     params: &Algorithm4Params,
     selected: &mut [collections::Vec<bool>],
 ) {
-    let slots = local_meta
+    let slots = cell_meta
         .iter()
         .enumerate()
         .filter_map(|(slot_index, meta)| (meta.bank == bank).then_some(slot_index))
@@ -431,7 +431,7 @@ fn solve_bank(
     for (slot_pos, &slot_index) in slots.iter().enumerate() {
         compute_slot_dp(
             slot_index,
-            local_meta[slot_index],
+            cell_meta[slot_index],
             regions,
             benefit,
             call_tax,
@@ -440,13 +440,13 @@ fn solve_bank(
         );
     }
 
-    let parent_selection = collections::vec![false; local_meta.len()];
+    let parent_selection = collections::vec![false; cell_meta.len()];
     extract_feasible_states(
         0,
         &parent_selection,
         &slots,
         regions,
-        local_meta,
+        cell_meta,
         &capacities,
         &slot_dps,
         selected,
@@ -455,7 +455,7 @@ fn solve_bank(
 
 fn compute_slot_dp(
     slot_index: usize,
-    meta: LocalMeta,
+    meta: CellMeta,
     regions: &RegionTree,
     benefit: &[collections::Vec<f64>],
     call_tax: &[collections::Vec<f64>],
@@ -489,7 +489,7 @@ fn extract_feasible_states(
     parent_selection: &[bool],
     bank_slots: &[usize],
     regions: &RegionTree,
-    local_meta: &[LocalMeta],
+    cell_meta: &[CellMeta],
     capacities: &[usize],
     slot_dps: &[SlotDp],
     selected: &mut [collections::Vec<bool>],
@@ -526,7 +526,7 @@ fn extract_feasible_states(
 
     for (row, &item_index) in order.iter().enumerate() {
         let slot_index = bank_slots[item_index];
-        let weight = local_meta[slot_index].units;
+        let weight = cell_meta[slot_index].units;
         let parent_state = parent_state_for(slot_index);
         let absent = slot_dps[item_index].force_value[region_id][parent_state][0];
         let resident = slot_dps[item_index].force_value[region_id][parent_state][1];
@@ -558,7 +558,7 @@ fn extract_feasible_states(
         let chose_resident = take[row + 1][used];
         selected[region_id][slot_index] = chose_resident;
         if chose_resident {
-            used = used.saturating_sub(local_meta[slot_index].units);
+            used = used.saturating_sub(cell_meta[slot_index].units);
         }
     }
 
@@ -569,7 +569,7 @@ fn extract_feasible_states(
             &parent_snapshot,
             bank_slots,
             regions,
-            local_meta,
+            cell_meta,
             capacities,
             slot_dps,
             selected,
@@ -696,11 +696,11 @@ fn current_parent_region(stack: &[StructuredFrame]) -> usize {
         .unwrap_or(0)
 }
 
-fn build_local_meta(
+fn build_cell_meta(
     local_types: &[ValueType],
     local_count: usize,
     gp_unit_bytes: u8,
-) -> collections::Vec<LocalMeta> {
+) -> collections::Vec<CellMeta> {
     (0..local_count)
         .map(|slot_index| {
             let ty = local_types
@@ -708,13 +708,13 @@ fn build_local_meta(
                 .copied()
                 .unwrap_or(ValueType::I64);
             if ty.is_fp() {
-                LocalMeta {
+                CellMeta {
                     bank: Bank::Fp,
                     units: 1,
                     is_ref: false,
                 }
             } else {
-                LocalMeta {
+                CellMeta {
                     bank: Bank::Gp,
                     units: gp_value_budget_units(ty, gp_unit_bytes),
                     is_ref: ty.is_ref(),
@@ -810,18 +810,18 @@ mod tests {
             ],
             owner_by_block: collections::Vec::new(),
         };
-        let local_meta = collections::vec![
-            LocalMeta {
+        let cell_meta = collections::vec![
+            CellMeta {
                 bank: Bank::Gp,
                 units: 1,
                 is_ref: false,
             },
-            LocalMeta {
+            CellMeta {
                 bank: Bank::Gp,
                 units: 1,
                 is_ref: false,
             },
-            LocalMeta {
+            CellMeta {
                 bank: Bank::Gp,
                 units: 1,
                 is_ref: false,
@@ -842,7 +842,7 @@ mod tests {
         solve_bank(
             Bank::Gp,
             &regions,
-            &local_meta,
+            &cell_meta,
             &benefit,
             &call_tax,
             &Algorithm4Params::default(),
@@ -863,7 +863,7 @@ mod tests {
     #[test]
     fn nomination_requires_relief_to_amortize_the_lane_overhead() {
         let meta = collections::vec![
-            LocalMeta {
+            CellMeta {
                 bank: Bank::Gp,
                 units: 1,
                 is_ref: false,
@@ -890,7 +890,7 @@ mod tests {
     #[test]
     fn nomination_clamps_to_preserved_capacity_by_descending_relief() {
         let meta = collections::vec![
-            LocalMeta {
+            CellMeta {
                 bank: Bank::Gp,
                 units: 1,
                 is_ref: false,
@@ -918,7 +918,7 @@ mod tests {
 
     #[test]
     fn nomination_never_selects_ref_locals() {
-        let meta = collections::vec![LocalMeta {
+        let meta = collections::vec![CellMeta {
             bank: Bank::Gp,
             units: 1,
             is_ref: true,

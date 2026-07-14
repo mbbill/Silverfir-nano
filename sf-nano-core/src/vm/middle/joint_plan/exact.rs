@@ -30,11 +30,12 @@ use crate::{
     vm::{
         backend::BackendConfig,
         middle::{
+            cell::CellId,
             cfg::{CfgBlockId, CfgTerminator, SemanticCfg},
             discipline::{
-                apply_op_discipline, cached_local_get_can_source_alias, BankBudget, NoEmit, Window,
+                apply_op_discipline, cached_cell_get_can_source_alias, BankBudget, NoEmit, Window,
             },
-            frame::{FrameLayoutPlan, FrameSlot},
+            frame::FrameLayoutPlan,
             ssa_ir::ir::{EntryCacheRequirement, SsaValue},
         },
         wasm::{
@@ -45,9 +46,9 @@ use crate::{
 };
 
 use super::{
+    cell_access::decide_local_access,
     facts::{self, FunctionPlan, RepairActions, RepairActionsSpans, RowSpan, NO_REPAIR},
-    local_access::decide_local_access,
-    LocalAccessDecision, LocalAccessQuery,
+    CellAccessDecision, CellAccessQuery,
 };
 
 /// One cache-relevant op in a block's lowered stream, in emission order. This
@@ -55,12 +56,12 @@ use super::{
 /// the walker records nothing else.
 #[derive(Clone, Copy)]
 enum CacheEvent {
-    /// `LOCAL_GET_CACHE`: exit set insert; entry requirement Ensure.
-    Get(FrameSlot),
-    /// `LOCAL_SET_CACHE`: exit set insert; entry requirement Reserve.
-    Set(FrameSlot),
-    /// `LOCAL_DROP_CACHE` (eviction): exit set remove; entry requirement None.
-    Drop(FrameSlot),
+    /// `CELL_GET_CACHE`: exit set insert; entry requirement Ensure.
+    Get(CellId),
+    /// `CELL_SET_CACHE`: exit set insert; entry requirement Reserve.
+    Set(CellId),
+    /// `CELL_DROP_CACHE` (eviction): exit set remove; entry requirement None.
+    Drop(CellId),
     /// `CALL`: kills every cached resident except, on a survivable (direct
     /// local-JIT) call, the preserved-class nominated slots, which ride the
     /// call out in their callee-saved registers.
@@ -71,8 +72,8 @@ enum CacheEvent {
 /// requirement for the edge pass — NOT the full event stream, so the walker's
 /// retained memory stays bounded by the exact rows, not the block's op count.
 struct BlockWalk {
-    exact_entry: collections::Vec<FrameSlot>,
-    exact_exit: collections::Vec<FrameSlot>,
+    exact_entry: collections::Vec<CellId>,
+    exact_exit: collections::Vec<CellId>,
     /// Parallel to `exact_entry`: each entry slot's first-use requirement, the
     /// value the edge pass would classify it as (carried_through is always true
     /// for an entry slot, so a slot never touched defaults to `Ensure`).
@@ -102,7 +103,7 @@ pub(crate) fn compute_exact_plan(
     // not reallocated per block. The machine-facing requirement + preferred rows
     // are derived later over the FINAL SSA (see `middle::final_signals`), not
     // here — a pre-cleanup classification cannot see block merges.
-    let mut row_arena: collections::Vec<FrameSlot> = collections::Vec::new();
+    let mut row_arena: collections::Vec<CellId> = collections::Vec::new();
     let mut requirement_arena: collections::Vec<EntryCacheRequirement> = collections::Vec::new();
     let mut entry_spans: collections::Vec<RowSpan> = collections::Vec::with_capacity(n);
     let mut exit_spans: collections::Vec<RowSpan> = collections::Vec::with_capacity(n);
@@ -134,7 +135,7 @@ pub(crate) fn compute_exact_plan(
     // action content regardless. Dedup uses a content hash with arena-slice
     // verification (collision-safe), so no per-edge key is allocated.
     let mut repair_pool: collections::Vec<RepairActionsSpans> = collections::Vec::new();
-    let mut repair_slot_arena: collections::Vec<FrameSlot> = collections::Vec::new();
+    let mut repair_slot_arena: collections::Vec<CellId> = collections::Vec::new();
     let mut repair_index_arena: collections::Vec<u32> = collections::Vec::new();
     let mut repair_spans: collections::Vec<RowSpan> = collections::Vec::with_capacity(n);
     let mut dedup: BTreeMap<u64, collections::Vec<u32>> = BTreeMap::new();
@@ -164,9 +165,9 @@ pub(crate) fn compute_exact_plan(
             let mut resolved = None;
             for &cand in bucket.iter() {
                 let (d, e, r) = repair_slices(&repair_slot_arena, repair_pool[cand as usize]);
-                if d == actions.drop_cached_locals.as_slice()
-                    && e == actions.ensure_cached_locals.as_slice()
-                    && r == actions.reserve_cached_locals.as_slice()
+                if d == actions.drop_cached_cells.as_slice()
+                    && e == actions.ensure_cached_cells.as_slice()
+                    && r == actions.reserve_cached_cells.as_slice()
                 {
                     resolved = Some(cand);
                     break;
@@ -218,21 +219,18 @@ fn append_row<T: Copy>(arena: &mut collections::Vec<T>, row: &[T]) -> RowSpan {
 /// Pack an owned repair action list into the flat slot arena, returning the
 /// per-group spans.
 fn pack_repair(
-    arena: &mut collections::Vec<FrameSlot>,
+    arena: &mut collections::Vec<CellId>,
     actions: &RepairActions,
 ) -> RepairActionsSpans {
     RepairActionsSpans {
-        drop: append_row(arena, &actions.drop_cached_locals),
-        ensure: append_row(arena, &actions.ensure_cached_locals),
-        reserve: append_row(arena, &actions.reserve_cached_locals),
+        drop: append_row(arena, &actions.drop_cached_cells),
+        ensure: append_row(arena, &actions.ensure_cached_cells),
+        reserve: append_row(arena, &actions.reserve_cached_cells),
     }
 }
 
 /// The drop/ensure/reserve slot groups of a packed repair entry, as slices.
-fn repair_slices(
-    arena: &[FrameSlot],
-    spans: RepairActionsSpans,
-) -> (&[FrameSlot], &[FrameSlot], &[FrameSlot]) {
+fn repair_slices(arena: &[CellId], spans: RepairActionsSpans) -> (&[CellId], &[CellId], &[CellId]) {
     (
         &arena[spans.drop.range()],
         &arena[spans.ensure.range()],
@@ -251,9 +249,9 @@ fn repair_content_hash(actions: &RepairActions) -> u64 {
     }
     let mut h: u64 = 0xcbf2_9ce4_8422_2325;
     for group in [
-        actions.drop_cached_locals.as_slice(),
-        actions.ensure_cached_locals.as_slice(),
-        actions.reserve_cached_locals.as_slice(),
+        actions.drop_cached_cells.as_slice(),
+        actions.ensure_cached_cells.as_slice(),
+        actions.reserve_cached_cells.as_slice(),
     ] {
         mix(&mut h, group.len() as u32);
         for slot in group {
@@ -268,7 +266,7 @@ fn repair_content_hash(actions: &RepairActions) -> u64 {
 #[derive(Default)]
 struct WalkScratch {
     events: collections::Vec<CacheEvent>,
-    before: collections::Vec<FrameSlot>,
+    before: collections::Vec<CellId>,
 }
 
 fn walk_block(
@@ -307,7 +305,7 @@ fn walk_block(
         entry.live_types().to_vec().into(),
         collections::vec![None; entry.live_types().len()],
     );
-    let mut resident: BTreeSet<FrameSlot> = planned.iter().copied().collect();
+    let mut resident: BTreeSet<CellId> = planned.iter().copied().collect();
     let WalkScratch { events, before } = scratch;
     events.clear();
     before.clear();
@@ -371,30 +369,30 @@ fn walk_block(
                     .get(*idx as usize)
                     .copied()
                     .unwrap_or(ValueType::I64);
-                let slot = frame.local_slot(*idx);
+                let slot = CellId(*idx);
                 let alias = match decide_local_access(
                     plan,
-                    LocalAccessQuery {
+                    CellAccessQuery {
                         block: block_id,
                         slot,
                         resident_cache: &resident,
                     },
                 ) {
-                    LocalAccessDecision::Cache => {
+                    CellAccessDecision::Cache => {
                         resident.insert(slot);
                         events.push(CacheEvent::Get(slot));
-                        cached_local_get_can_source_alias(ty, gp_unit_bytes).then_some(slot)
+                        cached_cell_get_can_source_alias(ty, gp_unit_bytes).then_some(slot)
                     }
-                    LocalAccessDecision::Slot => None,
+                    CellAccessDecision::Slot => None,
                 };
                 window.push_core(&[ty], &[alias]);
             }
             SemanticOpKind::LocalSet { idx } => {
                 window.pop_core();
-                let slot = frame.local_slot(*idx);
-                if let LocalAccessDecision::Cache = decide_local_access(
+                let slot = CellId(*idx);
+                if let CellAccessDecision::Cache = decide_local_access(
                     plan,
-                    LocalAccessQuery {
+                    CellAccessQuery {
                         block: block_id,
                         slot,
                         resident_cache: &resident,
@@ -410,23 +408,23 @@ fn walk_block(
                     .get(*idx as usize)
                     .copied()
                     .unwrap_or(ValueType::I64);
-                let slot = frame.local_slot(*idx);
+                let slot = CellId(*idx);
                 let alias = match decide_local_access(
                     plan,
-                    LocalAccessQuery {
+                    CellAccessQuery {
                         block: block_id,
                         slot,
                         resident_cache: &resident,
                     },
                 ) {
-                    LocalAccessDecision::Cache => {
+                    CellAccessDecision::Cache => {
                         resident.insert(slot);
                         // tee lowers as set-then-get; both re-cache the slot.
                         events.push(CacheEvent::Set(slot));
                         events.push(CacheEvent::Get(slot));
-                        cached_local_get_can_source_alias(ty, gp_unit_bytes).then_some(slot)
+                        cached_cell_get_can_source_alias(ty, gp_unit_bytes).then_some(slot)
                     }
-                    LocalAccessDecision::Slot => None,
+                    CellAccessDecision::Slot => None,
                 };
                 window.push_core(&[ty], &[alias]);
             }
@@ -481,7 +479,7 @@ fn walk_block(
     // seeded by the hint-materialized set (planned residents + cache decisions,
     // cleared on call, NOT reduced by eviction).
     let hint = replay_hint(planned, events, plan);
-    let exact_entry: collections::Vec<FrameSlot> = planned
+    let exact_entry: collections::Vec<CellId> = planned
         .iter()
         .copied()
         .filter(|slot| events_entry_requirement(events, *slot, hint.contains(slot)).is_some())
@@ -586,7 +584,7 @@ fn call_effect(
     survivable: bool,
     plan: &FunctionPlan,
     window: &mut Window,
-    resident: &mut BTreeSet<FrameSlot>,
+    resident: &mut BTreeSet<CellId>,
 ) {
     let mut noemit = NoEmit;
     match walker_live_scalar(config, results, result_types) {
@@ -594,7 +592,7 @@ fn call_effect(
         None => window.finish_call(&mut noemit, consumed, results, result_types),
     }
     if survivable {
-        let survivors: BTreeSet<FrameSlot> = resident
+        let survivors: BTreeSet<CellId> = resident
             .iter()
             .copied()
             .filter(|slot| plan.is_preserved_nominated(*slot))
@@ -635,7 +633,7 @@ fn walker_live_scalar(
 /// by `entry_cache_requirement`, which classifies conservatively at calls, and
 /// the two sides have to agree or an edge can hand a reserved (value-free)
 /// lane to a successor whose row demands a real value.
-fn events_first_touch(events: &[CacheEvent], slot: FrameSlot) -> Option<EntryCacheRequirement> {
+fn events_first_touch(events: &[CacheEvent], slot: CellId) -> Option<EntryCacheRequirement> {
     for event in events {
         match *event {
             CacheEvent::Get(s) if s == slot => return Some(EntryCacheRequirement::Ensure),
@@ -651,7 +649,7 @@ fn events_first_touch(events: &[CacheEvent], slot: FrameSlot) -> Option<EntryCac
 /// Mirror `entry_cache_requirement(ops, slot, carried_through)`.
 fn events_entry_requirement(
     events: &[CacheEvent],
-    slot: FrameSlot,
+    slot: CellId,
     carried_through: bool,
 ) -> Option<EntryCacheRequirement> {
     events_first_touch(events, slot)
@@ -661,11 +659,11 @@ fn events_entry_requirement(
 /// Replay the cache ops over `seed` to the block's true exit cache set (the
 /// drop-subtracted materialized state at block end).
 fn replay_exit(
-    seed: &[FrameSlot],
+    seed: &[CellId],
     events: &[CacheEvent],
     plan: &FunctionPlan,
-) -> collections::Vec<FrameSlot> {
-    let mut materialized: BTreeSet<FrameSlot> = seed.iter().copied().collect();
+) -> collections::Vec<CellId> {
+    let mut materialized: BTreeSet<CellId> = seed.iter().copied().collect();
     for event in events {
         match *event {
             CacheEvent::Get(slot) | CacheEvent::Set(slot) => {
@@ -676,7 +674,7 @@ fn replay_exit(
             }
             CacheEvent::Call { survivable } => {
                 if survivable {
-                    let survivors: BTreeSet<FrameSlot> = materialized
+                    let survivors: BTreeSet<CellId> = materialized
                         .iter()
                         .copied()
                         .filter(|slot| plan.is_preserved_nominated(*slot))
@@ -694,12 +692,8 @@ fn replay_exit(
 /// The old rewriter's `materialized_cache` at block end: planned-resident seed
 /// plus every cache decision, cleared on each call, and — unlike the exit set —
 /// never reduced by eviction.
-fn replay_hint(
-    seed: &[FrameSlot],
-    events: &[CacheEvent],
-    plan: &FunctionPlan,
-) -> BTreeSet<FrameSlot> {
-    let mut hint: BTreeSet<FrameSlot> = seed.iter().copied().collect();
+fn replay_hint(seed: &[CellId], events: &[CacheEvent], plan: &FunctionPlan) -> BTreeSet<CellId> {
+    let mut hint: BTreeSet<CellId> = seed.iter().copied().collect();
     for event in events {
         match *event {
             CacheEvent::Get(slot) | CacheEvent::Set(slot) => {
@@ -707,7 +701,7 @@ fn replay_hint(
             }
             CacheEvent::Call { survivable } => {
                 if survivable {
-                    let survivors: BTreeSet<FrameSlot> = hint
+                    let survivors: BTreeSet<CellId> = hint
                         .iter()
                         .copied()
                         .filter(|slot| plan.is_preserved_nominated(*slot))

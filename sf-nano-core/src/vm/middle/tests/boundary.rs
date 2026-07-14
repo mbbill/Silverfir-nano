@@ -1,3 +1,4 @@
+use crate::vm::middle::cell::CellId;
 use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind};
 
 use crate::collections;
@@ -36,14 +37,14 @@ fn prepared_ssa_trims_carried_local_when_branch_block_never_uses_it_and_pressure
     );
 
     let prepared = prepare_i32_program(&semantic, 1, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let then_block = branch_edge_targets(&prepared.ssa).0;
 
     assert!(
-        !prepared.ssa.block_entry_cached_slots[then_block].contains(&slot0),
+        !prepared.ssa.block_entry_cached_cells[then_block].contains(&slot0),
         "finalized block entry should trim the wrong carried local from the pressured branch block; then_block={}, entries={:?}",
         then_block,
-        prepared.ssa.block_entry_cached_slots,
+        prepared.ssa.block_entry_cached_cells,
     );
     assert!(
         !contains_ensure_cache(&prepared.ssa, slot0),
@@ -81,15 +82,15 @@ fn prepared_ssa_keeps_unused_carried_local_when_branch_block_can_carry_it_throug
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let (then_block, else_block) = branch_edge_targets(&prepared.ssa);
 
     assert_eq!(
-        prepared.ssa.block_entry_cached_slots[then_block],
+        prepared.ssa.block_entry_cached_cells[then_block],
         collections::vec![slot0]
     );
     assert_eq!(
-        prepared.ssa.block_entry_cached_slots[else_block],
+        prepared.ssa.block_entry_cached_cells[else_block],
         collections::vec![slot0]
     );
 }
@@ -121,14 +122,14 @@ fn prepared_ssa_uses_trimmed_final_entry_for_branch_block() {
     );
 
     let prepared = prepare_i32_program(&semantic, 1, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let then_block = branch_edge_targets(&prepared.ssa).0;
 
     assert!(
-        !prepared.ssa.block_entry_cached_slots[then_block].contains(&slot0),
+        !prepared.ssa.block_entry_cached_cells[then_block].contains(&slot0),
         "prepared SSA should use the finalized, trimmed entry set for the pressured branch block; then_block={}, entries={:?}",
         then_block,
-        prepared.ssa.block_entry_cached_slots,
+        prepared.ssa.block_entry_cached_cells,
     );
     assert!(
         !contains_ensure_cache(&prepared.ssa, slot0),
@@ -163,15 +164,15 @@ fn prepared_ssa_keeps_surviving_carried_local_in_branch_entry() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let (then_block, else_block) = branch_edge_targets(&prepared.ssa);
 
     assert_eq!(
-        prepared.ssa.block_entry_cached_slots[then_block],
+        prepared.ssa.block_entry_cached_cells[then_block],
         collections::vec![slot0]
     );
     assert_eq!(
-        prepared.ssa.block_entry_cached_slots[else_block],
+        prepared.ssa.block_entry_cached_cells[else_block],
         collections::vec![slot0]
     );
 }
@@ -209,17 +210,17 @@ fn prepared_ssa_trims_multi_carried_entry_down_to_the_hot_survivor() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
-    let slot1 = prepared.frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let then_block = branch_edge_targets(&prepared.ssa).0;
 
     assert_eq!(
-        prepared.ssa.block_entry_cached_slots[then_block],
+        prepared.ssa.block_entry_cached_cells[then_block],
         collections::vec![slot0],
         "finalized entry should trim the colder carried local after one lowering pass"
     );
     assert!(
-        !prepared.ssa.block_entry_cached_slots[then_block].contains(&slot1),
+        !prepared.ssa.block_entry_cached_cells[then_block].contains(&slot1),
         "the colder carried local should not survive finalized entry once the block drops it under pressure"
     );
 }

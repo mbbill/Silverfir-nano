@@ -7,7 +7,7 @@ use crate::collections;
 use tracked_alloc::collections::BTreeMap;
 
 use crate::vm::middle::{
-    frame::FrameSlot,
+    cell::CellId,
     joint_plan::facts::{self, RepairActions, RepairActionsSpans, RowSpan, NO_REPAIR},
     ssa_ir::{
         ir::{
@@ -21,7 +21,7 @@ use crate::vm::middle::{
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 struct RepairBlockKey {
     target: SsaTarget,
-    pred_exit: collections::Vec<FrameSlot>,
+    pred_exit: collections::Vec<CellId>,
     repair: RepairActions,
 }
 
@@ -42,14 +42,14 @@ enum EdgeSlot {
 #[derive(Clone, Copy)]
 pub(super) struct PlanRepairs<'a> {
     pub pool: &'a [RepairActionsSpans],
-    pub slot_arena: &'a [FrameSlot],
+    pub slot_arena: &'a [CellId],
     pub index_arena: &'a [u32],
     pub spans: &'a [RowSpan],
 }
 
 pub(super) fn insert_boundary_repair_blocks(
     program: &mut SsaProgram,
-    exit_cached_slots: &[collections::Vec<FrameSlot>],
+    exit_cached_slots: &[collections::Vec<CellId>],
     plan: PlanRepairs<'_>,
     semantic_count: usize,
 ) {
@@ -62,7 +62,7 @@ pub(super) fn insert_boundary_repair_blocks(
         original_len,
     );
     program.blocks.reserve_exact(repair_count);
-    program.block_entry_cached_slots.reserve_exact(repair_count);
+    program.block_entry_cached_cells.reserve_exact(repair_count);
     program
         .block_entry_cache_requirements
         .reserve_exact(repair_count);
@@ -162,7 +162,7 @@ fn resolve_edge_repair(
     block_index: usize,
     ordinal: usize,
     target: SsaTarget,
-    pred_exit: &[FrameSlot],
+    pred_exit: &[CellId],
 ) -> RepairActions {
     if block_index < semantic_count && target.as_usize() < semantic_count {
         let index = plan_edge_index(plan, block_index, ordinal);
@@ -173,9 +173,9 @@ fn resolve_edge_repair(
             // this half consumes (build_repair_ops + the RepairBlockKey dedup).
             let spans = plan.pool[index as usize];
             RepairActions {
-                ensure_cached_locals: plan.slot_arena[spans.ensure.range()].to_vec().into(),
-                reserve_cached_locals: plan.slot_arena[spans.reserve.range()].to_vec().into(),
-                drop_cached_locals: plan.slot_arena[spans.drop.range()].to_vec().into(),
+                ensure_cached_cells: plan.slot_arena[spans.ensure.range()].to_vec().into(),
+                reserve_cached_cells: plan.slot_arena[spans.reserve.range()].to_vec().into(),
+                drop_cached_cells: plan.slot_arena[spans.drop.range()].to_vec().into(),
             }
         };
     }
@@ -186,7 +186,7 @@ fn resolve_edge_repair(
         .map(|b| b.ops.as_slice())
         .unwrap_or(&[]);
     let target_entry = program
-        .block_entry_cached_slots
+        .block_entry_cached_cells
         .get(target_id)
         .map(|s| s.as_slice())
         .unwrap_or(&[]);
@@ -206,7 +206,7 @@ fn plan_edge_index(plan: PlanRepairs<'_>, block_index: usize, ordinal: usize) ->
 
 fn count_boundary_repairs(
     program: &SsaProgram,
-    exit_cached_slots: &[collections::Vec<FrameSlot>],
+    exit_cached_slots: &[collections::Vec<CellId>],
     plan: PlanRepairs<'_>,
     semantic_count: usize,
     original_len: usize,
@@ -245,14 +245,14 @@ fn count_boundary_repairs(
 
 fn edge_repair_needed(
     program: &SsaProgram,
-    pred_exit: &[FrameSlot],
+    pred_exit: &[CellId],
     original_target: SsaTarget,
 ) -> bool {
     let target_id = original_target.as_usize();
     let target_block = program.blocks.get(target_id);
     let target_ops = target_block.map(|b| b.ops.as_slice()).unwrap_or(&[]);
     let target_entry = program
-        .block_entry_cached_slots
+        .block_entry_cached_cells
         .get(target_id)
         .map(|s| s.as_slice())
         .unwrap_or(&[]);
@@ -281,7 +281,7 @@ fn edge_repair_needed(
 fn materialize_repair_block(
     program: &mut SsaProgram,
     original_target: SsaTarget,
-    pred_exit: &[FrameSlot],
+    pred_exit: &[CellId],
     repair: RepairActions,
     repair_blocks: &mut BTreeMap<RepairBlockKey, SsaTarget>,
 ) -> Option<SsaTarget> {
@@ -325,7 +325,7 @@ fn materialize_repair_block(
         terminator: SsaTerminator::Goto(repair_edge),
     });
     program
-        .block_entry_cached_slots
+        .block_entry_cached_cells
         .push(pred_exit.to_vec().into());
     // The repair block receives `pred_exit` as its entry cache set; each arrives
     // materialized, so every requirement is Ensure. The machine assigns lanes.
@@ -365,7 +365,7 @@ fn maybe_repair_entry(program: &mut SsaProgram) {
         let target_block = program.blocks.get(entry_id);
         let target_ops = target_block.map(|b| b.ops.as_slice()).unwrap_or(&[]);
         let target_entry = program
-            .block_entry_cached_slots
+            .block_entry_cached_cells
             .get(entry_id)
             .map(|s| s.as_slice())
             .unwrap_or(&[]);
@@ -398,7 +398,7 @@ fn maybe_repair_entry(program: &mut SsaProgram) {
         terminator: SsaTerminator::Goto(repair_edge),
     });
     program
-        .block_entry_cached_slots
+        .block_entry_cached_cells
         .push(collections::Vec::new());
     // The synthesized entry-repair block precedes the real entry and threads no
     // incoming cache (it runs the entry's ensures/reserves), so its requirement
@@ -411,18 +411,18 @@ fn maybe_repair_entry(program: &mut SsaProgram) {
 
 fn build_repair_ops(repair: &RepairActions) -> collections::Vec<SsaInst> {
     let mut ops = collections::Vec::with_capacity(
-        repair.drop_cached_locals.len()
-            + repair.ensure_cached_locals.len()
-            + repair.reserve_cached_locals.len(),
+        repair.drop_cached_cells.len()
+            + repair.ensure_cached_cells.len()
+            + repair.reserve_cached_cells.len(),
     );
-    for &slot in &repair.drop_cached_locals {
-        ops.push(SsaInst::local_drop_cache(slot));
+    for &slot in &repair.drop_cached_cells {
+        ops.push(SsaInst::cell_drop_cache(slot));
     }
-    for &slot in &repair.ensure_cached_locals {
-        ops.push(SsaInst::local_ensure_cache(slot));
+    for &slot in &repair.ensure_cached_cells {
+        ops.push(SsaInst::cell_ensure_cache(slot));
     }
-    for &slot in &repair.reserve_cached_locals {
-        ops.push(SsaInst::local_reserve_cache(slot));
+    for &slot in &repair.reserve_cached_cells {
+        ops.push(SsaInst::cell_reserve_cache(slot));
     }
     ops
 }
@@ -432,8 +432,8 @@ fn build_repair_ops(repair: &RepairActions) -> collections::Vec<SsaInst> {
 /// edges (which never enter pass D's plan) and shared with pass D's action
 /// computation through [`facts::derive_edge_repair`] so the logic exists once.
 pub(super) fn derive_edge_repair(
-    pred_exit: &[FrameSlot],
-    succ_entry: &[FrameSlot],
+    pred_exit: &[CellId],
+    succ_entry: &[CellId],
     target_ops: &[SsaInst],
 ) -> RepairActions {
     facts::derive_edge_repair(pred_exit, succ_entry, |slot| {
@@ -453,18 +453,19 @@ mod tests {
 
     #[test]
     fn br_table_edges_share_identical_boundary_repair_block() {
-        let slot0 = FrameSlot(0);
-        let slot1 = FrameSlot(1);
+        let slot0 = CellId(0);
+        let slot1 = CellId(1);
         let index = SsaValue(0);
         let cached = SsaValue(1);
 
         let mut program = SsaProgram {
+            cell_homes: collections::Vec::new(),
             entry: SsaTarget(0),
             blocks: collections::Vec::new(),
-            local_slot_types: collections::vec![ValueType::I32, ValueType::I32],
+            cell_types: collections::vec![ValueType::I32, ValueType::I32],
             result_types: collections::Vec::new(),
-            local_slot_info: collections::vec![Default::default(), Default::default()],
-            block_entry_cached_slots: collections::vec![
+            cell_info: collections::vec![Default::default(), Default::default()],
+            block_entry_cached_cells: collections::vec![
                 collections::Vec::new(),
                 collections::vec![slot0]
             ],
@@ -474,7 +475,7 @@ mod tests {
             ],
             preferred_preserved: collections::Vec::new(),
             value_types: collections::vec![ValueType::I32, ValueType::I32],
-            value_sink_local: collections::vec![None, None],
+            value_sink_cell: collections::vec![None, None],
             const_pool: collections::Vec::new(),
             primitive_pool: collections::Vec::new(),
             call_ops: collections::Vec::new(),
@@ -502,7 +503,7 @@ mod tests {
             SsaBlock {
                 id: SsaTarget(1),
                 params: collections::Vec::new(),
-                ops: collections::vec![SsaInst::local_get_cache(slot0, cached)],
+                ops: collections::vec![SsaInst::cell_get_cache(slot0, cached)],
                 extra_args: collections::Vec::new(),
                 terminator: SsaTerminator::Return { results: None },
             },
@@ -540,18 +541,18 @@ mod tests {
         assert_eq!(repair_target, SsaTarget(2));
         let repair_block = &program.blocks[repair_target.as_usize()];
         assert_eq!(
-            program.block_entry_cached_slots[repair_target.as_usize()],
+            program.block_entry_cached_cells[repair_target.as_usize()],
             collections::vec![slot1]
         );
         assert_eq!(
             repair_block
                 .ops
                 .iter()
-                .map(|inst| (inst.op, FrameSlot(inst.meta)))
+                .map(|inst| (inst.op, CellId(inst.meta)))
                 .collect::<collections::Vec<_>>(),
             collections::vec![
-                (SsaOp::LOCAL_DROP_CACHE, slot1),
-                (SsaOp::LOCAL_ENSURE_CACHE, slot0)
+                (SsaOp::CELL_DROP_CACHE, slot1),
+                (SsaOp::CELL_ENSURE_CACHE, slot0)
             ]
         );
         assert!(matches!(

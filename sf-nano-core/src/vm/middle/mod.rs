@@ -5,6 +5,7 @@
 //! - `joint_plan/` decides cache and spill policy
 //! - `rewrite/` materializes the final SSA-IR
 
+pub(crate) mod cell;
 pub(crate) mod frame;
 pub(crate) mod ssa_ir;
 
@@ -82,7 +83,7 @@ pub(crate) fn prepare_function(
     if semantic.ops.is_empty() {
         return Ok(PreparedFunction {
             frame,
-            ssa: empty_program(&semantic),
+            ssa: empty_program(&semantic, frame),
         });
     }
 
@@ -151,11 +152,11 @@ fn shrink_prepared_ssa_storage(ssa: &mut SsaProgram) {
         block.ops.shrink_to_fit();
         block.extra_args.shrink_to_fit();
     }
-    ssa.local_slot_types.shrink_to_fit();
+    ssa.cell_types.shrink_to_fit();
     ssa.result_types.shrink_to_fit();
-    ssa.local_slot_info.shrink_to_fit();
-    ssa.block_entry_cached_slots.shrink_to_fit();
-    for slots in &mut ssa.block_entry_cached_slots {
+    ssa.cell_info.shrink_to_fit();
+    ssa.block_entry_cached_cells.shrink_to_fit();
+    for slots in &mut ssa.block_entry_cached_cells {
         slots.shrink_to_fit();
     }
     ssa.block_entry_cache_requirements.shrink_to_fit();
@@ -163,24 +164,27 @@ fn shrink_prepared_ssa_storage(ssa: &mut SsaProgram) {
         reqs.shrink_to_fit();
     }
     ssa.value_types.shrink_to_fit();
-    ssa.value_sink_local.shrink_to_fit();
+    ssa.value_sink_cell.shrink_to_fit();
     ssa.const_pool.shrink_to_fit();
     ssa.primitive_pool.shrink_to_fit();
     ssa.call_ops.shrink_to_fit();
 }
 
-fn empty_program(semantic: &SemanticProgram) -> SsaProgram {
+fn empty_program(semantic: &SemanticProgram, frame: FrameLayoutPlan) -> SsaProgram {
     SsaProgram {
         entry: SsaTarget(0),
         blocks: collections::Vec::new(),
-        local_slot_types: semantic.local_types.clone(),
+        cell_types: semantic.local_types.clone(),
         result_types: semantic.result_types.clone(),
-        local_slot_info: collections::vec![Default::default(); semantic.local_count as usize],
-        block_entry_cached_slots: collections::Vec::new(),
+        cell_info: collections::vec![Default::default(); semantic.local_count as usize],
+        block_entry_cached_cells: collections::Vec::new(),
         block_entry_cache_requirements: collections::Vec::new(),
         preferred_preserved: collections::Vec::new(),
+        cell_homes: (0..semantic.local_count)
+            .map(|i| frame.local_slot(i))
+            .collect(),
         value_types: collections::Vec::new(),
-        value_sink_local: collections::Vec::new(),
+        value_sink_cell: collections::Vec::new(),
         const_pool: collections::Vec::new(),
         primitive_pool: collections::Vec::new(),
         call_ops: collections::Vec::new(),

@@ -1,4 +1,5 @@
 use crate::collections;
+use crate::vm::middle::cell::CellId;
 use crate::vm::middle::ssa_ir::ir::SsaInstKind;
 
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
@@ -34,15 +35,15 @@ fn mid_block_pressure_spills_colder_bottom_transient_to_keep_hot_cache() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let ops = all_inst_kinds(&prepared.ssa);
     let set_cache_idx = ops
         .iter()
-        .position(|kind| matches!(kind, SsaInstKind::LocalSetCache { slot, .. } if *slot == slot0))
+        .position(|kind| matches!(kind, SsaInstKind::CellSetCache { slot, .. } if *slot == slot0))
         .expect("the written local should become cached at the set point");
     let first_cache_get_idx = ops
         .iter()
-        .position(|kind| matches!(kind, SsaInstKind::LocalGetCache { slot, .. } if *slot == slot0))
+        .position(|kind| matches!(kind, SsaInstKind::CellGetCache { slot, .. } if *slot == slot0))
         .expect("the hot cached local should stay in cache form");
     let spill_idx = ops
         .iter()
@@ -67,7 +68,7 @@ fn mid_block_pressure_spills_colder_bottom_transient_to_keep_hot_cache() {
         ops[..first_cache_get_idx]
             .iter()
             .skip(set_cache_idx + 1)
-            .all(|kind| !matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot0)),
+            .all(|kind| !matches!(kind, SsaInstKind::CellDropCache { slot } if *slot == slot0)),
         "the newly cached local should survive the pressure point instead of being dropped before its hot reads; ops={:?}",
         ops
     );
@@ -97,15 +98,15 @@ fn mid_block_pressure_spills_truly_unused_transient_before_dropping_hot_cache() 
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let ops = all_inst_kinds(&prepared.ssa);
     let set_cache_idx = ops
         .iter()
-        .position(|kind| matches!(kind, SsaInstKind::LocalSetCache { slot, .. } if *slot == slot0))
+        .position(|kind| matches!(kind, SsaInstKind::CellSetCache { slot, .. } if *slot == slot0))
         .expect("the local should become cached at the set point");
     let first_cache_get_idx = ops
         .iter()
-        .position(|kind| matches!(kind, SsaInstKind::LocalGetCache { slot, .. } if *slot == slot0))
+        .position(|kind| matches!(kind, SsaInstKind::CellGetCache { slot, .. } if *slot == slot0))
         .expect("the later reads should still use the hot cached local");
     let spill_idx = ops
         .iter()
@@ -131,7 +132,7 @@ fn mid_block_pressure_spills_truly_unused_transient_before_dropping_hot_cache() 
         ops[..first_cache_get_idx]
             .iter()
             .skip(set_cache_idx + 1)
-            .all(|kind| !matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot0)),
+            .all(|kind| !matches!(kind, SsaInstKind::CellDropCache { slot } if *slot == slot0)),
         "the hot cache should survive while the truly unused transient is discarded; ops={:?}",
         ops
     );
@@ -158,7 +159,7 @@ fn mid_block_pressure_drops_cold_cache_to_keep_hot_transient_live() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let ops = all_inst_kinds(&prepared.ssa);
     let add_idx = ops
         .iter()
@@ -178,7 +179,7 @@ fn mid_block_pressure_drops_cold_cache_to_keep_hot_transient_live() {
     assert!(
         ops[..add_idx]
             .iter()
-            .any(|kind| matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot0)),
+            .any(|kind| matches!(kind, SsaInstKind::CellDropCache { slot } if *slot == slot0)),
         "the cache drop should happen before the pressured add; ops={:?}",
         ops
     );
@@ -213,13 +214,13 @@ fn mid_block_pressure_can_drop_multiple_cold_caches_to_admit_one_hot_local() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
-    let slot1 = prepared.frame.local_slot(1);
-    let slot2 = prepared.frame.local_slot(2);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
+    let slot2 = CellId(2);
     let ops = all_inst_kinds(&prepared.ssa);
     let first_get2_idx = ops
         .iter()
-        .position(|kind| matches!(kind, SsaInstKind::LocalGetCache { slot, .. } if *slot == slot2))
+        .position(|kind| matches!(kind, SsaInstKind::CellGetCache { slot, .. } if *slot == slot2))
         .unwrap_or_else(|| {
             panic!(
                 "the hotter repeated local2 get should be promoted to cache form even if two colder caches must be dropped; ops={:?}",
@@ -230,13 +231,13 @@ fn mid_block_pressure_can_drop_multiple_cold_caches_to_admit_one_hot_local() {
     assert!(
         ops[..first_get2_idx]
             .iter()
-            .any(|kind| matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot0)),
+            .any(|kind| matches!(kind, SsaInstKind::CellDropCache { slot } if *slot == slot0)),
         "the first colder cache should be dropped before the promoted local2 read"
     );
     assert!(
         ops[..first_get2_idx]
             .iter()
-            .any(|kind| matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot1)),
+            .any(|kind| matches!(kind, SsaInstKind::CellDropCache { slot } if *slot == slot1)),
         "the second colder cache should also be dropped before the promoted local2 read"
     );
 }

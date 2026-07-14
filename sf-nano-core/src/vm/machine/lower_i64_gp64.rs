@@ -11,11 +11,11 @@ use crate::vm::middle::ssa_ir::ir::{SsaOperand, SsaValue};
 use crate::vm::wasm::primitive_op::PrimitiveOpKind;
 
 use super::{
-    lower_context::{BlockLowerContext, BoundCachedLocal},
+    lower_context::{BlockLowerContext, BoundCachedCell},
     lower_i64::I64Lowering,
     lower_inst::LeafLowering,
     lower_leaf_special::{MemoryLoadSpec, MemoryStoreSpec},
-    lower_regalloc::{canonical_cached_local_mem_width, canonical_value_mem_width_for_value},
+    lower_regalloc::{canonical_cached_cell_mem_width, canonical_value_mem_width_for_value},
 };
 
 use crate::vm::machine::machine_ir::{
@@ -86,15 +86,15 @@ impl I64Lowering for Gp64Lowering {
     fn emit_reload_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &BoundCachedLocal,
+        cached: &BoundCachedCell,
     ) -> Result<(), WasmError> {
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Load {
-                owner: MachineRegOwner::CachedLocal,
+                owner: MachineRegOwner::CachedCell,
                 ty: cached.ty,
                 dst: cached.reg,
-                addr: ctx.frame_addr(cached.slot)?,
-                width: canonical_cached_local_mem_width(cached.ty),
+                addr: ctx.frame_addr(cached.home)?,
+                width: canonical_cached_cell_mem_width(cached.ty),
                 extension: MachineLoadExtension::None,
             },
         });
@@ -104,13 +104,13 @@ impl I64Lowering for Gp64Lowering {
     fn emit_save_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &BoundCachedLocal,
+        cached: &BoundCachedCell,
     ) -> Result<(), WasmError> {
         ctx.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Store {
                 ty: cached.ty,
-                addr: ctx.frame_addr(cached.slot)?,
-                width: canonical_cached_local_mem_width(cached.ty),
+                addr: ctx.frame_addr(cached.home)?,
+                width: canonical_cached_cell_mem_width(cached.ty),
                 src: MachineValue::Reg(cached.reg),
             },
         });

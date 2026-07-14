@@ -37,10 +37,7 @@ fn prepare_accepts_v128_locals() {
     )
     .expect("v128 locals should prepare cleanly when SIMD is enabled");
 
-    assert_eq!(
-        prepared.ssa.local_slot_types,
-        collections::vec![ValueType::V128]
-    );
+    assert_eq!(prepared.ssa.cell_types, collections::vec![ValueType::V128]);
 }
 
 #[test]

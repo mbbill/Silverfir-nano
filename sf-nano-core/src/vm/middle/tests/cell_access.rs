@@ -1,5 +1,6 @@
-use crate::vm::middle::ssa_ir::ir::SsaInstKind;
 use crate::collections;
+use crate::vm::middle::cell::CellId;
+use crate::vm::middle::ssa_ir::ir::SsaInstKind;
 
 use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind};
 
@@ -22,7 +23,7 @@ fn local_set_lowers_to_cache_even_at_minimal_budget() {
     );
 
     let prepared = prepare_i32_program(&semantic, 1, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let set_kinds = local_set_kinds_for(&prepared.ssa, slot0);
 
     assert_eq!(
@@ -30,12 +31,12 @@ fn local_set_lowers_to_cache_even_at_minimal_budget() {
         1,
         "expected exactly one local.set lowering"
     );
-    assert!(matches!(set_kinds[0], SsaInstKind::LocalSetCache { .. }));
+    assert!(matches!(set_kinds[0], SsaInstKind::CellSetCache { .. }));
     assert!(
         all_inst_kinds(&prepared.ssa)
             .into_iter()
-            .all(|kind| !matches!(kind, SsaInstKind::LocalSetSlot { .. })),
-        "plain local.set should no longer lower through LocalSetSlot"
+            .all(|kind| !matches!(kind, SsaInstKind::CellSetSlot { .. })),
+        "plain local.set should no longer lower through CellSetSlot"
     );
 }
 
@@ -53,16 +54,16 @@ fn local_tee_uses_cache_form_when_budget_has_spare_capacity() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let ops = all_inst_kinds(&prepared.ssa);
 
     let set_idx = ops
         .iter()
-        .position(|kind| matches!(kind, SsaInstKind::LocalSetCache { slot, .. } if *slot == slot0))
+        .position(|kind| matches!(kind, SsaInstKind::CellSetCache { slot, .. } if *slot == slot0))
         .expect("local.tee with spare capacity should set through cache");
     assert!(
-        matches!(ops.get(set_idx + 1), Some(SsaInstKind::LocalGetCache { slot, .. }) if *slot == slot0),
-        "cache-form local.tee should immediately read back through LocalGetCache"
+        matches!(ops.get(set_idx + 1), Some(SsaInstKind::CellGetCache { slot, .. }) if *slot == slot0),
+        "cache-form local.tee should immediately read back through CellGetCache"
     );
 }
 
@@ -90,16 +91,16 @@ fn local_tee_uses_slot_form_when_existing_hot_cache_should_stay() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot1 = prepared.frame.local_slot(1);
+    let slot1 = CellId(1);
     let ops = all_inst_kinds(&prepared.ssa);
 
     let set_idx = ops
         .iter()
-        .position(|kind| matches!(kind, SsaInstKind::LocalSetSlot { slot, .. } if *slot == slot1))
-        .expect("tight-budget local.tee should use LocalSetSlot for the colder target local");
+        .position(|kind| matches!(kind, SsaInstKind::CellSetSlot { slot, .. } if *slot == slot1))
+        .expect("tight-budget local.tee should use CellSetSlot for the colder target local");
     assert!(
-        matches!(ops.get(set_idx + 1), Some(SsaInstKind::LocalGetSlot { slot, .. }) if *slot == slot1),
-        "slot-form local.tee should immediately read back through LocalGetSlot"
+        matches!(ops.get(set_idx + 1), Some(SsaInstKind::CellGetSlot { slot, .. }) if *slot == slot1),
+        "slot-form local.tee should immediately read back through CellGetSlot"
     );
 }
 
@@ -124,22 +125,22 @@ fn local_tee_promotes_hot_local_and_drops_cold_cache_under_pressure() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
-    let slot1 = prepared.frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let ops = all_inst_kinds(&prepared.ssa);
 
     let set_idx = ops
         .iter()
-        .position(|kind| matches!(kind, SsaInstKind::LocalSetCache { slot, .. } if *slot == slot1))
+        .position(|kind| matches!(kind, SsaInstKind::CellSetCache { slot, .. } if *slot == slot1))
         .expect("the hotter tee target should still use cache form under tight pressure");
     assert!(
-        matches!(ops.get(set_idx + 1), Some(SsaInstKind::LocalGetCache { slot, .. }) if *slot == slot1),
-        "cache-form local.tee should immediately read back through LocalGetCache"
+        matches!(ops.get(set_idx + 1), Some(SsaInstKind::CellGetCache { slot, .. }) if *slot == slot1),
+        "cache-form local.tee should immediately read back through CellGetCache"
     );
     assert!(
         ops[..set_idx]
             .iter()
-            .any(|kind| matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot0)),
+            .any(|kind| matches!(kind, SsaInstKind::CellDropCache { slot } if *slot == slot0)),
         "using cache form for the hotter tee target should evict the colder cached local first"
     );
 }
@@ -163,13 +164,13 @@ fn local_get_promotes_hot_local_and_drops_cold_cache() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
-    let slot1 = prepared.frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let first_get = first_local_get_for(&prepared.ssa, slot1)
         .expect("expected one local.get for slot1 in the prepared SSA");
 
     assert!(
-        matches!(first_get, SsaInstKind::LocalGetCache { .. }),
+        matches!(first_get, SsaInstKind::CellGetCache { .. }),
         "a hotter repeated local.get should be promoted to cache form"
     );
     assert!(
@@ -198,24 +199,24 @@ fn local_get_uses_slot_when_hot_resident_cache_should_stay() {
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
-    let slot1 = prepared.frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let first_get = first_local_get_for(&prepared.ssa, slot1)
         .expect("expected one local.get for slot1 in the prepared SSA");
     let ops = all_inst_kinds(&prepared.ssa);
     let first_get_idx = ops
         .iter()
-        .position(|kind| matches!(kind, SsaInstKind::LocalGetSlot { slot, .. } if *slot == slot1))
+        .position(|kind| matches!(kind, SsaInstKind::CellGetSlot { slot, .. } if *slot == slot1))
         .expect("expected the first slot-based local.get for slot1");
 
     assert!(
-        matches!(first_get, SsaInstKind::LocalGetSlot { .. }),
+        matches!(first_get, SsaInstKind::CellGetSlot { .. }),
         "a colder one-shot local.get should stay slot-based when a hotter cache is already resident"
     );
     assert!(
         ops[..first_get_idx]
             .iter()
-            .all(|kind| !matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot0)),
+            .all(|kind| !matches!(kind, SsaInstKind::CellDropCache { slot } if *slot == slot0)),
         "keeping the hot resident cache should avoid dropping local0 before the colder slot-based get"
     );
 }
@@ -241,24 +242,24 @@ fn resident_local_get_keeps_current_cache_and_evicts_other_cache_when_result_roo
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
-    let slot1 = prepared.frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let ops = all_inst_kinds(&prepared.ssa);
     let get_idx = ops
         .iter()
-        .position(|kind| matches!(kind, SsaInstKind::LocalGetCache { slot, .. } if *slot == slot0))
+        .position(|kind| matches!(kind, SsaInstKind::CellGetCache { slot, .. } if *slot == slot0))
         .expect("resident local.get should stay in cache form under tight result pressure");
 
     assert!(
         ops[..get_idx]
             .iter()
-            .any(|kind| matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot1)),
+            .any(|kind| matches!(kind, SsaInstKind::CellDropCache { slot } if *slot == slot1)),
         "the colder other cache should be dropped before reading the still-resident target local"
     );
     assert!(
         ops[..get_idx]
             .iter()
-            .all(|kind| !matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot0)),
+            .all(|kind| !matches!(kind, SsaInstKind::CellDropCache { slot } if *slot == slot0)),
         "the local being read now should not be dropped before the cache read"
     );
 }
@@ -287,13 +288,13 @@ fn local_get_drops_dead_cache_before_other_cache_that_is_still_live_later() {
     );
 
     let prepared = prepare_i32_program(&semantic, 3, 0);
-    let slot0 = prepared.frame.local_slot(0);
-    let slot1 = prepared.frame.local_slot(1);
-    let slot2 = prepared.frame.local_slot(2);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
+    let slot2 = CellId(2);
     let ops = all_inst_kinds(&prepared.ssa);
     let first_get2_idx = ops
         .iter()
-        .position(|kind| matches!(kind, SsaInstKind::LocalGetCache { slot, .. } if *slot == slot2))
+        .position(|kind| matches!(kind, SsaInstKind::CellGetCache { slot, .. } if *slot == slot2))
         .unwrap_or_else(|| {
             panic!(
                 "the hotter repeated local2 get should be promoted to cache form; ops={:?}",
@@ -304,13 +305,13 @@ fn local_get_drops_dead_cache_before_other_cache_that_is_still_live_later() {
     assert!(
         ops[..first_get2_idx]
             .iter()
-            .any(|kind| matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot0)),
+            .any(|kind| matches!(kind, SsaInstKind::CellDropCache { slot } if *slot == slot0)),
         "the dead cache should be evicted before promoting the hotter local"
     );
     assert!(
         ops[..first_get2_idx]
             .iter()
-            .all(|kind| !matches!(kind, SsaInstKind::LocalDropCache { slot } if *slot == slot1)),
+            .all(|kind| !matches!(kind, SsaInstKind::CellDropCache { slot } if *slot == slot1)),
         "the still-live cache should not be dropped before the pressure point"
     );
 }

@@ -15,9 +15,10 @@ use crate::{
     vm::{
         backend::BackendConfig,
         middle::{
+            cell::CellId,
             cfg::SemanticCfg,
             discipline::{self, StructuralAction},
-            frame::{FrameLayoutPlan, FrameSlot},
+            frame::FrameLayoutPlan,
         },
         wasm::{
             primitive_op,
@@ -65,7 +66,7 @@ pub(crate) fn build_plan(
     if let Some(slot) = lightweight.peak_fp.get_mut(entry_block) {
         *slot = (*slot).max(entry_fp_param_units);
     }
-    let block_local_summaries = analyze_block_local_summaries(semantic, cfg, frame);
+    let block_local_summaries = analyze_block_local_summaries(semantic, cfg);
 
     let policy = ResidencyPolicy::from_env()?;
     let solution = solve_public_cache_sets(
@@ -78,7 +79,7 @@ pub(crate) fn build_plan(
         is_local_func,
         policy,
     );
-    let block_entry_cached_locals = &solution.block_residents;
+    let block_entry_cached_cells = &solution.block_residents;
     let LightweightPlanOutput {
         peak_gp: _,
         peak_fp: _,
@@ -87,12 +88,12 @@ pub(crate) fn build_plan(
     // Flatten each block's planned-resident set into one arena; the block keeps
     // only an (offset, len) span (the a3a7a102 lesson — per-block `Vec` headers
     // dominate planner memory on multi-thousand-block functions).
-    let mut resident_arena: collections::Vec<FrameSlot> = collections::Vec::new();
+    let mut resident_arena: collections::Vec<CellId> = collections::Vec::new();
     let blocks = block_entries
         .into_iter()
         .enumerate()
         .map(|(block_index, entry)| {
-            let residents = block_entry_cached_locals
+            let residents = block_entry_cached_cells
                 .get(block_index)
                 .map(|r| r.as_slice())
                 .unwrap_or(&[]);

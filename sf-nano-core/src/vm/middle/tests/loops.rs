@@ -1,5 +1,5 @@
 use crate::collections;
-use crate::vm::middle::frame::FrameSlot;
+use crate::vm::middle::cell::CellId;
 use crate::vm::middle::ssa_ir::ir::SsaOp;
 
 use crate::vm::wasm::{primitive_op::PrimitiveOpKind, semantic_ir::SemanticOpKind};
@@ -25,7 +25,7 @@ fn entry_block_hot_local_preload_uses_one_synthetic_entry_repair() {
     );
 
     let prepared = prepare_i32_program(&semantic, 3, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
 
     assert_eq!(prepared.ssa.blocks.len(), 1);
     assert!(
@@ -49,13 +49,13 @@ fn local_get_uses_cache_when_local_is_already_resident_and_budget_has_result_roo
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let first_get = first_local_get_for(&prepared.ssa, slot0)
         .expect("expected one local.get for the already-resident local");
 
     assert!(
-        first_get.op == SsaOp::LOCAL_GET_CACHE,
-        "a local that is already resident from LocalSetCache should be read back through LocalGetCache"
+        first_get.op == SsaOp::CELL_GET_CACHE,
+        "a local that is already resident from CellSetCache should be read back through CellGetCache"
     );
 }
 
@@ -102,14 +102,14 @@ fn hot_loop_body_keeps_hot_local_in_final_entry_with_at_most_one_cold_ensure() {
 
     let pipeline = plan_i32_program(&semantic, 2, 0);
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let hot_loop_body_cfg = block_for_semantic_index(&pipeline.cfg, 8);
 
     assert!(
-        prepared.ssa.block_entry_cached_slots[hot_loop_body_cfg.as_usize()]
+        prepared.ssa.block_entry_cached_cells[hot_loop_body_cfg.as_usize()]
             .contains(&slot0),
         "the hot loop body block should keep the carried local in its finalized entry boundary; entries={:?}",
-        prepared.ssa.block_entry_cached_slots[hot_loop_body_cfg.as_usize()]
+        prepared.ssa.block_entry_cached_cells[hot_loop_body_cfg.as_usize()]
     );
     assert!(
         count_ensure_cache(&prepared.ssa, slot0) <= 1,
@@ -160,13 +160,13 @@ fn hot_loop_header_needs_repair_on_at_most_one_incoming_edge() {
 
     let pipeline = plan_i32_program(&semantic, 2, 0);
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let hot_loop_body_cfg = block_for_semantic_index(&pipeline.cfg, 8);
     let hot_loop_body = loop_body_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, hot_loop_body);
 
     assert!(
-        prepared.ssa.block_entry_cached_slots[hot_loop_body_cfg.as_usize()].contains(&slot0),
+        prepared.ssa.block_entry_cached_cells[hot_loop_body_cfg.as_usize()].contains(&slot0),
         "the loop header should still admit the hot carried local into finalized entry"
     );
     assert!(
@@ -232,14 +232,14 @@ fn loop_dispatch_header_keeps_hot_pass_through_locals_across_backedge() {
 
     let pipeline = plan_i32_program(&semantic, 5, 0);
     let prepared = prepare_i32_program(&semantic, 5, 0);
-    let slot0 = prepared.frame.local_slot(0);
-    let slot1 = prepared.frame.local_slot(1);
-    let slot2 = prepared.frame.local_slot(2);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
+    let slot2 = CellId(2);
     let header_block = block_for_semantic_index(&pipeline.cfg, 10);
     let header_block_ssa = loop_header_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, header_block_ssa);
 
-    let entry = &prepared.ssa.block_entry_cached_slots[header_block.as_usize()];
+    let entry = &prepared.ssa.block_entry_cached_cells[header_block.as_usize()];
     assert!(
         entry.contains(&slot0) && entry.contains(&slot1) && entry.contains(&slot2),
         "a tiny dispatch header should keep the hot pass-through loop locals hot across the backedge; entry={entry:?}"
@@ -322,18 +322,18 @@ fn loop_interior_state_blocks_keep_hot_locals_for_later_dispatch_bodies() {
     );
 
     let prepared = prepare_i32_program(&semantic, 4, 0);
-    let slot0 = prepared.frame.local_slot(0);
-    let slot1 = prepared.frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let header = loop_header_block(&prepared.ssa);
     let loop_blocks = natural_loop_blocks(&prepared.ssa);
 
     // Positive property: the hot loop-carried data locals are admitted to the
     // loop-entry boundary in the first place.
     assert!(
-        prepared.ssa.block_entry_cached_slots[header].contains(&slot0)
-            && prepared.ssa.block_entry_cached_slots[header].contains(&slot1),
+        prepared.ssa.block_entry_cached_cells[header].contains(&slot0)
+            && prepared.ssa.block_entry_cached_cells[header].contains(&slot1),
         "hot loop-carried data locals should be cached at the loop-header entry; entries={:?}",
-        prepared.ssa.block_entry_cached_slots,
+        prepared.ssa.block_entry_cached_cells,
     );
 
     // Whole-loop-body property (subsumes the old two-block checks): no block
@@ -344,15 +344,15 @@ fn loop_interior_state_blocks_keep_hot_locals_for_later_dispatch_bodies() {
         let block = &prepared.ssa.blocks[block_index];
         assert!(
             block.ops.iter().all(|inst| {
-                !(inst.op == SsaOp::LOCAL_DROP_CACHE
-                    && (FrameSlot(inst.meta) == slot0 || FrameSlot(inst.meta) == slot1))
+                !(inst.op == SsaOp::CELL_DROP_CACHE
+                    && (CellId(inst.meta) == slot0 || CellId(inst.meta) == slot1))
             }),
             "no interior loop block should drop the hot loop-carried locals; block b{block_index}={block:?}"
         );
-        let entry = &prepared.ssa.block_entry_cached_slots[block_index];
+        let entry = &prepared.ssa.block_entry_cached_cells[block_index];
         assert!(
             block.ops.iter().all(|inst| {
-                !(inst.op == SsaOp::LOCAL_ENSURE_CACHE && entry.contains(&FrameSlot(inst.meta)))
+                !(inst.op == SsaOp::CELL_ENSURE_CACHE && entry.contains(&CellId(inst.meta)))
             }),
             "no loop block should re-ensure a slot already cached at its entry; block b{block_index}={block:?}, entry={entry:?}"
         );
@@ -395,8 +395,8 @@ fn region_solver_keeps_higher_value_stable_layout_when_child_capacity_competes()
     );
 
     let pipeline = plan_i32_program(&semantic, 2, 0);
-    let slot1 = pipeline.frame.local_slot(1);
-    let slot2 = pipeline.frame.local_slot(2);
+    let slot1 = CellId(1);
+    let slot2 = CellId(2);
     let second_loop_body = block_for_semantic_index(&pipeline.cfg, 3);
 
     assert!(
@@ -448,12 +448,12 @@ fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair
     );
 
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let loop_body = loop_header_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, loop_body);
 
     assert!(
-        prepared.ssa.block_entry_cached_slots[loop_body].contains(&slot0),
+        prepared.ssa.block_entry_cached_cells[loop_body].contains(&slot0),
         "a surviving write-first loop local should stay in the final loop-entry boundary as a reserved hot lane"
     );
     assert!(
@@ -463,31 +463,32 @@ fn write_first_loop_header_uses_reserve_on_cold_entry_and_no_hot_backedge_repair
                 block.ops.iter().any(|inst| {
                     matches!(
                         inst.op,
-                        SsaOp::LOCAL_RESERVE_CACHE
-                            | SsaOp::LOCAL_ENSURE_CACHE
-                            | SsaOp::LOCAL_DROP_CACHE
-                    ) && FrameSlot(inst.meta) == slot0
+                        SsaOp::CELL_RESERVE_CACHE
+                            | SsaOp::CELL_ENSURE_CACHE
+                            | SsaOp::CELL_DROP_CACHE
+                    ) && CellId(inst.meta) == slot0
                 })
             })
             .count()
             <= 1,
         "the write-first local itself should need repair on at most one incoming edge; loop_body={}, entries={:?}, repair_blocks={:?}",
         loop_body,
-        prepared.ssa.block_entry_cached_slots[loop_body].clone(),
+        prepared.ssa.block_entry_cached_cells[loop_body].clone(),
         repair_blocks
     );
     assert!(
         repair_blocks.iter().all(|block| {
-            block.ops.iter().all(|inst| {
-                !(inst.op == SsaOp::LOCAL_ENSURE_CACHE && FrameSlot(inst.meta) == slot0)
-            })
+            block
+                .ops
+                .iter()
+                .all(|inst| !(inst.op == SsaOp::CELL_ENSURE_CACHE && CellId(inst.meta) == slot0))
         }),
         "the cold incoming edge should reserve the write-first local, not ensure an old value"
     );
     assert!(
         prepared.ssa.blocks.iter().any(|block| {
             block.ops.iter().any(|inst| {
-                inst.op == SsaOp::LOCAL_RESERVE_CACHE && FrameSlot(inst.meta) == slot0
+                inst.op == SsaOp::CELL_RESERVE_CACHE && CellId(inst.meta) == slot0
             })
         }),
         "the cold incoming path should reserve the hot write-first local so the loop can keep that lane hot without loading an old slot value; repair_blocks={repair_blocks:?}, blocks={:?}",
@@ -536,19 +537,19 @@ fn hot_loop_header_needs_no_cache_repair_when_all_incoming_edges_already_match()
 
     let pipeline = plan_i32_program(&semantic, 2, 0);
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
+    let slot0 = CellId(0);
     let loop_body_cfg = block_for_semantic_index(&pipeline.cfg, 4);
     let loop_body = loop_header_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, loop_body);
 
     assert_eq!(
-        prepared.ssa.block_entry_cached_slots[loop_body_cfg.as_usize()].as_slice(),
+        prepared.ssa.block_entry_cached_cells[loop_body_cfg.as_usize()].as_slice(),
         &[slot0]
     );
     assert!(
         repair_blocks.is_empty(),
         "matching preheader and backedge exits should not create any cache repair for the loop header; entries={:?}, repair_blocks={:?}",
-        prepared.ssa.block_entry_cached_slots,
+        prepared.ssa.block_entry_cached_cells,
         repair_blocks
     );
 }
@@ -597,8 +598,8 @@ fn loop_header_trims_cold_carried_local_so_only_the_cold_edge_needs_repair() {
 
     let pipeline = plan_i32_program(&semantic, 2, 0);
     let prepared = prepare_i32_program(&semantic, 2, 0);
-    let slot0 = prepared.frame.local_slot(0);
-    let slot1 = prepared.frame.local_slot(1);
+    let slot0 = CellId(0);
+    let slot1 = CellId(1);
     let loop_body_cfg = block_for_semantic_index(&pipeline.cfg, 8);
     let loop_body = loop_body_block(&prepared.ssa);
     let repair_blocks = incoming_cache_repair_blocks(&prepared.ssa, loop_body);
@@ -609,30 +610,28 @@ fn loop_header_trims_cold_carried_local_so_only_the_cold_edge_needs_repair() {
             block.ops.iter().any(|inst| {
                 matches!(
                     inst.op,
-                    SsaOp::LOCAL_DROP_CACHE
-                        | SsaOp::LOCAL_ENSURE_CACHE
-                        | SsaOp::LOCAL_RESERVE_CACHE
-                ) && FrameSlot(inst.meta) == slot1
+                    SsaOp::CELL_DROP_CACHE | SsaOp::CELL_ENSURE_CACHE | SsaOp::CELL_RESERVE_CACHE
+                ) && CellId(inst.meta) == slot1
             })
         })
         .collect::<collections::Vec<_>>();
 
     assert!(
-        prepared.ssa.block_entry_cached_slots[loop_body_cfg.as_usize()].contains(&slot0),
+        prepared.ssa.block_entry_cached_cells[loop_body_cfg.as_usize()].contains(&slot0),
         "the hot local should stay in the finalized loop-header entry"
     );
     assert!(
-        !prepared.ssa.block_entry_cached_slots[loop_body_cfg.as_usize()].contains(&slot1),
+        !prepared.ssa.block_entry_cached_cells[loop_body_cfg.as_usize()].contains(&slot1),
         "the cold carried local should be trimmed from the finalized loop-header entry"
     );
     assert!(
         slot1_repairs.len() <= 1,
         "only the colder preheader edge should still mention the trimmed local in repair; entries={:?}, repair_blocks={:?}",
-        prepared.ssa.block_entry_cached_slots,
+        prepared.ssa.block_entry_cached_cells,
         repair_blocks
     );
     if let Some(block) = slot1_repairs.first() {
-        let pred_exit = &prepared.ssa.block_entry_cached_slots[block.id.as_usize()];
+        let pred_exit = &prepared.ssa.block_entry_cached_cells[block.id.as_usize()];
         assert!(
             pred_exit.contains(&slot1),
             "if a repair block still mentions the trimmed local, it should come from the predecessor that actually carried it"

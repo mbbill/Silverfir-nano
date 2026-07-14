@@ -9,7 +9,7 @@ pub(crate) struct MachineReg(pub(crate) u16);
 /// - `LinearValue` means a linear SSA-like machine value that can participate
 ///   in copy-propagation / fusion rules which rely on straight-line value
 ///   semantics.
-/// - `CachedLocal` means the register currently holds one cached local slot.
+/// - `CachedCell` means the register currently holds one cached local slot.
 ///
 /// Under the unified dynamic-bank model, these meanings can appear in the same
 /// physical register numbers at different program points, so late machine
@@ -17,7 +17,7 @@ pub(crate) struct MachineReg(pub(crate) u16);
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum MachineRegOwner {
     LinearValue,
-    CachedLocal,
+    CachedCell,
 }
 
 /// One machine CFG block id.
@@ -51,7 +51,7 @@ pub(crate) enum MachineValue {
     /// value.
     ///
     /// This is the machine-level counterpart of middle-layer
-    /// `LocalReserveCache`: the target block still owns the cached-local
+    /// `CellReserveCache`: the target block still owns the cached-local
     /// register at entry, but predecessors must not be forced to materialize
     /// or move an old value just to satisfy the edge contract.
     ReservedReg(MachineReg),

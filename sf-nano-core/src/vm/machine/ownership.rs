@@ -4,7 +4,7 @@
 //! "cached-local bank" split. Instead, each dynamic register has a semantic
 //! owner at each program point:
 //! - `LinearValue` for one linear SSA-like machine value
-//! - `CachedLocal` for one cached local binding
+//! - `CachedCell` for one cached local binding
 //!
 //! This module tracks that ownership through one block by starting from block
 //! params and then replaying instruction defs. Late peepholes use it to guard

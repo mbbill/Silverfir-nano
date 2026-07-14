@@ -8,7 +8,7 @@ use crate::error::WasmError;
 use crate::vm::middle::frame::FrameSlot;
 
 use super::{
-    lower_context::{BlockLowerContext, BoundCachedLocal},
+    lower_context::{BlockLowerContext, BoundCachedCell},
     lower_leaf_special::{MemoryLoadSpec, MemoryStoreSpec},
 };
 
@@ -49,14 +49,14 @@ pub(super) trait I64Lowering {
     fn emit_reload_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &BoundCachedLocal,
+        cached: &BoundCachedCell,
     ) -> Result<(), WasmError>;
 
     /// Save a cached i64 local from cache register(s) to its frame slot.
     fn emit_save_cached_i64(
         &self,
         ctx: &mut BlockLowerContext,
-        cached: &BoundCachedLocal,
+        cached: &BoundCachedCell,
     ) -> Result<(), WasmError>;
 
     /// Load an i64 global value (global.get).

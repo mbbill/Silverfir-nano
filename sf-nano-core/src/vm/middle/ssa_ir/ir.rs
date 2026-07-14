@@ -36,6 +36,7 @@ use crate::error::WasmError;
 use crate::value_type::ValueType;
 
 use super::target::SsaTarget;
+use crate::vm::middle::cell::CellId;
 use crate::vm::middle::frame::{FrameSlot, FrameSpan};
 use crate::vm::wasm::primitive_op::{self, PrimitiveOpKind};
 
@@ -149,13 +150,13 @@ pub(crate) struct SsaOp(u16);
 impl SsaOp {
     pub(crate) const FILL: Self = Self(0);
     pub(crate) const SPILL: Self = Self(1);
-    pub(crate) const LOCAL_GET_SLOT: Self = Self(2);
-    pub(crate) const LOCAL_GET_CACHE: Self = Self(3);
-    pub(crate) const LOCAL_SET_SLOT: Self = Self(4);
-    pub(crate) const LOCAL_SET_CACHE: Self = Self(5);
-    pub(crate) const LOCAL_ENSURE_CACHE: Self = Self(6);
-    pub(crate) const LOCAL_RESERVE_CACHE: Self = Self(7);
-    pub(crate) const LOCAL_DROP_CACHE: Self = Self(8);
+    pub(crate) const CELL_GET_SLOT: Self = Self(2);
+    pub(crate) const CELL_GET_CACHE: Self = Self(3);
+    pub(crate) const CELL_SET_SLOT: Self = Self(4);
+    pub(crate) const CELL_SET_CACHE: Self = Self(5);
+    pub(crate) const CELL_ENSURE_CACHE: Self = Self(6);
+    pub(crate) const CELL_RESERVE_CACHE: Self = Self(7);
+    pub(crate) const CELL_DROP_CACHE: Self = Self(8);
     pub(crate) const CALL: Self = Self(9);
 
     /// First opcode value used for primitive pool indices.
@@ -196,7 +197,7 @@ impl SsaOp {
 
 /// Stable facts about a local slot, carried from preparation to the backend.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub(crate) struct LocalSlotInfo {
+pub(crate) struct CellInfo {
     pub is_param: bool,
     pub reads_before_write: bool,
 }
@@ -239,70 +240,70 @@ impl SsaInst {
     }
 
     #[inline]
-    pub(crate) fn local_get_slot(slot: FrameSlot, dst: SsaValue) -> Self {
+    pub(crate) fn cell_get_slot(cell: CellId, dst: SsaValue) -> Self {
         Self {
-            op: SsaOp::LOCAL_GET_SLOT,
-            meta: slot.0,
+            op: SsaOp::CELL_GET_SLOT,
+            meta: cell.0,
             result: dst,
             args: [SsaOperand::NONE, SsaOperand::NONE],
         }
     }
 
     #[inline]
-    pub(crate) fn local_get_cache(slot: FrameSlot, dst: SsaValue) -> Self {
+    pub(crate) fn cell_get_cache(cell: CellId, dst: SsaValue) -> Self {
         Self {
-            op: SsaOp::LOCAL_GET_CACHE,
-            meta: slot.0,
+            op: SsaOp::CELL_GET_CACHE,
+            meta: cell.0,
             result: dst,
             args: [SsaOperand::NONE, SsaOperand::NONE],
         }
     }
 
     #[inline]
-    pub(crate) fn local_set_slot(slot: FrameSlot, src: SsaValue) -> Self {
+    pub(crate) fn cell_set_slot(cell: CellId, src: SsaValue) -> Self {
         Self {
-            op: SsaOp::LOCAL_SET_SLOT,
-            meta: slot.0,
+            op: SsaOp::CELL_SET_SLOT,
+            meta: cell.0,
             result: SsaValue::NONE,
             args: [SsaOperand::value(src), SsaOperand::NONE],
         }
     }
 
     #[inline]
-    pub(crate) fn local_set_cache(slot: FrameSlot, src: SsaValue) -> Self {
+    pub(crate) fn cell_set_cache(cell: CellId, src: SsaValue) -> Self {
         Self {
-            op: SsaOp::LOCAL_SET_CACHE,
-            meta: slot.0,
+            op: SsaOp::CELL_SET_CACHE,
+            meta: cell.0,
             result: SsaValue::NONE,
             args: [SsaOperand::value(src), SsaOperand::NONE],
         }
     }
 
     #[inline]
-    pub(crate) fn local_ensure_cache(slot: FrameSlot) -> Self {
+    pub(crate) fn cell_ensure_cache(cell: CellId) -> Self {
         Self {
-            op: SsaOp::LOCAL_ENSURE_CACHE,
-            meta: slot.0,
+            op: SsaOp::CELL_ENSURE_CACHE,
+            meta: cell.0,
             result: SsaValue::NONE,
             args: [SsaOperand::NONE, SsaOperand::NONE],
         }
     }
 
     #[inline]
-    pub(crate) fn local_reserve_cache(slot: FrameSlot) -> Self {
+    pub(crate) fn cell_reserve_cache(cell: CellId) -> Self {
         Self {
-            op: SsaOp::LOCAL_RESERVE_CACHE,
-            meta: slot.0,
+            op: SsaOp::CELL_RESERVE_CACHE,
+            meta: cell.0,
             result: SsaValue::NONE,
             args: [SsaOperand::NONE, SsaOperand::NONE],
         }
     }
 
     #[inline]
-    pub(crate) fn local_drop_cache(slot: FrameSlot) -> Self {
+    pub(crate) fn cell_drop_cache(cell: CellId) -> Self {
         Self {
-            op: SsaOp::LOCAL_DROP_CACHE,
-            meta: slot.0,
+            op: SsaOp::CELL_DROP_CACHE,
+            meta: cell.0,
             result: SsaValue::NONE,
             args: [SsaOperand::NONE, SsaOperand::NONE],
         }
@@ -389,30 +390,30 @@ pub(crate) enum SsaInstView<'a> {
         slot: FrameSlot,
         src: SsaValue,
     },
-    LocalGetSlot {
-        slot: FrameSlot,
+    CellGetSlot {
+        cell: CellId,
         dst: SsaValue,
     },
-    LocalGetCache {
-        slot: FrameSlot,
+    CellGetCache {
+        cell: CellId,
         dst: SsaValue,
     },
-    LocalSetSlot {
-        slot: FrameSlot,
+    CellSetSlot {
+        cell: CellId,
         src: SsaValue,
     },
-    LocalSetCache {
-        slot: FrameSlot,
+    CellSetCache {
+        cell: CellId,
         src: SsaValue,
     },
-    LocalEnsureCache {
-        slot: FrameSlot,
+    CellEnsureCache {
+        cell: CellId,
     },
-    LocalReserveCache {
-        slot: FrameSlot,
+    CellReserveCache {
+        cell: CellId,
     },
-    LocalDropCache {
-        slot: FrameSlot,
+    CellDropCache {
+        cell: CellId,
     },
     Call(&'a SsaCallOp),
     Value {
@@ -508,34 +509,34 @@ fn decode_view<'a>(inst: SsaInst, program: &'a SsaProgram, block: &'a SsaBlock) 
                 .as_value()
                 .expect("Spill src must be an SsaValue"),
         },
-        SsaOp::LOCAL_GET_SLOT => SsaInstView::LocalGetSlot {
-            slot: FrameSlot(inst.meta),
+        SsaOp::CELL_GET_SLOT => SsaInstView::CellGetSlot {
+            cell: CellId(inst.meta),
             dst: inst.result,
         },
-        SsaOp::LOCAL_GET_CACHE => SsaInstView::LocalGetCache {
-            slot: FrameSlot(inst.meta),
+        SsaOp::CELL_GET_CACHE => SsaInstView::CellGetCache {
+            cell: CellId(inst.meta),
             dst: inst.result,
         },
-        SsaOp::LOCAL_SET_SLOT => SsaInstView::LocalSetSlot {
-            slot: FrameSlot(inst.meta),
+        SsaOp::CELL_SET_SLOT => SsaInstView::CellSetSlot {
+            cell: CellId(inst.meta),
             src: inst.args[0]
                 .as_value()
-                .expect("LocalSetSlot src must be an SsaValue"),
+                .expect("CellSetSlot src must be an SsaValue"),
         },
-        SsaOp::LOCAL_SET_CACHE => SsaInstView::LocalSetCache {
-            slot: FrameSlot(inst.meta),
+        SsaOp::CELL_SET_CACHE => SsaInstView::CellSetCache {
+            cell: CellId(inst.meta),
             src: inst.args[0]
                 .as_value()
-                .expect("LocalSetCache src must be an SsaValue"),
+                .expect("CellSetCache src must be an SsaValue"),
         },
-        SsaOp::LOCAL_ENSURE_CACHE => SsaInstView::LocalEnsureCache {
-            slot: FrameSlot(inst.meta),
+        SsaOp::CELL_ENSURE_CACHE => SsaInstView::CellEnsureCache {
+            cell: CellId(inst.meta),
         },
-        SsaOp::LOCAL_RESERVE_CACHE => SsaInstView::LocalReserveCache {
-            slot: FrameSlot(inst.meta),
+        SsaOp::CELL_RESERVE_CACHE => SsaInstView::CellReserveCache {
+            cell: CellId(inst.meta),
         },
-        SsaOp::LOCAL_DROP_CACHE => SsaInstView::LocalDropCache {
-            slot: FrameSlot(inst.meta),
+        SsaOp::CELL_DROP_CACHE => SsaInstView::CellDropCache {
+            cell: CellId(inst.meta),
         },
         SsaOp::CALL => {
             let call = program
@@ -578,25 +579,29 @@ fn decode_view<'a>(inst: SsaInst, program: &'a SsaProgram, block: &'a SsaBlock) 
 pub(crate) struct SsaProgram {
     pub entry: SsaTarget,
     pub blocks: collections::Vec<SsaBlock>,
-    pub local_slot_types: collections::Vec<ValueType>,
+    pub cell_types: collections::Vec<ValueType>,
     pub result_types: collections::Vec<ValueType>,
-    pub local_slot_info: collections::Vec<LocalSlotInfo>,
-    pub block_entry_cached_slots: collections::Vec<collections::Vec<FrameSlot>>,
+    pub cell_info: collections::Vec<CellInfo>,
+    pub block_entry_cached_cells: collections::Vec<collections::Vec<CellId>>,
     /// Per-block entry-cache requirement, parallel 1:1 to
-    /// [`Self::block_entry_cached_slots`] (same outer index, same inner length and
+    /// [`Self::block_entry_cached_cells`] (same outer index, same inner length and
     /// order): each entry slot's `Ensure` (value must be materialized) vs
     /// `Reserve` (write-first lane). Derived once by the middle (pass D) so the
     /// machine reads it here instead of re-scanning ops. The machine owns the
     /// physical lane layout; the plan owns only this context-free requirement.
-    /// Maintained positionally alongside `block_entry_cached_slots`.
+    /// Maintained positionally alongside `block_entry_cached_cells`.
     pub block_entry_cache_requirements: collections::Vec<collections::Vec<EntryCacheRequirement>>,
-    /// Whole-function preserved-cache preference, per LOCAL slot (indexed by
-    /// `FrameSlot.0`): `true` when the local's local-JIT-call cross count reaches
-    /// the threshold (pass D). The machine's restored lane layout reads this
-    /// instead of recomputing the cross count itself.
+    /// Whole-function preserved-cache preference, per cell (indexed by
+    /// `CellId.0`): `true` when the residency solver nominated the cell for
+    /// the preserved class (pass D). The machine's restored lane layout reads
+    /// this instead of recomputing it.
     pub preferred_preserved: collections::Vec<bool>,
+    /// Each cell's frame home, indexed by `CellId.0`. Cells mirror their home
+    /// slot; frame addressing goes through this table, never through the cell
+    /// id itself.
+    pub cell_homes: collections::Vec<FrameSlot>,
     pub value_types: collections::Vec<ValueType>,
-    pub value_sink_local: collections::Vec<Option<FrameSlot>>,
+    pub value_sink_cell: collections::Vec<Option<CellId>>,
     /// Backing store for `SsaOperand::Const` — each entry is a 64-bit value.
     pub const_pool: collections::Vec<u64>,
     /// Deduplicated primitive op vocabulary; `SsaOp` carries a pool index.
@@ -613,8 +618,8 @@ pub(crate) enum EntryCacheRequirement {
 
 impl SsaProgram {
     #[inline]
-    pub(crate) fn value_sink(&self, value: SsaValue) -> Option<FrameSlot> {
-        self.value_sink_local
+    pub(crate) fn value_sink(&self, value: SsaValue) -> Option<CellId> {
+        self.value_sink_cell
             .get(value.0 as usize)
             .copied()
             .flatten()
@@ -669,22 +674,22 @@ impl SsaProgram {
 
 pub(crate) fn entry_cache_requirement_from_ops(
     ops: &[SsaInst],
-    slot: FrameSlot,
+    slot: CellId,
 ) -> Option<EntryCacheRequirement> {
     for inst in ops {
         match inst.op {
-            SsaOp::LOCAL_GET_CACHE | SsaOp::LOCAL_ENSURE_CACHE => {
-                if FrameSlot(inst.meta) == slot {
+            SsaOp::CELL_GET_CACHE | SsaOp::CELL_ENSURE_CACHE => {
+                if CellId(inst.meta) == slot {
                     return Some(EntryCacheRequirement::Ensure);
                 }
             }
-            SsaOp::LOCAL_SET_CACHE | SsaOp::LOCAL_RESERVE_CACHE => {
-                if FrameSlot(inst.meta) == slot {
+            SsaOp::CELL_SET_CACHE | SsaOp::CELL_RESERVE_CACHE => {
+                if CellId(inst.meta) == slot {
                     return Some(EntryCacheRequirement::Reserve);
                 }
             }
-            SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_SET_SLOT | SsaOp::LOCAL_DROP_CACHE => {
-                if FrameSlot(inst.meta) == slot {
+            SsaOp::CELL_GET_SLOT | SsaOp::CELL_SET_SLOT | SsaOp::CELL_DROP_CACHE => {
+                if CellId(inst.meta) == slot {
                     return None;
                 }
             }
@@ -698,7 +703,7 @@ pub(crate) fn entry_cache_requirement_from_ops(
 #[inline]
 pub(crate) fn entry_cache_requirement(
     ops: &[SsaInst],
-    slot: FrameSlot,
+    slot: CellId,
     carried_through: bool,
 ) -> Option<EntryCacheRequirement> {
     entry_cache_requirement_from_ops(ops, slot)

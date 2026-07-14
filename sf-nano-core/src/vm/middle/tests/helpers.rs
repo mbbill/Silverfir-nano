@@ -6,9 +6,10 @@ use crate::value_type::ValueType;
 use crate::vm::{
     backend::BackendConfig,
     middle::{
+        cell::CellId,
         cfg::{self, CfgBlockId, SemanticCfg},
-        frame::{plan_frame_layout, FrameLayoutPlan, FrameSlot},
-        joint_plan::{JointPlanner, LocalAccessDecision, LocalAccessQuery},
+        frame::plan_frame_layout,
+        joint_plan::{CellAccessDecision, CellAccessQuery, JointPlanner},
         prepare_function,
         ssa_ir::ir::{SsaBlock, SsaInst, SsaOp, SsaProgram, SsaTerminator},
         ModuleFacts, PrepareInput, PreparedFunction,
@@ -32,7 +33,6 @@ fn total_gp_budget_for_allocatable(allocatable_gp_budget: u8, gp_unit_bytes: u8)
 }
 
 pub(super) struct PlannedPipeline {
-    pub frame: FrameLayoutPlan,
     pub cfg: SemanticCfg,
     pub planner: JointPlanner,
 }
@@ -171,11 +171,7 @@ pub(super) fn plan_program(
             err.message()
         )
     });
-    PlannedPipeline {
-        frame,
-        cfg,
-        planner,
-    }
+    PlannedPipeline { cfg, planner }
 }
 
 pub(super) fn all_insts(program: &SsaProgram) -> collections::Vec<&SsaInst> {
@@ -191,23 +187,22 @@ pub(super) fn all_inst_kinds(program: &SsaProgram) -> collections::Vec<&SsaInst>
     all_insts(program)
 }
 
-pub(super) fn first_local_get_for(program: &SsaProgram, slot: FrameSlot) -> Option<&SsaInst> {
+pub(super) fn first_local_get_for(program: &SsaProgram, slot: CellId) -> Option<&SsaInst> {
     all_insts(program).into_iter().find(|inst| {
-        matches!(inst.op, SsaOp::LOCAL_GET_SLOT | SsaOp::LOCAL_GET_CACHE)
-            && FrameSlot(inst.meta) == slot
+        matches!(inst.op, SsaOp::CELL_GET_SLOT | SsaOp::CELL_GET_CACHE) && CellId(inst.meta) == slot
     })
 }
 
-pub(super) fn contains_ensure_cache(program: &SsaProgram, slot: FrameSlot) -> bool {
+pub(super) fn contains_ensure_cache(program: &SsaProgram, slot: CellId) -> bool {
     all_insts(program)
         .into_iter()
-        .any(|inst| inst.op == SsaOp::LOCAL_ENSURE_CACHE && FrameSlot(inst.meta) == slot)
+        .any(|inst| inst.op == SsaOp::CELL_ENSURE_CACHE && CellId(inst.meta) == slot)
 }
 
-pub(super) fn count_ensure_cache(program: &SsaProgram, slot: FrameSlot) -> usize {
+pub(super) fn count_ensure_cache(program: &SsaProgram, slot: CellId) -> usize {
     all_insts(program)
         .into_iter()
-        .filter(|inst| inst.op == SsaOp::LOCAL_ENSURE_CACHE && FrameSlot(inst.meta) == slot)
+        .filter(|inst| inst.op == SsaOp::CELL_ENSURE_CACHE && CellId(inst.meta) == slot)
         .count()
 }
 
@@ -229,9 +224,9 @@ pub(super) fn incoming_cache_repair_blocks(
                 && block.ops.iter().all(|inst| {
                     matches!(
                         inst.op,
-                        SsaOp::LOCAL_DROP_CACHE
-                            | SsaOp::LOCAL_ENSURE_CACHE
-                            | SsaOp::LOCAL_RESERVE_CACHE
+                        SsaOp::CELL_DROP_CACHE
+                            | SsaOp::CELL_ENSURE_CACHE
+                            | SsaOp::CELL_RESERVE_CACHE
                     )
                 })
         })
@@ -246,16 +241,16 @@ pub(super) fn block_for_semantic_index(cfg: &SemanticCfg, semantic_index: usize)
 /// Whether the solver plans to cache-admit `slot` at `block`. Queried with an
 /// empty resident cache so it isolates the planned-resident admission policy
 /// from any prior residency — the same admission decision the rewriter makes
-/// per local op, via the production `local_access` API.
-pub(super) fn is_admitted(planner: &JointPlanner, block: CfgBlockId, slot: FrameSlot) -> bool {
+/// per local op, via the production `cell_access` API.
+pub(super) fn is_admitted(planner: &JointPlanner, block: CfgBlockId, slot: CellId) -> bool {
     let empty = BTreeSet::new();
     matches!(
-        planner.local_access(LocalAccessQuery {
+        planner.cell_access(CellAccessQuery {
             block,
             slot,
             resident_cache: &empty,
         }),
-        LocalAccessDecision::Cache,
+        CellAccessDecision::Cache,
     )
 }
 
