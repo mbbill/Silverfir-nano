@@ -90,6 +90,27 @@
   displayed an unrelated constant-materialization block as "the loop"
   (sourced).
 
+- 2026-07-13 measurement: a general load-reuse promotion pass was built and
+  rejected on measurement. Two escalating forms ran on the semantic IR ahead
+  of the residency planner, promoting repeated `root+const` scalar reads to
+  synthetic cells (extra locals the solver prices like any cell): (1)
+  straight-line windows — zero matches on the whole nine-module corpus,
+  because LLVM already eliminates same-segment redundant loads when emitting
+  wasm; (2) full available-loads dataflow over the semantic CFG (abstract
+  operand stack, same-root disjoint-store tolerance, store-to-load
+  forwarding, cross-block/loop-invariant windows — verified working on
+  probes for all four shapes) — fired on five of nine modules but INCREASED
+  net SSA/MIR ops everywhere except sqlite (−0.04% code bytes), with
+  runtime scores flat: providers (a tee per establishing site) outnumber
+  rewritable reuses, single-op reuse shapes save one op each, and calls
+  plus different-root stores kill most windows in real code. Conclusion:
+  the residual memory traffic LLVM leaves in wasm is traffic LLVM's own
+  stronger alias analysis could not remove; wasm-level local semantics add
+  provable disjointness only in narrow patterns, and the hot one (the
+  sha256 in-memory counter) is already covered by this pass. Rejected per
+  the project rule that complexity must buy measured benefit; the code was
+  reverted without landing (sourced).
+
 - 2026-07-13 pitfall: the middle SSA's linear single-use discipline is
   enforced by a debug-only validator (`validate_linear_op_uses`) and assumed
   by machine register ownership — release builds do not check it. The first
