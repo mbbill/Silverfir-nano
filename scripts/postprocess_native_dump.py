@@ -227,12 +227,12 @@ def section_metrics(text: str, kind: str) -> Dict[str, int]:
             "gotos": text.count("term: goto"),
             "branches": text.count("term: branch"),
             "jump_tables": text.count("term: br_table"),
-            "ensure_cache": text.count("local.ensure_cache"),
-            "drop_cache": text.count("local.drop_cache"),
-            "get_cache": text.count("local.get_cache"),
-            "set_cache": text.count("local.set_cache"),
-            "get_slot": text.count("local.get_slot"),
-            "set_slot": text.count("local.set_slot"),
+            "ensure_cache": text.count("cell.ensure_cache"),
+            "drop_cache": text.count("cell.drop_cache"),
+            "get_cache": text.count("cell.get_cache"),
+            "set_cache": text.count("cell.set_cache"),
+            "get_slot": text.count("cell.get_slot"),
+            "set_slot": text.count("cell.set_slot"),
             "spill": text.count("spill "),
             "fill": text.count("fill "),
         }
@@ -468,8 +468,8 @@ NEW_FP_DYNAMIC = 29
 BLOCK_HEADER_RE = re.compile(
     r"^\s*block b(\d+)\s+params=\[([^\]]*)\](?:\s+cached=\[(.*)\])?\s*$"
 )
-LOCAL_TYPES_RE = re.compile(r"^\s*local_types=\[([^\]]*)\]\s*$")
-LOCAL_SLOTS_RE = re.compile(r"^\s*local_slots=(\d+)\s*$")
+LOCAL_TYPES_RE = re.compile(r"^\s*cell_types=\[([^\]]*)\]\s*$")
+LOCAL_SLOTS_RE = re.compile(r"^\s*cells=(\d+)\s*$")
 SSA_VALUE_DEF_RE = re.compile(r"v(\d+)")
 
 
@@ -648,15 +648,14 @@ def analyze_function_pressure(
             return
         body = "\n".join(current_lines)
 
-        # Classify cached slots as GP/FP. Each token leads with fp[slot] (the
-        # frame-slot index) and, since the middle owns lane assignment, carries an
-        # optional lane suffix @l<lane> with `*` (preserved-preference lane) and/or
-        # `?` (reserve, write-first) markers. The leading fp[slot] is what keys the
-        # GP/FP split, so the suffix is tolerated and ignored here.
+        # Classify cached cells as GP/FP. Each token leads with c<cell> (the
+        # cell id, indexing cell_types) and may carry a `?` (reserve,
+        # write-first) marker; legacy dumps used fp[slot]@l<lane> forms, so the
+        # old suffix is tolerated and ignored here.
         cached_gp = 0
         cached_fp = 0
         for slot_str in current_cached:
-            m = re.match(r"fp\[(\d+)\](?:@l\d+\*?\??)?$", slot_str.strip())
+            m = re.match(r"c(\d+)\??$", slot_str.strip())
             if m:
                 idx = int(m.group(1))
                 if idx < len(local_types) and is_fp_type(local_types[idx]):
@@ -673,13 +672,13 @@ def analyze_function_pressure(
             cached_gp=cached_gp,
             cached_fp=cached_fp,
             param_count=len([p for p in current_params if p.strip()]),
-            ensure_count=body.count("local.ensure_cache"),
-            drop_count=body.count("local.drop_cache"),
+            ensure_count=body.count("cell.ensure_cache"),
+            drop_count=body.count("cell.drop_cache"),
             leaf_count=body.count("leaf "),
-            get_cache=body.count("local.get_cache"),
-            set_cache=body.count("local.set_cache"),
-            get_slot=body.count("local.get_slot"),
-            set_slot=body.count("local.set_slot"),
+            get_cache=body.count("cell.get_cache"),
+            set_cache=body.count("cell.set_cache"),
+            get_slot=body.count("cell.get_slot"),
+            set_slot=body.count("cell.set_slot"),
             peak_live=peak_live,
         ))
         current_block_id = None

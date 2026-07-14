@@ -238,10 +238,10 @@ fn write_dump_impl(
 
 fn render_lir_program(out: &mut String, program: &SsaProgram) {
     let _ = writeln!(out, "  entry=b{}", program.entry.0);
-    let _ = writeln!(out, "  local_slots={}", program.cell_types.len());
+    let _ = writeln!(out, "  cells={}", program.cell_types.len());
     // Emit local types so analysis tools can compute GP/FP pressure split.
     if !program.cell_types.is_empty() {
-        let _ = write!(out, "  local_types=[");
+        let _ = write!(out, "  cell_types=[");
         for (i, ty) in program.cell_types.iter().enumerate() {
             if i > 0 {
                 let _ = write!(out, ", ");
@@ -302,13 +302,13 @@ fn render_param_locs(out: &mut String, locs: &[MachineParamLoc]) {
 }
 
 /// Render one cached-slot token for the `cached=[...]` block header. The leading
-/// `fp[slot]` token is preserved (the native-dump pressure classifier keys GP/FP
-/// off it); the middle's entry requirement is appended as `?` for a `Reserve`
+/// `c<cell>` token (the native-dump pressure classifier keys GP/FP off the
+/// cell id); the middle's entry requirement is appended as `?` for a `Reserve`
 /// (write-first, no incoming value) entry — `Ensure` adds nothing. The machine
 /// owns the physical lane, so no lane is shown here.
-fn render_cached_slot(slot: CellId, requirement: Option<EntryCacheRequirement>) -> String {
+fn render_cached_cell(cell: CellId, requirement: Option<EntryCacheRequirement>) -> String {
     let reserve = matches!(requirement, Some(EntryCacheRequirement::Reserve));
-    format!("fp[{}]{}", slot.0, if reserve { "?" } else { "" })
+    format!("c{}{}", cell.0, if reserve { "?" } else { "" })
 }
 
 fn render_lir_block(
@@ -344,7 +344,7 @@ fn render_lir_block(
             cached
                 .iter()
                 .enumerate()
-                .map(|(i, s)| render_cached_slot(*s, cached_reqs.get(i).copied()))
+                .map(|(i, s)| render_cached_cell(*s, cached_reqs.get(i).copied()))
                 .collect::<collections::Vec<_>>()
                 .join(", ")
         );
@@ -375,29 +375,29 @@ fn render_lir_inst(inst: &SsaInst, block: &SsaBlock, program: &SsaProgram) -> St
                 result_str,
             )
         }
-        SsaInstView::CellGetSlot { cell: slot, dst } => {
-            format!("local.get_slot v{} <- fp[{}]", dst.0, slot.0)
+        SsaInstView::CellGetSlot { cell, dst } => {
+            format!("cell.get_slot v{} <- c{}", dst.0, cell.0)
         }
-        SsaInstView::CellGetCache { cell: slot, dst } => {
-            format!("local.get_cache v{} <- fp[{}]", dst.0, slot.0)
+        SsaInstView::CellGetCache { cell, dst } => {
+            format!("cell.get_cache v{} <- c{}", dst.0, cell.0)
         }
         SsaInstView::Fill { slot, dst } => {
             format!("fill v{} <- fp[{}]", dst.0, slot.0)
         }
-        SsaInstView::CellSetSlot { cell: slot, src } => {
-            format!("local.set_slot fp[{}] <- v{}", slot.0, src.0)
+        SsaInstView::CellSetSlot { cell, src } => {
+            format!("cell.set_slot c{} <- v{}", cell.0, src.0)
         }
-        SsaInstView::CellSetCache { cell: slot, src } => {
-            format!("local.set_cache fp[{}] <- v{}", slot.0, src.0)
+        SsaInstView::CellSetCache { cell, src } => {
+            format!("cell.set_cache c{} <- v{}", cell.0, src.0)
         }
-        SsaInstView::CellEnsureCache { cell: slot } => {
-            format!("local.ensure_cache fp[{}]", slot.0)
+        SsaInstView::CellEnsureCache { cell } => {
+            format!("cell.ensure_cache c{}", cell.0)
         }
-        SsaInstView::CellReserveCache { cell: slot } => {
-            format!("local.reserve_cache fp[{}]", slot.0)
+        SsaInstView::CellReserveCache { cell } => {
+            format!("cell.reserve_cache c{}", cell.0)
         }
-        SsaInstView::CellDropCache { cell: slot } => {
-            format!("local.drop_cache fp[{}]", slot.0)
+        SsaInstView::CellDropCache { cell } => {
+            format!("cell.drop_cache c{}", cell.0)
         }
         SsaInstView::Spill { slot, src } => {
             format!("spill fp[{}] <- v{}", slot.0, src.0)
