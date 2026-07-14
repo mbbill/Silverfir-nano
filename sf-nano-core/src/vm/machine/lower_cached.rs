@@ -37,11 +37,14 @@ impl<'a> BlockLowerContext<'a> {
         Ok(())
     }
 
-    /// Prepare cached locals for a compiled local call. The cache-layout pass
-    /// selects non-ref caches worth carrying; selected caches already resident
-    /// in preserved dynamic regs remain live across the call. Dirty carried
-    /// caches are published once before the call so the frame is authoritative
-    /// at the safepoint, then continue in the preserved lane on the success
+    /// Prepare cached locals for a compiled local call. The plan nominates
+    /// non-ref caches to survive the call; a nominated cache holding a value
+    /// must sit in preserved dynamic regs here — the nomination clamp equals
+    /// the bank's preserved-lane count and lane assignment places
+    /// preference-first, so a volatile lane at this point means the plan
+    /// contract was broken upstream and is a hard error. Dirty carried caches
+    /// are published once before the call so the frame is authoritative at
+    /// the safepoint, then continue in the preserved lane on the success
     /// edge.
     pub(super) fn prepare_cached_locals_for_local_call(
         &mut self,
@@ -62,7 +65,12 @@ impl<'a> BlockLowerContext<'a> {
             let cached = self.bound_cached_local(index).ok_or_else(|| {
                 WasmError::internal("cached local binding missing during local-call cache prep")
             })?;
-            if self.can_keep_cached_local_across_local_call(index, &cached) {
+            if self.plan_carries_cached_local_across_local_call(index, &cached) {
+                if !self.cached_local_regs_are_preserved(&cached) {
+                    return Err(WasmError::internal(
+                        "preserved-nominated cache sits in a volatile lane at a survivable call",
+                    ));
+                }
                 if self.is_cache_dirty(index) {
                     self.emit_save_bound_cached_local(&cached)?;
                     self.set_cache_dirty(index, false);
@@ -208,7 +216,7 @@ impl<'a> BlockLowerContext<'a> {
         });
     }
 
-    fn can_keep_cached_local_across_local_call(
+    fn plan_carries_cached_local_across_local_call(
         &self,
         index: usize,
         cached: &BoundCachedLocal,
@@ -216,7 +224,10 @@ impl<'a> BlockLowerContext<'a> {
         self.cache_has_value(index)
             && self.prefers_preserved_cache_binding(index)
             && !cached.value_ty.is_ref()
-            && self.regfile().is_preserved_dynamic_reg(cached.reg)
+    }
+
+    fn cached_local_regs_are_preserved(&self, cached: &BoundCachedLocal) -> bool {
+        self.regfile().is_preserved_dynamic_reg(cached.reg)
             && cached
                 .hi_reg
                 .map(|reg| self.regfile().is_preserved_dynamic_reg(reg))
