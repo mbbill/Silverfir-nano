@@ -25,9 +25,10 @@
   only.
 
 - The nomination is published to the machine as the whole-function
-  preferred-preserved bit; the machine still re-checks the physically assigned
-  register's class before carrying, and a plan-kept cache the machine could
-  not place in a preserved lane reloads lazily at its next use.
+  preferred-preserved bit; at every survivable call the machine re-checks the
+  physically assigned register's class before carrying, and a nominated
+  value-holding cache found in a non-preserved lane is a hard internal error
+  — a plan-contract tripwire, not a recoverable state.
 
 - The backend declares the per-lane nomination overhead alongside its
   preserved capacity; a backend with zero preserved capacity makes the class
@@ -128,6 +129,13 @@
   sha256 reaches 277.3±0.8 MB/s under this contract (above the 271 pre-class
   record) and the carried-register loop finally shows its win (sourced).
 
+- 2026-07-13 (e333bec8) statement: Phase C must model 32-bit i64-pair
+  adjacency in the plan (nominate only what the preserved segment can
+  actually hold contiguously) rather than reintroducing a silent recovery —
+  the carry re-check errors on a volatile-lane nominee, so an
+  adjacency-blind clamp would fail loudly at the first fragmented layout
+  (code).
+
 ## Moves
 
 - 2026-07-13 (7db708a6) replaced [[static-cross-count-preference]]: the static
@@ -139,3 +147,10 @@
   residency objective and a plan-level survival contract removed those reloads
   corpus-wide, all nine modules improving (net −27,402 native instructions)
   (sourced)
+
+- 2026-07-13 (e333bec8) dropped: silent lazy-reload recovery for a nominated
+  value-holding cache found in a volatile lane at a survivable call: the
+  falsification experiment proved the state arithmetically unreachable under
+  the shipped nomination clamp, so reaching it means the budget/clamp/
+  preference-first identity was broken upstream — silent recovery hid exactly
+  that breakage; the carry re-check now raises a hard internal error (code)
