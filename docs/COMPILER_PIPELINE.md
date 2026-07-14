@@ -253,7 +253,7 @@ How the pipeline enables it:
 
 `joint_plan::init_locals::locals_reads_before_write` computes
 `reads_before_write` for each local slot and stores it in
-`SsaProgram.local_slot_info`.
+`SsaProgram.cell_info`.
 
 What it does:
 
@@ -408,9 +408,9 @@ Block lowering turns semantic ops into these SSA-IR variants:
 
 - primitive value ops for pure-ish arithmetic / compare / convert work
 - `Call` ops for compiled-call and runtime-dispatch sites
-- `LocalGetSlot` / `LocalSetSlot` for frame-slot traffic
-- `LocalGetCache` / `LocalSetCache` for cached-local traffic
-- `LocalEnsureCache` / `LocalReserveCache` / `LocalDropCache` for explicit
+- `CellGetSlot` / `CellSetSlot` for direct home-slot traffic
+- `CellGetCache` / `CellSetCache` for cached-cell traffic
+- `CellEnsureCache` / `CellReserveCache` / `CellDropCache` for explicit
   cache residency transitions
 - `Spill` / `Fill` for deep-stack publish/refresh
 
@@ -498,7 +498,7 @@ Why it belongs here:
 
 ### Optimization: sink planning
 
-`sink_plan::plan_sinks` finds `LocalSetCache` operations whose producer can
+`sink_plan::plan_sinks` finds `CellSetCache` operations whose producer can
 write directly into the local's cached home register, and annotates the SSA
 program's `value_sink_local` table accordingly.
 
@@ -511,7 +511,7 @@ local.set x, v1
 ```
 
 If no call and no intervening read of the old `x` exists, the add result
-can be placed directly in `x`'s cache register and the `LocalSetCache`
+can be placed directly in `x`'s cache register and the `CellSetCache`
 disappears (machine lowering consumes the sink annotation via
 `apply_sink_premap`).
 
@@ -597,7 +597,7 @@ the middle publishes on the `SsaProgram` (both derived over the final SSA in
   layout's per-block preference (also consumed by binding-time register
   selection in `lower_context` for mid-block caches)
 
-Together with `rewrite`-emitted `LocalEnsureCache` / `LocalReserveCache` ops,
+Together with `rewrite`-emitted `CellEnsureCache` / `CellReserveCache` ops,
 this drives machine lowering to:
 
 - load cached parameters from frame slots
@@ -608,15 +608,15 @@ This is the backend realization of the earlier joint-plan analysis; the middle
 hands the machine the context-free preference + per-entry requirement, and the
 machine places the lanes.
 
-### Optimization: `LocalGet` source aliasing
+### Optimization: cell get source aliasing
 
-When a local is cached, lowering a `LocalGetCache` does not emit a load. It
+When a local is cached, lowering a `CellGetCache` does not emit a load. It
 just maps the SSA value to the cache register.
 
 Simple example:
 
 ```text
-LocalGetCache x -> v0
+CellGetCache x -> v0
 i32.add v0, #1
 ```
 
@@ -635,7 +635,7 @@ Simple example:
 
 ```text
 i32.add v0, #1 -> v1
-LocalSetCache x, v1
+CellSetCache x, v1
 ```
 
 becomes "emit the add directly into `x`'s cache register".

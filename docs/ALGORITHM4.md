@@ -2,6 +2,13 @@
 
 ## Abstract
 
+> Vocabulary note (2026-07-13): the middle-end now calls the residency unit a
+> **cell** (`CellId`) — the multi-use value slot the solver prices; wasm locals
+> are one origin of cells, and a cell's frame home is a published property
+> (`cell_homes`), not its identity. "Lane" below is unchanged: a physical
+> register position in the bank. Older op names `Local*Cache`/`Local*Slot` are
+> today's `Cell*Cache`/`Cell*Slot`.
+
 This document specifies `ALGORITHM4` and its companion lane-mapping phase, the
 middle-end public-cache allocator used by Silverfir-nano, a WebAssembly 2.0
 JIT-only runtime. `ALGORITHM4` selects the set of locals that are publicly
@@ -394,7 +401,7 @@ map*.
 ### 4.2 Backend history
 
 Earlier versions of this backend imposed a deterministic compact order: middle
-IR carried `block_entry_cached_slots`, machine lowering built a global
+IR carried `block_entry_cached_cells`, machine lowering built a global
 `cached_locals` order from first appearance, and each block's entry slots
 were sorted by that global order and assigned sequential dynamic registers.
 Deterministic, but not edge-optimal.
@@ -622,8 +629,8 @@ lowering on which step 2 rests.
 #### 4.10.2 Middle IR impact
 
 No middle-IR lane annotation is required for v1. Middle IR stays set-based
-(`block_entry_cached_slots`; `LocalEnsureCache` / `LocalDropCache` /
-`LocalReserveCache`). Lane mapping is computed at the machine layer, once
+(`block_entry_cached_cells`; `CellEnsureCache` / `CellDropCache` /
+`CellReserveCache`). Lane mapping is computed at the machine layer, once
 exact bank sizes, lane widths, and the physical register file are known.
 
 ### 4.11 Pseudocode
@@ -678,13 +685,13 @@ currently operates on public cached locals plus transient values.
 
 At edges where `Owner(pred) ≠ Owner(succ)`:
 
-- `LocalDropCache` for locals in pred's state but not succ's state;
-- `LocalEnsureCache` for locals in succ's state but not pred's state.
+- `CellDropCache` for locals in pred's state but not succ's state;
+- `CellEnsureCache` for locals in succ's state but not pred's state.
 
 Emitted either inline at the end of the predecessor (single successor) or in
 a synthetic edge block (multi-predecessor targets).
 
-*Status.* Implemented. The current rewrite also uses `LocalReserveCache`
+*Status.* Implemented. The current rewrite also uses `CellReserveCache`
 for write-first block entries that need the cache lane but not the incoming
 value.
 
@@ -715,7 +722,7 @@ data. The region solver replaces the per-block tentative entry logic in
 
 *Status.* The split above is largely implemented. Two residual details:
 
-1. Rewrite still filters `block_entry_cached_slots` down to the subset the
+1. Rewrite still filters `block_entry_cached_cells` down to the subset the
    block actually needs and inserts edge repair blocks;
 2. Rewrite retains mid-block pressure fallback drops.
 
@@ -741,8 +748,8 @@ Implemented:
 
 - Region solver `region_solver.rs` (resident-set selection with Lagrangian
   DP).
-- Edge repair at region transitions (`LocalEnsureCache`, `LocalDropCache`,
-  `LocalReserveCache`).
+- Edge repair at region transitions (`CellEnsureCache`, `CellDropCache`,
+  `CellReserveCache`).
 - Sparse per-block cache layouts and explicit cache-entry params.
 - Machine-side lane-mapping pass `lower_cache_layout.rs` with sticky
   inheritance, hole filling, and GP exact repack.

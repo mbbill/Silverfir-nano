@@ -1,7 +1,9 @@
 - The prepared middle-end IR is a linear SSA-IR whose slot ops are role-split:
-  LocalGet/LocalSet are canonical-local accesses and Fill/Spill are operand-slot
-  spill/fill; canonical-local access is distinguishable from deep-stack
-  spill/fill (`SsaOp`).
+  CellGet/CellSet are cell accesses (cells: named multi-use value slots, wasm
+  locals being their origin, carrying `CellId` identity with frame homes in a
+  published table) and Fill/Spill are operand-slot spill/fill addressed by
+  frame geometry; cell access is distinguishable from deep-stack spill/fill
+  (`SsaOp`).
 
 - The IR is linear-SSA single-use: each transient value has exactly one use in
   the op stream, which later passes (constant absorption, sink planning) rely on.

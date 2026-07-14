@@ -30,13 +30,29 @@
   dynamic budget` must hold at every program point and block boundary; GP and FP
   hot canonical locals are kept in separate GP and FP local-cache banks.
 
-- Canonical local accesses keep frame-slot identity throughout the middle-end;
-  the middle-end publishes exact per-block cached-slot rows (never storage
-  kinds), and which fixed cache register mirrors which slot is decided at
-  machine lowering — register-cached locals are mirrors of their canonical slot
+- The middle-end's residency unit is the cell — a named multi-use value slot
+  with wasm locals as its origin — keyed by a cell identity distinct from
+  frame geometry (`CellId`); each cell's frame home is published as a table
+  keyed by that identity, plan rows and cache ops carry cell ids (never
+  storage kinds), and which fixed cache register mirrors which cell is decided
+  at machine lowering — register-cached cells are mirrors of their frame
   homes, never replacements for them.
 
 ## Facts
+
+- 2026-07-13 (769e1da8) statement: the cell identity split (CellId vs
+  FrameSlot, homes as a published table) landed as a semantics-preserving
+  rename+split — SSA-IR and MachineIR text byte-identical across the
+  nine-module corpus — staged deliberately before synthetic cells
+  (optimizer-created cells with no wasm counterpart) and optional homes,
+  which are the next two steps of the cell plan (code).
+
+- 2026-07-13 pitfall: raw native_code.bin bytes are NOT run-stable and can
+  never gate a refactor — JIT code materializes runtime addresses as
+  mov/movk immediates, so ASLR changes both the literal values and the
+  instruction count (a low-16-zero address saves a movk). Gate on the
+  dump's SSA-IR + MachineIR text sections instead; the middle-v2 campaign's
+  "byte-identical MIR" gate meant exactly this (sourced).
 
 - 2026-04-06 (0b5d2ea0) statement: each local is solved as an independent
   per-local tree DP over the region tree, bottom-up with Lagrangian capacity
