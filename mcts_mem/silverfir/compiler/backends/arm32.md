@@ -3,6 +3,13 @@
   `target_arch = arm` targets to `sf_backend_armv7a`, giving the backend one
   encoding-neutral home with target-driven profile selection (`arch/arm32`).
 
+- The GP dynamic bank is grouped by JIT-ABI class — four volatile lanes
+  (caller-saved physicals), two preserved lanes on EABI callee-saved
+  registers, and a two-lane internal-scratch tail; bodies save and restore
+  the preserved lanes they clobber lazily in the body prelude and on every
+  return path, with the sub-frame unwinding before the fixed link-save and
+  call-record offsets (`lower_preserved_dynamic_body_save`).
+
 ## Facts
 
 - 2026-03-27 (55b2ceea) pitfall: when an IntBinary's lhs is an Imm64 it was
@@ -30,6 +37,12 @@
   string-hash exposes this pattern via i64 And/Or/Xor, the same
   snapshot-rhs-before-materializing-lhs-into-dst hazard seen on the other 32-bit
   pair-bitop paths (code).
+
+- 2026-07-13 (8be69337) rationale: the preserved lanes reuse registers the
+  public entry already bulk-saves for the C ABI; the per-body lazy save
+  exists for the internal body-to-body ABI, because internal calls enter
+  past the public prologue and would otherwise clobber a caller's carried
+  preserved-lane caches (code).
 
 ## Moves
 

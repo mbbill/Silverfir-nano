@@ -122,6 +122,24 @@
   establishment loads per corpus module, all plan-intended; zero were
   divergence) (code).
 
+- 2026-07-13 (8be69337) measurement: Phase C landed on arm32 — 2 preserved
+  lanes (EABI callee-saved R9, R5) with the arm64-style lazy per-body save
+  at overhead 3. armv7 qemu coremark improved +4.2% (interleaved A/B, six
+  pairs, six wins, 2502±27 vs 2400±44); lua fib level; spectest all pass.
+  The static shape of the win: MIR ops fell corpus-wide (lua −578, sqlite
+  −462 — call-crossing publish/reload traffic gone) while native bytes rose
+  ~0.5-1.4% from incidental-clobber saves in cold body preludes — the
+  save cost moved off the hot path, exactly what the trip-weighted
+  nomination prices. x86_64 and riscv remain preserved=0 (sourced).
+
+- 2026-07-13 (8be69337) statement: on gp32 the machine layout places by
+  preference before width — an unnominated i64 pair placed width-first
+  could occupy the two-lane preserved run and strand a nominee in a
+  volatile lane, the exact state the survivable-call carry rejects as a
+  broken plan contract. On 64-bit targets every cached width is 1, so the
+  ordering is provably identical there (arm64 MIR byte-equality held on
+  the nine-module corpus) (code).
+
 - 2026-07-13 statement: the sha256 −16% regression this contract initially
   shipped with was fully resolved — the cause was not the class contract but
   the M4 same-address store→load pipeline hazard it exposed by removing a
