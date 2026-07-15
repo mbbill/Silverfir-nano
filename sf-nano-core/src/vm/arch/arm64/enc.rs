@@ -380,6 +380,24 @@ pub(crate) fn eor_reg_shifted_64(
 
 // --- TST (ANDS with Rd=XZR, sets flags, discards result) ---
 
+pub(crate) fn ands_imm_32(rd: Arm64Reg, rn: Arm64Reg, imm: u32) -> Option<u32> {
+    let (n, immr, imms) = encode_logical_immediate(imm as u64, 32)?;
+    Some(logical_imm(0, 0b11, n, rd, rn, immr, imms))
+}
+
+pub(crate) fn ands_imm_64(rd: Arm64Reg, rn: Arm64Reg, imm: u64) -> Option<u32> {
+    let (n, immr, imms) = encode_logical_immediate(imm, 64)?;
+    Some(logical_imm(1, 0b11, n, rd, rn, immr, imms))
+}
+
+pub(crate) fn ands_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    logical_shifted_reg(0, 0b11, 0, rd, rn, rm)
+}
+
+pub(crate) fn ands_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    logical_shifted_reg(1, 0b11, 0, rd, rn, rm)
+}
+
 pub(crate) fn tst_imm_32(rn: Arm64Reg, imm: u32) -> Option<u32> {
     let (n, immr, imms) = encode_logical_immediate(imm as u64, 32)?;
     Some(logical_imm(0, 0b11, n, abi::zero_reg(), rn, immr, imms))

@@ -334,6 +334,11 @@ impl<'a> super::backend::Arm64Backend<'a> {
     // ── Instruction dispatch ─────────────────────────────────────────────
 
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
+        // Flags fusion: whatever the previous instruction left in
+        // `select_flags` is only valid for the IMMEDIATELY following
+        // instruction. Take it unconditionally; only a Select uses it, and
+        // only And/IntCompare set it anew.
+        let pending_flags = self.select_flags.take();
         match &inst.kind {
             MachineInstKind::Move {
                 ty: MachineStorageType::V128,
@@ -403,7 +408,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 on_false,
                 cond,
                 ..
-            } => self.lower_select(*ty, *dst, *on_true, *on_false, *cond),
+            } => self.lower_select(*ty, *dst, *on_true, *on_false, *cond, pending_flags),
             MachineInstKind::TrapIf { kind, cond } => self.lower_trap_if(*kind, cond),
             MachineInstKind::CallRuntime(call) => self.lower_call_runtime(call.metadata.0 as usize),
             MachineInstKind::EhThrow { tag_idx, args } => self.lower_preserved_no_result(
@@ -2451,6 +2456,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
         lhs: MachineValue,
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
+        if matches!(op, MachineIntBinaryOp::And) {
+            return self.lower_int_and_flags(width, dst, lhs, rhs);
+        }
         let dst = self.map_gp_reg(dst)?;
         // Try immediate form: check reg+imm and imm+reg (for commutative ops).
         if let MachineValue::Imm64(imm) = rhs {
@@ -2707,6 +2715,59 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
     // ── Integer compare ──────────────────────────────────────────────────────────
 
+    /// Integer And, emitted as `ands` so the NZCV flags additionally encode
+    /// `dst != 0`; publishes that fact in `select_flags` for an immediately
+    /// following Select to consume (dropping its own `cmp #0`). Flags between
+    /// MachineIR instructions are otherwise dead, so the extra flag write is
+    /// free.
+    fn lower_int_and_flags(
+        &mut self,
+        width: MachineIntWidth,
+        dst_m: MachineReg,
+        lhs: MachineValue,
+        rhs: MachineValue,
+    ) -> Result<(), WasmError> {
+        let dst = self.map_gp_reg(dst_m)?;
+        for (a, b) in [(lhs, rhs), (rhs, lhs)] {
+            if let (MachineValue::Reg(reg), MachineValue::Imm64(imm)) = (a, b) {
+                let reg_phys = map_gp(self.core.compiled.backend(), reg)?;
+                let enc_inst = match width {
+                    MachineIntWidth::I32 => enc::ands_imm_32(dst, reg_phys, imm as u32),
+                    MachineIntWidth::I64 => enc::ands_imm_64(dst, reg_phys, imm),
+                };
+                if let Some(inst) = enc_inst {
+                    self.core.text.emit_u32(inst);
+                    self.select_flags = Some((dst_m, enc::Cond::Ne));
+                    return Ok(());
+                }
+            }
+        }
+        let lhs = prepare_gp(
+            self.core.compiled.backend(),
+            &self.core.fp_reg_widths,
+            &mut self.core.text,
+            &self.gp_scratch,
+            lhs,
+        )?;
+        let rhs = prepare_gp(
+            self.core.compiled.backend(),
+            &self.core.fp_reg_widths,
+            &mut self.core.text,
+            &self.gp_scratch,
+            rhs,
+        )?;
+        match width {
+            MachineIntWidth::I32 => {
+                self.core.text.emit_u32(enc::ands_reg_32(dst, *lhs, *rhs));
+            }
+            MachineIntWidth::I64 => {
+                self.core.text.emit_u32(enc::ands_reg_64(dst, *lhs, *rhs));
+            }
+        }
+        self.select_flags = Some((dst_m, enc::Cond::Ne));
+        Ok(())
+    }
+
     fn lower_int_compare(
         &mut self,
         width: MachineIntWidth,
@@ -2716,6 +2777,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         lhs: MachineValue,
         rhs: MachineValue,
     ) -> Result<(), WasmError> {
+        let dst_m = dst;
         self.lower_cmp_values(width, lhs, rhs)?;
         let dst = self.map_gp_reg(dst)?;
         let cond = map_int_cond(kind, sign);
@@ -2727,6 +2789,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 self.core.text.emit_u32(enc::cset_64(dst, cond));
             }
         };
+        // Flags still hold the comparison; an immediately following Select
+        // on this result can consume them directly.
+        self.select_flags = Some((dst_m, cond));
         Ok(())
     }
 
@@ -2904,6 +2969,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         on_true: MachineValue,
         on_false: MachineValue,
         cond: MachineValue,
+        pending_flags: Option<(MachineReg, enc::Cond)>,
     ) -> Result<(), WasmError> {
         if let Some(width) = ty.float_width() {
             match cond {
@@ -2931,15 +2997,21 @@ impl<'a> super::backend::Arm64Backend<'a> {
                         on_false,
                     )?;
                     let dst_fp = self.map_fp_reg(dst)?;
-                    self.core
-                        .text
-                        .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
+                    let cond_code = match pending_flags {
+                        Some((flags_reg, code)) if flags_reg == reg => code,
+                        _ => {
+                            self.core
+                                .text
+                                .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
+                            enc::Cond::Ne
+                        }
+                    };
                     self.core.text.emit_u32(match width {
                         MachineFloatWidth::F32 => {
-                            enc::fcsel_s(dst_fp, *true_fp, *false_fp, enc::Cond::Ne)
+                            enc::fcsel_s(dst_fp, *true_fp, *false_fp, cond_code)
                         }
                         MachineFloatWidth::F64 => {
-                            enc::fcsel_d(dst_fp, *true_fp, *false_fp, enc::Cond::Ne)
+                            enc::fcsel_d(dst_fp, *true_fp, *false_fp, cond_code)
                         }
                     });
                     self.core.set_fp_reg_width(dst, width)?;
@@ -2951,6 +3023,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             }
         } else {
             let dst = self.map_gp_reg(dst)?;
+            let mut select_cond = enc::Cond::Ne;
             match cond {
                 MachineValue::Imm64(value) => {
                     let selected = if value != 0 { on_true } else { on_false };
@@ -2966,11 +3039,16 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     }
                     return Ok(());
                 }
-                MachineValue::Reg(reg) => {
-                    self.core
-                        .text
-                        .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
-                }
+                MachineValue::Reg(reg) => match pending_flags {
+                    Some((flags_reg, code)) if flags_reg == reg => {
+                        select_cond = code;
+                    }
+                    _ => {
+                        self.core
+                            .text
+                            .emit_u32(enc::cmp_imm_64(self.map_gp_reg(reg)?, 0));
+                    }
+                },
                 MachineValue::ReservedReg(_reg) => {
                     return Err(WasmError::internal(
                         "arm64 select cannot consume reserved cache register as a condition",
@@ -2995,7 +3073,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             // and refs need full 64-bit values preserved (e.g. null sentinel).
             self.core
                 .text
-                .emit_u32(enc::csel_64(dst, *true_reg, *false_reg, enc::Cond::Ne));
+                .emit_u32(enc::csel_64(dst, *true_reg, *false_reg, select_cond));
             Ok(())
         }
     }

@@ -134,6 +134,12 @@ pub(crate) struct Arm64Backend<'a> {
     /// store/load pair) when the next op arrives. Drained on `end_block`.
     /// `usize` is the block-local op index at the time it was buffered.
     pending_op: Option<(&'a MachineInst, usize)>,
+    /// Select-condition flags fusion: `Some((reg, cond))` means the NZCV
+    /// flags currently encode `reg != 0` as `cond`, set by the immediately
+    /// preceding And (emitted as `ands`) or IntCompare. Taken (cleared) at
+    /// every instruction dispatch and at block/terminator boundaries; only a
+    /// Select consuming exactly that register uses it.
+    pub(super) select_flags: Option<(MachineReg, enc::Cond)>,
 }
 
 impl<'a> Arm64Backend<'a> {
@@ -465,6 +471,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             fp_scratch: abi::new_fp_scratch_pool(),
             pending_direct_calls: collections::Vec::new(),
             pending_op: None,
+            select_flags: None,
         }
     }
 
@@ -671,6 +678,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.core.current_block = Some(block.id);
         self.core.current_edge_target = None;
         self.core.reset_block_fp_state(block)?;
+        self.select_flags = None;
         Ok(())
     }
 
@@ -727,6 +735,9 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             self.fp_scratch.assert_all_free();
         }
         self.core.current_op_index = None;
+        // Flags never survive into a terminator (branch lowering emits its
+        // own compares) or across blocks.
+        self.select_flags = None;
         let result = self.lower_terminator(term, fallthrough);
         self.core.current_block = None;
         result
