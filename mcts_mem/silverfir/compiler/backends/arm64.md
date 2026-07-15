@@ -11,6 +11,21 @@
 
 ## Facts
 
+- 2026-07-15 (658cb4a3) measurement: select-condition flags fusion (And
+  emitted as ands, IntCompare flags left published, adjacent Select consumes
+  the condition from NZCV and drops its cmp #0) moved arm64 coremark from
+  91% to 98-100% of V8 back-to-back (+11%, 34.3k to 38.0-38.6k) — the
+  coremark crc16 and matrix-clamp recurrences carry a select per step, and
+  removing one compare from each loop-carried chain was worth far more than
+  its static count suggested. Every corpus module's code size shrank; no
+  regressions (sourced).
+
+- 2026-07-15 rationale: flags between MachineIR instructions are dead by
+  construction (every consumer emits its own compare), which is what makes
+  the always-ands rewrite and the take-per-dispatch pending-flags slot safe;
+  the slot clears at block and terminator boundaries because terminator
+  lowering emits its own compares (code).
+
 - 2026-04-08 (21d6f6bf) rationale: the arm64 FP scratch pool was cut from 3
   slots to 2 by restructuring FP-binary lowering so peak FP scratch never
   exceeds 2 — fmin/fmax fold into one shared NaN-patch helper (fcmp-first with a
