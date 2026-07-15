@@ -2,18 +2,20 @@
 
 Run with `run_tests.py` on macOS (Apple M4).
 
-Silverfir column: 2026-07-13 (post middle-v2 campaign, mean of 2 runs).
+Silverfir column: best observed as of 2026-07-15 (post middle-v2 campaign).
+Benchmarks that improved on a 2026-07-15 run were updated to the new peak;
+the rest retain their 2026-07-13 (mean-of-2) values.
 Cranelift / V8 columns: 2026-05 capture, re-run pending (see Notes).
 
 ## Integer / Control Flow
 
 | Benchmark             | Silverfir (JIT) | Cranelift |       V8 |  SF/CL |  SF/V8 |
 |-----------------------|----------------:|----------:|---------:|-------:|-------:|
-| CoreMark (score)      |      **36,628** |    14,669 |   37,869 | 249.7% |  96.7% |
-| SHA-256 (MB/s)        |      **275.06** |    249.26 |   201.20 | 110.4% | 136.7% |
-| bzip2 (MB/s)          |       **20.48** |     19.41 |    19.88 | 105.5% | 103.0% |
+| CoreMark (score)      |      **38,697** |    14,669 |   37,869 | 263.8% | 102.2% |
+| SHA-256 (MB/s)        |      **275.29** |    249.26 |   201.20 | 110.4% | 136.8% |
+| bzip2 (MB/s)          |       **20.55** |     19.41 |    19.88 | 105.9% | 103.4% |
 | LZ4 compress (MB/s)   |      **747.27** |    736.45 |   704.01 | 101.5% | 106.1% |
-| LZ4 decompress (MB/s) |    **3,200.68** |  3,455.15 | 2,908.07 |  92.6% | 110.1% |
+| LZ4 decompress (MB/s) |    **3,248.22** |  3,455.15 | 2,908.07 |  94.0% | 111.7% |
 
 ### Lua
 
@@ -27,33 +29,34 @@ Cranelift / V8 columns: 2026-05 capture, re-run pending (see Notes).
 
 | Benchmark             | Silverfir (JIT) | Cranelift |       V8 |  SF/CL |  SF/V8 |
 |-----------------------|----------------:|----------:|---------:|-------:|-------:|
-| mandelbrot (ms)       |         **849** |       855 |    2,035 | 100.7% | 239.7% |
-| c-ray (ms)            |       **2,101** |     2,055 |    1,947 |  97.8% |  92.7% |
+| mandelbrot (ms)       |         **848** |       855 |    2,035 | 100.8% | 240.0% |
+| c-ray (ms)            |       **2,098** |     2,055 |    1,947 |  97.9% |  92.8% |
 
 ## Memory Bound
 
 | Benchmark             | Silverfir (JIT) | Cranelift |       V8 |  SF/CL |  SF/V8 |
 |-----------------------|----------------:|----------:|---------:|-------:|-------:|
-| STREAM Copy (MB/s)    |      **44,071** |    44,124 |   39,714 |  99.9% | 111.0% |
+| STREAM Copy (MB/s)    |      **44,124** |    44,124 |   39,714 | 100.0% | 111.1% |
 | STREAM Scale (MB/s)   |      **49,574** |    49,692 |   18,332 |  99.8% | 270.4% |
 | STREAM Add (MB/s)     |      **64,258** |    48,398 |   29,989 | 132.8% | 214.3% |
-| STREAM Triad (MB/s)   |      **48,310** |    47,864 |   30,869 | 100.9% | 156.5% |
+| STREAM Triad (MB/s)   |      **48,349** |    47,864 |   30,869 | 101.0% | 156.6% |
 
 ## Summary
 
 **SF vs Cranelift** (optimizing JIT): SF wins 10, CL wins 2, tied 2
-- SF wins: Lua fib (539%), Lua sunfish (378%), Lua json (287%), CoreMark (250%), STREAM Add (133%), SHA-256 (110%), bzip2 (106%), LZ4 compress (102%), STREAM Triad (101%), mandelbrot (100.7%)
-- Ties: STREAM Copy (99.9%), STREAM Scale (99.8%)
-- Closest losses: c-ray (98%), LZ4 decompress (93%)
+- SF wins: Lua fib (539%), Lua sunfish (378%), Lua json (287%), CoreMark (264%), STREAM Add (133%), SHA-256 (110%), bzip2 (106%), LZ4 compress (102%), STREAM Triad (101%), mandelbrot (100.8%)
+- Ties: STREAM Copy (100.0%), STREAM Scale (99.8%)
+- Closest losses: c-ray (98%), LZ4 decompress (94%)
 
-**SF vs V8** (TurboFan JIT): SF wins 10, V8 wins 4
-- SF wins: STREAM Scale (270%), mandelbrot (240%), STREAM Add (214%), STREAM Triad (157%), Lua fib (139%), SHA-256 (137%), STREAM Copy (111%), LZ4 decompress (110%), LZ4 compress (106%), bzip2 (103%)
-- Closest losses: Lua sunfish (99%), CoreMark (97%), c-ray (93%), Lua json (91%)
+**SF vs V8** (TurboFan JIT): SF wins 11, V8 wins 3
+- SF wins: STREAM Scale (270%), mandelbrot (240%), STREAM Add (214%), STREAM Triad (157%), Lua fib (139%), SHA-256 (137%), LZ4 decompress (112%), STREAM Copy (111%), LZ4 compress (106%), bzip2 (103%), CoreMark (102%)
+- Closest losses: Lua sunfish (99%), c-ray (93%), Lua json (91%)
 
-**Overall best** (absolute winner per benchmark): SF wins 7, V8 wins 4, CL wins 3
-- SF wins: SHA-256, bzip2, LZ4 compress, Lua fib, mandelbrot, STREAM Add, STREAM Triad
-- V8 wins: CoreMark, Lua sunfish, Lua json, c-ray
-- CL wins: LZ4 decompress, STREAM Scale, STREAM Copy (by 0.1%)
+**Overall best** (absolute winner per benchmark): SF wins 8, V8 wins 3, CL wins 2, tied 1
+- SF wins: CoreMark, SHA-256, bzip2, LZ4 compress, Lua fib, mandelbrot, STREAM Add, STREAM Triad
+- V8 wins: Lua sunfish, Lua json, c-ray
+- CL wins: LZ4 decompress, STREAM Scale
+- Tied (SF ≈ CL): STREAM Copy (100.0%)
 
 ## Notes
 

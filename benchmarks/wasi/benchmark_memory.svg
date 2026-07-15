@@ -19,8 +19,8 @@
   <text x="182" y="104.0" fill="#8b949e" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="10">MB/s</text>
   <rect x="4" y="112" width="692" height="32" rx="4" fill="#f3e8ff" opacity="0.5"/>
   <text x="168" y="132.5" text-anchor="end" fill="#581c87" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">Silverfir</text>
-  <rect x="175" y="114" width="489.4" height="28" rx="4" fill="url(#hlGrad)" filter="url(#glow)"><animate attributeName="width" from="0" to="489.4" dur="0.35s" fill="freeze"/></rect>
-  <text x="656.4" y="133.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">44,071</text>
+  <rect x="175" y="114" width="490.0" height="28" rx="4" fill="url(#hlGrad)" filter="url(#glow)"><animate attributeName="width" from="0" to="490.0" dur="0.35s" fill="freeze"/></rect>
+  <text x="657.0" y="133.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">44,124</text>
   <text x="168" y="163.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">Cranelift</text>
   <rect x="175" y="145" width="490.0" height="28" rx="4" fill="#e8873d" opacity="0.85"><animate attributeName="width" from="0" to="490.0" dur="0.39s" fill="freeze"/></rect>
   <text x="657.0" y="164.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">44,124</text>
@@ -62,11 +62,11 @@
   <rect x="4" y="502" width="692" height="32" rx="4" fill="#f3e8ff" opacity="0.5"/>
   <text x="168" y="522.5" text-anchor="end" fill="#581c87" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">Silverfir</text>
   <rect x="175" y="504" width="490.0" height="28" rx="4" fill="url(#hlGrad)" filter="url(#glow)"><animate attributeName="width" from="0" to="490.0" dur="0.47s" fill="freeze"/></rect>
-  <text x="657.0" y="523.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">48,310</text>
+  <text x="657.0" y="523.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">48,349</text>
   <text x="168" y="553.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">Cranelift</text>
-  <rect x="175" y="535" width="485.5" height="28" rx="4" fill="#e8873d" opacity="0.85"><animate attributeName="width" from="0" to="485.5" dur="0.51s" fill="freeze"/></rect>
-  <text x="652.5" y="554.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">47,864</text>
+  <rect x="175" y="535" width="485.1" height="28" rx="4" fill="#e8873d" opacity="0.85"><animate attributeName="width" from="0" to="485.1" dur="0.51s" fill="freeze"/></rect>
+  <text x="652.1" y="554.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">47,864</text>
   <text x="168" y="584.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">V8</text>
-  <rect x="175" y="566" width="313.1" height="28" rx="4" fill="#4a9ede" opacity="0.85"><animate attributeName="width" from="0" to="313.1" dur="0.55s" fill="freeze"/></rect>
-  <text x="480.1" y="585.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">30,869</text>
+  <rect x="175" y="566" width="312.8" height="28" rx="4" fill="#4a9ede" opacity="0.85"><animate attributeName="width" from="0" to="312.8" dur="0.55s" fill="freeze"/></rect>
+  <text x="479.8" y="585.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">30,869</text>
 </svg>
