@@ -11,6 +11,16 @@
 
 ## Facts
 
+- 2026-07-16 (c7a8abaf) measurement: extending the pending-flags mechanism
+  to float compares and to the Branch terminator (fcmp/cset/cbnz becomes
+  fcmp/cset/b.cond — the branch consumes NZCV directly and the cset drops
+  off the resolve path) recovered essentially the whole Cranelift gap on
+  c-ray: 1993 vs 2130 ms interleaved (−6.4%), back-to-back now SF 2003 /
+  CL 2000 / V8 1940 ms. The c-ray sample pile-ups on the discriminant cbnz
+  (284/266 samples) were this dependency, not memory or FP-arithmetic
+  quality — our FP op mix in the hot leaf is identical to Cranelift's
+  (sourced).
+
 - 2026-07-16 (eafbeee9) rationale: FP constants are emitted via the arm64
   8-bit `fmov d,#imm` immediate when the value is losslessly representable
   (encoders brute-force all 256 encodings for an exact bit-match), instead
