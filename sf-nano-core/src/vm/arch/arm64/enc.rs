@@ -1279,6 +1279,51 @@ pub(crate) fn fmov_d(rd: Arm64FpReg, rn: Arm64FpReg) -> u32 {
     fp_data_proc_1src(0b01, 0b000000, rd, rn)
 }
 
+/// Decode an 8-bit FMOV-immediate (`imm8`) to the f64 bit pattern it names,
+/// per the Arm `VFPExpandImm` algorithm (E=11 exponent bits, F=52 fraction
+/// bits): `sign : NOT(b6) : b6×8 : b5 b4 : b3..b0 : 0×48`.
+const fn fmov_imm8_to_f64_bits(imm8: u8) -> u64 {
+    let sign = ((imm8 >> 7) & 1) as u64;
+    let b6 = ((imm8 >> 6) & 1) as u64;
+    let exp =
+        ((1 - b6) << 10) | (if b6 == 1 { 0xFF } else { 0 } << 2) | (((imm8 >> 4) & 0x3) as u64);
+    let frac_top4 = (imm8 & 0xF) as u64;
+    (sign << 63) | (exp << 52) | (frac_top4 << 48)
+}
+
+/// Decode an 8-bit FMOV-immediate to the f32 bit pattern (E=8, F=23):
+/// `sign : NOT(b6) : b6×5 : b5 b4 : b3..b0 : 0×19`.
+const fn fmov_imm8_to_f32_bits(imm8: u8) -> u32 {
+    let sign = ((imm8 >> 7) & 1) as u32;
+    let b6 = ((imm8 >> 6) & 1) as u32;
+    let exp =
+        ((1 - b6) << 7) | (if b6 == 1 { 0x1F } else { 0 } << 2) | (((imm8 >> 4) & 0x3) as u32);
+    let frac_top4 = (imm8 & 0xF) as u32;
+    (sign << 31) | (exp << 23) | (frac_top4 << 19)
+}
+
+/// The `imm8` that encodes `bits` as an FMOV double immediate, if any. Brute
+/// forces all 256 encodings and requires an exact bit-match, so only values
+/// the encoding represents losslessly qualify.
+pub(crate) fn fmov_f64_imm8(bits: u64) -> Option<u8> {
+    (0u16..256).find_map(|i| (fmov_imm8_to_f64_bits(i as u8) == bits).then_some(i as u8))
+}
+
+/// The `imm8` that encodes `bits` as an FMOV single immediate, if any.
+pub(crate) fn fmov_f32_imm8(bits: u32) -> Option<u8> {
+    (0u16..256).find_map(|i| (fmov_imm8_to_f32_bits(i as u8) == bits).then_some(i as u8))
+}
+
+/// FMOV Dd, #imm (double, 8-bit immediate).
+pub(crate) fn fmov_d_imm(rd: Arm64FpReg, imm8: u8) -> u32 {
+    0x1E60_1000 | ((imm8 as u32) << 13) | rd.index()
+}
+
+/// FMOV Sd, #imm (single, 8-bit immediate).
+pub(crate) fn fmov_s_imm(rd: Arm64FpReg, imm8: u8) -> u32 {
+    0x1E20_1000 | ((imm8 as u32) << 13) | rd.index()
+}
+
 // F32 arithmetic
 pub(crate) fn fadd_s(rd: Arm64FpReg, rn: Arm64FpReg, rm: Arm64FpReg) -> u32 {
     fp_data_proc_2src(0b00, 0b0010, rd, rn, rm)
@@ -2182,4 +2227,62 @@ pub(crate) fn umov_lane_to_gp(rd: Arm64Reg, rn: Arm64FpReg, lane: u8, elem_bytes
 pub(crate) fn smov_lane_to_gp(rd: Arm64Reg, rn: Arm64FpReg, lane: u8, elem_bytes: u8) -> u32 {
     debug_assert!(matches!(elem_bytes, 1 | 2));
     0x0e00_2c00 | (simd_lane_imm5(lane, elem_bytes) << 16) | (rn.index() << 5) | rd.index()
+}
+
+#[cfg(test)]
+mod fmov_imm_tests {
+    use super::{fmov_f32_imm8, fmov_f64_imm8};
+
+    /// Round-trip: the imm8 an encoder returns must reconstruct the exact
+    /// source bit pattern via the same VFPExpandImm mapping the hardware uses.
+    #[test]
+    fn f64_known_constants_encode_exactly() {
+        for (val, want_some) in [
+            (1.0_f64, true),
+            (-1.0, true),
+            (0.5, true),
+            (-0.5, true),
+            (2.0, true),
+            (-2.0, true),
+            (-4.0, true),
+            (31.0, true),
+            (0.1, false), // not representable in the 8-bit form
+            (3.14159, false),
+            (0.0, false), // zero is not an fmov-immediate value
+            (1e300, false),
+        ] {
+            let got = fmov_f64_imm8(val.to_bits());
+            assert_eq!(got.is_some(), want_some, "f64 {val}: encodable mismatch");
+        }
+    }
+
+    #[test]
+    fn f32_known_constants_encode_exactly() {
+        for (val, want_some) in [
+            (1.0_f32, true),
+            (-1.0, true),
+            (0.5, true),
+            (-4.0, true),
+            (0.1, false),
+            (0.0, false),
+        ] {
+            let got = fmov_f32_imm8(val.to_bits());
+            assert_eq!(got.is_some(), want_some, "f32 {val}: encodable mismatch");
+        }
+    }
+
+    /// Every imm8 the f64 encoder accepts must round-trip: decoding the
+    /// emitted instruction's immediate field back yields the same bits. We
+    /// verify by re-deriving the bit pattern from the returned imm8.
+    #[test]
+    fn f64_encoder_is_exact_over_all_encodable_values() {
+        for imm8 in 0u16..256 {
+            let bits = super::fmov_imm8_to_f64_bits(imm8 as u8);
+            assert_eq!(
+                fmov_f64_imm8(bits),
+                Some(imm8 as u8),
+                "imm8 {imm8:#x} did not round-trip",
+            );
+        }
+    }
 }

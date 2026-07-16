@@ -119,6 +119,24 @@ pub(super) fn prepare_fp<'p>(
             return Ok(PreparedFp::Mapped(map_fp(config, reg)?));
         }
     }
+    // An immediate FP operand the arm64 8-bit float form names exactly loads
+    // in one `fmov d, #imm` — no GP materialize, no GP→FP move, no GP scratch
+    // dependency ahead of the FP consumer. This is the common shape for FP
+    // arithmetic against a literal (e.g. c-ray's `x * -4.0`).
+    if let MachineValue::Imm64(bits) = value {
+        let imm8 = match width {
+            MachineFloatWidth::F32 => enc::fmov_f32_imm8(bits as u32),
+            MachineFloatWidth::F64 => enc::fmov_f64_imm8(bits),
+        };
+        if let Some(imm8) = imm8 {
+            let fp_scratch = fp_pool.scoped_alloc();
+            text.emit_u32(match width {
+                MachineFloatWidth::F32 => enc::fmov_s_imm(*fp_scratch, imm8),
+                MachineFloatWidth::F64 => enc::fmov_d_imm(*fp_scratch, imm8),
+            });
+            return Ok(PreparedFp::Scratch(fp_scratch));
+        }
+    }
     let gp = prepare_gp(config, fp_widths, text, gp_pool, value)?;
     let fp_scratch = fp_pool.scoped_alloc();
     text.emit_u32(match width {
@@ -1163,6 +1181,23 @@ impl<'a> super::backend::Arm64Backend<'a> {
             ));
         }
         let dst_fp = self.map_fp_reg(dst)?;
+        // Try the single-instruction FMOV immediate form first: constants the
+        // arm64 8-bit float immediate names exactly (±1.0, ±0.5, ±2.0, …)
+        // skip the GP-materialize + GP→FP-move pair, and drop the scratch
+        // dependency that would otherwise sit ahead of the constant's first
+        // FP consumer.
+        let imm8 = match width {
+            MachineFloatWidth::F32 => enc::fmov_f32_imm8(bits as u32),
+            MachineFloatWidth::F64 => enc::fmov_f64_imm8(bits),
+        };
+        if let Some(imm8) = imm8 {
+            self.core.text.emit_u32(match width {
+                MachineFloatWidth::F32 => enc::fmov_s_imm(dst_fp, imm8),
+                MachineFloatWidth::F64 => enc::fmov_d_imm(dst_fp, imm8),
+            });
+            self.core.set_fp_reg_width(dst, width)?;
+            return Ok(());
+        }
         let imm = match width {
             MachineFloatWidth::F32 => u64::from(bits as u32),
             MachineFloatWidth::F64 => bits,
