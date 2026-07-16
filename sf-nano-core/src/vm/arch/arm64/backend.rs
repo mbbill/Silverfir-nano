@@ -140,9 +140,55 @@ pub(crate) struct Arm64Backend<'a> {
     /// every instruction dispatch and at block/terminator boundaries; only a
     /// Select consuming exactly that register uses it.
     pub(super) select_flags: Option<(MachineReg, enc::Cond)>,
+    /// Ring of recently dispatched `Store` ops, as `(base, offset, bytes,
+    /// seq)`. Consulted by the FP load-pair fusion: an `ldp` that partially
+    /// overlaps a recent store defeats store-to-load forwarding on Apple
+    /// Silicon (~2x load-latency penalty), so pairing is suppressed and the
+    /// exact-width `ldr`s forward cleanly. Deliberately kept across block
+    /// boundaries: the hazard follows emission (= fallthrough) order, and a
+    /// false positive only costs one extra `ldr`.
+    pub(super) recent_stores: [(MachineReg, i32, u8, u32); RECENT_STORE_SLOTS],
+    pub(super) recent_store_len: usize,
+    pub(super) dispatch_seq: u32,
 }
 
+/// Capacity of the recent-store ring.
+pub(super) const RECENT_STORE_SLOTS: usize = 8;
+/// A recorded store older than this many dispatched ops has retired well
+/// past the store buffer and no longer inhibits load pairing.
+pub(super) const RECENT_STORE_MAX_AGE: u32 = 24;
+
 impl<'a> Arm64Backend<'a> {
+    /// Record a dispatched `Store` in the recent-store ring.
+    fn record_store(&mut self, base: MachineReg, offset: i32, bytes: u8) {
+        let slot = self.recent_store_len % RECENT_STORE_SLOTS;
+        self.recent_stores[slot] = (base, offset, bytes, self.dispatch_seq);
+        self.recent_store_len += 1;
+    }
+
+    /// True if a recent store partially overlaps `[offset, offset + bytes)`
+    /// at `base`. An exact-width match (same range) forwards fine and does
+    /// not count; only a store covering part of the range defeats forwarding.
+    pub(super) fn recent_store_partially_overlaps(
+        &self,
+        base: MachineReg,
+        offset: i32,
+        bytes: u8,
+    ) -> bool {
+        let lo = i64::from(offset);
+        let hi = lo + i64::from(bytes);
+        let tracked = self.recent_store_len.min(RECENT_STORE_SLOTS);
+        self.recent_stores[..tracked]
+            .iter()
+            .any(|&(b, off, w, seq)| {
+                b == base && self.dispatch_seq.wrapping_sub(seq) <= RECENT_STORE_MAX_AGE && {
+                    let s_lo = i64::from(off);
+                    let s_hi = s_lo + i64::from(w);
+                    s_lo < hi && lo < s_hi && !(s_lo == lo && s_hi == hi)
+                }
+            })
+    }
+
     pub(super) fn has_body_host_frame(&self) -> bool {
         match self.core.body {
             FunctionBody::Mir(function) => arm64_function_needs_body_host_frame(function),
@@ -472,6 +518,9 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             pending_direct_calls: collections::Vec::new(),
             pending_op: None,
             select_flags: None,
+            recent_stores: [(MachineReg(0), 0, 0, 0); RECENT_STORE_SLOTS],
+            recent_store_len: 0,
+            dispatch_seq: 0,
         }
     }
 
@@ -695,6 +744,10 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     // in inst.rs (kept under `#[allow(dead_code)]`) for the experiment and the
     // measured numbers.
     fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
+        self.dispatch_seq = self.dispatch_seq.wrapping_add(1);
+        if let MachineInstKind::Store { addr, width, .. } = &inst.kind {
+            self.record_store(addr.base, addr.offset, width.bytes() as u8);
+        }
         // Try to fuse the previously buffered op with this incoming op. On a
         // hit, both are consumed by a single emitted instruction. On a miss,
         // emit the buffered op solo and buffer the new one for the next call.

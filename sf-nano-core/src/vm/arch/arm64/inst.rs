@@ -2192,6 +2192,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 && d0 != d1
                 && *d0 != a0.base
                 && *d1 != a0.base
+                && !self.recent_store_partially_overlaps(a0.base, a0.offset, 16)
             {
                 let base_arm = self.map_gp_reg(a0.base)?;
                 let r0 = self.map_fp_reg(*d0)?;
