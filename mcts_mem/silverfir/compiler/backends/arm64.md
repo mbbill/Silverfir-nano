@@ -11,6 +11,17 @@
 
 ## Facts
 
+- 2026-07-16 (eafbeee9) rationale: FP constants are emitted via the arm64
+  8-bit `fmov d,#imm` immediate when the value is losslessly representable
+  (encoders brute-force all 256 encodings for an exact bit-match), instead
+  of the GP-materialize + `fmov d,gp` pair. Found while diagnosing c-ray:
+  its hot FP leaf function does arithmetic identical to Cranelift's, and the
+  only per-op difference was constant materialization. The change is a
+  code-size and dependency-shortening win (c-ray −172 B) but c-ray
+  wall-clock neutral — the constants sit off the FP-latency critical path,
+  so a future FP codegen effort should target the call-heavy functions
+  (frame-pointer adjust around calls), not the FP leaf (sourced).
+
 - 2026-07-15 (658cb4a3) measurement: select-condition flags fusion (And
   emitted as ands, IntCompare flags left published, adjacent Select consumes
   the condition from NZCV and drops its cmp #0) moved arm64 coremark from
