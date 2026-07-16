@@ -735,9 +735,11 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             self.fp_scratch.assert_all_free();
         }
         self.core.current_op_index = None;
-        // Flags never survive into a terminator (branch lowering emits its
-        // own compares) or across blocks.
-        self.select_flags = None;
+        // Flags published by the block's last instruction flow into the
+        // terminator: a Branch on that same bool consumes them as a b.cond
+        // (edge-arg moves and cache repairs emit no flag-setting
+        // instructions). Other terminator kinds ignore them, and
+        // `begin_block` clears before the next block.
         let result = self.lower_terminator(term, fallthrough);
         self.core.current_block = None;
         result

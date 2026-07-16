@@ -141,17 +141,36 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     }
                 }
                 MachineValue::Reg(reg) => {
+                    // If the block's last instruction was a compare (or ands)
+                    // that produced exactly this bool, the NZCV flags still
+                    // encode it: branch on the flags directly instead of
+                    // re-testing the materialized register. `invert()` is the
+                    // exact negation of the bool (NaN semantics of float
+                    // compares are baked into the published cond by cset).
+                    let fused = match self.select_flags.take() {
+                        Some((flags_reg, code)) if flags_reg == reg => Some(code),
+                        _ => None,
+                    };
                     let reg = self.map_gp_reg(reg)?;
                     if else_fallthrough {
                         if let Some(label) = then_label {
-                            self.lower_cbnz(reg, label);
+                            match fused {
+                                Some(code) => self.lower_b_cond(code, label),
+                                None => self.lower_cbnz(reg, label),
+                            }
                         }
                     } else if then_fallthrough {
                         if let Some(label) = else_label {
-                            self.lower_cbz(reg, label);
+                            match fused {
+                                Some(code) => self.lower_b_cond(code.invert(), label),
+                                None => self.lower_cbz(reg, label),
+                            }
                         }
                     } else if let (Some(then_label), Some(else_label)) = (then_label, else_label) {
-                        self.lower_cbnz(reg, then_label);
+                        match fused {
+                            Some(code) => self.lower_b_cond(code, then_label),
+                            None => self.lower_cbnz(reg, then_label),
+                        }
                         self.lower_b(else_label);
                     }
                 }

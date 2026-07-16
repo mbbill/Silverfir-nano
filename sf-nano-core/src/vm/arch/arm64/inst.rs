@@ -3498,6 +3498,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
         // Wasm float comparisons: unordered (NaN) => false for all except Ne
         let cond = map_float_cond(kind);
         self.core.text.emit_u32(enc::cset_32(dst_gp, cond));
+        // Flags still hold the comparison (cset preserves NZCV); an
+        // immediately following Select or the block's Branch terminator can
+        // consume the condition directly and skip re-testing the bool.
+        self.select_flags = Some((dst, cond));
         Ok(())
     }
 
