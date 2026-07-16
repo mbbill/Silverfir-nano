@@ -20,7 +20,9 @@ use crate::vm::machine::machine_ir::{
     MachineBlock, MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineValue,
 };
 
-use super::helpers::{addrs_overlap, kill_tracked_stores_by_reg, rewrite_move_storage_type};
+use super::helpers::{
+    kill_tracked_stores_by_reg, rewrite_move_storage_type, store_may_alias, unknown_store_may_alias,
+};
 use super::TrackedStore;
 
 #[inline]
@@ -69,7 +71,7 @@ pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendCon
             MachineInstKind::Store {
                 addr, width, src, ..
             } => {
-                tracked.retain(|entry| !addrs_overlap(entry.addr, entry.width, *addr, *width));
+                tracked.retain(|entry| !store_may_alias(entry.addr, entry.width, *addr, *width));
                 if is_forwardable_width(*width) {
                     tracked.push(TrackedStore {
                         addr: *addr,
@@ -77,6 +79,16 @@ pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendCon
                         width: *width,
                     });
                 }
+            }
+            MachineInstKind::IndexedStore { .. }
+            | MachineInstKind::MemoryFill { .. }
+            | MachineInstKind::MemoryCopy { .. }
+            | MachineInstKind::MemoryInit { .. }
+            | MachineInstKind::TableFill { .. }
+            | MachineInstKind::TableCopy { .. }
+            | MachineInstKind::TableInit { .. }
+            | MachineInstKind::TableGrow { .. } => {
+                tracked.retain(|entry| !unknown_store_may_alias(entry.addr.base));
             }
             MachineInstKind::CallRuntime(_)
             | MachineInstKind::RefFunc { .. }

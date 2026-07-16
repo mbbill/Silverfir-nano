@@ -1353,6 +1353,27 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 self.core.set_fp_reg_width(dst, tracked_width)?;
                 return Ok(());
             }
+            // Positive offset beyond add-imm reach: materialize + UXTW form
+            // (two instructions, versus three for materialize + add + load).
+            if offset >= 4096
+                && offset <= i64::from(u32::MAX)
+                && matches!(
+                    (width, extension),
+                    (
+                        MachineMemWidth::U32 | MachineMemWidth::U64,
+                        MachineLoadExtension::None | MachineLoadExtension::ZeroExtend
+                    )
+                )
+            {
+                let idx_scratch = *self.gp_scratch.scoped_alloc();
+                materialize_u64_into(&mut self.core.text, idx_scratch, offset as u64);
+                self.core.text.emit_u32(match tracked_width {
+                    MachineFloatWidth::F32 => enc::ldr_s_reg_uxtw(dst_fp, base, idx_scratch),
+                    MachineFloatWidth::F64 => enc::ldr_d_reg_uxtw(dst_fp, base, idx_scratch),
+                });
+                self.core.set_fp_reg_width(dst, tracked_width)?;
+                return Ok(());
+            }
             let addr_scratch = *self.gp_scratch.scoped_alloc();
             self.lower_addr_into(addr_scratch, addr)?;
             self.core
@@ -1379,17 +1400,88 @@ impl<'a> super::backend::Arm64Backend<'a> {
             return Ok(());
         }
         let dst = self.map_gp_reg(dst)?;
-        // Fast path: U64 load with aligned immediate offset -> single ldr_64
-        if matches!(
-            (width, extension),
-            (MachineMemWidth::U64, MachineLoadExtension::None)
-                | (MachineMemWidth::U64, MachineLoadExtension::ZeroExtend)
-        ) {
-            let offset = addr.offset as i64;
-            if offset >= 0 && (offset % 8) == 0 && (offset / 8) < 4096 {
-                self.core
-                    .text
-                    .emit_u32(enc::ldr_64(dst, base, (offset / 8) as u32));
+        let offset = addr.offset as i64;
+        if offset >= 0 {
+            // Fast path: aligned scaled-imm12 offset -> single load.
+            let bytes = i64::from(width.bytes());
+            if (offset % bytes) == 0 && (offset / bytes) < 4096 {
+                let imm12 = (offset / bytes) as u32;
+                let inst = match (width, extension) {
+                    (MachineMemWidth::U8, MachineLoadExtension::None)
+                    | (MachineMemWidth::U8, MachineLoadExtension::ZeroExtend) => {
+                        enc::ldrb_imm(dst, base, imm12)
+                    }
+                    (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => {
+                        enc::ldrsb_imm_64(dst, base, imm12)
+                    }
+                    (MachineMemWidth::U16, MachineLoadExtension::None)
+                    | (MachineMemWidth::U16, MachineLoadExtension::ZeroExtend) => {
+                        enc::ldrh_imm(dst, base, imm12)
+                    }
+                    (MachineMemWidth::U16, MachineLoadExtension::SignExtend) => {
+                        enc::ldrsh_imm_64(dst, base, imm12)
+                    }
+                    (MachineMemWidth::U32, MachineLoadExtension::None)
+                    | (MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => {
+                        enc::ldr_32(dst, base, imm12)
+                    }
+                    (MachineMemWidth::U32, MachineLoadExtension::SignExtend) => {
+                        enc::ldrsw_imm(dst, base, imm12)
+                    }
+                    (MachineMemWidth::U64, MachineLoadExtension::None)
+                    | (MachineMemWidth::U64, MachineLoadExtension::ZeroExtend) => {
+                        enc::ldr_64(dst, base, imm12)
+                    }
+                    (MachineMemWidth::U64, MachineLoadExtension::SignExtend) => {
+                        return Err(WasmError::invalid(
+                            "arm64 MachineIR backend does not support sign-extending U64 loads"
+                                .into(),
+                        ))
+                    }
+                };
+                self.core.text.emit_u32(inst);
+                return Ok(());
+            }
+            // Positive offset beyond add-imm reach: materialize it into a
+            // scratch and use the register-offset (UXTW) form — two
+            // instructions, versus three for materialize + add + load.
+            if offset >= 4096 && offset <= i64::from(u32::MAX) {
+                let idx_scratch = *self.gp_scratch.scoped_alloc();
+                materialize_u64_into(&mut self.core.text, idx_scratch, offset as u64);
+                let inst = match (width, extension) {
+                    (MachineMemWidth::U8, MachineLoadExtension::None)
+                    | (MachineMemWidth::U8, MachineLoadExtension::ZeroExtend) => {
+                        enc::ldrb_reg_uxtw(dst, base, idx_scratch)
+                    }
+                    (MachineMemWidth::U8, MachineLoadExtension::SignExtend) => {
+                        enc::ldrsb_reg_64_uxtw(dst, base, idx_scratch)
+                    }
+                    (MachineMemWidth::U16, MachineLoadExtension::None)
+                    | (MachineMemWidth::U16, MachineLoadExtension::ZeroExtend) => {
+                        enc::ldrh_reg_uxtw(dst, base, idx_scratch)
+                    }
+                    (MachineMemWidth::U16, MachineLoadExtension::SignExtend) => {
+                        enc::ldrsh_reg_64_uxtw(dst, base, idx_scratch)
+                    }
+                    (MachineMemWidth::U32, MachineLoadExtension::None)
+                    | (MachineMemWidth::U32, MachineLoadExtension::ZeroExtend) => {
+                        enc::ldr_reg_32_uxtw(dst, base, idx_scratch)
+                    }
+                    (MachineMemWidth::U32, MachineLoadExtension::SignExtend) => {
+                        enc::ldrsw_reg_uxtw(dst, base, idx_scratch)
+                    }
+                    (MachineMemWidth::U64, MachineLoadExtension::None)
+                    | (MachineMemWidth::U64, MachineLoadExtension::ZeroExtend) => {
+                        enc::ldr_reg_64_uxtw(dst, base, idx_scratch)
+                    }
+                    (MachineMemWidth::U64, MachineLoadExtension::SignExtend) => {
+                        return Err(WasmError::invalid(
+                            "arm64 MachineIR backend does not support sign-extending U64 loads"
+                                .into(),
+                        ))
+                    }
+                };
+                self.core.text.emit_u32(inst);
                 return Ok(());
             }
         }
@@ -1457,6 +1549,20 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     });
                     return Ok(());
                 }
+                // Positive offset beyond add-imm reach: materialize + UXTW.
+                if offset >= 4096
+                    && offset <= i64::from(u32::MAX)
+                    && matches!(width, MachineMemWidth::U32 | MachineMemWidth::U64)
+                {
+                    let idx_scratch = *self.gp_scratch.scoped_alloc();
+                    materialize_u64_into(&mut self.core.text, idx_scratch, offset as u64);
+                    self.core.text.emit_u32(match width {
+                        MachineMemWidth::U32 => enc::str_s_reg_uxtw(src_fp, base, idx_scratch),
+                        MachineMemWidth::U64 => enc::str_d_reg_uxtw(src_fp, base, idx_scratch),
+                        _ => unreachable!(),
+                    });
+                    return Ok(());
+                }
                 let addr_scratch = *self.gp_scratch.scoped_alloc();
                 self.lower_addr_into(addr_scratch, addr)?;
                 self.core.text.emit_u32(match width {
@@ -1481,10 +1587,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 return Ok(());
             }
         }
-        // Fast path: U64 store with aligned immediate offset -> single str_64
-        if width == MachineMemWidth::U64 {
-            let offset = addr.offset as i64;
-            if offset >= 0 && (offset % 8) == 0 && (offset / 8) < 4096 {
+        let offset = addr.offset as i64;
+        if offset >= 0 {
+            // Fast path: aligned scaled-imm12 offset -> single store.
+            let bytes = i64::from(width.bytes());
+            if (offset % bytes) == 0 && (offset / bytes) < 4096 {
+                let imm12 = (offset / bytes) as u32;
                 let src_reg = prepare_gp(
                     self.core.compiled.backend(),
                     &self.core.fp_reg_widths,
@@ -1492,9 +1600,31 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     &self.gp_scratch,
                     src,
                 )?;
-                self.core
-                    .text
-                    .emit_u32(enc::str_64(*src_reg, base, (offset / 8) as u32));
+                self.core.text.emit_u32(match width {
+                    MachineMemWidth::U8 => enc::strb_imm(*src_reg, base, imm12),
+                    MachineMemWidth::U16 => enc::strh_imm(*src_reg, base, imm12),
+                    MachineMemWidth::U32 => enc::str_32(*src_reg, base, imm12),
+                    MachineMemWidth::U64 => enc::str_64(*src_reg, base, imm12),
+                });
+                return Ok(());
+            }
+            // Positive offset beyond add-imm reach: materialize + UXTW form.
+            if offset >= 4096 && offset <= i64::from(u32::MAX) {
+                let idx_scratch = *self.gp_scratch.scoped_alloc();
+                materialize_u64_into(&mut self.core.text, idx_scratch, offset as u64);
+                let src_reg = prepare_gp(
+                    self.core.compiled.backend(),
+                    &self.core.fp_reg_widths,
+                    &mut self.core.text,
+                    &self.gp_scratch,
+                    src,
+                )?;
+                self.core.text.emit_u32(match width {
+                    MachineMemWidth::U8 => enc::strb_reg_uxtw(*src_reg, base, idx_scratch),
+                    MachineMemWidth::U16 => enc::strh_reg_uxtw(*src_reg, base, idx_scratch),
+                    MachineMemWidth::U32 => enc::str_reg_32_uxtw(*src_reg, base, idx_scratch),
+                    MachineMemWidth::U64 => enc::str_reg_64_uxtw(*src_reg, base, idx_scratch),
+                });
                 return Ok(());
             }
         }

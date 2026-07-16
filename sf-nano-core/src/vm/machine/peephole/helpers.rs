@@ -8,6 +8,7 @@ use crate::vm::machine::machine_ir::{
     MachineCallArgs, MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineEdge,
     MachineInst, MachineInstKind, MachineIntUnaryOp, MachineMemWidth, MachineReg, MachineResultDst,
     MachineResultSrc, MachineReturnValue, MachineStorageType, MachineTerminator, MachineValue,
+    MACHINE_CTX_REG, MACHINE_FP_REG,
 };
 
 // --- Instruction analysis ---
@@ -598,6 +599,37 @@ pub(super) fn addrs_overlap(
     let rhs_end = rhs_start + i64::from(rhs_width.bytes());
 
     lhs_start < rhs_end && rhs_start < lhs_end
+}
+
+/// True if `base` is a runtime-owned address space that a Wasm-visible store
+/// (linear memory, table) can never write: the frame and the runtime context.
+fn is_runtime_owned_base(base: MachineReg) -> bool {
+    base == MACHINE_FP_REG || base == MACHINE_CTX_REG
+}
+
+/// Conservative may-alias between a tracked entry and a plain `Store`.
+///
+/// Same base register: precise range overlap. Different base registers: two
+/// Wasm-side bases (e.g. the linear-memory base and a computed pointer into
+/// it) can address the same bytes, so they conservatively alias; a
+/// runtime-owned base on either side cannot alias the other.
+pub(super) fn store_may_alias(
+    entry_addr: MachineAddr,
+    entry_width: MachineMemWidth,
+    store_addr: MachineAddr,
+    store_width: MachineMemWidth,
+) -> bool {
+    if entry_addr.base == store_addr.base {
+        return addrs_overlap(entry_addr, entry_width, store_addr, store_width);
+    }
+    !is_runtime_owned_base(entry_addr.base) && !is_runtime_owned_base(store_addr.base)
+}
+
+/// Conservative may-alias between a tracked entry and a store whose target
+/// range is unknown (indexed store, bulk-memory op, table write). Only
+/// runtime-owned bases are provably out of reach.
+pub(super) fn unknown_store_may_alias(entry_base: MachineReg) -> bool {
+    !is_runtime_owned_base(entry_base)
 }
 
 // --- Tracker invalidation ---

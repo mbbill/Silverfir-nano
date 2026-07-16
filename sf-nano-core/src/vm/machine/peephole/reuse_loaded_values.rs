@@ -8,7 +8,9 @@ use crate::collections;
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{MachineBlock, MachineInstKind, MachineValue};
 
-use super::helpers::{addrs_overlap, kill_tracked_loads_by_reg, rewrite_move_storage_type};
+use super::helpers::{
+    kill_tracked_loads_by_reg, rewrite_move_storage_type, store_may_alias, unknown_store_may_alias,
+};
 use super::TrackedLoad;
 
 pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfig) {
@@ -72,7 +74,17 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
                 }
             }
             MachineInstKind::Store { addr, width, .. } => {
-                tracked.retain(|entry| !addrs_overlap(entry.addr, entry.width, *addr, *width));
+                tracked.retain(|entry| !store_may_alias(entry.addr, entry.width, *addr, *width));
+            }
+            MachineInstKind::IndexedStore { .. }
+            | MachineInstKind::MemoryFill { .. }
+            | MachineInstKind::MemoryCopy { .. }
+            | MachineInstKind::MemoryInit { .. }
+            | MachineInstKind::TableFill { .. }
+            | MachineInstKind::TableCopy { .. }
+            | MachineInstKind::TableInit { .. }
+            | MachineInstKind::TableGrow { .. } => {
+                tracked.retain(|entry| !unknown_store_may_alias(entry.addr.base));
             }
             MachineInstKind::CallRuntime(_)
             | MachineInstKind::RefFunc { .. }
