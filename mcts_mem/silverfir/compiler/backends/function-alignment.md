@@ -20,3 +20,13 @@
   (ARM64 NOP 0xd503201f, x86_64 INT3 0xCC, ARMv7 MOV R0,R0 0xe1a00000), and the
   64-byte cache-line snap applies to every function start in addition to the
   conditional page-crossing push (sourced).
+
+- 2026-07-16 (95fec85d) pitfall: 64-byte function alignment does not stabilize
+  branch-predictor aliasing in large dispatch loops — lua fib38 wall time
+  moved +4-6% when unrelated cold functions changed size, with the hot 45 KB
+  dispatch function's MachineIR and (in the backend-reverted control build)
+  its native bytes proven identical; the shift is 64-byte-granular base
+  movement changing BTB index bits, the same phenomenon behind the af139e58
+  regression. Before attributing a lua-fib delta to codegen quality, diff the
+  hot function's MIR/bytes; deltas within ~5% with identical hot code are
+  placement luck (code).

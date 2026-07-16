@@ -9,6 +9,13 @@
   ZeroExtend32), an i32 offset, width and load-extension, with semantics
   dst <- mem[base + extend(index) + offset] (`MachineIndexExtend`).
 
+- When the wasm address is a materialized constant (move-imm feeding the
+  extend), the pass folds the entire address computation into the original
+  load/store's immediate offset instead of forming an IndexedLoad/Store,
+  keeping the memory base as the base operand; the fold is exact
+  (base + zext32(imm) + wasm_offset) and requires the constant and extend
+  registers dead after the memory op (`try_fuse_const_addr`).
+
 ## Facts
 
 - 2026-03-23 (0a30b592) statement: when IndexedLoad/IndexedStore were
@@ -50,6 +57,26 @@
   'add ...,UXTW' does not fuse with the load AGU and adds a dependent cycle to
   the whole group; the result motivates reanimating burst fusion only on
   microarchitectures without macro-op fusion / move elimination (code).
+
+- 2026-07-16 (95fec85d) measurement: constant-address folding fires mostly in
+  wasm libm and static-data code — in c-ray, pow's polynomial coefficient
+  tables (the module's fourth-hottest function at 7.8% of samples) go from
+  mov-imm + register-indexed load to a single scaled-imm ldr; c-ray 4000x4000
+  improved 1989 -> 1970 ms mean over 5/5 interleaved rounds with the DVFS band
+  checked, narrowing the same-session gap to V8 from 3.2% to 2.2% (code).
+
+- 2026-07-16 (95fec85d) pitfall: the fold hands linear-memory accesses to the
+  store-forwarding and load-reuse passes in the same base+imm Load/Store shape
+  as frame accesses, and those passes' invalidation was frame-tuned — exact
+  same-base range overlap only, with IndexedStore and bulk-memory ops
+  invalidating nothing; the first folded build reused a load across an
+  aliasing indexed store (memory_redundancy.wast caught it). Pre-fold this was
+  latent only because every linear-memory address was recomputed into a fresh
+  register per access, so tracked entries never survived to a stale reuse. The
+  fold is only sound together with conservative alias rules in both passes:
+  cross-base stores kill entries unless one side is a runtime-owned base
+  (frame, context), and unknown-offset stores (indexed, bulk memory, table
+  writes) kill every non-runtime-owned entry (code).
 
 ## Moves
 

@@ -4,6 +4,15 @@
   pair an i64 wasm-local spill/fill lowers to on 32-bit GP backends forwards
   (`forward_stored_values`, `is_forwardable_width`).
 
+- Both the store-forwarding and load-reuse trackers invalidate on conservative
+  may-alias rules rather than exact address equality: a store with the same
+  base register kills entries by precise byte-range overlap, a store through a
+  different base register kills every entry unless one side's base is
+  runtime-owned (the frame or the runtime context, which a wasm-visible store
+  can never write), and stores with unknown target ranges — indexed stores,
+  bulk-memory ops, table writes — kill every non-runtime-owned entry
+  (`store_may_alias`).
+
 ## Facts
 
 - 2026-04-23 (d2a36772) statement: widening store-to-load forwarding to the U32

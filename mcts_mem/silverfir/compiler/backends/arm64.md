@@ -95,3 +95,21 @@
   — an inline NaN check (fcmp src,src) plus upper/lower bounds checks with a
   one-way trap exit (no register preservation) followed by native fcvtzs/fcvtzu;
   only arm32/x86_64 call out-of-line helpers (code).
+
+- 2026-07-16 (95fec85d) statement: plain Load/Store lowering covers three
+  addressing tiers in priority order — scaled-imm12 single instruction for
+  every GP width and extension (previously only U64 had an immediate fast
+  path), a mov+UXTW register-offset two-instruction form for positive offsets
+  beyond add-imm reach, and the generic materialize+add fallback last; without
+  the middle tier, constant-address folds beyond 4095 lowered to a
+  three-instruction materialize+add+load, one worse than the pre-fold shape
+  (code).
+
+- 2026-07-16 (21ab93bf) measurement: an ldp that partially overlaps a recent
+  narrower store defeats store-to-load forwarding on Apple Silicon — pow's
+  hot entry (cell-home zero-init `str xzr` immediately re-read by a paired
+  cell fill `ldp` at the same frame offset) carried 57 of 8000 c-ray profile
+  samples on that single ldp; the backend records dispatched stores in a small
+  ring and the FP load-pair fusion declines to pair across a partial overlap,
+  emitting exact-width ldrs that forward cleanly (a false positive costs one
+  instruction, so the ring is safely kept across block boundaries) (code).
