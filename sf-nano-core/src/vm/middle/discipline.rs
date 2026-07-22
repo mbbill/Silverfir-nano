@@ -51,9 +51,10 @@ pub(crate) enum StructuralAction {
     /// results before filling.
     PrimitiveFill { pop: u16, push: u16 },
     /// Fill `keep` operands live, then spill every live value except the top
-    /// `keep`. `if`, the branch family, `throw`, `throw_ref`.
+    /// `keep`. Typed `loop` entries, `if`, the branch family, `throw`,
+    /// `throw_ref`.
     FillKeepSpillRest(u16),
-    /// Spill every live transient. `loop`, `alloc_exn_ref`, `return` (void or
+    /// Spill every live transient. `alloc_exn_ref`, `return` (void or
     /// multi-value).
     SpillAll,
     /// A wasm call. The planner spills everything; the rewriter keeps the live
@@ -95,9 +96,13 @@ pub(crate) fn structural_action(op: &SemanticOpKind) -> StructuralAction {
         SemanticOpKind::Block { .. } | SemanticOpKind::End | SemanticOpKind::TryTable { .. } => {
             StructuralAction::None
         }
-        SemanticOpKind::Loop { .. } | SemanticOpKind::AllocExnRef { .. } => {
-            StructuralAction::SpillAll
-        }
+        // Only the loop's typed parameter suffix is part of its re-entry
+        // contract. Keep that suffix live so the loop header and backedges can
+        // exchange it through SSA block params instead of a frame round trip.
+        // A void loop still has `params == 0` and therefore spills everything,
+        // preserving the old boundary behavior for values below the loop.
+        SemanticOpKind::Loop { params, .. } => StructuralAction::FillKeepSpillRest(*params),
+        SemanticOpKind::AllocExnRef { .. } => StructuralAction::SpillAll,
         SemanticOpKind::If { params, .. } => {
             StructuralAction::FillKeepSpillRest(params.saturating_add(1))
         }

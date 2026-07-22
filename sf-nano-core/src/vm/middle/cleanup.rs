@@ -33,6 +33,7 @@ pub(crate) fn cleanup_program(program: &mut SsaProgram) {
         }
         break;
     }
+    fold_block_params_sourced_from_cached_cells(program);
     // Cache-run canonicalization neither creates empty goto blocks nor changes
     // CFG edges, so it cannot enable any of the structural transformations
     // above.  Running it inside the fixed-point loop rebuilt every block's op
@@ -40,6 +41,155 @@ pub(crate) fn cleanup_program(program: &mut SsaProgram) {
     // large functions.  Structural convergence can concatenate cache runs, so
     // canonicalize once on the final block layout instead.
     simplify_cache_only_runs(program);
+}
+
+/// Replace a block parameter with a cached-local read when every incoming edge
+/// obtains that parameter from the same cached local.
+///
+/// Typed loops often carry a value that is also assigned to a local with
+/// `local.tee`. Keeping both the transient block parameter and the cached local
+/// forces MachineIR to dedicate two registers to one value and shuffle between
+/// them on every backedge. When all predecessors prove the two identities are
+/// equal, define the former block-param value with `cell.get_cache` at the
+/// target instead. The final cache-requirement pass will upgrade the target
+/// cell from write-first Reserve to Ensure and the normal cache edge will carry
+/// the value.
+fn fold_block_params_sourced_from_cached_cells(program: &mut SsaProgram) -> bool {
+    let mut cache_get_cell = collections::vec![None; program.value_types.len()];
+    for block in &program.blocks {
+        for inst in &block.ops {
+            if inst.op != SsaOp::CELL_GET_CACHE || !inst.result.is_some() {
+                continue;
+            }
+            if let Some(slot) = cache_get_cell.get_mut(inst.result.0 as usize) {
+                *slot = Some(super::cell::CellId(inst.meta));
+            }
+        }
+    }
+
+    let incoming_by_block = all_incoming_edge_locations(program);
+    let mut param_location = collections::vec![None; program.value_types.len()];
+    for (block_index, block) in program.blocks.iter().enumerate() {
+        for (param_index, param) in block.params.iter().copied().enumerate() {
+            if let Some(slot) = param_location.get_mut(param.0 as usize) {
+                *slot = Some((block_index, param_index));
+            }
+        }
+    }
+    let mut folds = collections::Vec::<(usize, SsaValue, super::cell::CellId)>::new();
+    let mut common_cells = collections::Vec::new();
+    let mut seen_count = collections::Vec::new();
+    let mut valid = collections::Vec::new();
+    for block_index in 0..program.blocks.len() {
+        if block_index == program.entry.as_usize() {
+            continue;
+        }
+        let incoming = &incoming_by_block[block_index];
+        if incoming.is_empty() {
+            continue;
+        }
+        let params = &program.blocks[block_index].params;
+        common_cells.clear();
+        common_cells.resize(params.len(), None);
+        seen_count.clear();
+        seen_count.resize(params.len(), 0usize);
+        valid.clear();
+        valid.resize(params.len(), true);
+        for &location in incoming {
+            for binding in &edge_at(program, location).bindings {
+                let Some((target_block, param_index)) = param_location
+                    .get(binding.param.0 as usize)
+                    .copied()
+                    .flatten()
+                else {
+                    continue;
+                };
+                if target_block != block_index {
+                    continue;
+                }
+                seen_count[param_index] += 1;
+                let Some(source_cell) = cache_get_cell
+                    .get(binding.value.0 as usize)
+                    .copied()
+                    .flatten()
+                else {
+                    valid[param_index] = false;
+                    continue;
+                };
+                if common_cells[param_index].is_some_and(|candidate| candidate != source_cell) {
+                    valid[param_index] = false;
+                } else {
+                    common_cells[param_index] = Some(source_cell);
+                }
+            }
+        }
+        for (param_index, &param) in params.iter().enumerate() {
+            let Some(param_ty) = program.value_types.get(param.0 as usize).copied() else {
+                continue;
+            };
+            if param_ty.is_ref() {
+                continue;
+            }
+            if !valid[param_index] || seen_count[param_index] != incoming.len() {
+                continue;
+            }
+            let Some(cell) = common_cells[param_index] else {
+                continue;
+            };
+            if program.cell_types.get(cell.0 as usize).copied() != Some(param_ty)
+                || !program
+                    .block_entry_cached_cells
+                    .get(block_index)
+                    .is_some_and(|cells| cells.contains(&cell))
+            {
+                continue;
+            }
+            folds.push((block_index, param, cell));
+        }
+    }
+
+    if folds.is_empty() {
+        return false;
+    }
+
+    let mut folded_param = collections::vec![false; program.value_types.len()];
+    for &(_, param, _) in &folds {
+        if let Some(slot) = folded_param.get_mut(param.0 as usize) {
+            *slot = true;
+        }
+    }
+
+    let mut fold_index = 0;
+    while fold_index < folds.len() {
+        let block_index = folds[fold_index].0;
+        let group_start = fold_index;
+        while fold_index < folds.len() && folds[fold_index].0 == block_index {
+            fold_index += 1;
+        }
+        program.blocks[block_index]
+            .params
+            .retain(|param| !folded_param.get(param.0 as usize).copied().unwrap_or(false));
+        for &location in &incoming_by_block[block_index] {
+            edge_at_mut(program, location).bindings.retain(|binding| {
+                !folded_param
+                    .get(binding.param.0 as usize)
+                    .copied()
+                    .unwrap_or(false)
+            });
+        }
+        let old_ops = core::mem::take(&mut program.blocks[block_index].ops);
+        let mut new_ops = collections::Vec::with_capacity(
+            old_ops
+                .len()
+                .saturating_add(fold_index.saturating_sub(group_start)),
+        );
+        for &(_, param, cell) in &folds[group_start..fold_index] {
+            new_ops.push(SsaInst::cell_get_cache(cell, param));
+        }
+        new_ops.extend(old_ops);
+        program.blocks[block_index].ops = new_ops;
+    }
+    true
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -429,6 +579,58 @@ fn incoming_edge_locations(
                             entry: entry_index,
                         });
                     }
+                }
+            }
+            SsaTerminator::Return { .. }
+            | SsaTerminator::ReturnScalar { .. }
+            | SsaTerminator::TailCallDirect { .. }
+            | SsaTerminator::TailCallIndirect { .. }
+            | SsaTerminator::TailCallRef { .. }
+            | SsaTerminator::TrapUnreachable
+            | SsaTerminator::EhThrow { .. }
+            | SsaTerminator::EhThrowRef { .. } => {}
+        }
+    }
+    incoming
+}
+
+fn all_incoming_edge_locations(
+    program: &SsaProgram,
+) -> collections::Vec<collections::Vec<EdgeLocation>> {
+    let mut incoming = collections::vec![collections::Vec::new(); program.blocks.len()];
+    for (block_index, block) in program.blocks.iter().enumerate() {
+        let mut push = |target: SsaTarget, location| {
+            if let Some(edges) = incoming.get_mut(target.as_usize()) {
+                edges.push(location);
+            }
+        };
+        match &block.terminator {
+            SsaTerminator::Goto(edge) => {
+                push(edge.target, EdgeLocation::Goto { block: block_index });
+            }
+            SsaTerminator::Branch {
+                then_edge,
+                else_edge,
+                ..
+            } => {
+                push(
+                    then_edge.target,
+                    EdgeLocation::BranchThen { block: block_index },
+                );
+                push(
+                    else_edge.target,
+                    EdgeLocation::BranchElse { block: block_index },
+                );
+            }
+            SsaTerminator::BrTable { entries, .. } => {
+                for (entry_index, edge) in entries.iter().enumerate() {
+                    push(
+                        edge.target,
+                        EdgeLocation::BrTable {
+                            block: block_index,
+                            entry: entry_index,
+                        },
+                    );
                 }
             }
             SsaTerminator::Return { .. }
@@ -911,6 +1113,92 @@ mod tests {
             collections::vec![SsaOp::CELL_DROP_CACHE, SsaOp::CELL_ENSURE_CACHE]
         );
         assert!(simplified.iter().all(|inst| inst.meta == 0));
+    }
+
+    #[test]
+    fn folds_loop_param_sourced_from_same_cached_cell_on_every_edge() {
+        let param = SsaValue(10);
+        let mut program = SsaProgram {
+            cell_homes: collections::Vec::new(),
+            entry: SsaTarget(0),
+            blocks: collections::vec![
+                SsaBlock {
+                    id: SsaTarget(0),
+                    params: collections::Vec::new(),
+                    ops: collections::vec![SsaInst::cell_get_cache(CellId(0), SsaValue(0))],
+                    extra_args: collections::Vec::new(),
+                    terminator: SsaTerminator::Goto(SsaEdge {
+                        target: SsaTarget(1),
+                        bindings: collections::vec![SsaBinding {
+                            param,
+                            value: SsaValue(0),
+                        }],
+                    }),
+                },
+                SsaBlock {
+                    id: SsaTarget(1),
+                    params: collections::vec![param],
+                    ops: collections::vec![SsaInst::cell_get_cache(CellId(0), SsaValue(1))],
+                    extra_args: collections::Vec::new(),
+                    terminator: SsaTerminator::Branch {
+                        cond: param,
+                        then_edge: SsaEdge {
+                            target: SsaTarget(1),
+                            bindings: collections::vec![SsaBinding {
+                                param,
+                                value: SsaValue(1),
+                            }],
+                        },
+                        else_edge: SsaEdge {
+                            target: SsaTarget(2),
+                            bindings: collections::Vec::new(),
+                        },
+                    },
+                },
+                SsaBlock {
+                    id: SsaTarget(2),
+                    params: collections::Vec::new(),
+                    ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
+                    terminator: SsaTerminator::Return { results: None },
+                },
+            ],
+            cell_types: collections::vec![ValueType::I32],
+            result_types: collections::Vec::new(),
+            cell_info: collections::vec![Default::default()],
+            block_entry_cached_cells: collections::vec![
+                collections::vec![CellId(0)],
+                collections::vec![CellId(0)],
+                collections::Vec::new(),
+            ],
+            block_entry_cache_requirements: collections::vec![
+                collections::vec![EntryCacheRequirement::Ensure],
+                collections::vec![EntryCacheRequirement::Ensure],
+                collections::Vec::new(),
+            ],
+            preferred_preserved: collections::Vec::new(),
+            value_types: collections::vec![ValueType::I32; 11],
+            value_sink_cell: collections::vec![None; 11],
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
+        };
+
+        assert!(fold_block_params_sourced_from_cached_cells(&mut program));
+        let loop_block = &program.blocks[1];
+        assert!(loop_block.params.is_empty());
+        assert_eq!(loop_block.ops[0].op, SsaOp::CELL_GET_CACHE);
+        assert_eq!(loop_block.ops[0].meta, 0);
+        assert_eq!(loop_block.ops[0].result, param);
+        assert!(matches!(
+            &program.blocks[0].terminator,
+            SsaTerminator::Goto(edge) if edge.bindings.is_empty()
+        ));
+        assert!(matches!(
+            &loop_block.terminator,
+            SsaTerminator::Branch { then_edge, .. } if then_edge.bindings.is_empty()
+        ));
+        validate_program(&program).unwrap();
     }
 
     #[test]

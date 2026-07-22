@@ -405,7 +405,7 @@ fn typed_loop_br_if_backedge_keeps_loop_payload_live_for_fallthrough_and_reentry
 }
 
 #[test]
-fn typed_loop_block_start_before_op_refills_loop_params_for_first_body_op() {
+fn typed_loop_block_start_keeps_loop_params_live() {
     let mut semantic = typed_program(
         collections::vec![ValueType::I32],
         collections::vec![ValueType::I32],
@@ -443,7 +443,11 @@ fn typed_loop_block_start_before_op_refills_loop_params_for_first_body_op() {
     let block_open = planned.planner.block_open(loop_block);
 
     assert_eq!(block_open.transient.stack_height, 2);
-    assert_eq!(block_open.transient.spill_depth, 2);
+    assert_eq!(block_open.transient.spill_depth, 0);
+    assert_eq!(
+        block_open.transient.live_types,
+        &[ValueType::I32, ValueType::I32]
+    );
 }
 
 #[test]
