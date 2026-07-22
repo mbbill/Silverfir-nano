@@ -752,12 +752,12 @@ fn lower_primitive(
     builder: &mut ProgramBuilder,
 ) -> Result<(), WasmError> {
     let (pop, push) = primitive_op::stack_effect(kind);
-    let args = state.top_values(pop as usize)?;
+    let (inline_args, extra_idx, first_arg) = state.pack_top_primitive_args(pop)?;
     let result_ty = if push == 0 {
         ValueType::I64
     } else if matches!(kind, PrimitiveOpKind::Select) {
-        args.first()
-            .map(|v| values.value_type(*v))
+        first_arg
+            .map(|v| values.value_type(v))
             .unwrap_or(ValueType::I64)
     } else if let Some(ty) = primitive_op::result_type(kind) {
         ty
@@ -780,15 +780,11 @@ fn lower_primitive(
         values.fresh_typed(result_ty)
     };
     let pool_idx = builder.intern_primitive(kind.clone())?;
-    let (inline_args, extra_idx) = pack_primitive_args(&args, &mut state.extra_args)?;
     state
         .ops
         .push(SsaInst::primitive(pool_idx, result, inline_args, extra_idx));
     if push != 0 {
-        state.push_results(
-            collections::vec![result],
-            collections::vec![result_ty; push as usize],
-        )?;
+        state.push_result(result, result_ty)?;
     }
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "primitive op")
 }
@@ -860,10 +856,10 @@ fn lower_local_get(
         }
     };
     state.ops.push(inst);
-    let aliases = collections::vec![matches!(access, CellAccessDecision::Cache)
+    let alias = matches!(access, CellAccessDecision::Cache)
         .then_some(slot)
-        .filter(|_| discipline::cached_cell_get_can_source_alias(ty, state.gp_unit_bytes))];
-    state.push_results_with_aliases(collections::vec![dst], collections::vec![ty], aliases)?;
+        .filter(|_| discipline::cached_cell_get_can_source_alias(ty, state.gp_unit_bytes));
+    state.push_result_with_alias(dst, ty, alias)?;
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "local.get")
 }
 
@@ -939,10 +935,10 @@ fn lower_local_tee(
         }
     };
     state.ops.push(get_inst);
-    let aliases = collections::vec![matches!(access, CellAccessDecision::Cache)
+    let alias = matches!(access, CellAccessDecision::Cache)
         .then_some(slot)
-        .filter(|_| discipline::cached_cell_get_can_source_alias(ty, state.gp_unit_bytes))];
-    state.push_results_with_aliases(collections::vec![dst], collections::vec![ty], aliases)?;
+        .filter(|_| discipline::cached_cell_get_can_source_alias(ty, state.gp_unit_bytes));
+    state.push_result_with_alias(dst, ty, alias)?;
     ensure_state_fits_with_cache(state, resident_cache, &semantic.local_types, "local.tee")
 }
 
@@ -1863,7 +1859,7 @@ fn lower_block_terminator(
                 block_params,
                 planner,
             )?;
-            state.push_results(collections::vec![refined], collections::vec![*ref_type])?;
+            state.push_result(refined, *ref_type)?;
             let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough],
@@ -1923,7 +1919,7 @@ fn lower_block_terminator(
                 block_params,
                 planner,
             )?;
-            state.push_results(collections::vec![refined], collections::vec![*ref_type])?;
+            state.push_result(refined, *ref_type)?;
             if target_expects_canonical_payload(*target, *stack_drop, rewrite_cfg, state, planner)?
             {
                 publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
@@ -1966,7 +1962,7 @@ fn lower_block_terminator(
                 values,
             );
             let cond = emit_ref_test_condition(cond_ref, *cast_type, state, builder, values)?;
-            state.push_results(collections::vec![cast_ref], collections::vec![*cast_type])?;
+            state.push_result(cast_ref, *cast_type)?;
             if target_expects_canonical_payload(*target, *stack_drop, rewrite_cfg, state, planner)?
             {
                 publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;
@@ -1985,7 +1981,7 @@ fn lower_block_terminator(
                 planner,
             )?;
             state.consume_top(1)?;
-            state.push_results(collections::vec![source_ref], collections::vec![*fail_type])?;
+            state.push_result(source_ref, *fail_type)?;
             let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough],
@@ -2029,7 +2025,7 @@ fn lower_block_terminator(
                 values,
             );
             let cond = emit_ref_test_condition(cond_ref, *cast_type, state, builder, values)?;
-            state.push_results(collections::vec![cast_ref], collections::vec![*cast_type])?;
+            state.push_result(cast_ref, *cast_type)?;
             let fallthrough = fallthrough_target(semantic_index, semantic.ops.len())?;
             maybe_publish_live_window_for_targets(
                 &[fallthrough],
@@ -2049,7 +2045,7 @@ fn lower_block_terminator(
                 planner,
             )?;
             state.consume_top(1)?;
-            state.push_results(collections::vec![source_ref], collections::vec![*fail_type])?;
+            state.push_result(source_ref, *fail_type)?;
             if target_expects_canonical_payload(*target, *stack_drop, rewrite_cfg, state, planner)?
             {
                 publish_taken_branch_payload_at(*stack_drop, *arity, state, frame)?;

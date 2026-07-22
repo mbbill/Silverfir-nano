@@ -14,7 +14,7 @@ use crate::{
     value_type::ValueType,
     vm::{
         middle::{
-            budget::count_live_bank_budget_units,
+            budget::gp_value_budget_units,
             cell::{CellId, CellSet},
             discipline::{self, BankBudget, DisciplineDriver, Window},
             frame::{FrameLayoutPlan, FrameSlot},
@@ -182,6 +182,52 @@ impl BlockState {
         Ok(self.live[self.live.len() - count..].to_vec().into())
     }
 
+    /// Pack the top `count` live values into a primitive instruction without
+    /// allocating a temporary operand vector. Returns the first operand as
+    /// well because `select` uses it to derive its result type.
+    pub(super) fn pack_top_primitive_args(
+        &mut self,
+        count: usize,
+    ) -> Result<([SsaOperand; 2], u16, Option<SsaValue>), WasmError> {
+        if count > self.live.len() {
+            return Err(WasmError::internal(
+                "transient underflow: requested primitive operands from live window",
+            ));
+        }
+        let start = self.live.len() - count;
+        let first = self.live.get(start).copied();
+        let arg0 = first.map(SsaOperand::value).unwrap_or(SsaOperand::NONE);
+        let arg1 = self
+            .live
+            .get(start + 1)
+            .copied()
+            .map(SsaOperand::value)
+            .unwrap_or(SsaOperand::NONE);
+        if count <= 2 {
+            return Ok(([arg0, arg1], 0, first));
+        }
+
+        let extra_count = count - 2;
+        let Some(new_len) = self.extra_args.len().checked_add(extra_count) else {
+            return Err(WasmError::internal(
+                "block extra_args overflow while lowering primitive operands",
+            ));
+        };
+        if new_len > u16::MAX as usize {
+            return Err(WasmError::internal(
+                "block extra_args overflow while lowering primitive operands",
+            ));
+        }
+        let extra_idx = self.extra_args.len() as u16;
+        self.extra_args.extend(
+            self.live[start + 2..]
+                .iter()
+                .copied()
+                .map(SsaOperand::value),
+        );
+        Ok(([arg0, arg1], extra_idx, first))
+    }
+
     pub(super) fn pop_one(&mut self) -> Result<SsaValue, WasmError> {
         let value = self
             .live
@@ -203,25 +249,25 @@ impl BlockState {
         Ok(())
     }
 
-    pub(super) fn push_results(
+    pub(super) fn push_result(
         &mut self,
-        results: collections::Vec<SsaValue>,
-        result_types: collections::Vec<ValueType>,
+        result: SsaValue,
+        result_type: ValueType,
     ) -> Result<(), WasmError> {
-        let alias_len = results.len();
-        self.push_results_with_aliases(results, result_types, collections::vec![None; alias_len])
+        self.push_result_with_alias(result, result_type, None)
     }
 
-    pub(super) fn push_results_with_aliases(
+    pub(super) fn push_result_with_alias(
         &mut self,
-        results: collections::Vec<SsaValue>,
-        result_types: collections::Vec<ValueType>,
-        result_aliases: collections::Vec<Option<CellId>>,
+        result: SsaValue,
+        result_type: ValueType,
+        result_alias: Option<CellId>,
     ) -> Result<(), WasmError> {
-        debug_assert_eq!(results.len(), result_types.len());
-        debug_assert_eq!(results.len(), result_aliases.len());
-        self.live.extend(results);
-        self.window.push_core(&result_types, &result_aliases);
+        self.live.push(result);
+        self.window.push_core(
+            core::slice::from_ref(&result_type),
+            core::slice::from_ref(&result_alias),
+        );
         self.ensure_live_fit("value push")
     }
 
@@ -336,15 +382,23 @@ impl BlockState {
     }
 
     fn ensure_live_fit(&self, _context: &str) -> Result<(), WasmError> {
-        let effective_live_types = self
+        let mut gp_live = 0usize;
+        let mut fp_live = 0usize;
+        for (&ty, alias) in self
             .window
             .live_types()
             .iter()
-            .zip(self.window.live_aliases().iter())
-            .filter_map(|(ty, alias)| alias.is_none().then_some(*ty))
-            .collect::<collections::Vec<_>>();
-        let (gp_live, fp_live) =
-            count_live_bank_budget_units(&effective_live_types, self.gp_unit_bytes);
+            .zip(self.window.live_aliases())
+        {
+            if alias.is_some() {
+                continue;
+            }
+            if ty.is_fp() {
+                fp_live += 1;
+            } else {
+                gp_live += gp_value_budget_units(ty, self.gp_unit_bytes);
+            }
+        }
         if gp_live > self.gp_live_budget as usize || fp_live > self.fp_live_budget as usize {
             return Err(WasmError::internal(
                 "SSA-IR exceeds configured dynamic bank budget during : gp > or fp >",
