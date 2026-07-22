@@ -14,7 +14,9 @@ use crate::{
     vm::{
         backend::BackendConfig,
         middle::{
-            budget::gp_value_budget_units, cell::CellId, cfg::SemanticCfg,
+            budget::gp_value_budget_units,
+            cell::CellId,
+            cfg::{CfgTerminator, SemanticCfg},
             joint_plan::facts::BlockCellSummary,
         },
         wasm::semantic_ir::{SemanticOpKind, SemanticProgram},
@@ -288,7 +290,6 @@ pub(super) fn solve_public_cache_sets(
                 * meta.units as f64;
         }
     }
-
     let mut selected = collections::vec![collections::vec![false; local_count]; region_count];
     solve_bank(
         Bank::Gp,
@@ -758,6 +759,14 @@ fn compute_block_call_counts(
     let mut survivable = collections::vec![0u32; cfg.blocks.len()];
     let mut barrier = collections::vec![0u32; cfg.blocks.len()];
     for (block_index, block) in cfg.blocks.iter().enumerate() {
+        // Calls on a statically trapping path never cross a live cache
+        // boundary: execution cannot return to a successor that consumes the
+        // resident locals. Pricing these panic/bounds-check slow paths as if
+        // every loop iteration crossed the call systematically evicts the hot
+        // loop locals they guard.
+        if matches!(block.terminator, CfgTerminator::TrapUnreachable { .. }) {
+            continue;
+        }
         for semantic_index in block.range.clone() {
             match semantic.ops[semantic_index].kind {
                 SemanticOpKind::CallDirect { callee, .. }
@@ -928,5 +937,40 @@ mod tests {
         let nominated =
             nominate_preserved(&meta, &benefit, &[64.0], nomination_config(6, 0), &params);
         assert_eq!(nominated, collections::vec![false]);
+    }
+
+    #[test]
+    fn calls_on_statically_trapping_paths_do_not_tax_cache_residency() {
+        use crate::vm::{
+            middle::cfg::{CfgBlock, CfgBlockFlags, CfgBlockId},
+            wasm::semantic_ir::SemanticOp,
+        };
+
+        let semantic = SemanticProgram {
+            ops: collections::vec![SemanticOp {
+                kind: SemanticOpKind::CallDirect {
+                    callee: 0,
+                    params: 0,
+                    results: 0,
+                },
+            }],
+            ..SemanticProgram::default()
+        };
+        let cfg = SemanticCfg {
+            entry: CfgBlockId(0),
+            blocks: collections::vec![CfgBlock {
+                id: CfgBlockId(0),
+                range: 0..1,
+                preds: collections::Vec::new(),
+                succs: collections::Vec::new(),
+                terminator: CfgTerminator::TrapUnreachable { op_index: 0 },
+                flags: CfgBlockFlags::default(),
+            }],
+        };
+
+        let counts = compute_block_call_counts(&semantic, &cfg, &[true]);
+
+        assert_eq!(counts.survivable, collections::vec![0]);
+        assert_eq!(counts.barrier, collections::vec![0]);
     }
 }

@@ -100,10 +100,14 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
         let current_kind = program.primitive_pool[pool_idx as usize].clone();
         let args_len = inline_arg_count(inst);
 
-        if args_len > 0 && can_accept_const_operand(&current_kind) {
-            // Gather const bit values for each arg (up to 2 inline; this path
-            // never involves 3-arg primitives because `can_accept_const_operand`
-            // does not include them).
+        if args_len > 0
+            && primitive_op::stack_effect(&current_kind).0 <= 2
+            && can_accept_const_operand(&current_kind)
+        {
+            // Gather const bit values for each arg. Fully evaluating an op is
+            // restricted to one- and two-input primitives; three-input select
+            // may still absorb constants from its two inline value operands
+            // in the separate pass below.
             let mut const_args = [0_u64; 2];
             let mut const_args_len = 0;
             let mut all_const = true;
@@ -368,6 +372,10 @@ fn can_accept_const_operand(kind: &PrimitiveOpKind) -> bool {
             | P::F64Gt
             | P::F64Le
             | P::F64Ge
+            | P::Select
+            | P::MemoryFill { .. }
+            | P::MemoryCopy { .. }
+            | P::MemoryInit { .. }
             | P::I32Eqz
             | P::I32Clz
             | P::I32Ctz
@@ -1191,6 +1199,60 @@ mod tests {
         assert!(
             absorbed_const,
             "mixed arithmetic should absorb the const operand"
+        );
+    }
+
+    #[test]
+    fn folds_zero_value_operand_into_select() {
+        let mut program = empty_program();
+        let zero_pool_idx = program
+            .intern_primitive(PrimitiveOpKind::I32Const { value: 0 })
+            .unwrap();
+        let select_pool_idx = program.intern_primitive(PrimitiveOpKind::Select).unwrap();
+        program.blocks.push(SsaBlock {
+            id: SsaTarget(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                SsaInst::primitive(
+                    zero_pool_idx,
+                    SsaValue(1),
+                    [SsaOperand::NONE, SsaOperand::NONE],
+                    0,
+                ),
+                SsaInst::primitive(
+                    select_pool_idx,
+                    SsaValue(3),
+                    [
+                        SsaOperand::value(SsaValue(0)),
+                        SsaOperand::value(SsaValue(1)),
+                    ],
+                    0,
+                ),
+            ],
+            extra_args: collections::vec![SsaOperand::value(SsaValue(2))],
+            terminator: SsaTerminator::Return { results: None },
+        });
+        program
+            .block_entry_cached_cells
+            .push(collections::Vec::new());
+        program
+            .block_entry_cache_requirements
+            .push(collections::Vec::new());
+
+        fold_constants_into_operands(&mut program, 0);
+
+        let block = &program.blocks[0];
+        assert_eq!(block.ops.len(), 1, "the zero producer should be removed");
+        assert_eq!(block.ops[0].op, SsaOp::primitive(select_pool_idx));
+        assert!(matches!(
+            block.ops[0].args[1].decode(),
+            crate::vm::middle::ssa_ir::ir::DecodedOperand::Const(index)
+                if program.const_pool[index as usize] == 0
+        ));
+        assert_eq!(
+            block.extra_args,
+            collections::vec![SsaOperand::value(SsaValue(2))],
+            "select's condition remains in the overflow operand pool"
         );
     }
 

@@ -481,14 +481,33 @@ impl Window {
         operand_count: u16,
         result_units: (usize, usize),
         gp_unit_bytes: u8,
+        resident_cache: &CellSet,
     ) -> (usize, usize) {
         let min_spill_depth = self.stack_height.saturating_sub(operand_count);
         let fill_types = self.spilled_types_for_fill(min_spill_depth);
         let (fill_gp, fill_fp) = count_live_bank_budget_units(fill_types, gp_unit_bytes);
 
         let already_live = self.live_types.len().min(operand_count as usize);
-        let existing = &self.live_types[self.live_types.len().saturating_sub(already_live)..];
-        let (existing_gp, existing_fp) = count_live_bank_budget_units(existing, gp_unit_bytes);
+        let existing_start = self.live_types.len().saturating_sub(already_live);
+        let mut existing_gp = 0usize;
+        let mut existing_fp = 0usize;
+        for (&ty, alias) in self.live_types[existing_start..]
+            .iter()
+            .zip(&self.live_aliases[existing_start..])
+        {
+            // Consuming a value that aliases a resident cache lane does not
+            // free a transient lane for the result. Charging it as an ordinary
+            // operand under-reserves by one and can overflow immediately after
+            // an alias-heavy integer expression.
+            if alias.is_some_and(|slot| resident_cache.contains(&slot)) {
+                continue;
+            }
+            if ty.is_fp() {
+                existing_fp += 1;
+            } else {
+                existing_gp += gp_value_budget_units(ty, gp_unit_bytes);
+            }
+        }
         let (result_gp, result_fp) = result_units;
 
         (
@@ -609,7 +628,7 @@ pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
             // Ensure capacity BEFORE filling (the fill must not be undone by a
             // subsequent spill), reserving room for the pushed results.
             let result_units = emit_result_budget_units(op, cell_types, push, budget.gp_unit_bytes);
-            let extra = window.required_capacity(pop, result_units, budget.gp_unit_bytes);
+            let extra = window.required_capacity(pop, result_units, budget.gp_unit_bytes, resident);
             window.ensure_capacity(driver, frame, resident, cell_types, budget, extra)?;
             window.fill(driver, frame, pop);
             // The pre-fill check accounts for both restored operands and the
@@ -675,8 +694,10 @@ fn emit_result_budget_units(
 
 #[cfg(test)]
 mod tests {
-    use super::cached_cell_get_can_source_alias;
+    use super::{cached_cell_get_can_source_alias, Window};
+    use crate::collections;
     use crate::value_type::ValueType;
+    use crate::vm::middle::cell::{CellId, CellSet};
 
     #[test]
     fn gp32_i64_cached_get_needs_real_linear_pair() {
@@ -688,5 +709,24 @@ mod tests {
         assert!(cached_cell_get_can_source_alias(ValueType::I64, 8));
         assert!(cached_cell_get_can_source_alias(ValueType::I32, 4));
         assert!(cached_cell_get_can_source_alias(ValueType::F64, 4));
+    }
+
+    #[test]
+    fn cached_alias_operand_does_not_pay_for_a_new_result_lane() {
+        let slot = CellId(0);
+        let resident = core::iter::once(slot).collect::<CellSet>();
+        let window = Window::new(
+            1,
+            0,
+            collections::vec![ValueType::I64],
+            collections::vec![ValueType::I64],
+            collections::vec![Some(slot)],
+        );
+
+        assert_eq!(window.required_capacity(1, (1, 0), 8, &resident), (1, 0));
+        assert_eq!(
+            window.required_capacity(1, (1, 0), 8, &CellSet::default()),
+            (0, 0)
+        );
     }
 }

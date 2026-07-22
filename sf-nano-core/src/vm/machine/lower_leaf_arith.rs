@@ -297,9 +297,9 @@ impl<'a> BlockLowerContext<'a> {
         if args.len() != 3 {
             return Err(WasmError::internal("select expects three arguments"));
         }
-        let on_true = self.use_operand(args[0])?;
-        let on_false = self.use_operand(args[1])?;
-        let cond = self.use_operand(args[2])?;
+        let on_true = self.lower_operand(args[0])?;
+        let on_false = self.lower_operand(args[1])?;
+        let cond = self.lower_operand(args[2])?;
         let mut dead_storage = [SsaValue::NONE; 3];
         let dead_inputs = value_operands(args, &mut dead_storage)?;
         let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, dead_inputs)?;
@@ -307,9 +307,9 @@ impl<'a> BlockLowerContext<'a> {
             kind: MachineInstKind::Select {
                 ty: lir_value_storage_type(self.program(), single_result(results)?),
                 dst,
-                on_true: MachineValue::Reg(on_true),
-                on_false: MachineValue::Reg(on_false),
-                cond: MachineValue::Reg(cond),
+                on_true,
+                on_false,
+                cond,
             },
         });
         Ok(())

@@ -517,7 +517,7 @@ fn ensure_state_fits_with_cache(
     state: &BlockState,
     resident_cache: &CellSet,
     cell_types: &[ValueType],
-    _context: &str,
+    context: &str,
 ) -> Result<(), WasmError> {
     let mut gp_live = 0usize;
     let mut fp_live = 0usize;
@@ -536,9 +536,14 @@ fn ensure_state_fits_with_cache(
     if gp_live + gp_cache > state.gp_live_budget as usize
         || fp_live + fp_cache > state.fp_live_budget as usize
     {
-        return Err(WasmError::internal(
-            "planner exceeded dynamic bank budget during : gp > or fp >",
-        ));
+        return Err(WasmError::internal(match context {
+            "block entry boundary" => "planner exceeded dynamic bank budget at block entry",
+            "local.get" => "planner exceeded dynamic bank budget after local.get",
+            "local.set" => "planner exceeded dynamic bank budget after local.set",
+            "local.tee" => "planner exceeded dynamic bank budget after local.tee",
+            "primitive op" => "planner exceeded dynamic bank budget after primitive op",
+            _ => "planner exceeded dynamic bank budget",
+        }));
     }
     Ok(())
 }
