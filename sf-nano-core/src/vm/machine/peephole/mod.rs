@@ -94,6 +94,10 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
     fuse_indexed_memory::fuse_indexed_memory(block);
     reuse_loaded_values::reuse_loaded_values(block, ctx.config);
     copy_propagate::copy_propagate(block, ctx.config, &mut ctx.cp_scratch);
+    // Copy propagation can make previously distinct address bases or stored
+    // values identical. Re-run forwarding so those newly exposed store/load
+    // pairs do not survive into code emission.
+    forward_stored_values::forward_stored_values(block, ctx.config);
     fuse_isel::fuse_isel(block, ctx.config);
     fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);
 }
