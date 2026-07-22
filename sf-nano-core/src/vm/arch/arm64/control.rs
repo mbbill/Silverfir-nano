@@ -16,6 +16,7 @@ use super::{abi, enc};
 use crate::vm::arch::common::helpers::is_fallthrough_edge;
 use crate::vm::arch::common::helpers::trap_code;
 use crate::vm::arch::common::pipeline::emit_call_arg_lanes;
+use crate::vm::arch::common::pipeline::emit_parallel_moves;
 use crate::vm::arch::common::template::{
     decode_template_chain_next, encode_template_chain_next, template_i32_delta, TemplateBranchSense,
 };
@@ -76,6 +77,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 ) {
                     return Ok(());
                 }
+                if !self
+                    .core
+                    .is_identity_edge(self.core.mir_blocks()?, edge.target, &edge.args)
+                {
+                    return self.lower_inline_edge(edge, fallthrough);
+                }
                 let label = self.core.emit_edge(edge.target, &edge.args)?;
                 self.lower_b(label);
                 Ok(())
@@ -120,6 +127,22 @@ impl<'a> super::backend::Arm64Backend<'a> {
             is_fallthrough_edge(then_edge.target, &then_edge.args, fallthrough, blocks);
         let else_fallthrough =
             is_fallthrough_edge(else_edge.target, &else_edge.args, fallthrough, blocks);
+
+        // Keep a non-identity taken edge local when the other successor is the
+        // natural fallthrough. Sending a one- or two-move hot edge through the
+        // function-wide tail stub adds a second taken branch and disrupts
+        // I-cache locality in tight loops.
+        if else_fallthrough
+            && !self
+                .core
+                .is_identity_edge(blocks, then_edge.target, &then_edge.args)
+        {
+            let skip = self.core.new_label();
+            self.lower_branch_on_false(cond, skip)?;
+            self.lower_inline_edge(then_edge, None)?;
+            self.core.bind_label(skip);
+            return Ok(());
+        }
 
         let then_label = (!then_fallthrough)
             .then(|| self.core.emit_edge(then_edge.target, &then_edge.args))
@@ -273,6 +296,122 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     self.lower_b(else_label);
                 }
             }
+        }
+        Ok(())
+    }
+
+    fn lower_branch_on_false(
+        &mut self,
+        cond: &MachineBranchCond,
+        label: usize,
+    ) -> Result<(), WasmError> {
+        match *cond {
+            MachineBranchCond::Value(MachineValue::Imm64(0)) => self.lower_b(label),
+            MachineBranchCond::Value(MachineValue::Imm64(_)) => {}
+            MachineBranchCond::Value(MachineValue::Reg(reg)) => {
+                let fused = match self.select_flags.take() {
+                    Some((flags_reg, code)) if flags_reg == reg => Some(code),
+                    _ => None,
+                };
+                match fused {
+                    Some(code) => self.lower_b_cond(code.invert(), label),
+                    None => {
+                        let reg = self.map_gp_reg(reg)?;
+                        self.lower_cbz(reg, label);
+                    }
+                }
+            }
+            MachineBranchCond::Value(MachineValue::ReservedReg(_)) => {
+                return Err(WasmError::internal(
+                    "arm64 branch condition cannot read reserved cache register",
+                ));
+            }
+            MachineBranchCond::IntCompare {
+                width,
+                kind,
+                sign,
+                lhs,
+                rhs,
+            } => {
+                let zero_reg = match (kind, lhs, rhs) {
+                    (
+                        MachineCompareKind::Eq | MachineCompareKind::Ne,
+                        MachineValue::Reg(reg),
+                        MachineValue::Imm64(0),
+                    )
+                    | (
+                        MachineCompareKind::Eq | MachineCompareKind::Ne,
+                        MachineValue::Imm64(0),
+                        MachineValue::Reg(reg),
+                    ) => Some(reg),
+                    _ => None,
+                };
+                if let Some(reg) = zero_reg {
+                    let reg = self.map_gp_reg(reg)?;
+                    if kind == MachineCompareKind::Eq {
+                        self.lower_cbnz(reg, label);
+                    } else {
+                        self.lower_cbz(reg, label);
+                    }
+                } else {
+                    self.lower_cmp_values(width, lhs, rhs)?;
+                    self.lower_b_cond(map_int_cond(kind, sign).invert(), label);
+                }
+            }
+            MachineBranchCond::TestBits {
+                width,
+                kind,
+                src,
+                mask,
+            } => {
+                self.lower_tst_values(width, src, mask)?;
+                let code = match kind {
+                    MachineCompareKind::Eq => enc::Cond::Ne,
+                    MachineCompareKind::Ne => enc::Cond::Eq,
+                    _ => {
+                        return Err(WasmError::internal(
+                            "TestBits branch: unsupported compare kind",
+                        ));
+                    }
+                };
+                self.lower_b_cond(code, label);
+            }
+        }
+        Ok(())
+    }
+
+    fn lower_inline_edge(
+        &mut self,
+        edge: &MachineEdge,
+        fallthrough: Option<MachineBlockId>,
+    ) -> Result<(), WasmError> {
+        let (params, arg_float_widths) = {
+            let block = self
+                .core
+                .mir_blocks()?
+                .get(edge.target.as_usize())
+                .ok_or_else(|| WasmError::internal("edge target block is out of range"))?;
+            let widths = edge
+                .args
+                .iter()
+                .map(|arg| match arg {
+                    MachineValue::Reg(reg) if self.core.is_fp_reg(*reg) => {
+                        self.core.fp_reg_width(*reg).map(Some)
+                    }
+                    MachineValue::ReservedReg(_)
+                    | MachineValue::Reg(_)
+                    | MachineValue::Imm64(_) => Ok(None),
+                })
+                .collect::<Result<crate::collections::Vec<_>, _>>()?;
+            (block.params.clone(), widths)
+        };
+        self.core.current_edge_target = Some(edge.target);
+        let result = emit_parallel_moves(self, &params, &edge.args, &arg_float_widths);
+        self.core.current_edge_target = None;
+        result?;
+        if fallthrough != Some(edge.target) {
+            let target = self.core.block_label(edge.target)?;
+            self.lower_b(target);
         }
         Ok(())
     }

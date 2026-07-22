@@ -442,7 +442,7 @@ impl<'a> CompilerCore<'a> {
 
     // ── Edge management ──────────────────────────────────────────────────
 
-    fn is_identity_edge(
+    pub(crate) fn is_identity_edge(
         &self,
         blocks: &[MachineBlock],
         target: MachineBlockId,
