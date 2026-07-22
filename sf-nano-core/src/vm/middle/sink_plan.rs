@@ -17,7 +17,7 @@ use crate::collections;
 
 use crate::vm::middle::{
     cell::CellId,
-    ssa_ir::ir::{SsaBlock, SsaOp, SsaProgram},
+    ssa_ir::ir::{SsaBlock, SsaInst, SsaOp, SsaProgram, SsaValue},
 };
 
 /// Run the sink planner over all blocks in the program.
@@ -43,52 +43,24 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<CellId>]) {
         return;
     }
 
-    // Step 1: Record producer positions for single-result Value/Call ops.
-    let mut producer_pos: collections::Vec<Option<u32>> = collections::Vec::new();
-    let mut max_val: u32 = 0;
-
-    for inst in ops.iter() {
-        if inst.op.is_primitive() {
-            if inst.result.is_some() && inst.result.0 >= max_val {
-                max_val = inst.result.0 + 1;
-            }
-        } else {
-            match inst.op {
-                SsaOp::CELL_GET_CACHE | SsaOp::CELL_GET_SLOT | SsaOp::FILL => {
-                    let dst = inst.result;
-                    if dst.is_some() && dst.0 >= max_val {
-                        max_val = dst.0 + 1;
-                    }
-                }
-                SsaOp::CALL => {
-                    let dst = inst.result;
-                    if dst.is_some() && dst.0 >= max_val {
-                        max_val = dst.0 + 1;
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    producer_pos.resize(max_val as usize, None);
-    let mut is_single_result = collections::vec![false; max_val as usize];
+    // Step 1: Record producer positions for single-result Value/Call ops. SSA
+    // values are numbered across the whole function, but this analysis is
+    // block-local, so offset the scratch array by this block's first producer.
+    // Indexing by the absolute value number made every later block allocate and
+    // clear storage for all values produced by earlier blocks.
+    let Some((value_base, value_count)) = sinkable_result_range(ops) else {
+        return;
+    };
+    let mut producer_pos: collections::Vec<Option<u32>> = collections::vec![None; value_count];
 
     for (pos, inst) in ops.iter().enumerate() {
         // A primitive op always produces at most one result in the new flat
         // IR (tri-arg ops still have a single `result` slot), so treating
         // any primitive with a non-NONE result as single-result matches the
         // old `results.len() == 1` predicate.
-        let produced =
-            if (inst.op.is_primitive() || inst.op == SsaOp::CALL) && inst.result.is_some() {
-                Some(inst.result)
-            } else {
-                None
-            };
-        if let Some(r) = produced {
-            if (r.0 as usize) < producer_pos.len() {
-                producer_pos[r.0 as usize] = Some(pos as u32);
-                is_single_result[r.0 as usize] = true;
+        if let Some(result) = sinkable_result(inst) {
+            if let Some(index) = local_value_index(value_base, result, producer_pos.len()) {
+                producer_pos[index] = Some(pos as u32);
             }
         }
     }
@@ -103,11 +75,10 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<CellId>]) {
             .as_value()
             .expect("CellSetCache src must be an SsaValue");
 
-        let src_idx = src.0 as usize;
-        if src_idx >= producer_pos.len() || !is_single_result[src_idx] {
+        let Some(local_src_idx) = local_value_index(value_base, src, producer_pos.len()) else {
             continue;
-        }
-        let Some(prod_pos) = producer_pos[src_idx] else {
+        };
+        let Some(prod_pos) = producer_pos[local_src_idx] else {
             continue;
         };
         let prod_pos = prod_pos as usize;
@@ -125,6 +96,7 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<CellId>]) {
         }
 
         // Value must not already be sunk elsewhere.
+        let src_idx = src.0 as usize;
         if sinks.get(src_idx).copied().flatten().is_some() {
             continue;
         }
@@ -141,6 +113,28 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<CellId>]) {
             sinks[src_idx] = Some(slot);
         }
     }
+}
+
+#[inline]
+fn sinkable_result(inst: &SsaInst) -> Option<SsaValue> {
+    ((inst.op.is_primitive() || inst.op == SsaOp::CALL) && inst.result.is_some())
+        .then_some(inst.result)
+}
+
+fn sinkable_result_range(ops: &[SsaInst]) -> Option<(SsaValue, usize)> {
+    let mut min = u32::MAX;
+    let mut max = 0u32;
+    for result in ops.iter().filter_map(sinkable_result) {
+        min = min.min(result.0);
+        max = max.max(result.0);
+    }
+    (min != u32::MAX).then(|| (SsaValue(min), (max - min) as usize + 1))
+}
+
+#[inline]
+fn local_value_index(base: SsaValue, value: SsaValue, len: usize) -> Option<usize> {
+    let index = value.0.checked_sub(base.0)? as usize;
+    (index < len).then_some(index)
 }
 
 #[cfg(test)]
