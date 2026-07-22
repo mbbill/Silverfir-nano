@@ -131,7 +131,6 @@ pub(super) fn compute_block_entry_cache_params(
     if program.entry.as_usize() < program.blocks.len() {
         assign_bank_layouts_from_root(
             program.entry.as_usize(),
-            None,
             LayoutBank::Gp,
             regfile.gp_allocatable_count(),
             program,
@@ -151,7 +150,6 @@ pub(super) fn compute_block_entry_cache_params(
         )?;
         assign_bank_layouts_from_root(
             program.entry.as_usize(),
-            None,
             LayoutBank::Fp,
             regfile.fp_dynamic_count(),
             program,
@@ -177,7 +175,6 @@ pub(super) fn compute_block_entry_cache_params(
         }
         assign_bank_layouts_from_root(
             block_index,
-            None,
             LayoutBank::Gp,
             regfile.gp_allocatable_count(),
             program,
@@ -206,7 +203,6 @@ pub(super) fn compute_block_entry_cache_params(
         }
         assign_bank_layouts_from_root(
             block_index,
-            None,
             LayoutBank::Fp,
             regfile.fp_dynamic_count(),
             program,
@@ -539,7 +535,6 @@ fn compute_block_bank_slots(
 
 fn assign_bank_layouts_from_root(
     block_index: usize,
-    parent_layout: Option<&[Lane]>,
     bank: LayoutBank,
     lane_count: usize,
     program: &SsaProgram,
@@ -557,9 +552,10 @@ fn assign_bank_layouts_from_root(
     lanes: usize,
     visited: &mut [bool],
 ) -> Result<(), WasmError> {
-    let mut stack = collections::Vec::new();
-    stack.push((block_index, parent_layout.map(collections::Vec::from)));
-    while let Some((block_index, parent_layout)) = stack.pop() {
+    let mut stack = collections::vec![(block_index, None)];
+    let mut occupied = collections::vec![false; lane_count];
+    let mut additions = collections::Vec::new();
+    while let Some((block_index, parent_block)) = stack.pop() {
         if block_index >= visited.len() || visited[block_index] {
             continue;
         }
@@ -573,20 +569,28 @@ fn assign_bank_layouts_from_root(
             LayoutBank::Fp => param_usage[block_index].fp,
         };
         let row_base = block_index * lanes;
-        let entry_row = build_block_bank_layout(
+        let parent_layout = parent_block.map(|parent_index| {
+            let parent_base = parent_index * lanes;
+            &exit_layouts[parent_base..parent_base + lanes]
+        });
+        let entry_row = &mut layouts[row_base..row_base + lanes];
+        build_block_bank_layout(
             cells,
-            parent_layout.as_deref(),
+            parent_layout,
             cell_meta,
             lane_count,
             prefix,
             bank,
             call_preserve_preferences,
             preserved_lanes,
+            entry_row,
+            &mut occupied,
+            &mut additions,
         )?;
-        layouts[row_base..row_base + lanes].copy_from_slice(&entry_row);
-        let exit_row = simulate_block_exit_layout(
+        let exit_row = &mut exit_layouts[row_base..row_base + lanes];
+        simulate_block_exit_layout(
             &program.blocks[block_index],
-            &layouts[row_base..row_base + lanes],
+            entry_row,
             cell_to_cached_index,
             cell_meta,
             bank,
@@ -597,10 +601,11 @@ fn assign_bank_layouts_from_root(
             table_dispatch_modes,
             call_preserve_preferences,
             preserved_lanes,
+            exit_row,
+            &mut occupied,
         )?;
-        exit_layouts[row_base..row_base + lanes].copy_from_slice(&exit_row);
         for &child in idom_children[block_index].iter().rev() {
-            stack.push((child, Some(exit_row.clone())));
+            stack.push((child, Some(block_index)));
         }
     }
     Ok(())
@@ -622,6 +627,7 @@ fn improve_gp_layouts_for_incoming_edges(
     exit_layouts: &mut [Lane],
     lanes: usize,
 ) -> Result<(), WasmError> {
+    let mut occupied = collections::vec![false; lane_count];
     for _ in 0..2 {
         let mut changed = false;
         for block_index in 0..program.blocks.len() {
@@ -699,7 +705,7 @@ fn improve_gp_layouts_for_incoming_edges(
                 continue;
             }
             layouts[row_base..row_base + lanes].copy_from_slice(&candidate);
-            let exit_row = simulate_block_exit_layout(
+            simulate_block_exit_layout(
                 &program.blocks[block_index],
                 &layouts[row_base..row_base + lanes],
                 cell_to_cached_index,
@@ -712,8 +718,9 @@ fn improve_gp_layouts_for_incoming_edges(
                 table_dispatch_modes,
                 call_preserve_preferences,
                 preserved_lanes,
+                &mut exit_layouts[row_base..row_base + lanes],
+                &mut occupied,
             )?;
-            exit_layouts[row_base..row_base + lanes].copy_from_slice(&exit_row);
             changed = true;
         }
         if !changed {
@@ -905,9 +912,12 @@ fn simulate_block_exit_layout(
     table_dispatch_modes: &[TableDispatchMode],
     call_preserve_preferences: &[bool],
     preserved_lanes: &[bool],
-) -> Result<collections::Vec<Lane>, WasmError> {
-    let mut layout: collections::Vec<Lane> = entry_layout.to_vec().into();
-    let mut occupied = collections::vec![false; lane_count];
+    exit_layout: &mut [Lane],
+    mut occupied: &mut [bool],
+) -> Result<(), WasmError> {
+    exit_layout.copy_from_slice(entry_layout);
+    let layout = exit_layout;
+    occupied.fill(false);
     for lane in 0..prefix_occupied.min(lane_count) {
         occupied[lane] = true;
     }
@@ -949,7 +959,7 @@ fn simulate_block_exit_layout(
                     occupy_segment(&mut occupied, start, width, true);
                     layout[cell_index] = start as Lane;
                 } else if bank == LayoutBank::Gp {
-                    let preserve = layout.clone();
+                    let preserve: collections::Vec<Lane> = layout.to_vec().into();
                     let mut active = layout
                         .iter()
                         .enumerate()
@@ -959,7 +969,7 @@ fn simulate_block_exit_layout(
                         })
                         .collect::<collections::Vec<_>>();
                     active.push(cell_index);
-                    layout = exact_gp_layout(
+                    let exact = exact_gp_layout(
                         &active,
                         Some(&preserve),
                         cell_meta,
@@ -968,6 +978,7 @@ fn simulate_block_exit_layout(
                         call_preserve_preferences,
                         preserved_lanes,
                     )?;
+                    layout.copy_from_slice(&exact);
                     occupied.fill(false);
                     for lane in 0..prefix_occupied.min(lane_count) {
                         occupied[lane] = true;
@@ -1011,7 +1022,7 @@ fn simulate_block_exit_layout(
                         occupy_segment(&mut occupied, start, width, true);
                         layout[cell_index] = start as Lane;
                     } else if bank == LayoutBank::Gp {
-                        let preserve = layout.clone();
+                        let preserve: collections::Vec<Lane> = layout.to_vec().into();
                         let mut active = layout
                             .iter()
                             .enumerate()
@@ -1021,7 +1032,7 @@ fn simulate_block_exit_layout(
                             })
                             .collect::<collections::Vec<_>>();
                         active.push(cell_index);
-                        layout = exact_gp_layout(
+                        let exact = exact_gp_layout(
                             &active,
                             Some(&preserve),
                             cell_meta,
@@ -1030,6 +1041,7 @@ fn simulate_block_exit_layout(
                             call_preserve_preferences,
                             preserved_lanes,
                         )?;
+                        layout.copy_from_slice(&exact);
                         occupied.fill(false);
                         for lane in 0..prefix_occupied.min(lane_count) {
                             occupied[lane] = true;
@@ -1111,7 +1123,7 @@ fn simulate_block_exit_layout(
         }
     }
 
-    Ok(layout)
+    Ok(())
 }
 
 fn build_block_bank_layout(
@@ -1123,17 +1135,20 @@ fn build_block_bank_layout(
     bank: LayoutBank,
     call_preserve_preferences: &[bool],
     preserved_lanes: &[bool],
-) -> Result<collections::Vec<Lane>, WasmError> {
-    let mut layout = collections::vec![LANE_UNASSIGNED; cell_meta.len()];
+    layout: &mut [Lane],
+    mut occupied: &mut [bool],
+    additions: &mut collections::Vec<usize>,
+) -> Result<(), WasmError> {
+    layout.fill(LANE_UNASSIGNED);
     if cells.is_empty() {
-        return Ok(layout);
+        return Ok(());
     }
-    let mut occupied = collections::vec![false; lane_count];
+    occupied.fill(false);
     for lane in 0..prefix_occupied.min(lane_count) {
         occupied[lane] = true;
     }
 
-    let mut additions = collections::Vec::new();
+    additions.clear();
     if let Some(parent_layout) = parent_layout {
         for &cell in cells {
             let parent_start = parent_layout[cell];
@@ -1180,7 +1195,7 @@ fn build_block_bank_layout(
         )
     });
     let mut needs_repack = false;
-    for cell in additions {
+    for &cell in additions.iter() {
         let width = cell_meta[cell].width;
         let prefer_preserved = call_preserve_preferences
             .get(cell)
@@ -1197,7 +1212,7 @@ fn build_block_bank_layout(
     }
 
     if !needs_repack {
-        return Ok(layout);
+        return Ok(());
     }
 
     if bank != LayoutBank::Gp {
@@ -1206,7 +1221,7 @@ fn build_block_bank_layout(
         ));
     }
 
-    exact_gp_layout(
+    let exact = exact_gp_layout(
         cells,
         parent_layout,
         cell_meta,
@@ -1214,7 +1229,9 @@ fn build_block_bank_layout(
         prefix_occupied,
         call_preserve_preferences,
         preserved_lanes,
-    )
+    )?;
+    layout.copy_from_slice(&exact);
+    Ok(())
 }
 
 fn exact_gp_layout(
@@ -1613,7 +1630,6 @@ mod tests {
 
         assign_bank_layouts_from_root(
             0,
-            None,
             LayoutBank::Gp,
             1,
             &program,
@@ -1647,8 +1663,11 @@ mod tests {
         }];
         let call_preserve_preferences = collections::vec![true];
         let preserved_lanes = collections::vec![false, false, true];
+        let mut layout = collections::vec![LANE_UNASSIGNED; cell_meta.len()];
+        let mut occupied = collections::vec![false; 3];
+        let mut additions = collections::Vec::new();
 
-        let layout = build_block_bank_layout(
+        build_block_bank_layout(
             &cells,
             Some(&parent_layout),
             &cell_meta,
@@ -1657,6 +1676,9 @@ mod tests {
             LayoutBank::Gp,
             &call_preserve_preferences,
             &preserved_lanes,
+            &mut layout,
+            &mut occupied,
+            &mut additions,
         )
         .expect("one-cell preserved layout should be feasible");
 
@@ -1688,8 +1710,11 @@ mod tests {
         ];
         let call_preserve_preferences = collections::vec![false, true];
         let preserved_lanes = collections::vec![false, false, false, false, true, true];
+        let mut layout = collections::vec![LANE_UNASSIGNED; cell_meta.len()];
+        let mut occupied = collections::vec![false; 6];
+        let mut additions = collections::Vec::new();
 
-        let layout = build_block_bank_layout(
+        build_block_bank_layout(
             &cells,
             None,
             &cell_meta,
@@ -1698,6 +1723,9 @@ mod tests {
             LayoutBank::Gp,
             &call_preserve_preferences,
             &preserved_lanes,
+            &mut layout,
+            &mut occupied,
+            &mut additions,
         )
         .expect("pair + nominee layout should be feasible");
 
