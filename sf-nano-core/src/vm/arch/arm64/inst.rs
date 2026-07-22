@@ -4300,11 +4300,33 @@ impl<'a> super::backend::Arm64Backend<'a> {
         len: MachineValue,
     ) -> Result<(), WasmError> {
         if mem_idx == 0 {
-            self.lower_mem0_bulk_bounds(dest, len)?;
+            // x0-x2 are ordinary dynamic-register lanes inside JIT code.  A
+            // bulk op can therefore receive one of its inputs in the same
+            // physical register that the C ABI uses for an earlier argument.
+            // Stage all three inputs before bounds checks or argument setup
+            // clobber any of them.
+            let dest_stage_idx = self.gp_scratch.alloc();
+            let value_stage_idx = self.gp_scratch.alloc();
+            let len_stage_idx = self.fp_scratch.alloc();
+            let dest_stage = self.gp_scratch.reg(dest_stage_idx);
+            let value_stage = self.gp_scratch.reg(value_stage_idx);
+            let len_stage = self.fp_scratch.reg(len_stage_idx);
+            self.emit_stage_host_i32_gp(dest_stage, dest)?;
+            self.emit_stage_host_i32_gp(value_stage, val)?;
+            self.emit_stage_host_i32_fp(len_stage, len)?;
+
             let compact_frame = self.emit_infallible_host_frame_open();
-            self.emit_mem0_host_ptr(abi::C_ARG0, dest)?;
-            self.emit_host_i32_arg(abi::C_ARG1, val)?;
-            self.emit_host_i32_arg(abi::C_ARG2, len)?;
+            self.lower_mem0_bulk_bounds(dest, len, dest_stage, len_stage, compact_frame)?;
+            self.emit_mem0_host_ptr_from_stage(abi::C_ARG0, dest_stage);
+            self.core
+                .text
+                .emit_u32(enc::mov_reg_32(abi::C_ARG1, value_stage));
+            self.core
+                .text
+                .emit_u32(enc::fmov_gp_from_s(abi::C_ARG2, len_stage));
+            self.gp_scratch.free_index(value_stage_idx);
+            self.gp_scratch.free_index(dest_stage_idx);
+            self.fp_scratch.free_index(len_stage_idx);
             self.emit_infallible_host_call_and_close(
                 memset as *const () as usize,
                 self.bulk_memset_target,
@@ -4333,12 +4355,27 @@ impl<'a> super::backend::Arm64Backend<'a> {
         len: MachineValue,
     ) -> Result<(), WasmError> {
         if dst_mem == 0 && src_mem == 0 {
-            self.lower_mem0_bulk_bounds(dest, len)?;
-            self.lower_mem0_bulk_bounds(src, len)?;
+            let dest_stage_idx = self.gp_scratch.alloc();
+            let src_stage_idx = self.gp_scratch.alloc();
+            let len_stage_idx = self.fp_scratch.alloc();
+            let dest_stage = self.gp_scratch.reg(dest_stage_idx);
+            let src_stage = self.gp_scratch.reg(src_stage_idx);
+            let len_stage = self.fp_scratch.reg(len_stage_idx);
+            self.emit_stage_host_i32_gp(dest_stage, dest)?;
+            self.emit_stage_host_i32_gp(src_stage, src)?;
+            self.emit_stage_host_i32_fp(len_stage, len)?;
+
             let compact_frame = self.emit_infallible_host_frame_open();
-            self.emit_mem0_host_ptr(abi::C_ARG0, dest)?;
-            self.emit_mem0_host_ptr(abi::C_ARG1, src)?;
-            self.emit_host_i32_arg(abi::C_ARG2, len)?;
+            self.lower_mem0_bulk_bounds(dest, len, dest_stage, len_stage, compact_frame)?;
+            self.lower_mem0_bulk_bounds(src, len, src_stage, len_stage, compact_frame)?;
+            self.emit_mem0_host_ptr_from_stage(abi::C_ARG0, dest_stage);
+            self.emit_mem0_host_ptr_from_stage(abi::C_ARG1, src_stage);
+            self.core
+                .text
+                .emit_u32(enc::fmov_gp_from_s(abi::C_ARG2, len_stage));
+            self.gp_scratch.free_index(src_stage_idx);
+            self.gp_scratch.free_index(dest_stage_idx);
+            self.fp_scratch.free_index(len_stage_idx);
             self.emit_infallible_host_call_and_close(
                 memmove as *const () as usize,
                 self.bulk_memmove_target,
@@ -4359,12 +4396,16 @@ impl<'a> super::backend::Arm64Backend<'a> {
         Ok(())
     }
 
-    /// Place a Wasm i32 bulk-memory operand in a C argument register.
+    /// Stage a Wasm i32 bulk-memory operand in a non-ABI GP scratch register.
     ///
     /// Using the W-register move deliberately clears any stale upper half.
     /// Besides enforcing Wasm's unsigned-i32 address semantics, this proves
     /// that offset + length cannot overflow the 64-bit sum used below.
-    fn emit_host_i32_arg(&mut self, dst: Arm64Reg, value: MachineValue) -> Result<(), WasmError> {
+    fn emit_stage_host_i32_gp(
+        &mut self,
+        dst: Arm64Reg,
+        value: MachineValue,
+    ) -> Result<(), WasmError> {
         match value {
             MachineValue::Reg(reg) => {
                 let src = map_gp(self.core.compiled.backend(), reg)?;
@@ -4382,20 +4423,50 @@ impl<'a> super::backend::Arm64Backend<'a> {
         Ok(())
     }
 
-    fn emit_mem0_host_ptr(&mut self, dst: Arm64Reg, offset: MachineValue) -> Result<(), WasmError> {
-        self.emit_host_i32_arg(dst, offset)?;
+    /// Stage the third i32 input outside the GP bank.  This leaves both GP
+    /// scratch registers available for the two address/value inputs and keeps
+    /// all three values intact while x0-x2 are used by bounds checks.
+    fn emit_stage_host_i32_fp(
+        &mut self,
+        dst: Arm64FpReg,
+        value: MachineValue,
+    ) -> Result<(), WasmError> {
+        match value {
+            MachineValue::Reg(reg) => {
+                let src = map_gp(self.core.compiled.backend(), reg)?;
+                self.core.text.emit_u32(enc::fmov_s_from_gp(dst, src));
+            }
+            MachineValue::Imm64(value) => {
+                materialize_u64_into(&mut self.core.text, abi::C_ARG2, value as u32 as u64);
+                self.core
+                    .text
+                    .emit_u32(enc::fmov_s_from_gp(dst, abi::C_ARG2));
+            }
+            MachineValue::ReservedReg(_) => {
+                return Err(WasmError::internal(
+                    "arm64 bulk memory op cannot read a reserved register",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_mem0_host_ptr_from_stage(&mut self, dst: Arm64Reg, offset: Arm64Reg) {
+        self.core.text.emit_u32(enc::mov_reg_32(dst, offset));
         self.core.text.emit_u32(enc::add_reg_64(
             dst,
             abi::map_fixed_reg(MACHINE_MEM0_BASE_REG),
             dst,
         ));
-        Ok(())
     }
 
     fn lower_mem0_bulk_bounds(
         &mut self,
         offset: MachineValue,
         len: MachineValue,
+        offset_stage: Arm64Reg,
+        len_stage: Arm64FpReg,
+        compact_frame: bool,
     ) -> Result<(), WasmError> {
         let op_index = self.core.current_op_index.unwrap_or(usize::MAX);
         if self.bulk_bounds_facts.iter().flatten().any(|fact| {
@@ -4407,7 +4478,9 @@ impl<'a> super::backend::Arm64Backend<'a> {
             return Ok(());
         }
 
-        self.emit_host_i32_arg(abi::C_ARG2, len)?;
+        self.core
+            .text
+            .emit_u32(enc::fmov_gp_from_s(abi::C_ARG2, len_stage));
         let trap = self
             .core
             .ensure_trap_label(MachineTrapKind::MemoryOutOfBounds);
@@ -4417,9 +4490,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 abi::C_ARG2,
                 abi::map_fixed_reg(MACHINE_MEM0_SIZE_REG),
             ));
-            self.lower_b_cond(enc::Cond::Hi, trap);
         } else {
-            self.emit_host_i32_arg(abi::C_ARG0, offset)?;
+            self.core
+                .text
+                .emit_u32(enc::mov_reg_32(abi::C_ARG0, offset_stage));
             self.core
                 .text
                 .emit_u32(enc::add_reg_64(abi::C_ARG1, abi::C_ARG0, abi::C_ARG2));
@@ -4429,8 +4503,21 @@ impl<'a> super::backend::Arm64Backend<'a> {
                 abi::C_ARG1,
                 abi::map_fixed_reg(MACHINE_MEM0_SIZE_REG),
             ));
-            self.lower_b_cond(enc::Cond::Hi, trap);
         }
+
+        // The helper frame is already open so x0-x2 can be used without
+        // destroying JIT values that are live across this operation.  A trap
+        // only needs to discard that frame before entering the body's common
+        // error tail; the saved values themselves are dead on the error path.
+        let in_bounds = self.core.new_label();
+        self.lower_b_cond(enc::Cond::Ls, in_bounds);
+        self.emit_adjust_stack_up(if compact_frame {
+            16
+        } else {
+            abi::PRESERVED_HELPER_FRAME_SIZE
+        });
+        self.lower_b(trap);
+        self.core.bind_label(in_bounds);
 
         let slot = self.bulk_bounds_next % self.bulk_bounds_facts.len();
         self.bulk_bounds_facts[slot] = Some(super::backend::BulkBoundsFact {
