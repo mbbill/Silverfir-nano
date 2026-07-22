@@ -35,6 +35,17 @@ fn test_config(
     )
 }
 
+fn clz_use(src: MachineReg) -> MachineInst {
+    MachineInst {
+        kind: MachineInstKind::IntUnary {
+            width: MachineIntWidth::I32,
+            op: MachineIntUnaryOp::Clz,
+            dst: MachineReg(6),
+            src: MachineValue::Reg(src),
+        },
+    }
+}
+
 #[test]
 fn copy_propagates_linear_value_moves_into_ops_and_edges() {
     let mut program = MachineProgram {
@@ -70,7 +81,7 @@ fn copy_propagates_linear_value_moves_into_ops_and_edges() {
             MachineBlock {
                 id: MachineBlockId(1),
                 params: collections::vec![MachineBlockParam::gp_word(MachineReg(7))],
-                ops: collections::Vec::new(),
+                ops: collections::vec![clz_use(MachineReg(7))],
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -206,7 +217,7 @@ fn does_not_copy_propagate_move_from_cached_cell_block_param() {
             MachineBlock {
                 id: MachineBlockId(1),
                 params: collections::vec![MachineBlockParam::gp_word(MachineReg(8))],
-                ops: collections::Vec::new(),
+                ops: collections::vec![clz_use(MachineReg(8))],
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -293,7 +304,7 @@ fn copy_propagates_linear_value_load_defs_even_in_high_dynamic_regs() {
             MachineBlock {
                 id: MachineBlockId(1),
                 params: collections::vec![MachineBlockParam::gp_word(MachineReg(8))],
-                ops: collections::Vec::new(),
+                ops: collections::vec![clz_use(MachineReg(8))],
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -379,7 +390,7 @@ fn does_not_copy_propagate_cached_cell_load_defs() {
             MachineBlock {
                 id: MachineBlockId(1),
                 params: collections::vec![MachineBlockParam::gp_word(MachineReg(8))],
-                ops: collections::Vec::new(),
+                ops: collections::vec![clz_use(MachineReg(8))],
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -1767,7 +1778,7 @@ fn copy_propagates_linear_copies_of_cached_cell_snapshots() {
             MachineBlock {
                 id: MachineBlockId(1),
                 params: collections::vec![MachineBlockParam::gp_word(MachineReg(8))],
-                ops: collections::Vec::new(),
+                ops: collections::vec![clz_use(MachineReg(8))],
                 terminator: MachineTerminator::Return,
             },
         ],
@@ -1893,7 +1904,7 @@ fn does_not_copy_propagate_cached_cell_snapshots_into_integer_uses_or_edges() {
             MachineBlock {
                 id: MachineBlockId(1),
                 params: collections::vec![MachineBlockParam::gp_word(MachineReg(7))],
-                ops: collections::Vec::new(),
+                ops: collections::vec![clz_use(MachineReg(7))],
                 terminator: MachineTerminator::Return,
             },
         ],
