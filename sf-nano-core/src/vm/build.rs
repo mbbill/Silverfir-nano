@@ -650,6 +650,7 @@ fn emit_function_info_bytes(
 #[cfg(sf_has_std)]
 fn parallel_eager_worker_count(module: &ModuleInst) -> usize {
     const MIN_PARALLEL_FUNCTIONS: usize = 128;
+    #[cfg(not(target_pointer_width = "32"))]
     const MAX_MACHINE_WORKERS: usize = 8;
 
     let local_functions = module
@@ -670,9 +671,20 @@ fn parallel_eager_worker_count(module: &ModuleInst) -> usize {
         return 0;
     }
 
-    std::thread::available_parallelism()
-        .map(|parallelism| parallelism.get().saturating_sub(1).min(MAX_MACHINE_WORKERS))
-        .unwrap_or(0)
+    // Rust's Linux available_parallelism cgroup probe currently faults inside
+    // a riscv32 userspace process under QEMU before it can return a count. The
+    // serial path remains fully eager and is also the appropriate footprint
+    // policy for hosted 32-bit targets.
+    #[cfg(target_pointer_width = "32")]
+    {
+        0
+    }
+    #[cfg(not(target_pointer_width = "32"))]
+    {
+        std::thread::available_parallelism()
+            .map(|parallelism| parallelism.get().saturating_sub(1).min(MAX_MACHINE_WORKERS))
+            .unwrap_or(0)
+    }
 }
 
 #[cfg(sf_has_std)]
