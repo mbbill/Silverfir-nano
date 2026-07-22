@@ -1,10 +1,7 @@
 //! Runtime configuration for sf-nano-core.
 //!
 //! A one-shot global installed by the embedder via [`set_runtime_config`].
-//! Hosted targets get a default that preserves today's behavior
-//! (16 MiB compile-time code arena cap, wasm32 page ceiling). Finalized
-//! native code buffers release unused executable pages on hosted POSIX targets,
-//! so small modules do not retain the full cap as virtual address space. The
+//! Hosted targets get defaults suitable for native JIT workloads, while the
 //! bare-metal target (`sf_os_none`) has an explicit zero default — the embedder
 //! **must** call [`set_runtime_config`] before any `Instance::new()` /
 //! `CodeBuffer::new()` path, otherwise those fail with a clear error.
@@ -27,9 +24,9 @@ use core::sync::atomic::{AtomicU8, Ordering};
 /// Runtime-wide tunable sizes and limits.
 #[derive(Debug, Clone, Copy)]
 pub struct RuntimeConfig {
-    /// Bytes requested from the executable-memory allocator when a
-    /// `CodeBuffer` is created without an explicit capacity. Replaces
-    /// the previously-hardcoded `CodeBuffer::DEFAULT_CAPACITY`.
+    /// Module-wide executable-code arena size. This is the hard limit for
+    /// native code emitted for one module and the number of bytes requested
+    /// from the executable-memory allocator when a `CodeBuffer` is created.
     pub code_arena_bytes: usize,
 
     /// Maximum 64-KiB Wasm pages a single linear memory is allowed to
@@ -57,12 +54,17 @@ pub struct RuntimeConfig {
 }
 
 impl RuntimeConfig {
-    /// Compile-time default. Hosted targets get the pre-config numbers
-    /// that today's behavior relies on; `sf_os_none` gets zeros that
+    /// Compile-time default. Hosted 64-bit targets reserve enough executable
+    /// address space for large native JIT workloads such as FFmpeg. Hosted
+    /// 32-bit targets retain the smaller arena to avoid exhausting their
+    /// limited address space. `sf_os_none` gets zeros that
     /// force the embedder to override (see `ConfigError::NotInitialized`
     /// on the consumer side).
     #[cfg(not(sf_os_none))]
     pub const DEFAULT: Self = {
+        #[cfg(target_pointer_width = "64")]
+        const CODE_DEFAULT: usize = 64 * 1024 * 1024;
+        #[cfg(not(target_pointer_width = "64"))]
         const CODE_DEFAULT: usize = 16 * 1024 * 1024;
         Self {
             code_arena_bytes: CODE_DEFAULT,
@@ -157,4 +159,21 @@ pub fn runtime_config() -> &'static RuntimeConfig {
 #[inline]
 pub fn runtime_config_is_initialized() -> bool {
     STATE.load(Ordering::Acquire) == STATE_READY
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RuntimeConfig;
+
+    #[cfg(all(not(sf_os_none), target_pointer_width = "64"))]
+    #[test]
+    fn hosted_64_bit_default_supports_large_jit_modules() {
+        assert_eq!(RuntimeConfig::DEFAULT.code_arena_bytes, 64 * 1024 * 1024);
+    }
+
+    #[cfg(all(not(sf_os_none), target_pointer_width = "32"))]
+    #[test]
+    fn hosted_32_bit_default_preserves_address_space() {
+        assert_eq!(RuntimeConfig::DEFAULT.code_arena_bytes, 16 * 1024 * 1024);
+    }
 }

@@ -973,7 +973,7 @@ mod tests {
                 collections::vec![ValueType::I32],
                 collections::vec![ValueType::I64],
             )),
-            callback: host_noop,
+            callback: crate::vm::entities::HostCallback::new(host_noop),
         });
         let mut store = Box::new(Store::new(module));
         for func_idx in 0..store.module().functions.len() {

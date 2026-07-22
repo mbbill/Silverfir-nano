@@ -3198,7 +3198,7 @@ mod tests {
         let mut module = ModuleInst::new(String::from("m"), types);
         module.functions.push(FunctionInst::Host {
             func_type: Rc::clone(&ty),
-            callback: host_double,
+            callback: crate::vm::entities::HostCallback::new(host_double),
         });
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_locals(collections::vec![]);

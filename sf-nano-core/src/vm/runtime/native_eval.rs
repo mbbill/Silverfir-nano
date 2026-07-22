@@ -34,7 +34,7 @@ pub(super) fn eval(
                 Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
             };
             let mut caller = Caller::new(mem_slice);
-            callback(&mut caller, args, &mut returns)?;
+            callback.call(&mut caller, args, &mut returns)?;
 
             let mut out = ResultBuffer::with_exact_capacity(returns.len());
             for value in returns {

@@ -27,8 +27,8 @@ use crate::value_type::{HeapType, ValueType};
 #[cfg(sf_jit)]
 use crate::vm::entities::TableDispatchMode;
 use crate::vm::entities::{
-    DataInst, ElementInst, FunctionInst, GlobalInst, HostFn, MemInst, ModuleInst, TableInst,
-    TagInst,
+    Caller, DataInst, ElementInst, FunctionInst, GlobalInst, HostCallback, HostFn, MemInst,
+    ModuleInst, TableInst, TagInst,
 };
 use crate::vm::expr_eval::eval_const_expr;
 use crate::vm::runtime;
@@ -68,7 +68,7 @@ pub enum ImportedGlobal {
 
 pub enum ImportedFunction {
     Host {
-        callback: HostFn,
+        callback: HostCallback,
         func_type: Option<FunctionType>,
         type_ctx: Option<TypeContext>,
     },
@@ -100,42 +100,66 @@ pub enum ImportValue {
 }
 
 impl Import {
-    pub fn func(module: &str, name: &str, f: HostFn) -> Self {
+    pub fn func<F>(module: &str, name: &str, f: F) -> Self
+    where
+        F: for<'a, 'b, 'c, 'd> Fn(
+                &'a mut Caller<'b>,
+                &'c [Value],
+                &'d mut [Value],
+            ) -> Result<(), WasmError>
+            + 'static,
+    {
         Import {
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Func(ImportedFunction::Host {
-                callback: f,
+                callback: HostCallback::new(f),
                 func_type: None,
                 type_ctx: None,
             }),
         }
     }
 
-    pub fn func_typed(module: &str, name: &str, f: HostFn, func_type: FunctionType) -> Self {
+    pub fn func_typed<F>(module: &str, name: &str, f: F, func_type: FunctionType) -> Self
+    where
+        F: for<'a, 'b, 'c, 'd> Fn(
+                &'a mut Caller<'b>,
+                &'c [Value],
+                &'d mut [Value],
+            ) -> Result<(), WasmError>
+            + 'static,
+    {
         Import {
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Func(ImportedFunction::Host {
-                callback: f,
+                callback: HostCallback::new(f),
                 func_type: Some(func_type),
                 type_ctx: None,
             }),
         }
     }
 
-    pub fn func_typed_with_context(
+    pub fn func_typed_with_context<F>(
         module: &str,
         name: &str,
-        f: HostFn,
+        f: F,
         func_type: FunctionType,
         type_ctx: TypeContext,
-    ) -> Self {
+    ) -> Self
+    where
+        F: for<'a, 'b, 'c, 'd> Fn(
+                &'a mut Caller<'b>,
+                &'c [Value],
+                &'d mut [Value],
+            ) -> Result<(), WasmError>
+            + 'static,
+    {
         Import {
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Func(ImportedFunction::Host {
-                callback: f,
+                callback: HostCallback::new(f),
                 func_type: Some(func_type),
                 type_ctx: Some(type_ctx),
             }),
@@ -812,7 +836,7 @@ impl Instance {
                                 ImportedFunction::Host { callback, .. } => {
                                     functions.push(FunctionInst::Host {
                                         func_type,
-                                        callback: *callback,
+                                        callback: callback.clone(),
                                     });
                                 }
                                 ImportedFunction::Linked { handle, .. } => {
@@ -1067,7 +1091,7 @@ impl Instance {
                                                 func_type: tracked_alloc::rc::Rc::new(
                                                     func_type.clone(),
                                                 ),
-                                                callback: *callback,
+                                                callback: HostCallback::new(*callback),
                                             });
                                             val = Value::Ref(RefHandle::new(func_idx), ref_type);
                                         }
@@ -1647,11 +1671,19 @@ impl Instance {
         )
     }
 
-    pub fn append_host_function(&mut self, func_type: FunctionType, callback: HostFn) -> usize {
+    pub fn append_host_function<F>(&mut self, func_type: FunctionType, callback: F) -> usize
+    where
+        F: for<'a, 'b, 'c, 'd> Fn(
+                &'a mut Caller<'b>,
+                &'c [Value],
+                &'d mut [Value],
+            ) -> Result<(), WasmError>
+            + 'static,
+    {
         let idx = self.store.module().functions.len();
         self.store.module_mut().functions.push(FunctionInst::Host {
             func_type: tracked_alloc::rc::Rc::new(func_type),
-            callback,
+            callback: HostCallback::new(callback),
         });
         let _ = self.store.register_local_function(idx);
         idx
@@ -2079,6 +2111,48 @@ mod tests {
             &[Import::global_with_state("env", "g", immutable_shared)]
         )
         .is_err());
+    }
+
+    #[test]
+    fn imported_host_function_accepts_capturing_fn_callback() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (import "env" "add_bias" (func $add_bias (param i32) (result i32)))
+              (func (export "run") (param i32) (result i32)
+                local.get 0
+                call $add_bias))
+            "#,
+        )
+        .expect("host-callback module should encode");
+
+        let bias = std::rc::Rc::new(core::cell::Cell::new(40));
+        let observed_bias = std::rc::Rc::clone(&bias);
+        let imports = [Import::func(
+            "env",
+            "add_bias",
+            move |_caller, params, results| {
+                let Value::I32(value) = params[0] else {
+                    return Err(WasmError::invalid("expected i32 host argument"));
+                };
+                results[0] = Value::I32(value + observed_bias.get());
+                observed_bias.set(observed_bias.get() + 1);
+                Ok(())
+            },
+        )];
+        let mut instance =
+            Instance::new(&wasm, &imports).expect("capturing callback should instantiate");
+
+        let first = instance
+            .invoke("run", &[Value::I32(2)])
+            .expect("first callback invocation should succeed");
+        let second = instance
+            .invoke("run", &[Value::I32(2)])
+            .expect("second callback invocation should succeed");
+
+        assert_eq!(first.as_slice(), &[Value::I32(42)]);
+        assert_eq!(second.as_slice(), &[Value::I32(43)]);
+        assert_eq!(bias.get(), 42);
     }
 
     #[test]

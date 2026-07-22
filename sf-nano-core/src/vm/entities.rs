@@ -2,6 +2,7 @@
 
 use crate::collections;
 
+use alloc::rc::Rc as AllocRc;
 use core::cell::{Ref, RefCell, RefMut, UnsafeCell};
 use tracked_alloc::{rc::Rc, string::String};
 
@@ -31,7 +32,58 @@ pub struct TagInst {
 }
 use crate::vm::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store};
 
+/// A non-capturing host function pointer.
+///
+/// Kept as a public alias for source compatibility with embedders that name or
+/// cast plain host functions explicitly. [`Import::func`](crate::Import::func)
+/// also accepts capturing [`Fn`] callbacks.
 pub type HostFn = fn(&mut Caller, &[Value], &mut [Value]) -> Result<(), WasmError>;
+
+type DynHostCallback =
+    dyn for<'a> Fn(&mut Caller<'a>, &[Value], &mut [Value]) -> Result<(), WasmError>;
+
+/// A clonable, potentially capturing host callback.
+///
+/// Instances borrow their import list during construction, so callbacks use
+/// shared ownership when they are installed into a module. Silverfir-nano's
+/// runtime is single-threaded; captured mutable state can use interior
+/// mutability such as [`core::cell::Cell`] or [`core::cell::RefCell`].
+#[derive(Clone)]
+pub struct HostCallback {
+    callback: Rc<DynHostCallback>,
+}
+
+impl HostCallback {
+    pub fn new<F>(callback: F) -> Self
+    where
+        F: for<'a, 'b, 'c, 'd> Fn(
+                &'a mut Caller<'b>,
+                &'c [Value],
+                &'d mut [Value],
+            ) -> Result<(), WasmError>
+            + 'static,
+    {
+        let callback: AllocRc<DynHostCallback> = AllocRc::new(callback);
+        let callback: Rc<DynHostCallback> = callback.into();
+        Self { callback }
+    }
+
+    #[inline]
+    pub fn call(
+        &self,
+        caller: &mut Caller<'_>,
+        params: &[Value],
+        results: &mut [Value],
+    ) -> Result<(), WasmError> {
+        (self.callback)(caller, params, results)
+    }
+}
+
+impl core::fmt::Debug for HostCallback {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        f.debug_struct("HostCallback").finish_non_exhaustive()
+    }
+}
 
 #[cfg(sf_jit)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -88,7 +140,7 @@ pub enum FunctionInst {
     },
     Host {
         func_type: Rc<FunctionType>,
-        callback: HostFn,
+        callback: HostCallback,
     },
     Linked {
         func_type: Rc<FunctionType>,

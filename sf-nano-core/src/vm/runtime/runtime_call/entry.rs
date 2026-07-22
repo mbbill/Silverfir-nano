@@ -292,7 +292,7 @@ fn invoke_runtime_target(
                 }
             };
             let mut caller = Caller::new(mem_slice);
-            match callback(&mut caller, &args, &mut ret_vals) {
+            match callback.call(&mut caller, &args, &mut ret_vals) {
                 Ok(()) => {}
                 Err(WasmError::HostThrow {
                     tag,
@@ -434,7 +434,7 @@ mod tests {
         let mut module = ModuleInst::new(String::from("m"), TypeContext::empty());
         module.functions.push(FunctionInst::Host {
             func_type,
-            callback: host_add as HostFn,
+            callback: crate::vm::entities::HostCallback::new(host_add as HostFn),
         });
         module.memories.push(
             MemInst::new(Limits::new(1, Some(1)).unwrap())
@@ -490,7 +490,7 @@ mod tests {
         let mut module = ModuleInst::new(String::from("m"), TypeContext::empty());
         module.functions.push(FunctionInst::Host {
             func_type,
-            callback: host_add as HostFn,
+            callback: crate::vm::entities::HostCallback::new(host_add as HostFn),
         });
         module.memories.push(
             MemInst::new(Limits::new(1, Some(1)).unwrap())

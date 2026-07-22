@@ -1,6 +1,8 @@
 #![no_std]
 #![warn(unreachable_pub)]
 
+extern crate alloc;
+
 #[cfg(any(sf_has_std, test))]
 extern crate std;
 
@@ -30,7 +32,7 @@ pub use vm::build::{
     native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
     NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
 };
-pub use vm::entities::{Caller, FunctionInst, HostFn};
+pub use vm::entities::{Caller, FunctionInst, HostCallback, HostFn};
 pub use vm::instance::{
     Import, ImportValue, ImportedTableState, ImportedTagState, Instance, InstanceInstantiationError,
 };
