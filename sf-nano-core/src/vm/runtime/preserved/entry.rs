@@ -59,6 +59,7 @@ fn finish_preserved_result(ctx: &mut NativeContext, result: Result<(), WasmError
 /// Unlike `preserved_entry`, this avoids the opcode dispatcher and uses the
 /// context's already-validated memory view instead of walking back through the
 /// Store and Module on every bulk operation.
+#[cfg(sf_backend_arm64)]
 pub(crate) unsafe extern "C" fn memory_fill_entry(
     ctx: *mut NativeContext,
     io_ptr: *mut u64,
@@ -87,6 +88,7 @@ pub(crate) unsafe extern "C" fn memory_fill_entry(
 }
 
 /// Direct hot-path entry for `memory.copy`; see [`memory_fill_entry`].
+#[cfg(sf_backend_arm64)]
 pub(crate) unsafe extern "C" fn memory_copy_entry(
     ctx: *mut NativeContext,
     io_ptr: *mut u64,
@@ -122,6 +124,7 @@ pub(crate) unsafe extern "C" fn memory_copy_entry(
 }
 
 #[inline]
+#[cfg(sf_backend_arm64)]
 fn cached_memory_view(
     ctx: &NativeContext,
     mem_idx: usize,

@@ -124,6 +124,7 @@ impl BackendConfig {
     /// field docs). Chainable after `with_volatility` by backends with a lazy
     /// per-body preserved save.
     #[inline]
+    #[cfg(any(sf_backend_arm64, sf_backend_armv7a, sf_backend_thumbm, test))]
     pub(crate) const fn with_preserved_lane_save_overhead(mut self, overhead: u8) -> Self {
         self.preserved_lane_save_overhead = overhead;
         self
