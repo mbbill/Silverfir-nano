@@ -34,6 +34,7 @@ mod fuse_indexed_memory;
 mod fuse_isel;
 mod fuse_smull_sign_ext;
 pub(crate) mod helpers;
+mod hoist_loop_address_bases;
 mod reuse_loaded_values;
 mod reuse_loop_context_loads;
 mod reuse_loop_frame_values;
@@ -118,6 +119,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     if config.is_32bit_gp_target() {
         fuse_smull_sign_ext::fuse_smull_sign_ext_across_edges(program, ctx.total_reg_count);
     }
+    hoist_loop_address_bases::hoist_loop_address_bases(program, config);
     reuse_loop_frame_values::reuse_loop_frame_values(&mut program.blocks);
     reuse_loop_context_loads::reuse_loop_context_loads(&mut program.blocks);
     eliminate_dead_params::eliminate_dead_params(&mut program.blocks);
