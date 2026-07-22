@@ -20,14 +20,14 @@ use crate::{
             discipline,
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
             joint_plan::{
-                facts::RowSpan, init_locals::locals_reads_before_write, CellAccessDecision,
-                CellAccessQuery, JointPlanner,
+                init_locals::locals_reads_before_write, CellAccessDecision, CellAccessQuery,
+                JointPlanner,
             },
             ssa_ir::{
                 ir::{
-                    CellInfo, EntryCacheRequirement, SsaBinding, SsaBlock, SsaCallArgs,
-                    SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInst, SsaOp,
-                    SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator, SsaValue,
+                    entry_cache_requirement, CellInfo, EntryCacheRequirement, SsaBinding, SsaBlock,
+                    SsaCallArgs, SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInst,
+                    SsaOp, SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator, SsaValue,
                 },
                 target::SsaTarget,
             },
@@ -212,30 +212,36 @@ pub(crate) fn rewrite_function(
             frame,
             cfg,
             &block_params,
-            // Pass D authority: lowering seeds the resident/materialized cache
-            // from the plan's exact entry row (a slice into the plan arena), not
-            // the tentative public set. Admission (`cell_access`) still
-            // consults the planned set, so a hot local re-accessed after a call
-            // is re-cached even though it was trimmed from the entry row.
-            planner.exact_entry(cfg_block.id),
+            // Lower once from the solver's public resident set. After emission
+            // we trim unused entry residents and replay only the compact cache
+            // op stream to publish the realized entry/exit rows.
+            planner.planned_residents(cfg_block.id),
             &mut values,
             &mut builder,
             original_block_count,
             extra_blocks.len(),
             config,
         )?;
-        // Publishing is plan-authoritative: the block's entry/exit cache rows
-        // ARE the plan's exact rows (copied out of the flat arena into the
-        // program's own published rows). Standing guard: the lowered reality —
-        // the resident cache the engine actually maintained through lowering —
-        // must match the plan's exit row. The entry row is the seed the block
-        // opened with, so checking it would compare the plan to itself; dropped.
-        debug_assert_eq!(
-            lowered.actual_exit_cached_slots.as_slice(),
-            planner.exact_exit(cfg_block.id),
-            "block {block_index}: lowered exit cache set diverged from the authoritative plan",
+        let entry_slots = filter_block_entry_cached_cells(
+            planner.planned_residents(cfg_block.id),
+            &lowered.hint_exit_cached_cells,
+            &lowered.ops,
         );
-        let entry_slots = planner.exact_entry(cfg_block.id);
+        let exit_slots = lowered.actual_exit_cached_cells;
+        // The no-output exact walker remains a debug oracle. Release builds do
+        // not execute it; these rows are empty there and the branch folds away.
+        if cfg!(debug_assertions) {
+            debug_assert_eq!(
+                entry_slots.as_slice(),
+                planner.exact_entry(cfg_block.id),
+                "block {block_index}: emit-derived entry cache set diverged from the exact walker",
+            );
+            debug_assert_eq!(
+                exit_slots.as_slice(),
+                planner.exact_exit(cfg_block.id),
+                "block {block_index}: emit-derived exit cache set diverged from the exact walker",
+            );
+        }
         // The requirement row is a parallel placeholder here; it is finalized in
         // `prepare_function` by scanning the FINAL (post-cleanup) block ops, which
         // is the only faithful view once merges fold blocks together. We keep it
@@ -243,8 +249,8 @@ pub(crate) fn rewrite_function(
         // (cleanup's re-index, validate's length check) holds.
         block_entry_cache_requirements
             .push(collections::vec![EntryCacheRequirement::Ensure; entry_slots.len()]);
-        block_entry_cached_cells.push(entry_slots.to_vec().into());
-        block_exit_cached_slots.push(planner.exact_exit(cfg_block.id).to_vec().into());
+        block_entry_cached_cells.push(entry_slots);
+        block_exit_cached_slots.push(exit_slots);
         let mut block = SsaBlock {
             id: SsaTarget(block_index as u32),
             params,
@@ -317,22 +323,19 @@ pub(crate) fn rewrite_function(
         }
     }
 
-    // Per-semantic-block repair spans, read alongside the shared pool + index
-    // arena. The planner stays alive through insertion; the whole plan (compact
-    // flat arenas now) drops with it right after — no incremental freeing needed.
-    let repair_spans: collections::Vec<RowSpan> = (0..original_block_count as u32)
-        .map(|block_index| planner.repair_span(CfgBlockId(block_index)))
-        .collect();
+    // Reconcile edges from the realized predecessor/successor rows. Passing a
+    // semantic count of zero routes every edge through the emit-derived path;
+    // the exact plan's repair pool exists only in debug builds as an oracle.
     insert_boundary_repair_blocks(
         &mut program,
         &block_exit_cached_slots,
         PlanRepairs {
-            pool: planner.repair_pool(),
-            slot_arena: planner.repair_slot_arena(),
-            index_arena: planner.repair_index_arena(),
-            spans: &repair_spans,
+            pool: &[],
+            slot_arena: &[],
+            index_arena: &[],
+            spans: &[],
         },
-        original_block_count,
+        0,
     );
     drop(planner);
     drop(block_exit_cached_slots);
@@ -377,11 +380,28 @@ fn collect_local_slot_info(semantic: &SemanticProgram) -> collections::Vec<CellI
         .collect()
 }
 
+/// Trim the solver's public entry set to cells the emitted block consumes or
+/// carries through. This is intentionally based on emitted SSA, making rewrite
+/// the release-build authority instead of predicting it with a second semantic
+/// walk.
+fn filter_block_entry_cached_cells(
+    planned: &[CellId],
+    hint_exit: &[CellId],
+    ops: &[SsaInst],
+) -> collections::Vec<CellId> {
+    planned
+        .iter()
+        .copied()
+        .filter(|cell| entry_cache_requirement(ops, *cell, hint_exit.contains(cell)).is_some())
+        .collect()
+}
+
 struct LoweredBlock {
     ops: collections::Vec<SsaInst>,
     extra_args: collections::Vec<SsaOperand>,
     terminator: SsaTerminator,
-    actual_exit_cached_slots: collections::Vec<CellId>,
+    actual_exit_cached_cells: collections::Vec<CellId>,
+    hint_exit_cached_cells: collections::Vec<CellId>,
     extra_blocks: collections::Vec<SsaBlock>,
     extra_block_cached_slots: collections::Vec<collections::Vec<CellId>>,
     extra_block_exit_cached_slots: collections::Vec<collections::Vec<CellId>>,
@@ -474,12 +494,16 @@ fn lower_block_range(
         ops: state.ops,
         extra_args: state.extra_args,
         terminator: terminator.terminator,
-        // The true materialized cache set at block exit: `resident_cache` is
-        // drop-subtracted by the engine's evictions (unlike `materialized_cache`,
-        // which is the admission hint). This is the lowered reality the standing
-        // guard checks against the plan's exact_exit row. `materialized_cache`
-        // stays live only for the emit-side bridge-block exit snapshot.
-        actual_exit_cached_slots: resident_cache.iter().copied().collect(),
+        // This is the actual resident set maintained by the authoritative
+        // lowering walk. Any planned entry cell trimmed above was necessarily
+        // killed by a call or an emitted eviction here, so no second replay is
+        // needed to obtain the final exit row.
+        actual_exit_cached_cells: resident_cache.iter().copied().collect(),
+        // Admission hint used to decide which untouched planned residents were
+        // actually carried through. Unlike `resident_cache`, this intentionally
+        // ignores evictions; the exact exit is replayed from emitted cache ops
+        // after the entry set has been trimmed.
+        hint_exit_cached_cells: materialized_cache.iter().copied().collect(),
         extra_blocks: terminator.extra_blocks,
         extra_block_cached_slots: terminator.extra_block_cached_slots,
         extra_block_exit_cached_slots: terminator.extra_block_exit_cached_slots,

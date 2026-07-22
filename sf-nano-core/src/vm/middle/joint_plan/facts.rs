@@ -142,15 +142,14 @@ pub(crate) struct BlockPlan {
     /// admits a local to cache exactly when it is a planned resident, so a hot
     /// local re-accessed after a call is re-cached even though the exact entry
     /// row trimmed it — the call invalidated entry residency but not admission.
-    /// Lowering seeds each block from its exact-entry row; this set only governs
-    /// mid-block re-admission.
+    /// Lowering seeds each block from this set, then trims unused residents from
+    /// the row it publishes. It also governs mid-block re-admission.
     pub planned_residents: RowSpan,
-    /// Pass D exact entry cache set (slot-ascending), as a span into
-    /// [`FunctionPlan::row_arena`]: the planned residents trimmed to the locals
-    /// the block actually requires cached on entry.
+    /// Debug-oracle exact entry cache set (slot-ascending), as a span into
+    /// [`FunctionPlan::row_arena`]. Empty in release builds.
     pub exact_entry: RowSpan,
-    /// Pass D exact exit cache set (slot-ascending), as a span into
-    /// [`FunctionPlan::row_arena`]: the residents live when the block hands off.
+    /// Debug-oracle exact exit cache set (slot-ascending), as a span into
+    /// [`FunctionPlan::row_arena`]. Empty in release builds.
     pub exact_exit: RowSpan,
     /// Per out-edge repair, as a span into [`FunctionPlan::repair_index_arena`]
     /// in terminator edge order (Goto | BranchThen, BranchElse | BrTable(idx)).

@@ -122,13 +122,14 @@ pub(crate) fn build_plan(
         preferred_preserved: solution.preferred_preserved,
     };
 
-    // Pass D: exact per-block cache boundaries + per-edge repair actions. The
-    // walker shares the solver's class model: preserved-nominated residents
-    // survive survivable (direct local-JIT) calls; every other call clears the
-    // resident cache. The machine-facing Ensure|Reserve requirement rows are
-    // still derived over the FINAL SSA in `middle::final_signals` (a
-    // pre-cleanup classification cannot see block merges).
-    exact::compute_exact_plan(semantic, cfg, frame, config, is_local_func, &mut plan)?;
+    // Pass D is a debug oracle, not part of release compilation. The rewriter
+    // publishes cache boundaries from the SSA it actually emits; replaying the
+    // semantic program here as well would duplicate the hottest middle-end
+    // walk. Debug/test builds retain the exact walker and compare its rows with
+    // the emit-derived result in `rewrite_function`.
+    if cfg!(debug_assertions) {
+        exact::compute_exact_plan(semantic, cfg, frame, config, is_local_func, &mut plan)?;
+    }
 
     Ok(plan)
 }

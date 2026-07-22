@@ -22,7 +22,7 @@ use super::{
     block_open::{block_open_decision, target_entry_decision},
     build,
     cell_access::decide_local_access,
-    facts::{FunctionPlan, RepairActionsSpans, RowSpan},
+    facts::FunctionPlan,
     interface::{
         BlockOpenDecision, CellAccessDecision, CellAccessQuery, FunctionSetupDecision,
         TargetEntryDecision,
@@ -104,46 +104,25 @@ impl JointPlanner {
         decide_local_access(&self.plan, query)
     }
 
-    /// `block`'s exact entry cache row — the authoritative published entry set,
-    /// and the seed the rewriter opens the block with. A slice into the plan's
-    /// flat `row_arena`; rewrite copies it into the program's published row.
+    /// The region solver's public resident set. This is the rewrite seed and
+    /// the admission policy; the rewriter trims it to the entry cells that the
+    /// emitted block actually needs before publishing the final SSA row.
+    #[inline]
+    pub(crate) fn planned_residents(&self, block: CfgBlockId) -> &[CellId] {
+        self.plan.planned_residents(block.as_usize())
+    }
+
+    /// `block`'s debug-oracle entry cache row. Release builds do not compute
+    /// this data; debug/test rewrite compares it with the emit-derived row.
     #[inline]
     pub(crate) fn exact_entry(&self, block: CfgBlockId) -> &[CellId] {
         &self.plan.row_arena[self.plan.blocks[block.as_usize()].exact_entry.range()]
     }
 
-    /// `block`'s exact exit cache row — the authoritative published exit set,
-    /// checked against lowered reality by the standing guard. Slice into
-    /// `row_arena`.
+    /// `block`'s debug-oracle exit cache row, checked against lowered reality.
+    /// Release builds do not compute this data.
     #[inline]
     pub(crate) fn exact_exit(&self, block: CfgBlockId) -> &[CellId] {
         &self.plan.row_arena[self.plan.blocks[block.as_usize()].exact_exit.range()]
-    }
-
-    /// The content-deduped repair-action pool `rewrite/edge.rs` indexes for
-    /// semantic edges. Each entry's slot groups live in [`Self::repair_slot_arena`].
-    #[inline]
-    pub(crate) fn repair_pool(&self) -> &[RepairActionsSpans] {
-        &self.plan.repair_pool
-    }
-
-    /// The flat arena holding the repair pool's drop/ensure/reserve slot groups.
-    #[inline]
-    pub(crate) fn repair_slot_arena(&self) -> &[CellId] {
-        &self.plan.repair_slot_arena
-    }
-
-    /// The flat per-edge repair index arena (`NO_REPAIR` = no repair); a block's
-    /// slice is at its [`Self::repair_span`].
-    #[inline]
-    pub(crate) fn repair_index_arena(&self) -> &[u32] {
-        &self.plan.repair_index_arena
-    }
-
-    /// `block`'s span into [`Self::repair_index_arena`] (one entry per out-edge,
-    /// terminator edge order).
-    #[inline]
-    pub(crate) fn repair_span(&self, block: CfgBlockId) -> RowSpan {
-        self.plan.blocks[block.as_usize()].repair
     }
 }

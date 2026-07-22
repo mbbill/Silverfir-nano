@@ -1,19 +1,19 @@
 //! Pass D — the exact-simulation walker.
 //!
-//! Runs at the end of `build_plan`, after the region solver fills each block's
-//! planned-resident set. For every semantic block, in the order rewrite
-//! lowers, it re-walks the op stream through the SAME shared discipline engine
-//! the rewriter drives (measure driver, capacity clamp On), and mirrors the
-//! rewriter's per-op cache decisions from `rewrite/function.rs`. From that it
-//! derives the exact per-block cached-local entry/exit rows and the per-edge
-//! boundary repair actions.
+//! Runs only in debug/test builds at the end of `build_plan`, after the region
+//! solver fills each block's planned-resident set. For every semantic block, in
+//! the order rewrite lowers, it re-walks the op stream through the SAME shared
+//! discipline engine the rewriter drives (measure driver, capacity clamp On),
+//! and mirrors the rewriter's per-op cache decisions from
+//! `rewrite/function.rs`. From that it derives exact per-block cached-local
+//! entry/exit rows and per-edge boundary repair actions.
 //!
-//! These rows are plan-authoritative: lowering seeds each block from the plan's
-//! exact entry row, and a standing rewrite-time debug assert checks the lowered
-//! exit set against the plan's. The walker never emits SSA values — it evolves
-//! only the typed [`Window`] and observes cache eviction through the resident
-//! set the engine mutates, so the recorded cache-event stream is a faithful
-//! projection of the block's lowered cache ops.
+//! Emitted SSA is authoritative. These rows are an independent debug oracle:
+//! standing rewrite-time asserts compare them with the entry/exit sets produced
+//! by real lowering. The walker never emits SSA values — it evolves only the
+//! typed [`Window`] and observes cache eviction through the resident set the
+//! engine mutates, so the recorded cache-event stream is a faithful projection
+//! of the block's lowered cache ops.
 //!
 //! The machine-facing entry-cache requirement + preferred-preserved rows are NOT
 //! produced here. They are derived over the FINAL (post-cleanup) SSA in
@@ -284,11 +284,9 @@ fn walk_block(
     let block_id = cfg.blocks[block_index].id;
     let range = cfg.blocks[block_index].range.clone();
     let entry = &plan.blocks[block_index].entry;
-    // The step-1 walk seeds from the block's planned residents (the admission
-    // set) — the same seed the rewriter used before pass D became authoritative
-    // — so the filter derivation below reproduces the entry row the old path
-    // computed. Lowering itself now seeds from `exact_entry`, but the walker
-    // must stay planned-seeded here to feed that filter.
+    // Match real lowering's seed: the region solver's planned residents. The
+    // filter below then independently derives the entry row for the debug
+    // equality check.
     let planned = plan.planned_residents(block_index);
     let gp_unit_bytes = plan.gp_unit_bytes;
     let budget = BankBudget {
@@ -493,7 +491,7 @@ fn walk_block(
         .collect();
     // The exact exit replays the recorded cache ops over the FINAL (filtered)
     // entry seed — the exit set the old post-hoc simulate pass computed, now the
-    // authoritative published row checked against lowered reality.
+    // debug-oracle row checked against lowered reality.
     let exact_exit = replay_exit(&exact_entry, events, plan);
 
     // Compact the block's classification for the edge pass: each entry slot's

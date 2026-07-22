@@ -34,11 +34,9 @@ enum EdgeSlot {
     BrTable(usize),
 }
 
-/// Pass D's edge-repair data, threaded into repair-block insertion: the
-/// content-deduped action pool (flattened — each entry's slot groups live in
-/// `slot_arena`), the flat per-edge index arena (`NO_REPAIR` = none), and
-/// per-semantic-block spans into it (edge order Goto | BranchThen, BranchElse |
-/// BrTable(idx)).
+/// Optional debug-plan edge-repair data. Release rewrite passes empty slices
+/// and derives every repair from emitted SSA; the indexed representation stays
+/// available to cross-check the debug oracle.
 #[derive(Clone, Copy)]
 pub(super) struct PlanRepairs<'a> {
     pub pool: &'a [RepairActionsSpans],
@@ -151,10 +149,9 @@ fn edge_slot_ordinal(slot: EdgeSlot) -> usize {
     }
 }
 
-/// The repair actions for one outgoing edge. A semantic block's edge to a
-/// semantic target reads the plan's per-edge repair (pass D authority); every
-/// other edge — a semantic block's edge into a synthesized bridge, or any edge
-/// of a bridge/repair block — derives emit-side from the target's lowered ops.
+/// The repair actions for one outgoing edge. When optional debug-plan data is
+/// supplied, semantic-to-semantic edges can read it; release rewrite derives
+/// every edge from the target's lowered ops.
 fn resolve_edge_repair(
     program: &SsaProgram,
     plan: PlanRepairs<'_>,
@@ -512,8 +509,7 @@ mod tests {
             collections::vec![collections::vec![slot1], collections::vec![slot0]];
 
         // semantic_count = 0 routes every edge through the emit-side derive
-        // path this test exercises (the plan-authoritative path is covered by
-        // the corpus-wide standing-guard asserts).
+        // path this test exercises.
         insert_boundary_repair_blocks(
             &mut program,
             &exit_cached_slots,
