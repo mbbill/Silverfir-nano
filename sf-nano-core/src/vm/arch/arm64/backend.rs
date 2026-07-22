@@ -346,10 +346,32 @@ impl<'a> Arm64Backend<'a> {
         self.core
             .text
             .emit_u32(enc::sub_imm_64(abi::stack_reg(), abi::stack_reg(), total));
-        for (index, reg) in gp_regs.iter().copied().enumerate() {
+        let gp_pairs = gp_regs.len() / 2;
+        for pair in 0..gp_pairs {
+            let index = pair * 2;
+            self.core.text.emit_u32(enc::stp_64(
+                gp_regs[index],
+                gp_regs[index + 1],
+                abi::stack_reg(),
+                index as i32,
+            ));
+        }
+        if gp_regs.len() & 1 != 0 {
+            let index = gp_regs.len() - 1;
             self.core
                 .text
-                .emit_u32(enc::str_64(reg, abi::stack_reg(), index as u32));
+                .emit_u32(enc::str_64(gp_regs[index], abi::stack_reg(), index as u32));
+        }
+        #[cfg(not(sf_has_simd))]
+        for pair in 0..fp_regs.len() / 2 {
+            let index = pair * 2;
+            let byte_offset = fp_offset + index as u32 * PRESERVED_DYNAMIC_FP_SLOT_BYTES;
+            self.core.text.emit_u32(enc::stp_d(
+                fp_regs[index],
+                fp_regs[index + 1],
+                abi::stack_reg(),
+                (byte_offset / STACK_SLOT_BYTES) as i32,
+            ));
         }
         for (index, reg) in fp_regs.iter().copied().enumerate() {
             let byte_offset = fp_offset + index as u32 * PRESERVED_DYNAMIC_FP_SLOT_BYTES;
@@ -358,11 +380,13 @@ impl<'a> Arm64Backend<'a> {
                 .text
                 .emit_u32(enc::str_q(reg, abi::stack_reg(), byte_offset / 16));
             #[cfg(not(sf_has_simd))]
-            self.core.text.emit_u32(enc::str_d(
-                reg,
-                abi::stack_reg(),
-                byte_offset / STACK_SLOT_BYTES,
-            ));
+            if fp_regs.len() & 1 != 0 && index + 1 == fp_regs.len() {
+                self.core.text.emit_u32(enc::str_d(
+                    reg,
+                    abi::stack_reg(),
+                    byte_offset / STACK_SLOT_BYTES,
+                ));
+            }
         }
     }
 
@@ -376,10 +400,32 @@ impl<'a> Arm64Backend<'a> {
         if total == 0 {
             return;
         }
-        for (index, reg) in gp_regs.iter().copied().enumerate() {
+        let gp_pairs = gp_regs.len() / 2;
+        for pair in 0..gp_pairs {
+            let index = pair * 2;
+            self.core.text.emit_u32(enc::ldp_64(
+                gp_regs[index],
+                gp_regs[index + 1],
+                abi::stack_reg(),
+                index as i32,
+            ));
+        }
+        if gp_regs.len() & 1 != 0 {
+            let index = gp_regs.len() - 1;
             self.core
                 .text
-                .emit_u32(enc::ldr_64(reg, abi::stack_reg(), index as u32));
+                .emit_u32(enc::ldr_64(gp_regs[index], abi::stack_reg(), index as u32));
+        }
+        #[cfg(not(sf_has_simd))]
+        for pair in 0..fp_regs.len() / 2 {
+            let index = pair * 2;
+            let byte_offset = fp_offset + index as u32 * PRESERVED_DYNAMIC_FP_SLOT_BYTES;
+            self.core.text.emit_u32(enc::ldp_d(
+                fp_regs[index],
+                fp_regs[index + 1],
+                abi::stack_reg(),
+                (byte_offset / STACK_SLOT_BYTES) as i32,
+            ));
         }
         for (index, reg) in fp_regs.iter().copied().enumerate() {
             let byte_offset = fp_offset + index as u32 * PRESERVED_DYNAMIC_FP_SLOT_BYTES;
@@ -388,11 +434,13 @@ impl<'a> Arm64Backend<'a> {
                 .text
                 .emit_u32(enc::ldr_q(reg, abi::stack_reg(), byte_offset / 16));
             #[cfg(not(sf_has_simd))]
-            self.core.text.emit_u32(enc::ldr_d(
-                reg,
-                abi::stack_reg(),
-                byte_offset / STACK_SLOT_BYTES,
-            ));
+            if fp_regs.len() & 1 != 0 && index + 1 == fp_regs.len() {
+                self.core.text.emit_u32(enc::ldr_d(
+                    reg,
+                    abi::stack_reg(),
+                    byte_offset / STACK_SLOT_BYTES,
+                ));
+            }
         }
         self.core
             .text
@@ -433,6 +481,26 @@ impl<'a> Arm64Backend<'a> {
 
 fn arm64_function_needs_body_host_frame(function: &MachineFunction) -> bool {
     if !function.preserved_clobbers.is_empty() {
+        return true;
+    }
+
+    // x30 doubles as the architectural link register. When the volatile
+    // dynamic bank allocates it, preserve the incoming body return address
+    // before MachineIR can define the lane, even for an otherwise leaf body.
+    let uses_dynamic_lr = function.program.blocks.iter().any(|block| {
+        block.params.iter().any(|param| {
+            !param.ty.is_fp() && abi::map_reg(param.reg).is_ok_and(|reg| reg == abi::host_lr_reg())
+        }) || block.ops.iter().any(|inst| {
+            let mut found = false;
+            inst.kind.for_each_defined_reg(|reg| {
+                if !found && abi::map_reg(reg).is_ok_and(|mapped| mapped == abi::host_lr_reg()) {
+                    found = true;
+                }
+            });
+            found
+        })
+    });
+    if uses_dynamic_lr {
         return true;
     }
 

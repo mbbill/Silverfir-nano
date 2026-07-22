@@ -149,12 +149,20 @@ const REG_PLAN: RegPlan = RegPlan {
         gp(12),
         gp(13),
         gp(14),
+        // x30 is caller-clobbered by BL/BLR, so it belongs at the end of the
+        // volatile bank. A body that actually uses it saves the incoming LR in
+        // its host-frame pair before the first MachineIR block executes.
+        gp(30),
         gp(23),
         gp(24),
         gp(25),
         gp(26),
         gp(27),
         gp(28),
+        // x29 is paired with x30 in every body host frame. Treat that existing
+        // save/restore as its callee-saved dynamic-lane preservation instead
+        // of leaving a register idle throughout register-heavy leaf loops.
+        gp(29),
         gp(15),
     ],
     gp_dynamic_caller_saved: &[
@@ -317,8 +325,8 @@ pub(super) const fn fp_zero_reg() -> Arm64FpReg {
 // ── Derived config ───────────────────────────────────────────────────────────
 
 const SCALAR_CALL_SCRATCH_SLOTS: u16 = 3;
-const GP_VOLATILE_DYNAMIC: u8 = 15;
-const GP_PRESERVED_DYNAMIC: u8 = 6;
+const GP_VOLATILE_DYNAMIC: u8 = 16;
+const GP_PRESERVED_DYNAMIC: u8 = 7;
 const GP_INTERNAL_SCRATCH: u8 = 1;
 const FP_VOLATILE_DYNAMIC: u8 = 22;
 const FP_PRESERVED_DYNAMIC: u8 = 8;
@@ -451,3 +459,28 @@ pub(super) const PRESERVED_HELPER_FRAME_SIZE: u32 = {
     let raw = PRESERVED_HELPER_FP_OFFSET + PRESERVED_FP_COUNT as u32 * PRESERVED_FP_REG_BYTES;
     raw.div_ceil(16) * 16
 };
+
+#[cfg(test)]
+mod tests {
+    use super::{
+        compile_backend_config, gp, gp_dynamic_caller_saved_regs, map_reg, GP_INTERNAL_SCRATCH,
+        MACHINE_FIXED_REG_COUNT,
+    };
+    use crate::vm::machine::machine_ir::MachineReg;
+
+    #[test]
+    fn dynamic_plan_reclaims_host_fp_and_lr_without_cross_call_lr_preservation() {
+        let config = compile_backend_config();
+        assert_eq!(config.allocatable_gp_dynamic_budget(), 23);
+        assert_eq!(config.gp_internal_scratch, GP_INTERNAL_SCRATCH);
+        assert_eq!(
+            map_reg(MachineReg(MACHINE_FIXED_REG_COUNT + 15)).unwrap(),
+            gp(30)
+        );
+        assert_eq!(
+            map_reg(MachineReg(MACHINE_FIXED_REG_COUNT + 22)).unwrap(),
+            gp(29)
+        );
+        assert!(!gp_dynamic_caller_saved_regs().contains(&gp(30)));
+    }
+}
