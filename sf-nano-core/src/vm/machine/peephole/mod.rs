@@ -35,6 +35,7 @@ mod fuse_isel;
 mod fuse_smull_sign_ext;
 pub(crate) mod helpers;
 mod hoist_loop_address_bases;
+mod recognize_memmove;
 mod reuse_loaded_values;
 mod reuse_loop_context_loads;
 mod reuse_loop_frame_values;
@@ -124,4 +125,5 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     reuse_loop_context_loads::reuse_loop_context_loads(&mut program.blocks);
     eliminate_dead_params::eliminate_dead_params(&mut program.blocks);
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
+    recognize_memmove::recognize_memmove(program);
 }
