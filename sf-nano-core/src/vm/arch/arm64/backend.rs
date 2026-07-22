@@ -14,7 +14,7 @@ use crate::{
         machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId,
             MachineFunction, MachineInst, MachineInstKind, MachineReg, MachineReturnAbi,
-            MachineTerminator, MachineTrapKind, MACHINE_CTX_REG, MACHINE_FP_REG,
+            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
             MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
@@ -34,6 +34,15 @@ use crate::vm::arch::common::{
     scratch_pool::ScratchPool,
     types::ParallelSource,
 };
+
+unsafe extern "C" {
+    fn memset(dest: *mut core::ffi::c_void, value: i32, len: usize) -> *mut core::ffi::c_void;
+    fn memmove(
+        dest: *mut core::ffi::c_void,
+        src: *const core::ffi::c_void,
+        len: usize,
+    ) -> *mut core::ffi::c_void;
+}
 
 // ── Frame layout constants ───────────────────────────────────────────────────
 
@@ -112,6 +121,13 @@ pub(super) struct PendingDirectCall {
 }
 
 #[derive(Clone, Copy, Debug)]
+pub(super) struct BulkBoundsFact {
+    pub offset: MachineValue,
+    pub len: MachineValue,
+    pub op_index: usize,
+}
+
+#[derive(Clone, Copy, Debug)]
 struct DirectCallFallbackVeneer {
     callee: MachineFuncId,
     scratch_reg: Arm64Reg,
@@ -125,6 +141,13 @@ pub(crate) struct Arm64Backend<'a> {
     pub(super) fixups: collections::Vec<BranchFixup>,
     pub(super) gp_scratch: ScratchPool<Arm64Reg, 2>,
     pub(super) fp_scratch: ScratchPool<Arm64FpReg, 2>,
+    /// Caller-clobbered dynamic lanes that this function can actually use.
+    /// Preserved helper calls only spill these lanes, instead of the entire
+    /// architectural volatile bank.
+    pub(super) helper_gp_candidates: collections::Vec<(MachineReg, Arm64Reg)>,
+    pub(super) helper_fp_candidates: collections::Vec<(MachineReg, Arm64FpReg)>,
+    pub(super) helper_saved_gp: collections::Vec<Arm64Reg>,
+    pub(super) helper_saved_fp: collections::Vec<Arm64FpReg>,
     /// Deferred direct-call veneers. Flushed by
     /// `lower_function_literal_pool` (which the pipeline calls between
     /// edge stubs and the body-local error tail).
@@ -149,6 +172,15 @@ pub(crate) struct Arm64Backend<'a> {
     pub(super) recent_stores: [(MachineReg, i32, u8, u32); RECENT_STORE_SLOTS],
     pub(super) recent_store_len: usize,
     pub(super) dispatch_seq: u32,
+    /// The two most recent mem0 bulk ranges checked in this basic block.
+    /// Keeping two facts lets an adjacent `memory.fill` + `memory.copy`
+    /// share the common `[0, len)` source range.
+    pub(super) bulk_bounds_facts: [Option<BulkBoundsFact>; 2],
+    pub(super) bulk_bounds_next: usize,
+    /// Invariant libc entry addresses cached in otherwise-unused
+    /// callee-saved registers for bulk-memory-heavy bodies.
+    pub(super) bulk_memset_target: Option<Arm64Reg>,
+    pub(super) bulk_memmove_target: Option<Arm64Reg>,
 }
 
 /// Capacity of the recent-store ring.
@@ -158,6 +190,125 @@ pub(super) const RECENT_STORE_SLOTS: usize = 8;
 pub(super) const RECENT_STORE_MAX_AGE: u32 = 24;
 
 impl<'a> Arm64Backend<'a> {
+    fn bulk_host_call_targets(core: &CompilerCore<'a>) -> (Option<Arm64Reg>, Option<Arm64Reg>) {
+        let FunctionBody::Mir(function) = core.body else {
+            return (None, None);
+        };
+        let mut needs_memset = false;
+        let mut needs_memmove = false;
+        let mut used_phys = [false; 32];
+        for block in &function.program.blocks {
+            for param in &block.params {
+                if let Ok(reg) = abi::map_reg(param.reg) {
+                    used_phys[reg.index() as usize] = true;
+                }
+            }
+            for inst in &block.ops {
+                match inst.kind {
+                    MachineInstKind::MemoryFill { mem_idx: 0, .. } => needs_memset = true,
+                    MachineInstKind::MemoryCopy {
+                        dst_mem: 0,
+                        src_mem: 0,
+                        ..
+                    } => needs_memmove = true,
+                    _ => {}
+                }
+                inst.kind.for_each_defined_reg(|machine| {
+                    if let Ok(reg) = abi::map_reg(machine) {
+                        used_phys[reg.index() as usize] = true;
+                    }
+                });
+                crate::vm::machine::peephole::helpers::visit_source_values(&inst.kind, |value| {
+                    if let MachineValue::Reg(machine) = *value {
+                        if let Ok(reg) = abi::map_reg(machine) {
+                            used_phys[reg.index() as usize] = true;
+                        }
+                    }
+                });
+            }
+            for raw in 0..core.compiled.backend().total_reg_count() {
+                let machine = MachineReg(raw);
+                if crate::vm::machine::peephole::helpers::terminator_uses_reg(
+                    &block.terminator,
+                    machine,
+                ) {
+                    if let Ok(reg) = abi::map_reg(machine) {
+                        used_phys[reg.index() as usize] = true;
+                    }
+                }
+            }
+        }
+        if !needs_memset && !needs_memmove {
+            return (None, None);
+        }
+
+        // x29 is already preserved with LR by every body that calls a host
+        // helper. x28..x23 are the remaining dynamic callee-saved lanes. Only
+        // claim lanes the MachineIR body never defines or binds.
+        let mut available = [29_u8, 28, 27, 26, 25, 24, 23]
+            .into_iter()
+            .filter(|index| !used_phys[*index as usize])
+            .map(Arm64Reg::from_raw);
+        // Give the no-extra-save x29 lane to memmove, normally the more
+        // expensive and frequent bulk helper.
+        let memmove_target = needs_memmove.then(|| available.next()).flatten();
+        let memset_target = needs_memset.then(|| available.next()).flatten();
+        (memset_target, memmove_target)
+    }
+
+    fn helper_save_sets(
+        core: &CompilerCore<'a>,
+    ) -> (
+        collections::Vec<(MachineReg, Arm64Reg)>,
+        collections::Vec<(MachineReg, Arm64FpReg)>,
+    ) {
+        let FunctionBody::Mir(function) = core.body else {
+            return (collections::Vec::new(), collections::Vec::new());
+        };
+        let mut used = collections::vec![false; core.compiled.backend().total_reg_count() as usize];
+        for block in &function.program.blocks {
+            for param in &block.params {
+                if let Some(slot) = used.get_mut(param.reg.0 as usize) {
+                    *slot = true;
+                }
+            }
+            for inst in &block.ops {
+                inst.kind.for_each_defined_reg(|reg| {
+                    if let Some(slot) = used.get_mut(reg.0 as usize) {
+                        *slot = true;
+                    }
+                });
+            }
+        }
+
+        let mut gp = collections::Vec::new();
+        let mut fp = collections::Vec::new();
+        for (index, is_used) in used.into_iter().enumerate() {
+            if !is_used {
+                continue;
+            }
+            let reg = MachineReg(index as u16);
+            if core.is_fp_reg(reg) {
+                let Some(fp_index) =
+                    crate::vm::machine::machine_ir::fp_reg_index(reg, core.compiled.backend())
+                else {
+                    continue;
+                };
+                let Some(mapped) = abi::fp_machine_reg(fp_index) else {
+                    continue;
+                };
+                if abi::fp_dynamic_caller_saved_regs().contains(&mapped) {
+                    fp.push((reg, mapped));
+                }
+            } else if let Ok(mapped) = abi::map_reg(reg) {
+                if abi::gp_dynamic_caller_saved_regs().contains(&mapped) {
+                    gp.push((reg, mapped));
+                }
+            }
+        }
+        (gp, fp)
+    }
+
     /// Record a dispatched `Store` in the recent-store ring.
     fn record_store(&mut self, base: MachineReg, offset: i32, bytes: u8) {
         let slot = self.recent_store_len % RECENT_STORE_SLOTS;
@@ -217,9 +368,24 @@ impl<'a> Arm64Backend<'a> {
                         .expect("validated arm64 preserved FP clobber must map"),
                 );
             } else {
-                gp_regs.push(
-                    abi::map_reg(*reg).expect("validated arm64 preserved GP clobber must map"),
-                );
+                let mapped =
+                    abi::map_reg(*reg).expect("validated arm64 preserved GP clobber must map");
+                // x29 is already saved with LR by `lower_body_prelude` and
+                // restored by every body return path. Do not allocate a second
+                // dynamic-save slot for the same physical register.
+                if mapped != abi::host_fp_reg() {
+                    gp_regs.push(mapped);
+                }
+            }
+        }
+        for target in [self.bulk_memset_target, self.bulk_memmove_target]
+            .into_iter()
+            .flatten()
+        {
+            // x29 is already saved beside LR. Other cached target lanes must
+            // join the body's lazy preserved save exactly once.
+            if target != abi::host_fp_reg() && !gp_regs.contains(&target) {
+                gp_regs.push(target);
             }
         }
         (gp_regs, fp_regs)
@@ -577,17 +743,27 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     }
 
     fn new(core: CompilerCore<'a>) -> Self {
+        let (helper_gp_candidates, helper_fp_candidates) = Self::helper_save_sets(&core);
+        let (bulk_memset_target, bulk_memmove_target) = Self::bulk_host_call_targets(&core);
         Self {
             core,
             fixups: collections::Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),
+            helper_saved_gp: collections::Vec::with_capacity(helper_gp_candidates.len()),
+            helper_saved_fp: collections::Vec::with_capacity(helper_fp_candidates.len()),
+            helper_gp_candidates,
+            helper_fp_candidates,
             pending_direct_calls: collections::Vec::new(),
             pending_op: None,
             select_flags: None,
             recent_stores: [(MachineReg(0), 0, 0, 0); RECENT_STORE_SLOTS],
             recent_store_len: 0,
             dispatch_seq: 0,
+            bulk_bounds_facts: [None; 2],
+            bulk_bounds_next: 0,
+            bulk_memset_target,
+            bulk_memmove_target,
         }
     }
 
@@ -719,6 +895,20 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             .text
             .emit_u32(enc::stp_64_pre_index(x29, x30, abi::stack_reg(), -16));
         self.lower_preserved_dynamic_body_save();
+        if let Some(target) = self.bulk_memset_target {
+            super::inst::materialize_u64_into(
+                &mut self.core.text,
+                target,
+                memset as *const () as usize as u64,
+            );
+        }
+        if let Some(target) = self.bulk_memmove_target {
+            super::inst::materialize_u64_into(
+                &mut self.core.text,
+                target,
+                memmove as *const () as usize as u64,
+            );
+        }
     }
 
     /// Flush direct-call fallback veneers into the end-of-body pool. The
@@ -764,6 +954,7 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             };
             self.core.direct_call_patches.push(patch);
         }
+
         Ok(())
     }
 
@@ -795,6 +986,8 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         self.core.current_edge_target = None;
         self.core.reset_block_fp_state(block)?;
         self.select_flags = None;
+        self.bulk_bounds_facts = [None; 2];
+        self.bulk_bounds_next = 0;
         Ok(())
     }
 

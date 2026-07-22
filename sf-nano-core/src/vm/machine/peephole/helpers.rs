@@ -434,7 +434,7 @@ pub(crate) fn reg_live_after(
 }
 
 /// Check if a terminator reads from `reg`.
-pub(super) fn terminator_uses_reg(term: &MachineTerminator, reg: MachineReg) -> bool {
+pub(crate) fn terminator_uses_reg(term: &MachineTerminator, reg: MachineReg) -> bool {
     match term {
         MachineTerminator::Jump(edge) => edge_uses_reg(edge, reg),
         MachineTerminator::Branch {

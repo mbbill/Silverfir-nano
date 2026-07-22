@@ -39,6 +39,11 @@ pub(crate) unsafe extern "C" fn preserved_entry(
         return NativeCallStatus::Error as u32;
     };
     let result = unsafe { dispatch_preserved(ctx, op_code, io) };
+    finish_preserved_result(ctx, result)
+}
+
+#[inline]
+fn finish_preserved_result(ctx: &mut NativeContext, result: Result<(), WasmError>) -> u32 {
     match result {
         Ok(()) => NativeCallStatus::Ok as u32,
         Err(WasmError::Exception { .. }) => NativeCallStatus::Thrown as u32,
@@ -47,6 +52,92 @@ pub(crate) unsafe extern "C" fn preserved_entry(
             NativeCallStatus::Error as u32
         }
     }
+}
+
+/// Direct hot-path entry for `memory.fill`.
+///
+/// Unlike `preserved_entry`, this avoids the opcode dispatcher and uses the
+/// context's already-validated memory view instead of walking back through the
+/// Store and Module on every bulk operation.
+pub(crate) unsafe extern "C" fn memory_fill_entry(
+    ctx: *mut NativeContext,
+    io_ptr: *mut u64,
+) -> u32 {
+    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+        return NativeCallStatus::Error as u32;
+    };
+    let result = (|| {
+        let mem_idx = unsafe { *io_ptr.add(io::IMM0) } as usize;
+        let dest = unsafe { *io_ptr.add(io::ARG0) } as usize;
+        let val = unsafe { *io_ptr.add(io::ARG1) } as u8;
+        let len = unsafe { *io_ptr.add(io::ARG2) } as usize;
+        let view = cached_memory_view(ctx, mem_idx)?;
+        let Some(end) = dest.checked_add(len) else {
+            return Err(trap_error("out of bounds memory access"));
+        };
+        if end > view.len {
+            return Err(trap_error("out of bounds memory access"));
+        }
+        unsafe {
+            core::ptr::write_bytes(view.base.add(dest), val, len);
+        }
+        Ok(())
+    })();
+    finish_preserved_result(ctx, result)
+}
+
+/// Direct hot-path entry for `memory.copy`; see [`memory_fill_entry`].
+pub(crate) unsafe extern "C" fn memory_copy_entry(
+    ctx: *mut NativeContext,
+    io_ptr: *mut u64,
+) -> u32 {
+    let Some(ctx) = (unsafe { ctx.as_mut() }) else {
+        return NativeCallStatus::Error as u32;
+    };
+    let result = (|| {
+        let dst_mem_idx = unsafe { *io_ptr.add(io::IMM0) } as usize;
+        let src_mem_idx = unsafe { *io_ptr.add(io::IMM1) } as usize;
+        let dest = unsafe { *io_ptr.add(io::ARG0) } as usize;
+        let src = unsafe { *io_ptr.add(io::ARG1) } as usize;
+        let len = unsafe { *io_ptr.add(io::ARG2) } as usize;
+        let dst = cached_memory_view(ctx, dst_mem_idx)?;
+        let src_view = cached_memory_view(ctx, src_mem_idx)?;
+        let Some(dest_end) = dest.checked_add(len) else {
+            return Err(trap_error("out of bounds memory access"));
+        };
+        let Some(src_end) = src.checked_add(len) else {
+            return Err(trap_error("out of bounds memory access"));
+        };
+        if dest_end > dst.len || src_end > src_view.len {
+            return Err(trap_error("out of bounds memory access"));
+        }
+        unsafe {
+            // `ptr::copy` is overlap-safe even when two memory indices refer
+            // to the same imported memory allocation.
+            core::ptr::copy(src_view.base.add(src), dst.base.add(dest), len);
+        }
+        Ok(())
+    })();
+    finish_preserved_result(ctx, result)
+}
+
+#[inline]
+fn cached_memory_view(
+    ctx: &NativeContext,
+    mem_idx: usize,
+) -> Result<super::super::context::NativeMemoryView, WasmError> {
+    if mem_idx == 0 {
+        return Ok(super::super::context::NativeMemoryView {
+            base: ctx.mem0_base,
+            len: ctx.mem0_size as usize,
+        });
+    }
+    if mem_idx >= ctx.memory_views_len || ctx.memory_views_base.is_null() {
+        return Err(internal_error(
+            "preserved helper referenced invalid memory index",
+        ));
+    }
+    Ok(unsafe { *ctx.memory_views_base.add(mem_idx) })
 }
 
 unsafe fn dispatch_preserved(

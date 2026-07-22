@@ -6,7 +6,7 @@ use crate::vm::machine::machine_ir::{
     MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth, MachineIndexExtend, MachineInst,
     MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
     MachineMemWidth, MachineReg, MachineShiftOp, MachineSign, MachineStorageType, MachineTrapKind,
-    MachineValue, MACHINE_FP_REG,
+    MachineValue, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
 };
 
 use super::abi::{fp_machine_reg, map_reg};
@@ -25,6 +25,15 @@ use crate::vm::arch::common::types::ParallelSource;
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{fp_reg_index, is_fp_reg};
 use crate::vm::runtime::preserved::{io as preserved_io, op as preserved_op};
+
+unsafe extern "C" {
+    fn memset(dest: *mut core::ffi::c_void, value: i32, len: usize) -> *mut core::ffi::c_void;
+    fn memmove(
+        dest: *mut core::ffi::c_void,
+        src: *const core::ffi::c_void,
+        len: usize,
+    ) -> *mut core::ffi::c_void;
+}
 
 // ── Operand preparation (free functions) ─────────────────────────────────────
 //
@@ -4290,12 +4299,28 @@ impl<'a> super::backend::Arm64Backend<'a> {
         val: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
+        if mem_idx == 0 {
+            self.lower_mem0_bulk_bounds(dest, len)?;
+            let compact_frame = self.emit_infallible_host_frame_open();
+            self.emit_mem0_host_ptr(abi::C_ARG0, dest)?;
+            self.emit_host_i32_arg(abi::C_ARG1, val)?;
+            self.emit_host_i32_arg(abi::C_ARG2, len)?;
+            self.emit_infallible_host_call_and_close(
+                memset as *const () as usize,
+                self.bulk_memset_target,
+                compact_frame,
+            )?;
+            return Ok(());
+        }
+
+        use crate::vm::runtime::preserved::memory_fill_entry;
+
         self.emit_preserved_frame_open();
         self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
         self.emit_io_store_value(preserved_io::ARG0, dest)?;
         self.emit_io_store_value(preserved_io::ARG1, val)?;
         self.emit_io_store_value(preserved_io::ARG2, len)?;
-        self.emit_preserved_call_and_close(preserved_op::MEMORY_FILL, None)?;
+        self.emit_preserved_direct_call_and_close(memory_fill_entry as *const () as usize, None)?;
         Ok(())
     }
 
@@ -4307,13 +4332,113 @@ impl<'a> super::backend::Arm64Backend<'a> {
         src: MachineValue,
         len: MachineValue,
     ) -> Result<(), WasmError> {
+        if dst_mem == 0 && src_mem == 0 {
+            self.lower_mem0_bulk_bounds(dest, len)?;
+            self.lower_mem0_bulk_bounds(src, len)?;
+            let compact_frame = self.emit_infallible_host_frame_open();
+            self.emit_mem0_host_ptr(abi::C_ARG0, dest)?;
+            self.emit_mem0_host_ptr(abi::C_ARG1, src)?;
+            self.emit_host_i32_arg(abi::C_ARG2, len)?;
+            self.emit_infallible_host_call_and_close(
+                memmove as *const () as usize,
+                self.bulk_memmove_target,
+                compact_frame,
+            )?;
+            return Ok(());
+        }
+
+        use crate::vm::runtime::preserved::memory_copy_entry;
+
         self.emit_preserved_frame_open();
         self.emit_io_store_imm(preserved_io::IMM0, dst_mem);
         self.emit_io_store_imm(preserved_io::IMM1, src_mem);
         self.emit_io_store_value(preserved_io::ARG0, dest)?;
         self.emit_io_store_value(preserved_io::ARG1, src)?;
         self.emit_io_store_value(preserved_io::ARG2, len)?;
-        self.emit_preserved_call_and_close(preserved_op::MEMORY_COPY, None)?;
+        self.emit_preserved_direct_call_and_close(memory_copy_entry as *const () as usize, None)?;
+        Ok(())
+    }
+
+    /// Place a Wasm i32 bulk-memory operand in a C argument register.
+    ///
+    /// Using the W-register move deliberately clears any stale upper half.
+    /// Besides enforcing Wasm's unsigned-i32 address semantics, this proves
+    /// that offset + length cannot overflow the 64-bit sum used below.
+    fn emit_host_i32_arg(&mut self, dst: Arm64Reg, value: MachineValue) -> Result<(), WasmError> {
+        match value {
+            MachineValue::Reg(reg) => {
+                let src = map_gp(self.core.compiled.backend(), reg)?;
+                self.core.text.emit_u32(enc::mov_reg_32(dst, src));
+            }
+            MachineValue::Imm64(value) => {
+                materialize_u64_into(&mut self.core.text, dst, value as u32 as u64);
+            }
+            MachineValue::ReservedReg(_) => {
+                return Err(WasmError::internal(
+                    "arm64 bulk memory op cannot read a reserved register",
+                ));
+            }
+        }
+        Ok(())
+    }
+
+    fn emit_mem0_host_ptr(&mut self, dst: Arm64Reg, offset: MachineValue) -> Result<(), WasmError> {
+        self.emit_host_i32_arg(dst, offset)?;
+        self.core.text.emit_u32(enc::add_reg_64(
+            dst,
+            abi::map_fixed_reg(MACHINE_MEM0_BASE_REG),
+            dst,
+        ));
+        Ok(())
+    }
+
+    fn lower_mem0_bulk_bounds(
+        &mut self,
+        offset: MachineValue,
+        len: MachineValue,
+    ) -> Result<(), WasmError> {
+        let op_index = self.core.current_op_index.unwrap_or(usize::MAX);
+        if self.bulk_bounds_facts.iter().flatten().any(|fact| {
+            fact.offset == offset
+                && fact.len == len
+                && op_index >= fact.op_index
+                && op_index - fact.op_index <= 1
+        }) {
+            return Ok(());
+        }
+
+        self.emit_host_i32_arg(abi::C_ARG2, len)?;
+        let trap = self
+            .core
+            .ensure_trap_label(MachineTrapKind::MemoryOutOfBounds);
+        if offset == MachineValue::Imm64(0) {
+            // `[0, len)` is in bounds exactly when `len <= memory_size`.
+            self.core.text.emit_u32(enc::cmp_reg_64(
+                abi::C_ARG2,
+                abi::map_fixed_reg(MACHINE_MEM0_SIZE_REG),
+            ));
+            self.lower_b_cond(enc::Cond::Hi, trap);
+        } else {
+            self.emit_host_i32_arg(abi::C_ARG0, offset)?;
+            self.core
+                .text
+                .emit_u32(enc::add_reg_64(abi::C_ARG1, abi::C_ARG0, abi::C_ARG2));
+            // Both inputs were zero-extended from i32, so their 64-bit sum
+            // cannot wrap. Only the comparison against memory size remains.
+            self.core.text.emit_u32(enc::cmp_reg_64(
+                abi::C_ARG1,
+                abi::map_fixed_reg(MACHINE_MEM0_SIZE_REG),
+            ));
+            self.lower_b_cond(enc::Cond::Hi, trap);
+        }
+
+        let slot = self.bulk_bounds_next % self.bulk_bounds_facts.len();
+        self.bulk_bounds_facts[slot] = Some(super::backend::BulkBoundsFact {
+            offset,
+            len,
+            op_index,
+        });
+        self.bulk_bounds_next += 1;
         Ok(())
     }
 
