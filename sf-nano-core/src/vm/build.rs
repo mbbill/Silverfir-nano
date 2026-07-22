@@ -650,7 +650,7 @@ fn emit_function_info_bytes(
 #[cfg(sf_has_std)]
 fn parallel_eager_worker_count(module: &ModuleInst) -> usize {
     const MIN_PARALLEL_FUNCTIONS: usize = 128;
-    const MAX_MACHINE_WORKERS: usize = 4;
+    const MAX_MACHINE_WORKERS: usize = 8;
 
     let local_functions = module
         .functions
