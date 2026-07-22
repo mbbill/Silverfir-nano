@@ -18,6 +18,14 @@
 
 ## Facts
 
+- 2026-07-22 (4b360948) pitfall: ARM64's raw libc bulk-memory path cannot place
+  `memory.fill`/`memory.copy` operands directly into x0-x2 before preserving
+  live MachineIR lanes or before completing bounds checks, because those C ABI
+  argument registers are also allocatable dynamic lanes. The path stages all
+  operands outside x0-x2, opens the compact/general helper frame before the
+  bounds check, and explicitly unwinds that frame on the out-of-bounds tail
+  before forming the libc arguments (code).
+
 - 2026-07-22 pitfall: deriving the save set of every ARM64 preserved helper
   solely from ordinary MachineIR liveness passed emulator/x64 coverage but
   failed four of eight native array tests and produced 22 native GC/ref/table

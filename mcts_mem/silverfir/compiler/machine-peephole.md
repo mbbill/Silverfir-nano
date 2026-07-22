@@ -31,6 +31,13 @@
 
 ## Facts
 
+- 2026-07-22 (faf4b05f) pitfall: loop-address hoisting claimed the first
+  preserved dynamic lane after lowering had already derived the function's
+  preserved-clobber set; the ARM64 body then modified that lane without a
+  save/restore, corrupting its caller and making Lua Sunfish trap out of bounds.
+  Preserved-clobber metadata must be regenerated from the final MachineIR after
+  every late peephole that can introduce a register definition (sourced).
+
 - 2026-07-22 measurement: running forwarding again after copy propagation and
   carrying a proven-invariant context load through the loop moved
   counter-global 617 -> 560 -> 415 us; the original pass order hid the exact
