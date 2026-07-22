@@ -930,10 +930,12 @@ impl Instance {
                             }
                             let table_inst = if let Some(state) = state {
                                 let shared = state.table.clone_shared_elements();
+                                let revision = state.table.clone_shared_revision();
                                 TableInst::from_shared(
                                     state.table.limits,
                                     table.value_type(),
                                     shared,
+                                    revision,
                                 )
                             } else {
                                 TableInst::new(*import_limits, table.value_type())

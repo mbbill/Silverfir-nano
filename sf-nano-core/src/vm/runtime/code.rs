@@ -55,6 +55,15 @@ impl AlignedConstData {
     }
 }
 
+#[inline]
+fn max_frame_bytes(abi: &MachineModuleAbi) -> usize {
+    abi.functions
+        .iter()
+        .map(|function| usize::from(function.total_frame_slots) * core::mem::size_of::<u64>())
+        .max()
+        .unwrap_or(0)
+}
+
 #[derive(Debug)]
 pub(crate) struct CompiledNativeModule {
     backend_kind: NativeBackend,
@@ -63,6 +72,7 @@ pub(crate) struct CompiledNativeModule {
     abi: Option<MachineModuleAbi>,
     aligned_consts: collections::Vec<AlignedConstData>,
     dispatch_metadata: NativeDispatchMetadata,
+    max_frame_bytes: usize,
 }
 
 impl CompiledNativeModule {
@@ -80,6 +90,7 @@ impl CompiledNativeModule {
             aligned_consts.push(AlignedConstData::new(konst)?);
         }
         let dispatch_metadata = NativeDispatchMetadata::new(backend, &abi);
+        let max_frame_bytes = max_frame_bytes(&abi);
         Ok(Self {
             backend_kind,
             backend,
@@ -87,6 +98,7 @@ impl CompiledNativeModule {
             abi: Some(abi),
             aligned_consts,
             dispatch_metadata,
+            max_frame_bytes,
         })
     }
 
@@ -97,6 +109,7 @@ impl CompiledNativeModule {
         aligned_consts: collections::Vec<AlignedConstData>,
     ) -> Self {
         let dispatch_metadata = NativeDispatchMetadata::new(backend, &abi);
+        let max_frame_bytes = max_frame_bytes(&abi);
         Self {
             backend_kind,
             backend,
@@ -104,6 +117,7 @@ impl CompiledNativeModule {
             abi: Some(abi),
             aligned_consts,
             dispatch_metadata,
+            max_frame_bytes,
         }
     }
 
@@ -131,6 +145,11 @@ impl CompiledNativeModule {
             Some(abi) => abi,
             None => panic!("compiled machine ABI is not retained for this backend"),
         }
+    }
+
+    #[inline]
+    pub(crate) const fn max_frame_bytes(&self) -> usize {
+        self.max_frame_bytes
     }
 
     #[inline]

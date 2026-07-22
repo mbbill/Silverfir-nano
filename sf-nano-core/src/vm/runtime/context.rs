@@ -32,7 +32,7 @@ use crate::{
     error::WasmError,
     module::type_defs::CompositeType,
     vm::{
-        entities::{FunctionInst, ModuleInst, TableDispatchMode},
+        entities::{FunctionInst, ModuleInst, TableDispatchMode, TableInst},
         runtime::{
             code::CompiledNativeModule,
             dispatch_view::{
@@ -132,6 +132,9 @@ pub(crate) struct NativeContext {
     fixed_call_table_views: collections::Vec<NativeFixedCallTableView>,
     fixed_call_entry_tables: collections::Vec<collections::Vec<NativeFixedCallTableEntry>>,
     type_canon: collections::Vec<u32>,
+    cached_table_revisions: collections::Vec<u64>,
+    cached_module_revision: u64,
+    cached_function_registry_revision: u64,
     dispatch_gp_unit_bytes: u8,
     #[cfg(sf_call_trace)]
     pub(crate) trace_stack: collections::Vec<u32>,
@@ -185,19 +188,133 @@ impl NativeContext {
         self.refresh_type_canon();
         self.refresh_function_views();
         self.refresh_fixed_call_table_views();
+        self.snapshot_view_revisions();
+    }
+
+    #[inline]
+    pub(crate) fn prepare_for_invocation(&mut self, store: *mut Store, stack_end: *mut u64) {
+        self.store = store;
+        self.stack_end = stack_end;
+        self.error = None;
+        self.pending_escape = PendingEscape::None;
+        if !self.cached_views_are_current() {
+            self.refresh_cached_views();
+        }
     }
 
     #[inline]
     pub(crate) fn seed_local_call_infos(&mut self, compiled: &CompiledNativeModule) {
-        self.dispatch_gp_unit_bytes = compiled.backend().gp_unit_bytes;
-        self.seed_dispatch_metadata(compiled.dispatch_metadata());
-        self.refresh_fixed_call_table_views();
+        let metadata = compiled.dispatch_metadata();
+        let base = metadata.local_call_infos().base();
+        let len = metadata.local_call_infos().len();
+        let gp_unit_bytes = compiled.backend().gp_unit_bytes;
+        if self.local_call_infos_base != base
+            || self.local_call_infos_len != len
+            || self.dispatch_gp_unit_bytes != gp_unit_bytes
+        {
+            self.dispatch_gp_unit_bytes = gp_unit_bytes;
+            self.seed_dispatch_metadata(metadata);
+            self.refresh_fixed_call_table_views();
+        }
     }
 
     #[inline]
     pub(crate) fn seed_dispatch_metadata(&mut self, metadata: &NativeDispatchMetadata) {
         self.local_call_infos_base = metadata.local_call_infos().base();
         self.local_call_infos_len = metadata.local_call_infos().len();
+    }
+
+    #[inline]
+    fn snapshot_view_revisions(&mut self) {
+        let Some(store) = self.store() else {
+            self.cached_table_revisions.clear();
+            self.cached_module_revision = 0;
+            self.cached_function_registry_revision = 0;
+            return;
+        };
+        let module_revision = store.module_revision();
+        let function_registry_revision = store.function_registry_revision();
+        let table_revisions: collections::Vec<_> = store
+            .module()
+            .tables
+            .iter()
+            .map(TableInst::revision)
+            .collect();
+        self.cached_module_revision = module_revision;
+        self.cached_function_registry_revision = function_registry_revision;
+        self.cached_table_revisions = table_revisions;
+    }
+
+    #[inline]
+    fn cached_views_are_current(&self) -> bool {
+        let Some(store) = self.store() else {
+            return self.current_module.is_null();
+        };
+        let module = store.module();
+        if self.current_module != module as *const ModuleInst
+            || self.cached_module_revision != store.module_revision()
+            || self.cached_function_registry_revision != store.function_registry_revision()
+            || self.globals_len != module.globals.len()
+            || self.memory_views.len() != module.memories.len()
+            || self.table_views.len() != module.tables.len()
+            || self.cached_table_revisions.len() != module.tables.len()
+        {
+            return false;
+        }
+        if self
+            .globals_ptrs_base()
+            .is_null()
+            .ne(&module.globals.is_empty())
+        {
+            return false;
+        }
+        if !module.globals.is_empty() {
+            let cached =
+                unsafe { core::slice::from_raw_parts(self.globals_ptrs_base(), self.globals_len) };
+            if cached
+                .iter()
+                .zip(&module.globals)
+                .any(|(&ptr, global)| ptr != global.raw_ptr())
+            {
+                return false;
+            }
+        }
+        if self
+            .memory_views
+            .iter()
+            .zip(&module.memories)
+            .any(|(view, memory)| {
+                let len = memory.memory_len();
+                let base = if len == 0 {
+                    core::ptr::null_mut()
+                } else {
+                    memory.memory_ptr()
+                };
+                view.base != base || view.len != len
+            })
+        {
+            return false;
+        }
+        if self
+            .table_views
+            .iter()
+            .zip(&self.cached_table_revisions)
+            .zip(&module.tables)
+            .any(|((view, &revision), table)| {
+                let elements = table.elements();
+                let base = if elements.is_empty() {
+                    core::ptr::null_mut()
+                } else {
+                    elements.as_ptr() as *mut RefHandle
+                };
+                view.elements_base != base
+                    || view.elements_len != elements.len()
+                    || revision != table.revision()
+            })
+        {
+            return false;
+        }
+        true
     }
 
     #[inline]
@@ -658,6 +775,9 @@ impl NativeContextBox {
                 fixed_call_table_views: collections::Vec::new(),
                 fixed_call_entry_tables: collections::Vec::new(),
                 type_canon: collections::Vec::new(),
+                cached_table_revisions: collections::Vec::new(),
+                cached_module_revision: 0,
+                cached_function_registry_revision: 0,
                 dispatch_gp_unit_bytes: core::mem::size_of::<usize>() as u8,
                 #[cfg(sf_call_trace)]
                 trace_stack: collections::Vec::new(),

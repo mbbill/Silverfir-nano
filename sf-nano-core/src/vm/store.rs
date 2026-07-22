@@ -9,7 +9,7 @@ use crate::vm::entities::{FunctionInst, GlobalInst, MemInst, ModuleInst, TableIn
 use crate::vm::exn_heap::{ExnHeap, ExnRef};
 use crate::vm::gc_heap::{GcHeap, GcRef};
 use crate::vm::value::RefHandle;
-use core::cell::RefCell;
+use core::cell::{Cell, Ref, RefCell, RefMut};
 
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FunctionRegistryEntry {
@@ -17,7 +17,37 @@ pub(crate) struct FunctionRegistryEntry {
     pub(crate) local_index: usize,
 }
 
-pub(crate) type SharedFunctionRegistry = Rc<RefCell<collections::Vec<FunctionRegistryEntry>>>;
+#[derive(Clone)]
+pub(crate) struct SharedFunctionRegistry {
+    entries: Rc<RefCell<collections::Vec<FunctionRegistryEntry>>>,
+    revision: Rc<Cell<u64>>,
+}
+
+impl SharedFunctionRegistry {
+    #[inline]
+    fn new() -> Self {
+        Self {
+            entries: Rc::new(RefCell::new(collections::Vec::new())),
+            revision: Rc::new(Cell::new(0)),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn borrow(&self) -> Ref<'_, collections::Vec<FunctionRegistryEntry>> {
+        self.entries.borrow()
+    }
+
+    #[inline]
+    fn borrow_mut(&self) -> RefMut<'_, collections::Vec<FunctionRegistryEntry>> {
+        self.revision.set(self.revision.get().wrapping_add(1));
+        self.entries.borrow_mut()
+    }
+
+    #[inline]
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision.get()
+    }
+}
 pub(crate) type SharedRefRegistry = Rc<RefCell<collections::Vec<RefRegistryEntry>>>;
 #[cfg(sf_has_simd)]
 // Shared out-of-line storage for v128 payloads.
@@ -99,7 +129,7 @@ impl LinkRegistry {
     #[inline]
     pub fn new() -> Self {
         Self {
-            functions: Rc::new(RefCell::new(collections::Vec::new())),
+            functions: SharedFunctionRegistry::new(),
             refs: Rc::new(RefCell::new(collections::Vec::new())),
             #[cfg(sf_has_simd)]
             simd: SharedSimdRegistry::new(),
@@ -108,7 +138,7 @@ impl LinkRegistry {
 
     #[inline]
     pub(crate) fn function_registry_shared(&self) -> SharedFunctionRegistry {
-        Rc::clone(&self.functions)
+        self.functions.clone()
     }
 
     #[inline]
@@ -151,6 +181,13 @@ pub struct Store {
     simd_registry: SharedSimdRegistry,
     gc_heap: Rc<RefCell<GcHeap>>,
     exn_heap: Rc<RefCell<ExnHeap>>,
+    module_revision: u64,
+    #[cfg(sf_jit)]
+    native_context_cache: Option<crate::vm::runtime::context::NativeContextBox>,
+    #[cfg(all(sf_jit, sf_has_guard_pages))]
+    native_stack_cache: Option<crate::vm::runtime::guard_pages::GuardPageStack>,
+    #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
+    native_stack_cache: Option<collections::Vec<u64>>,
 }
 
 impl Store {
@@ -158,7 +195,7 @@ impl Store {
     pub fn new(module: ModuleInst) -> Self {
         Self::new_with_registries(
             module,
-            Rc::new(RefCell::new(collections::Vec::new())),
+            SharedFunctionRegistry::new(),
             Rc::new(RefCell::new(collections::Vec::new())),
             #[cfg(sf_has_simd)]
             SharedSimdRegistry::new(),
@@ -180,6 +217,11 @@ impl Store {
             simd_registry,
             gc_heap: Rc::new(RefCell::new(GcHeap::new())),
             exn_heap: Rc::new(RefCell::new(ExnHeap::new())),
+            module_revision: 0,
+            #[cfg(sf_jit)]
+            native_context_cache: None,
+            #[cfg(sf_jit)]
+            native_stack_cache: None,
         }
     }
 
@@ -190,6 +232,7 @@ impl Store {
 
     #[inline]
     pub fn module_mut(&mut self) -> &mut ModuleInst {
+        self.module_revision = self.module_revision.wrapping_add(1);
         &mut self.module
     }
 
@@ -205,6 +248,7 @@ impl Store {
 
     #[inline]
     pub fn table_mut(&mut self, idx: usize) -> &mut TableInst {
+        self.module_revision = self.module_revision.wrapping_add(1);
         &mut self.module.tables[idx]
     }
 
@@ -215,6 +259,7 @@ impl Store {
 
     #[inline]
     pub fn memory_mut(&mut self, idx: usize) -> &mut MemInst {
+        self.module_revision = self.module_revision.wrapping_add(1);
         &mut self.module.memories[idx]
     }
 
@@ -225,12 +270,75 @@ impl Store {
 
     #[inline]
     pub fn global_mut(&mut self, idx: usize) -> &mut GlobalInst {
+        self.module_revision = self.module_revision.wrapping_add(1);
         &mut self.module.globals[idx]
     }
 
     #[inline]
     pub(crate) fn clone_function_registry(&self) -> SharedFunctionRegistry {
-        Rc::clone(&self.function_registry)
+        self.function_registry.clone()
+    }
+
+    #[inline]
+    pub(crate) fn module_revision(&self) -> u64 {
+        self.module_revision
+    }
+
+    #[inline]
+    pub(crate) fn function_registry_revision(&self) -> u64 {
+        self.function_registry.revision()
+    }
+
+    #[cfg(sf_jit)]
+    #[inline]
+    pub(crate) fn take_native_context_cache(
+        &mut self,
+    ) -> Option<crate::vm::runtime::context::NativeContextBox> {
+        self.native_context_cache.take()
+    }
+
+    #[cfg(sf_jit)]
+    #[inline]
+    pub(crate) fn cache_native_context(
+        &mut self,
+        context: crate::vm::runtime::context::NativeContextBox,
+    ) {
+        if self.native_context_cache.is_none() {
+            self.native_context_cache = Some(context);
+        }
+    }
+
+    #[cfg(sf_has_guard_pages)]
+    #[inline]
+    pub(crate) fn take_native_stack_cache(
+        &mut self,
+    ) -> Option<crate::vm::runtime::guard_pages::GuardPageStack> {
+        self.native_stack_cache.take()
+    }
+
+    #[cfg(sf_has_guard_pages)]
+    #[inline]
+    pub(crate) fn cache_native_stack(
+        &mut self,
+        stack: crate::vm::runtime::guard_pages::GuardPageStack,
+    ) {
+        if self.native_stack_cache.is_none() {
+            self.native_stack_cache = Some(stack);
+        }
+    }
+
+    #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
+    #[inline]
+    pub(crate) fn take_native_stack_cache(&mut self) -> Option<collections::Vec<u64>> {
+        self.native_stack_cache.take()
+    }
+
+    #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
+    #[inline]
+    pub(crate) fn cache_native_stack(&mut self, stack: collections::Vec<u64>) {
+        if self.native_stack_cache.is_none() {
+            self.native_stack_cache = Some(stack);
+        }
     }
 
     #[inline]

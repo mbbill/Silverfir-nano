@@ -60,15 +60,12 @@ pub(crate) fn eval(
         return Err(WasmError::runtime_not_configured());
     }
     #[cfg(sf_has_guard_pages)]
-    let max_frame_bytes = compiled
-        .abi()
-        .functions
-        .iter()
-        .map(|abi| usize::from(abi.total_frame_slots) * core::mem::size_of::<u64>())
-        .max()
-        .unwrap_or(0);
+    let max_frame_bytes = compiled.max_frame_bytes();
     #[cfg(sf_has_guard_pages)]
-    let stack = crate::vm::runtime::guard_pages::GuardPageStack::new(stack_bytes, max_frame_bytes)?;
+    let stack = match store.take_native_stack_cache() {
+        Some(stack) if stack.supports(stack_bytes, max_frame_bytes) => stack,
+        _ => crate::vm::runtime::guard_pages::GuardPageStack::new(stack_bytes, max_frame_bytes)?,
+    };
     #[cfg(sf_has_guard_pages)]
     let stack_base = stack.base();
     #[cfg(sf_has_guard_pages)]
@@ -79,7 +76,13 @@ pub(crate) fn eval(
     #[cfg(not(sf_has_guard_pages))]
     let mut stack = {
         let stack_slots = stack_bytes / core::mem::size_of::<u64>();
-        collections::vec![0u64; stack_slots]
+        let mut stack = store
+            .take_native_stack_cache()
+            .unwrap_or_else(|| collections::vec![0u64; stack_slots]);
+        if stack.len() < stack_slots {
+            stack.resize(stack_slots, 0);
+        }
+        stack
     };
     #[cfg(not(sf_has_guard_pages))]
     let stack_base = stack.as_mut_ptr();
@@ -96,10 +99,19 @@ pub(crate) fn eval(
         // `cell_info.reads_before_write` analysis. The C entry path no
         // longer needs to pre-zero the frame prefix.
     }
-    ensure_stack_capacity(stack_base, stack_end, runtime.total_frame_slots)?;
+    if let Err(error) = ensure_stack_capacity(stack_base, stack_end, runtime.total_frame_slots) {
+        store.cache_native_stack(stack);
+        return Err(error);
+    }
 
     let n_globals = store.module().globals.len();
-    let mut ctx = NativeContext::new(store as *mut Store, stack_end, n_globals);
+    let store_ptr = store as *mut Store;
+    let mut ctx = if let Some(mut ctx) = store.take_native_context_cache() {
+        ctx.prepare_for_invocation(store_ptr, stack_end);
+        ctx
+    } else {
+        NativeContext::new(store_ptr, stack_end, n_globals)
+    };
     #[cfg(sf_has_guard_pages)]
     {
         ctx.stack_guard_end = stack_guard_end;
@@ -128,47 +140,52 @@ pub(crate) fn eval(
         ctx.trap_kind = 0;
     }
 
-    let status = unsafe { entry(&mut *ctx, stack_base) };
+    let result = (|| {
+        let status = unsafe { entry(&mut *ctx, stack_base) };
 
-    #[cfg(sf_has_guard_pages)]
-    if ctx.trap_kind != 0 {
-        let error = match ctx.trap_kind {
-            trap_signal::TRAP_STACK_OVERFLOW => trap_error(MachineTrapKind::StackOverflow),
-            _ => trap_error(MachineTrapKind::MemoryOutOfBounds),
-        };
+        #[cfg(sf_has_guard_pages)]
+        if ctx.trap_kind != 0 {
+            let error = match ctx.trap_kind {
+                trap_signal::TRAP_STACK_OVERFLOW => trap_error(MachineTrapKind::StackOverflow),
+                _ => trap_error(MachineTrapKind::MemoryOutOfBounds),
+            };
+            #[cfg(sf_call_trace)]
+            function_trace::native_trap_current(&mut ctx, &error);
+            return Err(error);
+        }
+
+        if status != 0 {
+            let error = ctx
+                .error
+                .take()
+                .or_else(|| core::mem::take(&mut ctx.pending_escape).into_error())
+                .unwrap_or_else(|| {
+                    WasmError::internal("native root entry failed without setting an error")
+                });
+            #[cfg(sf_call_trace)]
+            function_trace::native_trap_current(&mut ctx, &error);
+            return Err(error);
+        }
+
+        let out = unsafe {
+            collect_native_results_from_stack(
+                stack_base,
+                func_type.results(),
+                compiled.backend().gp_unit_bytes,
+                store,
+            )
+        }?;
         #[cfg(sf_call_trace)]
-        function_trace::native_trap_current(&mut ctx, &error);
-        return Err(error);
-    }
-
-    if status != 0 {
-        let error = ctx
-            .error
-            .take()
-            .or_else(|| core::mem::take(&mut ctx.pending_escape).into_error())
-            .unwrap_or_else(|| {
-                WasmError::internal("native root entry failed without setting an error")
-            });
-        #[cfg(sf_call_trace)]
-        function_trace::native_trap_current(&mut ctx, &error);
-        return Err(error);
-    }
-
-    let out = unsafe {
-        collect_native_results_from_stack(
-            stack_base,
-            func_type.results(),
-            compiled.backend().gp_unit_bytes,
-            store,
-        )
-    }?;
-    #[cfg(sf_call_trace)]
-    {
-        let results_len = func_type.results().len();
-        let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };
-        function_trace::native_root_exit(&mut ctx, spec, results);
-    }
-    Ok(out)
+        {
+            let results_len = func_type.results().len();
+            let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };
+            function_trace::native_root_exit(&mut ctx, spec, results);
+        }
+        Ok(out)
+    })();
+    store.cache_native_context(ctx);
+    store.cache_native_stack(stack);
+    result
 }
 
 pub(crate) fn ensure_stack_capacity(

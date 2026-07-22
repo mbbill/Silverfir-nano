@@ -3,7 +3,7 @@
 use crate::collections;
 
 use alloc::rc::Rc as AllocRc;
-use core::cell::{Ref, RefCell, RefMut, UnsafeCell};
+use core::cell::{Cell, Ref, RefCell, RefMut, UnsafeCell};
 use tracked_alloc::{rc::Rc, string::String};
 
 use crate::error::WasmError;
@@ -191,6 +191,7 @@ impl FunctionInst {
 #[derive(Debug, Clone)]
 pub struct TableInst {
     elements: Rc<RefCell<collections::Vec<RefHandle>>>,
+    revision: Rc<Cell<u64>>,
     pub limits: Limits,
     pub value_type: ValueType,
 }
@@ -203,6 +204,7 @@ impl TableInst {
                 RefHandle::null();
                 initial_size
             ])),
+            revision: Rc::new(Cell::new(0)),
             limits,
             value_type,
         }
@@ -213,9 +215,11 @@ impl TableInst {
         limits: Limits,
         value_type: ValueType,
         elements: Rc<RefCell<collections::Vec<RefHandle>>>,
+        revision: Rc<Cell<u64>>,
     ) -> Self {
         Self {
             elements,
+            revision,
             limits,
             value_type,
         }
@@ -228,12 +232,23 @@ impl TableInst {
 
     #[inline]
     pub fn elements_mut(&self) -> RefMut<'_, collections::Vec<RefHandle>> {
+        self.revision.set(self.revision.get().wrapping_add(1));
         self.elements.borrow_mut()
+    }
+
+    #[inline]
+    pub(crate) fn revision(&self) -> u64 {
+        self.revision.get()
     }
 
     #[inline]
     pub fn clone_shared_elements(&self) -> Rc<RefCell<collections::Vec<RefHandle>>> {
         Rc::clone(&self.elements)
+    }
+
+    #[inline]
+    pub(crate) fn clone_shared_revision(&self) -> Rc<Cell<u64>> {
+        Rc::clone(&self.revision)
     }
 
     #[inline]

@@ -206,6 +206,12 @@ impl GuardPageStack {
     pub(crate) fn guard_end(&self) -> *mut u8 {
         unsafe { self.base.add(self.usable + self.guard) }
     }
+
+    #[inline]
+    pub(crate) fn supports(&self, requested_bytes: usize, max_frame_bytes: usize) -> bool {
+        self.usable >= requested_bytes.max(core::mem::size_of::<u64>())
+            && self.guard >= max_frame_bytes.max(STACK_GUARD_MIN_BYTES)
+    }
 }
 
 impl Drop for GuardPageStack {
