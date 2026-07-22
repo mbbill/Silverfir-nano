@@ -15,6 +15,7 @@ use crate::{
     vm::{
         backend::BackendConfig,
         middle::{
+            budget::gp_value_budget_units,
             cell::CellId,
             cfg::SemanticCfg,
             discipline::{self, StructuralAction},
@@ -221,6 +222,27 @@ impl PrepareState {
                 })
                 .collect()
         }
+    }
+
+    /// Count a typed stack range without materializing a temporary type list.
+    /// The fallback to `i64` matches `types_at` for a malformed/short stack.
+    fn budget_units_at(&self, start: u16, count: u16, gp_unit_bytes: u8) -> (usize, usize) {
+        let start = start as usize;
+        let mut gp = 0usize;
+        let mut fp = 0usize;
+        for index in start..start.saturating_add(count as usize) {
+            let ty = self
+                .type_stack
+                .get(index)
+                .copied()
+                .unwrap_or(ValueType::I64);
+            if ty.is_fp() {
+                fp += 1;
+            } else {
+                gp += gp_value_budget_units(ty, gp_unit_bytes);
+            }
+        }
+        (gp, fp)
     }
 }
 
@@ -629,8 +651,6 @@ pub(crate) fn compute_lightweight_plan(
     cfg: &SemanticCfg,
     gp_unit_bytes: u8,
 ) -> LightweightPlanOutput {
-    use crate::vm::middle::budget::count_live_bank_budget_units;
-
     let mut state = PrepareState::new(
         semantic.results,
         semantic.local_types.clone(),
@@ -676,11 +696,11 @@ pub(crate) fn compute_lightweight_plan(
         apply_structural_prefix(semantic_op, &mut state);
 
         // Measure live-window pressure after prefix (= "before" the op executes).
-        let before_live = state.types_at(
+        let (bg, bf) = state.budget_units_at(
             state.spill_depth,
             state.height.saturating_sub(state.spill_depth),
+            gp_unit_bytes,
         );
-        let (bg, bf) = count_live_bank_budget_units(&before_live, gp_unit_bytes);
         peak_gp[block_index] = peak_gp[block_index].max(bg);
         peak_fp[block_index] = peak_fp[block_index].max(bf);
 
@@ -688,11 +708,11 @@ pub(crate) fn compute_lightweight_plan(
         apply_semantic_effect(semantic_op, op_index, &semantic.op_result_types, &mut state);
 
         // Measure "after" pressure.
-        let after_live = state.types_at(
+        let (ag, af) = state.budget_units_at(
             state.spill_depth,
             state.height.saturating_sub(state.spill_depth),
+            gp_unit_bytes,
         );
-        let (ag, af) = count_live_bank_budget_units(&after_live, gp_unit_bytes);
         peak_gp[block_index] = peak_gp[block_index].max(ag);
         peak_fp[block_index] = peak_fp[block_index].max(af);
     }
