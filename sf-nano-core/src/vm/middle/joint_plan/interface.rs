@@ -4,11 +4,12 @@
 //! lowering state. Every planner consultation should flow through these query
 //! and decision types so the boundary stays explicit.
 
-use tracked_alloc::collections::BTreeSet;
-
 use crate::{
     value_type::ValueType,
-    vm::middle::{cell::CellId, cfg::CfgBlockId},
+    vm::middle::{
+        cell::{CellId, CellSet},
+        cfg::CfgBlockId,
+    },
 };
 
 /// Function-wide setup facts needed by the rewriter.
@@ -58,7 +59,7 @@ impl TargetEntryDecision {
 pub(crate) struct CellAccessQuery<'a> {
     pub block: CfgBlockId,
     pub slot: CellId,
-    pub resident_cache: &'a BTreeSet<CellId>,
+    pub resident_cache: &'a CellSet,
 }
 
 /// Planner decision for a local op lowering.

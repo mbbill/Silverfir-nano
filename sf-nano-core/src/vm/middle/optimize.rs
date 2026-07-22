@@ -48,19 +48,19 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
         SsaTerminator::TrapUnreachable,
     );
 
-    let max_val = max_value_index_parts(&params, &ops, &extra_args, &terminator, program)
-        .map(|value| value.0 as usize + 1)
-        .unwrap_or(0);
-    if max_val == 0 {
+    // Values are numbered across the whole function, but this pass is
+    // block-local. Indexing scratch storage by the absolute value number made
+    // every later block allocate and clear storage for all earlier blocks too.
+    let Some((value_base, value_count)) = block_result_value_range(&ops) else {
         program.blocks[block_idx].ops = ops;
         program.blocks[block_idx].extra_args = extra_args;
         program.blocks[block_idx].params = params;
         program.blocks[block_idx].terminator = terminator;
         return;
-    }
+    };
 
-    let mut known_const: collections::Vec<Option<u64>> = collections::vec![None; max_val];
-    let mut used_in_terminator = collections::vec![false; max_val];
+    let mut known_const: collections::Vec<Option<u64>> = collections::vec![None; value_count];
+    let mut used_in_terminator = collections::vec![false; value_count];
 
     // Pass 1: collect Const producers.
     for inst in &ops {
@@ -77,16 +77,16 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
         let kind = &program.primitive_pool[pool_idx];
         if let Some(bits) = const_bits_of_primitive(kind) {
             let value = inst.result;
-            if let Some(slot) = known_const.get_mut(value.0 as usize) {
+            if let Some(slot) = value_slot_mut(&mut known_const, value_base, value) {
                 *slot = Some(bits);
             }
         }
     }
-    mark_terminator_uses(&terminator, &mut used_in_terminator);
+    mark_terminator_uses(&terminator, value_base, &mut used_in_terminator);
     for inst in &ops {
         if inst.op == SsaOp::CALL {
             if let Some(call) = program.call_ops.get(inst.meta as usize) {
-                mark_call_op_uses(call, &mut used_in_terminator);
+                mark_call_op_uses(call, value_base, &mut used_in_terminator);
             }
         }
     }
@@ -104,37 +104,44 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
             // Gather const bit values for each arg (up to 2 inline; this path
             // never involves 3-arg primitives because `can_accept_const_operand`
             // does not include them).
-            let mut const_args = collections::Vec::with_capacity(args_len);
+            let mut const_args = [0_u64; 2];
+            let mut const_args_len = 0;
             let mut all_const = true;
             for operand in inst.args.iter().take(args_len) {
-                match operand.decode() {
+                let bits = match operand.decode() {
                     super::ssa_ir::ir::DecodedOperand::Value(value) => {
-                        match known_const.get(value.0 as usize).copied().flatten() {
-                            Some(bits) => const_args.push(bits),
-                            None => {
-                                all_const = false;
-                                break;
-                            }
-                        }
+                        value_slot(&known_const, value_base, value)
+                            .copied()
+                            .flatten()
                     }
                     super::ssa_ir::ir::DecodedOperand::Const(idx) => {
-                        const_args.push(program.const_pool[idx as usize]);
+                        Some(program.const_pool[idx as usize])
                     }
-                    super::ssa_ir::ir::DecodedOperand::None => {
+                    super::ssa_ir::ir::DecodedOperand::None => None,
+                };
+                match bits {
+                    Some(bits) => {
+                        const_args[const_args_len] = bits;
+                        const_args_len += 1;
+                    }
+                    None => {
                         all_const = false;
                         break;
                     }
                 }
             }
-            if all_const && const_args.len() == args_len {
-                if let Some((result_bits, const_primitive)) = try_eval(&current_kind, &const_args) {
+            if all_const && const_args_len == args_len {
+                if let Some((result_bits, const_primitive)) =
+                    try_eval(&current_kind, &const_args[..const_args_len])
+                {
                     // Folding is best-effort: if the primitive pool is full
                     // (a u16-encoded SsaOp cannot address more entries), we
                     // leave the original op in place rather than miscompile.
                     if let Ok(new_pool_idx) = program.intern_primitive(const_primitive) {
                         let result = inst.result;
                         if result.is_some() {
-                            if let Some(slot) = known_const.get_mut(result.0 as usize) {
+                            if let Some(slot) = value_slot_mut(&mut known_const, value_base, result)
+                            {
                                 *slot = Some(result_bits);
                             }
                         }
@@ -152,9 +159,14 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
                 let Some(value) = operand.as_value() else {
                     continue;
                 };
-                let index = value.0 as usize;
-                if let Some(bits) = known_const.get(index).copied().flatten() {
-                    if !used_in_terminator.get(index).copied().unwrap_or(true) {
+                if let Some(bits) = value_slot(&known_const, value_base, value)
+                    .copied()
+                    .flatten()
+                {
+                    if !value_slot(&used_in_terminator, value_base, value)
+                        .copied()
+                        .unwrap_or(true)
+                    {
                         *operand = program.intern_const(bits);
                     }
                 }
@@ -164,12 +176,12 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
 
     // Pass 3: compute which SSA values are still used, including terminator,
     // then drop dead Const producers.
-    let mut still_used = collections::vec![false; max_val];
+    let mut still_used = collections::vec![false; value_count];
     for inst in &ops {
         if inst.op.is_primitive() {
             for operand in inst.args.iter() {
                 if let Some(value) = operand.as_value() {
-                    still_used[value.0 as usize] = true;
+                    mark_value_use(value, value_base, &mut still_used);
                 }
             }
             let pool_idx = inst.op.as_primitive_idx().expect("primitive op") as usize;
@@ -183,7 +195,7 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
                 if let Some(operands) = extra_args.get(start..end) {
                     for operand in operands {
                         if let Some(value) = operand.as_value() {
-                            still_used[value.0 as usize] = true;
+                            mark_value_use(value, value_base, &mut still_used);
                         }
                     }
                 }
@@ -192,12 +204,12 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
             match inst.op {
                 SsaOp::SPILL | SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE => {
                     if let Some(value) = inst.args[0].as_value() {
-                        still_used[value.0 as usize] = true;
+                        mark_value_use(value, value_base, &mut still_used);
                     }
                 }
                 SsaOp::CALL => {
                     if let Some(call) = program.call_ops.get(inst.meta as usize) {
-                        mark_call_op_uses(call, &mut still_used);
+                        mark_call_op_uses(call, value_base, &mut still_used);
                     }
                 }
                 _ => {}
@@ -231,9 +243,10 @@ fn fold_constants_into_operands(program: &mut SsaProgram, block_idx: usize) {
         ) {
             return true;
         }
-        let index = inst.result.0 as usize;
         // Keep the producer if the value is still consumed anywhere.
-        still_used.get(index).copied().unwrap_or(true)
+        value_slot(&still_used, value_base, inst.result)
+            .copied()
+            .unwrap_or(true)
     });
 
     // Reattach the block pieces.
@@ -960,11 +973,45 @@ fn soft_f64_nearest(bits: u64) -> u64 {
     }
 }
 
-fn mark_terminator_uses(term: &SsaTerminator, used: &mut [bool]) {
-    let mut mark = |value: SsaValue| {
-        if let Some(slot) = used.get_mut(value.0 as usize) {
-            *slot = true;
+fn block_result_value_range(ops: &[SsaInst]) -> Option<(SsaValue, usize)> {
+    let mut min_value = None;
+    let mut max_value = None;
+    for inst in ops {
+        if inst.result.is_none() {
+            continue;
         }
+        min_value = Some(min_value.map_or(inst.result, |min: SsaValue| min.min(inst.result)));
+        max_value = Some(max_value.map_or(inst.result, |max: SsaValue| max.max(inst.result)));
+    }
+
+    let min_value = min_value?;
+    let max_value = max_value.expect("result range has a maximum");
+    let count = (max_value.0 - min_value.0) as usize + 1;
+    Some((min_value, count))
+}
+
+#[inline]
+fn value_slot<'a, T>(slots: &'a [T], base: SsaValue, value: SsaValue) -> Option<&'a T> {
+    let index = value.0.checked_sub(base.0)? as usize;
+    slots.get(index)
+}
+
+#[inline]
+fn value_slot_mut<'a, T>(slots: &'a mut [T], base: SsaValue, value: SsaValue) -> Option<&'a mut T> {
+    let index = value.0.checked_sub(base.0)? as usize;
+    slots.get_mut(index)
+}
+
+#[inline]
+fn mark_value_use(value: SsaValue, base: SsaValue, used: &mut [bool]) {
+    if let Some(slot) = value_slot_mut(used, base, value) {
+        *slot = true;
+    }
+}
+
+fn mark_terminator_uses(term: &SsaTerminator, base: SsaValue, used: &mut [bool]) {
+    let mut mark = |value: SsaValue| {
+        mark_value_use(value, base, used);
     };
     match term {
         SsaTerminator::Goto(edge) => {
@@ -998,189 +1045,55 @@ fn mark_terminator_uses(term: &SsaTerminator, used: &mut [bool]) {
         | SsaTerminator::EhThrow { .. }
         | SsaTerminator::EhThrowRef { .. } => {}
         SsaTerminator::ReturnScalar { result, .. } => {
-            mark_scalar_result_uses(result, used);
+            mark_scalar_result_uses(result, base, used);
         }
         SsaTerminator::TailCallDirect { args, .. } => {
-            mark_call_args_uses(args, used);
+            mark_call_args_uses(args, base, used);
         }
         SsaTerminator::TailCallIndirect { index, args, .. } => {
-            mark_call_operand_uses(index, used);
-            mark_call_args_uses(args, used);
+            mark_call_operand_uses(index, base, used);
+            mark_call_args_uses(args, base, used);
         }
         SsaTerminator::TailCallRef {
             callee_ref, args, ..
         } => {
-            mark_call_operand_uses(callee_ref, used);
-            mark_call_args_uses(args, used);
+            mark_call_operand_uses(callee_ref, base, used);
+            mark_call_args_uses(args, base, used);
         }
     }
 }
 
-fn mark_call_op_uses(call: &SsaCallOp, used: &mut [bool]) {
+fn mark_call_op_uses(call: &SsaCallOp, base: SsaValue, used: &mut [bool]) {
     match call {
-        SsaCallOp::CallDirect { args, .. } => mark_call_args_uses(args, used),
+        SsaCallOp::CallDirect { args, .. } => mark_call_args_uses(args, base, used),
         SsaCallOp::CallIndirect { index, args, .. } => {
-            mark_call_operand_uses(index, used);
-            mark_call_args_uses(args, used);
+            mark_call_operand_uses(index, base, used);
+            mark_call_args_uses(args, base, used);
         }
         SsaCallOp::CallRef {
             callee_ref, args, ..
         } => {
-            mark_call_operand_uses(callee_ref, used);
-            mark_call_args_uses(args, used);
+            mark_call_operand_uses(callee_ref, base, used);
+            mark_call_args_uses(args, base, used);
         }
     }
 }
 
-fn mark_call_args_uses(args: &SsaCallArgs, used: &mut [bool]) {
+fn mark_call_args_uses(args: &SsaCallArgs, base: SsaValue, used: &mut [bool]) {
     for arg in &args.live_suffix {
-        if let Some(slot) = used.get_mut(arg.value.0 as usize) {
-            *slot = true;
-        }
+        mark_value_use(arg.value, base, used);
     }
 }
 
-fn mark_call_operand_uses(loc: &SsaCallOperandLoc, used: &mut [bool]) {
+fn mark_call_operand_uses(loc: &SsaCallOperandLoc, base: SsaValue, used: &mut [bool]) {
     if let SsaCallOperandLoc::Live { value, .. } = loc {
-        if let Some(slot) = used.get_mut(value.0 as usize) {
-            *slot = true;
-        }
+        mark_value_use(*value, base, used);
     }
 }
 
-fn mark_scalar_result_uses(loc: &SsaScalarResultLoc, used: &mut [bool]) {
+fn mark_scalar_result_uses(loc: &SsaScalarResultLoc, base: SsaValue, used: &mut [bool]) {
     if let SsaScalarResultLoc::Live { value, .. } = loc {
-        if let Some(slot) = used.get_mut(value.0 as usize) {
-            *slot = true;
-        }
-    }
-}
-
-/// Scan every place a value may appear (params, op args & results, extra_args
-/// operands, terminator) and return the highest-indexed `SsaValue` seen.
-fn max_value_index_parts(
-    params: &[SsaValue],
-    ops: &[SsaInst],
-    extra_args: &[SsaOperand],
-    terminator: &SsaTerminator,
-    program: &SsaProgram,
-) -> Option<SsaValue> {
-    let mut max_value = params.iter().copied().max();
-
-    for inst in ops {
-        if inst.op.is_primitive() {
-            for operand in inst.args.iter() {
-                if let Some(value) = operand.as_value() {
-                    max_value = max_value.max(Some(value));
-                }
-            }
-            if inst.result.is_some() {
-                max_value = max_value.max(Some(inst.result));
-            }
-            // Primitive overflow operands live in `extra_args`; covered by the
-            // blanket scan below.
-            let _ = program;
-        } else {
-            match inst.op {
-                SsaOp::FILL | SsaOp::CELL_GET_SLOT | SsaOp::CELL_GET_CACHE => {
-                    max_value = max_value.max(Some(inst.result));
-                }
-                SsaOp::SPILL | SsaOp::CELL_SET_SLOT | SsaOp::CELL_SET_CACHE => {
-                    if let Some(value) = inst.args[0].as_value() {
-                        max_value = max_value.max(Some(value));
-                    }
-                }
-                SsaOp::CELL_ENSURE_CACHE | SsaOp::CELL_RESERVE_CACHE | SsaOp::CELL_DROP_CACHE => {}
-                SsaOp::CALL => {
-                    if inst.result.is_some() {
-                        max_value = max_value.max(Some(inst.result));
-                    }
-                    if let Some(call) = program.call_ops.get(inst.meta as usize) {
-                        max_value = max_value.max(max_call_op_value(call));
-                    }
-                }
-                _ => {}
-            }
-        }
-    }
-
-    for operand in extra_args {
-        if let Some(value) = operand.as_value() {
-            max_value = max_value.max(Some(value));
-        }
-    }
-
-    match terminator {
-        SsaTerminator::Goto(edge) => {
-            max_value = max_value.max(edge.bindings.iter().map(|binding| binding.value).max());
-        }
-        SsaTerminator::Branch {
-            cond,
-            then_edge,
-            else_edge,
-        } => {
-            max_value = max_value.max(Some(*cond));
-            max_value = max_value.max(then_edge.bindings.iter().map(|binding| binding.value).max());
-            max_value = max_value.max(else_edge.bindings.iter().map(|binding| binding.value).max());
-        }
-        SsaTerminator::BrTable { index, entries } => {
-            max_value = max_value.max(Some(*index));
-            for edge in entries {
-                max_value = max_value.max(edge.bindings.iter().map(|binding| binding.value).max());
-            }
-        }
-        SsaTerminator::Return { .. }
-        | SsaTerminator::TrapUnreachable
-        | SsaTerminator::EhThrow { .. }
-        | SsaTerminator::EhThrowRef { .. } => {}
-        SsaTerminator::ReturnScalar { result, .. } => {
-            max_value = max_value.max(max_scalar_result_value(result));
-        }
-        SsaTerminator::TailCallDirect { args, .. } => {
-            max_value = max_value.max(max_call_args_value(args));
-        }
-        SsaTerminator::TailCallIndirect { index, args, .. } => {
-            max_value = max_value.max(max_call_operand_value(index));
-            max_value = max_value.max(max_call_args_value(args));
-        }
-        SsaTerminator::TailCallRef {
-            callee_ref, args, ..
-        } => {
-            max_value = max_value.max(max_call_operand_value(callee_ref));
-            max_value = max_value.max(max_call_args_value(args));
-        }
-    }
-
-    max_value
-}
-
-fn max_call_op_value(call: &SsaCallOp) -> Option<SsaValue> {
-    match call {
-        SsaCallOp::CallDirect { args, .. } => max_call_args_value(args),
-        SsaCallOp::CallIndirect { index, args, .. } => {
-            max_call_operand_value(index).max(max_call_args_value(args))
-        }
-        SsaCallOp::CallRef {
-            callee_ref, args, ..
-        } => max_call_operand_value(callee_ref).max(max_call_args_value(args)),
-    }
-}
-
-fn max_call_args_value(args: &SsaCallArgs) -> Option<SsaValue> {
-    args.live_suffix.iter().map(|arg| arg.value).max()
-}
-
-fn max_call_operand_value(loc: &SsaCallOperandLoc) -> Option<SsaValue> {
-    match loc {
-        SsaCallOperandLoc::Stack { .. } => None,
-        SsaCallOperandLoc::Live { value, .. } => Some(*value),
-    }
-}
-
-fn max_scalar_result_value(loc: &SsaScalarResultLoc) -> Option<SsaValue> {
-    match loc {
-        SsaScalarResultLoc::Stack { .. } => None,
-        SsaScalarResultLoc::Live { value, .. } => Some(*value),
+        mark_value_use(*value, base, used);
     }
 }
 

@@ -121,7 +121,7 @@ pub(super) struct BlockLowerContext<'a> {
     /// a real incoming edge value.
     cache_has_value: collections::Vec<bool>,
     cache_dirty: collections::Vec<bool>,
-    call_preserved_cache_candidates: collections::Vec<bool>,
+    call_preserved_cache_candidates: &'a [bool],
     values: collections::Vec<ValueLocation>,
     remaining_uses: tracked_alloc::collections::BTreeMap<SsaValue, u32>,
     /// Dynamic-register occupancy for linear SSA-like values.
@@ -232,7 +232,7 @@ impl<'a> BlockLowerContext<'a> {
         i64_ops: &'static dyn I64Lowering,
         is_entry: bool,
         initial_cache_dirty: Option<&[bool]>,
-        call_preserved_cache_candidates: Option<&[bool]>,
+        call_preserved_cache_candidates: Option<&'a [bool]>,
         #[cfg(sf_has_guard_pages)] guard_pages: bool,
         #[cfg(sf_has_guard_pages)] stack_guard_pages: bool,
     ) -> Result<Self, WasmError> {
@@ -261,9 +261,7 @@ impl<'a> BlockLowerContext<'a> {
             cache_live,
             cache_has_value,
             cache_dirty,
-            call_preserved_cache_candidates: call_preserved_cache_candidates
-                .map(collections::Vec::from)
-                .unwrap_or_else(|| collections::vec![false; cached_cells.len()]),
+            call_preserved_cache_candidates: call_preserved_cache_candidates.unwrap_or(&[]),
             values: collections::Vec::new(),
             remaining_uses: compute_remaining_uses(block, program),
             linear_value_state: collections::vec![

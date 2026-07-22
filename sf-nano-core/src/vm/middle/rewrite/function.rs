@@ -8,16 +8,14 @@
 
 use crate::collections;
 
-use tracked_alloc::collections::BTreeSet;
-
 use crate::{
     error::WasmError,
     value_type::ValueType,
     vm::{
         backend::BackendConfig,
         middle::{
-            budget::count_live_bank_budget_units,
-            cell::CellId,
+            budget::gp_value_budget_units,
+            cell::{CellId, CellSet},
             cfg::{CfgBlockId, SemanticCfg},
             discipline,
             frame::{FrameLayoutPlan, FrameSlot, FrameSpan},
@@ -101,22 +99,31 @@ impl RewriteCfg {
 #[derive(Debug, Default)]
 pub(super) struct ProgramBuilder {
     primitive_pool: collections::Vec<PrimitiveOpKind>,
+    /// Pool indices sorted by primitive value. The pool itself remains in
+    /// insertion order because `SsaOp` encodes its indices directly.
+    primitive_index: collections::Vec<u32>,
     call_ops: collections::Vec<SsaCallOp>,
 }
 
 impl ProgramBuilder {
     pub(super) fn intern_primitive(&mut self, kind: PrimitiveOpKind) -> Result<u32, WasmError> {
-        if let Some(idx) = self.primitive_pool.iter().position(|k| k == &kind) {
-            return Ok(idx as u32);
+        match self
+            .primitive_index
+            .binary_search_by(|pool_idx| self.primitive_pool[*pool_idx as usize].cmp(&kind))
+        {
+            Ok(index_pos) => return Ok(self.primitive_index[index_pos]),
+            Err(index_pos) => {
+                if self.primitive_pool.len() >= SsaOp::MAX_PRIMITIVE_POOL {
+                    return Err(WasmError::internal(
+                        "SSA-IR primitive op pool overflow: function has more distinct primitive ops than a u16 opcode can address",
+                    ));
+                }
+                let pool_idx = self.primitive_pool.len() as u32;
+                self.primitive_pool.push(kind);
+                self.primitive_index.insert(index_pos, pool_idx);
+                Ok(pool_idx)
+            }
         }
-        if self.primitive_pool.len() >= SsaOp::MAX_PRIMITIVE_POOL {
-            return Err(WasmError::internal(
-                "SSA-IR primitive op pool overflow: function has more distinct primitive ops than a u16 opcode can address",
-            ));
-        }
-        let idx = self.primitive_pool.len() as u32;
-        self.primitive_pool.push(kind);
-        Ok(idx)
     }
 
     pub(super) fn push_call_op(&mut self, call: SsaCallOp) -> Result<u32, WasmError> {
@@ -403,7 +410,7 @@ fn lower_block_range(
     extra_blocks_len: usize,
     config: BackendConfig,
 ) -> Result<LoweredBlock, WasmError> {
-    let mut resident_cache = entry_cached_cells.iter().copied().collect::<BTreeSet<_>>();
+    let mut resident_cache = entry_cached_cells.iter().copied().collect::<CellSet>();
     let mut materialized_cache = resident_cache.clone();
     ensure_state_fits_with_cache(
         &state,
@@ -484,23 +491,22 @@ fn lower_block_range(
 /// budgets at every rewrite point.
 fn ensure_state_fits_with_cache(
     state: &BlockState,
-    resident_cache: &BTreeSet<CellId>,
+    resident_cache: &CellSet,
     cell_types: &[ValueType],
     _context: &str,
 ) -> Result<(), WasmError> {
-    let effective_live_types = state
-        .live_types()
-        .iter()
-        .zip(state.live_aliases().iter())
-        .filter_map(|(ty, alias)| {
-            alias
-                .and_then(|slot| resident_cache.contains(&slot).then_some(()))
-                .is_none()
-                .then_some(*ty)
-        })
-        .collect::<collections::Vec<_>>();
-    let (gp_live, fp_live) =
-        count_live_bank_budget_units(&effective_live_types, state.gp_unit_bytes);
+    let mut gp_live = 0usize;
+    let mut fp_live = 0usize;
+    for (&ty, alias) in state.live_types().iter().zip(state.live_aliases()) {
+        if alias.is_some_and(|slot| resident_cache.contains(&slot)) {
+            continue;
+        }
+        if ty.is_fp() {
+            fp_live += 1;
+        } else {
+            gp_live += gp_value_budget_units(ty, state.gp_unit_bytes);
+        }
+    }
     let (gp_cache, fp_cache) =
         discipline::count_cached_cell_budget_units(resident_cache, cell_types, state.gp_unit_bytes);
     if gp_live + gp_cache > state.gp_live_budget as usize
@@ -524,7 +530,7 @@ fn apply_inline_prefix(
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     cell_types: &[ValueType],
-    resident_cache: &mut BTreeSet<CellId>,
+    resident_cache: &mut CellSet,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
     // Route through the shared engine dispatch — the exact same path pass D's
@@ -540,8 +546,8 @@ fn lower_block_body_op(
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     cell_types: &[ValueType],
-    resident_cache: &mut BTreeSet<CellId>,
-    materialized_cache: &mut BTreeSet<CellId>,
+    resident_cache: &mut CellSet,
+    materialized_cache: &mut CellSet,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
     config: BackendConfig,
@@ -716,8 +722,8 @@ fn lower_primitive(
     semantic_index: usize,
     state: &mut BlockState,
     _planner: &JointPlanner,
-    resident_cache: &mut BTreeSet<CellId>,
-    _materialized_cache: &mut BTreeSet<CellId>,
+    resident_cache: &mut CellSet,
+    _materialized_cache: &mut CellSet,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
 ) -> Result<(), WasmError> {
@@ -803,8 +809,8 @@ fn lower_local_get(
     planner: &JointPlanner,
     block_id: CfgBlockId,
     state: &mut BlockState,
-    resident_cache: &mut BTreeSet<CellId>,
-    materialized_cache: &mut BTreeSet<CellId>,
+    resident_cache: &mut CellSet,
+    materialized_cache: &mut CellSet,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
     // `local.get` always needs one SSA result. The current planner decides
@@ -843,8 +849,8 @@ fn lower_local_set(
     block_id: CfgBlockId,
     state: &mut BlockState,
     cell_types: &[ValueType],
-    resident_cache: &mut BTreeSet<CellId>,
-    materialized_cache: &mut BTreeSet<CellId>,
+    resident_cache: &mut CellSet,
+    materialized_cache: &mut CellSet,
 ) -> Result<(), WasmError> {
     let src = state.pop_one()?;
     let slot = CellId(local_idx);
@@ -871,8 +877,8 @@ fn lower_local_tee(
     planner: &JointPlanner,
     block_id: CfgBlockId,
     state: &mut BlockState,
-    resident_cache: &mut BTreeSet<CellId>,
-    materialized_cache: &mut BTreeSet<CellId>,
+    resident_cache: &mut CellSet,
+    materialized_cache: &mut CellSet,
     values: &mut ValueAlloc,
 ) -> Result<(), WasmError> {
     // `local.tee` is the same admission question as `local.get`, except stack
@@ -924,8 +930,8 @@ fn lower_call_direct(
     frame: FrameLayoutPlan,
     state: &mut BlockState,
     planner: &JointPlanner,
-    resident_cache: &mut BTreeSet<CellId>,
-    materialized_cache: &mut BTreeSet<CellId>,
+    resident_cache: &mut CellSet,
+    materialized_cache: &mut CellSet,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
     config: BackendConfig,
@@ -954,14 +960,8 @@ fn lower_call_direct(
     // local-JIT) call keeps preserved-class nominated residents alive in their
     // callee-saved registers; everything else dies at the boundary.
     if planner.direct_call_survivable(callee) {
-        let keep = |set: &BTreeSet<CellId>| -> BTreeSet<CellId> {
-            set.iter()
-                .copied()
-                .filter(|slot| planner.is_preserved_nominated(*slot))
-                .collect()
-        };
-        *resident_cache = keep(resident_cache);
-        *materialized_cache = keep(materialized_cache);
+        resident_cache.retain(|slot| planner.is_preserved_nominated(*slot));
+        materialized_cache.retain(|slot| planner.is_preserved_nominated(*slot));
     } else {
         resident_cache.clear();
         materialized_cache.clear();
@@ -977,8 +977,8 @@ fn lower_call_indirect(
     result_types: &[ValueType],
     frame: FrameLayoutPlan,
     state: &mut BlockState,
-    resident_cache: &mut BTreeSet<CellId>,
-    materialized_cache: &mut BTreeSet<CellId>,
+    resident_cache: &mut CellSet,
+    materialized_cache: &mut CellSet,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
     config: BackendConfig,
@@ -1023,8 +1023,8 @@ fn lower_call_ref(
     result_types: &[ValueType],
     frame: FrameLayoutPlan,
     state: &mut BlockState,
-    resident_cache: &mut BTreeSet<CellId>,
-    materialized_cache: &mut BTreeSet<CellId>,
+    resident_cache: &mut CellSet,
+    materialized_cache: &mut CellSet,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
     config: BackendConfig,
@@ -1080,8 +1080,8 @@ fn lower_alloc_exn_ref(
     semantic_index: usize,
     state: &mut BlockState,
     planner: &JointPlanner,
-    resident_cache: &mut BTreeSet<CellId>,
-    materialized_cache: &mut BTreeSet<CellId>,
+    resident_cache: &mut CellSet,
+    materialized_cache: &mut CellSet,
     values: &mut ValueAlloc,
     builder: &mut ProgramBuilder,
 ) -> Result<(), WasmError> {
@@ -1349,8 +1349,8 @@ fn lower_block_terminator(
     state: &mut BlockState,
     frame: FrameLayoutPlan,
     cell_types: &[ValueType],
-    resident_cache: &mut BTreeSet<CellId>,
-    materialized_cache: &mut BTreeSet<CellId>,
+    resident_cache: &mut CellSet,
+    materialized_cache: &mut CellSet,
     rewrite_cfg: &RewriteCfg,
     block_params: &[collections::Vec<SsaValue>],
     values: &mut ValueAlloc,

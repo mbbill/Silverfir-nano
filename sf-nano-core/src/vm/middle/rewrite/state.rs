@@ -9,15 +9,13 @@
 
 use crate::collections;
 
-use tracked_alloc::collections::BTreeSet;
-
 use crate::{
     error::WasmError,
     value_type::ValueType,
     vm::{
         middle::{
             budget::count_live_bank_budget_units,
-            cell::CellId,
+            cell::{CellId, CellSet},
             discipline::{self, BankBudget, DisciplineDriver, Window},
             frame::{FrameLayoutPlan, FrameSlot},
             joint_plan::TransientContract,
@@ -254,7 +252,7 @@ impl BlockState {
         &mut self,
         op: &SemanticOpKind,
         frame: FrameLayoutPlan,
-        resident: &mut BTreeSet<CellId>,
+        resident: &mut CellSet,
         cell_types: &[ValueType],
         values: &mut ValueAlloc,
     ) -> Result<(), WasmError> {

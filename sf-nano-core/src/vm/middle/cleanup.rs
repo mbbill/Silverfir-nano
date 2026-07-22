@@ -24,7 +24,6 @@ use super::ssa_ir::{
 
 pub(crate) fn cleanup_program(program: &mut SsaProgram) {
     loop {
-        simplify_cache_only_runs(program);
         while thread_one_empty_goto_block(program) {}
         if merge_one_goto_successor(program) {
             continue;
@@ -34,6 +33,13 @@ pub(crate) fn cleanup_program(program: &mut SsaProgram) {
         }
         break;
     }
+    // Cache-run canonicalization neither creates empty goto blocks nor changes
+    // CFG edges, so it cannot enable any of the structural transformations
+    // above.  Running it inside the fixed-point loop rebuilt every block's op
+    // vector after each single-block merge/removal, making cleanup quadratic on
+    // large functions.  Structural convergence can concatenate cache runs, so
+    // canonicalize once on the final block layout instead.
+    simplify_cache_only_runs(program);
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

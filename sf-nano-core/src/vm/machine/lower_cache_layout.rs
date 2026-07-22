@@ -88,11 +88,8 @@ pub(super) fn compute_block_entry_cache_params(
     // Preference is the whole-function `preferred_preserved` flag (per local
     // cell — the residency solver's preserved-class nomination, published
     // through the plan).
-    // Promote the per-cell flag to the per-block-per-cached-index shape the
-    // layout consumes; the flag is already function-global, so every block gets
-    // the same row.
     let call_preserve_preferences =
-        promote_preferred_preserved(cached_cells, preferred_preserved, program.blocks.len());
+        preferred_preserved_for_cached(cached_cells, preferred_preserved);
     let predecessors = compute_predecessors(program);
     let rpo = compute_reverse_postorder(program);
     let idom =
@@ -309,16 +306,14 @@ fn compute_param_prefix_usage(
         .collect()
 }
 
-/// Promote the whole-function `preferred_preserved` flag (per local cell,
-/// the residency solver's nomination, published through the plan) to the per-block-per-cached-index
-/// shape the layout consumes. The flag is already function-global, so every
-/// block gets the same row.
-pub(super) fn promote_preferred_preserved(
+/// Map the whole-function `preferred_preserved` flag from local-cell indices to
+/// cached-cell indices. The result is shared by every block because the
+/// residency solver's preserved-class nomination is function-global.
+pub(super) fn preferred_preserved_for_cached(
     cached_cells: &[CachedCell],
     preferred_preserved: &[bool],
-    block_count: usize,
-) -> collections::Vec<collections::Vec<bool>> {
-    let per_cached: collections::Vec<bool> = cached_cells
+) -> collections::Vec<bool> {
+    cached_cells
         .iter()
         .map(|cached| {
             preferred_preserved
@@ -326,8 +321,7 @@ pub(super) fn promote_preferred_preserved(
                 .copied()
                 .unwrap_or(false)
         })
-        .collect();
-    collections::vec![per_cached; block_count]
+        .collect()
 }
 
 /// Lane-stability classification for the layout sim: calls across which a
@@ -532,7 +526,7 @@ fn assign_bank_layouts_from_root(
     param_usage: &[ParamPrefixUsage],
     is_local_func: &[bool],
     table_dispatch_modes: &[TableDispatchMode],
-    call_preserve_preferences: &[collections::Vec<bool>],
+    call_preserve_preferences: &[bool],
     preserved_lanes: &[bool],
     layouts: &mut [u32],
     exit_layouts: &mut [u32],
@@ -562,10 +556,7 @@ fn assign_bank_layouts_from_root(
             lane_count,
             prefix,
             bank,
-            call_preserve_preferences
-                .get(block_index)
-                .map(|bits| bits.as_slice())
-                .unwrap_or(&[]),
+            call_preserve_preferences,
             preserved_lanes,
         )?;
         layouts[row_base..row_base + lanes].copy_from_slice(&entry_row);
@@ -580,10 +571,7 @@ fn assign_bank_layouts_from_root(
             program,
             is_local_func,
             table_dispatch_modes,
-            call_preserve_preferences
-                .get(block_index)
-                .map(|bits| bits.as_slice())
-                .unwrap_or(&[]),
+            call_preserve_preferences,
             preserved_lanes,
         )?;
         exit_layouts[row_base..row_base + lanes].copy_from_slice(&exit_row);
@@ -603,7 +591,7 @@ fn improve_gp_layouts_for_incoming_edges(
     param_usage: &[ParamPrefixUsage],
     is_local_func: &[bool],
     table_dispatch_modes: &[TableDispatchMode],
-    call_preserve_preferences: &[collections::Vec<bool>],
+    call_preserve_preferences: &[bool],
     preserved_lanes: &[bool],
     lane_count: usize,
     layouts: &mut [u32],
@@ -616,7 +604,11 @@ fn improve_gp_layouts_for_incoming_edges(
             let Some(preds) = predecessors.get(block_index) else {
                 continue;
             };
-            if preds.is_empty() {
+            // A reachable block with one predecessor is immediately dominated
+            // by that predecessor, so its initial layout already inherits the
+            // same exit row this heuristic would score. Only joins can improve
+            // by reconciling multiple incoming layouts.
+            if preds.len() < 2 {
                 continue;
             }
             let cells = &bank_cells[block_index][0];
@@ -656,10 +648,7 @@ fn improve_gp_layouts_for_incoming_edges(
                 cell_meta,
                 lane_count,
                 param_usage[block_index].gp,
-                call_preserve_preferences
-                    .get(block_index)
-                    .map(|bits| bits.as_slice())
-                    .unwrap_or(&[]),
+                call_preserve_preferences,
                 preserved_lanes,
             ) else {
                 continue;
@@ -670,10 +659,7 @@ fn improve_gp_layouts_for_incoming_edges(
                 &pred_layout_refs,
                 &needs_value,
                 cell_meta,
-                call_preserve_preferences
-                    .get(block_index)
-                    .map(|bits| bits.as_slice())
-                    .unwrap_or(&[]),
+                call_preserve_preferences,
                 preserved_lanes,
             );
             let candidate_cost = incoming_edge_layout_cost(
@@ -682,10 +668,7 @@ fn improve_gp_layouts_for_incoming_edges(
                 &pred_layout_refs,
                 &needs_value,
                 cell_meta,
-                call_preserve_preferences
-                    .get(block_index)
-                    .map(|bits| bits.as_slice())
-                    .unwrap_or(&[]),
+                call_preserve_preferences,
                 preserved_lanes,
             );
             if candidate_cost >= current_cost || candidate.as_slice() == current {
@@ -703,10 +686,7 @@ fn improve_gp_layouts_for_incoming_edges(
                 program,
                 is_local_func,
                 table_dispatch_modes,
-                call_preserve_preferences
-                    .get(block_index)
-                    .map(|bits| bits.as_slice())
-                    .unwrap_or(&[]),
+                call_preserve_preferences,
                 preserved_lanes,
             )?;
             exit_layouts[row_base..row_base + lanes].copy_from_slice(&exit_row);

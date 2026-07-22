@@ -13,8 +13,6 @@
 //! driver whose hooks do nothing (pass D) arrives with the exact-plan phase.
 //! Value identities never live in the engine.
 
-use tracked_alloc::collections::BTreeSet;
-
 use crate::collections;
 
 use crate::{
@@ -22,8 +20,8 @@ use crate::{
     value_type::ValueType,
     vm::{
         middle::{
-            budget::count_live_bank_budget_units,
-            cell::CellId,
+            budget::{count_live_bank_budget_units, gp_value_budget_units},
+            cell::{CellId, CellSet},
             frame::{FrameLayoutPlan, FrameSlot},
             ssa_ir::ir::SsaValue,
         },
@@ -258,6 +256,25 @@ impl Window {
         }
     }
 
+    /// Reset this window while retaining its backing storage.
+    pub(crate) fn reset_without_aliases(
+        &mut self,
+        stack_height: u16,
+        spill_depth: u16,
+        type_stack: &[ValueType],
+        live_types: &[ValueType],
+    ) {
+        debug_assert_eq!(type_stack.len(), stack_height as usize);
+        self.stack_height = stack_height;
+        self.spill_depth = spill_depth;
+        self.type_stack.clear();
+        self.type_stack.extend_from_slice(type_stack);
+        self.live_types.clear();
+        self.live_types.extend_from_slice(live_types);
+        self.live_aliases.clear();
+        self.live_aliases.resize(live_types.len(), None);
+    }
+
     #[inline]
     pub(crate) fn height(&self) -> u16 {
         self.stack_height
@@ -280,17 +297,14 @@ impl Window {
 
     /// Types of the spilled values in `[new_spill_depth, spill_depth)`, i.e. the
     /// values a fill down to `new_spill_depth` would restore, bottom-to-top.
-    pub(crate) fn spilled_types_for_fill(
-        &self,
-        new_spill_depth: u16,
-    ) -> collections::Vec<ValueType> {
+    pub(crate) fn spilled_types_for_fill(&self, new_spill_depth: u16) -> &[ValueType] {
         let start = new_spill_depth as usize;
         let end = self.spill_depth as usize;
         if start >= end || start >= self.type_stack.len() {
-            return collections::Vec::new();
+            return &[];
         }
         let end = end.min(self.type_stack.len());
-        self.type_stack[start..end].to_vec().into()
+        &self.type_stack[start..end]
     }
 
     // -- Semantic core mutation (value identity handled by the caller) --------
@@ -404,16 +418,18 @@ impl Window {
         if new_spill_depth >= self.spill_depth {
             return;
         }
-        let fill_types = self.spilled_types_for_fill(new_spill_depth);
+        let start = new_spill_depth as usize;
+        let end = (self.spill_depth as usize).min(self.type_stack.len());
+        let fill_types = &self.type_stack[start..end];
         let base_slot = frame.operand_slot(new_spill_depth);
-        driver.on_fill(base_slot, &fill_types);
+        driver.on_fill(base_slot, fill_types);
+        let fill_len = fill_types.len();
+        self.live_types.extend_from_slice(fill_types);
+        self.live_types.rotate_right(fill_len);
+        self.live_aliases
+            .resize(self.live_aliases.len() + fill_len, None);
+        self.live_aliases.rotate_right(fill_len);
         self.spill_depth = new_spill_depth;
-        let mut new_live_types = fill_types.clone();
-        new_live_types.extend_from_slice(&self.live_types);
-        self.live_types = new_live_types;
-        let mut new_live_aliases = collections::vec![None; fill_types.len()];
-        new_live_aliases.extend_from_slice(&self.live_aliases);
-        self.live_aliases = new_live_aliases;
     }
 
     /// Spill the bottom `count` live values, notifying the driver.
@@ -458,17 +474,17 @@ impl Window {
     pub(crate) fn required_capacity(
         &self,
         operand_count: u16,
-        result_types: &[ValueType],
+        result_units: (usize, usize),
         gp_unit_bytes: u8,
     ) -> (usize, usize) {
         let min_spill_depth = self.stack_height.saturating_sub(operand_count);
         let fill_types = self.spilled_types_for_fill(min_spill_depth);
-        let (fill_gp, fill_fp) = count_live_bank_budget_units(&fill_types, gp_unit_bytes);
+        let (fill_gp, fill_fp) = count_live_bank_budget_units(fill_types, gp_unit_bytes);
 
         let already_live = self.live_types.len().min(operand_count as usize);
         let existing = &self.live_types[self.live_types.len().saturating_sub(already_live)..];
         let (existing_gp, existing_fp) = count_live_bank_budget_units(existing, gp_unit_bytes);
-        let (result_gp, result_fp) = count_live_bank_budget_units(result_types, gp_unit_bytes);
+        let (result_gp, result_fp) = result_units;
 
         (
             fill_gp.max(result_gp.saturating_sub(existing_gp)),
@@ -486,7 +502,7 @@ impl Window {
         &mut self,
         driver: &mut impl DisciplineDriver,
         frame: FrameLayoutPlan,
-        resident: &mut BTreeSet<CellId>,
+        resident: &mut CellSet,
         cell_types: &[ValueType],
         budget: BankBudget,
         extra: (usize, usize),
@@ -520,29 +536,29 @@ impl Window {
 
     /// Alias-discounted live budget: live entries whose alias tag is a resident
     /// cached local do not count against the dynamic bank.
-    fn effective_live_units(
-        &self,
-        resident_cache: &BTreeSet<CellId>,
-        gp_unit_bytes: u8,
-    ) -> (usize, usize) {
-        let effective = self
-            .live_types
-            .iter()
-            .zip(self.live_aliases.iter())
-            .filter_map(|(ty, alias)| {
-                alias
-                    .and_then(|slot| resident_cache.contains(&slot).then_some(()))
-                    .is_none()
-                    .then_some(*ty)
-            })
-            .collect::<collections::Vec<_>>();
-        count_live_bank_budget_units(&effective, gp_unit_bytes)
+    fn effective_live_units(&self, resident_cache: &CellSet, gp_unit_bytes: u8) -> (usize, usize) {
+        let mut gp = 0usize;
+        let mut fp = 0usize;
+        for (ty, alias) in self.live_types.iter().zip(self.live_aliases.iter()) {
+            if alias
+                .and_then(|slot| resident_cache.contains(&slot).then_some(()))
+                .is_some()
+            {
+                continue;
+            }
+            if ty.is_fp() {
+                fp += 1;
+            } else {
+                gp += gp_value_budget_units(*ty, gp_unit_bytes);
+            }
+        }
+        (gp, fp)
     }
 }
 
 /// GP/FP budget units held by a resident cached-local set.
 pub(crate) fn count_cached_cell_budget_units(
-    resident_cache: &BTreeSet<CellId>,
+    resident_cache: &CellSet,
     cell_types: &[ValueType],
     gp_unit_bytes: u8,
 ) -> (usize, usize) {
@@ -575,7 +591,7 @@ pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
     window: &mut Window,
     driver: &mut D,
     frame: FrameLayoutPlan,
-    resident: &mut BTreeSet<CellId>,
+    resident: &mut CellSet,
     cell_types: &[ValueType],
     budget: BankBudget,
 ) -> Result<(), WasmError> {
@@ -584,13 +600,18 @@ pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
     }
     match structural_action(op) {
         StructuralAction::None => {}
-        StructuralAction::PrimitiveFill { pop, .. } => {
+        StructuralAction::PrimitiveFill { pop, push } => {
             // Ensure capacity BEFORE filling (the fill must not be undone by a
             // subsequent spill), reserving room for the pushed results.
-            let result_types = emit_result_types(op, cell_types);
-            let extra = window.required_capacity(pop, &result_types, budget.gp_unit_bytes);
+            let result_units = emit_result_budget_units(op, cell_types, push, budget.gp_unit_bytes);
+            let extra = window.required_capacity(pop, result_units, budget.gp_unit_bytes);
             window.ensure_capacity(driver, frame, resident, cell_types, budget, extra)?;
             window.fill(driver, frame, pop);
+            // The pre-fill check accounts for both restored operands and the
+            // result values the operation will push.  The generic trailing
+            // clamp below would only rescan the same live/cache sets with a
+            // weaker `(0, 0)` reservation.
+            return Ok(());
         }
         StructuralAction::FillKeepSpillRest(keep) => {
             window.fill(driver, frame, keep);
@@ -614,27 +635,36 @@ pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
 /// Result types the emit-side capacity reservation charges for an op's pushed
 /// results: primitive result type(s), or the accessed local's type for
 /// `local.get` / `local.tee`, or none otherwise.
-fn emit_result_types(op: &SemanticOpKind, cell_types: &[ValueType]) -> collections::Vec<ValueType> {
+fn emit_result_budget_units(
+    op: &SemanticOpKind,
+    cell_types: &[ValueType],
+    push: u16,
+    gp_unit_bytes: u8,
+) -> (usize, usize) {
+    if push == 0 {
+        return (0, 0);
+    }
     let local_ty = |idx: u16| {
         cell_types
             .get(idx as usize)
             .copied()
             .unwrap_or(ValueType::I64)
     };
-    match op {
+    let result_ty = match op {
         SemanticOpKind::Primitive(kind) => {
-            let (_pop, push) = primitive_op::stack_effect(kind);
-            if push == 0 {
-                collections::Vec::new()
-            } else {
-                let result_ty = primitive_op::result_type(kind).unwrap_or(ValueType::I64);
-                collections::vec![result_ty; push]
-            }
+            primitive_op::result_type(kind).unwrap_or(ValueType::I64)
         }
-        SemanticOpKind::LocalGet { idx } | SemanticOpKind::LocalTee { idx } => {
-            collections::vec![local_ty(*idx)]
-        }
-        _ => collections::Vec::new(),
+        SemanticOpKind::LocalGet { idx } | SemanticOpKind::LocalTee { idx } => local_ty(*idx),
+        _ => return (0, 0),
+    };
+    let count = push as usize;
+    if result_ty.is_fp() {
+        (0, count)
+    } else {
+        (
+            gp_value_budget_units(result_ty, gp_unit_bytes).saturating_mul(count),
+            0,
+        )
     }
 }
 

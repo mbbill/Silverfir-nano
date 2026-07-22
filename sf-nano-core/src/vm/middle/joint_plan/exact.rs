@@ -22,7 +22,7 @@
 
 use crate::collections;
 
-use tracked_alloc::collections::{BTreeMap, BTreeSet};
+use tracked_alloc::collections::BTreeMap;
 
 use crate::{
     error::WasmError,
@@ -30,7 +30,7 @@ use crate::{
     vm::{
         backend::BackendConfig,
         middle::{
-            cell::CellId,
+            cell::{CellId, CellSet},
             cfg::{CfgBlockId, CfgTerminator, SemanticCfg},
             discipline::{
                 apply_op_discipline, cached_cell_get_can_source_alias, BankBudget, NoEmit, Window,
@@ -267,6 +267,8 @@ fn repair_content_hash(actions: &RepairActions) -> u64 {
 struct WalkScratch {
     events: collections::Vec<CacheEvent>,
     before: collections::Vec<CellId>,
+    window: Window,
+    resident: CellSet,
 }
 
 fn walk_block(
@@ -298,15 +300,20 @@ fn walk_block(
 
     // Seed exactly as `BlockState::from_entry`: full stack types, the live
     // suffix above the spilled prefix, and all-`None` alias tags on that suffix.
-    let mut window = Window::new(
+    let WalkScratch {
+        events,
+        before,
+        window,
+        resident,
+    } = scratch;
+    let live_types = entry.live_types();
+    window.reset_without_aliases(
         entry.stack_height,
         entry.spill_depth,
-        entry.stack_types.clone(),
-        entry.live_types().to_vec().into(),
-        collections::vec![None; entry.live_types().len()],
+        &entry.stack_types,
+        live_types,
     );
-    let mut resident: BTreeSet<CellId> = planned.iter().copied().collect();
-    let WalkScratch { events, before } = scratch;
+    resident.replace_from_iter(planned.iter().copied());
     events.clear();
     before.clear();
     let mut noemit = NoEmit;
@@ -326,7 +333,7 @@ fn walk_block(
                 semantic,
                 cfg,
                 plan,
-                &mut window,
+                window,
                 frame,
                 &mut noemit,
             );
@@ -339,10 +346,10 @@ fn walk_block(
         before.extend(resident.iter().copied());
         apply_op_discipline(
             op,
-            &mut window,
+            window,
             &mut noemit,
             frame,
-            &mut resident,
+            resident,
             local_types,
             budget,
         )?;
@@ -356,13 +363,13 @@ fn walk_block(
         match op {
             SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable) => {}
             SemanticOpKind::Primitive(kind) => {
-                primitive_effect(kind, semantic_index, semantic, &mut window)
+                primitive_effect(kind, semantic_index, semantic, window)
             }
             SemanticOpKind::AllocExnRef { tag_idx } => primitive_effect(
                 &PrimitiveOpKind::EhAllocExnRef { tag_idx: *tag_idx },
                 semantic_index,
                 semantic,
-                &mut window,
+                window,
             ),
             SemanticOpKind::LocalGet { idx } => {
                 let ty = local_types
@@ -375,7 +382,7 @@ fn walk_block(
                     CellAccessQuery {
                         block: block_id,
                         slot,
-                        resident_cache: &resident,
+                        resident_cache: resident,
                     },
                 ) {
                     CellAccessDecision::Cache => {
@@ -395,7 +402,7 @@ fn walk_block(
                     CellAccessQuery {
                         block: block_id,
                         slot,
-                        resident_cache: &resident,
+                        resident_cache: resident,
                     },
                 ) {
                     resident.insert(slot);
@@ -414,7 +421,7 @@ fn walk_block(
                     CellAccessQuery {
                         block: block_id,
                         slot,
-                        resident_cache: &resident,
+                        resident_cache: resident,
                     },
                 ) {
                     CellAccessDecision::Cache => {
@@ -445,8 +452,8 @@ fn walk_block(
                     config,
                     survivable,
                     plan,
-                    &mut window,
-                    &mut resident,
+                    window,
+                    resident,
                 );
             }
             SemanticOpKind::CallIndirect {
@@ -463,8 +470,8 @@ fn walk_block(
                     config,
                     false,
                     plan,
-                    &mut window,
-                    &mut resident,
+                    window,
+                    resident,
                 );
             }
             // Control / branch / return / tail-call ops: the structural prefix
@@ -584,7 +591,7 @@ fn call_effect(
     survivable: bool,
     plan: &FunctionPlan,
     window: &mut Window,
-    resident: &mut BTreeSet<CellId>,
+    resident: &mut CellSet,
 ) {
     let mut noemit = NoEmit;
     match walker_live_scalar(config, results, result_types) {
@@ -592,12 +599,7 @@ fn call_effect(
         None => window.finish_call(&mut noemit, consumed, results, result_types),
     }
     if survivable {
-        let survivors: BTreeSet<CellId> = resident
-            .iter()
-            .copied()
-            .filter(|slot| plan.is_preserved_nominated(*slot))
-            .collect();
-        *resident = survivors;
+        resident.retain(|slot| plan.is_preserved_nominated(*slot));
     } else {
         resident.clear();
     }
@@ -663,7 +665,7 @@ fn replay_exit(
     events: &[CacheEvent],
     plan: &FunctionPlan,
 ) -> collections::Vec<CellId> {
-    let mut materialized: BTreeSet<CellId> = seed.iter().copied().collect();
+    let mut materialized: CellSet = seed.iter().copied().collect();
     for event in events {
         match *event {
             CacheEvent::Get(slot) | CacheEvent::Set(slot) => {
@@ -674,12 +676,7 @@ fn replay_exit(
             }
             CacheEvent::Call { survivable } => {
                 if survivable {
-                    let survivors: BTreeSet<CellId> = materialized
-                        .iter()
-                        .copied()
-                        .filter(|slot| plan.is_preserved_nominated(*slot))
-                        .collect();
-                    materialized = survivors;
+                    materialized.retain(|slot| plan.is_preserved_nominated(*slot));
                 } else {
                     materialized.clear();
                 }
@@ -692,8 +689,8 @@ fn replay_exit(
 /// The old rewriter's `materialized_cache` at block end: planned-resident seed
 /// plus every cache decision, cleared on each call, and — unlike the exit set —
 /// never reduced by eviction.
-fn replay_hint(seed: &[CellId], events: &[CacheEvent], plan: &FunctionPlan) -> BTreeSet<CellId> {
-    let mut hint: BTreeSet<CellId> = seed.iter().copied().collect();
+fn replay_hint(seed: &[CellId], events: &[CacheEvent], plan: &FunctionPlan) -> CellSet {
+    let mut hint: CellSet = seed.iter().copied().collect();
     for event in events {
         match *event {
             CacheEvent::Get(slot) | CacheEvent::Set(slot) => {
@@ -701,12 +698,7 @@ fn replay_hint(seed: &[CellId], events: &[CacheEvent], plan: &FunctionPlan) -> B
             }
             CacheEvent::Call { survivable } => {
                 if survivable {
-                    let survivors: BTreeSet<CellId> = hint
-                        .iter()
-                        .copied()
-                        .filter(|slot| plan.is_preserved_nominated(*slot))
-                        .collect();
-                    hint = survivors;
+                    hint.retain(|slot| plan.is_preserved_nominated(*slot));
                 } else {
                     hint.clear();
                 }

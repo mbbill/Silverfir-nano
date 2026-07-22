@@ -3,7 +3,6 @@
 // ---------------------------------------------------------------------------
 
 use crate::collections::{self, phase_span_with_function};
-use tracked_alloc::collections::BTreeMap;
 
 use crate::{
     error::WasmError,
@@ -46,7 +45,7 @@ use crate::{
 use super::{
     call_abi::{collect_preserved_clobbers, INDIRECT_DISPATCH_CONTROL_GP_LANES},
     gp32::Gp32Lowering,
-    lower_cache_layout::{compute_block_entry_cache_params, promote_preferred_preserved},
+    lower_cache_layout::{compute_block_entry_cache_params, preferred_preserved_for_cached},
     lower_const_pool::ConstPoolBuilder,
     lower_context::{
         explicit_cached_cells, BlockLowerContext, CachedCell, EntryCacheParam, ValueRegs,
@@ -436,11 +435,8 @@ fn lower_function(
         table_dispatch_modes,
         &input.ssa.preferred_preserved,
     )?;
-    let call_preserved_cache_candidates = promote_preferred_preserved(
-        &explicit_cache,
-        &input.ssa.preferred_preserved,
-        input.ssa.blocks.len(),
-    );
+    let call_preserved_cache_candidates =
+        preferred_preserved_for_cached(&explicit_cache, &input.ssa.preferred_preserved);
     let block_entry_cache_dirty = compute_block_entry_cache_dirty(
         &input.ssa,
         &explicit_cache,
@@ -467,9 +463,7 @@ fn lower_function(
             block_entry_cache_dirty
                 .get(target.as_usize())
                 .map(|dirty| dirty.as_slice()),
-            call_preserved_cache_candidates
-                .get(target.as_usize())
-                .map(|bits| bits.as_slice()),
+            Some(&call_preserved_cache_candidates),
             #[cfg(sf_has_guard_pages)]
             guard_pages,
             #[cfg(sf_has_guard_pages)]
@@ -3334,18 +3328,22 @@ fn compute_block_entry_cache_dirty(
     abi: &MachineFunctionAbi,
     entry_cache_params: &[collections::Vec<EntryCacheParam>],
     is_local_func: &[bool],
-    call_preserved_cache_candidates: &[collections::Vec<bool>],
+    call_preserved_cache_candidates: &[bool],
 ) -> collections::Vec<collections::Vec<bool>> {
     if program.blocks.is_empty() || cached_cells.is_empty() {
         return collections::vec![collections::Vec::new(); program.blocks.len()];
     }
 
     let predecessors = compute_ssa_predecessors(program);
-    let slot_to_index = cached_cells
+    let slot_index_len = cached_cells
         .iter()
-        .enumerate()
-        .map(|(index, cached)| (cached.cell, index))
-        .collect::<BTreeMap<CellId, usize>>();
+        .map(|cached| cached.cell.0 as usize + 1)
+        .max()
+        .unwrap_or(0);
+    let mut slot_to_index = collections::vec![u32::MAX; slot_index_len];
+    for (index, cached) in cached_cells.iter().enumerate() {
+        slot_to_index[cached.cell.0 as usize] = index as u32;
+    }
     let mut entry_dirty =
         collections::vec![collections::vec![false; cached_cells.len()]; program.blocks.len()];
     let register_param_slots = register_param_slots(&abi.param_locs);
@@ -3392,13 +3390,10 @@ fn compute_block_entry_cache_dirty(
                     &slot_to_index,
                     &register_param_slots,
                     is_local_func,
-                    call_preserved_cache_candidates
-                        .get(pred_index)
-                        .map(|bits| bits.as_slice())
-                        .unwrap_or(&[]),
+                    call_preserved_cache_candidates,
                 );
                 for &slot in entry_slots {
-                    if let Some(&cached_index) = slot_to_index.get(&slot) {
+                    if let Some(cached_index) = cached_cell_index(&slot_to_index, slot) {
                         next_dirty[cached_index] |= pred_exit_dirty[cached_index];
                     }
                 }
@@ -3484,17 +3479,17 @@ fn simulate_block_cache_exit_state(
     program: &SsaProgram,
     block: &SsaBlock,
     entry_dirty: &[bool],
-    slot_to_index: &BTreeMap<CellId, usize>,
+    slot_to_index: &[u32],
     register_param_slots: &[CellId],
     is_local_func: &[bool],
     call_preserved_cache_candidates: &[bool],
 ) -> (collections::Vec<bool>, collections::Vec<bool>) {
-    let mut resident = collections::vec![false; slot_to_index.len()];
-    let mut dirty = collections::vec![false; slot_to_index.len()];
+    let mut resident = collections::vec![false; entry_dirty.len()];
+    let mut dirty = collections::vec![false; entry_dirty.len()];
 
     if let Some(entry_slots) = program.block_entry_cached_cells.get(block.id.as_usize()) {
         for &slot in entry_slots {
-            if let Some(&cached_index) = slot_to_index.get(&slot) {
+            if let Some(cached_index) = cached_cell_index(slot_to_index, slot) {
                 resident[cached_index] = true;
                 dirty[cached_index] = entry_dirty.get(cached_index).copied().unwrap_or(false);
             }
@@ -3505,7 +3500,7 @@ fn simulate_block_cache_exit_state(
         match inst.op {
             SsaOp::CELL_GET_CACHE | SsaOp::CELL_ENSURE_CACHE => {
                 let slot = CellId(inst.meta);
-                if let Some(&cached_index) = slot_to_index.get(&slot) {
+                if let Some(cached_index) = cached_cell_index(slot_to_index, slot) {
                     if !resident[cached_index] {
                         resident[cached_index] = true;
                         dirty[cached_index] =
@@ -3515,7 +3510,7 @@ fn simulate_block_cache_exit_state(
             }
             SsaOp::CELL_RESERVE_CACHE => {
                 let slot = CellId(inst.meta);
-                if let Some(&cached_index) = slot_to_index.get(&slot) {
+                if let Some(cached_index) = cached_cell_index(slot_to_index, slot) {
                     if !resident[cached_index] {
                         resident[cached_index] = true;
                         dirty[cached_index] = false;
@@ -3524,14 +3519,14 @@ fn simulate_block_cache_exit_state(
             }
             SsaOp::CELL_SET_CACHE => {
                 let slot = CellId(inst.meta);
-                if let Some(&cached_index) = slot_to_index.get(&slot) {
+                if let Some(cached_index) = cached_cell_index(slot_to_index, slot) {
                     resident[cached_index] = true;
                     dirty[cached_index] = true;
                 }
             }
             SsaOp::CELL_DROP_CACHE => {
                 let slot = CellId(inst.meta);
-                if let Some(&cached_index) = slot_to_index.get(&slot) {
+                if let Some(cached_index) = cached_cell_index(slot_to_index, slot) {
                     resident[cached_index] = false;
                     dirty[cached_index] = false;
                 }
@@ -3560,6 +3555,15 @@ fn simulate_block_cache_exit_state(
     }
 
     (resident, dirty)
+}
+
+#[inline]
+fn cached_cell_index(slot_to_index: &[u32], cell: CellId) -> Option<usize> {
+    let index = slot_to_index
+        .get(cell.0 as usize)
+        .copied()
+        .unwrap_or(u32::MAX);
+    (index != u32::MAX).then_some(index as usize)
 }
 
 /// Value-carry classification: a call whose continuation can receive caches

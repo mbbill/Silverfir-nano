@@ -1,4 +1,4 @@
-use tracked_alloc::collections::{BTreeMap, BTreeSet};
+use tracked_alloc::collections::BTreeMap;
 
 use crate::collections;
 
@@ -6,7 +6,7 @@ use crate::value_type::ValueType;
 use crate::vm::{
     backend::BackendConfig,
     middle::{
-        cell::CellId,
+        cell::{CellId, CellSet},
         cfg::{self, CfgBlockId, SemanticCfg},
         frame::plan_frame_layout,
         joint_plan::{CellAccessDecision, CellAccessQuery, JointPlanner},
@@ -243,7 +243,7 @@ pub(super) fn block_for_semantic_index(cfg: &SemanticCfg, semantic_index: usize)
 /// from any prior residency — the same admission decision the rewriter makes
 /// per local op, via the production `cell_access` API.
 pub(super) fn is_admitted(planner: &JointPlanner, block: CfgBlockId, slot: CellId) -> bool {
-    let empty = BTreeSet::new();
+    let empty = CellSet::default();
     matches!(
         planner.cell_access(CellAccessQuery {
             block,
