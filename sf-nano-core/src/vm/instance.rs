@@ -2155,6 +2155,44 @@ mod tests {
         assert_eq!(bias.get(), 42);
     }
 
+    #[cfg(sf_jit)]
+    #[test]
+    fn direct_self_tail_call_reuses_function_entry() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (func $fib (param $n i64) (param $a i64) (param $b i64) (result i64)
+                local.get $n
+                i64.eqz
+                if
+                  local.get $a
+                  return
+                end
+                local.get $n
+                i64.const 1
+                i64.sub
+                local.get $b
+                local.get $a
+                local.get $b
+                i64.add
+                return_call $fib)
+              (func (export "run") (param i64) (result i64)
+                local.get 0
+                i64.const 0
+                i64.const 1
+                return_call $fib))
+            "#,
+        )
+        .expect("tail-call module should encode");
+        let mut instance = Instance::new(&wasm, &[]).expect("instantiation should succeed");
+
+        let result = instance
+            .invoke("run", &[Value::I64(10)])
+            .expect("tail-recursive invocation should succeed");
+
+        assert_eq!(result.as_slice(), &[Value::I64(55)]);
+    }
+
     #[test]
     fn instantiation_rejects_builder_modules_with_simd_types() {
         let mut builder = ModuleBuilder::new();

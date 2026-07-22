@@ -29,6 +29,7 @@ use crate::{
                     SsaBlock, SsaCallArgs, SsaCallLiveArg, SsaCallOp, SsaInstView, SsaOp,
                     SsaOperand, SsaProgram, SsaTerminator, SsaValue,
                 },
+                target::SsaTarget,
                 validate::validate_program,
             },
         },
@@ -437,6 +438,21 @@ fn lower_function(
     )?;
     let call_preserved_cache_candidates =
         preferred_preserved_for_cached(&explicit_cache, &input.ssa.preferred_preserved);
+    let has_direct_self_tail_call = input.ssa.blocks.iter().any(|block| {
+        matches!(
+            block.terminator,
+            SsaTerminator::TailCallDirect { callee, .. } if callee == input.id.0
+        )
+    });
+    let entry_has_no_ssa_params = input
+        .ssa
+        .blocks
+        .get(input.ssa.entry.as_usize())
+        .map(|block| block.params.is_empty())
+        .unwrap_or(false);
+    let self_tail_entry_params = (has_direct_self_tail_call && entry_has_no_ssa_params)
+        .then(|| derive_self_tail_entry_params(regfile, current_abi, &explicit_cache))
+        .flatten();
     let block_entry_cache_dirty = compute_block_entry_cache_dirty(
         &input.ssa,
         &explicit_cache,
@@ -489,6 +505,9 @@ fn lower_function(
                 &explicit_cache,
             );
         } else {
+            if let Some(params) = self_tail_entry_params.as_deref() {
+                append_entry_cache_params(&mut current_params, params, &explicit_cache);
+            }
             // Entry block: zero-init non-param locals that may be read before
             // being written. The caller no longer pre-zeros the callee frame;
             // each function is responsible for satisfying the wasm zero-init
@@ -755,7 +774,18 @@ fn lower_function(
                 args,
                 return_results,
             } => {
-                let terminator = if is_local_func
+                let self_tail_backedge = (*callee == input.id.0).then(|| {
+                    try_lower_self_tail_backedge(
+                        &lower,
+                        args,
+                        input.ssa.entry,
+                        self_tail_entry_params.as_deref().unwrap_or(&[]),
+                        &explicit_cache,
+                    )
+                });
+                let terminator = if let Some(Some(edge)) = self_tail_backedge {
+                    MachineTerminator::Jump(edge)
+                } else if is_local_func
                     .get(*callee as usize)
                     .copied()
                     .unwrap_or(false)
@@ -947,6 +977,129 @@ fn lower_function(
         program,
         preserved_clobbers,
     })
+}
+
+/// Turns a register-only direct self tail call into a CFG backedge.
+///
+/// The ordinary tail-call path must publish arguments and cached parameters to
+/// the Wasm frame, restore the native body frame, jump through the function
+/// entry, and reload the parameters. A self call whose complete parameter set
+/// is already live in registers can instead use the normal edge parallel-move
+/// machinery and branch straight to the function's entry block.
+fn try_lower_self_tail_backedge(
+    lower: &BlockLowerContext<'_>,
+    args: &SsaCallArgs,
+    entry: SsaTarget,
+    entry_cache_params: &[EntryCacheParam],
+    cached_cells: &[CachedCell],
+) -> Option<MachineEdge> {
+    if args.stack_prefix_count != 0
+        || args.live_suffix.len() != usize::from(args.total_params)
+        || entry_cache_params.len() != usize::from(args.total_params)
+    {
+        return None;
+    }
+
+    let mut seen = collections::vec![false; usize::from(args.total_params)];
+    let mut edge_args = collections::Vec::with_capacity(entry_cache_params.len());
+    for entry_param in entry_cache_params {
+        if !entry_param.needs_value {
+            return None;
+        }
+        let cached = cached_cells.get(usize::from(entry_param.cached_index))?;
+        if !cached.info.is_param {
+            return None;
+        }
+        let param_index = usize::try_from(cached.cell.0).ok()?;
+        if param_index >= seen.len() || seen[param_index] {
+            return None;
+        }
+        let live = args
+            .live_suffix
+            .iter()
+            .find(|arg| usize::from(arg.param_index) == param_index)?;
+        if program_value_storage_type(lower.program(), live.value) != cached.ty {
+            return None;
+        }
+        let (lo, hi) = lower.try_value_regs(live.value)?;
+        if hi.is_some() != entry_param.regs.hi.is_some() {
+            return None;
+        }
+        edge_args.push(MachineValue::Reg(lo));
+        if let Some(hi) = hi {
+            edge_args.push(MachineValue::Reg(hi));
+        }
+        seen[param_index] = true;
+    }
+    if seen.iter().any(|seen| !seen) {
+        return None;
+    }
+
+    Some(MachineEdge {
+        target: MachineBlockId(entry.as_u32()),
+        args: edge_args,
+    })
+}
+
+fn derive_self_tail_entry_params(
+    regfile: &MachineRegFile,
+    abi: &MachineFunctionAbi,
+    cached_cells: &[CachedCell],
+) -> Option<collections::Vec<EntryCacheParam>> {
+    // A fresh tail-called activation may discard every non-parameter local,
+    // and reference parameters must remain published in the canonical frame
+    // for GC root discovery. Keep this first version to scalar parameters
+    // whose complete live state can safely travel on the CFG edge.
+    if cached_cells
+        .iter()
+        .any(|cached| !cached.info.is_param || cached.value_ty.is_ref())
+    {
+        return None;
+    }
+    let mut params = collections::Vec::with_capacity(abi.param_locs.len());
+    for loc in &abi.param_locs {
+        let (param_index, regs) = match *loc {
+            MachineParamLoc::Frame { .. } => return None,
+            MachineParamLoc::GpArg {
+                param_index, lane, ..
+            } => (
+                param_index,
+                ValueRegs {
+                    lo: regfile.ordered_gp_allocatable(lane as usize)?,
+                    hi: None,
+                },
+            ),
+            MachineParamLoc::GpArgPair {
+                param_index,
+                lo_lane,
+                hi_lane,
+            } => (
+                param_index,
+                ValueRegs {
+                    lo: regfile.ordered_gp_allocatable(lo_lane as usize)?,
+                    hi: Some(regfile.ordered_gp_allocatable(hi_lane as usize)?),
+                },
+            ),
+            MachineParamLoc::FpArg {
+                param_index, lane, ..
+            } => (
+                param_index,
+                ValueRegs {
+                    lo: regfile.fp_dynamic(lane as usize)?,
+                    hi: None,
+                },
+            ),
+        };
+        let cached_index = cached_cells
+            .iter()
+            .position(|cached| cached.info.is_param && cached.cell.0 == param_index)?;
+        params.push(EntryCacheParam {
+            cached_index: u16::try_from(cached_index).ok()?,
+            regs,
+            needs_value: true,
+        });
+    }
+    Some(params)
 }
 
 fn release_cache_planning_only_ssa_storage(ssa: &mut SsaProgram) {

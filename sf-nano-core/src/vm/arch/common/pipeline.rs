@@ -34,6 +34,7 @@ fn compile_function_impl<'a, A: ArchBackend<'a>>(
     super::core::CompilerCore::validate_function(
         A::NAME,
         function,
+        compiled.runtime_for(function.id),
         compiled.backend(),
         A::max_total_regs(),
         A::max_fp_regs(),

@@ -7,7 +7,8 @@ use crate::{
         machine::machine_ir::{
             fp_reg_index, is_fp_reg, MachineBlock, MachineBlockId, MachineFloatWidth,
             MachineFuncId, MachineFunction, MachineFunctionAbi, MachineParamLoc, MachineReg,
-            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_FIXED_REG_COUNT,
+            MachineRegOwner, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
+            MACHINE_FIXED_REG_COUNT,
         },
     },
 };
@@ -514,6 +515,7 @@ impl<'a> CompilerCore<'a> {
     pub(crate) fn validate_function(
         _arch_name: &str,
         function: &MachineFunction,
+        runtime: Option<&MachineFunctionAbi>,
         config: BackendConfig,
         max_total_regs: usize,
         max_fp_regs: usize,
@@ -535,17 +537,60 @@ impl<'a> CompilerCore<'a> {
                 "backend supports at most FP machine regs, got in function",
             ));
         }
-        if function
+        let entry_params = function
             .program
             .blocks
             .iter()
             .find(|block| block.id == function.program.entry)
-            .map(|block| !block.params.is_empty())
-            .unwrap_or(false)
-        {
-            return Err(WasmError::invalid(
-                "backend does not support entry block params yet",
-            ));
+            .map(|block| block.params.as_slice())
+            .unwrap_or_default();
+        if !entry_params.is_empty() {
+            let runtime = runtime.ok_or_else(|| {
+                WasmError::invalid("entry block params require function ABI metadata")
+            })?;
+            let mut expected = collections::Vec::new();
+            for loc in &runtime.param_locs {
+                match *loc {
+                    MachineParamLoc::Frame { .. } => {}
+                    MachineParamLoc::GpArg { lane, ty, .. } => {
+                        expected.push((MachineReg(MACHINE_FIXED_REG_COUNT + u16::from(lane)), ty))
+                    }
+                    MachineParamLoc::GpArgPair {
+                        lo_lane, hi_lane, ..
+                    } => {
+                        expected.push((
+                            MachineReg(MACHINE_FIXED_REG_COUNT + u16::from(lo_lane)),
+                            MachineStorageType::GpWord,
+                        ));
+                        expected.push((
+                            MachineReg(MACHINE_FIXED_REG_COUNT + u16::from(hi_lane)),
+                            MachineStorageType::GpWord,
+                        ));
+                    }
+                    MachineParamLoc::FpArg { lane, ty, .. } => expected.push((
+                        MachineReg(
+                            MACHINE_FIXED_REG_COUNT
+                                + u16::from(config.gp_dynamic_budget)
+                                + u16::from(lane),
+                        ),
+                        ty,
+                    )),
+                }
+            }
+            let matches_incoming_abi = entry_params.len() == expected.len()
+                && entry_params
+                    .iter()
+                    .zip(expected.iter())
+                    .all(|(param, &(reg, ty))| {
+                        param.reg == reg
+                            && param.ty == ty
+                            && param.owner == MachineRegOwner::CachedCell
+                    });
+            if !matches_incoming_abi {
+                return Err(WasmError::invalid(
+                    "entry block params must exactly match incoming ABI registers",
+                ));
+            }
         }
         Ok(())
     }

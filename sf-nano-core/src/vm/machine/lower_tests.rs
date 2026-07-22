@@ -187,6 +187,91 @@ fn test_i64_call_args(span: FrameSpan) -> SsaCallArgs {
 }
 
 #[test]
+fn lowers_register_only_self_tail_call_to_entry_backedge() {
+    let frame = plan_frame_layout(3, 3, 0);
+    let call_base = frame.operand_slot(0);
+    let mut ssa = SsaProgram::default();
+    ssa.entry = SsaTarget(0);
+    ssa.cell_types = collections::vec![ValueType::I64; 3];
+    ssa.cell_info = collections::vec![
+        CellInfo {
+            is_param: true,
+            reads_before_write: true,
+        };
+        3
+    ];
+    ssa.block_entry_cached_cells =
+        collections::vec![collections::vec![CellId(0), CellId(1), CellId(2),]];
+    ssa.value_types = collections::vec![ValueType::I64; 3];
+    ssa.value_sink_cell = collections::vec![];
+
+    let args = SsaCallArgs {
+        frame_base: call_base,
+        total_params: 3,
+        param_types: collections::vec![ValueType::I64; 3],
+        stack_prefix_count: 0,
+        live_suffix: (0..3)
+            .map(|index| SsaCallLiveArg {
+                param_index: index,
+                value: SsaValue(u32::from(index)),
+                ty: ValueType::I64,
+                frame_slot: call_base.advance(index),
+            })
+            .collect(),
+    };
+    let mut block = SsaBlock {
+        id: SsaTarget(0),
+        params: collections::vec![],
+        ops: collections::vec![],
+        extra_args: collections::vec![],
+        terminator: SsaTerminator::TailCallDirect {
+            callee: 0,
+            args,
+            return_results: None,
+        },
+    };
+    for index in 0..3 {
+        block.ops.push(SsaInst::cell_get_cache(
+            CellId(index),
+            SsaValue(u32::from(index)),
+        ));
+    }
+    ssa.blocks.push(block);
+    set_default_entry_cache_metadata(&mut ssa);
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(3, 3, 0, 0),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("register-only self tail call should lower");
+
+    let program = &lowered.module.functions[0].program;
+    let entry = &program.blocks[program.entry.as_usize()];
+    assert!(matches!(
+        &entry.terminator,
+        MachineTerminator::Jump(MachineEdge { target, args })
+            if *target == program.entry && args.len() == entry.params.len()
+    ));
+    assert!(
+        entry
+            .ops
+            .iter()
+            .all(|inst| !matches!(inst.kind, MachineInstKind::Store { .. })),
+        "self tail backedge must not publish arguments through the frame: {:?}",
+        entry.ops
+    );
+}
+
+#[test]
 fn lowers_simple_slot_and_add_block() {
     let frame = plan_frame_layout(1, 4, 2);
     let ssa = {
