@@ -64,7 +64,25 @@
   (SF-to-SF) targets, with non-local targets falling back to a runtime call followed
   by a return (`lower_tail_call_internal`).
 
+- A direct self return_call whose non-reference register parameters already
+  match the incoming ABI and whose local/cache state can be safely re-entered is
+  lowered as an edge back to the entry block, not a frame repack plus function
+  re-entry. The edge's parallel move implements the tail-argument shuffle
+  (`lower_direct_self_tail_calls`).
+
 ## Facts
+
+- 2026-07-22 measurement: the generic self-tail path made Fibonacci-tail spill
+  nine frame values and reload three parameters on each of one million
+  iterations. Lowering it as an entry backedge reduced 1.85 ms to 0.253 ms
+  (-86.3%); the hot loop became two arithmetic instructions plus the branch
+  (`1a6c8e9`) (sourced).
+
+- 2026-07-22 rationale: the self-tail fast path excludes reference parameters
+  and cached non-parameter locals because a backedge must not bypass GC-root
+  publication or the fresh-local semantics of ordinary function entry; entry
+  block parameters are accepted only when they exactly match incoming ABI
+  registers (code).
 
 - 2026-03-13 (013fd297) pitfall: lowering hard-rejects any call, boundary, or return
   reached with a non-empty live transient set, forcing the frontend to publish all

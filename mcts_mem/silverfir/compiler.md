@@ -2,7 +2,9 @@
   its input and produces its output incrementally for one function, and on the
   native backends the streaming pipeline never holds a fully materialized
   whole-module IR (the emulator and IR-dump configurations retain the batch
-  pipeline that does).
+  pipeline that does). Hosted eager builds may run a bounded number of these
+  independent per-function pipelines concurrently; low-memory/no_std builds
+  keep the single-stream path.
 
 - The pipeline pushes structural choices up into the early, structured stages
   and ISA-specific cleverness down into small late rewrites, rather than
@@ -15,6 +17,12 @@
   allocation). This split removes the need for a heavyweight global allocator.
 
 ## Facts
+
+- 2026-07-22 measurement: the FFmpeg startup campaign found accidental
+  whole-function scratch, repeated scans, temporary containers, and duplicated
+  planning work rather than an inherently superlinear compiler pipeline; the
+  measured checkpoints and retained/rejected changes are recorded in
+  [[compiler.fact/startup-campaign-2026-07-22]] (sourced).
 
 - 2026-03-06 (37c40ffe) rationale: the backend split must not duplicate the
   middle of the pipeline — Wasm decode, stack tracking, neutral lowering / IR

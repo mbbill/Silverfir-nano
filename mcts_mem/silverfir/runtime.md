@@ -18,14 +18,31 @@
   numbers, while the bare-metal target defaults to zeros that an unconfigured
   embedder hits as a clean error (`RuntimeConfig`).
 
-- The Wasm operand/call stack that backs each invoke is a single embedder-sized
-  buffer allocated per invocation, indexed in 64-bit slots.
+- The Wasm operand/call stack and native dispatch context are cached per Store
+  and reused across exported invocations. `eval` temporarily takes ownership;
+  exact module/table/function-registry revisions control cached dispatch-view
+  refresh (`take_native_stack_cache`, `prepare_for_invocation`).
 
-- Host/imported functions are supplied to the engine as bare `fn` pointers
-  bound at instantiation (`fn(&mut Caller, &[Value], &mut [Value])`), with
-  multi-value results written into a caller-owned buffer (`HostFn`).
+- Host/imported functions are clonable, potentially capturing `Fn` callbacks
+  bound at instantiation and stored behind single-threaded shared ownership;
+  plain `HostFn` pointers remain source-compatible inputs. Callbacks receive a
+  `Caller`, typed params, and a caller-owned multi-value result buffer
+  (`HostCallback`, `Import::func`).
 
 ## Facts
+
+- 2026-07-22 measurement: forwarding the benchmark's real capturing
+  `clock_ms` callback through `HostCallback` enabled genuine CoreMark execution;
+  matched runs scored sf-nano 38,540.60, Wasmtime Cranelift 37,814.33, Wasmer
+  Cranelift 37,674.24, and V8 34,736.29. This is distinct from the 3.323 ms
+  startup/coremark instantiation benchmark, which does not exercise the host
+  callback (sourced).
+
+- 2026-07-22 measurement: reusing the native stack/context and validating
+  cached views by revision reduced regex-redux from 30.393 to 19.199 us (36.8%)
+  because short exported calls no longer allocate/free the stack or rebuild
+  type, memory, table, and function dispatch views each time; see
+  [[runtime/invocation-cache]] (sourced).
 
 - 2026-04-09 (c329abab) rationale: the native artifact strips MachineIR after
   emission because nothing at runtime reads it on the native backends; the one

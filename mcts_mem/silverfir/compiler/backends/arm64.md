@@ -9,7 +9,41 @@
   an edge stub (a synthetic block of copies plus a jump) is emitted only when
   the edge actually moves values (`emit_edge`, `is_identity_edge`).
 
+- The dynamic GP bank includes x30 at the end of the volatile lanes and x29 at
+  the end of the preserved lanes. A function that allocates x30 creates the
+  existing x29/x30 host-frame pair even when otherwise leaf; x29's existing
+  save/restore supplies its dynamic callee-preservation (`REG_PLAN`).
+
 ## Facts
+
+- 2026-07-22 rationale: reclaiming x30 is ABI-safe because allocating it forces
+  the incoming link register into the body host frame before MachineIR can
+  define the lane (code).
+
+- 2026-07-22 rationale: reclaiming x29 is ABI-safe because the body host frame
+  already saves/restores it beside x30, supplying its dynamic callee-preserved
+  contract without another slot (code).
+
+- 2026-07-22 statement: reclaiming x29 and x30 grows ARM64's allocatable dynamic
+  GP budget from 21 to 23, reducing spill pressure in register-heavy leaf loops
+  (code).
+
+- 2026-07-22 measurement: pairing scalar GP/FP callee-save stores and loads as
+  STP/LDP reduced word-count about 5% (484.6 to 460.6 us) and sort about 40%
+  (18.2 to 11.0 ms); the latter repeatedly crosses internal call boundaries and
+  exposed the accumulated scalar prologue/epilogue tax (sourced).
+
+- 2026-07-22 measurement: an adjacent XOR-all-ones plus AND whose temporary is
+  dead lowers to flag-setting BICS, preserving the pending-NZCV contract for a
+  following select. Tiny-keccak's 73%-hot round block shrank 944 to 844 bytes
+  (25 instructions) and the benchmark moved from 7.52-7.66 to 6.80-6.85 us
+  (sourced).
+
+- 2026-07-22 pitfall: a non-flag-setting AND-NOT/BIC experiment reduced static
+  instructions in Keccak but was neutral or briefly regressive in controlled
+  reruns. The retained BICS fusion is narrower: it requires an adjacent dead
+  transient and publishes the flags already expected by downstream select
+  fusion; code-size reduction alone was not sufficient evidence (sourced).
 
 - 2026-07-16 (c7a8abaf) measurement: extending the pending-flags mechanism
   to float compares and to the Branch terminator (fcmp/cset/cbnz becomes

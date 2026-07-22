@@ -4,6 +4,15 @@
   payload travels through canonical operand slots rather than a positional live
   window (`SsaBlock`, `params`).
 
+## Facts
+
+- 2026-07-22 (b933a0ec) statement: typed loop-carried stack values remain
+  explicit SSA/block parameters through cleanup instead of being published and
+  reloaded through a frame slot at each backedge. Counter-param's loop changed
+  from load/sub/store to `sub` + `cbnz`, reducing 0.749 to 0.254 ms; predecessor
+  discovery is built once so the cleanup remains linear rather than rescanning
+  the CFG per block (sourced).
+
 ## Moves
 
 - 2026-03-12 (455661a0) replaced [[positional-tos-window-boundary]]: a positional

@@ -4,7 +4,17 @@
   backend lowers straight to a native immediate, with no later peephole needed to
   re-detect a move-imm-then-use shape (`fold_constants_into_operands`).
 
+- Three-input select keeps its condition in the overflow operand pool but may
+  absorb constants in either of its two value operands; memory.fill/copy/init
+  likewise accept constant offsets, lengths, and fill values
+  (`can_accept_const_operand`).
+
 ## Facts
+
+- 2026-07-22 measurement: allowing a literal select arm to remain an SSA
+  constant freed the lane needed to carry an unchanged frame value through the
+  word-count loop; together those changes moved 477.48 to 450.38 us (-5.7%)
+  (sourced).
 
 - 2026-03-22 (f9e742ed) rationale: a deleted plan (docs/WASM_CONSTANT_FOLDING_PLAN.md,
   commit f9e742ed, removed cb040a2c) proposed real numeric folding as a wasm/

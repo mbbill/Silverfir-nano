@@ -29,6 +29,13 @@
 
 ## Facts
 
+- 2026-07-22 measurement: the eager-preserving execution catch-up campaign
+  moved the largest initial gaps (self-tail recursion, typed loop values, short
+  exported-call setup, bulk helpers, and small ARM64 kernels) to parity with or
+  ahead of at least one Cranelift/V8 comparison; measurements, retained changes,
+  and failed experiments are recorded in
+  [[backends.fact/execution-catchup-2026-07-22]] (sourced).
+
 - 2026-06-14 invariant: two kinds of runtime boundary must NEVER be conflated,
   and the whole pipeline depends on keeping them apart. (1) RUNTIME CALLS — JIT
   code calling into the runtime (e.g. WASI) — happen ONLY on functions marked

@@ -40,6 +40,12 @@
 
 ## Facts
 
+- 2026-07-22 rationale: calls that lie on a statically trapping block do not
+  cross a live cache boundary, because execution cannot return to a successor;
+  excluding them from survivable/barrier call counts avoids pricing panic and
+  bounds-check slow paths as if every hot-loop iteration crossed a call
+  (`compute_block_call_counts`) (code).
+
 - 2026-07-13 (769e1da8) statement: the cell identity split (CellId vs
   FrameSlot, homes as a published table) landed as a semantics-preserving
   rename+split — SSA-IR and MachineIR text byte-identical across the

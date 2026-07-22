@@ -1,17 +1,31 @@
 - Engine-internal boundary ops (memory.grow/fill/copy/init, data.drop,
   table.grow/fill/copy/init, elem.drop, plus reference and struct ops) are
   first-class MachineIR instructions that the native backend lowers into a
-  preserved-helper call: it saves all caller-clobbered JIT registers, writes the
-  operands into a fixed native-stack I/O area, calls one unified C-ABI dispatch
-  `fn(ctx, op_code, io) -> u32` with a standardized slot layout
-  (IMM0/IMM1/ARG0..ARG2/RET0), reads the result back, and restores the saved
-  registers (`preserved_op`, `preserved_io`).
+  preserved-helper call: semantic runtime helpers save the full dynamic
+  caller-clobbered JIT set, write operands into a fixed native-stack I/O area,
+  call one unified C-ABI dispatch `fn(ctx, op_code, io) -> u32` with a
+  standardized slot layout (IMM0/IMM1/ARG0..ARG2/RET0), read the result back,
+  and restore the saved registers (`preserved_op`, `preserved_io`).
+
+- ARM64 has a separate narrow path for already-bounds-checked, infallible mem0
+  `memory.fill`/`memory.copy`: it calls libc `memset`/`memmove` directly and may
+  save only values proven live across that raw call. This exception does not
+  weaken the full-save semantic-helper ABI (`refresh_infallible_helper_save_sets`).
 
 - The preserved-helper path is owned by the native backends, not by MachineIR:
   each backend emits its own save/dispatch/restore sequence; the op is never a
   MachineIR call form.
 
 ## Facts
+
+- 2026-07-22 pitfall: deriving the save set of every ARM64 preserved helper
+  solely from ordinary MachineIR liveness passed emulator/x64 coverage but
+  failed four of eight native array tests and produced 22 native GC/ref/table
+  spectest errors. MachineIR's normal live-after inventory is not the complete
+  semantic-helper ABI inventory. Restoring all dynamic caller-clobbered lanes
+  for semantic helpers fixed every array test and the full native release
+  spectest; liveness-only preservation remains valid only for the raw infallible
+  libc bulk calls (sourced).
 
 - 2026-03-13 (1f0c55d9) pitfall: the 32-bit memory.grow path decoded the
   delta-page count as a signed i32 and rejected any value with the high bit set as
@@ -60,6 +74,11 @@
   the 8-byte D half) or the upper halves are lost across a helper call (code).
 
 ## Moves
+
+- 2026-07-22 replaced [[liveness-only-helper-save-set]]:
+  ordinary MIR live-after data omits dynamic lanes required by semantic runtime
+  helpers; full preservation fixes native GC/reference/table behavior while
+  liveness-only remains scoped to raw infallible libc memory calls (code).
 
 - 2026-03-30 (f9348326) replaced [[helper-backed-boundary]]: engine-internal
   helper-backed operations move from a per-op extern symbol plus a frame-slot

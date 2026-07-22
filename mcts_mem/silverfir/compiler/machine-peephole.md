@@ -1,8 +1,11 @@
-- A small set of block-local MachineIR peepholes, run after lowering and before
-  backend emission, recovers native-quality patterns the fixed-shape lowering
-  set up on purpose: constant deduplication, store-to-load forwarding,
-  load-to-load reuse, indexed-memory fusion, copy propagation, and
-  instruction-selection fusion (`peephole::optimize`).
+- A small set of MachineIR peepholes, run after lowering and before backend
+  emission, recovers native-quality patterns the fixed-shape lowering set up on
+  purpose. Most passes remain block-local (constant deduplication,
+  store-to-load forwarding, load reuse, indexed-memory fusion, copy propagation,
+  and instruction-selection fusion); a bounded set of structural whole-function
+  passes uses explicit CFG proofs for dead parameters, loop-carried context/frame
+  values, invariant address bases, and canonical memmove recognition
+  (`peephole::optimize`).
 
 - Every peephole rewrites only short-lived transient values; fixed-role and
   cached-local registers carry meaning across the whole block and are never
@@ -24,7 +27,43 @@
 - Load-to-load reuse runs twice — once before indexed-memory fusion and once
   after.
 
+- Store-to-load forwarding runs before and after copy propagation.
+
 ## Facts
+
+- 2026-07-22 measurement: running forwarding again after copy propagation and
+  carrying a proven-invariant context load through the loop moved
+  counter-global 617 -> 560 -> 415 us; the original pass order hid the exact
+  store/reload pair until after the only forwarding pass (sourced).
+
+- 2026-07-22 rationale: the whole-function loop passes are deliberately not a
+  general optimizer or register allocator. They introduce at most a proved
+  edge parameter/value, preserve canonical frame publication, and require every
+  loop entry/backedge to establish the same value before removing a reload or
+  hoisting address arithmetic (code).
+
+- 2026-07-22 pitfall: proving an invariant register only by absence of
+  instruction definitions ignored CFG edge rebinding and made JSON parsing
+  non-terminating. Every retained loop proof must check edge arguments on every
+  entry and backedge; instruction-local def/use evidence is insufficient across
+  a cycle (sourced).
+
+- 2026-07-22 rationale: recognizing Rust's overlap-safe byte-copy loop is a
+  strict whole-function semantic pattern, not generic loop vectorization: the
+  matcher proves the direction dispatch, forward and backward loops, byte
+  load/store shape, and common length before replacing it with one MachineIR
+  `MemoryCopy` (code).
+
+- 2026-07-22 measurement: canonical memmove recognition reduced JSON parse
+  2.729 -> 2.553 ms and reverse-complement 16.43 -> 5.37 us, demonstrating that
+  library idiom recovery can dominate local instruction selection when the Wasm
+  producer did not emit `memory.copy` (sourced).
+
+- 2026-07-22 pitfall: cached-cell entry loads that appear dead in linear
+  MachineIR may establish mutable cache state consumed on another path; deleting
+  them as ordinary dead loads trapped word-count. Fixed-role/cached ownership
+  remains semantic even when a local def/use scan finds no immediate consumer
+  (sourced).
 
 - 2026-05-16 (111053dd) rationale: the load-to-load reuse peephole is run a
   second time immediately after indexed-memory fusion, because fusing address

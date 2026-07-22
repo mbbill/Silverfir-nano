@@ -5,6 +5,12 @@
 
 ## Facts
 
+- 2026-07-22 pitfall: consuming a live value that aliases a resident cache lane
+  does not free a transient lane for the result; charging the alias like an
+  ordinary transient under-reserved capacity by one and could overflow after an
+  alias-heavy integer expression. `required_capacity` now excludes resident
+  aliases from the operand lanes credited as freed (code).
+
 - 2026-03-15 (5828c3c2) statement: per-bank residency pressure is handled by
   spilling/reloading the deepest resident entry of the same bank — the live
   window stays a contiguous-suffix spill model (spill_depth, now bank-aware) —
