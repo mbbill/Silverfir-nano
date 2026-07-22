@@ -1,7 +1,5 @@
 //! Arithmetic, compare, convert, and select lowering.
 
-use crate::collections;
-
 use crate::{
     error::WasmError,
     vm::{
@@ -20,6 +18,28 @@ use super::{
     lower_regalloc::{convert_result_float_width, lir_value_storage_type},
     lower_util::{single_arg, single_result, two_args},
 };
+
+/// Collect the value operands of the scalar leaf ops in this file without a
+/// heap allocation. Their maximum arity is three (`select`).
+fn value_operands<'a>(
+    args: &[SsaOperand],
+    storage: &'a mut [SsaValue; 3],
+) -> Result<&'a [SsaValue], WasmError> {
+    let mut len = 0usize;
+    for arg in args {
+        let Some(value) = arg.as_value() else {
+            continue;
+        };
+        let Some(slot) = storage.get_mut(len) else {
+            return Err(WasmError::internal(
+                "scalar leaf lowering received more than three value operands",
+            ));
+        };
+        *slot = value;
+        len += 1;
+    }
+    Ok(&storage[..len])
+}
 
 impl<'a> BlockLowerContext<'a> {
     /// Resolve an operand to a `MachineValue`.
@@ -77,14 +97,9 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_op = single_arg(args)?;
         let src = self.lower_operand(src_op)?;
-        let dead: collections::Vec<SsaValue> = args
-            .iter()
-            .filter_map(|a| match a.decode() {
-                DecodedOperand::Value(v) => Some(v),
-                DecodedOperand::Const(_) | DecodedOperand::None => None,
-            })
-            .collect();
-        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+        let mut dead_storage = [SsaValue::NONE; 3];
+        let dead = value_operands(args, &mut dead_storage)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, dead)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntUnary {
                 width,
@@ -106,14 +121,9 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: collections::Vec<SsaValue> = args
-            .iter()
-            .filter_map(|a| match a.decode() {
-                DecodedOperand::Value(v) => Some(v),
-                DecodedOperand::Const(_) | DecodedOperand::None => None,
-            })
-            .collect();
-        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+        let mut dead_storage = [SsaValue::NONE; 3];
+        let dead = value_operands(args, &mut dead_storage)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, dead)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntBinary {
                 width,
@@ -137,14 +147,9 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: collections::Vec<SsaValue> = args
-            .iter()
-            .filter_map(|a| match a.decode() {
-                DecodedOperand::Value(v) => Some(v),
-                DecodedOperand::Const(_) | DecodedOperand::None => None,
-            })
-            .collect();
-        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+        let mut dead_storage = [SsaValue::NONE; 3];
+        let dead = value_operands(args, &mut dead_storage)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, dead)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntCompare {
                 width,
@@ -172,14 +177,9 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_op = single_arg(args)?;
         let lhs = self.lower_operand(src_op)?;
-        let dead: collections::Vec<SsaValue> = args
-            .iter()
-            .filter_map(|a| match a.decode() {
-                DecodedOperand::Value(v) => Some(v),
-                DecodedOperand::Const(_) | DecodedOperand::None => None,
-            })
-            .collect();
-        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+        let mut dead_storage = [SsaValue::NONE; 3];
+        let dead = value_operands(args, &mut dead_storage)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, dead)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::IntCompare {
                 width,
@@ -203,15 +203,10 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: collections::Vec<SsaValue> = args
-            .iter()
-            .filter_map(|a| match a.decode() {
-                DecodedOperand::Value(v) => Some(v),
-                DecodedOperand::Const(_) | DecodedOperand::None => None,
-            })
-            .collect();
+        let mut dead_storage = [SsaValue::NONE; 3];
+        let dead = value_operands(args, &mut dead_storage)?;
         let dst =
-            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, &dead, width)?;
+            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, dead, width)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatBinary {
                 width,
@@ -234,14 +229,9 @@ impl<'a> BlockLowerContext<'a> {
         let (lhs_op, rhs_op) = two_args(args)?;
         let lhs = self.lower_operand(lhs_op)?;
         let rhs = self.lower_operand(rhs_op)?;
-        let dead: collections::Vec<SsaValue> = args
-            .iter()
-            .filter_map(|a| match a.decode() {
-                DecodedOperand::Value(v) => Some(v),
-                DecodedOperand::Const(_) | DecodedOperand::None => None,
-            })
-            .collect();
-        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?;
+        let mut dead_storage = [SsaValue::NONE; 3];
+        let dead = value_operands(args, &mut dead_storage)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, dead)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatCompare {
                 width,
@@ -263,15 +253,10 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_op = single_arg(args)?;
         let src = self.lower_operand(src_op)?;
-        let dead: collections::Vec<SsaValue> = args
-            .iter()
-            .filter_map(|a| match a.decode() {
-                DecodedOperand::Value(v) => Some(v),
-                DecodedOperand::Const(_) | DecodedOperand::None => None,
-            })
-            .collect();
+        let mut dead_storage = [SsaValue::NONE; 3];
+        let dead = value_operands(args, &mut dead_storage)?;
         let dst =
-            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, &dead, width)?;
+            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, dead, width)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::FloatUnary {
                 width,
@@ -291,17 +276,12 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<(), WasmError> {
         let src_op = single_arg(args)?;
         let src = self.lower_operand(src_op)?;
-        let dead: collections::Vec<SsaValue> = args
-            .iter()
-            .filter_map(|a| match a.decode() {
-                DecodedOperand::Value(v) => Some(v),
-                DecodedOperand::Const(_) | DecodedOperand::None => None,
-            })
-            .collect();
+        let mut dead_storage = [SsaValue::NONE; 3];
+        let dead = value_operands(args, &mut dead_storage)?;
         let dst = if let Some(width) = convert_result_float_width(op) {
-            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, &dead, width)?
+            self.alloc_float_value_reusing_dead_inputs(single_result(results)?, dead, width)?
         } else {
-            self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead)?
+            self.alloc_value_reusing_dead_inputs(single_result(results)?, dead)?
         };
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Convert { op, dst, src },
@@ -320,14 +300,9 @@ impl<'a> BlockLowerContext<'a> {
         let on_true = self.use_operand(args[0])?;
         let on_false = self.use_operand(args[1])?;
         let cond = self.use_operand(args[2])?;
-        let dead_inputs: collections::Vec<_> = args
-            .iter()
-            .filter_map(|a| match a.decode() {
-                DecodedOperand::Value(v) => Some(v),
-                DecodedOperand::Const(_) | DecodedOperand::None => None,
-            })
-            .collect();
-        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, &dead_inputs)?;
+        let mut dead_storage = [SsaValue::NONE; 3];
+        let dead_inputs = value_operands(args, &mut dead_storage)?;
+        let dst = self.alloc_value_reusing_dead_inputs(single_result(results)?, dead_inputs)?;
         self.emit_machine_inst(MachineInst {
             kind: MachineInstKind::Select {
                 ty: lir_value_storage_type(self.program(), single_result(results)?),

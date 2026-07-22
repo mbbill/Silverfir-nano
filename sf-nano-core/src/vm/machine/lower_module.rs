@@ -504,19 +504,30 @@ fn lower_function(
             let inst = block.ops[inst_idx];
             match block.view(inst_idx, &input.ssa) {
                 SsaInstView::Value { op, result, args } => {
-                    // Flatten args into a Vec so helper lowerings that take
-                    // `&[SsaOperand]` keep their existing slice-based API.
-                    let args_vec: collections::Vec<SsaOperand> = args.to_vec();
-                    let results_vec: collections::Vec<SsaValue> = if result.is_some() {
-                        collections::vec![result]
+                    // Ordinary scalar leaves have at most three operands. Keep
+                    // those on the stack; only wide GC constructors need the
+                    // overflow Vec path.
+                    let mut inline_args = [SsaOperand::NONE; 3];
+                    let overflow_args = (args.len() > inline_args.len()).then(|| args.to_vec());
+                    let args_slice = if let Some(overflow) = overflow_args.as_deref() {
+                        overflow
                     } else {
-                        collections::Vec::new()
+                        for (index, arg) in args.iter().enumerate() {
+                            inline_args[index] = arg;
+                        }
+                        &inline_args[..args.len()]
                     };
-                    lower.apply_sink_premap(&args_vec, &results_vec)?;
+                    let result_storage = [result];
+                    let results_slice = if result.is_some() {
+                        &result_storage[..]
+                    } else {
+                        &[]
+                    };
+                    lower.apply_sink_premap(args_slice, results_slice)?;
                     if let Some(lowered) = lower.lower_leaf_special(
                         op,
-                        &args_vec,
-                        &results_vec,
+                        args_slice,
+                        results_slice,
                         extra_block_ids.peek(1),
                         extra_block_ids.peek(0),
                     )? {
@@ -561,7 +572,11 @@ fn lower_function(
                         }
                         continue;
                     }
-                    lower.lower_inst(&inst)?;
+                    // The caller already decoded this Value instruction. Avoid
+                    // lower_inst decoding it again, cloning the primitive, and
+                    // rebuilding operand/result Vecs.
+                    lower.lower_leaf(op, args_slice, results_slice)?;
+                    lower.release_dead_values()?;
                 }
                 SsaInstView::Call(call) => match call {
                     // `Call` preserves Wasm semantics above MachineIR:

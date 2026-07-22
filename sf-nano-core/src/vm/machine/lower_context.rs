@@ -28,7 +28,7 @@ use super::{
         canonical_cached_cell_mem_width, gp_reg_int_width, gp_reg_mem_width,
         lir_value_storage_type, value_type_storage_type, MachineRegFile,
     },
-    lower_util::compute_remaining_uses,
+    lower_util::{compute_remaining_uses, RemainingUses},
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -123,7 +123,10 @@ pub(super) struct BlockLowerContext<'a> {
     cache_dirty: collections::Vec<bool>,
     call_preserved_cache_candidates: &'a [bool],
     values: collections::Vec<ValueLocation>,
-    remaining_uses: tracked_alloc::collections::BTreeMap<SsaValue, u32>,
+    remaining_uses: RemainingUses,
+    /// Values whose last use has just been consumed. Keeping this worklist
+    /// lets op-end cleanup visit only values that can actually be released.
+    dead_values: collections::Vec<SsaValue>,
     /// Dynamic-register occupancy for linear SSA-like values.
     ///
     /// Cached locals are tracked separately through `cache_bindings`. A dynamic
@@ -264,6 +267,7 @@ impl<'a> BlockLowerContext<'a> {
             call_preserved_cache_candidates: call_preserved_cache_candidates.unwrap_or(&[]),
             values: collections::Vec::new(),
             remaining_uses: compute_remaining_uses(block, program),
+            dead_values: collections::Vec::new(),
             linear_value_state: collections::vec![
                 LinearValueState::default();
                 regfile.gp_dynamic_count() + regfile.fp_dynamic_count()
@@ -292,11 +296,7 @@ impl<'a> BlockLowerContext<'a> {
             .copied()
             .zip(machine_params.iter().copied())
         {
-            lower.values.push(ValueLocation {
-                value: param,
-                reg: regs.lo,
-                hi_reg: regs.hi,
-            });
+            lower.push_value_location(param, regs.lo, regs.hi);
             let ty = lir_value_storage_type(lower.program, param);
             if lower.gp_reg_width == 4 && matches!(ty, MachineStorageType::GpI64) {
                 lower.set_linear_value_reg(
@@ -767,13 +767,13 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn remaining_use_count(&self, value: SsaValue) -> u32 {
-        self.remaining_uses.get(&value).copied().unwrap_or(0)
+        self.remaining_uses.count(value)
     }
 
-    pub(super) fn remaining_uses_mut(
-        &mut self,
-    ) -> &mut tracked_alloc::collections::BTreeMap<SsaValue, u32> {
-        &mut self.remaining_uses
+    pub(super) fn consume_value_use(&mut self, value: SsaValue) {
+        if self.remaining_uses.consume(value) == 0 {
+            self.dead_values.push(value);
+        }
     }
 
     pub(super) fn linear_value_occupied(&self, index: usize) -> bool {
@@ -810,6 +810,13 @@ impl<'a> BlockLowerContext<'a> {
         hi_reg: Option<MachineReg>,
     ) {
         self.values.push(ValueLocation { value, reg, hi_reg });
+        self.queue_value_if_dead(value);
+    }
+
+    fn queue_value_if_dead(&mut self, value: SsaValue) {
+        if self.remaining_use_count(value) == 0 {
+            self.dead_values.push(value);
+        }
     }
 
     /// Free linear-value registers for values with no remaining uses.
@@ -817,24 +824,25 @@ impl<'a> BlockLowerContext<'a> {
     /// aliasing or sink allocation) are removed from the value list but their
     /// registers are not cleared — they belong to the cached local.
     pub(super) fn release_dead_values(&mut self) -> Result<(), WasmError> {
-        let mut index = 0;
-        while index < self.values.len() {
-            let value = self.values[index].value;
-            let remaining = self.remaining_uses.get(&value).copied().unwrap_or(0);
-            if remaining == 0 {
-                let reg = self.values[index].reg;
-                let hi_reg = self.values[index].hi_reg;
-                self.values.swap_remove(index);
-                if self.is_linear_value_reg(reg) {
-                    self.clear_linear_value_reg(reg)?;
+        while let Some(value) = self.dead_values.pop() {
+            if self.remaining_use_count(value) != 0 {
+                continue;
+            }
+            let Some(index) = self.values.iter().position(|entry| entry.value == value) else {
+                // A dead input may already have donated its register to the
+                // current result. Its stale work item is then harmless.
+                continue;
+            };
+            let reg = self.values[index].reg;
+            let hi_reg = self.values[index].hi_reg;
+            self.values.swap_remove(index);
+            if self.is_linear_value_reg(reg) {
+                self.clear_linear_value_reg(reg)?;
+            }
+            if let Some(hi_reg) = hi_reg {
+                if self.is_linear_value_reg(hi_reg) {
+                    self.clear_linear_value_reg(hi_reg)?;
                 }
-                if let Some(hi_reg) = hi_reg {
-                    if self.is_linear_value_reg(hi_reg) {
-                        self.clear_linear_value_reg(hi_reg)?;
-                    }
-                }
-            } else {
-                index += 1;
             }
         }
         Ok(())
@@ -1262,6 +1270,7 @@ impl<'a> BlockLowerContext<'a> {
             self.values[index].value = value;
             self.set_linear_value_reg(lo, Some(value), Some(MachineStorageType::GpWord))?;
             self.set_linear_value_reg(hi, Some(value), Some(MachineStorageType::GpWord))?;
+            self.queue_value_if_dead(value);
             return Ok(Some((lo, hi)));
         }
         Ok(None)
@@ -1294,6 +1303,7 @@ impl<'a> BlockLowerContext<'a> {
             self.values[index].hi_reg = Some(hi);
             self.set_linear_value_reg(lo, Some(value), Some(MachineStorageType::GpWord))?;
             self.set_linear_value_reg(hi, Some(value), Some(MachineStorageType::GpWord))?;
+            self.queue_value_if_dead(value);
             return Ok(Some((lo, hi)));
         }
         Ok(None)
@@ -1326,6 +1336,7 @@ impl<'a> BlockLowerContext<'a> {
             }
             self.values[index].value = value;
             self.set_linear_value_reg(reg, Some(value), Some(ty))?;
+            self.queue_value_if_dead(value);
             return Ok(Some(reg));
         }
         Ok(None)

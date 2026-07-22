@@ -297,9 +297,7 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn use_value(&mut self, value: SsaValue) -> Result<MachineReg, WasmError> {
         let reg = self.value_reg(value)?;
-        if let Some(remaining) = self.remaining_uses_mut().get_mut(&value) {
-            *remaining = remaining.saturating_sub(1);
-        }
+        self.consume_value_use(value);
         Ok(reg)
     }
 
@@ -342,9 +340,7 @@ impl<'a> BlockLowerContext<'a> {
         value: SsaValue,
     ) -> Result<(MachineReg, Option<MachineReg>), WasmError> {
         let regs = self.value_regs(value)?;
-        if let Some(remaining) = self.remaining_uses_mut().get_mut(&value) {
-            *remaining = remaining.saturating_sub(1);
-        }
+        self.consume_value_use(value);
         Ok(regs)
     }
 

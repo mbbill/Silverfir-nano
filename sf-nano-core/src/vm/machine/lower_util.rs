@@ -1,4 +1,4 @@
-use tracked_alloc::collections::BTreeMap;
+use crate::collections;
 
 use crate::{
     error::WasmError,
@@ -8,24 +8,84 @@ use crate::{
     },
 };
 
-fn count_operand_use(operand: SsaOperand, uses: &mut BTreeMap<SsaValue, u32>) {
+#[derive(Clone, Copy)]
+struct UseCount {
+    value: SsaValue,
+    count: u32,
+}
+
+/// Compact, read-mostly use counts for one SSA block.
+///
+/// SSA value ids are integers and the lowering pass only needs point lookups
+/// and decrements. A sorted flat vector avoids a separately allocated B-tree
+/// node for nearly every value while retaining logarithmic lookup.
+pub(super) struct RemainingUses {
+    entries: collections::Vec<UseCount>,
+}
+
+impl RemainingUses {
+    fn from_unsorted(mut entries: collections::Vec<UseCount>) -> Self {
+        entries.sort_unstable_by_key(|entry| entry.value);
+
+        let mut write = 0usize;
+        for read in 0..entries.len() {
+            let entry = entries[read];
+            if write != 0 && entries[write - 1].value == entry.value {
+                entries[write - 1].count += entry.count;
+            } else {
+                entries[write] = entry;
+                write += 1;
+            }
+        }
+        entries.truncate(write);
+        Self { entries }
+    }
+
+    #[inline]
+    fn index_of(&self, value: SsaValue) -> Option<usize> {
+        self.entries
+            .binary_search_by_key(&value, |entry| entry.value)
+            .ok()
+    }
+
+    #[inline]
+    pub(super) fn count(&self, value: SsaValue) -> u32 {
+        self.index_of(value)
+            .map(|index| self.entries[index].count)
+            .unwrap_or(0)
+    }
+
+    #[inline]
+    pub(super) fn consume(&mut self, value: SsaValue) -> u32 {
+        let Some(index) = self.index_of(value) else {
+            return 0;
+        };
+        let entry = &mut self.entries[index];
+        entry.count = entry.count.saturating_sub(1);
+        entry.count
+    }
+}
+
+#[inline]
+fn record_use(value: SsaValue, uses: &mut collections::Vec<UseCount>) {
+    uses.push(UseCount { value, count: 1 });
+}
+
+fn count_operand_use(operand: SsaOperand, uses: &mut collections::Vec<UseCount>) {
     if let DecodedOperand::Value(v) = operand.decode() {
-        *uses.entry(v).or_insert(0) += 1;
+        record_use(v, uses);
     }
     // Const / None operands have no SsaValue reference to track.
 }
 
-pub(super) fn compute_remaining_uses(
-    block: &SsaBlock,
-    program: &SsaProgram,
-) -> BTreeMap<SsaValue, u32> {
-    let mut uses = BTreeMap::new();
+pub(super) fn compute_remaining_uses(block: &SsaBlock, program: &SsaProgram) -> RemainingUses {
+    let mut uses = collections::Vec::new();
     for inst_idx in 0..block.ops.len() {
         match block.view(inst_idx, program) {
             SsaInstView::Spill { src, .. }
             | SsaInstView::CellSetSlot { src, .. }
             | SsaInstView::CellSetCache { src, .. } => {
-                *uses.entry(src).or_insert(0) += 1;
+                record_use(src, &mut uses);
             }
             SsaInstView::Value { args, .. } => {
                 for operand in args.iter() {
@@ -49,12 +109,12 @@ pub(super) fn compute_remaining_uses(
             then_edge,
             else_edge,
         } => {
-            *uses.entry(*cond).or_insert(0) += 1;
+            record_use(*cond, &mut uses);
             count_edge_uses(then_edge, &mut uses);
             count_edge_uses(else_edge, &mut uses);
         }
         SsaTerminator::BrTable { index, entries } => {
-            *uses.entry(*index).or_insert(0) += 1;
+            record_use(*index, &mut uses);
             for edge in entries {
                 count_edge_uses(edge, &mut uses);
             }
@@ -85,18 +145,18 @@ pub(super) fn compute_remaining_uses(
     // block boundaries.
     #[cfg(debug_assertions)]
     {
-        let mut op_uses: BTreeMap<SsaValue, u32> = BTreeMap::new();
+        let mut op_uses = collections::Vec::new();
         for inst_idx in 0..block.ops.len() {
             match block.view(inst_idx, program) {
                 SsaInstView::Spill { src, .. }
                 | SsaInstView::CellSetSlot { src, .. }
                 | SsaInstView::CellSetCache { src, .. } => {
-                    *op_uses.entry(src).or_insert(0) += 1;
+                    record_use(src, &mut op_uses);
                 }
                 SsaInstView::Value { args, .. } => {
                     for operand in args.iter() {
                         if let DecodedOperand::Value(v) = operand.decode() {
-                            *op_uses.entry(v).or_insert(0) += 1;
+                            record_use(v, &mut op_uses);
                         }
                     }
                 }
@@ -104,25 +164,26 @@ pub(super) fn compute_remaining_uses(
                 _ => {}
             }
         }
-        for (&value, &count) in &op_uses {
+        let op_uses = RemainingUses::from_unsorted(op_uses);
+        for entry in &op_uses.entries {
             debug_assert_eq!(
-                count, 1,
+                entry.count, 1,
                 "SSA-IR value {:?} has {} uses within ops (linear SSA requires exactly 1)",
-                value, count,
+                entry.value, entry.count,
             );
         }
     }
 
-    uses
+    RemainingUses::from_unsorted(uses)
 }
 
-fn count_edge_uses(edge: &SsaEdge, uses: &mut BTreeMap<SsaValue, u32>) {
+fn count_edge_uses(edge: &SsaEdge, uses: &mut collections::Vec<UseCount>) {
     for binding in &edge.bindings {
-        *uses.entry(binding.value).or_insert(0) += 1;
+        record_use(binding.value, uses);
     }
 }
 
-fn count_call_uses(call: &SsaCallOp, uses: &mut BTreeMap<SsaValue, u32>) {
+fn count_call_uses(call: &SsaCallOp, uses: &mut collections::Vec<UseCount>) {
     match call {
         SsaCallOp::CallDirect { args, .. } => count_call_args_uses(args, uses),
         SsaCallOp::CallIndirect { args, index, .. } => {
@@ -138,21 +199,21 @@ fn count_call_uses(call: &SsaCallOp, uses: &mut BTreeMap<SsaValue, u32>) {
     }
 }
 
-fn count_call_args_uses(args: &SsaCallArgs, uses: &mut BTreeMap<SsaValue, u32>) {
+fn count_call_args_uses(args: &SsaCallArgs, uses: &mut collections::Vec<UseCount>) {
     for arg in &args.live_suffix {
-        *uses.entry(arg.value).or_insert(0) += 1;
+        record_use(arg.value, uses);
     }
 }
 
-fn count_call_operand_loc_use(loc: &SsaCallOperandLoc, uses: &mut BTreeMap<SsaValue, u32>) {
+fn count_call_operand_loc_use(loc: &SsaCallOperandLoc, uses: &mut collections::Vec<UseCount>) {
     if let SsaCallOperandLoc::Live { value, .. } = loc {
-        *uses.entry(*value).or_insert(0) += 1;
+        record_use(*value, uses);
     }
 }
 
-fn count_scalar_result_loc_use(loc: &SsaScalarResultLoc, uses: &mut BTreeMap<SsaValue, u32>) {
+fn count_scalar_result_loc_use(loc: &SsaScalarResultLoc, uses: &mut collections::Vec<UseCount>) {
     if let SsaScalarResultLoc::Live { value, .. } = loc {
-        *uses.entry(*value).or_insert(0) += 1;
+        record_use(*value, uses);
     }
 }
 
