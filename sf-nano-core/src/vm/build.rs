@@ -68,7 +68,7 @@ use crate::{
         arch,
         arch::common::{
             helpers::page_align_function,
-            types::{DirectCallPatch, DirectCallPatchSite},
+            types::{DirectCallPatch, DirectCallPatchSite, FunctionArtifact},
         },
         machine::{
             derive_param_locs_from_types, derive_return_abi,
@@ -98,6 +98,9 @@ use crate::{
         wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
     },
 };
+
+#[cfg(sf_has_std)]
+use crate::vm::arch::common::types::LocalPtrPatch;
 
 const COMPILE_EXPANSION_FACTOR: u32 = 160;
 const OVER_BUDGET_TEMPLATE_UNSUPPORTED: &str =
@@ -252,6 +255,11 @@ impl StreamingCompiledModule {
             self.aligned_consts,
         )
     }
+
+    #[cfg(sf_has_std)]
+    fn take_aligned_consts(&mut self) -> collections::Vec<AlignedConstData> {
+        core::mem::take(&mut self.aligned_consts)
+    }
 }
 
 impl CodegenModuleView for StreamingCompiledModule {
@@ -268,6 +276,76 @@ impl CodegenModuleView for StreamingCompiledModule {
             .get(id.0 as usize)
             .map(AlignedConstData::as_ptr)
     }
+}
+
+#[cfg(sf_has_std)]
+#[derive(Debug)]
+// `FunctionArtifact` itself is not `Send`: its emitter can point into a shared
+// `CodeBuffer`. Workers convert only owned emitters into this pointer-free form
+// before crossing the result channel.
+struct OwnedFunctionArtifact {
+    text: collections::Vec<u8>,
+    local_ptr_patches: collections::Vec<LocalPtrPatch>,
+    direct_call_patches: collections::Vec<DirectCallPatch>,
+    #[cfg(sf_has_guard_pages)]
+    body_local_error_offset: usize,
+    internal_entry_offset: usize,
+    #[cfg(sf_has_debug_regions)]
+    debug_regions: collections::Vec<crate::vm::arch::common::types::DebugRegion>,
+}
+
+#[cfg(sf_has_std)]
+impl OwnedFunctionArtifact {
+    fn from_artifact(artifact: FunctionArtifact) -> Self {
+        Self {
+            text: artifact.text.finish(),
+            local_ptr_patches: artifact.local_ptr_patches,
+            direct_call_patches: artifact.direct_call_patches,
+            #[cfg(sf_has_guard_pages)]
+            body_local_error_offset: artifact.body_local_error_offset,
+            internal_entry_offset: artifact.internal_entry_offset,
+            #[cfg(sf_has_debug_regions)]
+            debug_regions: artifact.debug_regions,
+        }
+    }
+
+    fn into_artifact(self) -> FunctionArtifact {
+        FunctionArtifact {
+            text: crate::vm::arch::common::text_emitter::TextEmitter::from_owned(self.text),
+            local_ptr_patches: self.local_ptr_patches,
+            direct_call_patches: self.direct_call_patches,
+            #[cfg(sf_has_guard_pages)]
+            body_local_error_offset: self.body_local_error_offset,
+            internal_entry_offset: self.internal_entry_offset,
+            #[cfg(sf_has_debug_regions)]
+            debug_regions: self.debug_regions,
+        }
+    }
+}
+
+#[cfg(sf_has_std)]
+struct ParallelCompileJob {
+    func_idx: usize,
+    func_id: MachineFuncId,
+    result_count: u16,
+    semantic: SemanticProgram,
+}
+
+#[cfg(sf_has_std)]
+struct ParallelCompiledFunction {
+    artifact: OwnedFunctionArtifact,
+    abi: MachineFunctionAbi,
+    ssa_ops: usize,
+    mir_ops: usize,
+}
+
+#[cfg(sf_has_std)]
+enum ParallelCompileMessage {
+    Function {
+        func_idx: usize,
+        result: Result<ParallelCompiledFunction, WasmError>,
+    },
+    Consts(collections::Vec<AlignedConstData>),
 }
 
 #[inline]
@@ -569,6 +647,249 @@ fn emit_function_info_bytes(
     bytes
 }
 
+#[cfg(sf_has_std)]
+fn parallel_eager_worker_count(module: &ModuleInst) -> usize {
+    const MIN_PARALLEL_FUNCTIONS: usize = 128;
+    const MAX_MACHINE_WORKERS: usize = 4;
+
+    let local_functions = module
+        .functions
+        .iter()
+        .filter_map(|function| function.spec())
+        .count();
+    // Keep the low-RAM/template path strictly streaming. The parallel path is
+    // still eager, but retains owned text until every local function has been
+    // compiled and the deterministic serial linker can publish the module.
+    if local_functions < MIN_PARALLEL_FUNCTIONS
+        || module
+            .functions
+            .iter()
+            .filter_map(|function| function.spec())
+            .any(|spec| !full_optimization_for_bytecode_size(spec.code().len()))
+    {
+        return 0;
+    }
+
+    std::thread::available_parallelism()
+        .map(|parallelism| parallelism.get().saturating_sub(1).min(MAX_MACHINE_WORKERS))
+        .unwrap_or(0)
+}
+
+#[cfg(sf_has_std)]
+fn compile_semantic_function_owned(
+    active_backend: arch::NativeBackend,
+    backend: BackendConfig,
+    job: ParallelCompileJob,
+    compiled_view: &mut StreamingCompiledModule,
+    const_pool: &mut ConstPoolBuilder,
+    is_local_func: &[bool],
+    table_dispatch_modes: &[TableDispatchMode],
+    #[cfg(sf_has_guard_pages)] use_guard_pages: bool,
+    #[cfg(sf_has_guard_pages)] use_stack_guard_pages: bool,
+) -> Result<ParallelCompiledFunction, WasmError> {
+    let ParallelCompileJob {
+        func_idx,
+        func_id,
+        result_count,
+        semantic,
+    } = job;
+    let ssa_lower_function_phase = phase_span_with_function("ssa_lower", Some(func_idx as u32));
+    let prepared = prepare_function(
+        PrepareInput {
+            config: backend,
+            function_index: Some(func_idx as u32),
+        },
+        ModuleFacts { is_local_func },
+        semantic,
+    )?;
+    drop(ssa_lower_function_phase);
+    let ssa_ops = prepared
+        .ssa
+        .blocks
+        .iter()
+        .map(|block| block.ops.len())
+        .sum();
+
+    let machine_lower_phase = phase_span_with_function("machine_lower_func", Some(func_idx as u32));
+    let (mut machine, abi) = lower_single_function_with_table_dispatch_modes(
+        backend,
+        LowerFunctionInput {
+            id: func_id,
+            frame: prepared.frame,
+            ssa: prepared.ssa,
+            result_count,
+        },
+        &mut compiled_view.abi.functions,
+        is_local_func,
+        table_dispatch_modes,
+        const_pool,
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages,
+    )?;
+    optimize_function(&mut machine, backend);
+    if backend.is_32bit_gp_target() {
+        machine
+            .program
+            .validate_32bit_gp_target(backend.first_fp_reg(), backend)?;
+    }
+    let mir_ops = machine
+        .program
+        .blocks
+        .iter()
+        .map(|block| block.ops.len())
+        .sum();
+    drop(machine_lower_phase);
+
+    compiled_view.sync_consts(const_pool)?;
+    let arch_lower_function_phase =
+        phase_span_with_function("arch_lower_func", Some(func_idx as u32));
+    let artifact = arch::dispatch_compile_function(active_backend, compiled_view, &machine)?;
+    drop(arch_lower_function_phase);
+
+    Ok(ParallelCompiledFunction {
+        artifact: OwnedFunctionArtifact::from_artifact(artifact),
+        abi,
+        ssa_ops,
+        mir_ops,
+    })
+}
+
+#[cfg(sf_has_std)]
+fn compile_full_functions_parallel(
+    active_backend: arch::NativeBackend,
+    backend: BackendConfig,
+    module: &ModuleInst,
+    store: &Store,
+    abi: &MachineModuleAbi,
+    is_local_func: &[bool],
+    worker_count: usize,
+    #[cfg(sf_has_guard_pages)] use_guard_pages: bool,
+    #[cfg(sf_has_guard_pages)] use_stack_guard_pages: bool,
+) -> Result<
+    (
+        collections::Vec<Option<ParallelCompiledFunction>>,
+        collections::Vec<collections::Vec<AlignedConstData>>,
+    ),
+    WasmError,
+> {
+    use std::sync::{mpsc, Arc, Mutex};
+
+    let expected_functions = module
+        .functions
+        .iter()
+        .filter(|function| function.spec().is_some())
+        .count();
+    let queue_depth = worker_count.max(1);
+    let (job_tx, job_rx) = mpsc::sync_channel::<ParallelCompileJob>(queue_depth);
+    let job_rx = Arc::new(Mutex::new(job_rx));
+    let (result_tx, result_rx) = mpsc::channel::<ParallelCompileMessage>();
+    let table_dispatch_modes = module.table_dispatch_modes();
+
+    std::thread::scope(|scope| {
+        for _ in 0..worker_count {
+            let job_rx = Arc::clone(&job_rx);
+            let result_tx = result_tx.clone();
+            // Each worker owns its ABI view and constant pool. Architecture
+            // emission embeds pointers to the aligned constant allocations;
+            // moving their owning boxes into the final module after the worker
+            // exits leaves those addresses stable.
+            let worker_abi = abi.clone();
+            scope.spawn(move || {
+                let mut compiled_view = StreamingCompiledModule::new(backend, worker_abi);
+                let mut const_pool = ConstPoolBuilder::new();
+                loop {
+                    let received = {
+                        let receiver = job_rx
+                            .lock()
+                            .unwrap_or_else(std::sync::PoisonError::into_inner);
+                        receiver.recv()
+                    };
+                    let Ok(job) = received else {
+                        break;
+                    };
+                    let func_idx = job.func_idx;
+                    let result = compile_semantic_function_owned(
+                        active_backend,
+                        backend,
+                        job,
+                        &mut compiled_view,
+                        &mut const_pool,
+                        is_local_func,
+                        table_dispatch_modes,
+                        #[cfg(sf_has_guard_pages)]
+                        use_guard_pages,
+                        #[cfg(sf_has_guard_pages)]
+                        use_stack_guard_pages,
+                    );
+                    if result_tx
+                        .send(ParallelCompileMessage::Function { func_idx, result })
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let _ = result_tx.send(ParallelCompileMessage::Consts(
+                    compiled_view.take_aligned_consts(),
+                ));
+            });
+        }
+        drop(result_tx);
+
+        for (func_idx, function) in module.functions.iter().enumerate() {
+            let Some(spec) = function.spec() else {
+                continue;
+            };
+            let sem_decode_function_phase =
+                phase_span_with_function("sem_decode", Some(func_idx as u32));
+            let semantic = decode_function_semantic(module, store, spec)?;
+            drop(sem_decode_function_phase);
+
+            job_tx
+                .send(ParallelCompileJob {
+                    func_idx,
+                    func_id: MachineFuncId(func_idx as u32),
+                    result_count: spec.func_type().results().len() as u16,
+                    semantic,
+                })
+                .map_err(|_| WasmError::internal("parallel compiler workers stopped early"))?;
+        }
+        drop(job_tx);
+
+        let mut functions = core::iter::repeat_with(|| None)
+            .take(module.functions.len())
+            .collect::<collections::Vec<_>>();
+        let mut const_batches = collections::Vec::with_capacity(worker_count);
+        let mut first_error = None;
+        for _ in 0..expected_functions.saturating_add(worker_count) {
+            match result_rx
+                .recv()
+                .map_err(|_| WasmError::internal("parallel compiler result channel closed early"))?
+            {
+                ParallelCompileMessage::Function { func_idx, result } => match result {
+                    Ok(compiled) => {
+                        let slot = functions.get_mut(func_idx).ok_or_else(|| {
+                            WasmError::internal("parallel compiler function index is out of range")
+                        })?;
+                        *slot = Some(compiled);
+                    }
+                    Err(err) => {
+                        if first_error.is_none() {
+                            first_error = Some(err);
+                        }
+                    }
+                },
+                ParallelCompileMessage::Consts(consts) => const_batches.push(consts),
+            }
+        }
+        if let Some(err) = first_error {
+            return Err(err);
+        }
+        Ok((functions, const_batches))
+    })
+}
+
 fn compile_full_streaming_function(
     active_backend: arch::NativeBackend,
     backend: BackendConfig,
@@ -656,6 +977,136 @@ fn compile_full_streaming_function(
     Ok(artifact)
 }
 
+fn link_streaming_artifact(
+    active_backend: arch::NativeBackend,
+    executable: &mut CodeBuffer,
+    base_ptr: *const u8,
+    func_idx: usize,
+    stream_base: usize,
+    scratch_base: usize,
+    artifact: FunctionArtifact,
+    emitted: &mut [Option<FunctionEmitSummary>],
+    pending_direct_patches: &mut [collections::Vec<PendingPatch>],
+) -> Result<(), WasmError> {
+    let FunctionArtifact {
+        text,
+        local_ptr_patches,
+        direct_call_patches,
+        #[cfg(sf_has_guard_pages)]
+        body_local_error_offset,
+        internal_entry_offset,
+        #[cfg(sf_has_debug_regions)]
+        debug_regions,
+    } = artifact;
+    #[cfg(all(sf_has_debug_regions, not(sf_jitdump)))]
+    let _ = debug_regions;
+    let text_len = text.len();
+    let function_base = if let Some(text) = text.into_owned() {
+        let function_base = page_align_function(stream_base, text_len);
+        let extra_padding = function_base.saturating_sub(executable.len());
+        if extra_padding > 0 {
+            arch::dispatch_emit_nop_padding(active_backend, executable, extra_padding);
+        }
+        executable.emit_bytes(&text);
+        function_base
+    } else {
+        let function_base = page_align_function(stream_base, text_len);
+        let extra_padding = function_base.saturating_sub(scratch_base);
+        if extra_padding > 0 {
+            executable.move_region(scratch_base, scratch_base + extra_padding, text_len);
+            executable.set_len(scratch_base);
+            arch::dispatch_emit_nop_padding(active_backend, executable, extra_padding);
+            executable.set_len(function_base + text_len);
+        }
+        function_base
+    };
+
+    for patch in &local_ptr_patches {
+        let target_addr = unsafe { base_ptr.add(function_base + patch.target_offset) } as usize;
+        #[cfg(sf_arm32_isa_thumb)]
+        let target_addr = arch::arm32::thumb_interworking_bit(target_addr);
+        patch_code_buffer_word(
+            active_backend,
+            executable,
+            function_base + patch.literal_offset,
+            target_addr,
+        );
+    }
+
+    let internal_entry_addr =
+        unsafe { base_ptr.add(function_base + internal_entry_offset) } as usize;
+    #[cfg(sf_arm32_isa_thumb)]
+    let internal_entry_addr = arch::arm32::thumb_interworking_bit(internal_entry_addr);
+    for patch in &direct_call_patches {
+        let callee_idx = patch.callee.0 as usize;
+        if callee_idx == func_idx {
+            patch_direct_call_code_buffer(
+                active_backend,
+                executable,
+                function_base,
+                patch,
+                internal_entry_addr,
+            )?;
+            continue;
+        }
+        if let Some(summary) = emitted.get(callee_idx).and_then(|slot| slot.as_ref()) {
+            patch_direct_call_code_buffer(
+                active_backend,
+                executable,
+                function_base,
+                patch,
+                summary.internal_entry_addr,
+            )?;
+        } else {
+            let pending = pending_direct_patches
+                .get_mut(callee_idx)
+                .ok_or_else(|| WasmError::internal("direct callee patch list is out of range"))?;
+            pending.push(PendingPatch {
+                function_base,
+                patch: *patch,
+            });
+        }
+    }
+
+    let entry = unsafe { executable.fn_ptr::<NativeRootEntry>(function_base) };
+    #[cfg(sf_arm32_isa_thumb)]
+    let entry: NativeRootEntry = unsafe {
+        core::mem::transmute::<usize, NativeRootEntry>(arch::arm32::thumb_interworking_bit(
+            entry as usize,
+        ))
+    };
+    emitted[func_idx] = Some(FunctionEmitSummary {
+        entry,
+        internal_entry_addr,
+        text_len,
+        #[cfg(sf_has_guard_pages)]
+        body_local_error_addr: unsafe { executable.ptr(function_base + body_local_error_offset) }
+            as usize,
+        #[cfg(sf_jitdump)]
+        debug_regions,
+    });
+
+    let pending = core::mem::take(
+        pending_direct_patches
+            .get_mut(func_idx)
+            .ok_or_else(|| WasmError::internal("pending direct patch list is out of range"))?,
+    );
+    for patch in pending {
+        let callee_addr = emitted
+            .get(func_idx)
+            .and_then(|slot| slot.as_ref().map(|summary| summary.internal_entry_addr))
+            .ok_or_else(|| WasmError::internal("pending direct callee address is missing"))?;
+        patch_direct_call_code_buffer(
+            active_backend,
+            executable,
+            patch.function_base,
+            &patch.patch,
+            callee_addr,
+        )?;
+    }
+    Ok(())
+}
+
 fn finish_native_compile_streaming(
     active_backend: arch::NativeBackend,
     backend: BackendConfig,
@@ -684,6 +1135,47 @@ fn finish_native_compile_streaming(
     let use_stack_guard_pages = backend.gp_unit_bytes == 8;
 
     let arch_lower_phase = phase_span("arch_lower");
+
+    #[cfg(sf_has_std)]
+    let mut parallel_compiled = {
+        let worker_count = parallel_eager_worker_count(module);
+        if worker_count == 0 {
+            None
+        } else {
+            let (mut functions, const_batches) = compile_full_functions_parallel(
+                active_backend,
+                backend,
+                module,
+                store,
+                &compiled_view.abi,
+                &is_local_func,
+                worker_count,
+                #[cfg(sf_has_guard_pages)]
+                use_guard_pages,
+                #[cfg(sf_has_guard_pages)]
+                use_stack_guard_pages,
+            )?;
+            for consts in const_batches {
+                compiled_view.aligned_consts.extend(consts);
+            }
+            for (func_idx, slot) in functions.iter_mut().enumerate() {
+                let Some(compiled) = slot.as_mut() else {
+                    if module.functions[func_idx].spec().is_some() {
+                        return Err(WasmError::internal(
+                            "parallel compiler omitted a local function",
+                        ));
+                    }
+                    continue;
+                };
+                compiled_view.abi.functions[func_idx] = core::mem::take(&mut compiled.abi);
+                groups += 1;
+                ssa_ops += compiled.ssa_ops;
+                mir_ops += compiled.mir_ops;
+            }
+            Some(functions)
+        }
+    };
+
     let mut executable = CodeBuffer::new().map_err(WasmError::internal)?;
     executable.begin_write();
     executable.reset();
@@ -702,8 +1194,19 @@ fn finish_native_compile_streaming(
             arch::dispatch_emit_nop_padding(active_backend, &mut executable, initial_padding);
         }
 
+        #[cfg(sf_has_std)]
+        let precompiled_artifact = parallel_compiled
+            .as_mut()
+            .and_then(|functions| functions.get_mut(func_idx))
+            .and_then(Option::take)
+            .map(|compiled| compiled.artifact.into_artifact());
+        #[cfg(not(sf_has_std))]
+        let precompiled_artifact: Option<FunctionArtifact> = None;
+
         let template_requested = !full_optimization_for_bytecode_size(spec.code().len());
-        let artifact = if template_requested {
+        let artifact = if let Some(artifact) = precompiled_artifact {
+            artifact
+        } else if template_requested {
             let template_phase = phase_span_with_function("template_jit", Some(func_idx as u32));
             match template::compile_function_into_buffer(
                 active_backend,
@@ -749,109 +1252,17 @@ fn finish_native_compile_streaming(
             )?
         };
 
-        let text_len = artifact.text.len();
-        let function_base = page_align_function(stream_base, text_len);
-        let extra_padding = function_base.saturating_sub(scratch_base);
-        if extra_padding > 0 {
-            executable.move_region(scratch_base, scratch_base + extra_padding, text_len);
-            executable.set_len(scratch_base);
-            arch::dispatch_emit_nop_padding(active_backend, &mut executable, extra_padding);
-            executable.set_len(function_base + text_len);
-        }
-
-        for patch in &artifact.local_ptr_patches {
-            let target_addr = unsafe { base_ptr.add(function_base + patch.target_offset) } as usize;
-            // arm32 Thumb-2 interworking: continuation / local-ptr addresses
-            // are branched to via BX, so the LSB must signal Thumb mode.
-            // See arm32::thumb_interworking_bit. On A32 / arm64 / x86_64 the
-            // helper passes through unchanged.
-            #[cfg(sf_arm32_isa_thumb)]
-            let target_addr = arch::arm32::thumb_interworking_bit(target_addr);
-            patch_code_buffer_word(
-                active_backend,
-                &mut executable,
-                function_base + patch.literal_offset,
-                target_addr,
-            );
-        }
-
-        let internal_entry_addr =
-            unsafe { base_ptr.add(function_base + artifact.internal_entry_offset) } as usize;
-        // arm32 Thumb-2: internal call targets (reached via BLX reg after
-        // MOVW/MOVT) need LSB=1 so the CPU stays in Thumb on entry.
-        #[cfg(sf_arm32_isa_thumb)]
-        let internal_entry_addr = arch::arm32::thumb_interworking_bit(internal_entry_addr);
-        for patch in &artifact.direct_call_patches {
-            let callee_idx = patch.callee.0 as usize;
-            if callee_idx == func_idx {
-                patch_direct_call_code_buffer(
-                    active_backend,
-                    &mut executable,
-                    function_base,
-                    patch,
-                    internal_entry_addr,
-                )?;
-                continue;
-            }
-            if let Some(summary) = emitted.get(callee_idx).and_then(|slot| slot.as_ref()) {
-                patch_direct_call_code_buffer(
-                    active_backend,
-                    &mut executable,
-                    function_base,
-                    patch,
-                    summary.internal_entry_addr,
-                )?;
-            } else {
-                let pending = pending_direct_patches.get_mut(callee_idx).ok_or_else(|| {
-                    WasmError::internal("direct callee patch list is out of range")
-                })?;
-                pending.push(PendingPatch {
-                    function_base,
-                    patch: *patch,
-                });
-            }
-        }
-
-        let entry = unsafe { executable.fn_ptr::<NativeRootEntry>(function_base) };
-        // Rust code (A32) enters this JITted function via `blx reg`; on
-        // arm32 Thumb-2 builds, the pointer needs LSB=1 to switch the CPU
-        // to Thumb mode on entry.
-        #[cfg(sf_arm32_isa_thumb)]
-        let entry: NativeRootEntry = unsafe {
-            core::mem::transmute::<usize, NativeRootEntry>(arch::arm32::thumb_interworking_bit(
-                entry as usize,
-            ))
-        };
-        emitted[func_idx] = Some(FunctionEmitSummary {
-            entry,
-            internal_entry_addr,
-            text_len,
-            #[cfg(sf_has_guard_pages)]
-            body_local_error_addr: unsafe {
-                executable.ptr(function_base + artifact.body_local_error_offset)
-            } as usize,
-            #[cfg(sf_jitdump)]
-            debug_regions: artifact.debug_regions,
-        });
-
-        let pending = core::mem::take(
-            pending_direct_patches
-                .get_mut(func_idx)
-                .ok_or_else(|| WasmError::internal("pending direct patch list is out of range"))?,
-        );
-        for patch in pending {
-            let callee_addr = emitted
-                .get(func_idx)
-                .and_then(|slot| slot.as_ref().map(|summary| summary.internal_entry_addr))
-                .ok_or_else(|| WasmError::internal("pending direct callee address is missing"))?;
-            patch_direct_call_code_buffer(
-                active_backend,
-                &mut executable,
-                patch.function_base,
-                &patch.patch,
-                callee_addr,
-            )?;
-        }
+        link_streaming_artifact(
+            active_backend,
+            &mut executable,
+            base_ptr,
+            func_idx,
+            stream_base,
+            scratch_base,
+            artifact,
+            &mut emitted,
+            &mut pending_direct_patches,
+        )?;
     }
 
     if pending_direct_patches

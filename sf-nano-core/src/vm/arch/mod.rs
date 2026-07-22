@@ -355,6 +355,49 @@ pub(crate) fn dispatch_compile_function_into_buffer(
     }
 }
 
+pub(crate) fn dispatch_compile_function(
+    active_backend: NativeBackend,
+    compiled: &dyn CodegenModuleView,
+    function: &MachineFunction,
+) -> Result<FunctionArtifact, WasmError> {
+    #[cfg(any(sf_backend_emu64, sf_backend_emu32))]
+    let _ = (compiled, function);
+    match active_backend {
+        #[cfg(sf_backend_arm64)]
+        NativeBackend::Arm64 => {
+            common::pipeline::compile_function::<arm64::backend::Arm64Backend>(compiled, function)
+        }
+        #[cfg(sf_backend_armv7a)]
+        NativeBackend::Armv7a => {
+            common::pipeline::compile_function::<arm32::backend::Arm32Backend>(compiled, function)
+        }
+        #[cfg(sf_backend_thumbm)]
+        NativeBackend::ThumbM => {
+            common::pipeline::compile_function::<arm32::backend::Arm32Backend>(compiled, function)
+        }
+        #[cfg(sf_backend_x64)]
+        NativeBackend::X86_64 => {
+            common::pipeline::compile_function::<x86_64::backend::X86_64Backend>(compiled, function)
+        }
+        #[cfg(sf_backend_riscv32)]
+        NativeBackend::Riscv32 => common::pipeline::compile_function::<
+            riscv32::backend::Riscv32Backend,
+        >(compiled, function),
+        #[cfg(sf_backend_riscv64)]
+        NativeBackend::Riscv64 => common::pipeline::compile_function::<
+            riscv64::backend::Riscv64Backend,
+        >(compiled, function),
+        #[cfg(sf_backend_emu64)]
+        NativeBackend::Emu64 => Err(WasmError::invalid(
+            "emu64 backend does not emit native code artifacts",
+        )),
+        #[cfg(sf_backend_emu32)]
+        NativeBackend::Emu32 => Err(WasmError::invalid(
+            "emu32 backend does not emit native code artifacts",
+        )),
+    }
+}
+
 pub(crate) fn dispatch_compile_template_function_into_buffer(
     active_backend: NativeBackend,
     compiled: &dyn CodegenModuleView,

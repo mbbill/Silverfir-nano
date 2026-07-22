@@ -52,6 +52,13 @@ impl TextEmitter {
     }
 
     #[inline]
+    pub(crate) fn from_owned(text: collections::Vec<u8>) -> Self {
+        Self {
+            storage: TextStorage::Owned(text),
+        }
+    }
+
+    #[inline]
     pub(crate) fn new_in_code_buffer(buf: &mut CodeBuffer) -> Self {
         Self {
             storage: TextStorage::CodeBuffer {
@@ -245,6 +252,14 @@ impl TextEmitter {
             TextStorage::CodeBuffer { .. } => {
                 panic!("cannot finish a CodeBuffer-backed TextEmitter into owned bytes")
             }
+        }
+    }
+
+    #[inline]
+    pub(crate) fn into_owned(self) -> Option<collections::Vec<u8>> {
+        match self.storage {
+            TextStorage::Owned(text) => Some(text),
+            TextStorage::CodeBuffer { .. } => None,
         }
     }
 }
