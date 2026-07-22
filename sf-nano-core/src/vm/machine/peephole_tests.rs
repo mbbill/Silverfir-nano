@@ -6,7 +6,7 @@ use crate::vm::machine::machine_ir::{
     MachineFloatBinaryOp, MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind,
     MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
     MachineProgram, MachineReg, MachineRegOwner, MachineSign, MachineStorageType,
-    MachineTerminator, MachineValue,
+    MachineTerminator, MachineValue, MACHINE_CTX_REG,
 };
 use crate::vm::machine::peephole::optimize;
 
@@ -682,6 +682,361 @@ fn forwards_non_adjacent_u64_store_load_pairs() {
             ..
         }
     ));
+}
+
+#[test]
+fn removes_u64_self_reload_after_store() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(5),
+                            offset: 0,
+                        },
+                        width: MachineMemWidth::U64,
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(4),
+                        addr: MachineAddr {
+                            base: MachineReg(5),
+                            offset: 0,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(4, 8, 8, 8, 0));
+
+    assert_eq!(program.blocks[0].ops.len(), 1);
+    assert!(matches!(
+        program.blocks[0].ops[0].kind,
+        MachineInstKind::Store { .. }
+    ));
+}
+
+#[test]
+fn forwards_store_reload_exposed_by_copy_propagation() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::vec![MachineBlockParam::gp_word(MachineReg(6))],
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Move {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(5),
+                        src: MachineValue::Reg(MachineReg(6)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Store {
+                        ty: MachineStorageType::GpWord,
+                        addr: MachineAddr {
+                            base: MachineReg(5),
+                            offset: 0,
+                        },
+                        width: MachineMemWidth::U64,
+                        src: MachineValue::Reg(MachineReg(4)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(4),
+                        addr: MachineAddr {
+                            base: MachineReg(6),
+                            offset: 0,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(4, 8, 8, 8, 0));
+
+    assert_eq!(program.blocks[0].ops.len(), 1);
+    assert!(matches!(
+        program.blocks[0].ops[0].kind,
+        MachineInstKind::Store {
+            addr: MachineAddr {
+                base: MachineReg(6),
+                offset: 0
+            },
+            src: MachineValue::Reg(MachineReg(4)),
+            ..
+        }
+    ));
+}
+
+#[test]
+fn carries_invariant_context_load_across_loop_backedge() {
+    let pointer_load = || MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst: MachineReg(5),
+            addr: MachineAddr {
+                base: MACHINE_CTX_REG,
+                offset: 64,
+            },
+            width: MachineMemWidth::U64,
+            extension: MachineLoadExtension::None,
+        },
+    };
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: collections::Vec::new(),
+                ops: collections::vec![pointer_load()],
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: collections::Vec::new(),
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: collections::Vec::new(),
+                ops: collections::vec![
+                    pointer_load(),
+                    MachineInst {
+                        kind: MachineInstKind::Load {
+                            owner: MachineRegOwner::LinearValue,
+                            ty: MachineStorageType::GpWord,
+                            dst: MachineReg(4),
+                            addr: MachineAddr {
+                                base: MachineReg(5),
+                                offset: 0,
+                            },
+                            width: MachineMemWidth::U64,
+                            extension: MachineLoadExtension::None,
+                        },
+                    },
+                ],
+                terminator: MachineTerminator::Branch {
+                    cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(4))),
+                    then_edge: MachineEdge {
+                        target: MachineBlockId(1),
+                        args: collections::Vec::new(),
+                    },
+                    else_edge: MachineEdge {
+                        target: MachineBlockId(2),
+                        args: collections::Vec::new(),
+                    },
+                },
+            },
+            MachineBlock {
+                id: MachineBlockId(2),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    optimize(&mut program, test_config(4, 8, 8, 8, 0));
+
+    assert_eq!(program.blocks[1].ops.len(), 1);
+    assert_eq!(
+        program.blocks[1].params,
+        collections::vec![MachineBlockParam::gp_word(MachineReg(5))]
+    );
+    let MachineTerminator::Jump(entry_edge) = &program.blocks[0].terminator else {
+        panic!("expected entry jump")
+    };
+    assert_eq!(
+        entry_edge.args,
+        collections::vec![MachineValue::Reg(MachineReg(5))]
+    );
+    let MachineTerminator::Branch { then_edge, .. } = &program.blocks[1].terminator else {
+        panic!("expected loop branch")
+    };
+    assert_eq!(
+        then_edge.args,
+        collections::vec![MachineValue::Reg(MachineReg(5))]
+    );
+}
+
+#[test]
+fn keeps_loop_context_load_when_the_context_slot_is_written() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: collections::Vec::new(),
+                ops: collections::vec![MachineInst {
+                    kind: MachineInstKind::Load {
+                        owner: MachineRegOwner::LinearValue,
+                        ty: MachineStorageType::GpWord,
+                        dst: MachineReg(5),
+                        addr: MachineAddr {
+                            base: MACHINE_CTX_REG,
+                            offset: 64,
+                        },
+                        width: MachineMemWidth::U64,
+                        extension: MachineLoadExtension::None,
+                    },
+                }],
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: collections::Vec::new(),
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: collections::Vec::new(),
+                ops: collections::vec![
+                    MachineInst {
+                        kind: MachineInstKind::Load {
+                            owner: MachineRegOwner::LinearValue,
+                            ty: MachineStorageType::GpWord,
+                            dst: MachineReg(5),
+                            addr: MachineAddr {
+                                base: MACHINE_CTX_REG,
+                                offset: 64,
+                            },
+                            width: MachineMemWidth::U64,
+                            extension: MachineLoadExtension::None,
+                        },
+                    },
+                    MachineInst {
+                        kind: MachineInstKind::Store {
+                            ty: MachineStorageType::GpWord,
+                            addr: MachineAddr {
+                                base: MACHINE_CTX_REG,
+                                offset: 64,
+                            },
+                            width: MachineMemWidth::U64,
+                            src: MachineValue::Reg(MachineReg(4)),
+                        },
+                    },
+                ],
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: collections::Vec::new(),
+                }),
+            },
+        ],
+    };
+
+    optimize(&mut program, test_config(4, 8, 8, 8, 0));
+
+    assert_eq!(program.blocks[1].ops.len(), 2);
+    assert!(program.blocks[1].params.is_empty());
+}
+
+#[test]
+fn removes_dead_block_param_carried_only_around_a_loop() {
+    let params = || {
+        collections::vec![
+            MachineBlockParam::gp_word(MachineReg(4)),
+            MachineBlockParam::gp_word(MachineReg(5)),
+        ]
+    };
+    let args = || {
+        collections::vec![
+            MachineValue::Reg(MachineReg(4)),
+            MachineValue::Reg(MachineReg(5)),
+        ]
+    };
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(1),
+                    args: args(),
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: params(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Jump(MachineEdge {
+                    target: MachineBlockId(2),
+                    args: args(),
+                }),
+            },
+            MachineBlock {
+                id: MachineBlockId(2),
+                params: params(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Branch {
+                    cond: MachineBranchCond::Value(MachineValue::Reg(MachineReg(5))),
+                    then_edge: MachineEdge {
+                        target: MachineBlockId(2),
+                        args: args(),
+                    },
+                    else_edge: MachineEdge {
+                        target: MachineBlockId(3),
+                        args: collections::Vec::new(),
+                    },
+                },
+            },
+            MachineBlock {
+                id: MachineBlockId(3),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+        ],
+    };
+
+    optimize(&mut program, test_config(4, 8, 8, 8, 0));
+
+    for block_index in [1usize, 2] {
+        assert_eq!(
+            program.blocks[block_index].params,
+            collections::vec![MachineBlockParam::gp_word(MachineReg(5))]
+        );
+    }
+    let MachineTerminator::Jump(entry) = &program.blocks[0].terminator else {
+        panic!("expected entry jump")
+    };
+    assert_eq!(
+        entry.args,
+        collections::vec![MachineValue::Reg(MachineReg(5))]
+    );
+    let MachineTerminator::Branch { then_edge, .. } = &program.blocks[2].terminator else {
+        panic!("expected loop branch")
+    };
+    assert_eq!(
+        then_edge.args,
+        collections::vec![MachineValue::Reg(MachineReg(5))]
+    );
 }
 
 /// The P1 gp32-i64-pair shape from Mandelbrot's inner loop:
