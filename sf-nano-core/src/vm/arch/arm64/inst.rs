@@ -3007,6 +3007,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             MachineShiftOp::Lsl => enc::ShiftType::Lsl,
             MachineShiftOp::Lsr => enc::ShiftType::Lsr,
             MachineShiftOp::Asr => enc::ShiftType::Asr,
+            MachineShiftOp::Ror => enc::ShiftType::Ror,
         };
         let amt = amount as u32;
         let inst = match (width, op) {

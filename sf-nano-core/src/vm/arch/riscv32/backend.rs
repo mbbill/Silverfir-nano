@@ -17,13 +17,13 @@ use crate::{
             types::ParallelSource,
         },
         machine::machine_ir::{
-            MachineAddr, MachineBlockId, MachineBlockParam, MachineBranchCond,
-            MachineCallArgs, MachineCallResults, MachineCallTarget, MachineCompareKind,
-            MachineConstId, MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp,
-            MachineFloatWidth, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp,
-            MachineIntWidth, MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp,
-            MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
-            MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineAddr, MachineBlockId, MachineBlockParam, MachineBranchCond, MachineCallArgs,
+            MachineCallResults, MachineCallTarget, MachineCompareKind, MachineConstId,
+            MachineConvertOp, MachineFloatBinaryOp, MachineFloatUnaryOp, MachineFloatWidth,
+            MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth,
+            MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp, MachineSign,
+            MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
+            MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
         runtime::{
             code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset,
@@ -2613,6 +2613,18 @@ impl<'a> Riscv32Backend<'a> {
             (MachineIntWidth::I32, MachineShiftOp::Asr) => {
                 self.materialize_u64(*shifted, u64::from(amount));
                 self.core.text.emit_u32(enc::sra(*shifted, rhs, *shifted));
+            }
+            (MachineIntWidth::I32, MachineShiftOp::Ror) => {
+                if amount != 0 {
+                    let other = self.gp_scratch.scoped_alloc().detach();
+                    self.core
+                        .text
+                        .emit_u32(enc::srli(*shifted, rhs, u32::from(amount)));
+                    self.core
+                        .text
+                        .emit_u32(enc::slli(*other, rhs, 32_u32 - u32::from(amount)));
+                    self.core.text.emit_u32(enc::or(*shifted, *shifted, *other));
+                }
             }
             (MachineIntWidth::I64, _) => return Err(Self::unsupported_error()),
         };

@@ -240,7 +240,8 @@ pub(crate) enum MachineInstKind {
     /// `dst = lhs OP (rhs SHIFT amount)`.
     ///
     /// Fused from `shift(rhs, imm) + binary_op(lhs, shifted)`. Covers
-    /// Add, Sub, And, Or, Xor with LSL/LSR/ASR shifted register.
+    /// Add, Sub, And, Or, Xor with LSL/LSR/ASR shifted register, plus
+    /// logical operations with ROR.
     IntBinaryShifted {
         width: MachineIntWidth,
         op: MachineIntBinaryOp,

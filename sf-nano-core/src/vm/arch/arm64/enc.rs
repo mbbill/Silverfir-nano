@@ -10,6 +10,7 @@ pub(crate) enum ShiftType {
     Lsl = 0,
     Lsr = 1,
     Asr = 2,
+    Ror = 3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -192,6 +193,20 @@ fn ubfm(sf: u32, n: u32, rd: Arm64Reg, rn: Arm64Reg, immr: u32, imms: u32) -> u3
         | (n << 22)
         | (immr << 16)
         | (imms << 10)
+        | (rn.index() << 5)
+        | rd.index()
+}
+
+/// EXTR with identical source registers, the architectural ROR-immediate
+/// alias. `width_mask` is 31 for the 32-bit form and 63 for the 64-bit form.
+fn ror_imm(sf: u32, n: u32, width_mask: u32, rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
+    let imm = shift & width_mask;
+    (sf << 31)
+        | (0b00 << 29)
+        | (0b100111 << 23)
+        | (n << 22)
+        | (rn.index() << 16)
+        | (imm << 10)
         | (rn.index() << 5)
         | rd.index()
 }
@@ -580,6 +595,14 @@ pub(crate) fn asr_imm_32(rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
 pub(crate) fn asr_imm_64(rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
     debug_assert!(shift < 64);
     sbfm(1, 1, rd, rn, shift, 63)
+}
+
+pub(crate) fn ror_imm_32(rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
+    ror_imm(0, 0, 31, rd, rn, shift)
+}
+
+pub(crate) fn ror_imm_64(rd: Arm64Reg, rn: Arm64Reg, shift: u32) -> u32 {
+    ror_imm(1, 1, 63, rd, rn, shift)
 }
 
 pub(crate) fn ldr_64(rt: Arm64Reg, rn: Arm64Reg, imm12: u32) -> u32 {

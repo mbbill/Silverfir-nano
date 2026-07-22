@@ -1619,6 +1619,12 @@ impl<'a> X86_64Backend<'a> {
             (MachineIntWidth::I32, MachineShiftOp::Asr) => {
                 enc::sar_imm_32(&mut self.core.text, *scratch, amount)
             }
+            (MachineIntWidth::I64, MachineShiftOp::Ror) => {
+                enc::ror_imm_64(&mut self.core.text, *scratch, amount)
+            }
+            (MachineIntWidth::I32, MachineShiftOp::Ror) => {
+                enc::ror_imm_32(&mut self.core.text, *scratch, amount)
+            }
         }
         // Step 2: dst = lhs OP scratch
         if dst != lhs {

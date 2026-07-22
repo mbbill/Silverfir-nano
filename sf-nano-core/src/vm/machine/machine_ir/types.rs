@@ -221,6 +221,7 @@ pub(crate) enum MachineShiftOp {
     Lsl,
     Lsr,
     Asr,
+    Ror,
 }
 
 /// Float unary ALU op.

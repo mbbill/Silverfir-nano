@@ -4678,6 +4678,7 @@ impl<'a> Arm32Backend<'a> {
             MachineShiftOp::Lsl => 0b00,
             MachineShiftOp::Lsr => 0b01,
             MachineShiftOp::Asr => 0b10,
+            MachineShiftOp::Ror => 0b11,
         };
         let amt = amount as u32;
         let inst = match op {

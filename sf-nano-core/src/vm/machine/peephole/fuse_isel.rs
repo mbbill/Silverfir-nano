@@ -14,7 +14,7 @@
 //!
 //! 2. **Shifted operand** (`try_fuse_shifted_binop`):
 //!    `shift(rhs, #amount) + binop(lhs, shifted)` → `IntBinaryShifted { lhs, rhs, shift, amount }`
-//!    for Add/Sub/And/Or/Xor with LSL/LSR/ASR.
+//!    for Add/Sub/And/Or/Xor with LSL/LSR/ASR, and logical ops with ROR.
 //!    - ARM64/arm32: barrel-shifter form (1 insn). x86_64: decomposed (no gain).
 //!
 //! 3. **Test bits** (`try_fuse_test_bits`):
@@ -142,18 +142,38 @@ fn contiguous_mask_width(mask: u64, int_width: MachineIntWidth) -> Option<u8> {
     }
 }
 
-/// Map MachineIntBinaryOp shift to MachineShiftOp.
-fn shift_op(op: MachineIntBinaryOp) -> Option<MachineShiftOp> {
+/// Map a Wasm shift/rotate by an immediate to the shifted-register form.
+fn shift_op(
+    op: MachineIntBinaryOp,
+    width: MachineIntWidth,
+    amount: u64,
+) -> Option<(MachineShiftOp, u8)> {
+    let mask = u64::from(max_shift(width));
+    let amount = (amount & mask) as u8;
     match op {
-        MachineIntBinaryOp::Shl => Some(MachineShiftOp::Lsl),
-        MachineIntBinaryOp::ShrU => Some(MachineShiftOp::Lsr),
-        MachineIntBinaryOp::ShrS => Some(MachineShiftOp::Asr),
+        MachineIntBinaryOp::Shl => Some((MachineShiftOp::Lsl, amount)),
+        MachineIntBinaryOp::ShrU => Some((MachineShiftOp::Lsr, amount)),
+        MachineIntBinaryOp::ShrS => Some((MachineShiftOp::Asr, amount)),
+        MachineIntBinaryOp::Rotr => Some((MachineShiftOp::Ror, amount)),
+        MachineIntBinaryOp::Rotl => {
+            let bits = max_shift(width) + 1;
+            Some((
+                MachineShiftOp::Ror,
+                bits.wrapping_sub(amount) & max_shift(width),
+            ))
+        }
         _ => None,
     }
 }
 
 /// Can this binary op use a shifted register operand?
-fn supports_shifted_reg(op: MachineIntBinaryOp) -> bool {
+fn supports_shifted_reg(op: MachineIntBinaryOp, shift: MachineShiftOp) -> bool {
+    if shift == MachineShiftOp::Ror {
+        return matches!(
+            op,
+            MachineIntBinaryOp::And | MachineIntBinaryOp::Or | MachineIntBinaryOp::Xor
+        );
+    }
     matches!(
         op,
         MachineIntBinaryOp::Add
@@ -248,7 +268,8 @@ fn try_fuse_shifted_binop(
     term: &MachineTerminator,
     _config: BackendConfig,
 ) -> Option<MachineInst> {
-    // First: IntBinary { op: Shl/ShrU/ShrS, dst: shift_dst, lhs: Reg(shift_src), rhs: Imm64(amount) }
+    // First: IntBinary { op: shift/rotate, dst: shift_dst,
+    //                    lhs: Reg(shift_src), rhs: Imm64(amount) }
     let (width, shift_dst, shift_src, shift, amount) = match first.kind {
         MachineInstKind::IntBinary {
             width,
@@ -257,11 +278,8 @@ fn try_fuse_shifted_binop(
             lhs: MachineValue::Reg(src),
             rhs: MachineValue::Imm64(amt),
         } => {
-            let s = shift_op(op)?;
-            if amt > max_shift(width) as u64 {
-                return None;
-            }
-            (width, dst, src, s, amt as u8)
+            let (shift, amount) = shift_op(op, width, amt)?;
+            (width, dst, src, shift, amount)
         }
         _ => return None,
     };
@@ -274,7 +292,7 @@ fn try_fuse_shifted_binop(
             dst,
             lhs: MachineValue::Reg(lhs),
             rhs: MachineValue::Reg(rhs),
-        } if w2 == width && supports_shifted_reg(op) => {
+        } if w2 == width && supports_shifted_reg(op, shift) => {
             if rhs == shift_dst {
                 // Normal: lhs OP (rhs << N)
                 (op, dst, lhs, true)

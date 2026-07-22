@@ -2358,6 +2358,7 @@ fn apply_shift(width: MachineIntWidth, shift: MachineShiftOp, value: u64, amount
                 MachineShiftOp::Lsl => v.wrapping_shl(amount as u32),
                 MachineShiftOp::Lsr => v.wrapping_shr(amount as u32),
                 MachineShiftOp::Asr => (v as i32).wrapping_shr(amount as u32) as u32,
+                MachineShiftOp::Ror => v.rotate_right(amount as u32),
             };
             u64::from(r)
         }
@@ -2365,6 +2366,7 @@ fn apply_shift(width: MachineIntWidth, shift: MachineShiftOp, value: u64, amount
             MachineShiftOp::Lsl => value.wrapping_shl(amount as u32),
             MachineShiftOp::Lsr => value.wrapping_shr(amount as u32),
             MachineShiftOp::Asr => (value as i64).wrapping_shr(amount as u32) as u64,
+            MachineShiftOp::Ror => value.rotate_right(amount as u32),
         },
     }
 }

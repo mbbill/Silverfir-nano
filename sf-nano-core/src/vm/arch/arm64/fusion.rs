@@ -62,6 +62,20 @@ pub(super) fn int_binary_imm_inst(
         (MachineIntWidth::I64, MachineIntBinaryOp::ShrS) => {
             Some(enc::asr_imm_64(dst, lhs, (rhs as u32) & 63))
         }
+        (MachineIntWidth::I32, MachineIntBinaryOp::Rotr) => {
+            Some(enc::ror_imm_32(dst, lhs, (rhs as u32) & 31))
+        }
+        (MachineIntWidth::I64, MachineIntBinaryOp::Rotr) => {
+            Some(enc::ror_imm_64(dst, lhs, (rhs as u32) & 63))
+        }
+        (MachineIntWidth::I32, MachineIntBinaryOp::Rotl) => {
+            let shift = 32_u32.wrapping_sub(rhs as u32) & 31;
+            Some(enc::ror_imm_32(dst, lhs, shift))
+        }
+        (MachineIntWidth::I64, MachineIntBinaryOp::Rotl) => {
+            let shift = 64_u32.wrapping_sub(rhs as u32) & 63;
+            Some(enc::ror_imm_64(dst, lhs, shift))
+        }
         _ => None,
     }
 }
