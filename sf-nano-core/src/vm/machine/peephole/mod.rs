@@ -36,6 +36,7 @@ mod fuse_smull_sign_ext;
 pub(crate) mod helpers;
 mod reuse_loaded_values;
 mod reuse_loop_context_loads;
+mod reuse_loop_frame_values;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
@@ -117,6 +118,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     if config.is_32bit_gp_target() {
         fuse_smull_sign_ext::fuse_smull_sign_ext_across_edges(program, ctx.total_reg_count);
     }
+    reuse_loop_frame_values::reuse_loop_frame_values(&mut program.blocks);
     reuse_loop_context_loads::reuse_loop_context_loads(&mut program.blocks);
     eliminate_dead_params::eliminate_dead_params(&mut program.blocks);
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
