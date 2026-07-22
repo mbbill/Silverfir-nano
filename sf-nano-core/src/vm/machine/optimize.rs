@@ -6,8 +6,14 @@ use crate::vm::{
     },
 };
 
+use super::call_abi::collect_preserved_clobbers;
+
 pub(crate) fn optimize_function(function: &mut MachineFunction, config: BackendConfig) {
     peephole::optimize(&mut function.program, config);
+    // Peepholes may introduce definitions in previously unused dynamic lanes.
+    // Refresh this derived ABI metadata from the final MachineIR so a newly
+    // claimed preserved lane is saved and restored by the backend.
+    function.preserved_clobbers = collect_preserved_clobbers(&function.program, config);
     shrink_machine_function_storage(function);
 }
 
@@ -60,4 +66,47 @@ fn shrink_machine_terminator_storage(terminator: &mut MachineTerminator) {
 
 fn shrink_machine_edge_storage(edge: &mut MachineEdge) {
     edge.args.shrink_to_fit();
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        collections,
+        vm::machine::machine_ir::{
+            MachineBlock, MachineBlockId, MachineBlockParam, MachineFuncId, MachineReg,
+            MachineResultSrc, MachineReturnValue, MachineStorageType,
+        },
+    };
+
+    #[test]
+    fn optimization_refreshes_preserved_clobber_metadata() {
+        let config = BackendConfig::with_volatility(8, 1, 1, 1, 0, 0, 1, 0, false, 3);
+        let preserved = MachineReg(5);
+        let mut function = MachineFunction {
+            id: MachineFuncId(0),
+            program: crate::vm::machine::machine_ir::MachineProgram {
+                entry: MachineBlockId(0),
+                fp_reg_init_widths: collections::Vec::new(),
+                blocks: collections::vec![MachineBlock {
+                    id: MachineBlockId(0),
+                    params: collections::vec![MachineBlockParam::gp_word(preserved)],
+                    ops: collections::Vec::new(),
+                    terminator: MachineTerminator::ReturnScalar {
+                        value: MachineReturnValue::ScalarGp {
+                            src: MachineResultSrc::Reg(preserved),
+                            ty: MachineStorageType::GpWord,
+                        },
+                    },
+                }],
+            },
+            // Model metadata computed before a late optimization claimed the
+            // preserved lane.
+            preserved_clobbers: collections::Vec::new(),
+        };
+
+        optimize_function(&mut function, config);
+
+        assert_eq!(function.preserved_clobbers.as_slice(), &[preserved]);
+    }
 }
