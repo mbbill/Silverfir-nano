@@ -27,6 +27,7 @@
 
 mod copy_propagate;
 mod deduplicate_constants;
+mod eliminate_dead_params;
 mod forward_stored_values;
 mod fuse_compare_branch;
 mod fuse_indexed_memory;
@@ -115,5 +116,6 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     if config.is_32bit_gp_target() {
         fuse_smull_sign_ext::fuse_smull_sign_ext_across_edges(program, ctx.total_reg_count);
     }
+    eliminate_dead_params::eliminate_dead_params(&mut program.blocks);
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);
 }
