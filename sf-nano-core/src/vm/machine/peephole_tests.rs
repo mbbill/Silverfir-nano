@@ -5,7 +5,7 @@ use crate::vm::machine::machine_ir::{
     MachineCallRuntime, MachineCompareKind, MachineConstId, MachineConvertOp, MachineEdge,
     MachineFloatBinaryOp, MachineFloatWidth, MachineIndexExtend, MachineInst, MachineInstKind,
     MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
-    MachineProgram, MachineReg, MachineRegOwner, MachineSign, MachineStorageType,
+    MachineProgram, MachineReg, MachineRegOwner, MachineShiftOp, MachineSign, MachineStorageType,
     MachineTerminator, MachineValue, MACHINE_CTX_REG,
 };
 use crate::vm::machine::peephole::optimize;
@@ -2864,6 +2864,55 @@ fn fuses_shru_and_into_bitfield_extract() {
         "expected BitfieldExtractU, got: {:?}",
         block.ops[0].kind
     );
+}
+
+#[test]
+fn fuses_rotate_then_xor_into_rotated_register_operand() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: MachineIntWidth::I64,
+                        op: MachineIntBinaryOp::Rotl,
+                        dst: MachineReg(7),
+                        lhs: MachineValue::Reg(MachineReg(4)),
+                        rhs: MachineValue::Imm64(1),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::IntBinary {
+                        width: MachineIntWidth::I64,
+                        op: MachineIntBinaryOp::Xor,
+                        dst: MachineReg(8),
+                        lhs: MachineValue::Reg(MachineReg(5)),
+                        rhs: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(7, 8, 9, 9, 0));
+
+    assert_eq!(program.blocks[0].ops.len(), 1);
+    assert!(matches!(
+        program.blocks[0].ops[0].kind,
+        MachineInstKind::IntBinaryShifted {
+            width: MachineIntWidth::I64,
+            op: MachineIntBinaryOp::Xor,
+            dst: MachineReg(8),
+            lhs: MachineReg(5),
+            rhs: MachineReg(4),
+            shift: MachineShiftOp::Ror,
+            amount: 63,
+        }
+    ));
 }
 
 /// Reproduces the MIR shape for `(a as i64) * (b as i64)` where the
