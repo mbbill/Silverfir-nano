@@ -136,9 +136,8 @@ pub(crate) struct Arm64Backend<'a> {
     pending_op: Option<(&'a MachineInst, usize)>,
     /// Select-condition flags fusion: `Some((reg, cond))` means the NZCV
     /// flags currently encode `reg != 0` as `cond`, set by the immediately
-    /// preceding And (emitted as `ands`) or IntCompare. Taken (cleared) at
-    /// every instruction dispatch and at block/terminator boundaries; only a
-    /// Select consuming exactly that register uses it.
+    /// preceding And (emitted as `ands`) or comparison. Consumed by a Select
+    /// or terminator on exactly that register.
     pub(super) select_flags: Option<(MachineReg, enc::Cond)>,
     /// Ring of recently dispatched `Store` ops, as `(base, offset, bytes,
     /// seq)`. Consulted by the FP load-pair fusion: an `ldp` that partially
@@ -821,12 +820,85 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
         // emit the buffered op solo and buffer the new one for the next call.
         if let Some((prev, prev_index)) = self.pending_op.take() {
             self.core.current_op_index = Some(prev_index);
+            if let Some(fusion) = super::fusion::int_compare_select_fusion(prev, inst) {
+                let bool_is_dead = self
+                    .core
+                    .current_block
+                    .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                    .is_some_and(|block| {
+                        fusion.bool_reg == fusion.select_result
+                            || !crate::vm::machine::peephole::helpers::reg_live_after(
+                                &block.ops[index + 1..],
+                                &block.terminator,
+                                fusion.bool_reg,
+                            )
+                    });
+                if bool_is_dead {
+                    self.select_flags = None;
+                    self.lower_cmp_values(fusion.width, fusion.lhs, fusion.rhs)?;
+                    let cond = super::fusion::map_int_cond(fusion.kind, fusion.sign);
+                    let MachineInstKind::Select {
+                        ty,
+                        dst,
+                        on_true,
+                        on_false,
+                        cond: _,
+                    } = inst.kind
+                    else {
+                        unreachable!("validated compare-select fusion");
+                    };
+                    self.core.current_op_index = Some(index);
+                    self.lower_select(
+                        ty,
+                        dst,
+                        on_true,
+                        on_false,
+                        crate::vm::machine::machine_ir::MachineValue::Reg(fusion.bool_reg),
+                        Some((fusion.bool_reg, cond)),
+                    )?;
+                    self.gp_scratch.assert_all_free();
+                    self.fp_scratch.assert_all_free();
+                    return Ok(());
+                }
+            }
             if let Some((base, imm7)) = super::fusion::zero_store_pair_fusion(prev, inst) {
                 let base_reg = self.map_gp_reg(base)?;
                 self.core.text.emit_u32(enc::stp_zero_64(base_reg, imm7));
                 self.gp_scratch.assert_all_free();
                 self.fp_scratch.assert_all_free();
                 return Ok(());
+            }
+            if let Some(fusion) = super::fusion::bit_clear_fusion(prev, inst) {
+                let temporary_is_dead = fusion.not_result == fusion.dst
+                    || self
+                        .core
+                        .current_block
+                        .and_then(|id| self.core.mir_blocks().ok()?.get(id.as_usize()))
+                        .is_some_and(|block| {
+                            !crate::vm::machine::peephole::helpers::reg_live_after(
+                                &block.ops[index + 1..],
+                                &block.terminator,
+                                fusion.not_result,
+                            )
+                        });
+                if temporary_is_dead {
+                    let dst = self.map_gp_reg(fusion.dst)?;
+                    let lhs = self.map_gp_reg(fusion.lhs)?;
+                    let not_rhs = self.map_gp_reg(fusion.not_rhs)?;
+                    let encoded = match fusion.width {
+                        crate::vm::machine::machine_ir::MachineIntWidth::I32 => {
+                            enc::bics_reg_32(dst, lhs, not_rhs)
+                        }
+                        crate::vm::machine::machine_ir::MachineIntWidth::I64 => {
+                            enc::bics_reg_64(dst, lhs, not_rhs)
+                        }
+                    };
+                    self.core.text.emit_u32(encoded);
+                    self.select_flags = Some((fusion.dst, enc::Cond::Ne));
+                    self.gp_scratch.assert_all_free();
+                    self.fp_scratch.assert_all_free();
+                    return Ok(());
+                }
             }
             if self.try_lower_fp_pair(prev, inst)? {
                 self.gp_scratch.assert_all_free();

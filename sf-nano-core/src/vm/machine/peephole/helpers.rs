@@ -417,7 +417,7 @@ pub(super) fn value_is_reg(v: &MachineValue, reg: MachineReg) -> bool {
 
 /// Check if `reg` is used by any instruction in `ops` or the terminator before
 /// being redefined.
-pub(super) fn reg_live_after(
+pub(crate) fn reg_live_after(
     ops: &[MachineInst],
     term: &MachineTerminator,
     reg: MachineReg,

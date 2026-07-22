@@ -413,6 +413,16 @@ pub(crate) fn ands_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
     logical_shifted_reg(1, 0b11, 0, rd, rn, rm)
 }
 
+/// `BICS Wd, Wn, Wm`: bit-clear (`Wn & !Wm`) and update NZCV.
+pub(crate) fn bics_reg_32(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    logical_shifted_reg(0, 0b11, 1, rd, rn, rm)
+}
+
+/// `BICS Xd, Xn, Xm`: bit-clear (`Xn & !Xm`) and update NZCV.
+pub(crate) fn bics_reg_64(rd: Arm64Reg, rn: Arm64Reg, rm: Arm64Reg) -> u32 {
+    logical_shifted_reg(1, 0b11, 1, rd, rn, rm)
+}
+
 pub(crate) fn tst_imm_32(rn: Arm64Reg, imm: u32) -> Option<u32> {
     let (n, immr, imms) = encode_logical_immediate(imm as u64, 32)?;
     Some(logical_imm(0, 0b11, n, abi::zero_reg(), rn, immr, imms))

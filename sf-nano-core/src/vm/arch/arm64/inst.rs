@@ -352,10 +352,8 @@ impl<'a> super::backend::Arm64Backend<'a> {
     // ── Instruction dispatch ─────────────────────────────────────────────
 
     pub(super) fn lower_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
-        // Flags fusion: whatever the previous instruction left in
-        // `select_flags` is only valid for the IMMEDIATELY following
-        // instruction. Take it unconditionally; only a Select uses it, and
-        // only And/IntCompare set it anew.
+        // Flags from a comparison or AND can feed the immediately following
+        // scalar Select without re-testing its materialized boolean.
         let pending_flags = self.select_flags.take();
         match &inst.kind {
             MachineInstKind::Move {
@@ -3129,7 +3127,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
 
     // ── Select ───────────────────────────────────────────────────────────────────
 
-    fn lower_select(
+    pub(super) fn lower_select(
         &mut self,
         ty: MachineStorageType,
         dst: MachineReg,
@@ -3222,20 +3220,31 @@ impl<'a> super::backend::Arm64Backend<'a> {
                     ));
                 }
             }
-            let true_reg = prepare_gp(
-                self.core.compiled.backend(),
-                &self.core.fp_reg_widths,
-                &mut self.core.text,
-                &self.gp_scratch,
-                on_true,
-            )?;
-            let false_reg = prepare_gp(
-                self.core.compiled.backend(),
-                &self.core.fp_reg_widths,
-                &mut self.core.text,
-                &self.gp_scratch,
-                on_false,
-            )?;
+            // CSEL treats register 31 as XZR. Keep literal zero as that
+            // architectural operand instead of spending a scratch register
+            // and emitting a redundant MOV in a three-input hot-path op.
+            let true_reg = if on_true == MachineValue::Imm64(0) {
+                PreparedGp::Mapped(abi::zero_reg())
+            } else {
+                prepare_gp(
+                    self.core.compiled.backend(),
+                    &self.core.fp_reg_widths,
+                    &mut self.core.text,
+                    &self.gp_scratch,
+                    on_true,
+                )?
+            };
+            let false_reg = if on_false == MachineValue::Imm64(0) {
+                PreparedGp::Mapped(abi::zero_reg())
+            } else {
+                prepare_gp(
+                    self.core.compiled.backend(),
+                    &self.core.fp_reg_widths,
+                    &mut self.core.text,
+                    &self.gp_scratch,
+                    on_false,
+                )?
+            };
             // Always use csel_64: GpWord covers both i32 and reference types,
             // and refs need full 64-bit values preserved (e.g. null sentinel).
             self.core
