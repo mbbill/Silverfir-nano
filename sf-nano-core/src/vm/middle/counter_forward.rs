@@ -183,13 +183,46 @@ enum ValueFact {
     Opaque,
 }
 
+/// Sorted flat value-fact table for one SSA block.
+///
+/// A block only tracks the handful of address-relevant values it has seen.
+/// Keeping them inline avoids allocating a B-tree node per fact and lets local
+/// reassignment invalidate dependent facts in place.
+#[derive(Default)]
+struct ValueFacts {
+    entries: collections::Vec<(SsaValue, ValueFact)>,
+}
+
+impl ValueFacts {
+    fn insert(&mut self, value: SsaValue, fact: ValueFact) {
+        match self
+            .entries
+            .binary_search_by_key(&value, |(candidate, _)| *candidate)
+        {
+            Ok(index) => self.entries[index].1 = fact,
+            Err(index) => self.entries.insert(index, (value, fact)),
+        }
+    }
+
+    fn get(&self, value: &SsaValue) -> Option<&ValueFact> {
+        self.entries
+            .binary_search_by_key(value, |(candidate, _)| *candidate)
+            .ok()
+            .map(|index| &self.entries[index].1)
+    }
+
+    fn remove_facts_mentioning(&mut self, slot: CellId) {
+        self.entries.retain(|(_, fact)| !fact_mentions(fact, slot));
+    }
+}
+
 fn collect_block_rewrites(
     program: &SsaProgram,
     block_index: usize,
     rewrites: &mut collections::Vec<Rewrite>,
 ) {
     let block = &program.blocks[block_index];
-    let mut facts: BTreeMap<SsaValue, ValueFact> = BTreeMap::new();
+    let mut facts = ValueFacts::default();
 
     // Open store windows: (root, offset, kind class) -> (op index, stored
     // operand, width).
@@ -204,10 +237,7 @@ fn collect_block_rewrites(
                 let slot = CellId(inst.meta);
                 // A reassigned root/base invalidates address facts derived
                 // from it and any open window rooted at it.
-                facts = facts
-                    .into_iter()
-                    .filter(|(_, fact)| !fact_mentions(fact, slot))
-                    .collect();
+                facts.remove_facts_mentioning(slot);
                 open_stores = open_stores
                     .into_iter()
                     .filter(|&((root, _, _), _)| root != slot.0)
@@ -333,11 +363,7 @@ fn fact_mentions(fact: &ValueFact, slot: CellId) -> bool {
     }
 }
 
-fn add_fact(
-    const_pool: &[u64],
-    facts: &BTreeMap<SsaValue, ValueFact>,
-    inst: &SsaInst,
-) -> ValueFact {
+fn add_fact(const_pool: &[u64], facts: &ValueFacts, inst: &SsaInst) -> ValueFact {
     let a = operand_fact(const_pool, facts, inst.args[0]);
     let b = operand_fact(const_pool, facts, inst.args[1]);
     match (a, b) {
@@ -353,11 +379,7 @@ fn add_fact(
     }
 }
 
-fn operand_fact(
-    const_pool: &[u64],
-    facts: &BTreeMap<SsaValue, ValueFact>,
-    operand: SsaOperand,
-) -> ValueFact {
+fn operand_fact(const_pool: &[u64], facts: &ValueFacts, operand: SsaOperand) -> ValueFact {
     match operand.decode() {
         DecodedOperand::Value(value) => facts.get(&value).copied().unwrap_or(ValueFact::Opaque),
         DecodedOperand::Const(index) => const_pool
@@ -369,11 +391,7 @@ fn operand_fact(
     }
 }
 
-fn operand_root(
-    const_pool: &[u64],
-    facts: &BTreeMap<SsaValue, ValueFact>,
-    operand: SsaOperand,
-) -> Option<CellId> {
+fn operand_root(const_pool: &[u64], facts: &ValueFacts, operand: SsaOperand) -> Option<CellId> {
     match operand_fact(const_pool, facts, operand) {
         ValueFact::GetLocal(slot) => Some(slot),
         _ => None,
@@ -411,7 +429,7 @@ fn window_admissible(
     program: &SsaProgram,
     block: &crate::vm::middle::ssa_ir::ir::SsaBlock,
     block_index: usize,
-    facts: &BTreeMap<SsaValue, ValueFact>,
+    facts: &ValueFacts,
     store_index: usize,
     load_index: usize,
     root: CellId,
@@ -834,7 +852,7 @@ fn single_local_set_use(
 fn increment_recipe(
     program: &SsaProgram,
     block: &crate::vm::middle::ssa_ir::ir::SsaBlock,
-    facts: &BTreeMap<SsaValue, ValueFact>,
+    facts: &ValueFacts,
     store_index: usize,
     load_index: usize,
     stored: SsaOperand,
@@ -936,7 +954,7 @@ fn slot_reaching_defs(program: &SsaProgram, slot: CellId) -> Option<SlotDefs> {
     // Implicit zero-init reaches the entry.
     sites.push((usize::MAX, 0, DefFact::Const(0)));
     for (block_index, block) in program.blocks.iter().enumerate() {
-        let mut facts: BTreeMap<SsaValue, ValueFact> = BTreeMap::new();
+        let mut facts = ValueFacts::default();
         for (op_index, inst) in block.ops.iter().enumerate() {
             match inst.op {
                 SsaOp::CELL_GET_SLOT | SsaOp::CELL_GET_CACHE => {
@@ -957,10 +975,7 @@ fn slot_reaching_defs(program: &SsaProgram, slot: CellId) -> Option<SlotDefs> {
                         };
                         sites.push((block_index, op_index, fact));
                     }
-                    facts = facts
-                        .into_iter()
-                        .filter(|(_, fact)| !fact_mentions(fact, set_slot))
-                        .collect();
+                    facts.remove_facts_mentioning(set_slot);
                 }
                 _ => {
                     if let Some(pool_idx) = inst.op.as_primitive_idx() {
