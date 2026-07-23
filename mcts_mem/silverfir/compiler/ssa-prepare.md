@@ -192,6 +192,19 @@
   experiment was reverted; the early shrink's transient-memory bound was not
   exchanged for an unmeasured compile-time change (sourced).
 
+- 2026-07-23 measurement: bounded-counter forwarding stored its small,
+  block-local value-fact set in a `BTreeMap`, then consumed and rebuilt the
+  tree whenever a local assignment invalidated dependent facts. Node insert,
+  iteration, and bulk rebuild were three visible serial FFmpeg hotspots.
+  Replacing only that fact set with a sorted flat vector preserves ordered
+  binary lookup and in-place invalidation without introducing a dense
+  per-function value table. All three tree hotspots disappeared and
+  `prepare_function` moved from 37.82% to 35.89% inclusive in comparable
+  profiles. Exact-parent serial bz2 means were 36.27/36.74 ms for the parent
+  and 35.34/35.05 ms for the candidate, a 3.6% reduction on pair averages.
+  FFmpeg's complete SSA/MachineIR index remained byte-identical and all 356
+  release tests passed (sourced).
+
 ## Moves
 
 - 2026-03-12 (2ea0bb68) replaced [[two-stage-planning]]: the planning layer

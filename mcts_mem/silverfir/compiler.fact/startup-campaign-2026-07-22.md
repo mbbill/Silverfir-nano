@@ -456,3 +456,14 @@ the listed commits.
   alternating bz2 and FFmpeg timings were thermally/order dominated, so this
   five-line structural cleanup carries no claimed wall-time percentage
   (sourced).
+
+- 2026-07-23: bounded-counter forwarding used a `BTreeMap` for a small
+  block-local `SsaValue -> ValueFact` set and rebuilt the tree after local
+  assignments. A sorted flat vector retains the same ordered binary lookup and
+  invalidates facts in place, while deliberately avoiding a dense table sized
+  to every value in a large function. The B-tree insert/iterate/rebuild
+  hotspots disappeared; `prepare_function` fell from 37.82% to 35.89%
+  inclusive in serial FFmpeg profiles. Exact-parent alternating bz2 means
+  improved from 36.27/36.74 ms to 35.34/35.05 ms (3.6% on pair averages).
+  FFmpeg's complete SSA/MachineIR index remained byte-identical and all 356
+  release tests passed (sourced).
