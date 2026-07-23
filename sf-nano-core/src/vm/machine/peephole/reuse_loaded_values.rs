@@ -13,12 +13,16 @@ use super::helpers::{
 };
 use super::TrackedLoad;
 
-pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfig) {
+pub(super) fn reuse_loaded_values(
+    block: &mut MachineBlock,
+    config: BackendConfig,
+    tracked: &mut collections::Vec<TrackedLoad>,
+) {
     if block.ops.is_empty() {
         return;
     }
 
-    let mut tracked = collections::Vec::<TrackedLoad>::new();
+    tracked.clear();
 
     block.ops.retain_mut(|inst| {
         let mut keep_inst = true;
@@ -122,7 +126,7 @@ pub(super) fn reuse_loaded_values(block: &mut MachineBlock, config: BackendConfi
                 };
             }
             inst.kind.for_each_defined_reg(|dst| {
-                kill_tracked_loads_by_reg(&mut tracked, dst);
+                kill_tracked_loads_by_reg(tracked, dst);
             });
             if let Some(load) = produced_load {
                 tracked.push(load);

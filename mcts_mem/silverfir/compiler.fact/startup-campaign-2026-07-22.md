@@ -341,3 +341,20 @@ the listed commits.
   long A/B/A bz2 result is the attribution evidence; Pulldown, SpiderMonkey,
   FFmpeg, and ERC20 moved by -2.36%, -0.98%, -0.66%, and -1.25% respectively
   with no substantial-workload regression (sourced).
+
+- The block-local peephole profile then showed `RawVec` growth below
+  store-to-load forwarding and load-to-load reuse. Both passes intentionally
+  run twice, but each invocation discarded its small tracking vector. Moving
+  the two trackers into the existing per-function `BlockOptCtx` reused
+  capacity across passes and blocks without combining passes or changing
+  invalidation/order semantics; the verification profile no longer found
+  either pass beneath `RawVec::grow_one` (sourced).
+
+- Controlled serial bz2 scratch/parent/scratch means were 42.664, 42.985, and
+  42.654 ms, a repeatable roughly 0.75% reduction below Criterion's default
+  practical-change threshold. The seven-workload breadth run measured
+  42.985 ms (bz2), 84.925 ms (Pulldown-cmark), 1,770.8 ms (SpiderMonkey),
+  6,489.5 ms (FFmpeg), 3.588 ms (CoreMark), 12.702 ms (Argon2), and 2.051 ms
+  (ERC20). FFmpeg improved 2.29% significantly, while Pulldown, SpiderMonkey,
+  CoreMark, and ERC20 moved favorably by 0.6-1.7%; bz2's controlled A/B/A is
+  the attribution evidence (sourced).

@@ -30,12 +30,16 @@ fn is_forwardable_width(width: MachineMemWidth) -> bool {
     matches!(width, MachineMemWidth::U32 | MachineMemWidth::U64)
 }
 
-pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendConfig) {
+pub(super) fn forward_stored_values(
+    block: &mut MachineBlock,
+    config: BackendConfig,
+    tracked: &mut collections::Vec<TrackedStore>,
+) {
     if block.ops.is_empty() {
         return;
     }
 
-    let mut tracked = collections::Vec::<TrackedStore>::new();
+    tracked.clear();
 
     block.ops.retain_mut(|inst| {
         let mut keep_inst = true;
@@ -117,7 +121,7 @@ pub(super) fn forward_stored_values(block: &mut MachineBlock, config: BackendCon
 
         if keep_inst {
             inst.kind.for_each_defined_reg(|dst| {
-                kill_tracked_stores_by_reg(&mut tracked, dst);
+                kill_tracked_stores_by_reg(tracked, dst);
             });
         }
 

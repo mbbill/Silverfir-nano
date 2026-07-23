@@ -71,6 +71,8 @@ pub(crate) struct BlockOptCtx {
     first_fp_reg: u16,
     total_reg_count: usize,
     cp_scratch: copy_propagate::CopyPropagateScratch,
+    tracked_stores: crate::collections::Vec<TrackedStore>,
+    tracked_loads: crate::collections::Vec<TrackedLoad>,
 }
 
 impl BlockOptCtx {
@@ -81,6 +83,8 @@ impl BlockOptCtx {
             first_fp_reg: config.first_fp_reg(),
             total_reg_count,
             cp_scratch: copy_propagate::CopyPropagateScratch::new(total_reg_count),
+            tracked_stores: crate::collections::Vec::new(),
+            tracked_loads: crate::collections::Vec::new(),
         }
     }
 }
@@ -94,15 +98,15 @@ impl BlockOptCtx {
 /// `optimize` and execute after the per-block pass loop.
 pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
     deduplicate_constants::deduplicate_constants(block, ctx.first_fp_reg);
-    forward_stored_values::forward_stored_values(block, ctx.config);
-    reuse_loaded_values::reuse_loaded_values(block, ctx.config);
+    forward_stored_values::forward_stored_values(block, ctx.config, &mut ctx.tracked_stores);
+    reuse_loaded_values::reuse_loaded_values(block, ctx.config, &mut ctx.tracked_loads);
     fuse_indexed_memory::fuse_indexed_memory(block);
-    reuse_loaded_values::reuse_loaded_values(block, ctx.config);
+    reuse_loaded_values::reuse_loaded_values(block, ctx.config, &mut ctx.tracked_loads);
     copy_propagate::copy_propagate(block, ctx.config, &mut ctx.cp_scratch);
     // Copy propagation can make previously distinct address bases or stored
     // values identical. Re-run forwarding so those newly exposed store/load
     // pairs do not survive into code emission.
-    forward_stored_values::forward_stored_values(block, ctx.config);
+    forward_stored_values::forward_stored_values(block, ctx.config, &mut ctx.tracked_stores);
     fuse_isel::fuse_isel(block, ctx.config);
     if ctx.config.is_32bit_gp_target() {
         fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);

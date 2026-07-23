@@ -283,3 +283,17 @@
   comparisons found no significant change. The experiment was reverted rather
   than retaining unmeasured cleanup. Matcher-local small-vector allocation is
   not a demonstrated explanation for the remaining startup gap (sourced).
+
+- 2026-07-22 measurement and decision: store-to-load forwarding and
+  load-to-load reuse each run twice per block, and each invocation allocated a
+  fresh tracking vector. Moving the two trackers into the per-function
+  `BlockOptCtx` preserves pass order and exact invalidation semantics while
+  reusing capacity across passes and blocks. The verification profile no
+  longer found either peephole beneath `RawVec::grow_one` (sourced).
+
+- 2026-07-22 measurement: controlled serial bz2 scratch/parent/scratch means
+  were 42.664, 42.985, and 42.654 ms, a repeatable roughly 0.75% reduction
+  below Criterion's default practical-change threshold. The broader serial
+  run measured 84.925 ms for Pulldown, 1,770.8 ms for SpiderMonkey, and
+  6,489.5 ms for FFmpeg; FFmpeg improved 2.29% significantly because its many
+  multi-block functions amortize the trackers more often (sourced).
