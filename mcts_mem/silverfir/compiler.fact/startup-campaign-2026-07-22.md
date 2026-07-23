@@ -599,3 +599,22 @@ the listed commits.
   reduction on pair-average point estimates, but overlapping confidence
   intervals make this allocation/lifetime cleanup a retained structural
   simplification without a confident end-to-end percentage (sourced).
+
+- 2026-07-23: commit `2598d4da` replaced the primitive pool's sorted side
+  index with a half-full open-addressed hash index. The pool itself still
+  appends first-seen `PrimitiveOpKind` values in exactly the former order, so
+  every encoded `SsaOp` pool ID remains stable; hashes are lookup-only and
+  collisions probe until full enum equality succeeds. The former per-op binary
+  search repeatedly invoked `PrimitiveOpKind::cmp`; its comparison closure
+  alone accounted for 103 samples (1.73% of total) in the exact-parent serial
+  FFmpeg profile. With hashing, the comparison closure disappeared,
+  `intern_primitive` held 50 samples, `rewrite_function` fell from 1,131/5,947
+  samples to 999/5,756 (11.7% fewer absolute samples), `prepare_function` fell
+  from 2,131 to 2,018 samples (5.3%), and the complete profile fell 3.2%.
+  Two exact-parent ABBA startup pairs measured candidate medians of
+  5.5846/5.5553 s versus parent medians of 5.6736/5.6785 s: 5.570 versus
+  5.676 s on pair averages, or 1.87% faster. The fat-LTO benchmark text grew
+  only 220 bytes (3,933,356 to 3,933,576). FFmpeg's 14,290-function
+  deterministic native index stayed byte-identical at
+  `5db01c38ff5e59a3999683b893dc534d053f784cd85640bb2f42d28f4b1ce31c`,
+  and all 357 release tests passed (sourced).
