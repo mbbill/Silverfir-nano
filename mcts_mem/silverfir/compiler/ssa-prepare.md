@@ -7,9 +7,9 @@
   value under register pressure.
 
 - Structured control is flattened into an explicit basic-block CFG with
-  unreachable blocks pruned, then simplified to a fixed point with cheap local
-  cleanups: cache-run canonicalization, jump threading, single-predecessor
-  block merging, and unreachable-block removal.
+  unreachable blocks pruned, then simplified with cheap local cleanups:
+  cache-run canonicalization, jump threading, batched single-predecessor block
+  merging, and unreachable-block removal.
 
 - The live transient window is constrained to the backend's GP/FP budgets with
   explicit Spill/Fill actions, and deep Wasm stack values are published to
@@ -174,6 +174,16 @@
   (a50023c5) entry describes as demoted to `#[cfg(test)]` was fully deleted,
   together with its now-vacuous block-count plan check; the test suite anchors
   on the semantic CFG's block structure instead (code).
+
+- 2026-07-22 (4b801eb) measurement: single-predecessor cleanup previously
+  merged one successor, physically removed it from every per-block vector,
+  remapped every CFG target, and restarted the fixed point. Predecessor counts
+  for the remaining live graph do not change when a predecessor absorbs its
+  sole successor: only the source identity of the successor's outgoing edges
+  changes. The pass now uses one predecessor-count table to absorb complete
+  goto chains into tombstoned slots, then compacts and renumbers once. Serial
+  Pulldown startup fell from 123.66 ms to 111.8-114.1 ms, cleanup from 12.46%
+  to 4.14% inclusive, and `remove_blocks` from 6.38% to 1.63% (sourced).
 
 ## Moves
 

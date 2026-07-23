@@ -146,6 +146,26 @@ the listed commits.
   fastest-Cranelift time geometrically (about 10% faster); the remaining
   serial catch-up targets are Pulldown, bz2, and CoreMark (sourced).
 
+- A Pulldown profile then found middle-end CFG cleanup at 12.46% inclusive,
+  with `remove_blocks` alone at 6.38%. Single-predecessor merging compacted and
+  renumbered every program side table after each individual merge, then
+  restarted the cleanup fixed point. Commit `4b801eb` computes predecessor
+  counts once, absorbs each eligible goto chain without changing block ids, and
+  compacts all tombstoned successors once. Pulldown repeatedly moved from
+  123.66 ms to 111.8-114.1 ms (about 9%); cleanup fell to 4.14% inclusive and
+  `remove_blocks` to 1.63% (sourced).
+
+- The post-`4b801eb` seven-workload serial row was 51.158 ms (bz2), 112.41 ms
+  (pulldown-cmark), 2,192.1 ms (SpiderMonkey), 8,037.3 ms (FFmpeg), 4.136 ms
+  (CoreMark), 14.306 ms (Argon2), and 2.340 ms (ERC20). Relative to the
+  immediately preceding row, bz2, Pulldown, SpiderMonkey, and FFmpeg improved
+  1.5%, 9.1%, 5.1%, and 2.2%; the three small cases moved by less than 0.7% in
+  either direction. The geometric improvement was 2.4%. Ratios to the fastest
+  recorded serial Cranelift integration are now 1.15x, 1.16x, 0.78x, 0.62x,
+  1.08x, 0.94x, and 0.62x, or 0.88x geometrically. Pulldown's remaining gap
+  narrowed from 27% to 16% without adding a general allocator or changing the
+  eager policy (sourced).
+
 **Serial compiler comparison correction.**
 
 - Parallel startup is not the stable measure of intrinsic pipeline cost. With
