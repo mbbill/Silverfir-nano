@@ -29,6 +29,16 @@
 
 ## Facts
 
+- 2026-07-22 (678501db) measurement: ARM64 bulk-helper target
+  selection discovered used physical registers by asking
+  `terminator_uses_reg` once for every MachineIR register in every block,
+  repeatedly traversing identical terminators. On serial Pulldown the helper
+  was 3.06% self-time and 97.54% of its samples came from backend
+  construction. A canonical one-pass terminator source-register visitor
+  removed the nested scan; ARM64 backend construction fell to 0.65% total in
+  the verification profile, and all seven serial startup cases improved
+  (4.2% geometrically) (sourced).
+
 - 2026-07-22 measurement: the eager-preserving execution catch-up campaign
   moved the largest initial gaps (self-tail recursion, typed loop values, short
   exported-call setup, bulk helpers, and small ARM64 kernels) to parity with or

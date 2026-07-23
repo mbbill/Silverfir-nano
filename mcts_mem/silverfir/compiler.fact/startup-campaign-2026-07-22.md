@@ -149,13 +149,13 @@ the listed commits.
 - A Pulldown profile then found middle-end CFG cleanup at 12.46% inclusive,
   with `remove_blocks` alone at 6.38%. Single-predecessor merging compacted and
   renumbered every program side table after each individual merge, then
-  restarted the cleanup fixed point. Commit `4b801eb` computes predecessor
+  restarted the cleanup fixed point. Commit `4b801ebb` computes predecessor
   counts once, absorbs each eligible goto chain without changing block ids, and
   compacts all tombstoned successors once. Pulldown repeatedly moved from
   123.66 ms to 111.8-114.1 ms (about 9%); cleanup fell to 4.14% inclusive and
   `remove_blocks` to 1.63% (sourced).
 
-- The post-`4b801eb` seven-workload serial row was 51.158 ms (bz2), 112.41 ms
+- The post-`4b801ebb` seven-workload serial row was 51.158 ms (bz2), 112.41 ms
   (pulldown-cmark), 2,192.1 ms (SpiderMonkey), 8,037.3 ms (FFmpeg), 4.136 ms
   (CoreMark), 14.306 ms (Argon2), and 2.340 ms (ERC20). Relative to the
   immediately preceding row, bz2, Pulldown, SpiderMonkey, and FFmpeg improved
@@ -165,6 +165,26 @@ the listed commits.
   1.08x, 0.94x, and 0.62x, or 0.88x geometrically. Pulldown's remaining gap
   narrowed from 27% to 16% without adding a general allocator or changing the
   eager policy (sourced).
+
+- A post-cleanup Pulldown profile exposed a smaller instance of the same
+  repeated-traversal failure mode at the backend boundary:
+  `terminator_uses_reg` occupied 3.06% self-time, and 97.54% of its samples
+  came from ARM64 backend construction. The backend was traversing each block
+  terminator once for every MachineIR register merely to discover which
+  physical registers the terminator read. Commit `678501db` introduced one
+  canonical terminator source-register visitor and made backend construction
+  traverse each terminator once. The verification profile put ARM64 backend
+  construction at 0.65% total and its remaining `terminator_uses_reg` sample
+  came from a peephole pass, not backend construction (sourced).
+
+- The post-`678501db` seven-workload serial row was 49.481 ms (bz2), 106.54 ms
+  (pulldown-cmark), 2,112.7 ms (SpiderMonkey), 7,544.7 ms (FFmpeg), 3.909 ms
+  (CoreMark), 13.665 ms (Argon2), and 2.314 ms (ERC20). Improvements over the
+  post-`4b801ebb` row were 3.3%, 5.2%, 3.6%, 6.1%, 5.5%, 4.5%, and 1.1%,
+  respectively, or 4.2% geometrically. Approximate ratios to the fastest
+  recorded serial Cranelift integration are now 1.11x, 1.10x, 0.75x, 0.58x,
+  1.02x, 0.90x, and 0.61x (0.84x geometrically); bz2, Pulldown, and CoreMark
+  are the remaining near-parity catch-up cases (sourced).
 
 **Serial compiler comparison correction.**
 

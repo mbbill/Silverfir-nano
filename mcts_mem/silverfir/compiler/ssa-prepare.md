@@ -175,7 +175,7 @@
   together with its now-vacuous block-count plan check; the test suite anchors
   on the semantic CFG's block structure instead (code).
 
-- 2026-07-22 (4b801eb) measurement: single-predecessor cleanup previously
+- 2026-07-22 (4b801ebb) measurement: single-predecessor cleanup previously
   merged one successor, physically removed it from every per-block vector,
   remapped every CFG target, and restarted the fixed point. Predecessor counts
   for the remaining live graph do not change when a predecessor absorbs its
