@@ -33,6 +33,11 @@
   spill depth, so its spill-all can never reach a captured block-entry state
   (code).
 
+- 2026-07-23 rejected: returning the action already classified by the generic
+  discipline engine would let SSA emission reuse a primitive's pop/push counts,
+  but keeping that enum value live across the generic boundary enlarged
+  fat-LTO text and regressed serial startup (sourced).
+
 ## Moves
 
 - 2026-07-12 (35a439c7) replaced [[twin-simulations]]: the planner's

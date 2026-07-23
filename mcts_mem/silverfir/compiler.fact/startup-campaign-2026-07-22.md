@@ -467,3 +467,12 @@ the listed commits.
   improved from 36.27/36.74 ms to 35.34/35.05 ms (3.6% on pair averages).
   FFmpeg's complete SSA/MachineIR index remained byte-identical and all 356
   release tests passed (sourced).
+
+- 2026-07-23 rejected: the shared stack-discipline engine returned its
+  already-classified `StructuralAction` so immediate SSA emission could reuse
+  primitive pop/push counts instead of calling `stack_effect` again. Although
+  semantically clean, keeping the action live across the generic driver
+  boundary increased the fat-LTO benchmark binary's text from 3,702,156 to
+  3,933,912 bytes. Sixteen alternating quick serial bz2 pairs averaged
+  38.627 ms for the exact parent and 39.404 ms for the candidate (2.01%
+  slower), so the code change was fully reverted (sourced).
