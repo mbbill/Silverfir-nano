@@ -123,10 +123,11 @@ pub(super) fn compute_block_entry_cache_params(
 
     let lanes = cached_cells.len();
     let n_blocks = program.blocks.len();
-    let mut gp_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
-    let mut fp_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
-    let mut gp_exit_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
-    let mut fp_exit_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
+    // GP and FP cells occupy disjoint columns, so both banks can share the
+    // same dense block-by-cell entry/exit matrices. Lane numbers remain
+    // bank-relative; `cell_meta` selects the register bank at every read.
+    let mut entry_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
+    let mut exit_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
     let mut visited = collections::vec![false; program.blocks.len()];
     let mut fp_visited = collections::vec![false; program.blocks.len()];
     if program.entry.as_usize() < program.blocks.len() {
@@ -144,8 +145,8 @@ pub(super) fn compute_block_entry_cache_params(
             table_dispatch_modes,
             &call_preserve_preferences,
             &regfile.gp_allocatable_preserved_lanes(),
-            &mut gp_layouts,
-            &mut gp_exit_layouts,
+            &mut entry_layouts,
+            &mut exit_layouts,
             lanes,
             &mut visited,
         )?;
@@ -163,8 +164,8 @@ pub(super) fn compute_block_entry_cache_params(
             table_dispatch_modes,
             &call_preserve_preferences,
             &regfile.fp_allocatable_preserved_lanes(),
-            &mut fp_layouts,
-            &mut fp_exit_layouts,
+            &mut entry_layouts,
+            &mut exit_layouts,
             lanes,
             &mut fp_visited,
         )?;
@@ -188,8 +189,8 @@ pub(super) fn compute_block_entry_cache_params(
             table_dispatch_modes,
             &call_preserve_preferences,
             &regfile.gp_allocatable_preserved_lanes(),
-            &mut gp_layouts,
-            &mut gp_exit_layouts,
+            &mut entry_layouts,
+            &mut exit_layouts,
             lanes,
             &mut visited,
         )?;
@@ -212,8 +213,8 @@ pub(super) fn compute_block_entry_cache_params(
             table_dispatch_modes,
             &call_preserve_preferences,
             &regfile.fp_allocatable_preserved_lanes(),
-            &mut fp_layouts,
-            &mut fp_exit_layouts,
+            &mut entry_layouts,
+            &mut exit_layouts,
             lanes,
             &mut fp_visited,
         )?;
@@ -231,8 +232,8 @@ pub(super) fn compute_block_entry_cache_params(
         &call_preserve_preferences,
         &regfile.gp_allocatable_preserved_lanes(),
         regfile.gp_allocatable_count(),
-        &mut gp_layouts,
-        &mut gp_exit_layouts,
+        &mut entry_layouts,
+        &mut exit_layouts,
         lanes,
     )?;
 
@@ -261,10 +262,7 @@ pub(super) fn compute_block_entry_cache_params(
                 WasmError::internal("cached local index overflowed entry-cache metadata")
             })?;
             let row_base = block_index * lanes;
-            let lane_val = match cell_meta[cached_index].bank {
-                LayoutBank::Gp => gp_layouts[row_base + cached_index],
-                LayoutBank::Fp => fp_layouts[row_base + cached_index],
-            };
+            let lane_val = entry_layouts[row_base + cached_index];
             if lane_val == LANE_UNASSIGNED {
                 return Err(WasmError::internal(
                     "cache lane layout missing for cell in block b",
@@ -694,10 +692,14 @@ fn improve_gp_layouts_for_incoming_edges(
                 call_preserve_preferences,
                 preserved_lanes,
             );
-            if candidate_cost >= current_cost || candidate.as_slice() == current {
+            if candidate_cost >= current_cost
+                || cells.iter().all(|&cell| candidate[cell] == current[cell])
+            {
                 continue;
             }
-            layouts[row_base..row_base + lanes].copy_from_slice(&candidate);
+            for &cell in cells {
+                layouts[row_base + cell] = candidate[cell];
+            }
             simulate_block_exit_layout(
                 &program.blocks[block_index],
                 &layouts[row_base..row_base + lanes],
@@ -936,7 +938,11 @@ fn simulate_block_exit_layout(
     exit_layout: &mut [Lane],
     mut occupied: &mut [bool],
 ) -> Result<(), WasmError> {
-    exit_layout.copy_from_slice(entry_layout);
+    for (cell_index, meta) in cell_meta.iter().enumerate() {
+        if meta.bank == bank {
+            exit_layout[cell_index] = entry_layout[cell_index];
+        }
+    }
     let layout = exit_layout;
     occupied.fill(false);
     for lane in 0..prefix_occupied.min(lane_count) {
@@ -999,7 +1005,11 @@ fn simulate_block_exit_layout(
                         call_preserve_preferences,
                         preserved_lanes,
                     )?;
-                    layout.copy_from_slice(&exact);
+                    for (cached_index, meta) in cell_meta.iter().enumerate() {
+                        if meta.bank == bank {
+                            layout[cached_index] = exact[cached_index];
+                        }
+                    }
                     occupied.fill(false);
                     for lane in 0..prefix_occupied.min(lane_count) {
                         occupied[lane] = true;
@@ -1062,7 +1072,11 @@ fn simulate_block_exit_layout(
                             call_preserve_preferences,
                             preserved_lanes,
                         )?;
-                        layout.copy_from_slice(&exact);
+                        for (cached_index, meta) in cell_meta.iter().enumerate() {
+                            if meta.bank == bank {
+                                layout[cached_index] = exact[cached_index];
+                            }
+                        }
                         occupied.fill(false);
                         for lane in 0..prefix_occupied.min(lane_count) {
                             occupied[lane] = true;
@@ -1160,7 +1174,9 @@ fn build_block_bank_layout(
     mut occupied: &mut [bool],
     additions: &mut collections::Vec<usize>,
 ) -> Result<(), WasmError> {
-    layout.fill(LANE_UNASSIGNED);
+    for &cell in cells {
+        layout[cell] = LANE_UNASSIGNED;
+    }
     if cells.is_empty() {
         return Ok(());
     }
@@ -1251,7 +1267,9 @@ fn build_block_bank_layout(
         call_preserve_preferences,
         preserved_lanes,
     )?;
-    layout.copy_from_slice(&exact);
+    for &cell in cells {
+        layout[cell] = exact[cell];
+    }
     Ok(())
 }
 
