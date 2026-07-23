@@ -123,6 +123,15 @@ the listed commits.
   Cranelift rerun at 45.078 ms, Nano's bz2 ratio narrowed from 1.51x to 1.27x
   without changing eager or serial compilation policy (sourced).
 
+- A second follow-up found loop-frame reuse and loop-address hoisting each ran
+  a whole-CFG reachability DFS for every backward edge. Commit `8a89ce77`
+  replaced those repeated queries with one shared SCC analysis. Serial bz2
+  moved again from 57.066 ms to 51.909 and 52.621 ms (about 8-9%); the DFS
+  hotspot disappeared, address hoisting fell from 9.3% to 6.7% inclusive, and
+  frame reuse from 6.4% to 4.4%. Together with `70e165e0`, serial bz2 improved
+  from 67.180 ms to about 52.3 ms (22%) and the ratio to same-binary Wasmtime
+  Cranelift narrowed from 1.51x to about 1.16x (sourced).
+
 **Serial compiler comparison correction.**
 
 - Parallel startup is not the stable measure of intrinsic pipeline cost. With

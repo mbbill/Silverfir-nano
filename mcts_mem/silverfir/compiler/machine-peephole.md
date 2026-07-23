@@ -31,6 +31,22 @@
 
 ## Facts
 
+- 2026-07-22 (8a89ce77) pitfall and decision: both loop peepholes ran a
+  newly allocated whole-CFG reachability DFS for every numerically backward
+  edge. For an existing edge `source -> target`, the old proof that `target`
+  reaches `source` is exactly the statement that both endpoints share a
+  strongly connected component. The retained iterative Kosaraju analysis
+  computes all components once, preserves the numeric-header policy, and is
+  shared by loop-frame reuse and loop-address hoisting (sourced).
+
+- 2026-07-22 (8a89ce77) measurement: after the dead-parameter worklist fix,
+  replacing per-edge DFS with SCC discovery moved repeated serial bz2 startup
+  from 57.066 ms to 51.909 and 52.621 ms (about 8-9%). The former
+  `block_reachable_from` hotspot (4.4% self / 5.1% inclusive) disappeared;
+  loop-address hoisting fell from 9.3% to 6.7% inclusive and loop-frame reuse
+  from 6.4% to 4.4%. Against same-binary Wasmtime Cranelift at 45.078 ms,
+  Nano's bz2 ratio is about 1.16x (sourced).
+
 - 2026-07-22 (70e165e0) pitfall and decision: dead block-parameter
   elimination scanned every instruction once per parameter, cloned and
   stripped the terminator once per parameter, then repeatedly rescanned every
