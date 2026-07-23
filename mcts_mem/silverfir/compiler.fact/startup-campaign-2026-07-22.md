@@ -422,3 +422,17 @@ the listed commits.
   was fully reverted: removing one of four memory-value traversals is visible
   in a profile but did not produce a reproducible end-to-end gain large enough
   to justify the extra transfer abstraction (sourced).
+
+- 2026-07-23: the opcode macro generated a separate `Result`-constructing
+  match arm for every valid discriminant. On AArch64, `Opcode::try_from`
+  consequently occupied 3,992 bytes as a jump table plus duplicated result
+  writes and accounted for 2.01% of serial FFmpeg profile samples. Matching
+  the same complete set of valid discriminants in one arm and then performing
+  a checked representation conversion reduced the function to 116 bytes and
+  its self time to 0.72%; inclusive decoder time fell from 5.35% to 3.79%.
+  FFmpeg's complete SSA/MachineIR dump remained byte-identical and all 355
+  release tests passed. Exact-parent serial bz2 was neutral in both orders
+  (36.32 versus 36.48 ms, then 36.21 versus 36.20 ms); thermally noisy FFmpeg
+  samples were non-regressing but are not used to claim an end-to-end
+  percentage. The change was retained on the direct causal profile, exact
+  output equivalence, and four-line implementation surface (sourced).

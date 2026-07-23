@@ -51,6 +51,17 @@
   instead aliases a deterministic op or is given a fixed deterministic native
   lowering (code).
 
+- 2026-07-23 rationale: the macro-generated `TryFrom` implementation used one
+  `Result`-constructing match arm per valid opcode discriminant. On AArch64,
+  `Opcode::try_from` compiled to 3,992 bytes of jump table and duplicated
+  return blocks and consumed 2.01% of serial FFmpeg profile samples. One
+  shared pattern still validates exactly the declared discriminants before a
+  representation conversion, but compiles to 116 bytes; self time fell to
+  0.72% and inclusive decoder time from 5.35% to 3.79%. The complete FFmpeg
+  SSA/MachineIR dump remained byte-identical, exact-parent serial bz2 was
+  neutral in both measurement orders, and all 355 release tests passed
+  (sourced).
+
 ## Moves
 
 - 2025-08-13 (c7ae92e5) replaced [[push-broadcast-decoder]]: the push callback
