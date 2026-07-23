@@ -476,3 +476,15 @@ the listed commits.
   3,933,912 bytes. Sixteen alternating quick serial bz2 pairs averaged
   38.627 ms for the exact parent and 39.404 ms for the candidate (2.01%
   slower), so the code change was fully reverted (sourced).
+
+- 2026-07-23: empty-goto threading performed three input-scaled actions per
+  removed block: a full incoming-edge scan, physical removal from every
+  parallel block vector, and whole-CFG target renumbering. A maintained
+  incoming-edge index plus a fixed-point tombstone worklist now composes all
+  eligible chains before one compaction. Serial FFmpeg cleanup fell from 3.19%
+  to 2.53% inclusive and `remove_blocks` from about 1.52% to 0.67% of total
+  profile samples. Exact-parent alternating bz2 means improved by 6.08% on
+  pair averages; four alternating FFmpeg quick pairs all favored the candidate
+  (2.71% mean point estimate, secondary because of thermal drift). FFmpeg's
+  complete SSA/MachineIR/native index remained byte-identical and all 356
+  release tests passed (sourced).

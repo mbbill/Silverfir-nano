@@ -13,6 +13,13 @@
   discovery is built once so the cleanup remains linear rather than rescanning
   the CFG per block (sourced).
 
+- 2026-07-23 (fc6c058f) statement: empty-goto threading maintains one incoming
+  edge index while composing bindings, requeues affected sources/targets, and
+  tombstones every successfully threaded block before one final compaction.
+  It does not rescan the CFG or renumber the parallel block vectors per removed
+  block; cache-only repair blocks and guarded entry-block handling retain their
+  existing semantics (sourced).
+
 ## Moves
 
 - 2026-03-12 (455661a0) replaced [[positional-tos-window-boundary]]: a positional

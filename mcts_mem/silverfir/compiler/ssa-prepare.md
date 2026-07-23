@@ -205,6 +205,18 @@
   FFmpeg's complete SSA/MachineIR index remained byte-identical and all 356
   release tests passed (sourced).
 
+- 2026-07-23 (fc6c058f) measurement: empty-goto threading still rediscovered
+  incoming edges by scanning the whole CFG, physically removed one block from
+  every parallel block vector, remapped every target, and repeated. Retaining
+  one incoming-edge index, updating it as composed edges move, tombstoning the
+  fixed-point worklist, and compacting once removes that repeated graph/vector
+  work. Cleanup fell from 3.19% to 2.53% inclusive in serial FFmpeg profiles;
+  `remove_blocks` fell from about 1.52% to 0.67% of total samples. Exact-parent
+  serial bz2 means were 35.854/37.429 ms for the parent and 34.505/34.319 ms
+  for the candidate, a 6.08% reduction on pair averages. FFmpeg's complete
+  SSA/MachineIR/native index remained byte-identical and all 356 release tests
+  passed (sourced).
+
 ## Moves
 
 - 2026-03-12 (2ea0bb68) replaced [[two-stage-planning]]: the planning layer
