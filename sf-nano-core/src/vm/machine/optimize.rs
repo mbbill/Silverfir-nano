@@ -10,9 +10,9 @@ use super::call_abi::collect_preserved_clobbers;
 
 pub(crate) fn optimize_function(function: &mut MachineFunction, config: BackendConfig) {
     peephole::optimize(&mut function.program, config);
-    // Peepholes may introduce definitions in previously unused dynamic lanes.
-    // Refresh this derived ABI metadata from the final MachineIR so a newly
-    // claimed preserved lane is saved and restored by the backend.
+    // Derive ABI metadata once from final MachineIR. Peepholes may add or
+    // remove definitions, so a pre-optimization scan would be both stale and
+    // redundant.
     function.preserved_clobbers = collect_preserved_clobbers(&function.program, config);
     shrink_machine_function_storage(function);
 }
@@ -80,7 +80,7 @@ mod tests {
     };
 
     #[test]
-    fn optimization_refreshes_preserved_clobber_metadata() {
+    fn optimization_populates_preserved_clobber_metadata() {
         let config = BackendConfig::with_volatility(8, 1, 1, 1, 0, 0, 1, 0, false, 3);
         let preserved = MachineReg(5);
         let mut function = MachineFunction {
@@ -100,8 +100,6 @@ mod tests {
                     },
                 }],
             },
-            // Model metadata computed before a late optimization claimed the
-            // preserved lane.
             preserved_clobbers: collections::Vec::new(),
         };
 

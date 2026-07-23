@@ -2896,15 +2896,7 @@ fn direct_local_call_places_call_live_clean_cache_in_preserved_reg_when_availabl
     })
     .expect("direct local call should lower with a preserved cache lane");
 
-    let caller_function = &lowered.module.functions[0];
-    assert!(
-        caller_function
-            .preserved_clobbers
-            .contains(&MachineReg(MACHINE_FIXED_REG_COUNT + 3)),
-        "call-live clean cache should use the first preserved lane when one is available: {:?}",
-        caller_function.preserved_clobbers
-    );
-    let caller_program = &caller_function.program;
+    let caller_program = &lowered.module.functions[0].program;
     assert_eq!(caller_program.blocks.len(), 3);
     let call_block = &caller_program.blocks[0];
     let continuation = &caller_program.blocks[1];

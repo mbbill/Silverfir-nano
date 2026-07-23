@@ -44,7 +44,7 @@ use crate::{
 };
 
 use super::{
-    call_abi::{collect_preserved_clobbers, INDIRECT_DISPATCH_CONTROL_GP_LANES},
+    call_abi::INDIRECT_DISPATCH_CONTROL_GP_LANES,
     gp32::Gp32Lowering,
     lower_cache_layout::{compute_block_entry_cache_params, preferred_preserved_for_cached},
     lower_const_pool::ConstPoolBuilder,
@@ -974,12 +974,13 @@ fn lower_function(
         blocks,
     };
     program.validate(config)?;
-    let preserved_clobbers = collect_preserved_clobbers(&program, config);
 
     Ok(MachineFunction {
         id: input.id,
         program,
-        preserved_clobbers,
+        // Final optimization is the single authority for this derived ABI
+        // metadata because peepholes may add or remove register definitions.
+        preserved_clobbers: collections::Vec::new(),
     })
 }
 
