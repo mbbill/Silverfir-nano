@@ -891,27 +891,46 @@ fn remove_blocks(program: &mut SsaProgram, removed: &[usize]) {
     let old_blocks = core::mem::take(&mut program.blocks);
     let old_entries = core::mem::take(&mut program.block_entry_cached_cells);
     let old_entry_reqs = core::mem::take(&mut program.block_entry_cache_requirements);
+    debug_assert_eq!(old_blocks.len(), old_entries.len());
+    debug_assert!(old_entry_reqs.is_empty() || old_entry_reqs.len() == old_blocks.len());
     let kept_blocks = block_len.saturating_sub(removed.len());
     let mut new_blocks = collections::Vec::with_capacity(kept_blocks);
     let mut new_entries =
         collections::Vec::with_capacity(old_entries.len().saturating_sub(removed.len()));
-    let mut new_entry_reqs =
-        collections::Vec::with_capacity(old_entry_reqs.len().saturating_sub(removed.len()));
+    let mut new_entry_reqs = if old_entry_reqs.is_empty() {
+        collections::Vec::new()
+    } else {
+        collections::Vec::with_capacity(old_entry_reqs.len().saturating_sub(removed.len()))
+    };
 
-    for (old_index, ((mut block, entry_slots), entry_reqs)) in old_blocks
-        .into_iter()
-        .zip(old_entries.into_iter())
-        .zip(old_entry_reqs.into_iter())
-        .enumerate()
-    {
-        if removed_mask[old_index] {
-            continue;
+    if old_entry_reqs.is_empty() {
+        for (old_index, (mut block, entry_slots)) in
+            old_blocks.into_iter().zip(old_entries).enumerate()
+        {
+            if removed_mask[old_index] {
+                continue;
+            }
+            remap_terminator_targets(&mut block.terminator, &mapping);
+            block.id = mapping[old_index];
+            new_blocks.push(block);
+            new_entries.push(entry_slots);
         }
-        remap_terminator_targets(&mut block.terminator, &mapping);
-        block.id = mapping[old_index];
-        new_blocks.push(block);
-        new_entries.push(entry_slots);
-        new_entry_reqs.push(entry_reqs);
+    } else {
+        for (old_index, ((mut block, entry_slots), entry_reqs)) in old_blocks
+            .into_iter()
+            .zip(old_entries)
+            .zip(old_entry_reqs)
+            .enumerate()
+        {
+            if removed_mask[old_index] {
+                continue;
+            }
+            remap_terminator_targets(&mut block.terminator, &mapping);
+            block.id = mapping[old_index];
+            new_blocks.push(block);
+            new_entries.push(entry_slots);
+            new_entry_reqs.push(entry_reqs);
+        }
     }
 
     debug_assert!(removed_mask.get(program.entry.as_usize()).copied() != Some(true));
@@ -930,7 +949,9 @@ fn remove_one_block(program: &mut SsaProgram, removed_index: usize) {
 
     program.blocks.remove(removed_index);
     program.block_entry_cached_cells.remove(removed_index);
-    program.block_entry_cache_requirements.remove(removed_index);
+    if !program.block_entry_cache_requirements.is_empty() {
+        program.block_entry_cache_requirements.remove(removed_index);
+    }
 
     if program.entry.as_usize() > removed_index {
         program.entry = SsaTarget(program.entry.0 - 1);
@@ -1372,7 +1393,8 @@ mod tests {
             result_types: collections::Vec::new(),
             cell_info: collections::Vec::new(),
             block_entry_cached_cells: collections::vec![collections::Vec::new(); 3],
-            block_entry_cache_requirements: collections::vec![collections::Vec::new(); 3],
+            // Rewrite intentionally leaves this final-SSA side table absent.
+            block_entry_cache_requirements: collections::Vec::new(),
             preferred_preserved: collections::Vec::new(),
             value_types: collections::vec![ValueType::I32; 3],
             value_sink_cell: collections::vec![None; 3],
@@ -1462,7 +1484,8 @@ mod tests {
                 collections::Vec::new(),
                 collections::Vec::new()
             ],
-            block_entry_cache_requirements: collections::vec![collections::Vec::new(); 3],
+            // Rewrite intentionally leaves this final-SSA side table absent.
+            block_entry_cache_requirements: collections::Vec::new(),
             preferred_preserved: collections::Vec::new(),
             value_types: collections::Vec::new(),
             value_sink_cell: collections::Vec::new(),
@@ -1474,6 +1497,7 @@ mod tests {
         assert!(remove_unreachable_blocks(&mut program));
         assert_eq!(program.blocks.len(), 1);
         assert_eq!(program.entry, SsaTarget(0));
+        assert!(program.block_entry_cache_requirements.is_empty());
     }
 
     #[test]

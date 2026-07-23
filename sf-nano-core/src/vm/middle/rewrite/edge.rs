@@ -11,8 +11,8 @@ use crate::vm::middle::{
     joint_plan::facts::{self, RepairActions, RepairActionsSpans, RowSpan, NO_REPAIR},
     ssa_ir::{
         ir::{
-            entry_cache_requirement, EntryCacheRequirement, SsaBinding, SsaBlock, SsaEdge, SsaInst,
-            SsaProgram, SsaTerminator,
+            entry_cache_requirement, SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaProgram,
+            SsaTerminator,
         },
         target::SsaTarget,
     },
@@ -61,9 +61,6 @@ pub(super) fn insert_boundary_repair_blocks(
     );
     program.blocks.reserve_exact(repair_count);
     program.block_entry_cached_cells.reserve_exact(repair_count);
-    program
-        .block_entry_cache_requirements
-        .reserve_exact(repair_count);
 
     // Scratch reused across blocks for edge enumeration; avoids allocating a
     // fresh Vec per block for the common 1- and 2-edge cases.
@@ -324,11 +321,6 @@ fn materialize_repair_block(
     program
         .block_entry_cached_cells
         .push(pred_exit.to_vec().into());
-    // The repair block receives `pred_exit` as its entry cache set; each arrives
-    // materialized, so every requirement is Ensure. The machine assigns lanes.
-    program
-        .block_entry_cache_requirements
-        .push(collections::vec![EntryCacheRequirement::Ensure; pred_exit.len()]);
     repair_blocks.insert(key, repair_id);
     Some(repair_id)
 }
@@ -397,12 +389,6 @@ fn maybe_repair_entry(program: &mut SsaProgram) {
     program
         .block_entry_cached_cells
         .push(collections::Vec::new());
-    // The synthesized entry-repair block precedes the real entry and threads no
-    // incoming cache (it runs the entry's ensures/reserves), so its requirement
-    // row is empty.
-    program
-        .block_entry_cache_requirements
-        .push(collections::Vec::new());
     program.entry = repair_id;
 }
 
@@ -466,10 +452,8 @@ mod tests {
                 collections::Vec::new(),
                 collections::vec![slot0]
             ],
-            block_entry_cache_requirements: collections::vec![
-                collections::Vec::new(),
-                collections::vec![EntryCacheRequirement::Ensure]
-            ],
+            // Requirement rows are intentionally absent until final SSA.
+            block_entry_cache_requirements: collections::Vec::new(),
             preferred_preserved: collections::Vec::new(),
             value_types: collections::vec![ValueType::I32, ValueType::I32],
             value_sink_cell: collections::vec![None, None],

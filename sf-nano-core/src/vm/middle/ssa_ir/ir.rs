@@ -589,7 +589,9 @@ pub(crate) struct SsaProgram {
     /// `Reserve` (write-first lane). Derived once by the middle (pass D) so the
     /// machine reads it here instead of re-scanning ops. The machine owns the
     /// physical lane layout; the plan owns only this context-free requirement.
-    /// Maintained positionally alongside `block_entry_cached_cells`.
+    /// This outer vector is intentionally empty during rewrite and structural
+    /// cleanup; once derived from final SSA it is maintained positionally
+    /// alongside `block_entry_cached_cells`.
     pub block_entry_cache_requirements: collections::Vec<collections::Vec<EntryCacheRequirement>>,
     /// Whole-function preserved-cache preference, per cell (indexed by
     /// `CellId.0`): `true` when the residency solver nominated the cell for

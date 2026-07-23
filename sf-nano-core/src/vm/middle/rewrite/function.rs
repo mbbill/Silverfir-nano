@@ -25,10 +25,9 @@ use crate::{
             },
             ssa_ir::{
                 ir::{
-                    entry_cache_requirements, CellInfo, EntryCacheRequirement, SsaBinding,
-                    SsaBlock, SsaCallArgs, SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge,
-                    SsaInst, SsaOp, SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator,
-                    SsaValue,
+                    entry_cache_requirements, CellInfo, SsaBinding, SsaBlock, SsaCallArgs,
+                    SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInst, SsaOp,
+                    SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator, SsaValue,
                 },
                 target::SsaTarget,
             },
@@ -187,11 +186,9 @@ pub(crate) fn rewrite_function(
     let mut builder = ProgramBuilder::default();
     let mut blocks = collections::Vec::with_capacity(original_block_count);
     let mut block_entry_cached_cells = collections::Vec::with_capacity(original_block_count);
-    let mut block_entry_cache_requirements = collections::Vec::with_capacity(original_block_count);
     let mut block_exit_cached_slots = collections::Vec::with_capacity(original_block_count);
     let mut extra_blocks = collections::Vec::new();
     let mut extra_block_cached_slots = collections::Vec::new();
-    let mut extra_block_cache_requirements = collections::Vec::new();
     let mut extra_block_exit_cached_slots = collections::Vec::new();
     for (block_index, cfg_block) in cfg.blocks.iter().enumerate() {
         let block_entry = planner.block_open(cfg_block.id);
@@ -243,13 +240,6 @@ pub(crate) fn rewrite_function(
                 "block {block_index}: emit-derived exit cache set diverged from the exact walker",
             );
         }
-        // The requirement row is a parallel placeholder here; it is finalized in
-        // `prepare_function` by scanning the FINAL (post-cleanup) block ops, which
-        // is the only faithful view once merges fold blocks together. We keep it
-        // 1:1 with the entry set through cleanup so the parallel-row invariant
-        // (cleanup's re-index, validate's length check) holds.
-        block_entry_cache_requirements
-            .push(collections::vec![EntryCacheRequirement::Ensure; entry_slots.len()]);
         block_entry_cached_cells.push(entry_slots);
         block_exit_cached_slots.push(exit_slots);
         let mut block = SsaBlock {
@@ -261,13 +251,6 @@ pub(crate) fn rewrite_function(
         };
         shrink_ssa_block_storage(&mut block);
         blocks.push(block);
-        // Bridge blocks (br_if canonical payload) thread the origin block's live
-        // cache; each threaded cache arrives materialized, so its requirement is
-        // Ensure. The machine assigns the physical lane.
-        for bridge_slots in &lowered.extra_block_cached_slots {
-            extra_block_cache_requirements
-                .push(collections::vec![EntryCacheRequirement::Ensure; bridge_slots.len()]);
-        }
         extra_block_cached_slots.extend(lowered.extra_block_cached_slots);
         extra_block_exit_cached_slots.extend(lowered.extra_block_exit_cached_slots);
         for mut block in lowered.extra_blocks {
@@ -279,8 +262,6 @@ pub(crate) fn rewrite_function(
     blocks.extend(extra_blocks);
     block_entry_cached_cells.reserve_exact(extra_block_cached_slots.len());
     block_entry_cached_cells.extend(extra_block_cached_slots);
-    block_entry_cache_requirements.reserve_exact(extra_block_cache_requirements.len());
-    block_entry_cache_requirements.extend(extra_block_cache_requirements);
     block_exit_cached_slots.reserve_exact(extra_block_exit_cached_slots.len());
     block_exit_cached_slots.extend(extra_block_exit_cached_slots);
 
@@ -299,7 +280,10 @@ pub(crate) fn rewrite_function(
         result_types,
         cell_info,
         block_entry_cached_cells,
-        block_entry_cache_requirements,
+        // Edge repair derives successor requirements directly from emitted ops.
+        // Publishing rows here would only create placeholders that cleanup has
+        // to reindex before `prepare_function` overwrites them from final SSA.
+        block_entry_cache_requirements: collections::Vec::new(),
         // Finalized in `prepare_function` over the FINAL SSA (the literal 2c2e010
         // cross-count dataflow); empty here.
         preferred_preserved: collections::Vec::new(),
@@ -340,20 +324,15 @@ pub(crate) fn rewrite_function(
     );
     drop(planner);
     drop(block_exit_cached_slots);
-    // Structural standing guard: the block vector and its parallel entry-cache
-    // row + requirement-row vectors stay in lockstep, and every block id is its
-    // own index. A bridge or repair block pushed without its cache rows would
-    // desync these.
+    // Structural standing guard: the block vector and entry-cache rows stay in
+    // lockstep, and every block id is its own index. Requirement rows are
+    // intentionally absent until final SSA is available after cleanup.
     debug_assert_eq!(
         program.blocks.len(),
         program.block_entry_cached_cells.len(),
         "block vector and entry-cache-row vector desynced after repair insertion",
     );
-    debug_assert_eq!(
-        program.blocks.len(),
-        program.block_entry_cache_requirements.len(),
-        "block vector and entry-cache-requirement-row vector desynced after repair insertion",
-    );
+    debug_assert!(program.block_entry_cache_requirements.is_empty());
     debug_assert!(
         program
             .blocks
