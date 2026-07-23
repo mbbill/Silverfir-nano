@@ -297,3 +297,16 @@
   run measured 84.925 ms for Pulldown, 1,770.8 ms for SpiderMonkey, and
   6,489.5 ms for FFmpeg; FFmpeg improved 2.29% significantly because its many
   multi-block functions amortize the trackers more often (sourced).
+
+- 2026-07-23 rejected: the adjacent initial store-forwarding and load-reuse
+  passes were expressed as independent per-instruction transfers and composed
+  into one block traversal without changing the required post-indexed-fusion
+  reuse pass or post-copy-propagation forwarding pass. A regression test
+  preserved sequential tracker invalidation and FFmpeg's full SSA/MachineIR
+  dump was byte-identical, but exact-parent measurements did not reproduce:
+  bz2 moved 36.66 -> 36.07 ms in one 30-sample pair and 37.49 -> 37.77 ms in
+  the repeat; FFmpeg moved 6.450 -> 6.056 s in one order and 6.592 -> 6.739 s
+  in the reverse order, with severe thermal outliers. The refactor was fully
+  reverted. Keeping the two tiny trackers allocated across blocks is proven;
+  combining only one pair of the four ordered memory-value scans is not
+  (sourced).

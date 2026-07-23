@@ -408,3 +408,17 @@ the listed commits.
   faster); bz2's first matched pair measured 36.52 versus 37.41 ms (2.4%
   faster), but later thermally disturbed samples were inconclusive, so FFmpeg
   is the primary attribution evidence. All 355 release tests passed (sourced).
+
+- 2026-07-23 rejected: the adjacent initial store-to-load forwarding and
+  load-to-load reuse passes were factored into independent per-instruction
+  transfers and composed into one block traversal, while their later
+  post-fusion and post-copy-propagation reruns stayed in place. A focused test
+  pinned the subtle sequential-state case, and FFmpeg's full SSA/MachineIR dump
+  was byte-identical. The first 30-sample bz2 pair favored the combined scan
+  by 1.60% (36.07 versus 36.66 ms), but the repeat reversed slightly (37.77
+  versus 37.49 ms). FFmpeg likewise favored the candidate in the first
+  long-sample order (6.056 versus 6.450 s) but reversed when the order was
+  swapped (6.739 versus 6.592 s), with severe thermal outliers. The refactor
+  was fully reverted: removing one of four memory-value traversals is visible
+  in a profile but did not produce a reproducible end-to-end gain large enough
+  to justify the extra transfer abstraction (sourced).
