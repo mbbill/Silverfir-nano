@@ -87,6 +87,16 @@
   means were 6.571 versus 6.714 seconds (2.1% faster), and all 355 release
   tests passed (sourced).
 
+- 2026-07-23 rationale: the initial FP cache-layout dominator walk populated a
+  temporary visited bitmap and discarded it, then allocated a second bitmap
+  and traversed the whole dominator tree again solely to reconstruct which
+  blocks the first walk had visited. Retaining the first bitmap removes one
+  allocation and one O(blocks) traversal without changing either bank's layout
+  order. FFmpeg's complete SSA/MachineIR index remained byte-identical and all
+  356 release tests passed. Alternating bz2 and FFmpeg timing was dominated by
+  thermal/order effects, so no wall-time percentage is attributed to this
+  five-line aggregate-work removal (sourced).
+
 - 2026-03-12 (7bb4d7dc) rationale: the step between prepared LIR and MachineIR is
   one internal lowering pass, not a new public IR layer — it expands VM-flavored ops
   into machine-shaped code and does the trivial fixed-budget register assignment the

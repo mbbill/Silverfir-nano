@@ -446,3 +446,13 @@ the listed commits.
   bz2 means favored the candidate by about 0.65% on pair averages, FFmpeg's
   complete SSA/MachineIR index remained byte-identical, and all 356 release
   tests passed (sourced).
+
+- 2026-07-23: FP cache-layout assignment discarded the visited bitmap produced
+  by its dominator walk, then allocated another bitmap and walked the dominator
+  tree again to reconstruct the same visited set before handling disconnected
+  roots. Reusing the first bitmap removes one allocation and one O(blocks)
+  traversal while preserving exact layout order. FFmpeg's complete
+  SSA/MachineIR index remained byte-identical and all 356 release tests passed;
+  alternating bz2 and FFmpeg timings were thermally/order dominated, so this
+  five-line structural cleanup carries no claimed wall-time percentage
+  (sourced).
