@@ -10,7 +10,7 @@ use crate::{
 use core::fmt;
 
 #[repr(u8)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum AbstractHeapType {
     Func = 0x70,
     NoFunc = 0x73,
@@ -126,7 +126,7 @@ impl fmt::Display for AbstractHeapType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub enum HeapType {
     Abstract(AbstractHeapType),
     Concrete(u32),
@@ -267,7 +267,7 @@ impl From<AbstractHeapType> for HeapType {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
 pub struct RefType {
     pub nullable: bool,
     pub heap_type: HeapType,

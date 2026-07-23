@@ -7,6 +7,7 @@
 //! - this file coordinates one block-at-a-time lowering using planner decisions
 
 use crate::collections;
+use core::hash::{Hash, Hasher};
 
 use crate::{
     error::WasmError,
@@ -99,31 +100,117 @@ impl RewriteCfg {
 #[derive(Debug, Default)]
 pub(super) struct ProgramBuilder {
     primitive_pool: collections::Vec<PrimitiveOpKind>,
-    /// Pool indices sorted by primitive value. The pool itself remains in
-    /// insertion order because `SsaOp` encodes its indices directly.
+    /// Open-addressed lookup side table. The pool itself remains in insertion
+    /// order because `SsaOp` encodes its indices directly.
     primitive_index: collections::Vec<u32>,
     call_ops: collections::Vec<SsaCallOp>,
 }
 
+const EMPTY_PRIMITIVE_INDEX: u32 = u32::MAX;
+
+struct PrimitiveHasher(u64);
+
+impl PrimitiveHasher {
+    #[inline]
+    fn new() -> Self {
+        Self(0x517c_c1b7_2722_0a95)
+    }
+
+    #[inline]
+    fn mix(&mut self, value: u64) {
+        self.0 = (self.0.rotate_left(5) ^ value).wrapping_mul(0x9e37_79b1_85eb_ca87);
+    }
+}
+
+impl Hasher for PrimitiveHasher {
+    #[inline]
+    fn finish(&self) -> u64 {
+        self.0
+    }
+
+    #[inline]
+    fn write(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            self.mix(byte as u64);
+        }
+    }
+
+    #[inline]
+    fn write_u8(&mut self, value: u8) {
+        self.mix(value as u64);
+    }
+
+    #[inline]
+    fn write_u32(&mut self, value: u32) {
+        self.mix(value as u64);
+    }
+
+    #[inline]
+    fn write_u64(&mut self, value: u64) {
+        self.mix(value);
+    }
+
+    #[inline]
+    fn write_usize(&mut self, value: usize) {
+        self.mix(value as u64);
+    }
+}
+
+#[inline]
+fn primitive_hash(kind: &PrimitiveOpKind) -> u64 {
+    let mut hasher = PrimitiveHasher::new();
+    kind.hash(&mut hasher);
+    hasher.finish()
+}
+
 impl ProgramBuilder {
     pub(super) fn intern_primitive(&mut self, kind: &PrimitiveOpKind) -> Result<u32, WasmError> {
-        match self
-            .primitive_index
-            .binary_search_by(|pool_idx| self.primitive_pool[*pool_idx as usize].cmp(kind))
-        {
-            Ok(index_pos) => return Ok(self.primitive_index[index_pos]),
-            Err(index_pos) => {
-                if self.primitive_pool.len() >= SsaOp::MAX_PRIMITIVE_POOL {
-                    return Err(WasmError::internal(
-                        "SSA-IR primitive op pool overflow: function has more distinct primitive ops than a u16 opcode can address",
-                    ));
-                }
-                let pool_idx = self.primitive_pool.len() as u32;
-                self.primitive_pool.push(kind.clone());
-                self.primitive_index.insert(index_pos, pool_idx);
-                Ok(pool_idx)
-            }
+        let hash = primitive_hash(kind);
+        if let Some(pool_idx) = self.find_primitive(kind, hash) {
+            return Ok(pool_idx);
         }
+        if self.primitive_pool.len() >= SsaOp::MAX_PRIMITIVE_POOL {
+            return Err(WasmError::internal(
+                "SSA-IR primitive op pool overflow: function has more distinct primitive ops than a u16 opcode can address",
+            ));
+        }
+
+        self.reserve_primitive_index(self.primitive_pool.len() + 1);
+        let pool_idx = self.primitive_pool.len() as u32;
+        self.primitive_pool.push(kind.clone());
+        insert_primitive_index(&mut self.primitive_index, pool_idx, hash);
+        Ok(pool_idx)
+    }
+
+    #[inline]
+    fn find_primitive(&self, kind: &PrimitiveOpKind, hash: u64) -> Option<u32> {
+        if self.primitive_index.is_empty() {
+            return None;
+        }
+        let mask = self.primitive_index.len() - 1;
+        let mut slot = hash as usize & mask;
+        loop {
+            let pool_idx = self.primitive_index[slot];
+            if pool_idx == EMPTY_PRIMITIVE_INDEX {
+                return None;
+            }
+            if self.primitive_pool[pool_idx as usize] == *kind {
+                return Some(pool_idx);
+            }
+            slot = (slot + 1) & mask;
+        }
+    }
+
+    fn reserve_primitive_index(&mut self, next_pool_len: usize) {
+        if next_pool_len * 2 <= self.primitive_index.len() {
+            return;
+        }
+        let new_len = self.primitive_index.len().max(4) * 2;
+        let mut new_index = collections::vec![EMPTY_PRIMITIVE_INDEX; new_len];
+        for (pool_idx, kind) in self.primitive_pool.iter().enumerate() {
+            insert_primitive_index(&mut new_index, pool_idx as u32, primitive_hash(kind));
+        }
+        self.primitive_index = new_index;
     }
 
     pub(super) fn push_call_op(&mut self, call: SsaCallOp) -> Result<u32, WasmError> {
@@ -136,6 +223,16 @@ impl ProgramBuilder {
         self.call_ops.push(call);
         Ok(idx)
     }
+}
+
+#[inline]
+fn insert_primitive_index(index: &mut [u32], pool_idx: u32, hash: u64) {
+    let mask = index.len() - 1;
+    let mut slot = hash as usize & mask;
+    while index[slot] != EMPTY_PRIMITIVE_INDEX {
+        slot = (slot + 1) & mask;
+    }
+    index[slot] = pool_idx;
 }
 
 pub(crate) fn rewrite_function(
@@ -2675,5 +2772,42 @@ fn canonicalize_return_results(
         state
             .ops
             .push(SsaInst::spill(dst.advance(offset as u16), value));
+    }
+}
+
+#[cfg(test)]
+mod primitive_index_tests {
+    use super::*;
+
+    #[test]
+    fn primitive_hash_index_preserves_pool_ids_across_growth() {
+        let mut builder = ProgramBuilder::default();
+        assert_eq!(
+            builder.intern_primitive(&PrimitiveOpKind::I32Add).unwrap(),
+            0
+        );
+        assert_eq!(
+            builder.intern_primitive(&PrimitiveOpKind::I64Add).unwrap(),
+            1
+        );
+        for value in 0..64 {
+            assert_eq!(
+                builder
+                    .intern_primitive(&PrimitiveOpKind::I32Const { value })
+                    .unwrap(),
+                value + 2
+            );
+        }
+        for value in (0..64).rev() {
+            assert_eq!(
+                builder
+                    .intern_primitive(&PrimitiveOpKind::I32Const { value })
+                    .unwrap(),
+                value + 2
+            );
+        }
+        assert_eq!(builder.primitive_pool.len(), 66);
+        assert_eq!(builder.primitive_pool[0], PrimitiveOpKind::I32Add);
+        assert_eq!(builder.primitive_pool[1], PrimitiveOpKind::I64Add);
     }
 }

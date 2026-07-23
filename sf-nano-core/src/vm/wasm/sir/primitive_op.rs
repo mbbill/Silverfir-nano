@@ -283,7 +283,7 @@ macro_rules! define_primitive_ops {
         /// Function-body semantics such as locals, calls, returns, structured
         /// control, and branch metadata live in `SemanticOpKind`, which embeds
         /// `PrimitiveOpKind` instead of expanding this enum into a whole-function IR.
-        #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+        #[derive(Clone, Debug, Hash, PartialEq, Eq, PartialOrd, Ord)]
         pub(crate) enum PrimitiveOpKind {
             $( $name $( { $($field : $ty),* } )?, )*
         }
