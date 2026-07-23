@@ -17,7 +17,7 @@
 
 use crate::collections;
 
-use crate::vm::middle::ssa_ir::ir::{entry_cache_requirement, EntryCacheRequirement, SsaProgram};
+use crate::vm::middle::ssa_ir::ir::{entry_cache_requirements, EntryCacheRequirement, SsaProgram};
 
 /// (A) Per-block, per-entry-slot requirement (`Ensure` | `Reserve`) from the
 /// original `entry_cache_requirement` scan over each FINAL block's emitted ops.
@@ -35,15 +35,12 @@ pub(super) fn derive_entry_cache_requirements(
                 .get(block_index)
                 .map(|slots| slots.as_slice())
                 .unwrap_or(&[]);
-            entry_slots
-                .iter()
-                .map(|&slot| {
-                    // An entry-resident slot is carried-through by definition, so
-                    // one the block never touches needs its value materialized on
-                    // entry (`Ensure`); a first-touch `Set`/`Reserve` reserves.
-                    entry_cache_requirement(&block.ops, slot, true)
-                        .unwrap_or(EntryCacheRequirement::Ensure)
-                })
+            // An entry-resident slot is carried-through by definition, so one
+            // the block never touches needs its value materialized on entry
+            // (`Ensure`); a first-touch `Set`/`Reserve` reserves.
+            entry_cache_requirements(&block.ops, entry_slots, entry_slots)
+                .into_iter()
+                .map(|requirement| requirement.unwrap_or(EntryCacheRequirement::Ensure))
                 .collect()
         })
         .collect()

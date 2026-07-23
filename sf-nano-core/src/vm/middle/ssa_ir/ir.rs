@@ -710,6 +710,102 @@ pub(crate) fn entry_cache_requirement(
         .or_else(|| carried_through.then_some(EntryCacheRequirement::Ensure))
 }
 
+/// Classify the first cache-relevant touch of several sorted slots in one
+/// block walk.
+///
+/// The scalar [`entry_cache_requirement`] helper is convenient when querying
+/// one edge slot. Preparation, however, asks the same question for every
+/// planned entry resident. Replaying the block once per resident multiplies
+/// the hottest part of that classification by the register-cache budget.
+/// This batched form preserves the scalar helper's exact first-touch and call
+/// barrier semantics while walking `ops` only once.
+pub(crate) fn entry_cache_requirements(
+    ops: &[SsaInst],
+    slots: &[CellId],
+    carried_through: &[CellId],
+) -> collections::Vec<Option<EntryCacheRequirement>> {
+    const UNRESOLVED: u8 = 0;
+    const NONE: u8 = 1;
+    const ENSURE: u8 = 2;
+    const RESERVE: u8 = 3;
+
+    debug_assert!(slots.windows(2).all(|pair| pair[0] < pair[1]));
+    debug_assert!(carried_through.windows(2).all(|pair| pair[0] < pair[1]));
+
+    let mut states = collections::vec![UNRESOLVED; slots.len()];
+    let mut unresolved = slots.len();
+    for inst in ops {
+        let state = match inst.op {
+            SsaOp::CELL_GET_CACHE | SsaOp::CELL_ENSURE_CACHE => ENSURE,
+            SsaOp::CELL_SET_CACHE | SsaOp::CELL_RESERVE_CACHE => RESERVE,
+            SsaOp::CELL_GET_SLOT | SsaOp::CELL_SET_SLOT | SsaOp::CELL_DROP_CACHE => NONE,
+            SsaOp::CALL => break,
+            _ => continue,
+        };
+        let Ok(index) = slots.binary_search(&CellId(inst.meta)) else {
+            continue;
+        };
+        if states[index] != UNRESOLVED {
+            continue;
+        }
+        states[index] = state;
+        unresolved -= 1;
+        if unresolved == 0 {
+            break;
+        }
+    }
+
+    states
+        .into_iter()
+        .zip(slots.iter().copied())
+        .map(|(state, slot)| match state {
+            ENSURE => Some(EntryCacheRequirement::Ensure),
+            RESERVE => Some(EntryCacheRequirement::Reserve),
+            NONE | UNRESOLVED if carried_through.binary_search(&slot).is_ok() => {
+                Some(EntryCacheRequirement::Ensure)
+            }
+            NONE | UNRESOLVED => None,
+            _ => unreachable!("invalid entry-cache first-touch state"),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod entry_cache_requirement_tests {
+    use super::*;
+
+    #[test]
+    fn batched_requirements_match_scalar_first_touch_semantics() {
+        let slots = collections::vec![
+            CellId(0),
+            CellId(1),
+            CellId(2),
+            CellId(3),
+            CellId(4),
+            CellId(5),
+        ];
+        let carried = collections::vec![CellId(1), CellId(2), CellId(3)];
+        let value = SsaValue(0);
+        let ops = collections::vec![
+            SsaInst::cell_set_cache(CellId(0), value),
+            SsaInst::cell_get_cache(CellId(0), SsaValue(1)),
+            SsaInst::cell_get_cache(CellId(1), SsaValue(2)),
+            SsaInst::cell_drop_cache(CellId(2)),
+            SsaInst::cell_set_slot(CellId(5), value),
+            SsaInst::call(0),
+            SsaInst::cell_set_cache(CellId(3), value),
+            SsaInst::cell_set_cache(CellId(4), value),
+        ];
+
+        let expected = slots
+            .iter()
+            .copied()
+            .map(|slot| entry_cache_requirement(&ops, slot, carried.binary_search(&slot).is_ok()))
+            .collect::<collections::Vec<_>>();
+        assert_eq!(entry_cache_requirements(&ops, &slots, &carried), expected);
+    }
+}
+
 /// One SSA-IR basic block.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct SsaBlock {

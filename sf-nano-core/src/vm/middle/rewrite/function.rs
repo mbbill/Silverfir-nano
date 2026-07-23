@@ -25,9 +25,10 @@ use crate::{
             },
             ssa_ir::{
                 ir::{
-                    entry_cache_requirement, CellInfo, EntryCacheRequirement, SsaBinding, SsaBlock,
-                    SsaCallArgs, SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInst,
-                    SsaOp, SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator, SsaValue,
+                    entry_cache_requirements, CellInfo, EntryCacheRequirement, SsaBinding,
+                    SsaBlock, SsaCallArgs, SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge,
+                    SsaInst, SsaOp, SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator,
+                    SsaValue,
                 },
                 target::SsaTarget,
             },
@@ -389,10 +390,12 @@ fn filter_block_entry_cached_cells(
     hint_exit: &[CellId],
     ops: &[SsaInst],
 ) -> collections::Vec<CellId> {
+    let requirements = entry_cache_requirements(ops, planned, hint_exit);
     planned
         .iter()
         .copied()
-        .filter(|cell| entry_cache_requirement(ops, *cell, hint_exit.contains(cell)).is_some())
+        .zip(requirements)
+        .filter_map(|(cell, requirement)| requirement.map(|_| cell))
         .collect()
 }
 
