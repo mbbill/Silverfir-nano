@@ -120,6 +120,18 @@
   1.51x to 1.27x. Three focused worklist/definition-barrier tests, all 349
   workspace release tests, and native/emu64/emu32 spectests passed (sourced).
 
+- 2026-07-23 measurement: dead-parameter elimination cloned and then dropped
+  every block terminator solely to clear CFG edge arguments before checking
+  direct control/call/return uses. Clone and drop accounted for 20.9% of the
+  pass in a serial FFmpeg profile. An exact non-edge source visitor preserves
+  the distinction between edge-carried dependencies and direct terminator
+  reads without materializing the stripped copy; clone/drop disappeared from
+  the verification profile. Exact-parent serial bz2 means were 36.84/37.27 ms
+  for the parent and 36.84/36.78 ms for the candidate (about 0.65% favorable
+  on the pair averages, with overlapping intervals). FFmpeg's complete
+  SSA/MachineIR index remained byte-identical and all 356 release tests passed
+  (sourced).
+
 - 2026-07-22 (fa131723) pitfall: loop-frame reuse scanned every block and used
   repeated linear loop-membership tests to discover entry sources before it
   checked whether the loop exits even contained compatible frame reloads. On

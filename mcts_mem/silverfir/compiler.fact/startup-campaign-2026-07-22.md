@@ -436,3 +436,13 @@ the listed commits.
   samples were non-regressing but are not used to claim an end-to-end
   percentage. The change was retained on the direct causal profile, exact
   output equivalence, and four-line implementation surface (sourced).
+
+- 2026-07-23: dead-parameter elimination cloned and destroyed every MachineIR
+  terminator only to remove edge arguments before checking whether a parameter
+  had a direct control/call/return use. Clone/drop consumed 20.9% of the pass
+  in the parent serial FFmpeg profile. A dedicated non-edge source visitor
+  removed that allocation-bearing copy while preserving edge dependencies;
+  clone/drop disappeared from the candidate profile. Exact-parent alternating
+  bz2 means favored the candidate by about 0.65% on pair averages, FFmpeg's
+  complete SSA/MachineIR index remained byte-identical, and all 356 release
+  tests passed (sourced).
