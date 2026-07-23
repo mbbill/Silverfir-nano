@@ -304,6 +304,20 @@ the listed commits.
   it did not reduce startup, while retaining the early shrink bounds transient
   rewrite memory before the final whole-program compaction (sourced).
 
+- A distinct follow-up removed the final `shrink_prepared_ssa_storage` call
+  after cleanup, optimization, final-signal derivation, and before immediate
+  machine lowering. This tested whether whole-SSA compaction itself was
+  unamortized allocator traffic in the function-streaming native pipeline.
+  It was not: the serial FFmpeg profile grew from 5,642 to 5,764 total samples,
+  `prepare_function` grew from 1,948 to 1,990 inclusive samples, and machine
+  lowering also moved adversely while carrying the spare capacities.
+  FFmpeg's 14,290-function SSA/MachineIR/native index remained byte-identical
+  at
+  `5db01c38ff5e59a3999683b893dc534d053f784cd85640bb2f42d28f4b1ce31c`.
+  The experiment was fully reverted. The early per-block and final whole-SSA
+  shrink boundaries remain separate, measured memory/lifetime policies rather
+  than accidental duplicate calls (sourced).
+
 - MachineIR lowering then exposed a small allocation-pattern cost:
   `append_entry_cache_params` constructed an owned one- or two-element vector
   for every value, mapped its ownership metadata, and immediately drained it

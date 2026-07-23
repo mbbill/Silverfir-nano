@@ -192,6 +192,15 @@
   experiment was reverted; the early shrink's transient-memory bound was not
   exchanged for an unmeasured compile-time change (sourced).
 
+- 2026-07-23 rejected: removing the separate final whole-SSA
+  `shrink_prepared_ssa_storage` boundary also failed to improve serial startup.
+  On FFmpeg the candidate profile grew from 5,642 to 5,764 total samples and
+  `prepare_function` grew from 1,948 to 1,990 inclusive samples, despite
+  byte-identical SSA, MachineIR, and native output. Keeping spare SSA capacity
+  live into cache planning and machine lowering did not repay the avoided
+  compaction; both the early rewrite shrink and final prepared-SSA shrink remain
+  in force ([[compiler.fact/startup-campaign-2026-07-22]]) (sourced).
+
 - 2026-07-23 measurement: bounded-counter forwarding stored its small,
   block-local value-fact set in a `BTreeMap`, then consumed and rebuilt the
   tree whenever a local assignment invalidated dependent facts. Node insert,
