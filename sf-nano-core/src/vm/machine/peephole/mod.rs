@@ -104,7 +104,9 @@ pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
     // pairs do not survive into code emission.
     forward_stored_values::forward_stored_values(block, ctx.config);
     fuse_isel::fuse_isel(block, ctx.config);
-    fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);
+    if ctx.config.is_32bit_gp_target() {
+        fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);
+    }
 }
 
 /// Run peephole optimizations on all blocks in a program.

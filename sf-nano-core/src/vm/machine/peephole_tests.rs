@@ -2915,6 +2915,51 @@ fn fuses_rotate_then_xor_into_rotated_register_operand() {
     ));
 }
 
+#[test]
+fn skips_i64_pair_sign_ext_analysis_on_64_bit_targets() {
+    let mut program = MachineProgram {
+        entry: MachineBlockId(0),
+        fp_reg_init_widths: collections::vec![],
+        blocks: collections::vec![MachineBlock {
+            id: MachineBlockId(0),
+            params: collections::Vec::new(),
+            ops: collections::vec![
+                MachineInst {
+                    kind: MachineInstKind::Int64PairUnary {
+                        op: MachineIntUnaryOp::Extend32S,
+                        dst_lo: MachineReg(5),
+                        dst_hi: MachineReg(6),
+                        src_lo: MachineValue::Reg(MachineReg(4)),
+                        src_hi: MachineValue::Reg(MachineReg(7)),
+                    },
+                },
+                MachineInst {
+                    kind: MachineInstKind::Int64PairBinary {
+                        op: MachineIntBinaryOp::Mul,
+                        dst_lo: MachineReg(8),
+                        dst_hi: MachineReg(9),
+                        lhs_lo: MachineValue::Reg(MachineReg(5)),
+                        lhs_hi: MachineValue::Reg(MachineReg(6)),
+                        rhs_lo: MachineValue::Reg(MachineReg(5)),
+                        rhs_hi: MachineValue::Reg(MachineReg(6)),
+                    },
+                },
+            ],
+            terminator: MachineTerminator::Return,
+        }],
+    };
+
+    optimize(&mut program, test_config(7, 8, 10, 12, 0));
+
+    assert!(matches!(
+        program.blocks[0].ops.last().map(|inst| &inst.kind),
+        Some(MachineInstKind::Int64PairBinary {
+            op: MachineIntBinaryOp::Mul,
+            ..
+        })
+    ));
+}
+
 /// Reproduces the MIR shape for `(a as i64) * (b as i64)` where the
 /// `gp32` lowering inserts a `Move` to alias one operand to another reg
 /// before the sign-extend (e.g., `Move r6 <- Reg(r4); ShrS r7 <- Reg(r4)`).

@@ -237,6 +237,20 @@
   106.54 to 90.68-91.75 ms; SpiderMonkey moved from 2,112.7 to 1,882.9 ms and
   FFmpeg from 7,544.7 to 7,020.9 ms (sourced).
 
+- 2026-07-22 pitfall and decision: the signed 32x32-to-64 pair-multiply
+  recovery pass initialized register-value state and scanned every block on
+  64-bit targets even though pair-valued i64 MachineIR is produced only for
+  32-bit GP targets. The block-local and cross-edge forms are both now gated by
+  the target's GP width; target-specific analyses must decline before
+  allocating or scanning when their source IR cannot exist (sourced).
+
+- 2026-07-22 measurement: in a 7,421-sample serial FFmpeg profile, the
+  32-bit-only sign-extension analysis consumed about 30% of block-local
+  peephole time on ARM64. Skipping it reduced that block-local share from 7.71%
+  to 6.51% of the profile and moved the full serial FFmpeg criterion mean from
+  7,020.9 to 6,943.8 ms (1.10%); Pulldown's smaller movement remained within
+  noise (sourced).
+
 - 2026-03-29 (22c1c30f) pitfall: the per-register tracking shared by copy
   propagation, constant dedup, store-to-load forwarding, and load reuse was
   invalidated through a defined_reg that returns one register, leaving stale

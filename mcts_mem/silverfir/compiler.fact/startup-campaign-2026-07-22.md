@@ -239,3 +239,13 @@ the listed commits.
   code sizes were byte-for-byte identical. The apparent 2.9% execution
   movement in a warm full-matrix run was therefore environmental rather than a
   generated-code change (sourced).
+
+- The next 7,421-sample serial FFmpeg profile found no register-allocation
+  hotspot. Preparation occupied 36.0%, MachineIR lowering 32.4%, MachineIR
+  optimization 16.9%, native emission 3.6%, and remaining decode/setup work was
+  distributed. One avoidable target-policy cost remained inside block-local
+  optimization: the 32-bit-only signed pair-multiply recovery pass consumed
+  about 30% of block-local peephole time while running on ARM64. Gating it by
+  GP width moved the full serial FFmpeg criterion mean from 7,020.9 to 6,943.8
+  ms (1.10%) and reduced block-local peephole share from 7.71% to 6.51%
+  (sourced).
