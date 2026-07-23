@@ -6,7 +6,7 @@ use crate::vm::machine::machine_ir::{
     MachineBlock, MachineBlockId, MachineEdge, MachineReg, MachineTerminator, MachineValue,
 };
 
-use super::helpers::{terminator_uses_reg, visit_source_values};
+use super::helpers::{terminator_non_edge_uses_reg, visit_source_values};
 
 pub(super) fn eliminate_dead_params(blocks: &mut [MachineBlock]) {
     let mut param_offsets = collections::Vec::with_capacity(blocks.len() + 1);
@@ -58,12 +58,11 @@ pub(super) fn eliminate_dead_params(blocks: &mut [MachineBlock]) {
             });
         }
 
-        // Edge arguments are dependencies, not direct uses. Clear them once
-        // per block rather than cloning the whole terminator per parameter.
-        let mut terminator = block.terminator.clone();
-        visit_edges_mut(&mut terminator, |edge| edge.args.clear());
+        // Edge arguments are dependencies, not direct uses. Inspect only the
+        // terminator's control/call/return operands rather than cloning and
+        // stripping every edge payload.
         for &(reg, node) in lookup {
-            if !defined[node] && terminator_uses_reg(&terminator, reg) {
+            if !defined[node] && terminator_non_edge_uses_reg(&block.terminator, reg) {
                 useful[node] = true;
             }
         }
@@ -224,7 +223,8 @@ fn visit_edges_mut(terminator: &mut MachineTerminator, mut visit: impl FnMut(&mu
 mod tests {
     use super::*;
     use crate::vm::machine::machine_ir::{
-        MachineBlockParam, MachineInst, MachineInstKind, MachineRegOwner, MachineStorageType,
+        MachineBlockParam, MachineBranchCond, MachineInst, MachineInstKind, MachineRegOwner,
+        MachineStorageType,
     };
 
     fn edge(target: u32, args: &[MachineReg]) -> MachineEdge {
@@ -363,5 +363,24 @@ mod tests {
             panic!("expected jump");
         };
         assert_eq!(edge.args.as_slice(), &[MachineValue::Reg(carried)]);
+    }
+
+    #[test]
+    fn keeps_param_used_by_branch_condition() {
+        let carried = MachineReg(4);
+        let mut blocks = collections::vec![block(
+            10,
+            &[carried],
+            collections::Vec::new(),
+            MachineTerminator::Branch {
+                cond: MachineBranchCond::Value(MachineValue::Reg(carried)),
+                then_edge: edge(20, &[]),
+                else_edge: edge(30, &[]),
+            },
+        )];
+
+        eliminate_dead_params(&mut blocks);
+
+        assert_eq!(blocks[0].params.len(), 1);
     }
 }

@@ -442,6 +442,41 @@ pub(crate) fn terminator_uses_reg(term: &MachineTerminator, reg: MachineReg) -> 
     found
 }
 
+/// Check whether a terminator reads `reg` independently of its CFG edge
+/// arguments.
+///
+/// Edge arguments carry values to successor parameters; they are dependencies
+/// rather than direct uses for dead-parameter propagation.
+pub(crate) fn terminator_non_edge_uses_reg(term: &MachineTerminator, reg: MachineReg) -> bool {
+    let mut found = false;
+    visit_terminator_non_edge_source_regs(term, |source| {
+        found |= source == reg;
+    });
+    found
+}
+
+/// Visit every register a terminator reads outside its CFG edge arguments.
+fn visit_terminator_non_edge_source_regs(term: &MachineTerminator, mut f: impl FnMut(MachineReg)) {
+    match term {
+        MachineTerminator::Jump(_) => {}
+        MachineTerminator::Branch { cond, .. } => {
+            visit_branch_cond_source_regs(cond, &mut f);
+        }
+        MachineTerminator::JumpTable { index, .. } => {
+            visit_value_source_reg(index, &mut f);
+        }
+        MachineTerminator::Call { target, args, .. }
+        | MachineTerminator::TailCall { target, args } => {
+            visit_call_target_source_regs(target, &mut f);
+            visit_call_arg_source_regs(args, &mut f);
+        }
+        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+        MachineTerminator::ReturnScalar { value } => {
+            visit_return_value_source_regs(value, &mut f);
+        }
+    }
+}
+
 /// Visit every register read by a terminator.
 ///
 /// Call result destinations are definitions, not reads, even when they also
