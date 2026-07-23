@@ -24,7 +24,7 @@ use super::ssa_ir::{
 
 pub(crate) fn cleanup_program(program: &mut SsaProgram) {
     loop {
-        while thread_one_empty_goto_block(program) {}
+        thread_empty_goto_blocks(program);
         merge_goto_successors(program);
         if remove_unreachable_blocks(program) {
             continue;
@@ -328,8 +328,19 @@ fn cache_run_slot(inst: &SsaInst) -> Option<super::cell::CellId> {
     }
 }
 
-fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
-    for block_index in 0..program.blocks.len() {
+fn thread_empty_goto_blocks(program: &mut SsaProgram) -> bool {
+    let block_count = program.blocks.len();
+    let mut incoming_by_block = all_incoming_edge_locations(program);
+    let mut removed = collections::vec![false; block_count];
+    let mut removed_indices = collections::Vec::new();
+    let mut queued = collections::vec![true; block_count];
+    let mut worklist = (0..block_count).collect::<collections::Vec<_>>();
+
+    while let Some(block_index) = worklist.pop() {
+        queued[block_index] = false;
+        if removed[block_index] {
+            continue;
+        }
         let (target, bindings_empty) = match &program.blocks[block_index].terminator {
             SsaTerminator::Goto(edge) if program.blocks[block_index].ops.is_empty() => {
                 (edge.target, edge.bindings.is_empty())
@@ -352,12 +363,23 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
             {
                 continue;
             }
+            if incoming_by_block[block_index]
+                .iter()
+                .any(|location| !removed[edge_location_block(*location)])
+            {
+                continue;
+            }
             program.entry = target;
-            remove_blocks(program, &[block_index]);
-            return true;
+            removed[block_index] = true;
+            removed_indices.push(block_index);
+            queue_cleanup_block(target.as_usize(), &removed, &mut queued, &mut worklist);
+            continue;
         }
 
-        let incoming = incoming_edge_locations(program, block_index);
+        let incoming = core::mem::take(&mut incoming_by_block[block_index])
+            .into_iter()
+            .filter(|location| !removed[edge_location_block(*location)])
+            .collect::<collections::Vec<_>>();
         if incoming.is_empty() {
             continue;
         }
@@ -379,17 +401,52 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
             }
         }
         if composed.is_empty() {
+            incoming_by_block[block_index] = incoming;
             continue;
         }
 
         for (loc, new_edge) in incoming.into_iter().zip(composed.into_iter()) {
             *edge_at_mut(program, loc) = new_edge;
+            incoming_by_block[target.as_usize()].push(loc);
+            queue_cleanup_block(
+                edge_location_block(loc),
+                &removed,
+                &mut queued,
+                &mut worklist,
+            );
         }
-        remove_blocks(program, &[block_index]);
-        return true;
+        removed[block_index] = true;
+        removed_indices.push(block_index);
+        queue_cleanup_block(target.as_usize(), &removed, &mut queued, &mut worklist);
     }
 
-    false
+    if removed_indices.is_empty() {
+        false
+    } else {
+        remove_blocks(program, &removed_indices);
+        true
+    }
+}
+
+fn queue_cleanup_block(
+    block_index: usize,
+    removed: &[bool],
+    queued: &mut [bool],
+    worklist: &mut collections::Vec<usize>,
+) {
+    if block_index < queued.len() && !removed[block_index] && !queued[block_index] {
+        queued[block_index] = true;
+        worklist.push(block_index);
+    }
+}
+
+fn edge_location_block(location: EdgeLocation) -> usize {
+    match location {
+        EdgeLocation::Goto { block }
+        | EdgeLocation::BranchThen { block }
+        | EdgeLocation::BranchElse { block }
+        | EdgeLocation::BrTable { block, .. } => block,
+    }
 }
 
 fn merge_goto_successors(program: &mut SsaProgram) -> bool {
@@ -550,53 +607,6 @@ fn predecessor_counts(program: &SsaProgram) -> collections::Vec<usize> {
         });
     }
     counts
-}
-
-fn incoming_edge_locations(
-    program: &SsaProgram,
-    target_index: usize,
-) -> collections::Vec<EdgeLocation> {
-    let mut incoming = collections::Vec::new();
-    for (block_index, block) in program.blocks.iter().enumerate() {
-        match &block.terminator {
-            SsaTerminator::Goto(edge) => {
-                if edge.target.as_usize() == target_index {
-                    incoming.push(EdgeLocation::Goto { block: block_index });
-                }
-            }
-            SsaTerminator::Branch {
-                then_edge,
-                else_edge,
-                ..
-            } => {
-                if then_edge.target.as_usize() == target_index {
-                    incoming.push(EdgeLocation::BranchThen { block: block_index });
-                }
-                if else_edge.target.as_usize() == target_index {
-                    incoming.push(EdgeLocation::BranchElse { block: block_index });
-                }
-            }
-            SsaTerminator::BrTable { entries, .. } => {
-                for (entry_index, edge) in entries.iter().enumerate() {
-                    if edge.target.as_usize() == target_index {
-                        incoming.push(EdgeLocation::BrTable {
-                            block: block_index,
-                            entry: entry_index,
-                        });
-                    }
-                }
-            }
-            SsaTerminator::Return { .. }
-            | SsaTerminator::ReturnScalar { .. }
-            | SsaTerminator::TailCallDirect { .. }
-            | SsaTerminator::TailCallIndirect { .. }
-            | SsaTerminator::TailCallRef { .. }
-            | SsaTerminator::TrapUnreachable
-            | SsaTerminator::EhThrow { .. }
-            | SsaTerminator::EhThrowRef { .. } => {}
-        }
-    }
-    incoming
 }
 
 fn all_incoming_edge_locations(
@@ -1207,7 +1217,7 @@ mod tests {
     }
 
     #[test]
-    fn threads_empty_goto_block_and_composes_bindings() {
+    fn threads_empty_goto_chain_and_composes_bindings() {
         let mut program = SsaProgram {
             cell_homes: collections::Vec::new(),
             entry: SsaTarget(0),
@@ -1243,6 +1253,19 @@ mod tests {
                     params: collections::vec![SsaValue(20)],
                     ops: collections::Vec::new(),
                     extra_args: collections::Vec::new(),
+                    terminator: SsaTerminator::Goto(SsaEdge {
+                        target: SsaTarget(3),
+                        bindings: collections::vec![SsaBinding {
+                            param: SsaValue(30),
+                            value: SsaValue(20),
+                        }],
+                    }),
+                },
+                SsaBlock {
+                    id: SsaTarget(3),
+                    params: collections::vec![SsaValue(30)],
+                    ops: collections::Vec::new(),
+                    extra_args: collections::Vec::new(),
                     terminator: SsaTerminator::Return { results: None },
                 },
             ],
@@ -1252,9 +1275,10 @@ mod tests {
             block_entry_cached_cells: collections::vec![
                 collections::Vec::new(),
                 collections::Vec::new(),
+                collections::Vec::new(),
                 collections::Vec::new()
             ],
-            block_entry_cache_requirements: collections::vec![collections::Vec::new(); 3],
+            block_entry_cache_requirements: collections::vec![collections::Vec::new(); 4],
             preferred_preserved: collections::Vec::new(),
             value_types: collections::vec![ValueType::I32; 32],
             value_sink_cell: collections::vec![None; 32],
@@ -1263,7 +1287,7 @@ mod tests {
             call_ops: collections::Vec::new(),
         };
 
-        assert!(thread_one_empty_goto_block(&mut program));
+        assert!(thread_empty_goto_blocks(&mut program));
         assert_eq!(program.blocks.len(), 2);
         let edge = match &program.blocks[0].terminator {
             SsaTerminator::Goto(edge) => edge,
@@ -1273,7 +1297,7 @@ mod tests {
         assert_eq!(
             edge.bindings,
             collections::vec![SsaBinding {
-                param: SsaValue(20),
+                param: SsaValue(30),
                 value: SsaValue(0),
             }]
         );
