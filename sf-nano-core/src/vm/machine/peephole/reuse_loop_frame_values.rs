@@ -82,32 +82,9 @@ fn try_reuse_one_frame_value(
     loop_nodes: &[usize],
     predecessors: &[collections::Vec<usize>],
 ) {
-    let mut entry_sources = collections::Vec::<(usize, MachineValue)>::new();
-    for source in 0..blocks.len() {
-        if loop_nodes.contains(&source) {
-            continue;
-        }
-        let mut enters = false;
-        let mut only_header = true;
-        visit_edges(&blocks[source].terminator, |edge| {
-            let Some(target) = block_index_for_id(blocks, edge.target) else {
-                return;
-            };
-            if loop_nodes.contains(&target) {
-                enters = true;
-                only_header &= target == header;
-            }
-        });
-        if enters {
-            if !only_header {
-                return;
-            }
-            // The exact seed is checked after the common exit load is known.
-            entry_sources.push((source, MachineValue::Imm64(0)));
-        }
-    }
-    if entry_sources.is_empty() {
-        return;
+    let mut in_loop = collections::vec![false; blocks.len()];
+    for &block in loop_nodes {
+        in_loop[block] = true;
     }
 
     let mut exit_targets = collections::Vec::new();
@@ -116,7 +93,7 @@ fn try_reuse_one_frame_value(
             let Some(target) = block_index_for_id(blocks, edge.target) else {
                 return;
             };
-            if !loop_nodes.contains(&target) && !exit_targets.contains(&target) {
+            if !in_loop[target] && !exit_targets.contains(&target) {
                 exit_targets.push(target);
             }
         });
@@ -134,9 +111,7 @@ fn try_reuse_one_frame_value(
     // Exit blocks must be dedicated to this loop, begin with the identical
     // reload, and not already bind the destination lane.
     for &target in &exit_targets {
-        if predecessors[target]
-            .iter()
-            .any(|source| !loop_nodes.contains(source))
+        if predecessors[target].iter().any(|&source| !in_loop[source])
             || blocks[target]
                 .params
                 .iter()
@@ -155,6 +130,37 @@ fn try_reuse_one_frame_value(
         .any(|&block| block_mentions_reg(&blocks[block], load.dst))
         || !loop_preserves_frame_value(blocks, loop_nodes, load)
     {
+        return;
+    }
+
+    // Most loops do not have a reusable frame load on every dedicated exit.
+    // Delay the whole-function entry-edge scan until the cheap, selective exit
+    // checks above have found a viable candidate.
+    let mut entry_sources = collections::Vec::<(usize, MachineValue)>::new();
+    for source in 0..blocks.len() {
+        if in_loop[source] {
+            continue;
+        }
+        let mut enters = false;
+        let mut only_header = true;
+        visit_edges(&blocks[source].terminator, |edge| {
+            let Some(target) = block_index_for_id(blocks, edge.target) else {
+                return;
+            };
+            if in_loop[target] {
+                enters = true;
+                only_header &= target == header;
+            }
+        });
+        if enters {
+            if !only_header {
+                return;
+            }
+            // The exact seed is checked after the common exit load is known.
+            entry_sources.push((source, MachineValue::Imm64(0)));
+        }
+    }
+    if entry_sources.is_empty() {
         return;
     }
 
@@ -182,7 +188,7 @@ fn try_reuse_one_frame_value(
     let exit_ids: collections::Vec<_> =
         exit_targets.iter().map(|&index| blocks[index].id).collect();
     for source in 0..blocks.len() {
-        let source_inside = loop_nodes.contains(&source);
+        let source_inside = in_loop[source];
         let entry_seed = entry_sources
             .iter()
             .find_map(|(entry, seed)| (*entry == source).then_some(*seed));
