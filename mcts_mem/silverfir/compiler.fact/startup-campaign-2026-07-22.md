@@ -511,3 +511,14 @@ the listed commits.
   quick bz2 timings were invalidated by severe thermal drift, so no
   end-to-end percentage is attributed. FFmpeg's full SSA/MachineIR/native
   index remained byte-identical and all 356 release tests passed (sourced).
+
+- 2026-07-23: the lowerer derived preserved-register clobbers by scanning the
+  complete MachineIR body, then the mandatory peephole stage discarded and
+  recomputed that metadata because it may add or remove definitions. Commit
+  `4e8fbfc1` makes final optimization the single authority; every production
+  caller already optimizes before backend consumption. The lowerer-side
+  collector disappeared from the serial FFmpeg profile and
+  `lower_function` moved from 31.96% to 30.09% inclusive; fat-LTO text shrank
+  by 572 bytes. Quick bz2 pairs varied from -15% to +24%, so no end-to-end
+  percentage is attributed. FFmpeg's complete SSA/MachineIR/native index
+  remained byte-identical and all 356 release tests passed (sourced).

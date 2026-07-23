@@ -108,6 +108,16 @@
   of the function's samples. The complete SSA/MachineIR/native index remained
   byte-identical and all 356 release tests passed (sourced).
 
+- 2026-07-23 (4e8fbfc1) rationale: preserved-register clobbers are derived
+  only from final MachineIR because every backend consumer runs after
+  peephole optimization and those peepholes may add or remove register
+  definitions (sourced).
+
+- 2026-07-23 (4e8fbfc1) measurement: removing the pre-optimization clobber
+  scan eliminated its lowerer-side profile path and reduced
+  `lower_function` from 31.96% to 30.09% inclusive in adjacent serial FFmpeg
+  profiles (sourced).
+
 - 2026-03-12 (7bb4d7dc) rationale: the step between prepared LIR and MachineIR is
   one internal lowering pass, not a new public IR layer — it expands VM-flavored ops
   into machine-shaped code and does the trivial fixed-budget register assignment the
