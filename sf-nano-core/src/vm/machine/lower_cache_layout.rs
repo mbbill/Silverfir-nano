@@ -635,24 +635,17 @@ fn improve_gp_layouts_for_incoming_edges(
                 continue;
             }
             let row_base = block_index * lanes;
-            let current = collections::Vec::from(&layouts[row_base..row_base + lanes]);
-            let current = current.as_slice();
-            let pred_layouts = preds
+            let current = &layouts[row_base..row_base + lanes];
+            let pred_layout_refs = preds
                 .iter()
                 .filter_map(|pred| {
                     let start = pred.checked_mul(lanes)?;
-                    exit_layouts
-                        .get(start..start + lanes)
-                        .map(collections::Vec::from)
+                    exit_layouts.get(start..start + lanes)
                 })
                 .collect::<collections::Vec<_>>();
-            if pred_layouts.is_empty() {
+            if pred_layout_refs.is_empty() {
                 continue;
             }
-            let pred_layout_refs = pred_layouts
-                .iter()
-                .map(|layout| layout.as_slice())
-                .collect::<collections::Vec<_>>();
             let needs_value = entry_cache_needs_value(
                 program,
                 block_index,
@@ -695,6 +688,9 @@ fn improve_gp_layouts_for_incoming_edges(
             {
                 continue;
             }
+            // End the shared borrow before replacing this block's exit row.
+            // `preds` may include the block itself through a self-loop.
+            drop(pred_layout_refs);
             for &cell in cells {
                 layouts[row_base + cell] = candidate[cell];
             }
