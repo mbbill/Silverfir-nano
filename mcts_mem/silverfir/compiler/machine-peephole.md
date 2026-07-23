@@ -31,6 +31,14 @@
 
 ## Facts
 
+- 2026-07-22 rejected: a whole-function necessary-condition gate scanned all
+  MachineIR instructions before loop analysis and skipped address hoisting when
+  no index register appeared in at least two mem0 accesses. The extra scan was
+  paid by every multi-block function and repeated serial Pulldown runs centered
+  around 116 ms with no improvement over the 106.5 ms accepted baseline. The
+  experiment was reverted; candidate pruning must reuse loop-analysis data
+  rather than add another whole-function instruction pass (sourced).
+
 - 2026-07-22 rejected: sharing one immutable predecessor/SCC analysis between
   address hoisting and frame-value reuse preserved CFG topology but did not
   remove either pass's repeated natural-loop predecessor closures. Serial
