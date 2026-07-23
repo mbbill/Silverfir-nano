@@ -296,3 +296,10 @@ the listed commits.
   The three millisecond-scale cases remained noise dominated. In the
   verification profile, feasible extraction fell from 7.35% to 2.93%
   inclusive and the whole joint-plan builder from 11.58% to 7.32% (sourced).
+
+- Removing the per-block `shrink_to_fit` calls during SSA rewrite was tested
+  because final prepared-SSA compaction repeats those calls after cleanup and
+  optimization. Serial bz2 measured 44.583 ms versus 44.786 and 44.495 ms for
+  the accepted rolling-DP parent, inside noise. The experiment was reverted:
+  it did not reduce startup, while retaining the early shrink bounds transient
+  rewrite memory before the final whole-program compaction (sourced).

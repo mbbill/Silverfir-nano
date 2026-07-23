@@ -185,6 +185,13 @@
   Pulldown startup fell from 123.66 ms to 111.8-114.1 ms, cleanup from 12.46%
   to 4.14% inclusive, and `remove_blocks` from 6.38% to 1.63% (sourced).
 
+- 2026-07-22 rejected: removing the per-block vector `shrink_to_fit` calls
+  during SSA rewrite appeared to avoid work duplicated by final prepared-SSA
+  compaction after cleanup and optimization, but serial bz2 measured 44.583 ms
+  versus 44.786 and 44.495 ms for the accepted parent, inside run noise. The
+  experiment was reverted; the early shrink's transient-memory bound was not
+  exchanged for an unmeasured compile-time change (sourced).
+
 ## Moves
 
 - 2026-03-12 (2ea0bb68) replaced [[two-stage-planning]]: the planning layer
