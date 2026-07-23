@@ -547,3 +547,15 @@ the listed commits.
   14,290 functions; all 356 release tests passed with the oracle enabled; and
   fat-LTO text grew by only 316 bytes. Short bz2 timings were order/thermal
   sensitive, so no end-to-end wall-time percentage is claimed (sourced).
+
+- 2026-07-23: cache-layout predecessor construction and reverse-postorder
+  discovery allocated a temporary successor vector for every block even though
+  the same module already had an allocation-free terminator successor visitor.
+  Commit `c5f95443` visits both traversals in place and preserves the former
+  reverse push order exactly. The `block_successors` path disappeared from the
+  serial FFmpeg profile; `compute_block_entry_cache_params` moved from 8.64%
+  to 8.40% inclusive (about 2.7% relative), while complete lowering was
+  essentially stable at 31.97% versus 31.82%. FFmpeg's 14,290-function
+  SSA/MachineIR/native metadata index remained byte-identical, all 356 release
+  tests passed, and fat-LTO text shrank by 368 bytes. This supports a modest
+  structural phase win but no end-to-end wall-time percentage (sourced).

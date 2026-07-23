@@ -118,6 +118,21 @@
   `lower_function` from 31.96% to 30.09% inclusive in adjacent serial FFmpeg
   profiles (sourced).
 
+- 2026-07-23 (c5f95443) rationale: cache-layout predecessor construction and
+  reverse-postorder discovery both read successors directly from SSA
+  terminators. They now use allocation-free visitors instead of materializing
+  a temporary successor vector for every visited block; the reverse visitor
+  preserves the former stack-push order for branches and `br_table` entries
+  exactly (sourced).
+
+- 2026-07-23 (c5f95443) measurement: the `block_successors` allocation path
+  disappeared from the serial FFmpeg profile and
+  `compute_block_entry_cache_params` moved from 8.64% to 8.40% inclusive
+  (about 2.7% relative). The complete 14,290-function
+  SSA/MachineIR/native metadata index remained byte-identical, all 356 release
+  tests passed, and fat-LTO text shrank by 368 bytes. This is a direct modest
+  phase reduction; no end-to-end wall-time percentage is attributed (sourced).
+
 - 2026-03-12 (7bb4d7dc) rationale: the step between prepared LIR and MachineIR is
   one internal lowering pass, not a new public IR layer — it expands VM-flavored ops
   into machine-shaped code and does the trivial fixed-budget register assignment the
