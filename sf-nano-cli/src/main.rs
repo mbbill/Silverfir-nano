@@ -40,6 +40,7 @@ fn run_cli(args: &[String]) -> i32 {
     let mut backend_mode = BackendMode::Native;
     let mut compile_only = false;
     let mut compiler_ram_budget: Option<u32> = None;
+    let mut parallel_compilation = true;
     let mut remaining_args: Vec<String> = Vec::new();
     #[cfg(feature = "memprof")]
     let mut memprof_enabled = false;
@@ -111,6 +112,8 @@ fn run_cli(args: &[String]) -> i32 {
             backend_mode = parsed;
         } else if args[i] == "--compile-only" || args[i] == "--no-run" {
             compile_only = true;
+        } else if args[i] == "--no-parallel-compilation" {
+            parallel_compilation = false;
         } else if args[i] == "--compiler-ram-budget" {
             i += 1;
             if i >= args.len() {
@@ -168,12 +171,15 @@ fn run_cli(args: &[String]) -> i32 {
                 }
             }
         }
-        if let Some(bytes) = compiler_ram_budget {
+        if compiler_ram_budget.is_some() || !parallel_compilation {
             let mut cfg: RuntimeConfig = *runtime_config();
-            cfg.compiler_ram_budget_bytes = bytes;
+            if let Some(bytes) = compiler_ram_budget {
+                cfg.compiler_ram_budget_bytes = bytes;
+            }
+            cfg.parallel_compilation = parallel_compilation;
             if let Err(err) = set_runtime_config(cfg) {
                 eprintln!(
-                    "Error: --compiler-ram-budget could not install runtime config: {:?}",
+                    "Error: compiler options could not install runtime config: {:?}",
                     err
                 );
                 return 1;
@@ -289,7 +295,7 @@ fn print_usage(program_name: &str) {
     eprintln!();
     eprintln!("USAGE:");
     eprintln!(
-        "  {program_name} [--backend <auto|native>] [--compile-only] [--dir <guest::host|path>] [--memprof] [--memprof-report <html>] <wasm-file> [args...]"
+        "  {program_name} [--backend <auto|native>] [--compile-only] [--no-parallel-compilation] [--dir <guest::host|path>] [--memprof] [--memprof-report <html>] <wasm-file> [args...]"
     );
     eprintln!();
     eprintln!("Run a WebAssembly module with WASI support.");
@@ -297,6 +303,7 @@ fn print_usage(program_name: &str) {
     eprintln!("OPTIONS:");
     eprintln!("  --backend <auto|native>   Select the execution backend.");
     eprintln!("  --compile-only, --no-run  Compile/instantiate the module without invoking it.");
+    eprintln!("  --no-parallel-compilation Force deterministic serial eager compilation.");
     eprintln!("  --compiler-ram-budget <n> Override the per-function compiler RAM budget.");
     eprintln!("  --dir <guest::host|path>  Preopen a host directory (repeatable).");
     #[cfg(feature = "memprof")]

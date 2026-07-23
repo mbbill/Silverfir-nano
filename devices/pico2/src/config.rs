@@ -39,6 +39,7 @@ pub fn init() {
         wasm_memory_max_pages: WASM_MEMORY_MAX_PAGES,
         wasm_stack_bytes: WASM_STACK_BYTES,
         compiler_ram_budget_bytes: COMPILER_RAM_BUDGET_BYTES,
+        parallel_compilation: false,
     })
     .expect("sf-nano-pico2 config already initialized");
 }

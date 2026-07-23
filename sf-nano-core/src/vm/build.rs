@@ -653,6 +653,13 @@ fn parallel_eager_worker_count(module: &ModuleInst) -> usize {
     #[cfg(not(target_pointer_width = "32"))]
     const MAX_MACHINE_WORKERS: usize = 8;
 
+    // Read the explicit policy before inspecting the module or probing the
+    // host. Besides forcing the serial pipeline, this keeps benchmark runs
+    // independent of CPU-count and cgroup detection.
+    if !crate::runtime_config().parallel_compilation {
+        return 0;
+    }
+
     let local_functions = module
         .functions
         .iter()

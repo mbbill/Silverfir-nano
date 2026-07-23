@@ -51,6 +51,13 @@ pub struct RuntimeConfig {
     /// optimization path. Embedded targets use this to keep oversized
     /// functions out of the full compiler pipeline.
     pub compiler_ram_budget_bytes: u32,
+
+    /// Whether hosted eager compilation may distribute local functions across
+    /// worker threads. Disable this for deterministic compiler benchmarks that
+    /// must not depend on the number of CPU cores available to the process.
+    /// This does not change eager-compilation semantics; it only selects the
+    /// serial implementation of the same pipeline.
+    pub parallel_compilation: bool,
 }
 
 impl RuntimeConfig {
@@ -72,6 +79,7 @@ impl RuntimeConfig {
             // 2 MiB matches the former `constants::MAX_STACK_SIZE`.
             wasm_stack_bytes: 2 * 1024 * 1024,
             compiler_ram_budget_bytes: u32::MAX,
+            parallel_compilation: true,
         }
     };
 
@@ -84,6 +92,7 @@ impl RuntimeConfig {
         wasm_memory_max_pages: 0,
         wasm_stack_bytes: 0,
         compiler_ram_budget_bytes: 0,
+        parallel_compilation: false,
     };
 }
 
@@ -169,6 +178,7 @@ mod tests {
     #[test]
     fn hosted_64_bit_default_supports_large_jit_modules() {
         assert_eq!(RuntimeConfig::DEFAULT.code_arena_bytes, 64 * 1024 * 1024);
+        assert!(RuntimeConfig::DEFAULT.parallel_compilation);
     }
 
     #[cfg(all(not(sf_os_none), target_pointer_width = "32"))]

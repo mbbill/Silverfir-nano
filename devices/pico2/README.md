@@ -229,6 +229,7 @@ JIT work. That installs:
   - 32 KiB JIT code arena.
   - 3 Wasm memory pages max per linear memory (192 KiB).
   - 16 KiB Wasm operand/call stack per invoke.
+  - Serial eager compilation (parallel compilation is a hosted-only policy).
 - A single 32 KiB executable SRAM arena exposed through
   `sf_os_alloc_executable`.
 
