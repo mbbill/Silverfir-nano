@@ -358,3 +358,53 @@ the listed commits.
   (ERC20). FFmpeg improved 2.29% significantly, while Pulldown, SpiderMonkey,
   CoreMark, and ERC20 moved favorably by 0.6-1.7%; bz2's controlled A/B/A is
   the attribution evidence (sourced).
+
+- 2026-07-23: entry-cache Ensure-versus-Reserve publication still called the
+  scalar first-touch classifier once per cached local, repeatedly walking the
+  same block prefix. Classifying the whole entry row in one block scan
+  preserved the scalar semantics and measured about 2.4% faster on serial bz2
+  and 1.27% on serial FFmpeg against the exact parent (sourced).
+
+- 2026-07-23: the cache-dirty dataflow recomputed every block after every
+  change even though only successors can become stale. Replacing those global
+  rescans with a successor worklist preserved the same monotone transfer
+  function and measured 5.13% faster on serial bz2 and 2.78% on serial FFmpeg
+  against the exact parent (sourced).
+
+- 2026-07-23: loop-address hoisting repeatedly scanned the whole block set to
+  rediscover the same natural-loop membership. Retaining the already-derived
+  loop structure for the later hoist decisions removed those repeated scans;
+  exact-parent serial bz2 improved 6.11%, while FFmpeg was statistically
+  neutral (a favorable 0.54% point estimate). The change was retained because
+  it removes input-scaled repeated work and passed the full release suite
+  without changing generated output (sourced).
+
+- 2026-07-23 rejected follow-ups: borrowing cache-layout rows instead of
+  cloning them, using binary search for short cache rows, and preallocating the
+  decoded-op sliding buffer did not survive exact alternating measurement.
+  Unstable sorting in the region solver regressed serial startup by 2.83%.
+  All four experiments were reverted rather than accumulating speculative
+  container-level changes (sourced).
+
+- 2026-07-23 breadth checkpoint after batched entry classification, dirty
+  propagation worklisting, and loop-scan removal: the seven serial Nano means
+  were 37.329 ms (bz2), 83.418 ms (Pulldown-cmark), 1,687.4 ms
+  (SpiderMonkey), 6,177.4 ms (FFmpeg), 3.424 ms (CoreMark), 12.232 ms
+  (Argon2), and 2.032 ms (ERC20). Against single-threaded Wasmer Singlepass,
+  the per-row gaps were 10.869x, 9.845x, 8.775x, 8.571x, 9.864x, 8.906x,
+  and 5.209x (8.670x geometric mean). Nano's geometric mean improved 3.83%
+  from the preceding full matrix, but the remaining order-of-magnitude gap
+  confirms that the campaign still needs structural aggregate-work reductions
+  rather than only tiny local container changes (sourced).
+
+- 2026-07-23: incoming-edge GP cache layout refinement deliberately keeps two
+  ascending rounds, but the second round rescanned every join. The replacement
+  preserves that exact schedule while revisiting only a row that improved in
+  round one or a successor whose predecessor exit became stale after its last
+  visit; the bitmap is allocated lazily only after the first improvement.
+  FFmpeg's complete SSA/MachineIR dump remained byte-identical (14,290
+  functions, 4,019,624 MIR ops, 32,515,260 code bytes). A controlled
+  exact-parent Criterion pair measured 6.571 versus 6.714 seconds (2.1%
+  faster); bz2's first matched pair measured 36.52 versus 37.41 ms (2.4%
+  faster), but later thermally disturbed samples were inconclusive, so FFmpeg
+  is the primary attribution evidence. All 355 release tests passed (sourced).

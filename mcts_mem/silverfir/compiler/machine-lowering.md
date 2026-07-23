@@ -77,6 +77,16 @@
   reverted; the theoretical local-count scan is not a demonstrated startup
   bottleneck on bz2 (sourced).
 
+- 2026-07-23 measurement: incoming-edge GP cache layout refinement keeps its
+  existing two ascending rounds and sticky candidate policy, but its second
+  round now visits only a row that improved in round one or a successor made
+  stale after its last visit. Later successors still observe changes in the
+  current ascending round, earlier successors are deferred exactly as before,
+  and the work bitmap is allocated only after the first improvement. FFmpeg's
+  full SSA/MachineIR dump was byte-identical; controlled exact-parent Criterion
+  means were 6.571 versus 6.714 seconds (2.1% faster), and all 355 release
+  tests passed (sourced).
+
 - 2026-03-12 (7bb4d7dc) rationale: the step between prepared LIR and MachineIR is
   one internal lowering pass, not a new public IR layer — it expands VM-flavored ops
   into machine-shaped code and does the trivial fixed-budget register assignment the
