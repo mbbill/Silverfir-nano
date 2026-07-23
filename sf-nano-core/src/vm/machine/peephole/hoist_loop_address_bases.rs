@@ -55,7 +55,7 @@ pub(super) fn hoist_loop_address_bases(
         {
             continue;
         }
-        try_hoist_one_base(blocks, header, &loop_nodes, config);
+        try_hoist_one_base(blocks, header, &loop_nodes, predecessors, config);
     }
 }
 
@@ -242,48 +242,64 @@ fn try_hoist_one_base(
     blocks: &mut [MachineBlock],
     header: usize,
     loop_nodes: &[usize],
+    predecessors: &[collections::Vec<usize>],
     config: BackendConfig,
 ) {
     if loop_nodes.is_empty() || loop_can_change_memory_base(blocks, loop_nodes) {
         return;
     }
 
+    let mut in_loop = collections::vec![false; blocks.len()];
+    for &block_index in loop_nodes {
+        in_loop[block_index] = true;
+    }
+    let gp_end = MACHINE_FIXED_REG_COUNT
+        + u16::from(config.gp_volatile_dynamic)
+        + u16::from(config.gp_preserved_dynamic);
+
     // Prefer the invariant Wasm address used by the most accesses. Two uses
     // are enough to amortize the entry conversion/add on the first trip.
-    let mut candidates: collections::Vec<(MachineReg, usize)> = collections::Vec::new();
+    // Build the loop def set once: testing it by rescanning every instruction
+    // for every memory access made this pass quadratic in large loop bodies.
+    let mut loop_defined = collections::vec![false; gp_end as usize];
     for &block_index in loop_nodes {
-        let block = &blocks[block_index];
-        for inst in &block.ops {
+        for inst in &blocks[block_index].ops {
+            inst.kind.for_each_defined_reg(|reg| {
+                if let Some(defined) = loop_defined.get_mut(reg.0 as usize) {
+                    *defined = true;
+                }
+            });
+        }
+    }
+    let mut use_counts = collections::vec![0usize; gp_end as usize];
+    for &block_index in loop_nodes {
+        for inst in &blocks[block_index].ops {
             let Some(index) = mem0_index(&inst.kind) else {
                 continue;
             };
-            if loop_nodes.iter().any(|&block_index| {
-                blocks[block_index]
-                    .ops
-                    .iter()
-                    .any(|inst| inst_defines(&inst.kind, index))
-            }) {
+            let Some(count) = use_counts.get_mut(index.0 as usize) else {
+                continue;
+            };
+            if loop_defined[index.0 as usize] {
                 continue;
             }
-            if let Some((_, count)) = candidates.iter_mut().find(|(reg, _)| *reg == index) {
-                *count += 1;
-            } else {
-                candidates.push((index, 1));
-            }
+            *count += 1;
         }
     }
-    let Some((index, use_count)) =
-        candidates
-            .into_iter()
-            .max_by(|(reg_a, count_a), (reg_b, count_b)| {
-                count_a.cmp(count_b).then_with(|| reg_b.0.cmp(&reg_a.0))
-            })
+    let Some((index, use_count)) = use_counts
+        .into_iter()
+        .enumerate()
+        .filter(|(_, count)| *count != 0)
+        .max_by(|(index_a, count_a), (index_b, count_b)| {
+            count_a.cmp(count_b).then_with(|| index_b.cmp(index_a))
+        })
     else {
         return;
     };
     if use_count < 2 {
         return;
     }
+    let index = MachineReg(index as u16);
 
     let Some(index_param) = blocks[header]
         .params
@@ -308,7 +324,7 @@ fn try_hoist_one_base(
         };
         let mut has_predecessor = false;
         let mut preserves_index = true;
-        for source in 0..blocks.len() {
+        for &source in &predecessors[target] {
             visit_edges(&blocks[source].terminator, |edge| {
                 if edge.target == blocks[target].id {
                     has_predecessor = true;
@@ -325,34 +341,37 @@ fn try_hoist_one_base(
     }
 
     let mut entry_predecessors = collections::Vec::new();
-    for source in 0..blocks.len() {
-        let source_inside = loop_nodes.contains(&source);
-        let mut valid = true;
-        let mut enters = false;
-        visit_edges(&blocks[source].terminator, |edge| {
-            let Some(target) = block_index_for_id(blocks, edge.target) else {
-                return;
-            };
-            if !source_inside && loop_nodes.contains(&target) {
-                enters = true;
-                valid &= target == header
-                    && matches!(edge.args.get(index_param), Some(MachineValue::Reg(reg)) if *reg == index);
+    for &target in loop_nodes {
+        for &source in &predecessors[target] {
+            if in_loop[source] {
+                continue;
             }
-        });
-        if enters {
-            if !valid {
+            if target != header {
                 return;
             }
-            entry_predecessors.push(source);
+            let mut enters = false;
+            let mut valid = true;
+            visit_edges(&blocks[source].terminator, |edge| {
+                if edge.target == blocks[target].id {
+                    enters = true;
+                    valid &= matches!(
+                        edge.args.get(index_param),
+                        Some(MachineValue::Reg(reg)) if *reg == index
+                    );
+                }
+            });
+            if !enters || !valid {
+                return;
+            }
+            if !entry_predecessors.contains(&source) {
+                entry_predecessors.push(source);
+            }
         }
     }
     if entry_predecessors.is_empty() {
         return;
     }
 
-    let gp_end = MACHINE_FIXED_REG_COUNT
-        + u16::from(config.gp_volatile_dynamic)
-        + u16::from(config.gp_preserved_dynamic);
     let spare = (MACHINE_FIXED_REG_COUNT..gp_end)
         .map(MachineReg)
         .find(|&reg| {
@@ -404,9 +423,11 @@ fn try_hoist_one_base(
         .iter()
         .map(|&block_index| blocks[block_index].id)
         .collect();
+    let mut loop_ids = loop_ids;
+    loop_ids.sort_unstable();
     for block in blocks.iter_mut() {
         visit_edges_mut(&mut block.terminator, |edge| {
-            if loop_ids.contains(&edge.target) {
+            if loop_ids.binary_search(&edge.target).is_ok() {
                 edge.args.push(MachineValue::Reg(spare));
             }
         });
