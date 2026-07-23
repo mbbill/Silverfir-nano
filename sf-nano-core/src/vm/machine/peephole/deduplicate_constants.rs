@@ -11,12 +11,16 @@ use crate::vm::machine::machine_ir::{
     MachineStorageType, MachineValue,
 };
 
-pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16) {
+use super::BlockFeatures;
+
+pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16) -> BlockFeatures {
     let mut gp_consts: collections::Vec<(u64, MachineReg)> = collections::Vec::new();
     let mut fp_consts: collections::Vec<(u64, MachineFloatWidth, MachineReg)> =
         collections::Vec::new();
+    let mut features = BlockFeatures::default();
 
     for inst in &mut block.ops {
+        features.observe(&inst.kind);
         if matches!(
             inst.kind,
             MachineInstKind::CallRuntime(_)
@@ -86,6 +90,7 @@ pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16)
                             dst: d,
                             src: MachineValue::Reg(prev),
                         };
+                        features.has_move = true;
                     }
                     new_fp = Some((b, w, d));
                 }
@@ -106,4 +111,6 @@ pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16)
             fp_consts.push(e);
         }
     }
+
+    features
 }

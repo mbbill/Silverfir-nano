@@ -42,9 +42,45 @@ mod reuse_loop_frame_values;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    MachineAddr, MachineBlock, MachineLoadExtension, MachineMemWidth, MachineProgram, MachineReg,
-    MachineStorageType, MachineValue,
+    MachineAddr, MachineBlock, MachineInstKind, MachineIntBinaryOp, MachineLoadExtension,
+    MachineMemWidth, MachineProgram, MachineReg, MachineStorageType, MachineValue,
 };
+
+#[derive(Clone, Copy, Default)]
+struct BlockFeatures {
+    // Conservative precursor facts only: a pass may run unnecessarily, but
+    // must never be skipped when it could rewrite the block. The debug/test
+    // oracle at the end of `optimize_block` guards this contract as passes
+    // gain new patterns.
+    load_count: usize,
+    has_store: bool,
+    has_move: bool,
+    has_address_add: bool,
+    may_fuse_isel: bool,
+}
+
+impl BlockFeatures {
+    fn observe(&mut self, kind: &MachineInstKind) {
+        match kind {
+            MachineInstKind::Load { .. } => self.load_count += 1,
+            MachineInstKind::Store { .. } => self.has_store = true,
+            MachineInstKind::Move { .. } => self.has_move = true,
+            MachineInstKind::IntBinary { op, .. } => {
+                self.has_address_add |= *op == MachineIntBinaryOp::Add;
+                self.may_fuse_isel |= matches!(
+                    op,
+                    MachineIntBinaryOp::And
+                        | MachineIntBinaryOp::Shl
+                        | MachineIntBinaryOp::ShrS
+                        | MachineIntBinaryOp::ShrU
+                        | MachineIntBinaryOp::Rotl
+                        | MachineIntBinaryOp::Rotr
+                );
+            }
+            _ => {}
+        }
+    }
+}
 
 #[derive(Clone, Copy)]
 struct TrackedStore {
@@ -97,19 +133,85 @@ impl BlockOptCtx {
 /// `fuse_smull_sign_ext_across_edges`) are not run here; they live in
 /// `optimize` and execute after the per-block pass loop.
 pub(crate) fn optimize_block(ctx: &mut BlockOptCtx, block: &mut MachineBlock) {
-    deduplicate_constants::deduplicate_constants(block, ctx.first_fp_reg);
-    forward_stored_values::forward_stored_values(block, ctx.config, &mut ctx.tracked_stores);
-    reuse_loaded_values::reuse_loaded_values(block, ctx.config, &mut ctx.tracked_loads);
-    fuse_indexed_memory::fuse_indexed_memory(block);
-    reuse_loaded_values::reuse_loaded_values(block, ctx.config, &mut ctx.tracked_loads);
-    copy_propagate::copy_propagate(block, ctx.config, &mut ctx.cp_scratch);
+    #[cfg(any(debug_assertions, test))]
+    let mut unconditional_oracle = block.clone();
+
+    let features = deduplicate_constants::deduplicate_constants(block, ctx.first_fp_reg);
+    let may_forward_store = features.has_store && features.load_count != 0;
+    let may_reuse_load = features.load_count > 1;
+    let may_fuse_indexed =
+        features.has_address_add && (features.has_store || features.load_count != 0);
+
+    if may_forward_store {
+        forward_stored_values::forward_stored_values(block, ctx.config, &mut ctx.tracked_stores);
+    }
+    if may_reuse_load {
+        reuse_loaded_values::reuse_loaded_values(block, ctx.config, &mut ctx.tracked_loads);
+    }
+    if may_fuse_indexed {
+        fuse_indexed_memory::fuse_indexed_memory(block);
+    }
+    if may_reuse_load {
+        reuse_loaded_values::reuse_loaded_values(block, ctx.config, &mut ctx.tracked_loads);
+    }
+    if features.has_move || may_forward_store || may_reuse_load {
+        copy_propagate::copy_propagate(block, ctx.config, &mut ctx.cp_scratch);
+    }
     // Copy propagation can make previously distinct address bases or stored
     // values identical. Re-run forwarding so those newly exposed store/load
     // pairs do not survive into code emission.
-    forward_stored_values::forward_stored_values(block, ctx.config, &mut ctx.tracked_stores);
-    fuse_isel::fuse_isel(block, ctx.config);
+    if may_forward_store {
+        forward_stored_values::forward_stored_values(block, ctx.config, &mut ctx.tracked_stores);
+    }
+    if features.may_fuse_isel {
+        fuse_isel::fuse_isel(block, ctx.config);
+    }
     if ctx.config.is_32bit_gp_target() {
         fuse_smull_sign_ext::fuse_smull_sign_ext(block, ctx.total_reg_count);
+    }
+
+    // Keep pass scheduling honest as transformation patterns evolve. Release
+    // builds pay nothing; debug builds and tests compare against the original
+    // unconditional sequence after every block.
+    #[cfg(any(debug_assertions, test))]
+    {
+        let _ = deduplicate_constants::deduplicate_constants(
+            &mut unconditional_oracle,
+            ctx.first_fp_reg,
+        );
+        forward_stored_values::forward_stored_values(
+            &mut unconditional_oracle,
+            ctx.config,
+            &mut ctx.tracked_stores,
+        );
+        reuse_loaded_values::reuse_loaded_values(
+            &mut unconditional_oracle,
+            ctx.config,
+            &mut ctx.tracked_loads,
+        );
+        fuse_indexed_memory::fuse_indexed_memory(&mut unconditional_oracle);
+        reuse_loaded_values::reuse_loaded_values(
+            &mut unconditional_oracle,
+            ctx.config,
+            &mut ctx.tracked_loads,
+        );
+        copy_propagate::copy_propagate(&mut unconditional_oracle, ctx.config, &mut ctx.cp_scratch);
+        forward_stored_values::forward_stored_values(
+            &mut unconditional_oracle,
+            ctx.config,
+            &mut ctx.tracked_stores,
+        );
+        fuse_isel::fuse_isel(&mut unconditional_oracle, ctx.config);
+        if ctx.config.is_32bit_gp_target() {
+            fuse_smull_sign_ext::fuse_smull_sign_ext(
+                &mut unconditional_oracle,
+                ctx.total_reg_count,
+            );
+        }
+        assert_eq!(
+            block, &unconditional_oracle,
+            "feature-gated peephole schedule diverged from unconditional passes"
+        );
     }
 }
 
