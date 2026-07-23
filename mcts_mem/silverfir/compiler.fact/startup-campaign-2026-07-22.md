@@ -112,3 +112,22 @@ the listed commits.
   exit-first repair, so valid-candidate frame-reuse work and address hoisting
   remain measurable startup costs rather than the original compiler pipeline
   itself becoming inherently quadratic (sourced).
+
+**Serial compiler comparison correction.**
+
+- Parallel startup is not the stable measure of intrinsic pipeline cost. With
+  `SF_NANO_BENCH_SERIAL=1`, Nano's eager compiler measured 67.180 ms (bz2),
+  145.780 ms (pulldown-cmark), 2,701.3 ms (SpiderMonkey), 12,421 ms (FFmpeg),
+  4.819 ms (CoreMark), 16.962 ms (Argon2), and 2.417 ms (ERC20). CoreMark,
+  Argon2, and ERC20 use isolated cooldown reruns after the full matrix's two
+  multi-minute FFmpeg phases visibly heated the machine (sourced).
+
+- The benchmark's Wasmtime adapter already omits Wasmtime's
+  `parallel-compilation` feature. For a true serial comparison, the temporary
+  Wasmer adapters additionally set their Cranelift and Singlepass Rayon pools
+  to one thread. Against the faster serial Cranelift integration per workload,
+  Nano's ratios were 1.51x, 1.50x, 0.96x, 0.96x, 1.26x, 1.12x, and 0.64x,
+  respectively: Nano won SpiderMonkey, FFmpeg, and ERC20 and was 1.09x slower
+  geometrically across all seven. The parallel table remains useful for
+  end-user wall time, but must not be used as the compiler-efficiency headline
+  (sourced).
