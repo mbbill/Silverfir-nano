@@ -38,7 +38,7 @@ jobs:
           key: testsuite-${{ steps.testsuite.outputs.sha }}
 
       - name: Install Rust (stable)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.0
         with:
           # Native arm64 + Rosetta x64 + cross-check rows from check.py's
           # default target matrix (cargo check only for non-Apple) + bare-smoke.

@@ -43,7 +43,7 @@ jobs:
           key: testsuite-${{ steps.testsuite.outputs.sha }}
 
       - name: Install Rust (stable, MSVC host)
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@1.97.0
         with:
           # check.py's Windows phase cross-checks arm64-linux + x64-windows-gnu
           # (cargo check only, no linker), and runs bare-smoke on thumbv8m/riscv32imac.
