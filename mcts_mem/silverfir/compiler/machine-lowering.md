@@ -32,6 +32,13 @@
 
 ## Facts
 
+- 2026-07-22 rejected: borrowing cache-layout rows directly during incoming-edge
+  scoring instead of cloning the current and predecessor rows changed serial
+  bz2 from about 51.91 to 51.83 ms, inside run-to-run noise. The clones account
+  for only a small fraction of `compute_block_entry_cache_params`; the
+  experiment was discarded rather than retained as unmeasured complexity
+  (sourced).
+
 - 2026-03-12 (7bb4d7dc) rationale: the step between prepared LIR and MachineIR is
   one internal lowering pass, not a new public IR layer — it expands VM-flavored ops
   into machine-shaped code and does the trivial fixed-budget register assignment the

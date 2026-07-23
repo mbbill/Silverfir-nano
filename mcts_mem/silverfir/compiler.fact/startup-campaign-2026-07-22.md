@@ -132,6 +132,20 @@ the listed commits.
   from 67.180 ms to about 52.3 ms (22%) and the ratio to same-binary Wasmtime
   Cranelift narrowed from 1.51x to about 1.16x (sourced).
 
+- The cooled/isolated seven-workload serial rerun after `70e165e0` and
+  `8a89ce77` measured 51.912 ms (bz2), 123.66 ms (pulldown-cmark), 2,309.2 ms
+  (SpiderMonkey), 8,213.9 ms (FFmpeg), 4.112 ms (CoreMark), 14.212 ms
+  (Argon2), and 2.332 ms (ERC20). Relative to the prior serial Nano row, the
+  improvements were 22.7%, 15.2%, 14.5%, 33.9%, 14.7%, 16.2%, and 3.5%,
+  respectively: 1.215x faster geometrically, or 17.7% less compile/instantiate
+  time (sourced).
+
+- Against the faster serial Cranelift integration recorded for each workload,
+  the new Nano ratios are 1.16x, 1.27x, 0.82x, 0.63x, 1.07x, 0.94x, and 0.62x.
+  Nano now wins SpiderMonkey, FFmpeg, Argon2, and ERC20 and is 0.90x the
+  fastest-Cranelift time geometrically (about 10% faster); the remaining
+  serial catch-up targets are Pulldown, bz2, and CoreMark (sourced).
+
 **Serial compiler comparison correction.**
 
 - Parallel startup is not the stable measure of intrinsic pipeline cost. With

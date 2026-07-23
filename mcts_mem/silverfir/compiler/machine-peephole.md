@@ -31,6 +31,20 @@
 
 ## Facts
 
+- 2026-07-22 rejected: replacing per-loop visited/result allocation with a
+  reusable generation-marked scratch buffer required sorting discovered nodes
+  to preserve the existing ascending block order. On serial Pulldown this
+  regressed 123.66 -> 135.57 ms (9.6%); the experiment was discarded. The
+  remaining `natural_loop_nodes` cost is overlapping predecessor traversal,
+  not primarily vector allocation (sourced).
+
+- 2026-07-22 rejected: collecting all loop definitions once and sorting
+  indexed-access candidates removed the apparent access-count x
+  instruction-count scan in address hoisting, but serial bz2 remained about
+  52.1 ms versus the 51.9-52.6 ms post-SCC range. The experiment was discarded
+  because the suspected scan was not material on the measured workload
+  (sourced).
+
 - 2026-07-22 (8a89ce77) pitfall and decision: both loop peepholes ran a
   newly allocated whole-CFG reachability DFS for every numerically backward
   edge. For an existing edge `source -> target`, the old proof that `target`
