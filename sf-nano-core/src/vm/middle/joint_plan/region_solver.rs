@@ -497,10 +497,15 @@ fn extract_feasible_states(
 ) {
     let cap = capacities[region_id];
     let neg_inf = f64::NEG_INFINITY;
-    let mut values = collections::vec![collections::vec![neg_inf; cap + 1]; bank_slots.len() + 1];
-    let mut take = collections::vec![collections::vec![false; cap + 1]; bank_slots.len() + 1];
+    let row_len = cap + 1;
+    // Backtracking needs every take/not-take decision, but the value DP reads
+    // only the immediately preceding row. Keep the decisions dense and roll
+    // two value rows instead of materializing and zeroing a full value matrix.
+    let mut values = collections::vec![neg_inf; row_len];
+    let mut next_values = collections::vec![neg_inf; row_len];
+    let mut take = collections::vec![false; (bank_slots.len() + 1) * row_len];
 
-    values[0][0] = 0.0;
+    values[0] = 0.0;
 
     // Knapsack ties break toward the earliest item (`candidate > best` is
     // strict), and a slot whose benefit sits deep in the subtree has the same
@@ -533,30 +538,31 @@ fn extract_feasible_states(
         let resident = slot_dps[item_index].force_value[region_id][parent_state][1];
 
         for used in 0..=cap {
-            let mut best = values[row][used] + absent;
+            let mut best = values[used] + absent;
             let mut choose_resident = false;
             if used >= weight {
-                let candidate = values[row][used - weight] + resident;
+                let candidate = values[used - weight] + resident;
                 if candidate > best {
                     best = candidate;
                     choose_resident = true;
                 }
             }
-            values[row + 1][used] = best;
-            take[row + 1][used] = choose_resident;
+            next_values[used] = best;
+            take[(row + 1) * row_len + used] = choose_resident;
         }
+        core::mem::swap(&mut values, &mut next_values);
     }
 
     let mut used = 0usize;
     for candidate in 1..=cap {
-        if values[bank_slots.len()][candidate] > values[bank_slots.len()][used] {
+        if values[candidate] > values[used] {
             used = candidate;
         }
     }
 
     for row in (0..order.len()).rev() {
         let slot_index = bank_slots[order[row]];
-        let chose_resident = take[row + 1][used];
+        let chose_resident = take[(row + 1) * row_len + used];
         selected[region_id][slot_index] = chose_resident;
         if chose_resident {
             used = used.saturating_sub(cell_meta[slot_index].units);

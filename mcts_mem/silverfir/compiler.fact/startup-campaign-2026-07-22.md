@@ -278,3 +278,21 @@ the listed commits.
   statistically flat. The experiment and its extra mirrored state were
   reverted. Incoming parameter ownership is too small or too short-lived on
   this workload to explain the remaining compile-time gap (sourced).
+
+- The residency solver's feasible-state extraction was 7.35% inclusive in the
+  serial bz2 profile and materialized both the floating-point values and
+  boolean decisions as full `(locals + 1) x (capacity + 1)` matrices for every
+  region. Backtracking needs the complete decision matrix, but each value row
+  reads only its predecessor. Retaining a dense decision matrix while rolling
+  two value rows preserved the exact knapsack and tie-breaking policy and
+  removed about half of its matrix initialization (sourced).
+
+- Controlled long-sample bz2 B/A/B means for the rolling rows, exact parent,
+  and rolling rows again were 45.421, 46.548, and 44.786 ms, a repeatable
+  2.4-3.8% reduction with significant transitions. The seven-workload serial
+  breadth run measured 44.495 ms (bz2), 88.073 ms (Pulldown-cmark), 1,826.2 ms
+  (SpiderMonkey), and 6,835.5 ms (FFmpeg); SpiderMonkey improved 3.0%
+  significantly, while Pulldown and FFmpeg moved favorably by 0.8% and 1.1%.
+  The three millisecond-scale cases remained noise dominated. In the
+  verification profile, feasible extraction fell from 7.35% to 2.93%
+  inclusive and the whole joint-plan builder from 11.58% to 7.32% (sourced).

@@ -12,6 +12,10 @@
   (each slot's DP value when forced resident in the region), with slot index
   as the deterministic tiebreaker.
 
+- Feasible extraction stores its complete take/not-take backtracking choices in
+  one dense matrix and stores its floating-point DP values in two rolling rows
+  (`extract_feasible_states`).
+
 ## Facts
 
 - 2026-07-12 measurement: the pricing ablation that motivated the deletion —
@@ -50,6 +54,16 @@
   functions cache every hot local, so capacity-arbitration differences are
   nearly invisible there — the pricing looked neutral on arm64 for months
   while costing 4% on armv7 (sourced).
+
+- 2026-07-22 measurement: a serial bz2 profile put feasible extraction at
+  7.35% inclusive. Replacing its full value matrix with two rolling rows
+  produced controlled long-sample B/A/B means of 45.421 ms (rolling), 46.548
+  ms (exact parent), and 44.786 ms (rolling), a repeatable 2.4-3.8% reduction.
+  The existing exact-selection test and all workspace release tests passed;
+  the resident decisions, full boolean backtracking matrix, item ordering, and
+  strict tie rule are unchanged. The verification profile reduced feasible
+  extraction to 2.93% inclusive and the enclosing joint-plan builder from
+  11.58% to 7.32% (sourced).
 
 ## Moves
 
