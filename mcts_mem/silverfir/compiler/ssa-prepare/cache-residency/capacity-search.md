@@ -65,6 +65,17 @@
   extraction to 2.93% inclusive and the enclosing joint-plan builder from
   11.58% to 7.32% (sourced).
 
+- 2026-07-23 rejected: replacing recursive top-down extraction with a
+  parent-indexed iterative region walk removed one `selected[parent].clone()`
+  per region edge and bank, but the cloned rows are bit-packed `Vec<bool>` and
+  were not the remaining solver cost. FFmpeg kept `solve_bank` essentially flat
+  at 95 versus 96 inclusive samples; exact-parent bz2 ABBA point estimates were
+  neutral (64.16 versus 64.39 ms on pair averages). Making the now-inlineable
+  walk iterative also grew fat-LTO text by 4,708 bytes; forcing a separate code
+  boundary grew it by 5,004 bytes. The experiment was fully reverted. Focus
+  future solver work on the per-region sort/knapsack work, not parent-row
+  snapshots ([[compiler.fact/startup-campaign-2026-07-22]]) (sourced).
+
 ## Moves
 
 - 2026-07-12 (748c8416) replaced [[lagrangian-pricing]]: the price iterations

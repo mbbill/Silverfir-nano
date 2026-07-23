@@ -297,6 +297,22 @@ the listed commits.
   verification profile, feasible extraction fell from 7.35% to 2.93%
   inclusive and the whole joint-plan builder from 11.58% to 7.32% (sourced).
 
+- A later structural follow-up made feasible extraction iterative and stored
+  each region's parent index, allowing child rows to borrow the already-solved
+  parent instead of cloning `selected[parent]` on every region-tree edge and
+  bank. This did not reduce the measured solver cost: serial FFmpeg
+  `solve_bank` was effectively unchanged at 95 versus 96 inclusive samples.
+  Exact-parent bz2 ABBA runs measured candidate point estimates of
+  63.547/64.778 ms versus parent estimates of 60.755/68.029 ms, or 64.16
+  versus 64.39 ms on pair averages (0.36% favorable and well inside noise).
+  The snapshots are bit-packed `Vec<bool>` rows, so their source-level clones
+  are substantially cheaper than full byte-per-local copies. The iterative
+  body also became inlineable and grew fat-LTO text from 3,933,696 to
+  3,938,404 bytes (+4,708); forcing the former function boundary explicitly
+  grew it further to 3,938,700 (+5,004). Both variants were fully reverted.
+  The remaining feasible-extraction target is repeated per-region ordering and
+  knapsack work, not recursive parent snapshots (sourced).
+
 - Removing the per-block `shrink_to_fit` calls during SSA rewrite was tested
   because final prepared-SSA compaction repeats those calls after cleanup and
   optimization. Serial bz2 measured 44.583 ms versus 44.786 and 44.495 ms for
