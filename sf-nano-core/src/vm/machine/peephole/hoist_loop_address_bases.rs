@@ -36,7 +36,7 @@ pub(super) fn hoist_loop_address_bases(program: &mut MachineProgram, config: Bac
         return;
     }
 
-    let loop_graph = analyze_loop_graph(blocks);
+    let loop_graph = analyze_loop_graph(blocks, entry);
     let latches_by_header = loop_graph.latches_by_header;
     let predecessors = loop_graph.predecessors;
 
@@ -56,7 +56,7 @@ pub(super) fn hoist_loop_address_bases(program: &mut MachineProgram, config: Bac
     }
 }
 
-pub(super) fn analyze_loop_graph(blocks: &[MachineBlock]) -> LoopGraph {
+pub(super) fn analyze_loop_graph(blocks: &[MachineBlock], entry: MachineBlockId) -> LoopGraph {
     let mut predecessors: collections::Vec<collections::Vec<usize>> =
         (0..blocks.len()).map(|_| collections::Vec::new()).collect();
     let mut successors: collections::Vec<collections::Vec<usize>> =
@@ -75,25 +75,38 @@ pub(super) fn analyze_loop_graph(blocks: &[MachineBlock]) -> LoopGraph {
         });
     }
 
-    // An edge source -> target closes a cycle exactly when target can reach
-    // source, which is equivalent to both endpoints belonging to one SCC.
-    // Compute SCCs once instead of running a fresh whole-CFG DFS per backward
-    // edge.
-    let components = strongly_connected_components(&successors, &predecessors);
     let mut latches_by_header: collections::Vec<collections::Vec<usize>> =
         (0..blocks.len()).map(|_| collections::Vec::new()).collect();
-    for source in 0..blocks.len() {
-        visit_edges(&blocks[source].terminator, |edge| {
-            let Some(target) = block_index_for_id(blocks, edge.target) else {
-                return;
-            };
-            if edge.target.0 <= blocks[source].id.0
-                && components[target] == components[source]
+    let has_backward_edge = successors.iter().enumerate().any(|(source, targets)| {
+        targets
+            .iter()
+            .any(|&target| blocks[target].id.0 <= blocks[source].id.0)
+    });
+    if !has_backward_edge {
+        return LoopGraph {
+            predecessors,
+            latches_by_header,
+        };
+    }
+
+    // A natural-loop backedge must target a block that dominates its source.
+    // Merely sharing an SCC proves that the edge participates in some cycle,
+    // not that its target is that cycle's header. Treating every numerically
+    // backward SCC edge as a latch manufactures many overlapping pseudo-loops
+    // in large irreducible components.
+    let entry_index = block_index_for_id(blocks, entry);
+    let immediate_dominators = entry_index
+        .map(|entry| compute_immediate_dominators(&successors, &predecessors, entry))
+        .unwrap_or_else(|| collections::vec![None; blocks.len()]);
+    for (source, targets) in successors.iter().enumerate() {
+        for &target in targets {
+            if blocks[target].id.0 <= blocks[source].id.0
+                && dominates(&immediate_dominators, target, source)
                 && !latches_by_header[target].contains(&source)
             {
                 latches_by_header[target].push(source);
             }
-        });
+        }
     }
 
     LoopGraph {
@@ -102,53 +115,92 @@ pub(super) fn analyze_loop_graph(blocks: &[MachineBlock]) -> LoopGraph {
     }
 }
 
-fn strongly_connected_components(
+fn compute_immediate_dominators(
     successors: &[collections::Vec<usize>],
     predecessors: &[collections::Vec<usize>],
-) -> collections::Vec<usize> {
+    entry: usize,
+) -> collections::Vec<Option<usize>> {
     let mut visited = collections::vec![false; successors.len()];
-    let mut postorder = collections::Vec::with_capacity(successors.len());
-    let mut dfs = collections::Vec::new();
-    for root in 0..successors.len() {
-        if visited[root] {
-            continue;
+    let mut reverse_postorder = collections::Vec::with_capacity(successors.len());
+    let mut dfs = collections::vec![(entry, 0usize)];
+    visited[entry] = true;
+    while let Some((block, next_successor)) = dfs.last_mut() {
+        if let Some(&successor) = successors[*block].get(*next_successor) {
+            *next_successor += 1;
+            if !visited[successor] {
+                visited[successor] = true;
+                dfs.push((successor, 0));
+            }
+        } else {
+            let (block, _) = dfs.pop().unwrap();
+            reverse_postorder.push(block);
         }
-        visited[root] = true;
-        dfs.push((root, 0usize));
-        while let Some((block, next_successor)) = dfs.last_mut() {
-            if let Some(&successor) = successors[*block].get(*next_successor) {
-                *next_successor += 1;
-                if !visited[successor] {
-                    visited[successor] = true;
-                    dfs.push((successor, 0));
-                }
-            } else {
-                let (block, _) = dfs.pop().unwrap();
-                postorder.push(block);
+    }
+    reverse_postorder.reverse();
+
+    let mut rpo_index = collections::vec![usize::MAX; successors.len()];
+    for (index, &block) in reverse_postorder.iter().enumerate() {
+        rpo_index[block] = index;
+    }
+    let mut idom = collections::vec![None; successors.len()];
+    idom[entry] = Some(entry);
+    let mut changed = true;
+    while changed {
+        changed = false;
+        for &block in reverse_postorder.iter().skip(1) {
+            let mut reachable_predecessors = predecessors[block]
+                .iter()
+                .copied()
+                .filter(|predecessor| idom[*predecessor].is_some());
+            let Some(mut new_idom) = reachable_predecessors.next() else {
+                continue;
+            };
+            for predecessor in reachable_predecessors {
+                new_idom = intersect_dominators(&idom, &rpo_index, predecessor, new_idom);
+            }
+            if idom[block] != Some(new_idom) {
+                idom[block] = Some(new_idom);
+                changed = true;
             }
         }
     }
 
-    let mut components = collections::vec![usize::MAX; successors.len()];
-    let mut pending = collections::Vec::new();
-    let mut component = 0usize;
-    for &root in postorder.iter().rev() {
-        if components[root] != usize::MAX {
-            continue;
+    idom
+}
+
+fn intersect_dominators(
+    idom: &[Option<usize>],
+    rpo_index: &[usize],
+    mut lhs: usize,
+    mut rhs: usize,
+) -> usize {
+    while lhs != rhs {
+        while rpo_index[lhs] > rpo_index[rhs] {
+            lhs = idom[lhs].expect("reachable block must have an immediate dominator");
         }
-        components[root] = component;
-        pending.push(root);
-        while let Some(block) = pending.pop() {
-            for &predecessor in &predecessors[block] {
-                if components[predecessor] == usize::MAX {
-                    components[predecessor] = component;
-                    pending.push(predecessor);
-                }
-            }
+        while rpo_index[rhs] > rpo_index[lhs] {
+            rhs = idom[rhs].expect("reachable block must have an immediate dominator");
         }
-        component += 1;
     }
-    components
+    lhs
+}
+
+fn dominates(idom: &[Option<usize>], dominator: usize, mut block: usize) -> bool {
+    if idom.get(block).copied().flatten().is_none() {
+        return false;
+    }
+    loop {
+        if block == dominator {
+            return true;
+        }
+        let Some(parent) = idom[block] else {
+            return false;
+        };
+        if parent == block {
+            return false;
+        }
+        block = parent;
+    }
 }
 
 pub(super) fn natural_loop_nodes(
@@ -623,13 +675,58 @@ mod tests {
             },
         ];
 
-        let loop_graph = analyze_loop_graph(&blocks);
+        let loop_graph = analyze_loop_graph(&blocks, MachineBlockId(0));
 
         assert!(loop_graph
             .latches_by_header
             .iter()
             .all(|latches| latches.is_empty()));
         assert_eq!(loop_graph.predecessors[0].as_slice(), &[1]);
+    }
+
+    #[test]
+    fn irreducible_scc_edges_are_not_natural_loop_latches() {
+        let blocks = collections::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Branch {
+                    cond: MachineBranchCond::Value(MachineValue::Imm64(1)),
+                    then_edge: edge(1, &[]),
+                    else_edge: edge(2, &[]),
+                },
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Jump(edge(3, &[])),
+            },
+            MachineBlock {
+                id: MachineBlockId(2),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Jump(edge(3, &[])),
+            },
+            MachineBlock {
+                id: MachineBlockId(3),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Branch {
+                    cond: MachineBranchCond::Value(MachineValue::Imm64(1)),
+                    then_edge: edge(1, &[]),
+                    else_edge: edge(2, &[]),
+                },
+            },
+        ];
+
+        let loop_graph = analyze_loop_graph(&blocks, MachineBlockId(0));
+
+        assert!(loop_graph
+            .latches_by_header
+            .iter()
+            .all(|latches| latches.is_empty()));
     }
 
     #[test]

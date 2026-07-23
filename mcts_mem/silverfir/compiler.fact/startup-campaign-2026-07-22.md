@@ -204,3 +204,38 @@ the listed commits.
   geometrically across all seven. The parallel table remains useful for
   end-user wall time, but must not be used as the compiler-efficiency headline
   (sourced).
+
+**Natural-loop correction.**
+
+- The SCC optimization fixed repeated reachability traversal but retained a
+  semantically weak latch predicate: every numerically backward edge whose
+  endpoints shared an SCC was treated as a natural-loop backedge. A dump of
+  Pulldown's post-optimization MachineIR showed 11,674 blocks, 1,325 alleged
+  loops, and 1,124,306 expanded block memberships. Function 26 alone had 2,629
+  blocks, 556 alleged loops, and 877,011 memberships; the generated regions
+  contained 4,486 non-laminar overlap pairs. This was repeated work caused by
+  misclassification, not register allocation or an inherently superlinear
+  compiler pipeline (sourced).
+
+- Requiring the candidate header to dominate the latch reduced the same module
+  to 289 natural loops and 4,710 memberships (about 239x fewer); the resulting
+  loop sets were laminar with maximum nesting depth four. In the verification
+  profile, `natural_loop_nodes` disappeared from the sample and the replacement
+  graph analysis occupied about 3.1% inclusive in a low-sample run, versus
+  9.15% self-time for loop expansion before the correction (sourced).
+
+- The final serial seven-workload run measured 48.164 ms (bz2), 91.752 ms
+  (Pulldown-cmark), 1,882.9 ms (SpiderMonkey), 7,020.9 ms (FFmpeg), 3.861 ms
+  (CoreMark), and 13.895 ms (Argon2). Those are improvements of 2.7%, 13.9%,
+  10.9%, 6.9%, and 1.2% for bz2 through CoreMark; Argon2 moved 1.7% in the
+  opposite direction within the host's small-case noise. ERC20 was also noise
+  dominated: identical-code isolated means swung 3.077, 2.227, and 2.358 ms,
+  so no directional claim is supported. Pulldown is now about 6% faster than
+  the roughly 97 ms fastest recorded serial Cranelift integration rather than
+  about 10% slower (sourced).
+
+- A runtime guard compared Mandelbrot after the loop correction against the
+  exact parent: the complete post-peephole MachineIR and all emitted function
+  code sizes were byte-for-byte identical. The apparent 2.9% execution
+  movement in a warm full-matrix run was therefore environmental rather than a
+  generated-code change (sourced).

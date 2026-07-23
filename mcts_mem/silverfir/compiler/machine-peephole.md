@@ -220,6 +220,23 @@
   instruction-selection fusion eliminated 128 MachineIR instructions (34
   BitfieldExtractU/UBFX + 94 IntBinaryShifted shifted-operand fusions) (code).
 
+- 2026-07-22 pitfall and decision: sharing a strongly connected component
+  proves only that a CFG edge participates in some cycle; it does not prove
+  that a numerically backward edge targets that cycle's natural-loop header.
+  The SCC predicate manufactured overlapping pseudo-loops in complex
+  components, so structural loop peepholes now accept a backedge only when its
+  target dominates its source. Future loop-region work must preserve that
+  dominance condition rather than recover the cheaper but weaker SCC test
+  (sourced).
+
+- 2026-07-22 measurement: on Pulldown-cmark, the SCC-plus-numeric predicate
+  classified 1,325 loop headers and expanded 1,124,306 block memberships,
+  including 877,011 memberships in one 2,629-block function. Requiring
+  dominance found 289 natural loops and 4,710 memberships for the whole module,
+  reducing expanded loop-region work about 239x. Serial startup moved from
+  106.54 to 90.68-91.75 ms; SpiderMonkey moved from 2,112.7 to 1,882.9 ms and
+  FFmpeg from 7,544.7 to 7,020.9 ms (sourced).
+
 - 2026-03-29 (22c1c30f) pitfall: the per-register tracking shared by copy
   propagation, constant dedup, store-to-load forwarding, and load reuse was
   invalidated through a defined_reg that returns one register, leaving stale

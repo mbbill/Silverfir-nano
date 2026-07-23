@@ -121,7 +121,7 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
         fuse_smull_sign_ext::fuse_smull_sign_ext_across_edges(program, ctx.total_reg_count);
     }
     hoist_loop_address_bases::hoist_loop_address_bases(program, config);
-    reuse_loop_frame_values::reuse_loop_frame_values(&mut program.blocks);
+    reuse_loop_frame_values::reuse_loop_frame_values(&mut program.blocks, program.entry);
     reuse_loop_context_loads::reuse_loop_context_loads(&mut program.blocks);
     eliminate_dead_params::eliminate_dead_params(&mut program.blocks);
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);

@@ -33,12 +33,15 @@ struct FrameLoad {
     extension: MachineLoadExtension,
 }
 
-pub(super) fn reuse_loop_frame_values(blocks: &mut [MachineBlock]) {
+pub(super) fn reuse_loop_frame_values(
+    blocks: &mut [MachineBlock],
+    entry: crate::vm::machine::machine_ir::MachineBlockId,
+) {
     if blocks.len() < 3 {
         return;
     }
 
-    let loop_graph = analyze_loop_graph(blocks);
+    let loop_graph = analyze_loop_graph(blocks, entry);
     let latches_by_header = loop_graph.latches_by_header;
     let predecessors = loop_graph.predecessors;
 
@@ -320,7 +323,10 @@ mod tests {
             },
         ];
 
-        reuse_loop_frame_values(&mut blocks);
+        reuse_loop_frame_values(
+            &mut blocks,
+            crate::vm::machine::machine_ir::MachineBlockId(0),
+        );
 
         assert_eq!(
             blocks[1].params.last().map(|param| param.reg),
