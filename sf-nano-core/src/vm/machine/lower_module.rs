@@ -3508,6 +3508,12 @@ fn compute_block_entry_cache_dirty(
     }
 
     let predecessors = compute_ssa_predecessors(program);
+    let mut successors = collections::vec![collections::Vec::new(); program.blocks.len()];
+    for (successor, preds) in predecessors.iter().enumerate() {
+        for &predecessor in preds {
+            successors[predecessor].push(successor);
+        }
+    }
     let slot_index_len = cached_cells
         .iter()
         .map(|cached| cached.cell.0 as usize + 1)
@@ -3540,14 +3546,38 @@ fn compute_block_entry_cache_dirty(
         }
     }
 
-    loop {
-        let mut changed = false;
-        for block in &program.blocks {
-            if block.id == program.entry {
+    // Cache each block's transfer result and revisit only blocks whose entry
+    // state changed. The previous global sweep re-simulated a predecessor once
+    // for every outgoing edge on every iteration.
+    let mut exit_dirty =
+        collections::vec![collections::vec![false; cached_cells.len()]; program.blocks.len()];
+    let mut queued = collections::vec![true; program.blocks.len()];
+    let mut worklist: collections::Vec<usize> = (0..program.blocks.len()).collect();
+    let mut worklist_head = 0;
+    while worklist_head < worklist.len() {
+        let block_index = worklist[worklist_head];
+        worklist_head += 1;
+        queued[block_index] = false;
+
+        let (_, next_exit_dirty) = simulate_block_cache_exit_state(
+            program,
+            &program.blocks[block_index],
+            &entry_dirty[block_index],
+            &slot_to_index,
+            &register_param_slots,
+            is_local_func,
+            call_preserved_cache_candidates,
+        );
+        if next_exit_dirty == exit_dirty[block_index] {
+            continue;
+        }
+        exit_dirty[block_index] = next_exit_dirty;
+
+        for &successor in &successors[block_index] {
+            if successor == entry_index {
                 continue;
             }
-            let block_index = block.id.as_usize();
-            let Some(entry_slots) = program.block_entry_cached_cells.get(block_index) else {
+            let Some(entry_slots) = program.block_entry_cached_cells.get(successor) else {
                 continue;
             };
             if entry_slots.is_empty() {
@@ -3555,16 +3585,8 @@ fn compute_block_entry_cache_dirty(
             }
 
             let mut next_dirty = collections::vec![false; cached_cells.len()];
-            for &pred_index in &predecessors[block_index] {
-                let (_, pred_exit_dirty) = simulate_block_cache_exit_state(
-                    program,
-                    &program.blocks[pred_index],
-                    &entry_dirty[pred_index],
-                    &slot_to_index,
-                    &register_param_slots,
-                    is_local_func,
-                    call_preserved_cache_candidates,
-                );
+            for &pred_index in &predecessors[successor] {
+                let pred_exit_dirty = &exit_dirty[pred_index];
                 for &slot in entry_slots {
                     if let Some(cached_index) = cached_cell_index(&slot_to_index, slot) {
                         next_dirty[cached_index] |= pred_exit_dirty[cached_index];
@@ -3572,14 +3594,13 @@ fn compute_block_entry_cache_dirty(
                 }
             }
 
-            if next_dirty != entry_dirty[block_index] {
-                entry_dirty[block_index] = next_dirty;
-                changed = true;
+            if next_dirty != entry_dirty[successor] {
+                entry_dirty[successor] = next_dirty;
+                if !queued[successor] {
+                    queued[successor] = true;
+                    worklist.push(successor);
+                }
             }
-        }
-
-        if !changed {
-            break;
         }
     }
 
