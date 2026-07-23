@@ -1,6 +1,6 @@
 - Hosted 64-bit std builds eagerly compile sufficiently large modules with a
-  bounded worker pool. Each worker owns an ABI view, constant pool, and
-  ordinary per-function streaming pipeline; results are reassembled in
+  bounded worker pool by default. Embedders may select the same eager pipeline
+  in strictly serial mode; parallel and serial results are reassembled in
   function-index order before instantiation returns
   (`compile_full_functions_parallel`).
 
@@ -9,6 +9,10 @@
   (`parallel_eager_worker_count`).
 
 ## Facts
+
+- 2026-07-22 (af066aae) rationale: explicit serial eager compilation removes
+  host CPU-count and worker-scheduling variation from compiler measurements
+  without introducing lazy or dynamic compilation (sourced).
 
 - 2026-07-22 (e0394b1c) pitfall: Rust's Linux cgroup probe inside
   `available_parallelism` null-faulted in a riscv32 userspace process under
