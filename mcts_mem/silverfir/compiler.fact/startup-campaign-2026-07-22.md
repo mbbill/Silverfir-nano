@@ -641,3 +641,24 @@ the listed commits.
   14,290-function deterministic native index stayed byte-identical at
   `5db01c38ff5e59a3999683b893dc534d053f784cd85640bb2f42d28f4b1ce31c`,
   and all 357 release tests passed (sourced).
+
+- 2026-07-23: commit `fef7fbf4` removed per-edge dense-row cloning from
+  incoming cache-layout scoring. The old implementation copied the current
+  entry row, copied every predecessor exit row into an independently allocated
+  vector, and then allocated another vector of slices over those copies. The
+  scoring operation is read-only until it has selected a candidate, so the new
+  implementation borrows the current and predecessor rows directly from the
+  dense layout matrices, then explicitly drops the predecessor-slice vector
+  before writing the current block's exit row; this boundary is required for
+  self-loop predecessors. In adjacent serial FFmpeg profiles,
+  `compute_block_entry_cache_params` fell from 512/5,691 samples (9.00%) to
+  471/5,642 samples (8.35%), an 8.0% reduction in absolute phase samples, while
+  complete profiles differed by 0.9% and remain secondary. Two exact-parent
+  ABBA startup pairs produced candidate point estimates of 5.6628/5.5131 s
+  versus parent estimates of 5.5818/5.5324 s: 5.588 versus 5.557 s on pair
+  averages, a neutral/slightly adverse 0.55% result within noise. No
+  end-to-end speedup is claimed. Fat-LTO text shrank 380 bytes (3,934,076 to
+  3,933,696). FFmpeg's 14,290-function deterministic native index stayed
+  byte-identical at
+  `5db01c38ff5e59a3999683b893dc534d053f784cd85640bb2f42d28f4b1ce31c`,
+  and all 357 release tests passed (sourced).

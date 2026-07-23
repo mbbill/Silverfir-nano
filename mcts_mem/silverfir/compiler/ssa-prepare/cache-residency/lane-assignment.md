@@ -138,6 +138,20 @@
   357 release tests passed, and fat-LTO text grew 500 bytes
   ([[compiler.fact/startup-campaign-2026-07-22]]) (sourced).
 
+- 2026-07-23 (fef7fbf4) measurement: incoming-edge cache-layout scoring cloned
+  every predecessor's complete dense lane row, then allocated a second vector
+  of references to those clones. The scorer now borrows predecessor rows
+  directly from the immutable exit-layout matrix and explicitly ends those
+  borrows before updating the current block's exit row, which also preserves
+  self-loop correctness. `compute_block_entry_cache_params` fell from 512 to
+  471 serial FFmpeg samples (8.0% absolute), and fat-LTO text shrank 380 bytes.
+  Exact-parent ABBA startup point estimates were neutral/slightly adverse
+  (candidate 5.588 s versus parent 5.557 s on pair averages), so this is retained
+  as a localized allocation and code-size improvement without an end-to-end
+  speed claim. FFmpeg's deterministic native index remained byte-identical and
+  all 357 release tests passed
+  ([[compiler.fact/startup-campaign-2026-07-22]]) (sourced).
+
 ## Moves
 
 - 2026-04-06 (366923b2) replaced [[compact-lane-assignment]]: compacting each
