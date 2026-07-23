@@ -31,6 +31,14 @@
 
 ## Facts
 
+- 2026-07-22 (fa131723) pitfall: loop-frame reuse scanned every block and used
+  repeated linear loop-membership tests to discover entry sources before it
+  checked whether the loop exits even contained compatible frame reloads. On
+  Pulldown-cmark this made the pass roughly 75% of active serial compiler
+  samples; checking exits first and using dense membership reduced same-binary
+  startup from about 259 -> 59.8 ms parallel and 375 -> 138.9 ms serial while
+  preserving the optimization (sourced).
+
 - 2026-07-22 (faf4b05f) pitfall: loop-address hoisting claimed the first
   preserved dynamic lane after lowering had already derived the function's
   preserved-clobber set; the ARM64 body then modified that lane without a
