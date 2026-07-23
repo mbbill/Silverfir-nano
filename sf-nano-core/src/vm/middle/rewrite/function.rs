@@ -107,10 +107,10 @@ pub(super) struct ProgramBuilder {
 }
 
 impl ProgramBuilder {
-    pub(super) fn intern_primitive(&mut self, kind: PrimitiveOpKind) -> Result<u32, WasmError> {
+    pub(super) fn intern_primitive(&mut self, kind: &PrimitiveOpKind) -> Result<u32, WasmError> {
         match self
             .primitive_index
-            .binary_search_by(|pool_idx| self.primitive_pool[*pool_idx as usize].cmp(&kind))
+            .binary_search_by(|pool_idx| self.primitive_pool[*pool_idx as usize].cmp(kind))
         {
             Ok(index_pos) => return Ok(self.primitive_index[index_pos]),
             Err(index_pos) => {
@@ -120,7 +120,7 @@ impl ProgramBuilder {
                     ));
                 }
                 let pool_idx = self.primitive_pool.len() as u32;
-                self.primitive_pool.push(kind);
+                self.primitive_pool.push(kind.clone());
                 self.primitive_index.insert(index_pos, pool_idx);
                 Ok(pool_idx)
             }
@@ -787,7 +787,7 @@ fn lower_primitive(
     } else {
         values.fresh_typed(result_ty)
     };
-    let pool_idx = builder.intern_primitive(kind.clone())?;
+    let pool_idx = builder.intern_primitive(kind)?;
     state
         .ops
         .push(SsaInst::primitive(pool_idx, result, inline_args, extra_idx));
@@ -1265,7 +1265,7 @@ fn emit_ref_is_null_condition(
     values: &mut ValueAlloc,
 ) -> Result<SsaValue, WasmError> {
     let cond = values.fresh_typed(ValueType::I32);
-    let pool_idx = builder.intern_primitive(PrimitiveOpKind::RefIsNull)?;
+    let pool_idx = builder.intern_primitive(&PrimitiveOpKind::RefIsNull)?;
     let (inline_args, extra_idx) = pack_primitive_args(&[ref_value], &mut state.extra_args)?;
     state
         .ops
@@ -1286,7 +1286,7 @@ fn emit_ref_test_condition(
         ));
     };
     let cond = values.fresh_typed(ValueType::I32);
-    let pool_idx = builder.intern_primitive(PrimitiveOpKind::RefTest { ref_type })?;
+    let pool_idx = builder.intern_primitive(&PrimitiveOpKind::RefTest { ref_type })?;
     let (inline_args, extra_idx) = pack_primitive_args(&[ref_value], &mut state.extra_args)?;
     state
         .ops
