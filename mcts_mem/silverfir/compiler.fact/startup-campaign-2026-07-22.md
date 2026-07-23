@@ -500,3 +500,14 @@ the listed commits.
   were mildly favorable on their means (0.64%), but no end-to-end percentage
   is attributed. FFmpeg's complete SSA/MachineIR/native index remained
   byte-identical and all 356 release tests passed (sourced).
+
+- 2026-07-23: ARM64 backend construction separately scanned each final
+  MachineIR body for helper-save candidates and bulk-helper target lanes, then
+  repeatedly rescanned it from emission sites to decide whether the body needs
+  a host frame. Commit `c0654348` derives all three facts in one traversal and
+  caches the frame predicate. In serial FFmpeg profiles, backend construction
+  fell from 1.40% to 0.93% inclusive and total architecture lowering from
+  5.72% to 4.81%; the fat-LTO text also shrank by 1,984 bytes. Sustained and
+  quick bz2 timings were invalidated by severe thermal drift, so no
+  end-to-end percentage is attributed. FFmpeg's full SSA/MachineIR/native
+  index remained byte-identical and all 356 release tests passed (sourced).

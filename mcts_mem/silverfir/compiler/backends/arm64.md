@@ -28,6 +28,15 @@
   GP budget from 21 to 23, reducing spill pressure in register-heavy leaf loops
   (code).
 
+- 2026-07-23 (c0654348) rationale: ARM64 helper-save candidates, bulk-helper
+  target lanes, and the body-host-frame predicate are derived in one
+  backend-construction traversal because all three depend on the same
+  MachineIR register and instruction facts (sourced).
+
+- 2026-07-23 (c0654348) measurement: folding the ARM64 body analyses reduced
+  backend construction from 1.40% to 0.93% inclusive and architecture
+  lowering from 5.72% to 4.81% inclusive in serial FFmpeg profiles (sourced).
+
 - 2026-07-22 measurement: pairing scalar GP/FP callee-save stores and loads as
   STP/LDP reduced word-count about 5% (484.6 to 460.6 us) and sort about 40%
   (18.2 to 11.0 ms); the latter repeatedly crosses internal call boundaries and
