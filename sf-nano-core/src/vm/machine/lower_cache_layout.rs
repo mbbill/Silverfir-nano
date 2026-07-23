@@ -628,9 +628,18 @@ fn improve_gp_layouts_for_incoming_edges(
     lanes: usize,
 ) -> Result<(), WasmError> {
     let mut occupied = collections::vec![false; lane_count];
-    for _ in 0..2 {
+    let mut needs_second_round = collections::Vec::new();
+    for round in 0..2 {
         let mut changed = false;
         for block_index in 0..program.blocks.len() {
+            if round == 1
+                && !needs_second_round
+                    .get(block_index)
+                    .copied()
+                    .unwrap_or(false)
+            {
+                continue;
+            }
             let Some(preds) = predecessors.get(block_index) else {
                 continue;
             };
@@ -722,6 +731,34 @@ fn improve_gp_layouts_for_incoming_edges(
                 &mut occupied,
             )?;
             changed = true;
+
+            if round == 0 {
+                if needs_second_round.is_empty() {
+                    needs_second_round.resize(program.blocks.len(), false);
+                }
+                // The candidate is sticky to the current row, so a row which
+                // improved once may improve again even if its predecessors do
+                // not change. Revisit it in round two.
+                needs_second_round[block_index] = true;
+            }
+            for_each_block_successor(&program.blocks[block_index].terminator, |successor| {
+                if successor >= needs_second_round.len() {
+                    return;
+                }
+                // Preserve the exact scheduling semantics of two ascending
+                // full scans. In round one, a later successor will observe
+                // this exit change during the same scan; only an already
+                // visited successor becomes stale. In round two, only a later
+                // successor can still be visited.
+                let becomes_stale = if round == 0 {
+                    successor <= block_index
+                } else {
+                    successor > block_index
+                };
+                if becomes_stale {
+                    needs_second_round[successor] = true;
+                }
+            });
         }
         if !changed {
             break;
@@ -1562,6 +1599,33 @@ fn block_successors(terminator: &SsaTerminator) -> collections::Vec<SsaTarget> {
         | SsaTerminator::TrapUnreachable
         | SsaTerminator::EhThrow { .. }
         | SsaTerminator::EhThrowRef { .. } => collections::Vec::new(),
+    }
+}
+
+fn for_each_block_successor(terminator: &SsaTerminator, mut visit: impl FnMut(usize)) {
+    match terminator {
+        SsaTerminator::Goto(edge) => visit(edge.target.as_usize()),
+        SsaTerminator::Branch {
+            then_edge,
+            else_edge,
+            ..
+        } => {
+            visit(then_edge.target.as_usize());
+            visit(else_edge.target.as_usize());
+        }
+        SsaTerminator::BrTable { entries, .. } => {
+            for entry in entries {
+                visit(entry.target.as_usize());
+            }
+        }
+        SsaTerminator::Return { .. }
+        | SsaTerminator::ReturnScalar { .. }
+        | SsaTerminator::TailCallDirect { .. }
+        | SsaTerminator::TailCallIndirect { .. }
+        | SsaTerminator::TailCallRef { .. }
+        | SsaTerminator::TrapUnreachable
+        | SsaTerminator::EhThrow { .. }
+        | SsaTerminator::EhThrowRef { .. } => {}
     }
 }
 
