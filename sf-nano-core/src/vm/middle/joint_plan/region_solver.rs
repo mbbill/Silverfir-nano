@@ -521,7 +521,7 @@ fn extract_feasible_states(
         }
     };
     let mut order = (0..bank_slots.len()).collect::<collections::Vec<_>>();
-    order.sort_by(|&a, &b| {
+    order.sort_unstable_by(|&a, &b| {
         let pot_a = slot_dps[a].force_value[region_id][parent_state_for(bank_slots[a])][1];
         let pot_b = slot_dps[b].force_value[region_id][parent_state_for(bank_slots[b])][1];
         pot_b
