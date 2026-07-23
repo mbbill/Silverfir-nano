@@ -19,8 +19,8 @@ use crate::vm::machine::machine_ir::{
 
 use super::helpers::store_may_alias;
 use super::hoist_loop_address_bases::{
-    analyze_loop_graph, block_index_for_id, block_mentions_reg, natural_loop_nodes, visit_edges,
-    visit_edges_mut,
+    block_index_for_id, block_mentions_reg, natural_loop_nodes, visit_edges, visit_edges_mut,
+    LoopGraph,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -33,24 +33,20 @@ struct FrameLoad {
     extension: MachineLoadExtension,
 }
 
-pub(super) fn reuse_loop_frame_values(
-    blocks: &mut [MachineBlock],
-    entry: crate::vm::machine::machine_ir::MachineBlockId,
-) {
+pub(super) fn reuse_loop_frame_values(blocks: &mut [MachineBlock], loop_graph: &LoopGraph) {
     if blocks.len() < 3 {
         return;
     }
 
-    let loop_graph = analyze_loop_graph(blocks, entry);
-    let latches_by_header = loop_graph.latches_by_header;
-    let predecessors = loop_graph.predecessors;
+    let latches_by_header = &loop_graph.latches_by_header;
+    let predecessors = &loop_graph.predecessors;
 
     for header in (0..blocks.len()).rev() {
         if latches_by_header[header].is_empty() {
             continue;
         }
-        let loop_nodes = natural_loop_nodes(header, &latches_by_header[header], &predecessors);
-        try_reuse_one_frame_value(blocks, header, &loop_nodes, &predecessors);
+        let loop_nodes = natural_loop_nodes(header, &latches_by_header[header], predecessors);
+        try_reuse_one_frame_value(blocks, header, &loop_nodes, predecessors);
     }
 }
 
@@ -323,10 +319,11 @@ mod tests {
             },
         ];
 
-        reuse_loop_frame_values(
-            &mut blocks,
+        let loop_graph = crate::vm::machine::peephole::hoist_loop_address_bases::analyze_loop_graph(
+            &blocks,
             crate::vm::machine::machine_ir::MachineBlockId(0),
         );
+        reuse_loop_frame_values(&mut blocks, &loop_graph);
 
         assert_eq!(
             blocks[1].params.last().map(|param| param.reg),

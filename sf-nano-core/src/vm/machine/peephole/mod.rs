@@ -122,8 +122,12 @@ pub(crate) fn optimize(program: &mut MachineProgram, config: BackendConfig) {
     if config.is_32bit_gp_target() {
         fuse_smull_sign_ext::fuse_smull_sign_ext_across_edges(program, ctx.total_reg_count);
     }
-    hoist_loop_address_bases::hoist_loop_address_bases(program, config);
-    reuse_loop_frame_values::reuse_loop_frame_values(&mut program.blocks, program.entry);
+    // Address hoisting changes instructions, block parameters, and edge
+    // arguments, but not CFG targets, so frame-value reuse can consume the
+    // same predecessor/dominance analysis.
+    let loop_graph = hoist_loop_address_bases::analyze_loop_graph(&program.blocks, program.entry);
+    hoist_loop_address_bases::hoist_loop_address_bases(program, config, &loop_graph);
+    reuse_loop_frame_values::reuse_loop_frame_values(&mut program.blocks, &loop_graph);
     reuse_loop_context_loads::reuse_loop_context_loads(&mut program.blocks);
     eliminate_dead_params::eliminate_dead_params(&mut program.blocks);
     fuse_compare_branch::fuse_compare_branch(&mut program.blocks, config.gp_unit_bytes, config);

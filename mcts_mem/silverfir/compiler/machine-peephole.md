@@ -259,3 +259,18 @@
   values and corrupted SHA-256, fixed by enumerating both dst_lo and dst_hi
   (for_each_defined_reg) — the same single-vs-pair defined-register hazard as
   in the regalloc liveness path (code).
+
+- 2026-07-22 correction and decision: the earlier rejection of sharing loop
+  graph inputs was conditional on repeated expanded pseudo-loop closures
+  dominating both passes. After the dominance-based latch correction reduced
+  Pulldown's expanded memberships about 239x, that condition lapsed. Address
+  hoisting changes instructions, block parameters, and edge arguments but not
+  CFG targets, so address hoisting and frame-value reuse now share one immutable
+  predecessor/dominance analysis (sourced).
+
+- 2026-07-22 measurement: sharing the corrected loop graph moved serial
+  Pulldown from 91.287 to 88.748 ms (2.78%, statistically significant).
+  Serial bz2 measured 46.757 ms and FFmpeg moved 6,943.8 to 6,909.7 ms in the
+  favorable direction but within noise; SpiderMonkey was unchanged. The change
+  was retained for its clear Pulldown win and removal of duplicate CFG
+  allocation without changing pass priority or loop membership (sourced).

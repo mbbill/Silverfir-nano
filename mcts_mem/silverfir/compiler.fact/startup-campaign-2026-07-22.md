@@ -249,3 +249,13 @@ the listed commits.
   GP width moved the full serial FFmpeg criterion mean from 7,020.9 to 6,943.8
   ms (1.10%) and reduced block-local peephole share from 7.71% to 6.51%
   (sourced).
+
+- The dominance correction changed the result of an earlier rejected
+  experiment. Sharing predecessor/SCC inputs had not helped while each pass
+  still expanded hundreds of thousands of pseudo-loop memberships; once the
+  corrected predicate reduced those closures about 239x, constructing the
+  predecessor/dominance graph twice became visible. Sharing one immutable graph
+  across the adjacent address-hoisting and frame-value-reuse passes moved
+  serial Pulldown from 91.287 to 88.748 ms (2.78%). Bz2 at 46.757 ms and
+  FFmpeg at 6,909.7 ms moved favorably but within noise, while SpiderMonkey was
+  unchanged (sourced).

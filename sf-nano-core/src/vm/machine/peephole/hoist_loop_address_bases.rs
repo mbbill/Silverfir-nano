@@ -28,7 +28,11 @@ pub(super) struct LoopGraph {
     pub latches_by_header: collections::Vec<collections::Vec<usize>>,
 }
 
-pub(super) fn hoist_loop_address_bases(program: &mut MachineProgram, config: BackendConfig) {
+pub(super) fn hoist_loop_address_bases(
+    program: &mut MachineProgram,
+    config: BackendConfig,
+    loop_graph: &LoopGraph,
+) {
     let entry = program.entry;
     let blocks = &mut program.blocks;
     let entry_index = block_index_for_id(blocks, entry);
@@ -36,9 +40,8 @@ pub(super) fn hoist_loop_address_bases(program: &mut MachineProgram, config: Bac
         return;
     }
 
-    let loop_graph = analyze_loop_graph(blocks, entry);
-    let latches_by_header = loop_graph.latches_by_header;
-    let predecessors = loop_graph.predecessors;
+    let latches_by_header = &loop_graph.latches_by_header;
+    let predecessors = &loop_graph.predecessors;
 
     // Inner/later loops first. A surrounding loop can still use another free
     // dynamic register after seeing the parameter introduced here.
@@ -46,7 +49,7 @@ pub(super) fn hoist_loop_address_bases(program: &mut MachineProgram, config: Bac
         if latches_by_header[header].is_empty() {
             continue;
         }
-        let loop_nodes = natural_loop_nodes(header, &latches_by_header[header], &predecessors);
+        let loop_nodes = natural_loop_nodes(header, &latches_by_header[header], predecessors);
         if blocks[header].id == entry
             || entry_index.is_some_and(|entry| loop_nodes.contains(&entry))
         {
@@ -732,8 +735,9 @@ mod tests {
     #[test]
     fn hoists_reused_invariant_mem0_index_into_loop_parameter() {
         let mut program = loop_program();
+        let loop_graph = analyze_loop_graph(&program.blocks, program.entry);
 
-        hoist_loop_address_bases(&mut program, config());
+        hoist_loop_address_bases(&mut program, config(), &loop_graph);
 
         let spare = MachineReg(4);
         assert!(matches!(
@@ -784,8 +788,9 @@ mod tests {
             },
         });
         let original = program.clone();
+        let loop_graph = analyze_loop_graph(&program.blocks, program.entry);
 
-        hoist_loop_address_bases(&mut program, config());
+        hoist_loop_address_bases(&mut program, config(), &loop_graph);
 
         assert_eq!(program, original);
     }
@@ -798,8 +803,9 @@ mod tests {
         };
         backedge.args[0] = MachineValue::Reg(MachineReg(7));
         let original = program.clone();
+        let loop_graph = analyze_loop_graph(&program.blocks, program.entry);
 
-        hoist_loop_address_bases(&mut program, config());
+        hoist_loop_address_bases(&mut program, config(), &loop_graph);
 
         assert_eq!(program, original);
     }
