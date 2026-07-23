@@ -568,3 +568,13 @@ the listed commits.
   parent. Empty-parameter blocks are numerous but concentrated in cheap
   functions; the gates were fully reverted, and the remaining target is graph
   work in parameter-carrying functions (sourced).
+
+- 2026-07-23 rejected: replacing per-parameter terminator non-edge-use tests
+  with one terminator source traversal first exposed a correctness pitfall:
+  linear and cached block parameters may share one physical register, so a
+  reverse lookup must mark every equal-register parameter node. After that was
+  corrected, FFmpeg's deterministic index was byte-identical, but the pass
+  measured 4.07% inclusive versus 3.81% for the exact parent. The tiny
+  terminator matches and short parameter lists beat binary reverse lookup plus
+  duplicate-range expansion; the code and regression test were reverted, and
+  the invariant was retained here as design evidence (sourced).

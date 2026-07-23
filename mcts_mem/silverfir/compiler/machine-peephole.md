@@ -357,3 +357,14 @@
   gates were reverted. Future work on this pass must reduce the weighted graph
   work in parameter-carrying functions rather than specialize empty cases
   (sourced).
+
+- 2026-07-23 rejected: terminator non-edge operands were visited once per
+  block and mapped back to parameter nodes instead of testing the tiny
+  terminator once per parameter. The first implementation changed output
+  because one physical register can name both a linear and a cached block
+  parameter; preserving semantics requires marking every equal-register node,
+  not one binary-search hit. The corrected version kept FFmpeg byte-identical
+  but measured 4.07% inclusive versus 3.81% for the exact parent, so it was
+  reverted. Terminators have few non-edge operands and parameter lists are
+  short enough that reverse lookup plus duplicate expansion costs more than
+  the established small repeated match (sourced).
