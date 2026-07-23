@@ -128,6 +128,7 @@ pub(super) fn compute_block_entry_cache_params(
     let mut gp_exit_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
     let mut fp_exit_layouts = collections::vec![LANE_UNASSIGNED; n_blocks * lanes];
     let mut visited = collections::vec![false; program.blocks.len()];
+    let mut fp_visited = collections::vec![false; program.blocks.len()];
     if program.entry.as_usize() < program.blocks.len() {
         assign_bank_layouts_from_root(
             program.entry.as_usize(),
@@ -165,7 +166,7 @@ pub(super) fn compute_block_entry_cache_params(
             &mut fp_layouts,
             &mut fp_exit_layouts,
             lanes,
-            &mut collections::vec![false; program.blocks.len()],
+            &mut fp_visited,
         )?;
     }
 
@@ -192,10 +193,6 @@ pub(super) fn compute_block_entry_cache_params(
             lanes,
             &mut visited,
         )?;
-    }
-    let mut fp_visited = collections::vec![false; program.blocks.len()];
-    if program.entry.as_usize() < program.blocks.len() {
-        mark_idom_reachable(program.entry.as_usize(), &idom_children, &mut fp_visited);
     }
     for block_index in 0..program.blocks.len() {
         if fp_visited[block_index] {
@@ -490,19 +487,6 @@ fn build_idom_children(
         children[parent].push(block_index);
     }
     children
-}
-
-fn mark_idom_reachable(block_index: usize, children: &[collections::Vec<usize>], out: &mut [bool]) {
-    let mut stack = collections::vec![block_index];
-    while let Some(block_index) = stack.pop() {
-        if block_index >= out.len() || out[block_index] {
-            continue;
-        }
-        out[block_index] = true;
-        for &child in children[block_index].iter().rev() {
-            stack.push(child);
-        }
-    }
 }
 
 fn compute_block_bank_slots(
