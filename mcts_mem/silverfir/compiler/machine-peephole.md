@@ -274,3 +274,12 @@
   favorable direction but within noise; SpiderMonkey was unchanged. The change
   was retained for its clear Pulldown win and removal of duplicate CFG
   allocation without changing pass priority or loop membership (sourced).
+
+- 2026-07-22 rejected: `recognize_memmove::edge_args_are` allocated a temporary
+  `Vec<MachineValue>` each time it compared an edge with an expected register
+  list, up to six times in a fully matched candidate. Direct zipped comparison
+  removed those allocations, but three serial bz2 means were 46.591, 46.441,
+  and 46.441 ms against the accepted 46.757 ms baseline; repeated Criterion
+  comparisons found no significant change. The experiment was reverted rather
+  than retaining unmeasured cleanup. Matcher-local small-vector allocation is
+  not a demonstrated explanation for the remaining startup gap (sourced).

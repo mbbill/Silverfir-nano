@@ -259,3 +259,13 @@ the listed commits.
   serial Pulldown from 91.287 to 88.748 ms (2.78%). Bz2 at 46.757 ms and
   FFmpeg at 6,909.7 ms moved favorably but within noise, while SpiderMonkey was
   unchanged (sourced).
+
+- A follow-up tested whether the memmove recognizer's repeated construction of
+  temporary edge-argument vectors was a remaining container-level startup
+  problem. Comparing edge arguments directly removed up to six small
+  allocations for a fully matched candidate, but three serial bz2 means were
+  46.591, 46.441, and 46.441 ms versus the 46.757 ms accepted baseline; the
+  repeat comparisons reported no statistically significant change. The
+  experiment was reverted. The remaining bz2 gap is therefore not explained by
+  these small matcher-local allocations and should be pursued in the aggregate
+  lowering, cache-planning, and peephole costs (sourced).
