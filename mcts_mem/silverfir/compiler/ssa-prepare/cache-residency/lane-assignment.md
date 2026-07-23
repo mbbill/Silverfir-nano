@@ -24,10 +24,10 @@
   (`final_signals`); nothing derives them from pre-cleanup state.
 
 - The entry-requirement outer vector remains intentionally empty from rewrite
-  through structural cleanup. Edge repair already derives successor requirements
-  from emitted ops, and cleanup accepts an absent optional side table; allocating
-  provisional Ensure rows would only make cleanup maintain data that
-  `final_signals` must overwrite from final SSA.
+  through structural cleanup. Rewrite retains its emitted first-touch
+  classifications only in a flat temporary arena long enough for edge repair,
+  then drops them; cleanup accepts the absent program side table, and
+  `final_signals` remains the first publisher of machine-facing rows.
 
 - The keep-across-call decision re-checks the physically assigned register's
   preservation class in addition to the preference bit; call classification
@@ -125,6 +125,17 @@
   the candidate by 1.1% on mean point estimates, but their intervals overlapped
   and adjacent CPU profiles left `prepare_function` at 35.83% inclusive, so the
   structural simplification is retained without a confident wall-time claim
+  ([[compiler.fact/startup-campaign-2026-07-22]]) (sourced).
+
+- 2026-07-23 (b903d80b) measurement: emit-side repair counting and
+  materialization repeatedly rescanned each successor's ops for the same
+  first-touch answer, even though entry filtering had already classified every
+  retained slot. Rewrite now appends those exact classifications to one flat
+  span arena, consumes them for edge repair, and drops the arena before
+  cleanup. `rewrite_function` fell from 999 to 938 serial FFmpeg samples
+  (6.1% absolute); exact-parent ABBA startup point estimates averaged 0.65%
+  faster. FFmpeg's deterministic native index remained byte-identical, all
+  357 release tests passed, and fat-LTO text grew 500 bytes
   ([[compiler.fact/startup-campaign-2026-07-22]]) (sourced).
 
 ## Moves

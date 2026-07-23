@@ -618,3 +618,26 @@ the listed commits.
   deterministic native index stayed byte-identical at
   `5db01c38ff5e59a3999683b893dc534d053f784cd85640bb2f42d28f4b1ce31c`,
   and all 357 release tests passed (sourced).
+
+- 2026-07-23: commit `b903d80b` reused rewrite's batched per-block
+  entry-cache first-touch facts for boundary repair. Previously, entry
+  filtering classified all planned residents in one block walk, discarded the
+  classifications, and repair materialization called the scalar classifier
+  again for every successor slot on every edge. Repair pre-counting separately
+  repeated the missing-entry test. A first prototype retained one requirement
+  vector per block and was profile-neutral because the tiny allocations
+  replaced the saved scans. The accepted version appends retained
+  Ensure/Reserve classifications to one flat temporary arena with per-block
+  spans; bridge blocks append to the same arena. Repair counting now recognizes
+  that every target-entry slot missing from the predecessor necessarily needs
+  repair, while repair materialization indexes the saved row. The arena is
+  dropped immediately after repair and is never published as the final SSA
+  side table. Against the exact parent, `rewrite_function` fell from 999 to
+  938 samples (6.1% absolute), while complete profiles measured 5,756 and
+  5,691 samples (1.1%, secondary because of run noise). Two exact-parent ABBA
+  startup pairs had candidate medians of 5.5044/5.5244 s versus parent medians
+  of 5.5629/5.5380 s: 5.514 versus 5.550 s on pair averages, or 0.65% faster.
+  Fat-LTO text grew 500 bytes (3,933,576 to 3,934,076). FFmpeg's
+  14,290-function deterministic native index stayed byte-identical at
+  `5db01c38ff5e59a3999683b893dc534d053f784cd85640bb2f42d28f4b1ce31c`,
+  and all 357 release tests passed (sourced).
