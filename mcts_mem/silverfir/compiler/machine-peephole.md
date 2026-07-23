@@ -29,6 +29,12 @@
 
 - Store-to-load forwarding runs before and after copy propagation.
 
+- The first per-block traversal also publishes conservative precursor facts
+  used to skip later block-local passes that provably cannot match. This is
+  scheduling only: the established transformation order remains unchanged,
+  and test/debug builds run the original unconditional sequence on a clone and
+  require exact MachineIR equality after every block.
+
 ## Facts
 
 - 2026-07-22 rejected: a whole-function necessary-condition gate scanned all
@@ -322,3 +328,22 @@
   reverted. Keeping the two tiny trackers allocated across blocks is proven;
   combining only one pair of the four ordered memory-value scans is not
   (sourced).
+
+- 2026-07-23 (a60efd62) decision: constant deduplication is already the first
+  mandatory block traversal, so it now reports conservative facts about loads,
+  stores, moves, address adds, and instruction-selection precursors while doing
+  its existing work. The scheduler uses those facts only to skip passes that
+  cannot match; it neither combines transformations nor changes their order.
+  Test/debug builds retain a zero-release-cost oracle that runs the former
+  unconditional sequence on a cloned block and asserts exact output equality,
+  guarding future pass-pattern changes against stale feature classification
+  (sourced).
+
+- 2026-07-23 (a60efd62) measurement: in adjacent serial FFmpeg profiles,
+  `optimize_block` fell from 7.19% to 5.82% inclusive (19.0% relative) and the
+  complete MachineIR peephole stage from 15.59% to 14.25% inclusive (8.6%
+  relative). FFmpeg's complete SSA/MachineIR/native index remained
+  byte-identical across 14,290 functions, and all 356 release tests passed
+  with the unconditional oracle enabled. Fat-LTO text grew by 316 bytes.
+  Alternating short bz2 timings were strongly order/thermal sensitive, so no
+  end-to-end wall-time percentage is attributed (sourced).

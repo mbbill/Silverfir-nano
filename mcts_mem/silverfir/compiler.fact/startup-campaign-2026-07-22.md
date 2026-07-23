@@ -532,3 +532,18 @@ the listed commits.
   order-sensitive and included a 55 ms thermal outlier, so no end-to-end
   percentage is attributed. FFmpeg's complete SSA/MachineIR/native index
   remained byte-identical and all 356 release tests passed (sourced).
+
+- 2026-07-23: every MachineIR block unconditionally ran the complete ordered
+  block-local peephole sequence even when the block contained none of a pass's
+  precursor operations. Commit `a60efd62` makes the existing first
+  constant-deduplication traversal publish conservative block features, then
+  skips only provably inapplicable later traversals without combining
+  transformations or changing their order. Test/debug builds run the former
+  unconditional pipeline on a clone and assert exact MachineIR equality after
+  every block, so future feature-classification drift becomes a test failure.
+  In adjacent serial FFmpeg profiles, `optimize_block` fell from 7.19% to
+  5.82% inclusive and the whole MachineIR peephole stage from 15.59% to 14.25%.
+  FFmpeg's complete SSA/MachineIR/native index remained byte-identical over
+  14,290 functions; all 356 release tests passed with the oracle enabled; and
+  fat-LTO text grew by only 316 bytes. Short bz2 timings were order/thermal
+  sensitive, so no end-to-end wall-time percentage is claimed (sourced).
