@@ -20,7 +20,11 @@ macro_rules! define_opcodes {
 
             fn try_from(value: $type) -> Result<Self, Self::Error> {
                 match value {
-                    $($value => Ok($enum_name::$name),)*
+                    $($value)|* => {
+                        // SAFETY: the match above accepts exactly the
+                        // discriminants declared by this repr-backed enum.
+                        Ok(unsafe { core::mem::transmute::<$type, $enum_name>(value) })
+                    }
                     _ => Err(WasmError::malformed("invalid opcode")),
                 }
             }
