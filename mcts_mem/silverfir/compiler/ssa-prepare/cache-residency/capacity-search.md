@@ -76,6 +76,17 @@
   future solver work on the per-region sort/knapsack work, not parent-row
   snapshots ([[compiler.fact/startup-campaign-2026-07-22]]) (sourced).
 
+- 2026-07-23 (d1023e88) measurement: every region sorted its feasibility items
+  with stable driftsort even though resident potential plus slot index forms a
+  deterministic total order, so stability cannot affect selection. Switching
+  to allocation-free unstable sort removed the stable-sort scratch path;
+  serial FFmpeg `solve_bank` fell from 96 to 87 samples and extraction from 87
+  to 78 (about 10% each). Exact-parent bz2 ABBA was neutral (+0.29% on pair
+  averages), and fat-LTO text grew only 8 bytes, so this is retained as a
+  localized solver improvement without an end-to-end speed claim. FFmpeg output
+  remained byte-identical and all 357 release tests passed
+  ([[compiler.fact/startup-campaign-2026-07-22]]) (sourced).
+
 ## Moves
 
 - 2026-07-12 (748c8416) replaced [[lagrangian-pricing]]: the price iterations

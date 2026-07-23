@@ -313,6 +313,24 @@ the listed commits.
   The remaining feasible-extraction target is repeated per-region ordering and
   knapsack work, not recursive parent snapshots (sourced).
 
+- Commit `d1023e88` addressed the ordering half of that remaining target.
+  Feasible extraction used stable `slice::sort_by` for every region and bank,
+  although its comparator orders first by resident-subtree potential and then
+  by unique slot index. That explicit tie-break makes the ordering total and
+  deterministic, so stability supplied no semantic property while driftsort
+  allocated scratch. Replacing it with `sort_unstable_by` removed the stable
+  sorting path from the FFmpeg profile; `solve_bank` fell from 96 to 87
+  inclusive samples (9.4%) and `extract_feasible_states` from 87 to 78 (10.3%).
+  The surrounding profile was noisy and did not establish a whole-program win.
+  Exact-parent bz2 ABBA point estimates were 32.740/33.046 ms for the candidate
+  and 32.503/33.090 ms for the parent: 32.893 versus 32.797 ms on pair averages
+  (+0.29%, neutral). Fat-LTO text changed from 3,933,696 to 3,933,704 bytes
+  (+8). FFmpeg's 14,290-function deterministic native index remained
+  byte-identical at
+  `5db01c38ff5e59a3999683b893dc534d053f784cd85640bb2f42d28f4b1ce31c`,
+  and all 357 release tests passed. Retain as an allocation-free localized
+  solver improvement with no end-to-end percentage attributed (sourced).
+
 - Removing the per-block `shrink_to_fit` calls during SSA rewrite was tested
   because final prepared-SSA compaction repeats those calls after cleanup and
   optimization. Serial bz2 measured 44.583 ms versus 44.786 and 44.495 ms for
