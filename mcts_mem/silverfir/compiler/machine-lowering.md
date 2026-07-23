@@ -46,6 +46,15 @@
   experiment was discarded rather than retained as unmeasured complexity
   (sourced).
 
+- 2026-07-22 rejected: `incoming_param_owns_reg` scanned the per-cell
+  parameter-state vector for every candidate dynamic register, so an
+  O(1) register-indexed ownership bitmap was tested. All 147 machine-focused
+  release tests passed, but three serial bz2 means were 47.038, 46.871, and
+  46.566 ms against the accepted 46.757 ms baseline, with no statistically
+  significant comparison. The bitmap and its duplicated state maintenance were
+  reverted; the theoretical local-count scan is not a demonstrated startup
+  bottleneck on bz2 (sourced).
+
 - 2026-03-12 (7bb4d7dc) rationale: the step between prepared LIR and MachineIR is
   one internal lowering pass, not a new public IR layer — it expands VM-flavored ops
   into machine-shaped code and does the trivial fixed-budget register assignment the

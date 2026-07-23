@@ -269,3 +269,12 @@ the listed commits.
   experiment was reverted. The remaining bz2 gap is therefore not explained by
   these small matcher-local allocations and should be pursued in the aggregate
   lowering, cache-planning, and peephole costs (sourced).
+
+- Another follow-up replaced `incoming_param_owns_reg`'s scan of the per-cell
+  parameter-state vector with a dynamic-register-indexed ownership bitmap. The
+  source-level scan was a plausible hidden cost in the otherwise fixed-budget
+  allocator, but three serial bz2 means were 47.038, 46.871, and 46.566 ms
+  against the 46.757 ms accepted baseline, and every Criterion comparison was
+  statistically flat. The experiment and its extra mirrored state were
+  reverted. Incoming parameter ownership is too small or too short-lived on
+  this workload to explain the remaining compile-time gap (sourced).
