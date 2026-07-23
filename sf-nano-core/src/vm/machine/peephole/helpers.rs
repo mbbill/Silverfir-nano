@@ -4,9 +4,9 @@ use crate::collections;
 
 use crate::vm::backend::BackendConfig;
 use crate::vm::machine::machine_ir::{
-    is_fp_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineBranchCond,
-    MachineCallArgs, MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineEdge,
-    MachineInst, MachineInstKind, MachineIntUnaryOp, MachineMemWidth, MachineReg, MachineResultDst,
+    is_fp_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineBranchCond, MachineCallArgs,
+    MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineEdge, MachineInst,
+    MachineInstKind, MachineIntUnaryOp, MachineMemWidth, MachineReg, MachineResultDst,
     MachineResultSrc, MachineReturnValue, MachineStorageType, MachineTerminator, MachineValue,
     MACHINE_CTX_REG, MACHINE_FP_REG,
 };
@@ -435,19 +435,37 @@ pub(crate) fn reg_live_after(
 
 /// Check if a terminator reads from `reg`.
 pub(crate) fn terminator_uses_reg(term: &MachineTerminator, reg: MachineReg) -> bool {
+    let mut found = false;
+    visit_terminator_source_regs(term, |source| {
+        found |= source == reg;
+    });
+    found
+}
+
+/// Visit every register read by a terminator.
+///
+/// Call result destinations are definitions, not reads, even when they also
+/// appear in the success edge's post-call arguments.
+pub(crate) fn visit_terminator_source_regs(
+    term: &MachineTerminator,
+    mut f: impl FnMut(MachineReg),
+) {
     match term {
-        MachineTerminator::Jump(edge) => edge_uses_reg(edge, reg),
+        MachineTerminator::Jump(edge) => visit_edge_source_regs(edge, &mut f),
         MachineTerminator::Branch {
             cond,
             then_edge,
             else_edge,
         } => {
-            branch_cond_uses_reg(cond, reg)
-                || edge_uses_reg(then_edge, reg)
-                || edge_uses_reg(else_edge, reg)
+            visit_branch_cond_source_regs(cond, &mut f);
+            visit_edge_source_regs(then_edge, &mut f);
+            visit_edge_source_regs(else_edge, &mut f);
         }
         MachineTerminator::JumpTable { index, entries } => {
-            value_is_reg(index, reg) || entries.iter().any(|e| edge_uses_reg(e, reg))
+            visit_value_source_reg(index, &mut f);
+            for edge in entries {
+                visit_edge_source_regs(edge, &mut f);
+            }
         }
         MachineTerminator::Call {
             target,
@@ -456,69 +474,76 @@ pub(crate) fn terminator_uses_reg(term: &MachineTerminator, reg: MachineReg) -> 
             success,
             ..
         } => {
-            call_target_uses_reg(target, reg)
-                || call_args_use_reg(args, reg)
-                || call_success_uses_reg(success, results, reg)
+            visit_call_target_source_regs(target, &mut f);
+            visit_call_arg_source_regs(args, &mut f);
+            for value in &success.args {
+                if let MachineValue::Reg(reg) = *value {
+                    if !call_results_define_reg(results, reg) {
+                        f(reg);
+                    }
+                }
+            }
         }
         MachineTerminator::TailCall { target, args } => {
-            call_target_uses_reg(target, reg) || call_args_use_reg(args, reg)
+            visit_call_target_source_regs(target, &mut f);
+            visit_call_arg_source_regs(args, &mut f);
         }
-        MachineTerminator::Return | MachineTerminator::Trap { .. } => false,
-        MachineTerminator::ReturnScalar { value } => return_value_uses_reg(value, reg),
+        MachineTerminator::Return | MachineTerminator::Trap { .. } => {}
+        MachineTerminator::ReturnScalar { value } => {
+            visit_return_value_source_regs(value, &mut f);
+        }
     }
 }
 
-fn call_target_uses_reg(target: &MachineCallTarget, reg: MachineReg) -> bool {
+fn visit_call_target_source_regs(target: &MachineCallTarget, f: &mut impl FnMut(MachineReg)) {
     match target {
-        MachineCallTarget::Direct(_) => false,
+        MachineCallTarget::Direct(_) => {}
         MachineCallTarget::Indirect {
             callee_target,
             callee_entry,
-        } => *callee_target == reg || *callee_entry == reg,
+        } => {
+            f(*callee_target);
+            f(*callee_entry);
+        }
     }
 }
 
-fn call_args_use_reg(args: &MachineCallArgs, reg: MachineReg) -> bool {
-    args.lane_args.iter().any(|arg| match arg {
-        MachineCallLaneArg::Gp { src, .. } | MachineCallLaneArg::Fp { src, .. } => {
-            arg_src_uses_reg(src, reg)
+fn visit_call_arg_source_regs(args: &MachineCallArgs, f: &mut impl FnMut(MachineReg)) {
+    for arg in &args.lane_args {
+        match arg {
+            MachineCallLaneArg::Gp { src, .. } | MachineCallLaneArg::Fp { src, .. } => {
+                visit_arg_source_reg(src, f);
+            }
+            MachineCallLaneArg::GpPair { src, .. } => {
+                visit_arg_source_reg(&src.lo, f);
+                visit_arg_source_reg(&src.hi, f);
+            }
         }
-        MachineCallLaneArg::GpPair { src, .. } => arg_src_pair_uses_reg(src, reg),
-    })
+    }
 }
 
-fn arg_src_pair_uses_reg(src: &MachineArgSrcPair, reg: MachineReg) -> bool {
-    arg_src_uses_reg(&src.lo, reg) || arg_src_uses_reg(&src.hi, reg)
+fn visit_arg_source_reg(src: &MachineArgSrc, f: &mut impl FnMut(MachineReg)) {
+    if let MachineArgSrc::Reg(reg) = *src {
+        f(reg);
+    }
 }
 
-fn arg_src_uses_reg(src: &MachineArgSrc, reg: MachineReg) -> bool {
-    matches!(src, MachineArgSrc::Reg(src) if *src == reg)
-}
-
-fn return_value_uses_reg(value: &MachineReturnValue, reg: MachineReg) -> bool {
+fn visit_return_value_source_regs(value: &MachineReturnValue, f: &mut impl FnMut(MachineReg)) {
     match value {
         MachineReturnValue::ScalarGp { src, .. } | MachineReturnValue::ScalarFp { src, .. } => {
-            result_src_uses_reg(src, reg)
+            visit_result_source_reg(src, f);
         }
         MachineReturnValue::ScalarGpPair { lo, hi } => {
-            result_src_uses_reg(lo, reg) || result_src_uses_reg(hi, reg)
+            visit_result_source_reg(lo, f);
+            visit_result_source_reg(hi, f);
         }
     }
 }
 
-fn result_src_uses_reg(src: &MachineResultSrc, reg: MachineReg) -> bool {
-    matches!(src, MachineResultSrc::Reg(src) if *src == reg)
-}
-
-fn call_success_uses_reg(
-    success: &MachineEdge,
-    results: &MachineCallResults,
-    reg: MachineReg,
-) -> bool {
-    success
-        .args
-        .iter()
-        .any(|v| value_is_reg(v, reg) && !call_results_define_reg(results, reg))
+fn visit_result_source_reg(src: &MachineResultSrc, f: &mut impl FnMut(MachineReg)) {
+    if let MachineResultSrc::Reg(reg) = *src {
+        f(reg);
+    }
 }
 
 fn call_results_define_reg(results: &MachineCallResults, reg: MachineReg) -> bool {
@@ -537,19 +562,19 @@ fn result_dst_is_reg(dst: MachineResultDst, reg: MachineReg) -> bool {
     matches!(dst, MachineResultDst::Reg(dst) if dst == reg)
 }
 
-fn edge_uses_reg(edge: &MachineEdge, reg: MachineReg) -> bool {
-    edge.args.iter().any(|v| value_is_reg(v, reg))
+fn visit_edge_source_regs(edge: &MachineEdge, f: &mut impl FnMut(MachineReg)) {
+    for value in &edge.args {
+        visit_value_source_reg(value, f);
+    }
 }
 
-fn branch_cond_uses_reg(cond: &MachineBranchCond, reg: MachineReg) -> bool {
-    match cond {
-        MachineBranchCond::Value(v) => value_is_reg(v, reg),
-        MachineBranchCond::IntCompare { lhs, rhs, .. } => {
-            value_is_reg(lhs, reg) || value_is_reg(rhs, reg)
-        }
-        MachineBranchCond::TestBits { src, mask, .. } => {
-            value_is_reg(src, reg) || value_is_reg(mask, reg)
-        }
+fn visit_branch_cond_source_regs(cond: &MachineBranchCond, f: &mut impl FnMut(MachineReg)) {
+    visit_branch_cond_values(cond, |value| visit_value_source_reg(value, f));
+}
+
+fn visit_value_source_reg(value: &MachineValue, f: &mut impl FnMut(MachineReg)) {
+    if let MachineValue::Reg(reg) = *value {
+        f(reg);
     }
 }
 
@@ -646,4 +671,50 @@ pub(super) fn kill_tracked_loads_by_reg(
     reg: MachineReg,
 ) {
     tracked.retain(|entry| entry.addr.base != reg && entry.reg != reg);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::vm::machine::machine_ir::MachineBlockId;
+
+    #[test]
+    fn visits_call_sources_once_without_treating_results_as_reads() {
+        let result = MachineReg(5);
+        let survivor = MachineReg(6);
+        let term = MachineTerminator::Call {
+            target: MachineCallTarget::Indirect {
+                callee_target: MachineReg(2),
+                callee_entry: MachineReg(3),
+            },
+            frame_delta: 0,
+            args: MachineCallArgs {
+                frame_params: Default::default(),
+                lane_args: collections::vec![MachineCallLaneArg::Gp {
+                    param_index: 0,
+                    lane: 0,
+                    src: MachineArgSrc::Reg(MachineReg(4)),
+                    ty: MachineStorageType::GpWord,
+                }],
+            },
+            results: MachineCallResults::ScalarGp {
+                dst: MachineResultDst::Reg(result),
+                ty: MachineStorageType::GpWord,
+            },
+            success: MachineEdge {
+                target: MachineBlockId(1),
+                args: collections::vec![MachineValue::Reg(result), MachineValue::Reg(survivor)],
+            },
+        };
+
+        let mut sources = collections::Vec::new();
+        visit_terminator_source_regs(&term, |reg| sources.push(reg));
+
+        assert_eq!(
+            sources,
+            collections::vec![MachineReg(2), MachineReg(3), MachineReg(4), survivor]
+        );
+        assert!(!terminator_uses_reg(&term, result));
+        assert!(terminator_uses_reg(&term, survivor));
+    }
 }

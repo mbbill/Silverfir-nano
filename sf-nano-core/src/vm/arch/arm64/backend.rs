@@ -226,17 +226,14 @@ impl<'a> Arm64Backend<'a> {
                     }
                 });
             }
-            for raw in 0..core.compiled.backend().total_reg_count() {
-                let machine = MachineReg(raw);
-                if crate::vm::machine::peephole::helpers::terminator_uses_reg(
-                    &block.terminator,
-                    machine,
-                ) {
+            crate::vm::machine::peephole::helpers::visit_terminator_source_regs(
+                &block.terminator,
+                |machine| {
                     if let Ok(reg) = abi::map_reg(machine) {
                         used_phys[reg.index() as usize] = true;
                     }
-                }
-            }
+                },
+            );
         }
         if !needs_memset && !needs_memmove {
             return (None, None);
