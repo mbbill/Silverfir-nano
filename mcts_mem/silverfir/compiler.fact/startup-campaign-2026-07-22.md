@@ -113,6 +113,16 @@ the listed commits.
   remain measurable startup costs rather than the original compiler pipeline
   itself becoming inherently quadratic (sourced).
 
+- A follow-up serial bz2 profile found another traversal pathology rather than
+  inherent code-generator cost: dead block-parameter elimination occupied
+  14.9% self / 17.4% inclusive because it scanned instructions per parameter
+  and the whole CFG per fixed-point round. Commit `70e165e0` replaced both
+  layers with one block scan and a flat reverse-dependency worklist. Repeated
+  serial startup fell from 67.180 ms to 56.587 and 57.066 ms (about 15%), and
+  the pass fell to 1.0% self / 3.2% inclusive. Against a same-binary Wasmtime
+  Cranelift rerun at 45.078 ms, Nano's bz2 ratio narrowed from 1.51x to 1.27x
+  without changing eager or serial compilation policy (sourced).
+
 **Serial compiler comparison correction.**
 
 - Parallel startup is not the stable measure of intrinsic pipeline cost. With

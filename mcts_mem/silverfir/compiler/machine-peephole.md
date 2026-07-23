@@ -31,6 +31,23 @@
 
 ## Facts
 
+- 2026-07-22 (70e165e0) pitfall and decision: dead block-parameter
+  elimination scanned every instruction once per parameter, cloned and
+  stripped the terminator once per parameter, then repeatedly rescanned every
+  parameter and CFG edge to reach a fixed point. On serial bz2 this pass was
+  14.9% self / 17.4% inclusive. The retained implementation scans each block's
+  instructions once using a sorted flat register-to-parameter table and
+  propagates edge-carried usefulness through a flat reverse-dependency
+  worklist; it deliberately remains a small late cleanup rather than adding a
+  general liveness framework or register allocator (sourced).
+
+- 2026-07-22 (70e165e0) measurement: repeated serial bz2 startup runs fell
+  from 67.180 ms to 56.587 and 57.066 ms (about 15%); the post-change profile
+  put dead-parameter elimination at 1.0% self / 3.2% inclusive. A same-binary
+  Wasmtime Cranelift rerun measured 45.078 ms, narrowing Nano's ratio from
+  1.51x to 1.27x. Three focused worklist/definition-barrier tests, all 349
+  workspace release tests, and native/emu64/emu32 spectests passed (sourced).
+
 - 2026-07-22 (fa131723) pitfall: loop-frame reuse scanned every block and used
   repeated linear loop-membership tests to discover entry sources before it
   checked whether the loop exits even contained compatible frame reloads. On
