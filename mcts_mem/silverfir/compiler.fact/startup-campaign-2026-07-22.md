@@ -710,3 +710,34 @@ the listed commits.
   byte-identical at
   `5db01c38ff5e59a3999683b893dc534d053f784cd85640bb2f42d28f4b1ce31c`,
   and all 357 release tests passed (sourced).
+
+- 2026-07-23 final serial comparison: a single fat-LTO Criterion harness built
+  with Rust 1.97 measured compile plus instantiate for all JITs under explicit
+  single-thread constraints. Nano used `parallel_compilation = false`; both
+  Wasmer compilers used one compiler thread; Wasmtime omitted its
+  `parallel-compilation` feature and therefore used its sequential fallback;
+  V8 used `--single_threaded` and the single-threaded default platform.
+  Criterion used ten samples, one second of warm-up, and a two-second target
+  measurement window. Point estimates in milliseconds were:
+
+  | Workload | Nano | Wasmtime CL | Winch | Wasmer CL | Wasmer SP | V8 |
+  |---|---:|---:|---:|---:|---:|---:|
+  | bz2 | 32.793 | 43.548 | 4.049 | 44.435 | 3.411 | 0.669 |
+  | pulldown-cmark | 74.291 | 94.457 | 16.293 | 91.356 | 8.265 | 0.961 |
+  | SpiderMonkey | 1,569.175 | 1,963.000 | 291.418 | 2,267.144 | 289.832 | 19.483 |
+  | FFmpeg | 7,424.235 | — | 1,168.526 | 8,351.804 | 740.764 | 45.681 |
+  | CoreMark | 3.203 | 4.479 | 0.789 | 4.024 | 0.386 | 0.486 |
+  | Argon2 | 10.366 | 16.525 | 2.905 | 16.114 | 1.430 | 0.566 |
+  | ERC20 | 2.039 | 3.540 | 0.960 | 3.810 | 0.385 | 0.473 |
+
+  Nano beat Wasmtime Cranelift on all six common workloads and Wasmer
+  Cranelift on all seven; geometrically those competitors took 1.419x and
+  1.387x Nano's time. Nano remained behind Winch and Wasmer Singlepass on all
+  seven, taking 4.525x and 7.622x their time geometrically. V8 took 0.0325x
+  Nano's time (Nano 30.73x slower), but this is startup latency rather than an
+  equal-code-quality eager optimizing compilation comparison. FFmpeg was
+  thermally/load noisy at 6.846-7.994 seconds for Nano, so its point estimate
+  should not be used as a sub-percent regression signal. The durable next
+  startup target is baseline-compiler constant factors, not Cranelift parity:
+  the serial eager pipeline has caught both measured Cranelift integrations
+  without lazy compilation, but not Winch, Wasmer Singlepass, or V8 (sourced).

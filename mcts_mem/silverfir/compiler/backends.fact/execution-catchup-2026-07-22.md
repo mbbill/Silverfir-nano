@@ -189,3 +189,19 @@ not evidence for another compiler-pipeline bottleneck (sourced).
   the same binary/host state and confidence intervals or alternating runs were
   used. Bulk's matched sampled parity is more informative than comparing two
   isolated sub-millisecond means under different host load (sourced).
+
+- 2026-07-23 final validation: the same Rust 1.97 fat-LTO harness used for the
+  final serial startup comparison completed all 20 registered execution
+  workloads across Nano, V8, Wasmtime Cranelift/Winch, and Wasmer
+  Cranelift/Singlepass. Nano had the lowest point estimate on 13 of 20
+  workloads. In pairwise common-workload comparisons, Nano beat Wasmtime
+  Cranelift on 16/20 (the competitor took 1.247x Nano's time geometrically),
+  Wasmer Cranelift on 13/19 (1.197x), V8 on 17/20 (1.194x), Winch on 19/19
+  (2.814x), and Wasmer Singlepass on 19/19 (4.337x). The strongest final
+  standings included reverse-complement at 5.272 us versus V8 at 15.210 us and
+  both Cranelift integrations at about 16.1-16.2 us; sort at 11.252 ms versus
+  18.232-19.184 ms for Cranelift and 18.761 ms for V8; and bulk operations at
+  439.95 us versus 456.90-479.00 us for every competitor. This full sweep
+  confirms that the startup-focused structural changes preserved the campaign's
+  generated-code standing; future startup work need not trade away the current
+  execution tier to reach baseline-compiler compile latency (sourced).
