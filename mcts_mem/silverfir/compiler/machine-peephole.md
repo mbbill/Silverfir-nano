@@ -31,12 +31,38 @@
 
 ## Facts
 
+- 2026-07-22 rejected: a shared inner-to-outer loop driver computed each
+  natural-loop predecessor closure once and immediately ran address hoisting
+  followed by frame-value reuse. It avoided retaining every loop set and made
+  all seven serial startup cases 1.7-4.6% faster (3.0% geometrically), but it
+  changed the established global pass priority: inner-loop frame reuse could
+  claim a lane before an outer address hoist saw it. Against the exact parent,
+  matrix-multiply execution regressed from 28.42 to 30.12 ms (about 6%), with
+  smaller roughly 2% regressions in Mandelbrot and spectralnorm. The experiment
+  was fully reverted. Future sharing of the 10.66%-inclusive
+  `natural_loop_nodes` hotspot must preserve all address hoists before any
+  frame-value reuse, or prove the new priority improves generated code
+  (sourced).
+
+- 2026-07-22 rejected: retaining every exact natural-loop membership set from
+  address hoisting for later frame-value reuse preserved the original pass
+  order and moved Pulldown from about 112.4 to 107.0 ms. It was not retained:
+  2x, 4x, and 8x block-count caps captured almost none of the gain, showing
+  that expanded nested memberships are substantially superlinear on this
+  workload. An O(number-of-loops) cache for contiguous block ranges avoided
+  that memory growth, but both rebuilding node slices and consuming the ranges
+  through statically specialized iterators regressed Pulldown to 120-130 ms.
+  A future solution needs a loop forest/region traversal native to both passes,
+  not a wrapper around the current expanded-set APIs (sourced).
+
 - 2026-07-22 rejected: replacing per-loop visited/result allocation with a
   reusable generation-marked scratch buffer required sorting discovered nodes
   to preserve the existing ascending block order. On serial Pulldown this
   regressed 123.66 -> 135.57 ms (9.6%); the experiment was discarded. The
-  remaining `natural_loop_nodes` cost is overlapping predecessor traversal,
-  not primarily vector allocation (sourced).
+  follow-up removed the sort and allowed discovery order, but still measured
+  112.99 and 113.83 ms against a 112.41 ms baseline. The remaining
+  `natural_loop_nodes` cost is overlapping predecessor traversal, not primarily
+  vector allocation (sourced).
 
 - 2026-07-22 rejected: collecting all loop definitions once and sorting
   indexed-access candidates removed the apparent access-count x

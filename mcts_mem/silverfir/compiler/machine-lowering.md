@@ -32,6 +32,13 @@
 
 ## Facts
 
+- 2026-07-22 rejected: skipping GP/FP cache-layout matrices and dominator
+  traversals for functions with cached cells in only one register bank made
+  serial Pulldown and SpiderMonkey effectively flat. Bz2 and CoreMark showed
+  only roughly 1% signals, too small for the 200-line control-flow expansion;
+  the experiment and its test were fully reverted rather than retaining
+  unmeasured bank-specialized complexity (sourced).
+
 - 2026-07-22 rejected: borrowing cache-layout rows directly during incoming-edge
   scoring instead of cloning the current and predecessor rows changed serial
   bz2 from about 51.91 to 51.83 ms, inside run-to-run noise. The clones account
