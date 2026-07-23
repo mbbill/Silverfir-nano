@@ -26,9 +26,10 @@ use crate::{
             },
             ssa_ir::{
                 ir::{
-                    entry_cache_requirements, CellInfo, SsaBinding, SsaBlock, SsaCallArgs,
-                    SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge, SsaInst, SsaOp,
-                    SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator, SsaValue,
+                    entry_cache_requirements, CellInfo, EntryCacheRequirement, SsaBinding,
+                    SsaBlock, SsaCallArgs, SsaCallLiveArg, SsaCallOp, SsaCallOperandLoc, SsaEdge,
+                    SsaInst, SsaOp, SsaOperand, SsaProgram, SsaScalarResultLoc, SsaTerminator,
+                    SsaValue,
                 },
                 target::SsaTarget,
             },
@@ -283,9 +284,14 @@ pub(crate) fn rewrite_function(
     let mut builder = ProgramBuilder::default();
     let mut blocks = collections::Vec::with_capacity(original_block_count);
     let mut block_entry_cached_cells = collections::Vec::with_capacity(original_block_count);
+    // Rewrite-local first-touch facts share one arena: edge repair consumes
+    // them, then they disappear rather than becoming stale final SSA metadata.
+    let mut block_entry_requirement_spans = collections::Vec::with_capacity(original_block_count);
+    let mut block_entry_requirement_arena = collections::Vec::new();
     let mut block_exit_cached_slots = collections::Vec::with_capacity(original_block_count);
     let mut extra_blocks = collections::Vec::new();
     let mut extra_block_cached_slots = collections::Vec::new();
+    let mut extra_block_requirement_spans = collections::Vec::new();
     let mut extra_block_exit_cached_slots = collections::Vec::new();
     for (block_index, cfg_block) in cfg.blocks.iter().enumerate() {
         let block_entry = planner.block_open(cfg_block.id);
@@ -317,10 +323,11 @@ pub(crate) fn rewrite_function(
             extra_blocks.len(),
             config,
         )?;
-        let entry_slots = filter_block_entry_cached_cells(
+        let (entry_slots, entry_requirement_span) = filter_block_entry_cached_cells(
             planner.planned_residents(cfg_block.id),
             &lowered.hint_exit_cached_cells,
             &lowered.ops,
+            &mut block_entry_requirement_arena,
         );
         let exit_slots = lowered.actual_exit_cached_cells;
         // The no-output exact walker remains a debug oracle. Release builds do
@@ -338,6 +345,7 @@ pub(crate) fn rewrite_function(
             );
         }
         block_entry_cached_cells.push(entry_slots);
+        block_entry_requirement_spans.push(entry_requirement_span);
         block_exit_cached_slots.push(exit_slots);
         let mut block = SsaBlock {
             id: SsaTarget(block_index as u32),
@@ -348,6 +356,23 @@ pub(crate) fn rewrite_function(
         };
         shrink_ssa_block_storage(&mut block);
         blocks.push(block);
+        debug_assert_eq!(
+            lowered.extra_blocks.len(),
+            lowered.extra_block_cached_slots.len()
+        );
+        for (bridge, slots) in lowered
+            .extra_blocks
+            .iter()
+            .zip(&lowered.extra_block_cached_slots)
+        {
+            let start = block_entry_requirement_arena.len();
+            block_entry_requirement_arena.extend(
+                entry_cache_requirements(&bridge.ops, slots, slots)
+                    .into_iter()
+                    .map(|requirement| requirement.unwrap_or(EntryCacheRequirement::Ensure)),
+            );
+            extra_block_requirement_spans.push(start..block_entry_requirement_arena.len());
+        }
         extra_block_cached_slots.extend(lowered.extra_block_cached_slots);
         extra_block_exit_cached_slots.extend(lowered.extra_block_exit_cached_slots);
         for mut block in lowered.extra_blocks {
@@ -359,6 +384,8 @@ pub(crate) fn rewrite_function(
     blocks.extend(extra_blocks);
     block_entry_cached_cells.reserve_exact(extra_block_cached_slots.len());
     block_entry_cached_cells.extend(extra_block_cached_slots);
+    block_entry_requirement_spans.reserve_exact(extra_block_requirement_spans.len());
+    block_entry_requirement_spans.extend(extra_block_requirement_spans);
     block_exit_cached_slots.reserve_exact(extra_block_exit_cached_slots.len());
     block_exit_cached_slots.extend(extra_block_exit_cached_slots);
 
@@ -411,6 +438,8 @@ pub(crate) fn rewrite_function(
     insert_boundary_repair_blocks(
         &mut program,
         &block_exit_cached_slots,
+        &block_entry_requirement_spans,
+        &block_entry_requirement_arena,
         PlanRepairs {
             pool: &[],
             slot_arena: &[],
@@ -465,14 +494,18 @@ fn filter_block_entry_cached_cells(
     planned: &[CellId],
     hint_exit: &[CellId],
     ops: &[SsaInst],
-) -> collections::Vec<CellId> {
+    requirement_arena: &mut collections::Vec<EntryCacheRequirement>,
+) -> (collections::Vec<CellId>, core::ops::Range<usize>) {
     let requirements = entry_cache_requirements(ops, planned, hint_exit);
-    planned
-        .iter()
-        .copied()
-        .zip(requirements)
-        .filter_map(|(cell, requirement)| requirement.map(|_| cell))
-        .collect()
+    let mut cells = collections::Vec::with_capacity(planned.len());
+    let start = requirement_arena.len();
+    for (cell, requirement) in planned.iter().copied().zip(requirements) {
+        if let Some(requirement) = requirement {
+            cells.push(cell);
+            requirement_arena.push(requirement);
+        }
+    }
+    (cells, start..requirement_arena.len())
 }
 
 struct LoweredBlock {

@@ -11,7 +11,7 @@ use crate::vm::middle::{
     joint_plan::facts::{self, RepairActions, RepairActionsSpans, RowSpan, NO_REPAIR},
     ssa_ir::{
         ir::{
-            entry_cache_requirement, SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaProgram,
+            EntryCacheRequirement, SsaBinding, SsaBlock, SsaEdge, SsaInst, SsaProgram,
             SsaTerminator,
         },
         target::SsaTarget,
@@ -48,6 +48,8 @@ pub(super) struct PlanRepairs<'a> {
 pub(super) fn insert_boundary_repair_blocks(
     program: &mut SsaProgram,
     exit_cached_slots: &[collections::Vec<CellId>],
+    entry_requirement_spans: &[core::ops::Range<usize>],
+    entry_requirement_arena: &[EntryCacheRequirement],
     plan: PlanRepairs<'_>,
     semantic_count: usize,
 ) {
@@ -85,6 +87,8 @@ pub(super) fn insert_boundary_repair_blocks(
                 edge_slot_ordinal(slot),
                 original_target,
                 pred_exit,
+                entry_requirement_spans,
+                entry_requirement_arena,
             );
             if repair.is_empty() {
                 continue;
@@ -101,7 +105,7 @@ pub(super) fn insert_boundary_repair_blocks(
         }
     }
 
-    maybe_repair_entry(program);
+    maybe_repair_entry(program, entry_requirement_spans, entry_requirement_arena);
 }
 
 /// Enumerate a terminator's outgoing edges in the fixed edge order
@@ -148,7 +152,7 @@ fn edge_slot_ordinal(slot: EdgeSlot) -> usize {
 
 /// The repair actions for one outgoing edge. When optional debug-plan data is
 /// supplied, semantic-to-semantic edges can read it; release rewrite derives
-/// every edge from the target's lowered ops.
+/// every edge from the target's batched first-touch requirements.
 fn resolve_edge_repair(
     program: &SsaProgram,
     plan: PlanRepairs<'_>,
@@ -157,6 +161,8 @@ fn resolve_edge_repair(
     ordinal: usize,
     target: SsaTarget,
     pred_exit: &[CellId],
+    entry_requirement_spans: &[core::ops::Range<usize>],
+    entry_requirement_arena: &[EntryCacheRequirement],
 ) -> RepairActions {
     if block_index < semantic_count && target.as_usize() < semantic_count {
         let index = plan_edge_index(plan, block_index, ordinal);
@@ -174,17 +180,14 @@ fn resolve_edge_repair(
         };
     }
     let target_id = target.as_usize();
-    let target_ops = program
-        .blocks
-        .get(target_id)
-        .map(|b| b.ops.as_slice())
-        .unwrap_or(&[]);
     let target_entry = program
         .block_entry_cached_cells
         .get(target_id)
         .map(|s| s.as_slice())
         .unwrap_or(&[]);
-    derive_edge_repair(pred_exit, target_entry, target_ops)
+    let target_requirements =
+        entry_requirement_row(entry_requirement_spans, entry_requirement_arena, target_id);
+    derive_edge_repair(pred_exit, target_entry, target_requirements)
 }
 
 /// The plan's repair-pool index for semantic block `block_index`'s edge at
@@ -243,8 +246,6 @@ fn edge_repair_needed(
     original_target: SsaTarget,
 ) -> bool {
     let target_id = original_target.as_usize();
-    let target_block = program.blocks.get(target_id);
-    let target_ops = target_block.map(|b| b.ops.as_slice()).unwrap_or(&[]);
     let target_entry = program
         .block_entry_cached_cells
         .get(target_id)
@@ -257,10 +258,9 @@ fn edge_repair_needed(
         }
     }
     for &slot in target_entry {
-        if pred_exit.contains(&slot) {
-            continue;
-        }
-        if entry_cache_requirement(target_ops, slot, target_entry.contains(&slot)).is_some() {
+        // Every target-entry slot is carried by definition. If the predecessor
+        // does not already carry it, the edge needs an Ensure or Reserve.
+        if !pred_exit.contains(&slot) {
             return true;
         }
     }
@@ -346,19 +346,24 @@ fn retarget_edge(terminator: &mut SsaTerminator, slot: EdgeSlot, repair_id: SsaT
     }
 }
 
-fn maybe_repair_entry(program: &mut SsaProgram) {
+fn maybe_repair_entry(
+    program: &mut SsaProgram,
+    entry_requirement_spans: &[core::ops::Range<usize>],
+    entry_requirement_arena: &[EntryCacheRequirement],
+) {
     let entry_target = program.entry;
     let entry_id = entry_target.as_usize();
 
     let (repair, repair_params) = {
         let target_block = program.blocks.get(entry_id);
-        let target_ops = target_block.map(|b| b.ops.as_slice()).unwrap_or(&[]);
         let target_entry = program
             .block_entry_cached_cells
             .get(entry_id)
             .map(|s| s.as_slice())
             .unwrap_or(&[]);
-        let repair = derive_edge_repair(&[], target_entry, target_ops);
+        let target_requirements =
+            entry_requirement_row(entry_requirement_spans, entry_requirement_arena, entry_id);
+        let repair = derive_edge_repair(&[], target_entry, target_requirements);
         if repair.is_empty() {
             return;
         }
@@ -392,6 +397,17 @@ fn maybe_repair_entry(program: &mut SsaProgram) {
     program.entry = repair_id;
 }
 
+fn entry_requirement_row<'a>(
+    spans: &[core::ops::Range<usize>],
+    arena: &'a [EntryCacheRequirement],
+    block_index: usize,
+) -> &'a [EntryCacheRequirement] {
+    spans
+        .get(block_index)
+        .and_then(|span| arena.get(span.clone()))
+        .unwrap_or(&[])
+}
+
 fn build_repair_ops(repair: &RepairActions) -> collections::Vec<SsaInst> {
     let mut ops = collections::Vec::with_capacity(
         repair.drop_cached_cells.len()
@@ -410,17 +426,19 @@ fn build_repair_ops(repair: &RepairActions) -> collections::Vec<SsaInst> {
     ops
 }
 
-/// Emit-side edge-repair derivation: reads the successor's first-use
-/// requirement straight from its lowered ops. Kept for synthesized bridge-block
-/// edges (which never enter pass D's plan) and shared with pass D's action
-/// computation through [`facts::derive_edge_repair`] so the logic exists once.
+/// Emit-side edge-repair derivation from the successor's batched first-use
+/// requirements. The rows are rewrite-local scratch and are never published as
+/// final machine-facing SSA metadata.
 pub(super) fn derive_edge_repair(
     pred_exit: &[CellId],
     succ_entry: &[CellId],
-    target_ops: &[SsaInst],
+    succ_requirements: &[EntryCacheRequirement],
 ) -> RepairActions {
     facts::derive_edge_repair(pred_exit, succ_entry, |slot| {
-        entry_cache_requirement(target_ops, slot, succ_entry.contains(&slot))
+        succ_entry
+            .binary_search(&slot)
+            .ok()
+            .and_then(|index| succ_requirements.get(index).copied())
     })
 }
 
@@ -491,12 +509,16 @@ mod tests {
         ];
         let exit_cached_slots =
             collections::vec![collections::vec![slot1], collections::vec![slot0]];
+        let entry_requirement_spans = collections::vec![0..0, 0..1];
+        let entry_requirement_arena = collections::vec![EntryCacheRequirement::Ensure];
 
         // semantic_count = 0 routes every edge through the emit-side derive
         // path this test exercises.
         insert_boundary_repair_blocks(
             &mut program,
             &exit_cached_slots,
+            &entry_requirement_spans,
+            &entry_requirement_arena,
             PlanRepairs {
                 pool: &[],
                 slot_arena: &[],

@@ -674,6 +674,7 @@ impl SsaProgram {
     }
 }
 
+#[cfg(test)]
 pub(crate) fn entry_cache_requirement_from_ops(
     ops: &[SsaInst],
     slot: CellId,
@@ -703,6 +704,7 @@ pub(crate) fn entry_cache_requirement_from_ops(
 }
 
 #[inline]
+#[cfg(test)]
 pub(crate) fn entry_cache_requirement(
     ops: &[SsaInst],
     slot: CellId,
