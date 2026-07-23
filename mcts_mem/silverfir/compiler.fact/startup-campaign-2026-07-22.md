@@ -578,3 +578,24 @@ the listed commits.
   terminator matches and short parameter lists beat binary reverse lookup plus
   duplicate-range expansion; the code and regression test were reverted, and
   the invariant was retained here as design evidence (sourced).
+
+- 2026-07-23: commit `7a8dc84b` made final entry-cache requirements a genuinely
+  final-SSA side table. Rewrite previously allocated an outer row for every
+  block and an inner all-Ensure vector for every nonempty entry-cache set,
+  extended the table for bridge and boundary-repair blocks, and made cleanup
+  reindex it. The boundary-repair implementation did not consume the table: it
+  derived each successor's requirement directly from emitted target ops. The
+  table was then unconditionally overwritten by `final_signals` after cleanup,
+  optimization, counter forwarding, and sink planning. Rewrite now leaves the
+  vector empty, repair insertion does not extend it, and cleanup preserves its
+  prior reindexing behavior only for standalone callers that supply nonempty
+  finalized rows. FFmpeg's 14,290-function deterministic native index stayed
+  byte-identical at
+  `5db01c38ff5e59a3999683b893dc534d053f784cd85640bb2f42d28f4b1ce31c`;
+  all 356 release tests passed. Adjacent serial profiles both placed
+  `prepare_function` at 35.83% inclusive (cleanup itself was sample-noisy), and
+  fat-LTO text grew 332 bytes. Two exact-parent ABBA startup pairs had candidate
+  medians of 5.6319/5.7877 s versus parent medians of 5.7214/5.8304 s, a 1.1%
+  reduction on pair-average point estimates, but overlapping confidence
+  intervals make this allocation/lifetime cleanup a retained structural
+  simplification without a confident end-to-end percentage (sourced).

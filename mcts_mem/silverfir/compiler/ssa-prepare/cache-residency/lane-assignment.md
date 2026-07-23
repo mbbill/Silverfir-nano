@@ -23,6 +23,12 @@
   planning, by scanning the final blocks and final control flow
   (`final_signals`); nothing derives them from pre-cleanup state.
 
+- The entry-requirement outer vector remains intentionally empty from rewrite
+  through structural cleanup. Edge repair already derives successor requirements
+  from emitted ops, and cleanup accepts an absent optional side table; allocating
+  provisional Ensure rows would only make cleanup maintain data that
+  `final_signals` must overwrite from final SSA.
+
 - The keep-across-call decision re-checks the physically assigned register's
   preservation class in addition to the preference bit; call classification
   reads the module facts threaded into lowering, and reference-typed locals
@@ -108,6 +114,18 @@
   +289 and lua by +1844 native instructions, because the entry layout places
   only entry-resident caches while binding-time matching is what puts a
   call-crossing MID-BLOCK cache into a preserved lane (sourced).
+
+- 2026-07-23 (7a8dc84b) measurement: rewrite allocated a provisional
+  Ensure-versus-Reserve row for every ordinary, bridge, and repair block, then
+  cleanup reindexed those rows even though edge repair never read them and
+  final-signals unconditionally replaced them. Deferring first publication
+  until final SSA removed those allocations and the stale side-table lifetime.
+  FFmpeg's deterministic 14,290-function native index remained byte-identical
+  and all 356 release tests passed. Two exact-parent ABBA startup pairs favored
+  the candidate by 1.1% on mean point estimates, but their intervals overlapped
+  and adjacent CPU profiles left `prepare_function` at 35.83% inclusive, so the
+  structural simplification is retained without a confident wall-time claim
+  ([[compiler.fact/startup-campaign-2026-07-22]]) (sourced).
 
 ## Moves
 
