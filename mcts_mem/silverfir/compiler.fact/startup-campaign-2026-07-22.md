@@ -319,3 +319,25 @@ the listed commits.
   large cases moved by -1.6%, +0.1%, -1.5%, and -2.2%; bz2's controlled A/B/A
   remains the primary attribution evidence, while the breadth run confirms
   there is no workload regression (sourced).
+
+- The next lowering profile found that `dynamic_reg_available` and
+  `is_linear_value_reg` together still occupied 3.40% self-time. Nano's
+  allocator remained fixed-budget and local; the cost came from linearly
+  scanning all cache bindings and unpublished incoming parameters for every
+  candidate register. A compact per-dynamic-register non-linear reservation
+  count made both ownership queries indexed while preserving the existing
+  cache/parameter policy and live-value safety check (sourced).
+
+- Controlled serial bz2 indexed/parent/indexed means were 42.664, 43.965, and
+  42.624 ms, a repeatable roughly 3.0% improvement. In the verification
+  profile, `dynamic_reg_available` fell from 1.80% to 0.19% self-time and
+  `is_linear_value_reg` from 1.60% to 0.09%, confirming that the scan loops
+  disappeared rather than moving elsewhere (sourced).
+
+- The corresponding seven-workload breadth run measured 44.498 ms (bz2),
+  86.077 ms (Pulldown-cmark), 1,782.0 ms (SpiderMonkey), 6,641.3 ms (FFmpeg),
+  3.649 ms (CoreMark), 13.241 ms (Argon2), and 2.097 ms (ERC20). Bz2 had two
+  severe high outliers and the millisecond-scale cases remained noisy, so the
+  long A/B/A bz2 result is the attribution evidence; Pulldown, SpiderMonkey,
+  FFmpeg, and ERC20 moved by -2.36%, -0.98%, -0.66%, and -1.25% respectively
+  with no substantial-workload regression (sourced).

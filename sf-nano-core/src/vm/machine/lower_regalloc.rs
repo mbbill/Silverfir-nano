@@ -670,9 +670,10 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn is_linear_value_reg(&self, reg: MachineReg) -> bool {
-        self.dynamic_index(reg).is_ok()
-            && !self.is_bound_cache_reg(reg)
-            && !self.incoming_param_owns_reg(reg)
+        self.dynamic_index(reg)
+            .ok()
+            .map(|index| !self.nonlinear_dynamic_reg_occupied(index))
+            .unwrap_or(false)
     }
 
     pub(super) fn is_fp_reg(&self, reg: MachineReg) -> bool {
@@ -830,11 +831,33 @@ impl<'a> BlockLowerContext<'a> {
             .map(|index| {
                 !self.linear_value_occupied(index)
                     && !self.value_location_owns_reg(reg)
-                    && !self.is_bound_cache_reg(reg)
-                    && !self.incoming_param_owns_reg(reg)
+                    && !self.nonlinear_dynamic_reg_occupied(index)
             })
             .unwrap_or(false)
     }
+}
+
+pub(super) fn reserve_nonlinear_dynamic_reg(
+    regfile: &MachineRegFile,
+    owners: &mut [u8],
+    reg: MachineReg,
+) -> Result<(), WasmError> {
+    let index = if let Some(index) = regfile.gp_dynamic_index(reg) {
+        index
+    } else if let Some(index) = regfile.fp_dynamic_index(reg) {
+        regfile.gp_dynamic_count() + index
+    } else {
+        return Err(WasmError::internal(
+            "non-dynamic register cannot have a dynamic owner".into(),
+        ));
+    };
+    let owner = owners
+        .get_mut(index)
+        .ok_or_else(|| WasmError::internal("dynamic register owner index is out of range"))?;
+    *owner = owner
+        .checked_add(1)
+        .ok_or_else(|| WasmError::internal("dynamic register owner count overflow"))?;
+    Ok(())
 }
 
 // ---------------------------------------------------------------------------

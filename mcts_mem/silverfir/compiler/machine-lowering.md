@@ -32,6 +32,20 @@
 
 ## Facts
 
+- 2026-07-22 measurement: two fixed-budget allocator predicates still scanned
+  every cached-local binding and unpublished incoming parameter for each
+  candidate register. Mirroring those non-linear reservations in one compact
+  per-dynamic-register count preserved cache/parameter ownership (including a
+  transient overlapping transfer) while changing the queries to indexed
+  lookups. In the verification profile, `dynamic_reg_available` fell from
+  1.80% to 0.19% self-time and `is_linear_value_reg` from 1.60% to 0.09%
+  (sourced).
+
+- 2026-07-22 measurement: controlled serial bz2 indexed/parent/indexed means
+  were 42.664, 43.965, and 42.624 ms, a repeatable roughly 3.0% reduction.
+  This is a representation win inside the intentionally simple fixed-budget
+  allocator, not the introduction of general register allocation (sourced).
+
 - 2026-07-22 measurement: MachineIR block-parameter lowering used an owned
   temporary vector for every scalar value (and every GP32 i64 pair), attached
   ownership metadata, and immediately drained it into the block's destination

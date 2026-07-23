@@ -26,7 +26,8 @@ use super::{
     lower_module::{slot_offset_bytes, target_param_regs},
     lower_regalloc::{
         canonical_cached_cell_mem_width, gp_reg_int_width, gp_reg_mem_width,
-        lir_value_storage_type, value_type_storage_type, MachineRegFile,
+        lir_value_storage_type, reserve_nonlinear_dynamic_reg, value_type_storage_type,
+        MachineRegFile,
     },
     lower_util::{compute_remaining_uses, RemainingUses},
 };
@@ -136,6 +137,13 @@ pub(super) struct BlockLowerContext<'a> {
     /// - occupied by one linear value
     /// - bound to one cached local
     linear_value_state: collections::Vec<LinearValueState>,
+    /// Number of non-linear owners reserving each dynamic register.
+    ///
+    /// This mirrors cached-local bindings and still-unpublished incoming
+    /// parameters so allocator queries do not repeatedly scan both vectors.
+    /// A count is used because entry materialization can briefly transfer a
+    /// parameter directly into a cache binding on the same register.
+    nonlinear_dynamic_reg_owners: collections::Vec<u8>,
     param_slot_state: collections::Vec<ParamSlotState>,
     #[cfg(sf_has_guard_pages)]
     guard_pages: bool,
@@ -247,6 +255,28 @@ impl<'a> BlockLowerContext<'a> {
         let cache_live = collections::vec![false; cached_cells.len()];
         let cache_has_value = collections::vec![false; cached_cells.len()];
         let cache_dirty = collections::vec![false; cached_cells.len()];
+        let param_slot_state = if is_entry {
+            initial_param_slot_state(current_abi, regfile, program)?
+        } else {
+            collections::vec![
+                ParamSlotState::FrameAuthoritative;
+                program
+                    .cell_types
+                    .len()
+                    .max(usize::from(current_abi.frame_prefix_slots))
+            ]
+        };
+        let mut nonlinear_dynamic_reg_owners =
+            collections::vec![0; regfile.gp_dynamic_count() + regfile.fp_dynamic_count()];
+        for state in &param_slot_state {
+            if let ParamSlotState::RegisterOnly { lo, hi, .. } = *state {
+                reserve_nonlinear_dynamic_reg(regfile, &mut nonlinear_dynamic_reg_owners, lo)?;
+                if let Some(hi) = hi {
+                    reserve_nonlinear_dynamic_reg(regfile, &mut nonlinear_dynamic_reg_owners, hi)?;
+                }
+            }
+        }
+
         let mut lower = Self {
             regfile,
             program,
@@ -272,17 +302,8 @@ impl<'a> BlockLowerContext<'a> {
                 LinearValueState::default();
                 regfile.gp_dynamic_count() + regfile.fp_dynamic_count()
             ],
-            param_slot_state: if is_entry {
-                initial_param_slot_state(current_abi, regfile, program)?
-            } else {
-                collections::vec![
-                    ParamSlotState::FrameAuthoritative;
-                    program
-                        .cell_types
-                        .len()
-                        .max(usize::from(current_abi.frame_prefix_slots))
-                ]
-            },
+            nonlinear_dynamic_reg_owners,
+            param_slot_state,
             #[cfg(sf_has_guard_pages)]
             guard_pages,
             #[cfg(sf_has_guard_pages)]
@@ -397,8 +418,15 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     pub(super) fn mark_param_frame_authoritative(&mut self, cell: CellId) {
-        if let Some(state) = self.param_slot_state.get_mut(cell.0 as usize) {
-            *state = ParamSlotState::FrameAuthoritative;
+        let Some(state) = self.param_slot_state.get_mut(cell.0 as usize) else {
+            return;
+        };
+        let previous = core::mem::replace(state, ParamSlotState::FrameAuthoritative);
+        if let ParamSlotState::RegisterOnly { lo, hi, .. } = previous {
+            self.release_nonlinear_dynamic_reg(lo);
+            if let Some(hi) = hi {
+                self.release_nonlinear_dynamic_reg(hi);
+            }
         }
     }
 
@@ -449,13 +477,6 @@ impl<'a> BlockLowerContext<'a> {
         }
 
         Ok(())
-    }
-
-    pub(super) fn incoming_param_owns_reg(&self, reg: MachineReg) -> bool {
-        self.param_slot_state.iter().any(|state| match *state {
-            ParamSlotState::RegisterOnly { lo, hi, .. } => lo == reg || hi == Some(reg),
-            ParamSlotState::FrameAuthoritative => false,
-        })
     }
 
     pub(super) fn frame_addr(&self, slot: FrameSlot) -> Result<MachineAddr, WasmError> {
@@ -661,11 +682,7 @@ impl<'a> BlockLowerContext<'a> {
     ) -> Result<BoundCachedCell, WasmError> {
         if self.cache_bindings.get(index).copied().flatten().is_none() {
             let preferred = self.allocate_cache_binding(index)?;
-            let slot = self
-                .cache_bindings
-                .get_mut(index)
-                .ok_or_else(|| WasmError::internal("cached local binding is out of range"))?;
-            *slot = Some(preferred);
+            self.bind_cached_cell_to_regs(index, preferred.reg, preferred.hi_reg)?;
         }
         self.bound_cached_cell(index)
             .ok_or_else(|| WasmError::internal("cached local binding missing after assignment"))
@@ -677,11 +694,32 @@ impl<'a> BlockLowerContext<'a> {
         reg: MachineReg,
         hi_reg: Option<MachineReg>,
     ) -> Result<BoundCachedCell, WasmError> {
+        let next = CachedCellBinding { reg, hi_reg };
+        let previous = self
+            .cache_bindings
+            .get(index)
+            .copied()
+            .ok_or_else(|| WasmError::internal("cached local binding is out of range"))?;
+        if previous == Some(next) {
+            return self.bound_cached_cell(index).ok_or_else(|| {
+                WasmError::internal("cached local binding missing after assignment")
+            });
+        }
+        self.reserve_nonlinear_dynamic_reg(reg)?;
+        if let Some(hi_reg) = hi_reg {
+            self.reserve_nonlinear_dynamic_reg(hi_reg)?;
+        }
+        if let Some(previous) = previous {
+            self.release_nonlinear_dynamic_reg(previous.reg);
+            if let Some(hi_reg) = previous.hi_reg {
+                self.release_nonlinear_dynamic_reg(hi_reg);
+            }
+        }
         let slot = self
             .cache_bindings
             .get_mut(index)
             .ok_or_else(|| WasmError::internal("cached local binding is out of range"))?;
-        *slot = Some(CachedCellBinding { reg, hi_reg });
+        *slot = Some(next);
         self.bound_cached_cell(index)
             .ok_or_else(|| WasmError::internal("cached local binding missing after assignment"))
     }
@@ -708,7 +746,13 @@ impl<'a> BlockLowerContext<'a> {
 
     pub(super) fn clear_cache_binding(&mut self, index: usize) {
         if let Some(binding) = self.cache_bindings.get_mut(index) {
-            *binding = None;
+            let previous = binding.take();
+            if let Some(previous) = previous {
+                self.release_nonlinear_dynamic_reg(previous.reg);
+                if let Some(hi_reg) = previous.hi_reg {
+                    self.release_nonlinear_dynamic_reg(hi_reg);
+                }
+            }
         }
     }
 
@@ -719,8 +763,8 @@ impl<'a> BlockLowerContext<'a> {
         for has_value in &mut self.cache_has_value {
             *has_value = false;
         }
-        for binding in &mut self.cache_bindings {
-            *binding = None;
+        for index in 0..self.cache_bindings.len() {
+            self.clear_cache_binding(index);
         }
     }
 
@@ -781,6 +825,39 @@ impl<'a> BlockLowerContext<'a> {
             .get(index)
             .map(|state| state.value.is_some())
             .unwrap_or(false)
+    }
+
+    pub(super) fn nonlinear_dynamic_reg_occupied(&self, index: usize) -> bool {
+        self.nonlinear_dynamic_reg_owners
+            .get(index)
+            .copied()
+            .unwrap_or(1)
+            != 0
+    }
+
+    fn reserve_nonlinear_dynamic_reg(&mut self, reg: MachineReg) -> Result<(), WasmError> {
+        let index = self.dynamic_index(reg)?;
+        let owners = self
+            .nonlinear_dynamic_reg_owners
+            .get_mut(index)
+            .ok_or_else(|| WasmError::internal("dynamic register owner index is out of range"))?;
+        *owners = owners
+            .checked_add(1)
+            .ok_or_else(|| WasmError::internal("dynamic register owner count overflow"))?;
+        Ok(())
+    }
+
+    fn release_nonlinear_dynamic_reg(&mut self, reg: MachineReg) {
+        let Ok(index) = self.dynamic_index(reg) else {
+            debug_assert!(false, "non-dynamic register had a dynamic owner");
+            return;
+        };
+        let Some(owners) = self.nonlinear_dynamic_reg_owners.get_mut(index) else {
+            debug_assert!(false, "dynamic register owner index is out of range");
+            return;
+        };
+        debug_assert_ne!(*owners, 0, "dynamic register owner count underflow");
+        *owners = owners.saturating_sub(1);
     }
 
     pub(super) fn linear_value_storage_type(&self, index: usize) -> Option<MachineStorageType> {
@@ -974,13 +1051,6 @@ impl<'a> BlockLowerContext<'a> {
                     None
                 }
             })
-    }
-
-    pub(super) fn is_bound_cache_reg(&self, reg: MachineReg) -> bool {
-        self.cache_bindings
-            .iter()
-            .flatten()
-            .any(|binding| binding.reg == reg || binding.hi_reg == Some(reg))
     }
 
     fn preferred_cache_binding(&self, index: usize) -> Option<CachedCellBinding> {
@@ -1239,14 +1309,14 @@ impl<'a> BlockLowerContext<'a> {
     }
 
     fn dynamic_reg_unavailable(&self, reg: MachineReg) -> bool {
-        self.is_bound_cache_reg(reg)
-            || self.incoming_param_owns_reg(reg)
-            || self.value_location_owns_reg(reg)
-            || self
-                .dynamic_index(reg)
-                .ok()
-                .map(|index| self.linear_value_occupied(index))
-                .unwrap_or(true)
+        self.dynamic_index(reg)
+            .ok()
+            .map(|index| {
+                self.linear_value_occupied(index)
+                    || self.nonlinear_dynamic_reg_occupied(index)
+                    || self.value_location_owns_reg(reg)
+            })
+            .unwrap_or(true)
     }
 
     /// Try to reuse a dead pair candidate's registers for a new i64 value.
