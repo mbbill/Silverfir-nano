@@ -97,6 +97,17 @@
   thermal/order effects, so no wall-time percentage is attributed to this
   five-line aggregate-work removal (sourced).
 
+- 2026-07-23 (b197ae33) rationale: the cache layout stores both register banks
+  in one shared entry/exit matrix pair because GP and FP cells occupy disjoint
+  columns and each lane number is interpreted through its cell's bank metadata
+  (sourced).
+
+- 2026-07-23 (b197ae33) measurement: sharing the GP/FP layout matrices reduced
+  `compute_block_entry_cache_params` from 8.15% to 7.81% inclusive in serial
+  FFmpeg profiles, and reduced its dense-allocation bucket from 16.9% to 11.8%
+  of the function's samples. The complete SSA/MachineIR/native index remained
+  byte-identical and all 356 release tests passed (sourced).
+
 - 2026-03-12 (7bb4d7dc) rationale: the step between prepared LIR and MachineIR is
   one internal lowering pass, not a new public IR layer — it expands VM-flavored ops
   into machine-shaped code and does the trivial fixed-budget register assignment the

@@ -488,3 +488,15 @@ the listed commits.
   (2.71% mean point estimate, secondary because of thermal drift). FFmpeg's
   complete SSA/MachineIR/native index remained byte-identical and all 356
   release tests passed (sourced).
+
+- 2026-07-23: GP and FP cache-layout lanes are bank-relative, but their cached
+  cells occupy disjoint columns. Commit `b197ae33` therefore shares one dense
+  entry matrix and one dense exit matrix across both banks instead of
+  allocating four matrices, while every bank-specific copy still touches only
+  that bank's cells. This halves the main dense layout storage. In serial
+  FFmpeg profiles, `compute_block_entry_cache_params` fell from 8.15% to
+  7.81% inclusive and its dense-allocation bucket fell from 16.9% to 11.8% of
+  the function's samples. Twenty thermally noisy alternating quick bz2 pairs
+  were mildly favorable on their means (0.64%), but no end-to-end percentage
+  is attributed. FFmpeg's complete SSA/MachineIR/native index remained
+  byte-identical and all 356 release tests passed (sourced).
