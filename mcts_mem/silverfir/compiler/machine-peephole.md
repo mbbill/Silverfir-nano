@@ -31,6 +31,14 @@
 
 ## Facts
 
+- 2026-07-22 rejected: sharing one immutable predecessor/SCC analysis between
+  address hoisting and frame-value reuse preserved CFG topology but did not
+  remove either pass's repeated natural-loop predecessor closures. Serial
+  Pulldown measured 116.4 ms immediately after the optimized rebuild and 109.5
+  ms on repeat against the 106.5 ms accepted baseline. The experiment was
+  reverted; future loop-region work must eliminate or compactly represent the
+  closures themselves rather than merely share their graph inputs (sourced).
+
 - 2026-07-22 rejected: a shared inner-to-outer loop driver computed each
   natural-loop predecessor closure once and immediately ran address hoisting
   followed by frame-value reuse. It avoided retaining every loop set and made
