@@ -522,3 +522,13 @@ the listed commits.
   by 572 bytes. Quick bz2 pairs varied from -15% to +24%, so no end-to-end
   percentage is attributed. FFmpeg's complete SSA/MachineIR/native index
   remained byte-identical and all 356 release tests passed (sourced).
+
+- 2026-07-23: rewrite cloned every semantic `PrimitiveOpKind` before
+  primitive-pool lookup, then immediately dropped the clone for every
+  duplicate. Commit `79405ca0` borrows the key during lookup and clones only
+  on first insertion, preserving pool order and encoded indices.
+  `rewrite_function` fell from 18.28% to 17.48% inclusive in adjacent serial
+  FFmpeg profiles (about 4.4% relative). Short exact-parent bz2 pairs were
+  order-sensitive and included a 55 ms thermal outlier, so no end-to-end
+  percentage is attributed. FFmpeg's complete SSA/MachineIR/native index
+  remained byte-identical and all 356 release tests passed (sourced).

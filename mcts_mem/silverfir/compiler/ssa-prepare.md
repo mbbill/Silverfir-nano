@@ -217,6 +217,15 @@
   SSA/MachineIR/native index remained byte-identical and all 356 release tests
   passed (sourced).
 
+- 2026-07-23 (79405ca0) rationale: primitive-pool interning borrows each
+  semantic primitive during lookup and clones it only when the value is first
+  inserted, because duplicate occurrences do not transfer ownership into the
+  pool (sourced).
+
+- 2026-07-23 (79405ca0) measurement: borrowing primitive interning keys
+  reduced `rewrite_function` from 18.28% to 17.48% inclusive in adjacent
+  serial FFmpeg profiles (sourced).
+
 ## Moves
 
 - 2026-03-12 (2ea0bb68) replaced [[two-stage-planning]]: the planning layer
