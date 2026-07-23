@@ -25,9 +25,7 @@ use super::ssa_ir::{
 pub(crate) fn cleanup_program(program: &mut SsaProgram) {
     loop {
         while thread_one_empty_goto_block(program) {}
-        if merge_one_goto_successor(program) {
-            continue;
-        }
+        merge_goto_successors(program);
         if remove_unreachable_blocks(program) {
             continue;
         }
@@ -394,116 +392,123 @@ fn thread_one_empty_goto_block(program: &mut SsaProgram) -> bool {
     false
 }
 
-fn merge_one_goto_successor(program: &mut SsaProgram) -> bool {
+fn merge_goto_successors(program: &mut SsaProgram) -> bool {
+    let mut removed = collections::Vec::new();
     let predecessor_counts = predecessor_counts(program);
     for pred_index in 0..program.blocks.len() {
-        let SsaTerminator::Goto(edge) = &program.blocks[pred_index].terminator else {
-            continue;
-        };
-        let succ_index = edge.target.as_usize();
-        if succ_index == pred_index || succ_index >= program.blocks.len() {
-            continue;
+        while let Some(succ_index) = merge_goto_successor(program, pred_index, &predecessor_counts)
+        {
+            removed.push(succ_index);
         }
-        if succ_index == program.entry.as_usize() {
-            continue;
-        }
-        if predecessor_counts[succ_index] != 1 {
-            continue;
-        }
-
-        // Boundary-repair blocks emitted by `rewrite/edge.rs` contain only
-        // cache-only ops (CellEnsureCache / CellReserveCache / CellDropCache).
-        // They exist precisely to give the machine layer a fresh
-        // `cache_bindings` slate when crossing a region boundary: each new
-        // block starts with all cache bindings = None. Merging such a
-        // successor into its predecessor makes the merged block need
-        // simultaneous bindings for `pred_exit_cache ∪ succ_ensure_slots`,
-        // which can exceed the configured dynamic-lane budget once entry
-        // register params and transient values are accounted for. Keeping the
-        // repair block separate is the middle-layer mechanism that preserves
-        // the budget proof handed to machine lowering.
-        let succ_ops = &program.blocks[succ_index].ops;
-        if !succ_ops.is_empty() && succ_ops.iter().all(|inst| is_cache_only_op(inst.op)) {
-            continue;
-        }
-
-        let Some(subst) = binding_substitution(&program.blocks[succ_index].params, &edge.bindings)
-        else {
-            continue;
-        };
-
-        // The merged block's extra_args is concatenated
-        // `[pred.extra_args ++ succ.extra_args]`. `SsaInst.meta` indexes
-        // extra_args with a u16, so the combined length must fit in u16.
-        // If it wouldn't, skip this merge rather than wrap indices and
-        // miscompile primitive overflow-operand ranges.
-        let Some(combined_extra) = program.blocks[pred_index]
-            .extra_args
-            .len()
-            .checked_add(program.blocks[succ_index].extra_args.len())
-        else {
-            continue;
-        };
-        if combined_extra > u16::MAX as usize {
-            continue;
-        }
-
-        let succ = core::mem::replace(
-            &mut program.blocks[succ_index],
-            SsaBlock {
-                id: SsaTarget(u32::MAX),
-                params: collections::Vec::new(),
-                ops: collections::Vec::new(),
-                extra_args: collections::Vec::new(),
-                terminator: SsaTerminator::TrapUnreachable,
-            },
-        );
-
-        // Precompute whether each succ op uses overflow operands while the
-        // primitive pool is borrowable. We need this when rebasing
-        // `extra_args` indices: only primitives with more than two operands
-        // read `meta` as an extra_args start index.
-        let has_extra_args: collections::Vec<bool> = succ
-            .ops
-            .iter()
-            .map(|inst| {
-                inst.op.as_primitive_idx().is_some_and(|idx| {
-                    crate::vm::wasm::primitive_op::stack_effect(
-                        &program.primitive_pool[idx as usize],
-                    )
-                    .0 > 2
-                })
-            })
-            .collect();
-
-        // Substitute extra_args in-place, and remember how succ's indices map
-        // into the appended region of pred.extra_args.
-        let mut succ_extra = succ.extra_args;
-        for operand in succ_extra.iter_mut() {
-            *operand = substitute_operand(*operand, &subst);
-        }
-
-        let pred = &mut program.blocks[pred_index];
-        let extra_args_base = pred.extra_args.len() as u16;
-        pred.extra_args.extend(succ_extra.into_iter());
-
-        let merged_ops = succ
-            .ops
-            .into_iter()
-            .zip(has_extra_args.into_iter())
-            .map(|(inst, has_extra_args)| {
-                substitute_inst(inst, &subst, extra_args_base, has_extra_args)
-            })
-            .collect::<collections::Vec<_>>();
-        let merged_terminator = substitute_terminator(succ.terminator, &subst);
-
-        pred.ops.extend(merged_ops);
-        pred.terminator = merged_terminator;
-        remove_blocks(program, &[succ_index]);
-        return true;
     }
 
-    false
+    if removed.is_empty() {
+        false
+    } else {
+        remove_blocks(program, &removed);
+        true
+    }
+}
+
+fn merge_goto_successor(
+    program: &mut SsaProgram,
+    pred_index: usize,
+    predecessor_counts: &[usize],
+) -> Option<usize> {
+    let SsaTerminator::Goto(edge) = &program.blocks[pred_index].terminator else {
+        return None;
+    };
+    let succ_index = edge.target.as_usize();
+    if succ_index == pred_index || succ_index >= program.blocks.len() {
+        return None;
+    }
+    if succ_index == program.entry.as_usize() {
+        return None;
+    }
+    if predecessor_counts[succ_index] != 1 {
+        return None;
+    }
+
+    // Boundary-repair blocks emitted by `rewrite/edge.rs` contain only
+    // cache-only ops (CellEnsureCache / CellReserveCache / CellDropCache).
+    // They exist precisely to give the machine layer a fresh `cache_bindings`
+    // slate when crossing a region boundary: each new block starts with all
+    // cache bindings = None. Merging such a successor into its predecessor
+    // makes the merged block need simultaneous bindings for
+    // `pred_exit_cache ∪ succ_ensure_slots`, which can exceed the configured
+    // dynamic-lane budget once entry register params and transient values are
+    // accounted for. Keeping the repair block separate is the middle-layer
+    // mechanism that preserves the budget proof handed to machine lowering.
+    let succ_ops = &program.blocks[succ_index].ops;
+    if !succ_ops.is_empty() && succ_ops.iter().all(|inst| is_cache_only_op(inst.op)) {
+        return None;
+    }
+
+    let subst = binding_substitution(&program.blocks[succ_index].params, &edge.bindings)?;
+
+    // The merged block's extra_args is concatenated
+    // `[pred.extra_args ++ succ.extra_args]`. `SsaInst.meta` indexes
+    // extra_args with a u16, so the combined length must fit in u16. If it
+    // wouldn't, skip this merge rather than wrap indices and miscompile
+    // primitive overflow-operand ranges.
+    let combined_extra = program.blocks[pred_index]
+        .extra_args
+        .len()
+        .checked_add(program.blocks[succ_index].extra_args.len())?;
+    if combined_extra > u16::MAX as usize {
+        return None;
+    }
+
+    let succ = core::mem::replace(
+        &mut program.blocks[succ_index],
+        SsaBlock {
+            id: SsaTarget(u32::MAX),
+            params: collections::Vec::new(),
+            ops: collections::Vec::new(),
+            extra_args: collections::Vec::new(),
+            terminator: SsaTerminator::TrapUnreachable,
+        },
+    );
+
+    // Precompute whether each succ op uses overflow operands while the
+    // primitive pool is borrowable. We need this when rebasing `extra_args`
+    // indices: only primitives with more than two operands read `meta` as an
+    // extra_args start index.
+    let has_extra_args: collections::Vec<bool> = succ
+        .ops
+        .iter()
+        .map(|inst| {
+            inst.op.as_primitive_idx().is_some_and(|idx| {
+                crate::vm::wasm::primitive_op::stack_effect(&program.primitive_pool[idx as usize]).0
+                    > 2
+            })
+        })
+        .collect();
+
+    // Substitute extra_args in-place, and remember how succ's indices map into
+    // the appended region of pred.extra_args.
+    let mut succ_extra = succ.extra_args;
+    for operand in succ_extra.iter_mut() {
+        *operand = substitute_operand(*operand, &subst);
+    }
+
+    let pred = &mut program.blocks[pred_index];
+    let extra_args_base = pred.extra_args.len() as u16;
+    pred.extra_args.extend(succ_extra);
+
+    let merged_ops = succ
+        .ops
+        .into_iter()
+        .zip(has_extra_args)
+        .map(|(inst, has_extra_args)| {
+            substitute_inst(inst, &subst, extra_args_base, has_extra_args)
+        })
+        .collect::<collections::Vec<_>>();
+    let merged_terminator = substitute_terminator(succ.terminator, &subst);
+
+    pred.ops.extend(merged_ops);
+    pred.terminator = merged_terminator;
+    Some(succ_index)
 }
 
 fn remove_unreachable_blocks(program: &mut SsaProgram) -> bool {
@@ -1320,12 +1325,73 @@ mod tests {
             },
         ];
 
-        assert!(merge_one_goto_successor(&mut program));
+        assert!(merge_goto_successors(&mut program));
         assert_eq!(program.blocks.len(), 1);
         assert_eq!(program.blocks[0].ops.len(), 2);
         let set_cache = &program.blocks[0].ops[1];
         assert_eq!(set_cache.op, SsaOp::CELL_SET_CACHE);
         assert_eq!(set_cache.args[0].as_value(), Some(SsaValue(0)));
+        assert!(matches!(
+            program.blocks[0].terminator,
+            SsaTerminator::Return { .. }
+        ));
+        validate_program(&program).unwrap();
+    }
+
+    #[test]
+    fn merges_entire_goto_chain_before_reindexing() {
+        let mut program = SsaProgram {
+            cell_homes: collections::Vec::new(),
+            entry: SsaTarget(0),
+            blocks: collections::Vec::new(),
+            cell_types: collections::Vec::new(),
+            result_types: collections::Vec::new(),
+            cell_info: collections::Vec::new(),
+            block_entry_cached_cells: collections::vec![collections::Vec::new(); 3],
+            block_entry_cache_requirements: collections::vec![collections::Vec::new(); 3],
+            preferred_preserved: collections::Vec::new(),
+            value_types: collections::vec![ValueType::I32; 3],
+            value_sink_cell: collections::vec![None; 3],
+            const_pool: collections::Vec::new(),
+            primitive_pool: collections::Vec::new(),
+            call_ops: collections::Vec::new(),
+        };
+        let vi0 = value_inst(&mut program, 0);
+        let vi1 = value_inst(&mut program, 1);
+        let vi2 = value_inst(&mut program, 2);
+        program.blocks = collections::vec![
+            SsaBlock {
+                id: SsaTarget(0),
+                params: collections::Vec::new(),
+                ops: collections::vec![vi0],
+                extra_args: collections::Vec::new(),
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(1),
+                    bindings: collections::Vec::new(),
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(1),
+                params: collections::Vec::new(),
+                ops: collections::vec![vi1],
+                extra_args: collections::Vec::new(),
+                terminator: SsaTerminator::Goto(SsaEdge {
+                    target: SsaTarget(2),
+                    bindings: collections::Vec::new(),
+                }),
+            },
+            SsaBlock {
+                id: SsaTarget(2),
+                params: collections::Vec::new(),
+                ops: collections::vec![vi2],
+                extra_args: collections::Vec::new(),
+                terminator: SsaTerminator::Return { results: None },
+            },
+        ];
+
+        assert!(merge_goto_successors(&mut program));
+        assert_eq!(program.blocks.len(), 1);
+        assert_eq!(program.blocks[0].ops.len(), 3);
         assert!(matches!(
             program.blocks[0].terminator,
             SsaTerminator::Return { .. }
@@ -1429,7 +1495,7 @@ mod tests {
             },
         ];
 
-        assert!(!merge_one_goto_successor(&mut program));
+        assert!(!merge_goto_successors(&mut program));
         assert!(remove_unreachable_blocks(&mut program));
         assert_eq!(program.entry, SsaTarget(0));
         assert_eq!(program.blocks.len(), 1);
