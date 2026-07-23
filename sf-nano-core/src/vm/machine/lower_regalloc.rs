@@ -889,14 +889,23 @@ pub(super) fn machine_block_params_for_value(
     regs: super::lower_context::ValueRegs,
     ty: MachineStorageType,
 ) -> collections::Vec<MachineBlockParam> {
+    let mut params = collections::Vec::with_capacity(1 + usize::from(regs.hi.is_some()));
+    append_machine_block_params_for_value(&mut params, regs, ty, MachineRegOwner::LinearValue);
+    params
+}
+
+pub(super) fn append_machine_block_params_for_value(
+    params: &mut collections::Vec<MachineBlockParam>,
+    regs: super::lower_context::ValueRegs,
+    ty: MachineStorageType,
+    owner: MachineRegOwner,
+) {
     match (ty, regs.hi) {
         (MachineStorageType::GpI64, Some(hi)) => {
-            collections::vec![
-                MachineBlockParam::gp_word(regs.lo),
-                MachineBlockParam::gp_word(hi)
-            ]
+            params.push(MachineBlockParam::gp_word(regs.lo).with_owner(owner));
+            params.push(MachineBlockParam::gp_word(hi).with_owner(owner));
         }
-        _ => collections::vec![machine_block_param(regs.lo, ty)],
+        _ => params.push(machine_block_param(regs.lo, ty).with_owner(owner)),
     }
 }
 

@@ -54,7 +54,9 @@ use super::{
     lower_i64::I64Lowering,
     lower_i64_gp64::Gp64Lowering,
     lower_inst::LeafLowering,
-    lower_regalloc::{machine_block_params_for_value, value_type_storage_type, MachineRegFile},
+    lower_regalloc::{
+        append_machine_block_params_for_value, value_type_storage_type, MachineRegFile,
+    },
 };
 
 /// One prepared function borrowed for internal lowering helpers.
@@ -493,10 +495,12 @@ fn lower_function(
             .copied()
             .zip(block.params.iter().copied())
         {
-            current_params.extend(machine_block_params_for_value(
+            append_machine_block_params_for_value(
+                &mut current_params,
                 regs,
                 program_value_storage_type(&input.ssa, value),
-            ));
+                MachineRegOwner::LinearValue,
+            );
         }
         if target != input.ssa.entry {
             append_entry_cache_params(
@@ -2492,10 +2496,11 @@ fn append_entry_cache_params(
 ) {
     for entry in entry_cache_params {
         if let Some(cached) = cached_cells.get(usize::from(entry.cached_index)) {
-            params.extend(
-                machine_block_params_for_value(entry.regs, cached.ty)
-                    .into_iter()
-                    .map(|param| param.with_owner(MachineRegOwner::CachedCell)),
+            append_machine_block_params_for_value(
+                params,
+                entry.regs,
+                cached.ty,
+                MachineRegOwner::CachedCell,
             );
         }
     }

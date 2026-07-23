@@ -303,3 +303,19 @@ the listed commits.
   the accepted rolling-DP parent, inside noise. The experiment was reverted:
   it did not reduce startup, while retaining the early shrink bounds transient
   rewrite memory before the final whole-program compaction (sourced).
+
+- MachineIR lowering then exposed a small allocation-pattern cost:
+  `append_entry_cache_params` constructed an owned one- or two-element vector
+  for every value, mapped its ownership metadata, and immediately drained it
+  into the destination block-parameter vector. Directly appending scalar or
+  GP32-pair parameters reduced this helper from 7.18% to 1.93% of
+  `lower_function`. Controlled serial bz2 direct/parent/direct means were
+  43.829, 44.416, and 43.856 ms, a repeatable 1.26-1.32% reduction (sourced).
+
+- The full seven-workload serial breadth run after direct parameter appends
+  measured 43.773 ms (bz2), 88.154 ms (Pulldown-cmark), 1,799.6 ms
+  (SpiderMonkey), 6,685.6 ms (FFmpeg), 3.624 ms (CoreMark), 12.979 ms
+  (Argon2), and 2.117 ms (ERC20). Relative to the rolling-DP row, the four
+  large cases moved by -1.6%, +0.1%, -1.5%, and -2.2%; bz2's controlled A/B/A
+  remains the primary attribution evidence, while the breadth run confirms
+  there is no workload regression (sourced).

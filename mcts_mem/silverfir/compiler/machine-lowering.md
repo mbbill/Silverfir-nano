@@ -32,6 +32,14 @@
 
 ## Facts
 
+- 2026-07-22 measurement: MachineIR block-parameter lowering used an owned
+  temporary vector for every scalar value (and every GP32 i64 pair), attached
+  ownership metadata, and immediately drained it into the block's destination
+  vector. Appending those parameters directly preserved the scalar/pair and
+  owner policy while reducing `append_entry_cache_params` from 7.18% to 1.93%
+  of `lower_function`. Controlled serial bz2 direct/parent/direct means were
+  43.829, 44.416, and 43.856 ms, a repeatable 1.26-1.32% reduction (sourced).
+
 - 2026-07-22 rejected: skipping GP/FP cache-layout matrices and dominator
   traversals for functions with cached cells in only one register bank made
   serial Pulldown and SpiderMonkey effectively flat. Bz2 and CoreMark showed
