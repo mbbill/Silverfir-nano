@@ -19,7 +19,7 @@ use crate::vm::machine::machine_ir::{
 
 use super::helpers::store_may_alias;
 use super::hoist_loop_address_bases::{
-    block_index_for_id, block_mentions_reg, block_reachable_from, natural_loop_nodes, visit_edges,
+    analyze_loop_graph, block_index_for_id, block_mentions_reg, natural_loop_nodes, visit_edges,
     visit_edges_mut,
 };
 
@@ -38,34 +38,9 @@ pub(super) fn reuse_loop_frame_values(blocks: &mut [MachineBlock]) {
         return;
     }
 
-    let mut predecessors: collections::Vec<collections::Vec<usize>> =
-        (0..blocks.len()).map(|_| collections::Vec::new()).collect();
-    for source in 0..blocks.len() {
-        visit_edges(&blocks[source].terminator, |edge| {
-            let Some(target) = block_index_for_id(blocks, edge.target) else {
-                return;
-            };
-            if !predecessors[target].contains(&source) {
-                predecessors[target].push(source);
-            }
-        });
-    }
-
-    let mut latches_by_header: collections::Vec<collections::Vec<usize>> =
-        (0..blocks.len()).map(|_| collections::Vec::new()).collect();
-    for source in 0..blocks.len() {
-        visit_edges(&blocks[source].terminator, |edge| {
-            let Some(target) = block_index_for_id(blocks, edge.target) else {
-                return;
-            };
-            if edge.target.0 <= blocks[source].id.0
-                && block_reachable_from(blocks, target, source)
-                && !latches_by_header[target].contains(&source)
-            {
-                latches_by_header[target].push(source);
-            }
-        });
-    }
+    let loop_graph = analyze_loop_graph(blocks);
+    let latches_by_header = loop_graph.latches_by_header;
+    let predecessors = loop_graph.predecessors;
 
     for header in (0..blocks.len()).rev() {
         if latches_by_header[header].is_empty() {

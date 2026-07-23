@@ -23,6 +23,11 @@ use crate::vm::{
 
 use super::helpers::{inst_defines, inst_uses_value, terminator_uses_reg};
 
+pub(super) struct LoopGraph {
+    pub predecessors: collections::Vec<collections::Vec<usize>>,
+    pub latches_by_header: collections::Vec<collections::Vec<usize>>,
+}
+
 pub(super) fn hoist_loop_address_bases(program: &mut MachineProgram, config: BackendConfig) {
     let entry = program.entry;
     let blocks = &mut program.blocks;
@@ -31,33 +36,9 @@ pub(super) fn hoist_loop_address_bases(program: &mut MachineProgram, config: Bac
         return;
     }
 
-    let mut latches_by_header: collections::Vec<collections::Vec<usize>> =
-        (0..blocks.len()).map(|_| collections::Vec::new()).collect();
-    let mut predecessors: collections::Vec<collections::Vec<usize>> =
-        (0..blocks.len()).map(|_| collections::Vec::new()).collect();
-    for source in 0..blocks.len() {
-        visit_edges(&blocks[source].terminator, |edge| {
-            let Some(target) = block_index_for_id(blocks, edge.target) else {
-                return;
-            };
-            if !predecessors[target].contains(&source) {
-                predecessors[target].push(source);
-            }
-        });
-    }
-    for source in 0..blocks.len() {
-        visit_edges(&blocks[source].terminator, |edge| {
-            let Some(target) = block_index_for_id(blocks, edge.target) else {
-                return;
-            };
-            if edge.target.0 <= blocks[source].id.0
-                && block_reachable_from(blocks, target, source)
-                && !latches_by_header[target].contains(&source)
-            {
-                latches_by_header[target].push(source);
-            }
-        });
-    }
+    let loop_graph = analyze_loop_graph(blocks);
+    let latches_by_header = loop_graph.latches_by_header;
+    let predecessors = loop_graph.predecessors;
 
     // Inner/later loops first. A surrounding loop can still use another free
     // dynamic register after seeing the parameter introduced here.
@@ -73,6 +54,101 @@ pub(super) fn hoist_loop_address_bases(program: &mut MachineProgram, config: Bac
         }
         try_hoist_one_base(blocks, header, &loop_nodes, config);
     }
+}
+
+pub(super) fn analyze_loop_graph(blocks: &[MachineBlock]) -> LoopGraph {
+    let mut predecessors: collections::Vec<collections::Vec<usize>> =
+        (0..blocks.len()).map(|_| collections::Vec::new()).collect();
+    let mut successors: collections::Vec<collections::Vec<usize>> =
+        (0..blocks.len()).map(|_| collections::Vec::new()).collect();
+    for source in 0..blocks.len() {
+        visit_edges(&blocks[source].terminator, |edge| {
+            let Some(target) = block_index_for_id(blocks, edge.target) else {
+                return;
+            };
+            if !successors[source].contains(&target) {
+                successors[source].push(target);
+            }
+            if !predecessors[target].contains(&source) {
+                predecessors[target].push(source);
+            }
+        });
+    }
+
+    // An edge source -> target closes a cycle exactly when target can reach
+    // source, which is equivalent to both endpoints belonging to one SCC.
+    // Compute SCCs once instead of running a fresh whole-CFG DFS per backward
+    // edge.
+    let components = strongly_connected_components(&successors, &predecessors);
+    let mut latches_by_header: collections::Vec<collections::Vec<usize>> =
+        (0..blocks.len()).map(|_| collections::Vec::new()).collect();
+    for source in 0..blocks.len() {
+        visit_edges(&blocks[source].terminator, |edge| {
+            let Some(target) = block_index_for_id(blocks, edge.target) else {
+                return;
+            };
+            if edge.target.0 <= blocks[source].id.0
+                && components[target] == components[source]
+                && !latches_by_header[target].contains(&source)
+            {
+                latches_by_header[target].push(source);
+            }
+        });
+    }
+
+    LoopGraph {
+        predecessors,
+        latches_by_header,
+    }
+}
+
+fn strongly_connected_components(
+    successors: &[collections::Vec<usize>],
+    predecessors: &[collections::Vec<usize>],
+) -> collections::Vec<usize> {
+    let mut visited = collections::vec![false; successors.len()];
+    let mut postorder = collections::Vec::with_capacity(successors.len());
+    let mut dfs = collections::Vec::new();
+    for root in 0..successors.len() {
+        if visited[root] {
+            continue;
+        }
+        visited[root] = true;
+        dfs.push((root, 0usize));
+        while let Some((block, next_successor)) = dfs.last_mut() {
+            if let Some(&successor) = successors[*block].get(*next_successor) {
+                *next_successor += 1;
+                if !visited[successor] {
+                    visited[successor] = true;
+                    dfs.push((successor, 0));
+                }
+            } else {
+                let (block, _) = dfs.pop().unwrap();
+                postorder.push(block);
+            }
+        }
+    }
+
+    let mut components = collections::vec![usize::MAX; successors.len()];
+    let mut pending = collections::Vec::new();
+    let mut component = 0usize;
+    for &root in postorder.iter().rev() {
+        if components[root] != usize::MAX {
+            continue;
+        }
+        components[root] = component;
+        pending.push(root);
+        while let Some(block) = pending.pop() {
+            for &predecessor in &predecessors[block] {
+                if components[predecessor] == usize::MAX {
+                    components[predecessor] = component;
+                    pending.push(predecessor);
+                }
+            }
+        }
+        component += 1;
+    }
+    components
 }
 
 pub(super) fn natural_loop_nodes(
@@ -105,28 +181,6 @@ pub(super) fn natural_loop_nodes(
         .enumerate()
         .filter_map(|(index, included)| included.then_some(index))
         .collect()
-}
-
-pub(super) fn block_reachable_from(blocks: &[MachineBlock], start: usize, goal: usize) -> bool {
-    let mut visited = collections::vec![false; blocks.len()];
-    let mut pending = collections::vec![start];
-    while let Some(block) = pending.pop() {
-        if block == goal {
-            return true;
-        }
-        if visited[block] {
-            continue;
-        }
-        visited[block] = true;
-        visit_edges(&blocks[block].terminator, |edge| {
-            if let Some(successor) = block_index_for_id(blocks, edge.target) {
-                if !visited[successor] {
-                    pending.push(successor);
-                }
-            }
-        });
-    }
-    false
 }
 
 fn try_hoist_one_base(
@@ -550,6 +604,32 @@ mod tests {
 
     fn config() -> BackendConfig {
         BackendConfig::with_volatility(8, 6, 0, 2, 0, 0, 4, 0, false, 3)
+    }
+
+    #[test]
+    fn acyclic_backward_edge_is_not_a_loop_latch() {
+        let blocks = collections::vec![
+            MachineBlock {
+                id: MachineBlockId(0),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Return,
+            },
+            MachineBlock {
+                id: MachineBlockId(1),
+                params: collections::Vec::new(),
+                ops: collections::Vec::new(),
+                terminator: MachineTerminator::Jump(edge(0, &[])),
+            },
+        ];
+
+        let loop_graph = analyze_loop_graph(&blocks);
+
+        assert!(loop_graph
+            .latches_by_header
+            .iter()
+            .all(|latches| latches.is_empty()));
+        assert_eq!(loop_graph.predecessors[0].as_slice(), &[1]);
     }
 
     #[test]
