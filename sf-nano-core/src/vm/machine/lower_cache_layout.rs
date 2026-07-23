@@ -370,11 +370,11 @@ pub(super) fn is_local_jit_call(
 fn compute_predecessors(program: &SsaProgram) -> collections::Vec<collections::Vec<usize>> {
     let mut predecessors = collections::vec![collections::Vec::new(); program.blocks.len()];
     for (block_index, block) in program.blocks.iter().enumerate() {
-        for target in block_successors(&block.terminator) {
-            if let Some(preds) = predecessors.get_mut(target.as_usize()) {
+        for_each_block_successor(&block.terminator, |target| {
+            if let Some(preds) = predecessors.get_mut(target) {
                 preds.push(block_index);
             }
-        }
+        });
     }
     predecessors
 }
@@ -396,13 +396,11 @@ fn compute_reverse_postorder(program: &SsaProgram) -> collections::Vec<usize> {
         }
         seen[block_index] = true;
         stack.push((block_index, true));
-        let successors = block_successors(&program.blocks[block_index].terminator);
-        for succ in successors.iter().rev() {
-            let succ_index = succ.as_usize();
+        for_each_block_successor_reverse(&program.blocks[block_index].terminator, |succ_index| {
             if succ_index < program.blocks.len() && !seen[succ_index] {
                 stack.push((succ_index, false));
             }
-        }
+        });
     }
     order.reverse();
     order
@@ -1582,16 +1580,21 @@ fn regs_for_segment(
     }
 }
 
-fn block_successors(terminator: &SsaTerminator) -> collections::Vec<SsaTarget> {
+fn for_each_block_successor_reverse(terminator: &SsaTerminator, mut visit: impl FnMut(usize)) {
     match terminator {
-        SsaTerminator::Goto(edge) => collections::vec![edge.target],
+        SsaTerminator::Goto(edge) => visit(edge.target.as_usize()),
         SsaTerminator::Branch {
             then_edge,
             else_edge,
             ..
-        } => collections::vec![then_edge.target, else_edge.target],
+        } => {
+            visit(else_edge.target.as_usize());
+            visit(then_edge.target.as_usize());
+        }
         SsaTerminator::BrTable { entries, .. } => {
-            entries.iter().map(|entry| entry.target).collect()
+            for entry in entries.iter().rev() {
+                visit(entry.target.as_usize());
+            }
         }
         SsaTerminator::Return { .. }
         | SsaTerminator::ReturnScalar { .. }
@@ -1600,7 +1603,7 @@ fn block_successors(terminator: &SsaTerminator) -> collections::Vec<SsaTarget> {
         | SsaTerminator::TailCallRef { .. }
         | SsaTerminator::TrapUnreachable
         | SsaTerminator::EhThrow { .. }
-        | SsaTerminator::EhThrowRef { .. } => collections::Vec::new(),
+        | SsaTerminator::EhThrowRef { .. } => {}
     }
 }
 
