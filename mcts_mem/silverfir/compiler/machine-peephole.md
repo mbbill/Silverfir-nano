@@ -347,3 +347,13 @@
   with the unconditional oracle enabled. Fat-LTO text grew by 316 bytes.
   Alternating short bz2 timings were strongly order/thermal sensitive, so no
   end-to-end wall-time percentage is attributed (sourced).
+
+- 2026-07-23 rejected: dead-parameter elimination returned immediately when a
+  function had no block parameters and skipped direct-use/dependency scans for
+  individual parameter-free source blocks. Although FFmpeg contains many such
+  blocks, they are concentrated in cheap functions; the expensive functions
+  still carry parameters. Two serial FFmpeg candidate profiles measured the
+  pass at 4.21% and 3.88% inclusive versus 3.81% for the exact parent, so the
+  gates were reverted. Future work on this pass must reduce the weighted graph
+  work in parameter-carrying functions rather than specialize empty cases
+  (sourced).

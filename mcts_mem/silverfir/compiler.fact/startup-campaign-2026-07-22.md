@@ -559,3 +559,12 @@ the listed commits.
   SSA/MachineIR/native metadata index remained byte-identical, all 356 release
   tests passed, and fat-LTO text shrank by 368 bytes. This supports a modest
   structural phase win but no end-to-end wall-time percentage (sourced).
+
+- 2026-07-23 rejected: fast-returning dead-parameter elimination for
+  zero-parameter functions and skipping its direct-use/dependency scans on
+  parameter-free source blocks preserved FFmpeg's complete deterministic
+  index, but did not reduce the weighted pass cost. Two serial candidate
+  profiles measured 4.21% and 3.88% inclusive against 3.81% for the exact
+  parent. Empty-parameter blocks are numerous but concentrated in cheap
+  functions; the gates were fully reverted, and the remaining target is graph
+  work in parameter-carrying functions (sourced).
