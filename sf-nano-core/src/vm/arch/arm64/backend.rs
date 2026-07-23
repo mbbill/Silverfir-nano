@@ -13,9 +13,9 @@ use crate::{
     vm::{
         machine::machine_ir::{
             MachineBlock, MachineBlockId, MachineBlockParam, MachineFloatWidth, MachineFuncId,
-            MachineFunction, MachineInst, MachineInstKind, MachineReg, MachineReturnAbi,
-            MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
-            MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
+            MachineInst, MachineInstKind, MachineReg, MachineReturnAbi, MachineTerminator,
+            MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
+            MACHINE_MEM0_SIZE_REG,
         },
         runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
@@ -135,6 +135,14 @@ struct DirectCallFallbackVeneer {
     literal_offset: usize,
 }
 
+struct Arm64BodyAnalysis {
+    helper_gp_candidates: collections::Vec<(MachineReg, Arm64Reg)>,
+    helper_fp_candidates: collections::Vec<(MachineReg, Arm64FpReg)>,
+    bulk_memset_target: Option<Arm64Reg>,
+    bulk_memmove_target: Option<Arm64Reg>,
+    has_body_host_frame: bool,
+}
+
 #[derive(Debug)]
 pub(crate) struct Arm64Backend<'a> {
     pub core: CompilerCore<'a>,
@@ -181,6 +189,9 @@ pub(crate) struct Arm64Backend<'a> {
     /// callee-saved registers for bulk-memory-heavy bodies.
     pub(super) bulk_memset_target: Option<Arm64Reg>,
     pub(super) bulk_memmove_target: Option<Arm64Reg>,
+    /// Cached ARM64 lowering effect. This is derived with the other
+    /// whole-body register facts when the backend is constructed.
+    has_body_host_frame: bool,
 }
 
 /// Capacity of the recent-store ring.
@@ -190,17 +201,30 @@ pub(super) const RECENT_STORE_SLOTS: usize = 8;
 pub(super) const RECENT_STORE_MAX_AGE: u32 = 24;
 
 impl<'a> Arm64Backend<'a> {
-    fn bulk_host_call_targets(core: &CompilerCore<'a>) -> (Option<Arm64Reg>, Option<Arm64Reg>) {
+    fn analyze_body(core: &CompilerCore<'a>) -> Arm64BodyAnalysis {
         let FunctionBody::Mir(function) = core.body else {
-            return (None, None);
+            return Arm64BodyAnalysis {
+                helper_gp_candidates: collections::Vec::new(),
+                helper_fp_candidates: collections::Vec::new(),
+                bulk_memset_target: None,
+                bulk_memmove_target: None,
+                has_body_host_frame: true,
+            };
         };
+        let config = core.compiled.backend();
+        let mut defined = collections::vec![false; config.total_reg_count() as usize];
         let mut needs_memset = false;
         let mut needs_memmove = false;
         let mut used_phys = [false; 32];
+        let mut has_body_host_frame = !function.preserved_clobbers.is_empty();
         for block in &function.program.blocks {
             for param in &block.params {
+                if let Some(slot) = defined.get_mut(param.reg.0 as usize) {
+                    *slot = true;
+                }
                 if let Ok(reg) = abi::map_reg(param.reg) {
                     used_phys[reg.index() as usize] = true;
+                    has_body_host_frame |= !param.ty.is_fp() && reg == abi::host_lr_reg();
                 }
             }
             for inst in &block.ops {
@@ -213,9 +237,14 @@ impl<'a> Arm64Backend<'a> {
                     } => needs_memmove = true,
                     _ => {}
                 }
+                has_body_host_frame |= arm64_inst_lowers_to_inline_native_call(&inst.kind);
                 inst.kind.for_each_defined_reg(|machine| {
+                    if let Some(slot) = defined.get_mut(machine.0 as usize) {
+                        *slot = true;
+                    }
                     if let Ok(reg) = abi::map_reg(machine) {
                         used_phys[reg.index() as usize] = true;
+                        has_body_host_frame |= reg == abi::host_lr_reg();
                     }
                 });
                 crate::vm::machine::peephole::helpers::visit_source_values(&inst.kind, |value| {
@@ -234,9 +263,7 @@ impl<'a> Arm64Backend<'a> {
                     }
                 },
             );
-        }
-        if !needs_memset && !needs_memmove {
-            return (None, None);
+            has_body_host_frame |= matches!(block.terminator, MachineTerminator::Call { .. });
         }
 
         // x29 is already preserved with LR by every body that calls a host
@@ -250,44 +277,16 @@ impl<'a> Arm64Backend<'a> {
         // expensive and frequent bulk helper.
         let memmove_target = needs_memmove.then(|| available.next()).flatten();
         let memset_target = needs_memset.then(|| available.next()).flatten();
-        (memset_target, memmove_target)
-    }
-
-    fn helper_save_sets(
-        core: &CompilerCore<'a>,
-    ) -> (
-        collections::Vec<(MachineReg, Arm64Reg)>,
-        collections::Vec<(MachineReg, Arm64FpReg)>,
-    ) {
-        let FunctionBody::Mir(function) = core.body else {
-            return (collections::Vec::new(), collections::Vec::new());
-        };
-        let mut used = collections::vec![false; core.compiled.backend().total_reg_count() as usize];
-        for block in &function.program.blocks {
-            for param in &block.params {
-                if let Some(slot) = used.get_mut(param.reg.0 as usize) {
-                    *slot = true;
-                }
-            }
-            for inst in &block.ops {
-                inst.kind.for_each_defined_reg(|reg| {
-                    if let Some(slot) = used.get_mut(reg.0 as usize) {
-                        *slot = true;
-                    }
-                });
-            }
-        }
 
         let mut gp = collections::Vec::new();
         let mut fp = collections::Vec::new();
-        for (index, is_used) in used.into_iter().enumerate() {
-            if !is_used {
+        for (index, is_defined) in defined.into_iter().enumerate() {
+            if !is_defined {
                 continue;
             }
             let reg = MachineReg(index as u16);
             if core.is_fp_reg(reg) {
-                let Some(fp_index) =
-                    crate::vm::machine::machine_ir::fp_reg_index(reg, core.compiled.backend())
+                let Some(fp_index) = crate::vm::machine::machine_ir::fp_reg_index(reg, config)
                 else {
                     continue;
                 };
@@ -303,7 +302,13 @@ impl<'a> Arm64Backend<'a> {
                 }
             }
         }
-        (gp, fp)
+        Arm64BodyAnalysis {
+            helper_gp_candidates: gp,
+            helper_fp_candidates: fp,
+            bulk_memset_target: memset_target,
+            bulk_memmove_target: memmove_target,
+            has_body_host_frame,
+        }
     }
 
     /// Record a dispatched `Store` in the recent-store ring.
@@ -337,10 +342,7 @@ impl<'a> Arm64Backend<'a> {
     }
 
     pub(super) fn has_body_host_frame(&self) -> bool {
-        match self.core.body {
-            FunctionBody::Mir(function) => arm64_function_needs_body_host_frame(function),
-            FunctionBody::Template { .. } => true,
-        }
+        self.has_body_host_frame
     }
 
     pub(super) fn emit_body_returning_blr(&mut self, target: Arm64Reg) -> Result<(), WasmError> {
@@ -641,40 +643,6 @@ impl<'a> Arm64Backend<'a> {
     }
 }
 
-fn arm64_function_needs_body_host_frame(function: &MachineFunction) -> bool {
-    if !function.preserved_clobbers.is_empty() {
-        return true;
-    }
-
-    // x30 doubles as the architectural link register. When the volatile
-    // dynamic bank allocates it, preserve the incoming body return address
-    // before MachineIR can define the lane, even for an otherwise leaf body.
-    let uses_dynamic_lr = function.program.blocks.iter().any(|block| {
-        block.params.iter().any(|param| {
-            !param.ty.is_fp() && abi::map_reg(param.reg).is_ok_and(|reg| reg == abi::host_lr_reg())
-        }) || block.ops.iter().any(|inst| {
-            let mut found = false;
-            inst.kind.for_each_defined_reg(|reg| {
-                if !found && abi::map_reg(reg).is_ok_and(|mapped| mapped == abi::host_lr_reg()) {
-                    found = true;
-                }
-            });
-            found
-        })
-    });
-    if uses_dynamic_lr {
-        return true;
-    }
-
-    function.program.blocks.iter().any(|block| {
-        block
-            .ops
-            .iter()
-            .any(|inst| arm64_inst_lowers_to_inline_native_call(&inst.kind))
-            || matches!(block.terminator, MachineTerminator::Call { .. })
-    })
-}
-
 /// ARM64-only lowering effect: true when this MachineIR instruction emits a
 /// native call and then resumes inside the same wasm body. Shared MachineIR
 /// deliberately does not own this predicate because other backends may lower
@@ -740,17 +708,16 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     }
 
     fn new(core: CompilerCore<'a>) -> Self {
-        let (helper_gp_candidates, helper_fp_candidates) = Self::helper_save_sets(&core);
-        let (bulk_memset_target, bulk_memmove_target) = Self::bulk_host_call_targets(&core);
+        let analysis = Self::analyze_body(&core);
         Self {
             core,
             fixups: collections::Vec::new(),
             gp_scratch: abi::new_gp_scratch_pool(),
             fp_scratch: abi::new_fp_scratch_pool(),
-            helper_saved_gp: collections::Vec::with_capacity(helper_gp_candidates.len()),
-            helper_saved_fp: collections::Vec::with_capacity(helper_fp_candidates.len()),
-            helper_gp_candidates,
-            helper_fp_candidates,
+            helper_saved_gp: collections::Vec::with_capacity(analysis.helper_gp_candidates.len()),
+            helper_saved_fp: collections::Vec::with_capacity(analysis.helper_fp_candidates.len()),
+            helper_gp_candidates: analysis.helper_gp_candidates,
+            helper_fp_candidates: analysis.helper_fp_candidates,
             pending_direct_calls: collections::Vec::new(),
             pending_op: None,
             select_flags: None,
@@ -759,8 +726,9 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
             dispatch_seq: 0,
             bulk_bounds_facts: [None; 2],
             bulk_bounds_next: 0,
-            bulk_memset_target,
-            bulk_memmove_target,
+            bulk_memset_target: analysis.bulk_memset_target,
+            bulk_memmove_target: analysis.bulk_memmove_target,
+            has_body_host_frame: analysis.has_body_host_frame,
         }
     }
 
