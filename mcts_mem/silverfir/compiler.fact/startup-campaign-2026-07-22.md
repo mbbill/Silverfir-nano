@@ -85,3 +85,30 @@ the listed commits.
   s on the warm machine). Old changes were therefore ranked by normalized
   phase/profile deltas, and exact percentages were used only for recorded
   alternating A/B runs (sourced).
+
+**Later loop-peephole regression and partial recovery.**
+
+- After the campaign, loop-frame reuse scanned all blocks and repeatedly used
+  linear loop-membership tests before rejecting loops whose exits had no
+  compatible reload. On Pulldown-cmark this pass occupied about 75% of active
+  serial compiler samples. Commit `fa131723` checks exits first and uses dense
+  membership; controlled same-binary measurements fell from about 259 to 59.8
+  ms parallel and 375 to 138.9 ms serial without disabling eager compilation
+  or the optimization (sourced).
+
+- The post-fix seven-workload run measured 64.561 ms (bz2), 59.104 ms
+  (pulldown-cmark), 730.580 ms (SpiderMonkey), 3,365.5 ms (FFmpeg), 4.573 ms
+  (CoreMark), 14.672 ms (Argon2), and 2.297 ms (ERC20); the last three use
+  isolated all-engine reruns because their first full-run samples were visibly
+  heat-skewed. Against the fastest measured Cranelift integration per workload,
+  the ratios were 2.98x, 1.85x, 1.50x, 0.95x, 1.00x, 0.86x, and 0.54x
+  respectively, or 1.20x slower geometrically (sourced).
+
+- This is only a partial recovery: compared with the campaign's recorded
+  last-good sf-nano results above, post-fix startup remains 1.58x, 1.79x,
+  1.27x, 1.90x, 1.38x, 1.22x, and 1.17x slower, or 1.45x geometrically.
+  Pulldown ablations measured about 39.9 ms with both recent loop passes off,
+  47.6 ms with address hoisting alone, and 59.8 ms with both passes plus the
+  exit-first repair, so valid-candidate frame-reuse work and address hoisting
+  remain measurable startup costs rather than the original compiler pipeline
+  itself becoming inherently quadratic (sourced).
