@@ -38,6 +38,9 @@ fn run_cli(args: &[String]) -> i32 {
 
     let mut preopens: Vec<(String, PathBuf)> = Vec::new();
     let mut backend_mode = BackendMode::Native;
+    let mut use_interp = false;
+    #[cfg(feature = "interp")]
+    let mut interp_stats = false;
     let mut compile_only = false;
     let mut compiler_ram_budget: Option<u32> = None;
     let mut parallel_compilation = true;
@@ -110,6 +113,14 @@ fn run_cli(args: &[String]) -> i32 {
                 return 1;
             };
             backend_mode = parsed;
+        } else if args[i] == "--interp" || args[i] == "--interp-stats" {
+            use_interp = true;
+            #[cfg(feature = "interp")]
+            {
+                if args[i] == "--interp-stats" {
+                    interp_stats = true;
+                }
+            }
         } else if args[i] == "--compile-only" || args[i] == "--no-run" {
             compile_only = true;
         } else if args[i] == "--no-parallel-compilation" {
@@ -185,18 +196,20 @@ fn run_cli(args: &[String]) -> i32 {
                 return 1;
             }
         }
-        let runtime_engine = match active_runtime_engine() {
-            Ok(engine) => engine,
-            Err(err) => {
-                eprintln!(
-                    "Error: backend '{}' is unavailable in this build: {}",
-                    backend_mode.as_str(),
-                    err,
-                );
-                return 1;
-            }
-        };
-        print_runtime_engine(runtime_engine);
+        if !use_interp {
+            let runtime_engine = match active_runtime_engine() {
+                Ok(engine) => engine,
+                Err(err) => {
+                    eprintln!(
+                        "Error: backend '{}' is unavailable in this build: {}",
+                        backend_mode.as_str(),
+                        err,
+                    );
+                    return 1;
+                }
+            };
+            print_runtime_engine(runtime_engine);
+        }
 
         let path = PathBuf::from(&remaining_args[0]);
         let prog_args: Vec<String> = remaining_args[1..].to_vec();
@@ -238,6 +251,18 @@ fn run_cli(args: &[String]) -> i32 {
         }
         let ctx = ctx_builder.build();
         set_wasi_ctx(ctx);
+
+        if use_interp {
+            #[cfg(feature = "interp")]
+            {
+                return run_interp(&data, module_name, interp_stats);
+            }
+            #[cfg(not(feature = "interp"))]
+            {
+                eprintln!("Error: --interp requires building sf-nano-cli with the interp feature");
+                return 1;
+            }
+        }
 
         let imports = wasi_imports();
         let mut instance = match Instance::new(&data, &imports) {
@@ -290,6 +315,152 @@ fn run_cli(args: &[String]) -> i32 {
     exit_code
 }
 
+/// Run the module through the interpreter, bridging its host-dispatch
+/// interface to the same WASI import set the JIT path uses (the WASI
+/// context installed by the caller applies unchanged).
+#[cfg(feature = "interp")]
+fn run_interp(data: &[u8], module_name: &str, stats: bool) -> i32 {
+    use sf_nano_core::module::entities::FunctionDef;
+    use sf_nano_core::module::Module;
+    use sf_nano_core::value_type::ValueType;
+    use sf_nano_core::{
+        Caller, FunctionType, HostCallback, ImportValue, ImportedFunction, InterpInstance, Value,
+        WasmError,
+    };
+    use std::collections::HashMap;
+
+    fn raw_to_value(t: &ValueType, raw: u64) -> Option<Value> {
+        match t {
+            ValueType::I32 => Some(Value::I32(raw as u32 as i32)),
+            ValueType::I64 => Some(Value::I64(raw as i64)),
+            ValueType::F32 => Some(Value::F32(f32::from_bits(raw as u32))),
+            ValueType::F64 => Some(Value::F64(f64::from_bits(raw))),
+            _ => None,
+        }
+    }
+    fn value_to_raw(v: &Value) -> Option<u64> {
+        match v {
+            Value::I32(x) => Some(*x as u32 as u64),
+            Value::I64(x) => Some(*x as u64),
+            Value::F32(x) => Some(x.to_bits() as u64),
+            Value::F64(x) => Some(x.to_bits()),
+            _ => None,
+        }
+    }
+
+    let module = match Module::new(module_name, data) {
+        Ok(m) => m,
+        Err(err) => {
+            eprintln!("Error parsing module: {}", err);
+            return 1;
+        }
+    };
+
+    // Host bridge tables: WASI callbacks by import name, and the module's
+    // declared type for each imported function (drives raw<->Value
+    // conversion).
+    let mut host_fns: HashMap<(String, String), HostCallback> = HashMap::new();
+    for imp in wasi_imports() {
+        if let ImportValue::Func(ImportedFunction::Host { callback, .. }) = imp.value {
+            host_fns.insert((imp.module, imp.name), callback);
+        }
+    }
+    let mut import_types: HashMap<(String, String), FunctionType> = HashMap::new();
+    for f in module.functions() {
+        if let FunctionDef::Import {
+            module: m, name: n, ..
+        } = f.def()
+        {
+            import_types.insert((m.clone(), n.clone()), f.func_type().clone());
+        }
+    }
+
+    let exit_code;
+    {
+        let mut inst = match InterpInstance::new(&module) {
+            Ok(inst) => inst,
+            Err(err) => {
+                eprintln!("Error instantiating module: {}", err);
+                return 1;
+            }
+        };
+        println!("runtime engine: interpreter (native dispatch)");
+
+        inst.set_host(Box::new(move |m, n, mem, args, results| {
+            let key = (m.to_string(), n.to_string());
+            let cb = host_fns
+                .get(&key)
+                .ok_or(WasmError::invalid("interp cli: unlinked host import"))?;
+            let ft = import_types
+                .get(&key)
+                .ok_or(WasmError::invalid("interp cli: untyped host import"))?;
+            let mut params = Vec::with_capacity(args.len());
+            for (t, &raw) in ft.params().iter().zip(args.iter()) {
+                params.push(raw_to_value(t, raw).ok_or(WasmError::invalid(
+                    "interp cli: non-numeric host import parameter",
+                ))?);
+            }
+            let mut vresults = Vec::with_capacity(results.len());
+            for t in ft.results().iter() {
+                vresults.push(raw_to_value(t, 0).ok_or(WasmError::invalid(
+                    "interp cli: non-numeric host import result",
+                ))?);
+            }
+            let mut caller = Caller::new(Some(&mut mem[..]));
+            cb.call(&mut caller, &params, &mut vresults)?;
+            for (dst, v) in results.iter_mut().zip(vresults.iter()) {
+                *dst = value_to_raw(v).ok_or(WasmError::invalid(
+                    "interp cli: non-numeric host import result",
+                ))?;
+            }
+            Ok(())
+        }));
+
+        let entry = inst
+            .find_export("_start")
+            .or_else(|| inst.find_export("main"));
+        let Some(entry) = entry else {
+            eprintln!("Error: module exports neither _start nor main");
+            return 1;
+        };
+        let (n_params, n_results) = inst.func_arity(entry).unwrap_or((0, 0));
+        if n_params != 0 {
+            eprintln!("Error: entry function takes parameters");
+            return 1;
+        }
+        let mut results = vec![0u64; n_results];
+        let result = inst.invoke(entry, &[], &mut results);
+
+        if stats {
+            let native = inst.dispatch_count();
+            if native > 0 {
+                eprintln!("[interp] native dispatches: {native}");
+            }
+            let slow = inst.slow_exit_stats();
+            if !slow.is_empty() {
+                let total: u64 = slow.iter().map(|(_, n)| n).sum();
+                eprintln!("[interp] slow exits: {total}");
+                for (op, n) in slow.iter().take(12) {
+                    eprintln!("[interp]   {op:?}: {n}");
+                }
+            }
+        }
+
+        exit_code = match result {
+            Ok(()) => 0,
+            Err(err) => {
+                if let Some(code) = err.exit_code() {
+                    code
+                } else {
+                    eprintln!("Error: {}", err);
+                    1
+                }
+            }
+        };
+    }
+    exit_code
+}
+
 fn print_usage(program_name: &str) {
     eprintln!("Silverfir-nano — WebAssembly interpreter");
     eprintln!();
@@ -302,6 +473,10 @@ fn print_usage(program_name: &str) {
     eprintln!();
     eprintln!("OPTIONS:");
     eprintln!("  --backend <auto|native>   Select the execution backend.");
+    eprintln!("  --interp                  Run through the interpreter instead of the JIT.");
+    eprintln!(
+        "  --interp-stats            Interpreter: print dispatch statistics (implies --interp)."
+    );
     eprintln!("  --compile-only, --no-run  Compile/instantiate the module without invoking it.");
     eprintln!("  --no-parallel-compilation Force deterministic serial eager compilation.");
     eprintln!("  --compiler-ram-budget <n> Override the per-function compiler RAM budget.");

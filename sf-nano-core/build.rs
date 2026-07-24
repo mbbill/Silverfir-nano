@@ -91,6 +91,7 @@ const DECLARED_CFGS: &[&str] = &[
     "sf_has_guard_pages",
     "sf_has_debug_regions",
     "sf_jit",
+    "sf_interp",
     "sf_wasi_host",
     "sf_module_validator",
     "sf_has_simd",
@@ -254,6 +255,9 @@ fn emit_has_std_cfg() {
 fn emit_subsystem_cfgs() {
     if env::var_os("CARGO_FEATURE_JIT").is_some() {
         println!("cargo:rustc-cfg=sf_jit");
+    }
+    if env::var_os("CARGO_FEATURE_INTERP").is_some() {
+        println!("cargo:rustc-cfg=sf_interp");
     }
     if env::var_os("CARGO_FEATURE_WASI").is_some() {
         println!("cargo:rustc-cfg=sf_wasi_host");

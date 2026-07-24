@@ -1,0 +1,13 @@
+[package]
+name = "sf-nano-foldsim"
+version = "0.1.0"
+edition = "2021"
+description = "Static analyzer: simulates the folded-stack-machine predecoder over wasm binaries and reports dispatch/operand statistics"
+license = "MIT/Apache-2.0"
+
+[[bin]]
+name = "foldsim"
+path = "src/main.rs"
+
+[dependencies]
+sf-nano-core = { path = "../../sf-nano-core" }

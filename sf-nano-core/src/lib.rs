@@ -34,7 +34,13 @@ pub use vm::build::{
 };
 pub use vm::entities::{Caller, FunctionInst, HostCallback, HostFn};
 pub use vm::instance::{
-    Import, ImportValue, ImportedTableState, ImportedTagState, Instance, InstanceInstantiationError,
+    Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,
+    InstanceInstantiationError,
+};
+#[cfg(sf_interp)]
+pub use vm::interpreter::{
+    predecode_function, HostDispatch as InterpHostDispatch, Instr as InterpInstr, InterpInstance,
+    Op as InterpOp, PredecodedFunction, FLAG_A_CONST, FLAG_B_CONST,
 };
 #[cfg(sf_has_guard_pages)]
 use vm::runtime::trap_signal;

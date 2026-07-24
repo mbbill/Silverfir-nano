@@ -1,4 +1,6 @@
 mod discovery;
+#[cfg(feature = "interp")]
+mod interp;
 mod summary;
 mod types;
 mod wast_test_runner;
@@ -45,10 +47,26 @@ struct Cli {
     /// Override per-function compiler RAM budget, e.g. 0, 400K, 2M.
     #[structopt(long = "compiler-ram-budget")]
     compiler_ram_budget: Option<String>,
+
+    /// Run the suite against the interpreter instead of the JIT.
+    #[structopt(long = "interp")]
+    interp: bool,
 }
 
 fn main() {
     let args = Cli::from_args();
+
+    if args.interp {
+        #[cfg(feature = "interp")]
+        {
+            std::process::exit(interp::run(&args.filters));
+        }
+        #[cfg(not(feature = "interp"))]
+        {
+            eprintln!("--interp requires building with the 'interp' feature");
+            std::process::exit(1);
+        }
+    }
 
     if let Some(backend) = &args.backend {
         let mode = BackendMode::parse_str(backend).unwrap_or_else(|| {

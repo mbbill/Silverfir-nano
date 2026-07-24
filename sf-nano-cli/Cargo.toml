@@ -11,8 +11,9 @@ name = "sf-nano-cli"
 path = "src/main.rs"
 
 [features]
-default = ["jit"]
+default = ["jit", "interp"]
 jit = ["sf-nano-core/jit"]
+interp = ["sf-nano-core/interp"]
 call-trace = ["sf-nano-core/call-trace"]
 memprof = ["sf-nano-core/memprof", "dep:tracked_alloc", "dep:memprof_report"]
 backend-emu64 = ["sf-nano-core/backend-emu64"]

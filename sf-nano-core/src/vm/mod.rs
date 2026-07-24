@@ -19,6 +19,8 @@ pub(crate) mod expr_eval;
 pub(crate) mod gc_heap;
 pub(crate) mod gc_type_check;
 pub(crate) mod instance;
+#[cfg(sf_interp)]
+pub(crate) mod interpreter;
 #[cfg(sf_jit)]
 pub(crate) mod machine;
 pub(crate) mod middle;

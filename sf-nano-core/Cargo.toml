@@ -19,6 +19,9 @@ wat = "1.246.2"
 [features]
 default = ["jit", "guard-pages"]
 jit = []
+# Interpreter v2 (folded stack machine, docs/INTERPRETER_V2.md). Non-default
+# and independent of the JIT compile/execute pipeline during bring-up.
+interp = []
 backend-emu64 = ["jit"]
 backend-emu32 = ["jit"]
 wasi = ["dep:filetime"]
