@@ -72,6 +72,7 @@ pub fn predecode_function(
         region: 0,
         last_read: vec![0u32; n_locals as usize],
         last_write: vec![0u32; n_locals as usize],
+        last_write_region: vec![0u32; n_locals as usize],
         br_tables: Vec::new(),
         max_height: 0,
         n_locals,
@@ -144,6 +145,11 @@ struct Predecoder<'m> {
     /// writing it (0 = never). Used by the dst-folding soundness rules.
     last_read: Vec<u32>,
     last_write: Vec<u32>,
+    /// Control region of the last write per local (acc write-through:
+    /// a consumer may read the accumulator only when the write happened
+    /// in the same region — a merge between them means the consumer can
+    /// be reached with a stale accumulator).
+    last_write_region: Vec<u32>,
     br_tables: Vec<Vec<u32>>,
     max_height: u32,
     n_locals: u32,
@@ -363,11 +369,37 @@ impl<'m> Predecoder<'m> {
     /// match (only one instruction sits at `len-1`), and slot fields stay
     /// valid either way: the hints are droppable by construction.
     fn acc_operand(&mut self, d: Desc, which_flag: u16) -> u16 {
-        if let Some(def) = self.rewritable_producer(d) {
-            self.code[def as usize].flags |= FLAG_DST_ACC;
-            which_flag
-        } else {
-            0
+        match d {
+            Desc::Temp { .. } => {
+                if let Some(def) = self.rewritable_producer(d) {
+                    self.code[def as usize].flags |= FLAG_DST_ACC;
+                    which_flag
+                } else {
+                    0
+                }
+            }
+            // Write-through residency: every native value handler leaves
+            // its result in the accumulator, so a local written by the
+            // immediately preceding instruction (folded dst or mov) can
+            // be read from the accumulator — the slot stays written, no
+            // producer-side mark exists. Both operands of one consumer
+            // may read the same just-written local.
+            Desc::Local(x) => {
+                // last_write is 1 + writer index (0 = never written), so
+                // equality with the code length means "written by the
+                // immediately preceding instruction" — and the nonzero
+                // gate keeps never-written locals at function start from
+                // colliding with an empty stream.
+                if self.last_write[x as usize] > 0
+                    && self.last_write[x as usize] == self.code.len() as u32
+                    && self.last_write_region[x as usize] == self.region
+                {
+                    which_flag
+                } else {
+                    0
+                }
+            }
+            Desc::ConstV(_) => 0,
         }
     }
 
@@ -458,12 +490,14 @@ impl<'m> Predecoder<'m> {
         if let Some(def) = fold_def {
             self.patch_dst(def, idx as u64);
             self.last_write[idx as usize] = def + 1;
+            self.last_write_region[idx as usize] = self.region;
         } else {
             let at = self.code.len() as u32;
             let (op, flags, a) = match top {
                 Desc::Local(src) => {
                     self.last_read[src as usize] = at + 1;
-                    (Op::MovSlot, 0u16, src as u64)
+                    let acc = self.acc_operand(top, FLAG_A_ACC);
+                    (Op::MovSlot, acc, src as u64)
                 }
                 Desc::ConstV(k) => (Op::MovConst, FLAG_A_CONST, k),
                 Desc::Temp { height, .. } => {
@@ -473,6 +507,7 @@ impl<'m> Predecoder<'m> {
             };
             self.emit(op, flags, a, 0, idx as u64);
             self.last_write[idx as usize] = at + 1;
+            self.last_write_region[idx as usize] = self.region;
         }
         if is_tee {
             self.stack.push(Desc::Local(idx));
@@ -1427,11 +1462,15 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     let at = self.code.len() as u32;
                     let d0 = self.pop()?;
                     let (a, a_const) = self.operand(d0, at);
-                    let mut flags = self.acc_operand(d0, FLAG_A_ACC);
-                    if a_const {
-                        flags |= FLAG_A_CONST;
-                    }
+                    let mut flags = if a_const { FLAG_A_CONST } else { 0 };
                     self.materialize_all();
+                    // Acc marking AFTER materialization: the adjacency
+                    // guard re-evaluates against the post-materialization
+                    // length, so the mark only lands when no mov sits
+                    // between the producer and the BrTable cell (movs
+                    // clobber the accumulator — every value handler
+                    // computes into it).
+                    flags |= self.acc_operand(d0, FLAG_A_ACC);
                     // v1 restriction: every target must need no value moves
                     // (LLVM switch tables are arity-0). Reject otherwise.
                     for &d in labels.iter().chain(core::iter::once(&default)) {

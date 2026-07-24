@@ -113,6 +113,28 @@ fn vbits(a: Cls, b: Cls, dst_acc: bool) -> usize {
         | (dst_acc as usize) << 4
 }
 
+/// Whether an op's native handler leaves a result in the accumulator
+/// (every value producer computes into it; see `finish_dst`). Relies on
+/// the `Op` enum's contiguous value-op ranges; ops that are never native
+/// are harmlessly included — the linker's native check is the real gate.
+fn writes_acc(op: Op) -> bool {
+    use Op::*;
+    let d = op as u16;
+    (d >= MovSlot as u16 && d <= F64_ReinterpretI64 as u16)
+        || (d >= I32_Load as u16 && d <= I64_Load32U as u16)
+        || matches!(
+            op,
+            MemorySize
+                | MemoryGrow
+                | GlobalGet
+                | RefIsNull
+                | TableGet
+                | TableSize
+                | TableGrow
+                | Select
+        )
+}
+
 /// Ops whose static offset packs a memory index in the high bits can only
 /// run natively against memory 0.
 fn native_guard(ins: &Instr) -> bool {
@@ -248,24 +270,35 @@ impl NativeEngine {
         // cell carrying an acc operand flag — only plain movs can sit
         // between, and they never carry acc flags of their own pair.
         let mut flags: Vec<u16> = func.code.iter().map(|i| i.flags).collect();
-        for i in 0..func.code.len() {
-            if flags[i] & FLAG_DST_ACC == 0 {
+        // An acc consumer's producer is EXACTLY the preceding cell (the
+        // predecoder marks under strict adjacency). Honor the mark only
+        // when both sides run natively; otherwise fall back to slots —
+        // and a store-skipping producer whose consumer fell back must
+        // store again.
+        for j in 0..func.code.len() {
+            if flags[j] & (FLAG_A_ACC | FLAG_B_ACC) == 0 {
                 continue;
             }
-            let mut j = i + 1;
-            while j < func.code.len() && flags[j] & (FLAG_A_ACC | FLAG_B_ACC) == 0 {
-                j += 1;
-            }
-            let ok = j < func.code.len()
-                && self.handlers[key(func.code[i].op, flags[i])] != u32::MAX
+            let ok = j > 0
+                && writes_acc(func.code[j - 1].op)
+                && self.handlers[key(func.code[j - 1].op, flags[j - 1])] != u32::MAX
                 && self.handlers[key(func.code[j].op, flags[j])] != u32::MAX
-                && native_guard(&func.code[i])
+                && native_guard(&func.code[j - 1])
                 && native_guard(&func.code[j]);
             if !ok {
-                flags[i] &= !FLAG_DST_ACC;
-                if j < func.code.len() {
-                    flags[j] &= !(FLAG_A_ACC | FLAG_B_ACC);
+                flags[j] &= !(FLAG_A_ACC | FLAG_B_ACC);
+                if j > 0 {
+                    flags[j - 1] &= !FLAG_DST_ACC;
                 }
+            }
+        }
+        // Defensive: a store-skipping producer requires an acc consumer
+        // right behind it (predecode marks them in pairs).
+        for i in 0..func.code.len() {
+            if flags[i] & FLAG_DST_ACC != 0
+                && (i + 1 >= func.code.len() || flags[i + 1] & (FLAG_A_ACC | FLAG_B_ACC) == 0)
+            {
+                flags[i] &= !FLAG_DST_ACC;
             }
         }
 
@@ -643,22 +676,18 @@ fn src_b(e: &mut Enc<'_>, cls: Cls, tmp: u32) -> u32 {
     }
 }
 
-/// The register a value-producing handler should compute into.
-fn dst_reg(dst_acc: bool, tmp: u32) -> u32 {
-    if dst_acc {
-        ACC
-    } else {
-        tmp
-    }
-}
-
 /// Store `src` to the dst slot (c = pre-scaled byte offset).
 fn store_dst(e: &mut Enc<'_>, src: u32) {
     e.ldr_x_imm(X12, PC, 24);
     e.str_x_reg(src, FRAME, X12);
 }
 
-/// Finish a value-producing handler: acc results stay in the register.
+/// Finish a value-producing handler. Every value handler computes into
+/// the accumulator; memory-destination variants store from it, so each
+/// native value handler leaves its result in the acc as a side effect —
+/// which is what makes write-through residency (a consumer reading the
+/// local written by the immediately preceding producer) free: no
+/// producer-side variant exists at all.
 fn finish_dst(e: &mut Enc<'_>, dst_acc: bool, src: u32) {
     if !dst_acc {
         store_dst(e, src);
@@ -809,7 +838,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     ];
     for &(op, a, dst) in mov_variants.iter() {
         let off = e.here();
-        let rd = dst_reg(dst, X10);
+        let rd = ACC;
         let ra = match a {
             Cls::Acc => ACC,
             Cls::Const => {
@@ -985,7 +1014,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                         }
                         rb = X11;
                     }
-                    let rd = dst_reg(dst, X10);
+                    let rd = ACC;
                     e.alu_reg(b.enc, rd, ra, rb);
                     finish_dst(e, dst, rd);
                     tail(e);
@@ -1115,7 +1144,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                     } else {
                         e.cmp_x(ra, rb);
                     }
-                    let rd = dst_reg(dst, X10);
+                    let rd = ACC;
                     e.cset_w(rd, c.cond);
                     finish_dst(e, dst, rd);
                     tail(e);
@@ -1134,7 +1163,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 } else {
                     e.cmp_x(ra, 31);
                 }
-                let rd = dst_reg(dst, X10);
+                let rd = ACC;
                 e.cset_w(rd, EQ);
                 finish_dst(e, dst, rd);
                 tail(e);
@@ -1162,7 +1191,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             for dst in [false, true] {
                 let off = e.here();
                 let ra = src_a(e, a_cls, X10);
-                let rd = dst_reg(dst, X10);
+                let rd = ACC;
                 match op {
                     Op::I32_Clz => e.clz_w(rd, ra),
                     Op::I64_Clz => e.clz_x(rd, ra),
@@ -1279,7 +1308,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 e.lsr_x(X13, X12, 32); // cond slot byte offset
                 e.ldr_x_reg(X13, FRAME, X13);
                 e.cmp_x(X13, 31);
-                let rd = dst_reg(dst, X10);
+                let rd = ACC;
                 e.csel_x(rd, ra, rb, NE);
                 if !dst {
                     e.mov_w(X12, X12); // dst slot byte offset
@@ -1314,7 +1343,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     for dst in [false, true] {
         let off = e.here();
         e.ldr_x_imm(X10, PC, 8); // a = index*8
-        let rd = dst_reg(dst, X10);
+        let rd = ACC;
         e.ldr_x_reg(rd, GLOB, X10);
         finish_dst(e, dst, rd);
         tail(e);
@@ -1507,7 +1536,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                         e.b_cond(HI, delta as i32);
                     }
                     if m.load {
-                        let rd = dst_reg(dst, X10);
+                        let rd = ACC;
                         match m.kind {
                             0 => e.ldr_w_reg(rd, MEM, X12),
                             1 => e.ldr_x_reg(rd, MEM, X12),
