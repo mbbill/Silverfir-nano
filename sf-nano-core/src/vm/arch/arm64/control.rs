@@ -1186,7 +1186,12 @@ impl<'a> super::backend::Arm64Backend<'a> {
         materialize_u64_into(&mut self.core.text, abi::C_ARG1, trap_code(kind));
         let call_scratch_idx = self.gp_scratch.alloc();
         let call_scratch = self.gp_scratch.reg(call_scratch_idx);
-        materialize_u64_into(&mut self.core.text, call_scratch, raise_trap as u64);
+        let raise_trap_fn: unsafe extern "C" fn(_, _) -> _ = raise_trap;
+        materialize_u64_into(
+            &mut self.core.text,
+            call_scratch,
+            raise_trap_fn as usize as u64,
+        );
         self.core.text.emit_u32(enc::blr(call_scratch));
         self.gp_scratch.free_index(call_scratch_idx);
         if local_link_save {

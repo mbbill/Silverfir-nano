@@ -108,15 +108,15 @@ struct FileRun<'m> {
     skip_rest: Option<&'static str>,
 }
 
-fn spectest_host(
-) -> Box<dyn FnMut(&str, &str, &mut Vec<u8>, &[u64], &mut [u64]) -> Result<(), WasmError>> {
-    Box::new(|_module, name, _mem, _args, _results| {
+fn spectest_host() -> impl FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError>
+{
+    |_module, name, _mem, _args, _results| {
         if name.starts_with("print") {
             Ok(())
         } else {
             Err(WasmError::invalid("interp-spectest: unshimmed host import"))
         }
-    })
+    }
 }
 
 fn run_file(path: &PathBuf, totals: &mut Totals) {

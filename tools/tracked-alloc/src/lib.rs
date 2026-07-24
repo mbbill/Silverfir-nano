@@ -1793,6 +1793,20 @@ impl<T: ?Sized> Box<T> {
         boxed
     }
 
+    /// Wrap an already-built `alloc` box whose target may be unsized
+    /// (trait objects) — the sized `from_alloc_box`/`From` impls cannot
+    /// cover `dyn` targets without overlapping the slice and str impls.
+    #[inline]
+    #[track_caller]
+    pub fn from_alloc_box_unsized(inner: AllocBox<T>) -> Self {
+        let state = box_state(&inner);
+        Self::from_alloc_box_with(
+            inner,
+            AllocationDescriptor::new("Box", type_name::<T>()),
+            state,
+        )
+    }
+
     #[inline]
     pub fn into_alloc_box(self) -> AllocBox<T> {
         let this = mem::ManuallyDrop::new(self);
@@ -3778,6 +3792,21 @@ static TEST_TRACKING_ALLOCATOR: TrackingAllocator<std::alloc::System> =
 /// Tracked box surface.
 pub mod boxed {
     pub use crate::Box;
+}
+
+/// Convert an `alloc` box into the tracked facade. Unlike the `From`
+/// impls this accepts unsized targets (`dyn` closures), and it exists
+/// under both cfgs so callers need no feature knowledge.
+#[cfg(feature = "memprof")]
+#[track_caller]
+pub fn box_from_alloc<T: ?Sized>(inner: AllocBox<T>) -> Box<T> {
+    Box::from_alloc_box_unsized(inner)
+}
+
+/// Convert an `alloc` box into the tracked facade (plain alias here).
+#[cfg(not(feature = "memprof"))]
+pub fn box_from_alloc<T: ?Sized>(inner: AllocBox<T>) -> Box<T> {
+    inner
 }
 
 /// Mixed tracked/pass-through collection facade.

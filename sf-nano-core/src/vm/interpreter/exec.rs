@@ -38,8 +38,10 @@ const VALUE_STACK_SLOTS: usize = 256 * 1024;
 
 /// Host dispatcher for imported functions: called with the import's module
 /// and field names, the linear memory, argument slots, and result slots.
+/// The signature carries only std types (`&mut [u8]`, not this crate's
+/// tracked collections), so external callers stay feature-independent.
 pub type HostDispatch<'h> =
-    Box<dyn FnMut(&str, &str, &mut Vec<u8>, &[u64], &mut [u64]) -> Result<(), WasmError> + 'h>;
+    Box<dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'h>;
 
 struct TableState {
     entries: Vec<u32>,
@@ -200,9 +202,14 @@ fn eval_simple_const(expr: &[u8]) -> Result<u64, WasmError> {
 
     let mut h = H { value: None };
     // A const expr is an expression body: decode it like a function body.
-    let mut d = Decoder::new(expr);
-    d.add_handler(&mut h);
-    d.decode_function()?;
+    // The decoder is scoped so its borrow of `h` provably ends before the
+    // read below (with tracked-alloc's memprof feature unified in, its Vec
+    // has a destructor and the borrow would otherwise extend to it).
+    {
+        let mut d = Decoder::new(expr);
+        d.add_handler(&mut h);
+        d.decode_function()?;
+    }
     h.value
         .ok_or(WasmError::invalid("interp: empty constant expression"))
 }
@@ -533,9 +540,18 @@ impl<'m> InterpInstance<'m> {
         Vec::new()
     }
 
-    /// Install the host dispatcher used for imported functions.
-    pub fn set_host(&mut self, host: HostDispatch<'m>) {
-        self.host = Some(host);
+    /// Install the host dispatcher used for imported functions. Generic
+    /// so callers pass a plain closure; boxing happens here (unsizing to
+    /// the dyn target through the `alloc` box, then wrapping in the
+    /// tracked facade — the same pattern as the JIT's host callbacks).
+    pub fn set_host<F>(&mut self, host: F)
+    where
+        F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'm,
+    {
+        let host: alloc::boxed::Box<
+            dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'm,
+        > = alloc::boxed::Box::new(host);
+        self.host = Some(tracked_alloc::box_from_alloc(host));
     }
 
     /// Resolve the element-segment function value at `seg[k]`.
@@ -754,12 +770,11 @@ impl<'m> InterpInstance<'m> {
             return Err(WasmError::invalid("interp: too many host results"));
         }
         let args: Vec<u64> = frame[arg_base..arg_base + p].iter().copied().collect();
-        let mut no_memory = Vec::new();
         let mem0 = self
             .memories
             .first_mut()
-            .map(|m| &mut m.bytes)
-            .unwrap_or(&mut no_memory);
+            .map(|m| m.bytes.as_mut_slice())
+            .unwrap_or(&mut []);
         host(&mod_name, &field, mem0, &args, &mut results[..r])?;
         frame[arg_base..arg_base + r].copy_from_slice(&results[..r]);
         Ok(())

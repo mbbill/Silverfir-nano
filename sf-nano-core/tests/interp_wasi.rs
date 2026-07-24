@@ -38,57 +38,59 @@ fn run_wasi(path: &str) -> (Result<(), WasmError>, HostState) {
     };
     let result = {
         let mut inst = InterpInstance::new(&module).expect("instantiate");
-        inst.set_host(Box::new(|_mod, name, mem, args, results| {
-            match name {
-                "clock_time_get" => {
-                    // Advance 11 fake seconds per read so self-timing
-                    // benchmark loops converge immediately.
-                    let t = state.fake_nanos.get() + 11_000_000_000;
-                    state.fake_nanos.set(t);
-                    w64(mem, args[2] as usize, t);
-                    results[0] = 0;
-                }
-                "fd_write" => {
-                    let iovs = args[1] as usize;
-                    let n = args[2] as usize;
-                    let mut written = 0u32;
-                    for k in 0..n {
-                        let ptr = r32(mem, iovs + k * 8) as usize;
-                        let len = r32(mem, iovs + k * 8 + 4) as usize;
-                        state
-                            .output
-                            .borrow_mut()
-                            .extend_from_slice(&mem[ptr..ptr + len]);
-                        written += len as u32;
+        inst.set_host(
+            |_mod: &str, name: &str, mem: &mut [u8], args: &[u64], results: &mut [u64]| {
+                match name {
+                    "clock_time_get" => {
+                        // Advance 11 fake seconds per read so self-timing
+                        // benchmark loops converge immediately.
+                        let t = state.fake_nanos.get() + 11_000_000_000;
+                        state.fake_nanos.set(t);
+                        w64(mem, args[2] as usize, t);
+                        results[0] = 0;
                     }
-                    w32(mem, args[3] as usize, written);
-                    results[0] = 0;
-                }
-                "args_sizes_get" => {
-                    w32(mem, args[0] as usize, 0);
-                    w32(mem, args[1] as usize, 0);
-                    results[0] = 0;
-                }
-                "args_get" => results[0] = 0,
-                "fd_close" | "fd_seek" | "fd_fdstat_get" => {
-                    // benign stubs: zero any out-parameters conservatively
-                    if name == "fd_seek" {
-                        w64(mem, args[3] as usize, 0);
+                    "fd_write" => {
+                        let iovs = args[1] as usize;
+                        let n = args[2] as usize;
+                        let mut written = 0u32;
+                        for k in 0..n {
+                            let ptr = r32(mem, iovs + k * 8) as usize;
+                            let len = r32(mem, iovs + k * 8 + 4) as usize;
+                            state
+                                .output
+                                .borrow_mut()
+                                .extend_from_slice(&mem[ptr..ptr + len]);
+                            written += len as u32;
+                        }
+                        w32(mem, args[3] as usize, written);
+                        results[0] = 0;
                     }
-                    if name == "fd_fdstat_get" {
-                        let p = args[1] as usize;
-                        mem[p..p + 24].fill(0);
+                    "args_sizes_get" => {
+                        w32(mem, args[0] as usize, 0);
+                        w32(mem, args[1] as usize, 0);
+                        results[0] = 0;
                     }
-                    results[0] = 0;
+                    "args_get" => results[0] = 0,
+                    "fd_close" | "fd_seek" | "fd_fdstat_get" => {
+                        // benign stubs: zero any out-parameters conservatively
+                        if name == "fd_seek" {
+                            w64(mem, args[3] as usize, 0);
+                        }
+                        if name == "fd_fdstat_get" {
+                            let p = args[1] as usize;
+                            mem[p..p + 24].fill(0);
+                        }
+                        results[0] = 0;
+                    }
+                    "proc_exit" => {
+                        state.exit_code.set(Some(args[0] as u32));
+                        return Err(WasmError::trap("proc_exit"));
+                    }
+                    other => panic!("unshimmed WASI import: {other}"),
                 }
-                "proc_exit" => {
-                    state.exit_code.set(Some(args[0] as u32));
-                    return Err(WasmError::trap("proc_exit"));
-                }
-                other => panic!("unshimmed WASI import: {other}"),
-            }
-            Ok(())
-        }));
+                Ok(())
+            },
+        );
         let start = inst.find_export("_start").expect("_start export");
         inst.invoke(start, &[], &mut [])
     };

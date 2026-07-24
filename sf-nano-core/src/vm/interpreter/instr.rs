@@ -25,11 +25,11 @@ pub const FLAG_B_CONST: u16 = 1 << 1;
 /// instruction reads it from there. Slot fields stay valid — a backend is
 /// free to ignore the hints (and strips them when either side of a pair
 /// lacks an acc-capable handler), and the slow path always uses the slots.
-pub const FLAG_A_ACC: u16 = 1 << 2;
-pub const FLAG_B_ACC: u16 = 1 << 3;
+pub(crate) const FLAG_A_ACC: u16 = 1 << 2;
+pub(crate) const FLAG_B_ACC: u16 = 1 << 3;
 /// This instruction's result lives in the accumulator; the frame-slot
 /// write is skipped by acc-honoring backends.
-pub const FLAG_DST_ACC: u16 = 1 << 4;
+pub(crate) const FLAG_DST_ACC: u16 = 1 << 4;
 
 /// Semantic operations. One dispatch each; routing opcodes never appear.
 ///

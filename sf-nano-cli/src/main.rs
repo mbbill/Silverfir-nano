@@ -362,7 +362,9 @@ fn run_interp(data: &[u8], module_name: &str, stats: bool) -> i32 {
     let mut host_fns: HashMap<(String, String), HostCallback> = HashMap::new();
     for imp in wasi_imports() {
         if let ImportValue::Func(ImportedFunction::Host { callback, .. }) = imp.value {
-            host_fns.insert((imp.module, imp.name), callback);
+            // Explicit conversion: with the memprof feature unified in,
+            // core strings are tracked_alloc types, not std String.
+            host_fns.insert((imp.module.to_string(), imp.name.to_string()), callback);
         }
     }
     let mut import_types: HashMap<(String, String), FunctionType> = HashMap::new();
@@ -371,7 +373,7 @@ fn run_interp(data: &[u8], module_name: &str, stats: bool) -> i32 {
             module: m, name: n, ..
         } = f.def()
         {
-            import_types.insert((m.clone(), n.clone()), f.func_type().clone());
+            import_types.insert((m.to_string(), n.to_string()), f.func_type().clone());
         }
     }
 
@@ -388,35 +390,37 @@ fn run_interp(data: &[u8], module_name: &str, stats: bool) -> i32 {
         // the benchmark harness).
         eprintln!("runtime engine: interpreter (native dispatch)");
 
-        inst.set_host(Box::new(move |m, n, mem, args, results| {
-            let key = (m.to_string(), n.to_string());
-            let cb = host_fns
-                .get(&key)
-                .ok_or(WasmError::invalid("interp cli: unlinked host import"))?;
-            let ft = import_types
-                .get(&key)
-                .ok_or(WasmError::invalid("interp cli: untyped host import"))?;
-            let mut params = Vec::with_capacity(args.len());
-            for (t, &raw) in ft.params().iter().zip(args.iter()) {
-                params.push(raw_to_value(t, raw).ok_or(WasmError::invalid(
-                    "interp cli: non-numeric host import parameter",
-                ))?);
-            }
-            let mut vresults = Vec::with_capacity(results.len());
-            for t in ft.results().iter() {
-                vresults.push(raw_to_value(t, 0).ok_or(WasmError::invalid(
-                    "interp cli: non-numeric host import result",
-                ))?);
-            }
-            let mut caller = Caller::new(Some(&mut mem[..]));
-            cb.call(&mut caller, &params, &mut vresults)?;
-            for (dst, v) in results.iter_mut().zip(vresults.iter()) {
-                *dst = value_to_raw(v).ok_or(WasmError::invalid(
-                    "interp cli: non-numeric host import result",
-                ))?;
-            }
-            Ok(())
-        }));
+        inst.set_host(
+            move |m: &str, n: &str, mem: &mut [u8], args: &[u64], results: &mut [u64]| {
+                let key = (m.to_string(), n.to_string());
+                let cb = host_fns
+                    .get(&key)
+                    .ok_or(WasmError::invalid("interp cli: unlinked host import"))?;
+                let ft = import_types
+                    .get(&key)
+                    .ok_or(WasmError::invalid("interp cli: untyped host import"))?;
+                let mut params = Vec::with_capacity(args.len());
+                for (t, &raw) in ft.params().iter().zip(args.iter()) {
+                    params.push(raw_to_value(t, raw).ok_or(WasmError::invalid(
+                        "interp cli: non-numeric host import parameter",
+                    ))?);
+                }
+                let mut vresults = Vec::with_capacity(results.len());
+                for t in ft.results().iter() {
+                    vresults.push(raw_to_value(t, 0).ok_or(WasmError::invalid(
+                        "interp cli: non-numeric host import result",
+                    ))?);
+                }
+                let mut caller = Caller::new(Some(&mut mem[..]));
+                cb.call(&mut caller, &params, &mut vresults)?;
+                for (dst, v) in results.iter_mut().zip(vresults.iter()) {
+                    *dst = value_to_raw(v).ok_or(WasmError::invalid(
+                        "interp cli: non-numeric host import result",
+                    ))?;
+                }
+                Ok(())
+            },
+        );
 
         let entry = inst
             .find_export("_start")
