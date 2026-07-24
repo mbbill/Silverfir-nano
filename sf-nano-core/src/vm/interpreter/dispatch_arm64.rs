@@ -68,7 +68,11 @@ pub(super) struct EnterState {
     pub l0_value: u64,    // 88: current function's l0 local value (in only)
     pub l1_value: u64,    // 96: current function's l1 local value (in only)
     pub acc_value: u64,   // 104: the accumulator (in AND out — call results
-                          // ride it across activation boundaries)
+    // ride it across activation boundaries)
+    pub table0_base: u64, // 112: funcref table 0 entries (in only, u32 elems)
+    pub table0_len: u64,  // 120
+    pub indirect_base: u64, // 128: per-function indirect-call info, [u64;3]
+                          // per function index (in only)
 }
 
 /// One 32-byte dispatch cell; `Instr` with the leading word replaced by the
@@ -344,6 +348,8 @@ fn native_guard(ins: &Instr) -> bool {
         | I64_Load32U => ins.b >> 48 == 0,
         I32_Store | I64_Store | F32_Store | F64_Store | I32_Store8 | I32_Store16 | I64_Store8
         | I64_Store16 | I64_Store32 => ins.c >> 48 == 0,
+        // b packs the memory index (copy: dst<<32 | src)
+        MemoryFill | MemoryCopy => ins.b == 0,
         _ => true,
     }
 }
@@ -416,6 +422,7 @@ pub(super) struct NativeEngine {
     /// The native `Call` handler (wired by the cross-function fixup pass,
     /// not through `handlers`: its cells need callee addresses).
     call_handler: usize,
+    callindirect_handler: usize,
     /// One synthetic cell whose handler word is the `EXIT_RETURN` stub.
     /// Sentinel return-stack records point here, so a native `Return` that
     /// pops a sentinel lands in Rust — the boxed cell must outlive every
@@ -446,6 +453,7 @@ impl NativeEngine {
             handlers,
             slow_stub: out.slow_stub,
             call_handler: out.call_handler,
+            callindirect_handler: out.callindirect_handler,
             exit_cell,
         })
     }
@@ -458,6 +466,11 @@ impl NativeEngine {
     /// Address of the native `Call` handler, for the fixup pass.
     pub(super) fn call_handler_addr(&self) -> u64 {
         unsafe { self.buf.ptr(self.call_handler) as u64 }
+    }
+
+    /// Address of the native `CallIndirect` handler, for the fixup pass.
+    pub(super) fn callindirect_handler_addr(&self) -> u64 {
+        unsafe { self.buf.ptr(self.callindirect_handler) as u64 }
     }
 
     /// Handler-table lookup by op and dense variant.
@@ -484,13 +497,18 @@ impl NativeEngine {
             if flags[j] & (FLAG_A_ACC | FLAG_B_ACC) == 0 {
                 continue;
             }
+            // Call/CallIndirect are wired by the fixup pass, never via the
+            // handler table; every call flavor (native, slow, host) delivers
+            // result 0 through the accumulator relay, so they are valid
+            // producers regardless of the table lookup.
+            let prev_is_call = j > 0 && matches!(func.code[j - 1].op, Op::Call | Op::CallIndirect);
             let ok = j > 0
-                && (writes_acc(func.code[j - 1].op)
-                    || matches!(func.code[j - 1].op, Op::Call | Op::CallIndirect))
-                && self.h(
-                    func.code[j - 1].op,
-                    op_variant(&func.code[j - 1], flags[j - 1], l0_slot, l1_slot),
-                ) != u32::MAX
+                && (writes_acc(func.code[j - 1].op) || prev_is_call)
+                && (prev_is_call
+                    || self.h(
+                        func.code[j - 1].op,
+                        op_variant(&func.code[j - 1], flags[j - 1], l0_slot, l1_slot),
+                    ) != u32::MAX)
                 && self.h(
                     func.code[j].op,
                     op_variant(&func.code[j], flags[j], l0_slot, l1_slot),
@@ -606,6 +624,9 @@ const L0R: u32 = 17;
 const L1R: u32 = 14;
 const X9: u32 = 9;
 const X10: u32 = 10;
+/// Extra scratch for the indirect-call handler (safe: handlers never
+/// call out, so the platform's IP0 role is irrelevant here).
+const X16: u32 = 16;
 const X11: u32 = 11;
 const X12: u32 = 12;
 const X13: u32 = 13;
@@ -629,6 +650,7 @@ const HS: u32 = 2;
 const LO: u32 = 3;
 const HI: u32 = 8;
 const LS: u32 = 9;
+const MI: u32 = 4;
 const GE: u32 = 10;
 const LT: u32 = 11;
 const GT: u32 = 12;
@@ -843,6 +865,48 @@ impl<'b> Enc<'b> {
     }
 
     // ---- constants, prologue/epilogue ----
+    fn ldr_d_reg(&mut self, vt: u32, rn: u32, rm: u32) {
+        self.i(0xFC60_6800 | rm << 16 | rn << 5 | vt);
+    }
+    fn ldr_s_reg(&mut self, vt: u32, rn: u32, rm: u32) {
+        self.i(0xBC60_6800 | rm << 16 | rn << 5 | vt);
+    }
+    fn ldr_d_imm(&mut self, vt: u32, rn: u32, imm: u32) {
+        self.i(0xFD40_0000 | (imm / 8) << 10 | rn << 5 | vt);
+    }
+    fn ldr_s_imm(&mut self, vt: u32, rn: u32, imm: u32) {
+        self.i(0xBD40_0000 | (imm / 4) << 10 | rn << 5 | vt);
+    }
+    fn fmov_d_x(&mut self, vd: u32, xn: u32) {
+        self.i(0x9E67_0000 | xn << 5 | vd);
+    }
+    fn fmov_x_d(&mut self, xd: u32, vn: u32) {
+        self.i(0x9E66_0000 | vn << 5 | xd);
+    }
+    fn fmov_s_w(&mut self, vd: u32, wn: u32) {
+        self.i(0x1E27_0000 | wn << 5 | vd);
+    }
+    fn fmov_w_s(&mut self, wd: u32, vn: u32) {
+        self.i(0x1E26_0000 | vn << 5 | wd);
+    }
+    /// Generic 3-register FP op (fadd/fsub/fmul/fdiv/fmin/fmax forms).
+    fn fp2(&mut self, base: u32, vd: u32, vn: u32, vm: u32) {
+        self.i(base | vm << 16 | vn << 5 | vd);
+    }
+    /// Generic 2-register FP/convert op.
+    fn fp1(&mut self, base: u32, rd: u32, rn: u32) {
+        self.i(base | rn << 5 | rd);
+    }
+    fn fcmp(&mut self, f32w: bool, vn: u32, vm: u32) {
+        let base = if f32w { 0x1E20_2000 } else { 0x1E60_2000 };
+        self.i(base | vm << 16 | vn << 5);
+    }
+    fn movz_hw(&mut self, rd: u32, imm16: u32, hw: u32) {
+        self.i(0xD280_0000 | hw << 21 | imm16 << 5 | rd);
+    }
+    fn movk_hw(&mut self, rd: u32, imm16: u32, hw: u32) {
+        self.i(0xF280_0000 | hw << 21 | imm16 << 5 | rd);
+    }
     fn movz_x(&mut self, rd: u32, imm16: u32) {
         self.i(0xD280_0000 | (imm16 << 5) | rd);
     }
@@ -970,6 +1034,81 @@ fn finish(e: &mut Enc<'_>, d: DstCls, src: u32) {
     }
 }
 
+/// Load a floating operand into FP register `v`. Register classes move
+/// raw bits over (f32 values are zero-extended in slots and registers,
+/// so an S-view read is always exact).
+fn src_fp(e: &mut Enc<'_>, cls: Cls, f32w: bool, v: u32, pcoff: u32, tmp: u32) {
+    match cls {
+        Cls::Slot => {
+            e.ldr_x_imm(tmp, PC, pcoff);
+            if f32w {
+                e.ldr_s_reg(v, FRAME, tmp);
+            } else {
+                e.ldr_d_reg(v, FRAME, tmp);
+            }
+        }
+        Cls::Const => {
+            if f32w {
+                e.ldr_s_imm(v, PC, pcoff);
+            } else {
+                e.ldr_d_imm(v, PC, pcoff);
+            }
+        }
+        Cls::Acc => {
+            if f32w {
+                e.fmov_s_w(v, ACC);
+            } else {
+                e.fmov_d_x(v, ACC);
+            }
+        }
+        Cls::L0 => {
+            if f32w {
+                e.fmov_s_w(v, L0R);
+            } else {
+                e.fmov_d_x(v, L0R);
+            }
+        }
+        Cls::L1 => {
+            if f32w {
+                e.fmov_s_w(v, L1R);
+            } else {
+                e.fmov_d_x(v, L1R);
+            }
+        }
+    }
+}
+
+/// Move an FP result's bits into an integer destination register (the
+/// S-form zero-extends, upholding the f32 slot convention).
+fn fp_result(e: &mut Enc<'_>, f32w: bool, rd: u32, v: u32) {
+    if f32w {
+        e.fmov_w_s(rd, v);
+    } else {
+        e.fmov_x_d(rd, v);
+    }
+}
+
+/// Materialize an arbitrary 64-bit constant (movz + movk per non-zero
+/// halfword).
+fn mov_imm64(e: &mut Enc<'_>, rd: u32, val: u64) {
+    let mut set = false;
+    for hw in 0..4 {
+        let part = ((val >> (hw * 16)) & 0xFFFF) as u32;
+        if part == 0 {
+            continue;
+        }
+        if set {
+            e.movk_hw(rd, part, hw);
+        } else {
+            e.movz_hw(rd, part, hw);
+            set = true;
+        }
+    }
+    if !set {
+        e.movz_hw(rd, 0, 0);
+    }
+}
+
 fn def(handlers: &mut [u32], op: Op, variant: usize, off: usize) {
     handlers[op as usize * N_VARIANTS + variant] = off as u32;
 }
@@ -979,6 +1118,7 @@ struct EmitOut {
     entry: usize,
     slow_stub: usize,
     call_handler: usize,
+    callindirect_handler: usize,
     return_exit: usize,
 }
 
@@ -1047,14 +1187,20 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         // b = callee_l1off<<48 | callee_l0off<<32 | arg_base*8,
         // c = caller_l0off<<48 | frame_slots<<32 | n_locals<<16 | n_params
         e.ldr_x_imm(X12, PC, 24);
+        e.ldr_x_imm(X11, PC, 16);
+        e.ldr_x_imm(X9, PC, 8);
+    }
+    // The shared activation-entry tail: X9/X11/X12 hold the a/b/c-shaped
+    // callee description (the indirect handler composes them from its
+    // runtime lookup instead of cell fields).
+    let call_core = e.here();
+    {
         // return-stack depth
         e.cmp_x(RETSP, RETLIM);
         {
             let delta = (trap_exhaust as i64 - e.here() as i64) / 4;
             e.b_cond(HS, delta as i32);
         }
-        e.ldr_x_imm(X11, PC, 16);
-        e.ldr_x_imm(X9, PC, 8);
         e.mov_w(X10, X11); // arg_base*8 (low 32, zero-extended)
         e.add_x_reg(X10, FRAME, X10); // new frame base
         e.ubfx_x(X13, X12, 32, 16); // frame_slots
@@ -1092,6 +1238,67 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         e.mov_x(PC, CODE);
         e.ldr_x_imm(X9, PC, 0);
         e.br(X9);
+    }
+
+    // ---- call_indirect (rewired by the fixup pass; not in `handlers`)
+    // Cell: a = caller_l1off<<48 | index_slot*8,
+    //       b = caller_l0off<<48 | canon_expected<<32 | arg_base*8.
+    // Table 0 base/len and the per-function info table come from the
+    // entry state (refreshed every chain entry, so table.grow/set need
+    // no invalidation). Every guard failure (bounds, null, type
+    // mismatch, import callee) bails to the slow stub, which re-executes
+    // the cell from its predecoded form and raises the proper trap or
+    // routes the host call.
+    let callindirect_handler = e.here();
+    {
+        bump(e, COUNT_MODE == 0);
+        e.ldr_x_imm(X9, PC, 8);
+        e.ubfx_x(X10, X9, 0, 32); // index_slot*8
+        e.ldr_x_reg(X10, FRAME, X10); // t (i32, zero-extended)
+        e.ldr_x_imm(X11, STATE, 112); // table 0 entries
+        e.ldr_x_imm(X12, STATE, 120); // table 0 len
+        e.cmp_w(X10, X12);
+        {
+            let delta = (slow_stub as i64 - e.here() as i64) / 4;
+            e.b_cond(HS, delta as i32); // out of bounds (or no table)
+        }
+        e.ldr_w_uxtw2(X12, X11, X10); // fi = entries[t]
+        e.i(0x3100_0000 | (1 << 10) | (X12 << 5) | 31); // cmn w12, #1
+        {
+            let delta = (slow_stub as i64 - e.here() as i64) / 4;
+            e.b_cond(EQ, delta as i32); // null entry
+        }
+        e.ldr_x_imm(X13, STATE, 128); // info base
+        e.add_x_lsl(X11, X12, X12, 1); // fi*3
+        e.add_x_lsl(X13, X13, X11, 3); // entry = info + fi*24
+        e.ldr_x_imm(X11, X13, 8); // l1off<<48 | l0off<<32 | canon type
+        e.ldr_x_imm(X10, PC, 16); // cell b
+        e.ubfx_x(X12, X11, 0, 32); // canonical actual
+        e.ubfx_x(X16, X10, 32, 16); // canonical expected
+        e.cmp_x(X12, X16);
+        {
+            let delta = (slow_stub as i64 - e.here() as i64) / 4;
+            e.b_cond(NE, delta as i32); // type mismatch
+        }
+        e.ldr_x_imm(X12, X13, 0); // callee cells (0 = import/unlinked)
+        {
+            let delta = (slow_stub as i64 - e.here() as i64) / 4;
+            e.cbz_x(X12, delta as i32);
+        }
+        e.ldr_x_imm(X16, X13, 16); // frame metadata
+                                   // compose the call_core inputs from cell + info entry
+        e.lsr_x(X9, X9, 48);
+        e.orr_x_lsl(X9, X12, X9, 48); // a-equiv: caller_l1off | cells
+        e.lsr_x(X13, X10, 48);
+        e.orr_x_lsl(X12, X16, X13, 48); // c-equiv: caller_l0off | meta
+        e.lsr_x(X11, X11, 32);
+        e.lsl_x(X11, X11, 32); // callee l0/l1 offsets, canon cleared
+        e.ubfx_x(X13, X10, 0, 32);
+        e.orr_x_lsl(X11, X11, X13, 0); // b-equiv: | arg_base*8
+        {
+            let delta = (call_core as i64 - e.here() as i64) / 4;
+            e.b(delta as i32);
+        }
     }
 
     // ---- return (a = first-result slot*8, b = result count) ----
@@ -1890,10 +2097,623 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         }
     }
 
+    // ---- integer division and remainder ----
+    // The trap edges (div0, and MIN/-1 for div_s) branch to the slow
+    // stub: exec_ins re-executes the cell and raises the proper trap.
+    // rem_s needs no overflow edge — sdiv wraps MIN/-1 to MIN and msub
+    // then yields the correct 0.
+    struct DivOp {
+        op: Op,
+        w: bool,
+        signed: bool,
+        rem: bool,
+    }
+    let divs = [
+        DivOp {
+            op: Op::I32_DivS,
+            w: true,
+            signed: true,
+            rem: false,
+        },
+        DivOp {
+            op: Op::I32_DivU,
+            w: true,
+            signed: false,
+            rem: false,
+        },
+        DivOp {
+            op: Op::I32_RemS,
+            w: true,
+            signed: true,
+            rem: true,
+        },
+        DivOp {
+            op: Op::I32_RemU,
+            w: true,
+            signed: false,
+            rem: true,
+        },
+        DivOp {
+            op: Op::I64_DivS,
+            w: false,
+            signed: true,
+            rem: false,
+        },
+        DivOp {
+            op: Op::I64_DivU,
+            w: false,
+            signed: false,
+            rem: false,
+        },
+        DivOp {
+            op: Op::I64_RemS,
+            w: false,
+            signed: true,
+            rem: true,
+        },
+        DivOp {
+            op: Op::I64_RemU,
+            w: false,
+            signed: false,
+            rem: true,
+        },
+    ];
+    for dv in divs.iter() {
+        let div_enc: u32 = match (dv.w, dv.signed) {
+            (true, false) => 0x1AC0_0800,  // udiv w
+            (true, true) => 0x1AC0_0C00,   // sdiv w
+            (false, false) => 0x9AC0_0800, // udiv x
+            (false, true) => 0x9AC0_0C00,  // sdiv x
+        };
+        for a_cls in CLASSES {
+            for b_cls in CLASSES {
+                for d in DSTS {
+                    let off = e.here();
+                    let ra = src_a(e, a_cls, X10);
+                    let rb = src_b(e, b_cls, X11);
+                    {
+                        let delta = (slow_stub as i64 - e.here() as i64) / 4;
+                        if dv.w {
+                            e.cbz_w(rb, delta as i32);
+                        } else {
+                            e.cbz_x(rb, delta as i32);
+                        }
+                    }
+                    if dv.signed && !dv.rem {
+                        // movn -1 into X12; MIN materializes in X13
+                        if dv.w {
+                            e.i(0x1280_0000 | X12);
+                            e.cmp_w(rb, X12);
+                        } else {
+                            e.i(0x9280_0000 | X12);
+                            e.cmp_x(rb, X12);
+                        }
+                        e.b_cond(NE, 5); // -> div
+                        e.movz_x(X13, 0x8000);
+                        e.lsl_x(X13, X13, if dv.w { 16 } else { 48 });
+                        if dv.w {
+                            e.cmp_w(ra, X13);
+                        } else {
+                            e.cmp_x(ra, X13);
+                        }
+                        let delta = (slow_stub as i64 - e.here() as i64) / 4;
+                        e.b_cond(EQ, delta as i32);
+                    }
+                    let rd = dst_target(d);
+                    if dv.rem {
+                        e.alu_reg(div_enc, X12, ra, rb);
+                        // msub rd, X12, rb, ra: rd = ra - quotient*rb
+                        let msub: u32 = if dv.w { 0x1B00_8000 } else { 0x9B00_8000 };
+                        e.i(msub | (rb << 16) | (ra << 10) | (X12 << 5) | rd);
+                    } else {
+                        e.alu_reg(div_enc, rd, ra, rb);
+                    }
+                    finish(e, d, rd);
+                    tail(e, counted(a_cls, b_cls, d));
+                    def(handlers, dv.op, variant(a_cls, b_cls, d), off);
+                }
+            }
+        }
+    }
+
+    // ---- memory.fill / memory.copy (memory 0; a = base slot of the
+    // three contiguous operands). 8-byte main loop with a byte tail;
+    // bounds failures bail to the slow stub (exec_ins raises the trap).
+    // Overlapping-downward copies take the backward block below.
+    // (inputs: X10 = d, X11 = s, X12 = n, all raw offsets)
+    let copy_backward = e.here();
+    {
+        e.add_x_reg(X10, MEM, X10);
+        e.add_x_reg(X11, MEM, X11);
+        e.movz_x(X13, 8);
+        e.cmp_x(X12, X13); // b8:
+        e.b_cond(LO, 5); // -> bytes
+        e.sub_x_imm(X12, X12, 8);
+        e.ldr_x_reg(X9, X11, X12);
+        e.str_x_reg(X9, X10, X12);
+        e.b(-5); // -> b8
+        e.cbz_x(X12, 5); // bytes: -> done
+        e.sub_x_imm(X12, X12, 1);
+        e.ldrb_reg(X9, X11, X12);
+        e.strb_reg(X9, X10, X12);
+        e.b(-4); // -> bytes
+        tail(e, COUNT_MODE == 0); // done:
+    }
+    {
+        let off = e.here();
+        bump(e, COUNT_MODE == 0);
+        e.ldr_x_imm(X9, PC, 8);
+        e.add_x_reg(X9, FRAME, X9);
+        e.ldr_x_imm(X10, X9, 0); // d
+        e.ldr_x_imm(X11, X9, 8); // value
+        e.ldr_x_imm(X12, X9, 16); // n
+        e.add_x_reg(X13, X10, X12);
+        e.cmp_x(X13, MEMLEN);
+        {
+            let delta = (slow_stub as i64 - e.here() as i64) / 4;
+            e.b_cond(HI, delta as i32); // out of bounds
+        }
+        e.ubfx_x(X11, X11, 0, 8); // splat the fill byte
+        e.orr_x_lsl(X11, X11, X11, 8);
+        e.orr_x_lsl(X11, X11, X11, 16);
+        e.orr_x_lsl(X11, X11, X11, 32);
+        e.add_x_reg(X10, MEM, X10); // cursor
+        e.add_x_reg(X13, MEM, X13); // end
+        e.add_x_imm(X9, X10, 8); // l8:
+        e.cmp_x(X9, X13);
+        e.b_cond(HI, 3); // -> bytes
+        e.str_x_post(X11, X10, 8);
+        e.b(-4); // -> l8
+        e.cmp_x(X10, X13); // bytes:
+        e.b_cond(HS, 4); // -> done
+        e.strb_reg(X11, X10, 31);
+        e.add_x_imm(X10, X10, 1);
+        e.b(-4); // -> bytes
+        tail(e, COUNT_MODE == 0); // done:
+        def(handlers, Op::MemoryFill, 0, off);
+    }
+    {
+        let off = e.here();
+        bump(e, COUNT_MODE == 0);
+        e.ldr_x_imm(X9, PC, 8);
+        e.add_x_reg(X9, FRAME, X9);
+        e.ldr_x_imm(X10, X9, 0); // d
+        e.ldr_x_imm(X11, X9, 8); // s
+        e.ldr_x_imm(X12, X9, 16); // n
+        e.add_x_reg(X13, X10, X12);
+        e.cmp_x(X13, MEMLEN);
+        {
+            let delta = (slow_stub as i64 - e.here() as i64) / 4;
+            e.b_cond(HI, delta as i32); // dst out of bounds
+        }
+        e.add_x_reg(X13, X11, X12);
+        e.cmp_x(X13, MEMLEN);
+        {
+            let delta = (slow_stub as i64 - e.here() as i64) / 4;
+            e.b_cond(HI, delta as i32); // src out of bounds
+        }
+        // A forward copy is wrong only when s < d < s+n; that
+        // overlapping-downward move runs the backward block (X13 still
+        // holds s+n).
+        e.cmp_x(X10, X11);
+        e.b_cond(LS, 3); // d <= s -> fwd
+        e.cmp_x(X10, X13);
+        {
+            let delta = (copy_backward as i64 - e.here() as i64) / 4;
+            e.b_cond(LO, delta as i32); // overlap -> backward copy
+        }
+        e.add_x_reg(X10, MEM, X10); // fwd: dst cursor
+        e.add_x_reg(X11, MEM, X11); // src cursor
+        e.add_x_reg(X13, X10, X12); // dst end
+        e.add_x_imm(X9, X10, 8); // l8:
+        e.cmp_x(X9, X13);
+        e.b_cond(HI, 4); // -> bytes
+        e.ldr_x_post(X12, X11, 8);
+        e.str_x_post(X12, X10, 8);
+        e.b(-5); // -> l8
+        e.cmp_x(X10, X13); // bytes:
+        e.b_cond(HS, 6); // -> done
+        e.ldrb_reg(X12, X11, 31);
+        e.strb_reg(X12, X10, 31);
+        e.add_x_imm(X10, X10, 1);
+        e.add_x_imm(X11, X11, 1);
+        e.b(-6); // -> bytes
+        tail(e, COUNT_MODE == 0); // done:
+        def(handlers, Op::MemoryCopy, 0, off);
+    }
+
+    // ---- floating point (S-form encodings = D-form with bit 22
+    // cleared). Emitted after the integer families: float handlers must
+    // never displace the hot integer ones. Values move between frame
+    // slots / pinned registers / the accumulator as raw bits, so every
+    // operand and destination class composes exactly like the integer
+    // families. ----
+
+    // binary arithmetic with a direct FP instruction (hardware
+    // fmin/fmax match wasm NaN and signed-zero semantics)
+    let fbins: [(Op, bool, u32); 12] = [
+        (Op::F32_Add, true, 0x1E60_2800),
+        (Op::F32_Sub, true, 0x1E60_3800),
+        (Op::F32_Mul, true, 0x1E60_0800),
+        (Op::F32_Div, true, 0x1E60_1800),
+        (Op::F32_Min, true, 0x1E60_5800),
+        (Op::F32_Max, true, 0x1E60_4800),
+        (Op::F64_Add, false, 0x1E60_2800),
+        (Op::F64_Sub, false, 0x1E60_3800),
+        (Op::F64_Mul, false, 0x1E60_0800),
+        (Op::F64_Div, false, 0x1E60_1800),
+        (Op::F64_Min, false, 0x1E60_5800),
+        (Op::F64_Max, false, 0x1E60_4800),
+    ];
+    for &(op, f32w, denc) in fbins.iter() {
+        let enc = if f32w { denc - 0x0040_0000 } else { denc };
+        for a_cls in CLASSES {
+            for b_cls in CLASSES {
+                for d in DSTS {
+                    let off = e.here();
+                    src_fp(e, a_cls, f32w, 0, 8, X10);
+                    src_fp(e, b_cls, f32w, 1, 16, X11);
+                    e.fp2(enc, 0, 0, 1);
+                    let rd = dst_target(d);
+                    fp_result(e, f32w, rd, 0);
+                    finish(e, d, rd);
+                    tail(e, counted(a_cls, b_cls, d));
+                    def(handlers, op, variant(a_cls, b_cls, d), off);
+                }
+            }
+        }
+    }
+
+    // copysign: pure bit splice, no FP unit involved
+    for &(op, f32w) in [(Op::F32_Copysign, true), (Op::F64_Copysign, false)].iter() {
+        for a_cls in CLASSES {
+            for b_cls in CLASSES {
+                for d in DSTS {
+                    let off = e.here();
+                    let ra = src_a(e, a_cls, X10);
+                    let rb = src_b(e, b_cls, X11);
+                    let rd = dst_target(d);
+                    if f32w {
+                        e.lsl_x(X12, ra, 33);
+                        e.lsr_x(X12, X12, 33);
+                        e.ubfx_x(X13, rb, 31, 1);
+                        e.orr_x_lsl(rd, X12, X13, 31);
+                    } else {
+                        e.lsl_x(X12, ra, 1);
+                        e.lsr_x(X12, X12, 1);
+                        e.lsr_x(X13, rb, 63);
+                        e.orr_x_lsl(rd, X12, X13, 63);
+                    }
+                    finish(e, d, rd);
+                    tail(e, counted(a_cls, b_cls, d));
+                    def(handlers, op, variant(a_cls, b_cls, d), off);
+                }
+            }
+        }
+    }
+
+    // compares (fcmp + cset with unordered-false condition mapping;
+    // Ne is unordered-true via NE)
+    let fcmps: [(Op, bool, u32); 12] = [
+        (Op::F32_Eq, true, EQ),
+        (Op::F32_Ne, true, NE),
+        (Op::F32_Lt, true, MI),
+        (Op::F32_Gt, true, GT),
+        (Op::F32_Le, true, LS),
+        (Op::F32_Ge, true, GE),
+        (Op::F64_Eq, false, EQ),
+        (Op::F64_Ne, false, NE),
+        (Op::F64_Lt, false, MI),
+        (Op::F64_Gt, false, GT),
+        (Op::F64_Le, false, LS),
+        (Op::F64_Ge, false, GE),
+    ];
+    for &(op, f32w, cond) in fcmps.iter() {
+        for a_cls in CLASSES {
+            for b_cls in CLASSES {
+                for d in DSTS {
+                    let off = e.here();
+                    src_fp(e, a_cls, f32w, 0, 8, X10);
+                    src_fp(e, b_cls, f32w, 1, 16, X11);
+                    e.fcmp(f32w, 0, 1);
+                    let rd = dst_target(d);
+                    e.cset_w(rd, cond);
+                    finish(e, d, rd);
+                    tail(e, counted(a_cls, b_cls, d));
+                    def(handlers, op, variant(a_cls, b_cls, d), off);
+                }
+            }
+        }
+    }
+
+    // unary FP ops
+    let funs: [(Op, bool, u32); 14] = [
+        (Op::F32_Abs, true, 0x1E60_C000),
+        (Op::F32_Neg, true, 0x1E61_4000),
+        (Op::F32_Sqrt, true, 0x1E61_C000),
+        (Op::F32_Ceil, true, 0x1E64_C000),
+        (Op::F32_Floor, true, 0x1E65_4000),
+        (Op::F32_Trunc, true, 0x1E65_C000),
+        (Op::F32_Nearest, true, 0x1E64_4000),
+        (Op::F64_Abs, false, 0x1E60_C000),
+        (Op::F64_Neg, false, 0x1E61_4000),
+        (Op::F64_Sqrt, false, 0x1E61_C000),
+        (Op::F64_Ceil, false, 0x1E64_C000),
+        (Op::F64_Floor, false, 0x1E65_4000),
+        (Op::F64_Trunc, false, 0x1E65_C000),
+        (Op::F64_Nearest, false, 0x1E64_4000),
+    ];
+    for &(op, f32w, denc) in funs.iter() {
+        let enc = if f32w { denc - 0x0040_0000 } else { denc };
+        for a_cls in CLASSES {
+            for d in DSTS {
+                let off = e.here();
+                src_fp(e, a_cls, f32w, 0, 8, X10);
+                e.fp1(enc, 0, 0);
+                let rd = dst_target(d);
+                fp_result(e, f32w, rd, 0);
+                finish(e, d, rd);
+                tail(e, counted(a_cls, Cls::Slot, d));
+                def(handlers, op, variant(a_cls, Cls::Slot, d), off);
+            }
+        }
+    }
+
+    // int -> float conversions (scvtf/ucvtf: base = signed w->d;
+    // +0x1_0000 unsigned, +0x8000_0000 64-bit source, -0x40_0000 f32
+    // destination); the integer operand comes through the int classes
+    let cvts: [(Op, bool, bool, bool); 8] = [
+        // (op, dst_f32, src64, unsigned)
+        (Op::F32_ConvertI32S, true, false, false),
+        (Op::F32_ConvertI32U, true, false, true),
+        (Op::F32_ConvertI64S, true, true, false),
+        (Op::F32_ConvertI64U, true, true, true),
+        (Op::F64_ConvertI32S, false, false, false),
+        (Op::F64_ConvertI32U, false, false, true),
+        (Op::F64_ConvertI64S, false, true, false),
+        (Op::F64_ConvertI64U, false, true, true),
+    ];
+    for &(op, dst32, src64, uns) in cvts.iter() {
+        let mut enc: u32 = 0x1E62_0000;
+        if uns {
+            enc += 0x0001_0000;
+        }
+        if src64 {
+            enc += 0x8000_0000;
+        }
+        if dst32 {
+            enc -= 0x0040_0000;
+        }
+        for a_cls in CLASSES {
+            for d in DSTS {
+                let off = e.here();
+                let ra = src_a(e, a_cls, X10);
+                e.fp1(enc, 0, ra);
+                let rd = dst_target(d);
+                fp_result(e, dst32, rd, 0);
+                finish(e, d, rd);
+                tail(e, counted(a_cls, Cls::Slot, d));
+                def(handlers, op, variant(a_cls, Cls::Slot, d), off);
+            }
+        }
+    }
+
+    // demote / promote
+    for &(op, to32) in [(Op::F32_DemoteF64, true), (Op::F64_PromoteF32, false)].iter() {
+        let enc: u32 = if to32 { 0x1E62_4000 } else { 0x1E22_C000 };
+        for a_cls in CLASSES {
+            for d in DSTS {
+                let off = e.here();
+                src_fp(e, a_cls, !to32, 0, 8, X10);
+                e.fp1(enc, 0, 0);
+                let rd = dst_target(d);
+                fp_result(e, to32, rd, 0);
+                finish(e, d, rd);
+                tail(e, counted(a_cls, Cls::Slot, d));
+                def(handlers, op, variant(a_cls, Cls::Slot, d), off);
+            }
+        }
+    }
+
+    // saturating float -> int (fcvtzs/fcvtzu implement wasm trunc_sat
+    // exactly: clamp at the bounds, NaN -> 0); base = signed d->w
+    let sats: [(Op, bool, bool, bool); 8] = [
+        // (op, src_f32, to64, unsigned)
+        (Op::I32_TruncSatF32S, true, false, false),
+        (Op::I32_TruncSatF32U, true, false, true),
+        (Op::I32_TruncSatF64S, false, false, false),
+        (Op::I32_TruncSatF64U, false, false, true),
+        (Op::I64_TruncSatF32S, true, true, false),
+        (Op::I64_TruncSatF32U, true, true, true),
+        (Op::I64_TruncSatF64S, false, true, false),
+        (Op::I64_TruncSatF64U, false, true, true),
+    ];
+    let sat_enc = |src32: bool, to64: bool, uns: bool| -> u32 {
+        let mut enc: u32 = 0x1E78_0000;
+        if uns {
+            enc += 0x0001_0000;
+        }
+        if to64 {
+            enc += 0x8000_0000;
+        }
+        if src32 {
+            enc -= 0x0040_0000;
+        }
+        enc
+    };
+    for &(op, src32, to64, uns) in sats.iter() {
+        let enc = sat_enc(src32, to64, uns);
+        for a_cls in CLASSES {
+            for d in DSTS {
+                let off = e.here();
+                src_fp(e, a_cls, src32, 0, 8, X10);
+                let rd = dst_target(d);
+                e.fp1(enc, rd, 0);
+                finish(e, d, rd);
+                tail(e, counted(a_cls, Cls::Slot, d));
+                def(handlers, op, variant(a_cls, Cls::Slot, d), off);
+            }
+        }
+    }
+
+    // trapping float -> int: precise range pre-check so a bail always
+    // means a trap (never a valid value computed on the slow path — a
+    // dynamically-successful bail would break the accumulator pairing
+    // and stale the mirrored result). Bounds are the exclusive trap
+    // boundaries on the UNtruncated operand; the low compare's LE is
+    // unordered-true, so it also catches NaN.
+    let traps: [(Op, bool, bool, bool, u64, u64); 8] = [
+        // (op, src_f32, to64, unsigned, lo_bits, hi_bits)
+        (
+            Op::I32_TruncF32S,
+            true,
+            false,
+            false,
+            0xCF00_0001,
+            0x4F00_0000,
+        ),
+        (
+            Op::I32_TruncF32U,
+            true,
+            false,
+            true,
+            0xBF80_0000,
+            0x4F80_0000,
+        ),
+        (
+            Op::I32_TruncF64S,
+            false,
+            false,
+            false,
+            0xC1E0_0000_0020_0000,
+            0x41E0_0000_0000_0000,
+        ),
+        (
+            Op::I32_TruncF64U,
+            false,
+            false,
+            true,
+            0xBFF0_0000_0000_0000,
+            0x41F0_0000_0000_0000,
+        ),
+        (
+            Op::I64_TruncF32S,
+            true,
+            true,
+            false,
+            0xDF00_0001,
+            0x5F00_0000,
+        ),
+        (
+            Op::I64_TruncF32U,
+            true,
+            true,
+            true,
+            0xBF80_0000,
+            0x5F80_0000,
+        ),
+        (
+            Op::I64_TruncF64S,
+            false,
+            true,
+            false,
+            0xC3E0_0000_0000_0001,
+            0x43E0_0000_0000_0000,
+        ),
+        (
+            Op::I64_TruncF64U,
+            false,
+            true,
+            true,
+            0xBFF0_0000_0000_0000,
+            0x43F0_0000_0000_0000,
+        ),
+    ];
+    for &(op, src32, to64, uns, lo, hi) in traps.iter() {
+        let enc = sat_enc(src32, to64, uns);
+        for a_cls in CLASSES {
+            for d in DSTS {
+                let off = e.here();
+                src_fp(e, a_cls, src32, 0, 8, X10);
+                mov_imm64(e, X13, lo);
+                if src32 {
+                    e.fmov_s_w(1, X13);
+                } else {
+                    e.fmov_d_x(1, X13);
+                }
+                e.fcmp(src32, 0, 1);
+                {
+                    let delta = (slow_stub as i64 - e.here() as i64) / 4;
+                    e.b_cond(LE, delta as i32); // x <= lo, or NaN
+                }
+                mov_imm64(e, X13, hi);
+                if src32 {
+                    e.fmov_s_w(1, X13);
+                } else {
+                    e.fmov_d_x(1, X13);
+                }
+                e.fcmp(src32, 0, 1);
+                {
+                    let delta = (slow_stub as i64 - e.here() as i64) / 4;
+                    e.b_cond(GE, delta as i32); // x >= hi
+                }
+                let rd = dst_target(d);
+                e.fp1(enc, rd, 0);
+                finish(e, d, rd);
+                tail(e, counted(a_cls, Cls::Slot, d));
+                def(handlers, op, variant(a_cls, Cls::Slot, d), off);
+            }
+        }
+    }
+
+    // popcnt via NEON (cnt per byte + uaddlv); i32 slots are
+    // zero-extended, so the 64-bit byte-sum is exact for both widths
+    for &op in [Op::I32_Popcnt, Op::I64_Popcnt].iter() {
+        for a_cls in CLASSES {
+            for d in DSTS {
+                let off = e.here();
+                let ra = src_a(e, a_cls, X10);
+                e.fmov_d_x(0, ra);
+                e.i(0x0E20_5800); // cnt v0.8b, v0.8b
+                e.i(0x2E30_3800); // uaddlv h0, v0.8b
+                let rd = dst_target(d);
+                e.fmov_w_s(rd, 0);
+                finish(e, d, rd);
+                tail(e, counted(a_cls, Cls::Slot, d));
+                def(handlers, op, variant(a_cls, Cls::Slot, d), off);
+            }
+        }
+    }
+
+    // reinterpret: slots and registers already hold raw bits — a pure
+    // 64-bit copy in the integer domain
+    let reints = [
+        Op::I32_ReinterpretF32,
+        Op::I64_ReinterpretF64,
+        Op::F32_ReinterpretI32,
+        Op::F64_ReinterpretI64,
+    ];
+    for &op in reints.iter() {
+        for a_cls in CLASSES {
+            for d in DSTS {
+                let off = e.here();
+                let ra = src_a(e, a_cls, X10);
+                let rd = dst_target(d);
+                if ra != rd {
+                    e.mov_x(rd, ra);
+                }
+                finish(e, d, rd);
+                tail(e, counted(a_cls, Cls::Slot, d));
+                def(handlers, op, variant(a_cls, Cls::Slot, d), off);
+            }
+        }
+    }
+
     EmitOut {
         entry,
         slow_stub,
         call_handler,
+        callindirect_handler,
         return_exit,
     }
 }

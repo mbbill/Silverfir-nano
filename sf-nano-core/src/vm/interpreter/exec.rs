@@ -105,6 +105,10 @@ pub(super) enum Effect {
 struct NativeState {
     engine: NativeEngine,
     linked: Vec<Option<LinkedFunction>>,
+    /// Per-function-index callee info for the native `CallIndirect`
+    /// handler: [callee cells (0 = slow), l1off<<48|l0off<<32|canon type,
+    /// frame metadata]. The handler reads it through the entry state.
+    indirect_info: Vec<[u64; 3]>,
     /// `(cells_start, cells_end, func_index)`, sorted by start — maps a
     /// native pc back to its function on slow exits (native calls move
     /// between functions without Rust involvement).
@@ -390,6 +394,53 @@ impl<'m> InterpInstance<'m> {
                 _ => None,
             })
             .collect();
+        // Canonical type ids for the native call_indirect type check:
+        // `types_equivalent` is an equivalence relation, so numbering the
+        // classes densely lets the handler compare one small id. Class
+        // representatives are found by linear scan — real modules carry
+        // hundreds of types at most.
+        let mut used_types: Vec<u32> = (0..self.funcs.len())
+            .filter_map(|i| self.module.functions().get(i).map(|f| f.type_index()))
+            .collect();
+        for f in self.funcs.iter().flatten() {
+            for ins in f.code.iter() {
+                if ins.op == Op::CallIndirect {
+                    used_types.push(ins.c as u32);
+                }
+            }
+        }
+        let max_ti = used_types.iter().max().copied().unwrap_or(0) as usize;
+        let mut canon_of: Vec<Option<u64>> = vec![None; max_ti + 1];
+        let mut reps: Vec<u32> = Vec::new();
+        for &ti in used_types.iter() {
+            if canon_of[ti as usize].is_some() {
+                continue;
+            }
+            let id = reps
+                .iter()
+                .position(|&r| self.module.types().types_equivalent(r, ti))
+                .unwrap_or_else(|| {
+                    reps.push(ti);
+                    reps.len() - 1
+                });
+            canon_of[ti as usize] = Some(id as u64);
+        }
+
+        let indirect_info: Vec<[u64; 3]> = (0..self.funcs.len())
+            .map(|i| {
+                let (Some(Some((cells, packed, l0, l1))), Some(func)) =
+                    (callee_info.get(i), self.module.functions().get(i))
+                else {
+                    return [0; 3];
+                };
+                let Some(Some(canon)) = canon_of.get(func.type_index() as usize) else {
+                    return [0; 3];
+                };
+                [*cells, l1 << 48 | l0 << 32 | canon, *packed]
+            })
+            .collect();
+
+        let ci_h = engine.callindirect_handler_addr();
         for (i, lf) in linked.iter_mut().enumerate() {
             let (Some(f), Some(lf)) = (&self.funcs[i], lf) else {
                 continue;
@@ -409,6 +460,21 @@ impl<'m> InterpInstance<'m> {
                         };
                     }
                 }
+                if ins.op == Op::CallIndirect && ins.flags & FLAG_A_CONST == 0 && ins.c >> 32 == 0 {
+                    // The expected id must fit the cell's 16-bit field;
+                    // an overflow (or unknown type) leaves the site slow.
+                    let canon = canon_of.get((ins.c as u32) as usize);
+                    if let Some(Some(canon)) = canon {
+                        if *canon <= 0xFFFF {
+                            lf.cells[k] = DCell {
+                                h: ci_h,
+                                a: caller_l1 << 48 | ins.a * 8,
+                                b: caller_l0 << 48 | canon << 32 | ins.b * 8,
+                                c: 0,
+                            };
+                        }
+                    }
+                }
             }
         }
 
@@ -425,6 +491,7 @@ impl<'m> InterpInstance<'m> {
         self.native = Some(NativeState {
             engine,
             linked,
+            indirect_info,
             ranges,
             slow_exits: vec![0u64; Op::Unreachable as usize + 1],
             dispatches: 0,
@@ -773,6 +840,12 @@ impl<'m> InterpInstance<'m> {
             l0_value: 0,
             l1_value: 0,
             acc_value: 0,
+            table0_base: 0,
+            table0_len: 0,
+            indirect_base: self
+                .native
+                .as_ref()
+                .map_or(0, |n| n.indirect_info.as_ptr() as u64),
         };
         let mut cur_base = act.base;
         let mut cur_l0_slot = (l0_off / 8) as usize;
@@ -781,6 +854,13 @@ impl<'m> InterpInstance<'m> {
             if let Some(m) = self.memories.first_mut() {
                 state.mem_base = m.bytes.as_mut_ptr() as u64;
                 state.mem_len = m.bytes.len() as u64;
+            }
+            // Table 0 can move or grow only on the slow path, so a
+            // per-entry refresh keeps the native indirect-call handler
+            // valid with no invalidation protocol.
+            if let Some(t) = self.tables.first() {
+                state.table0_base = t.entries.as_ptr() as u64;
+                state.table0_len = t.entries.len() as u64;
             }
             // The pinned-local registers reload from their (write-through,
             // hence authoritative) slots at every chain entry.
