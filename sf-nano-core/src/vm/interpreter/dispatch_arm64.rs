@@ -46,8 +46,9 @@ pub(super) const EXIT_TRAP_BASE: u64 = 16;
 /// match `exec_ins` exactly (differential/spectest parity).
 pub(super) const TRAP_KINDS: &[&str] = &["out of bounds memory access", "call stack exhausted"];
 
-/// Bytes per native return-stack record: `(ret_pc, frame, code_base)`.
-pub(super) const RET_RECORD: usize = 24;
+/// Bytes per native return-stack record:
+/// `(ret_pc, frame, code_base | caller_l0off<<48, caller_l1off)`.
+pub(super) const RET_RECORD: usize = 32;
 
 /// Communication block between Rust and the native chain. Field offsets are
 /// baked into the trampoline; keep in sync with `emit_engine`.
@@ -65,6 +66,7 @@ pub(super) struct EnterState {
     pub stack_limit: u64, // 72: value-stack end (frame exhaustion)
     pub dispatches: u64,  // 80: handler dispatch count (in and out)
     pub l0_value: u64,    // 88: current function's l0 local value (in only)
+    pub l1_value: u64,    // 96: current function's l1 local value (in only)
 }
 
 /// One 32-byte dispatch cell; `Instr` with the leading word replaced by the
@@ -84,16 +86,17 @@ pub(super) struct DCell {
 pub(super) struct LinkedFunction {
     pub cells: Vec<DCell>,
     br_flat: Vec<u32>,
-    /// Byte offset of the function's l0 local in its frame (0 when the
-    /// function has no l0 — the unconditional reload then reads slot 0,
-    /// which no cell consumes as L0).
+    /// Byte offsets of the function's pinned locals in its frame (0 when
+    /// absent — the unconditional reload then reads slot 0, which no
+    /// cell consumes as a pinned class).
     pub l0_off: u32,
+    pub l1_off: u32,
 }
 
 const N_OPS: usize = Op::Unreachable as usize + 1;
-/// Variant slots per op: operand classes a×b ∈ {slot, const, acc, l0}²,
-/// destination ∈ {mem, acc, l0} — densely mapped, 4·4·3 = 48.
-const N_VARIANTS: usize = 48;
+/// Variant slots per op: operand classes a×b ∈ {slot, const, acc, l0,
+/// l1}², destination ∈ {mem, acc, l0, l1} — densely mapped, 5·5·4 = 100.
+const N_VARIANTS: usize = 100;
 
 /// Operand residency class for handler emission and link classification.
 #[derive(Clone, Copy, PartialEq)]
@@ -102,21 +105,23 @@ enum Cls {
     Const,
     Acc,
     L0,
+    L1,
 }
 
 /// Destination residency class. `Mem` computes into the accumulator and
-/// stores; `Acc` skips the store; `L0` computes into the l0 register AND
-/// stores (write-through — the slot stays authoritative for the slow
-/// path and for l0 reloads).
+/// stores; `Acc` skips the store; `L0`/`L1` compute into the pinned
+/// register AND store (write-through — the slot stays authoritative for
+/// the slow path and for reloads).
 #[derive(Clone, Copy, PartialEq)]
 enum DstCls {
     Mem,
     Acc,
     L0,
+    L1,
 }
 
-const CLASSES: [Cls; 4] = [Cls::Slot, Cls::Const, Cls::Acc, Cls::L0];
-const DSTS: [DstCls; 3] = [DstCls::Mem, DstCls::Acc, DstCls::L0];
+const CLASSES: [Cls; 5] = [Cls::Slot, Cls::Const, Cls::Acc, Cls::L0, Cls::L1];
+const DSTS: [DstCls; 4] = [DstCls::Mem, DstCls::Acc, DstCls::L0, DstCls::L1];
 
 /// Dense variant index for an (a, b, dst) class combination.
 fn variant(a: Cls, b: Cls, d: DstCls) -> usize {
@@ -125,19 +130,22 @@ fn variant(a: Cls, b: Cls, d: DstCls) -> usize {
         Cls::Const => 1,
         Cls::Acc => 2,
         Cls::L0 => 3,
+        Cls::L1 => 4,
     };
     let bi = match b {
         Cls::Slot => 0,
         Cls::Const => 1,
         Cls::Acc => 2,
         Cls::L0 => 3,
+        Cls::L1 => 4,
     };
     let di = match d {
         DstCls::Mem => 0,
         DstCls::Acc => 1,
         DstCls::L0 => 2,
+        DstCls::L1 => 3,
     };
-    ai + 4 * bi + 16 * di
+    ai + 5 * bi + 25 * di
 }
 
 fn between(op: Op, lo: Op, hi: Op) -> bool {
@@ -200,14 +208,23 @@ fn slot_fields(op: Op) -> (bool, bool, bool) {
     }
 }
 
-/// Pick the function's l0: the local slot with the most native-operand
-/// references (`u64::MAX` = none). Unweighted static counts.
-fn select_l0(func: &PredecodedFunction) -> u64 {
+/// Pick the function's two pinned locals — the most- and second-most-
+/// referenced slots, by UNWEIGHTED static count (`u64::MAX` = none).
+/// Loop-depth weighting (10^depth over back edges) was tried and
+/// measured 11% WORSE on CoreMark; the per-function diagnostic showed
+/// why: depth weighting systematically displaced frequently-WRITTEN
+/// locals (loop-carried state, e.g. 33r/17w) with read-mostly ones
+/// (base pointers, 39r/3w). The pinned-local payoff is breaking the
+/// loop-carried store→load chain, which needs the WRITTEN local;
+/// read-mostly slot loads are independent and the OoO core hides them
+/// anyway. A write-biased score (reads + 2·writes) measured
+/// inconclusive (flips only cold functions on CoreMark).
+fn select_pinned(func: &PredecodedFunction) -> (u64, u64) {
     let n = func.n_locals as u64;
     if n == 0 {
-        return u64::MAX;
+        return (u64::MAX, u64::MAX);
     }
-    let mut counts = vec![0u32; func.n_locals as usize];
+    let mut counts = vec![0u64; func.n_locals as usize];
     for ins in func.code.iter() {
         let (a_s, b_s, c_d) = slot_fields(ins.op);
         if a_s && ins.flags & FLAG_A_CONST == 0 && ins.a < n {
@@ -220,26 +237,39 @@ fn select_l0(func: &PredecodedFunction) -> u64 {
             counts[ins.c as usize] += 1;
         }
     }
-    let (best, &cnt) = match counts.iter().enumerate().max_by_key(|(_, &c)| c) {
-        Some(x) => x,
-        None => return u64::MAX,
-    };
-    // Byte offset must fit the 16-bit packing in call cells / records.
-    if cnt == 0 || best * 8 >= 1 << 16 {
-        return u64::MAX;
+    let mut best = (usize::MAX, 0u64);
+    let mut second = (usize::MAX, 0u64);
+    for (i, &c) in counts.iter().enumerate() {
+        if c > best.1 {
+            second = best;
+            best = (i, c);
+        } else if c > second.1 {
+            second = (i, c);
+        }
     }
-    best as u64
+    // Byte offsets must fit the 16-bit packing in call cells / records.
+    let ok = |(i, c): (usize, u64)| c > 0 && i * 8 < 1 << 16;
+    let l0 = if ok(best) { best.0 as u64 } else { u64::MAX };
+    let l1 = if l0 != u64::MAX && ok(second) {
+        second.0 as u64
+    } else {
+        u64::MAX
+    };
+    (l0, l1)
 }
 
 /// Classify one cell into its dense variant, given link-resolved flags
-/// and the function's l0 slot (`u64::MAX` = none). L0 takes precedence
-/// over acc hints on the same operand; a `const` flag wins over both.
-fn op_variant(ins: &Instr, flags: u16, l0_slot: u64) -> usize {
+/// and the function's pinned slots (`u64::MAX` = none). Pinned classes
+/// take precedence over acc hints on the same operand; a `const` flag
+/// wins over both.
+fn op_variant(ins: &Instr, flags: u16, l0_slot: u64, l1_slot: u64) -> usize {
     let (a_s, b_s, c_d) = slot_fields(ins.op);
     let a = if flags & FLAG_A_CONST != 0 {
         Cls::Const
     } else if a_s && ins.a == l0_slot {
         Cls::L0
+    } else if a_s && ins.a == l1_slot {
+        Cls::L1
     } else if flags & FLAG_A_ACC != 0 {
         Cls::Acc
     } else {
@@ -249,13 +279,29 @@ fn op_variant(ins: &Instr, flags: u16, l0_slot: u64) -> usize {
         Cls::Const
     } else if b_s && ins.b == l0_slot {
         Cls::L0
+    } else if b_s && ins.b == l1_slot {
+        Cls::L1
     } else if flags & FLAG_B_ACC != 0 {
         Cls::Acc
     } else {
         Cls::Slot
     };
-    let d = if c_d && ins.c == l0_slot {
+    let d = if ins.op == Op::Select {
+        // Select's dst slot is packed in c's low half.
+        let dslot = ins.c & 0xffff_ffff;
+        if dslot == l0_slot {
+            DstCls::L0
+        } else if dslot == l1_slot {
+            DstCls::L1
+        } else if flags & FLAG_DST_ACC != 0 {
+            DstCls::Acc
+        } else {
+            DstCls::Mem
+        }
+    } else if c_d && ins.c == l0_slot {
         DstCls::L0
+    } else if c_d && ins.c == l1_slot {
+        DstCls::L1
     } else if flags & FLAG_DST_ACC != 0 {
         DstCls::Acc
     } else {
@@ -377,7 +423,7 @@ pub(super) struct NativeEngine {
 
 impl NativeEngine {
     pub(super) fn new() -> Result<Self, WasmError> {
-        let mut buf = CodeBuffer::with_capacity(256 * 1024).map_err(WasmError::invalid)?;
+        let mut buf = CodeBuffer::with_capacity(512 * 1024).map_err(WasmError::invalid)?;
         buf.begin_write();
         let mut handlers = vec![u32::MAX; N_OPS * N_VARIANTS];
         let out = {
@@ -422,7 +468,7 @@ impl NativeEngine {
         // Pick the function's l0: the most-referenced local slot. Static
         // unweighted counts; byte offset must fit the 16-bit packing in
         // call cells and return records.
-        let l0_slot = select_l0(func);
+        let (l0_slot, l1_slot) = select_pinned(func);
 
         // Resolve the predecoder's acc hints: an acc consumer's producer
         // is EXACTLY the preceding cell (strict adjacency). Honor the
@@ -440,11 +486,11 @@ impl NativeEngine {
                 && writes_acc(func.code[j - 1].op)
                 && self.h(
                     func.code[j - 1].op,
-                    op_variant(&func.code[j - 1], flags[j - 1], l0_slot),
+                    op_variant(&func.code[j - 1], flags[j - 1], l0_slot, l1_slot),
                 ) != u32::MAX
                 && self.h(
                     func.code[j].op,
-                    op_variant(&func.code[j], flags[j], l0_slot),
+                    op_variant(&func.code[j], flags[j], l0_slot, l1_slot),
                 ) != u32::MAX
                 && native_guard(&func.code[j - 1])
                 && native_guard(&func.code[j]);
@@ -481,11 +527,7 @@ impl NativeEngine {
         let mut brtable_native = vec![false; func.code.len()];
         for (i, ins) in func.code.iter().enumerate() {
             let fl = flags[i];
-            let off = self.h(ins.op, op_variant(ins, fl, l0_slot));
-            // Select whose packed dst is the l0 local must go slow: its
-            // handler writes only the slot, which would leave the l0
-            // register stale inside the chain.
-            let l0_ok = !(ins.op == Op::Select && (ins.c & 0xffff_ffff) == l0_slot);
+            let off = self.h(ins.op, op_variant(ins, fl, l0_slot, l1_slot));
             if ins.op == Op::BrTable && off != u32::MAX {
                 let table = &func.br_tables[ins.c as usize];
                 brtable_native[i] = true;
@@ -495,7 +537,7 @@ impl NativeEngine {
                     b: table_byte_off[ins.c as usize],
                     c: (table.len() - 1) as u64,
                 });
-            } else if off != u32::MAX && native_guard(ins) && l0_ok {
+            } else if off != u32::MAX && native_guard(ins) {
                 let a = if fl & FLAG_A_CONST != 0 {
                     ins.a
                 } else {
@@ -515,15 +557,18 @@ impl NativeEngine {
             }
         }
 
-        let l0_off = if l0_slot == u64::MAX {
-            0
-        } else {
-            (l0_slot * 8) as u32
+        let off_of = |slot: u64| {
+            if slot == u64::MAX {
+                0
+            } else {
+                (slot * 8) as u32
+            }
         };
         let mut lf = LinkedFunction {
             cells,
             br_flat,
-            l0_off,
+            l0_off: off_of(l0_slot),
+            l1_off: off_of(l1_slot),
         };
         // The flat buffer has its final allocation now; resolve BrTable
         // base offsets to absolute addresses.
@@ -550,10 +595,12 @@ impl NativeEngine {
 /// adjacent producer/consumer pair. Never live across an exit, so it is
 /// not part of EnterState.
 const ACC: u32 = 8;
-/// The l0 register: the function's hottest local, register-resident
-/// across the whole body (write-through — its frame slot stays current).
-/// Reloaded from the slot at every chain entry, call, and return.
+/// The l0/l1 registers: the function's two hottest locals,
+/// register-resident across the whole body (write-through — the frame
+/// slots stay current). Reloaded from the slots at every chain entry,
+/// call, and return.
 const L0R: u32 = 17;
+const L1R: u32 = 14;
 const X9: u32 = 9;
 const X10: u32 = 10;
 const X11: u32 = 11;
@@ -818,12 +865,35 @@ impl<'b> Enc<'b> {
 // Engine emission
 // ---------------------------------------------------------------------------
 
+/// Diagnostic count-mode for the in-chain dispatch counter:
+/// 0 = count every dispatch (production), 1 = count only handlers whose
+/// variant involves the L0 class, 2 = only L1-involved. Modes 1/2 turn
+/// one CoreMark run into an exact, timing-independent measurement of
+/// dynamic pinned-class engagement.
+const COUNT_MODE: u8 = 0;
+
+/// Whether a handler of this variant bumps the dispatch counter under
+/// the current COUNT_MODE.
+fn counted(a: Cls, b: Cls, d: DstCls) -> bool {
+    match COUNT_MODE {
+        1 => a == Cls::L0 || b == Cls::L0 || d == DstCls::L0,
+        2 => a == Cls::L1 || b == Cls::L1 || d == DstCls::L1,
+        _ => true,
+    }
+}
+
+fn bump(e: &mut Enc<'_>, on: bool) {
+    if on {
+        e.add_x_imm(DCNT, DCNT, 1);
+    }
+}
+
 /// The `add pc, #32; ldr x9, [pc]; br x9` dispatch tail plus the
 /// one-instruction counter. (A pre-index `ldr x9, [pc, #32]!` form
 /// measured no better on Apple silicon: the writeback µop serializes
 /// against the load, while the separate `add` schedules freely.)
-fn tail(e: &mut Enc<'_>) {
-    e.add_x_imm(DCNT, DCNT, 1);
+fn tail(e: &mut Enc<'_>, count: bool) {
+    bump(e, count);
     e.add_x_imm(PC, PC, CELL);
     e.ldr_x_imm(X9, PC, 0);
     e.br(X9);
@@ -836,6 +906,7 @@ fn src_a(e: &mut Enc<'_>, cls: Cls, tmp: u32) -> u32 {
     match cls {
         Cls::Acc => ACC,
         Cls::L0 => L0R,
+        Cls::L1 => L1R,
         Cls::Const => {
             e.ldr_x_imm(tmp, PC, 8);
             tmp
@@ -852,6 +923,7 @@ fn src_b(e: &mut Enc<'_>, cls: Cls, tmp: u32) -> u32 {
     match cls {
         Cls::Acc => ACC,
         Cls::L0 => L0R,
+        Cls::L1 => L1R,
         Cls::Const => {
             e.ldr_x_imm(tmp, PC, 16);
             tmp
@@ -882,6 +954,7 @@ fn store_dst(e: &mut Enc<'_>, src: u32) {
 fn dst_target(d: DstCls) -> u32 {
     match d {
         DstCls::L0 => L0R,
+        DstCls::L1 => L1R,
         _ => ACC,
     }
 }
@@ -955,6 +1028,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     e.ldr_x_imm(STKLIM, STATE, 72);
     e.ldr_x_imm(DCNT, STATE, 80);
     e.ldr_x_imm(L0R, STATE, 88);
+    e.ldr_x_imm(L1R, STATE, 96);
     e.ldr_x_imm(X9, PC, 0);
     e.br(X9);
 
@@ -963,7 +1037,9 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     //       c = frame_slots<<32 | n_locals<<16 | n_params
     let call_handler = e.here();
     {
-        e.add_x_imm(DCNT, DCNT, 1);
+        bump(e, COUNT_MODE == 0);
+        // Cell layout: a = caller_l1off<<48 | callee cells (48-bit VA),
+        // b = callee_l1off<<48 | callee_l0off<<32 | arg_base*8,
         // c = caller_l0off<<48 | frame_slots<<32 | n_locals<<16 | n_params
         e.ldr_x_imm(X12, PC, 24);
         // return-stack depth
@@ -972,8 +1048,8 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             let delta = (trap_exhaust as i64 - e.here() as i64) / 4;
             e.b_cond(HS, delta as i32);
         }
-        // b = callee_l0off<<32 | arg_base*8; new frame + value-stack limit
         e.ldr_x_imm(X11, PC, 16);
+        e.ldr_x_imm(X9, PC, 8);
         e.mov_w(X10, X11); // arg_base*8 (low 32, zero-extended)
         e.add_x_reg(X10, FRAME, X10); // new frame base
         e.ubfx_x(X13, X12, 32, 16); // frame_slots
@@ -983,12 +1059,14 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             let delta = (trap_exhaust as i64 - e.here() as i64) / 4;
             e.b_cond(HI, delta as i32);
         }
-        // push (ret_pc, caller frame, caller code | caller_l0off<<48)
+        // push (ret_pc, caller frame, code | caller_l0off<<48, caller_l1off)
         e.add_x_imm(X13, PC, CELL);
         e.stp_x_base(X13, FRAME, RETSP);
         e.lsr_x(X13, X12, 48); // caller l0off
         e.orr_x_lsl(X13, CODE, X13, 48);
         e.str_x_imm(X13, RETSP, 16);
+        e.lsr_x(X13, X9, 48); // caller l1off
+        e.str_x_imm(X13, RETSP, 24);
         e.add_x_imm(RETSP, RETSP, RET_RECORD as u32);
         e.mov_x(FRAME, X10);
         // zero the fresh locals: [n_params*8, n_locals*8)
@@ -1000,10 +1078,12 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         e.b_cond(HS, 3); // -> zdone
         e.str_x_post(31, X10, 8); // str xzr, [x10], #8
         e.b(-3); // -> zl
-                 // load the callee's l0 (after zeroing) and jump in
-        e.lsr_x(X13, X11, 32); // zdone: callee l0off
+                 // load the callee's pinned locals (after zeroing) and jump in
+        e.ubfx_x(X13, X11, 32, 16); // zdone: callee l0off
         e.ldr_x_reg(L0R, FRAME, X13);
-        e.ldr_x_imm(CODE, PC, 8);
+        e.lsr_x(X13, X11, 48); // callee l1off
+        e.ldr_x_reg(L1R, FRAME, X13);
+        e.ubfx_x(CODE, X9, 0, 48);
         e.mov_x(PC, CODE);
         e.ldr_x_imm(X9, PC, 0);
         e.br(X9);
@@ -1015,7 +1095,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     // through `exit_cell` into `return_exit`.
     {
         let off = e.here();
-        e.add_x_imm(DCNT, DCNT, 1);
+        bump(e, COUNT_MODE == 0);
         e.ldr_x_imm(X10, PC, 8);
         e.ldr_x_imm(X11, PC, 16);
         e.add_x_reg(X10, FRAME, X10);
@@ -1027,11 +1107,13 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         e.cbnz_x(X11, -3); // -> cl
         e.ldp_x_pre(X13, FRAME, RETSP, -(RET_RECORD as i32)); // pop:
         e.ldr_x_imm(X12, RETSP, 16); // caller code | caller_l0off<<48
+        e.ldr_x_imm(X10, RETSP, 24); // caller l1off
         e.lsr_x(X11, X12, 48);
         e.ubfx_x(CODE, X12, 0, 48);
-        // reload the caller's l0 (sentinel records carry a readable dummy
-        // frame, so this load is always safe)
+        // reload the caller's pinned locals (sentinel records carry a
+        // readable dummy frame, so these loads are always safe)
         e.ldr_x_reg(L0R, FRAME, X11);
+        e.ldr_x_reg(L1R, FRAME, X10);
         e.mov_x(PC, X13);
         e.ldr_x_imm(X9, PC, 0);
         e.br(X9);
@@ -1041,7 +1123,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     // ---- data movement (a ∈ {slot, acc, l0} for MovSlot, const for
     // MovConst; dst ∈ {mem, acc, l0}) ----
     let mut mov_variants: Vec<(Op, Cls)> = Vec::new();
-    for a in [Cls::Slot, Cls::Acc, Cls::L0] {
+    for a in [Cls::Slot, Cls::Acc, Cls::L0, Cls::L1] {
         mov_variants.push((Op::MovSlot, a));
     }
     mov_variants.push((Op::MovConst, Cls::Const));
@@ -1052,6 +1134,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             let v = match a {
                 Cls::Acc => ACC,
                 Cls::L0 => L0R,
+                Cls::L1 => L1R,
                 Cls::Const => {
                     e.ldr_x_imm(rd, PC, 8);
                     rd
@@ -1066,7 +1149,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 e.mov_x(rd, v);
             }
             finish(e, d, rd);
-            tail(e);
+            tail(e, counted(a, Cls::Slot, d));
             def(handlers, op, variant(a, Cls::Slot, d), off);
         }
     }
@@ -1232,7 +1315,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                     let rd = dst_target(d);
                     e.alu_reg(b.enc, rd, ra, rb);
                     finish(e, d, rd);
-                    tail(e);
+                    tail(e, counted(a_cls, b_cls, d));
                     def(handlers, b.op, variant(a_cls, b_cls, d), off);
                 }
             }
@@ -1362,7 +1445,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                     let rd = dst_target(d);
                     e.cset_w(rd, c.cond);
                     finish(e, d, rd);
-                    tail(e);
+                    tail(e, counted(a_cls, b_cls, d));
                     def(handlers, c.op, variant(a_cls, b_cls, d), off);
                 }
             }
@@ -1381,7 +1464,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 let rd = dst_target(d);
                 e.cset_w(rd, EQ);
                 finish(e, d, rd);
-                tail(e);
+                tail(e, counted(a_cls, Cls::Slot, d));
                 def(handlers, op, variant(a_cls, Cls::Slot, d), off);
             }
         }
@@ -1429,7 +1512,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                     _ => unreachable!(),
                 }
                 finish(e, d, rd);
-                tail(e);
+                tail(e, counted(a_cls, Cls::Slot, d));
                 def(handlers, op, variant(a_cls, Cls::Slot, d), off);
             }
         }
@@ -1438,7 +1521,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     // ---- branches ----
     {
         let off = e.here();
-        e.add_x_imm(DCNT, DCNT, 1);
+        bump(e, COUNT_MODE == 0);
         e.ldr_x_imm(X12, PC, 24);
         e.add_x_reg(PC, CODE, X12);
         e.ldr_x_imm(X9, PC, 0);
@@ -1447,20 +1530,22 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     }
     for (op, taken_on_nonzero) in [(Op::BrIf, true), (Op::BrIfNot, false)] {
         for a_cls in CLASSES {
+            let cnt = counted(a_cls, Cls::Slot, DstCls::Mem);
             let off = e.here();
             let ra = src_a(e, a_cls, X10);
-            // not-taken: skip the 5-instruction taken path into the tail
+            // not-taken: skip the taken path into the tail (its length
+            // depends on whether this variant bumps the counter)
             if taken_on_nonzero {
-                e.cbz_w(ra, 6);
+                e.cbz_w(ra, 5 + cnt as i32);
             } else {
-                e.cbnz_w(ra, 6);
+                e.cbnz_w(ra, 5 + cnt as i32);
             }
-            e.add_x_imm(DCNT, DCNT, 1);
+            bump(e, cnt);
             e.ldr_x_imm(X12, PC, 24);
             e.add_x_reg(PC, CODE, X12);
             e.ldr_x_imm(X9, PC, 0);
             e.br(X9);
-            tail(e);
+            tail(e, counted(a_cls, Cls::Slot, DstCls::Mem));
             def(handlers, op, variant(a_cls, Cls::Slot, DstCls::Mem), off);
         }
     }
@@ -1499,24 +1584,25 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 } else {
                     e.cmp_x(ra, rb);
                 }
+                let cnt = counted(a_cls, b_cls, DstCls::Mem);
                 // not-taken: inverted condition skips the taken path
-                e.b_cond(cond ^ 1, 6);
-                e.add_x_imm(DCNT, DCNT, 1);
+                e.b_cond(cond ^ 1, 5 + cnt as i32);
+                bump(e, cnt);
                 e.ldr_x_imm(X12, PC, 24);
                 e.add_x_reg(PC, CODE, X12);
                 e.ldr_x_imm(X9, PC, 0);
                 e.br(X9);
-                tail(e);
+                tail(e, counted(a_cls, b_cls, DstCls::Mem));
                 def(handlers, op, variant(a_cls, b_cls, DstCls::Mem), off);
             }
         }
     }
 
-    // ---- select (c = cond_byteoff << 32 | dst_byteoff; an l0 dst is
-    // forced to the slow path by the link guard, so no L0-dst variant) ----
+    // ---- select (c = cond_byteoff << 32 | dst_byteoff; pinned dsts
+    // compute into their register and still store — write-through) ----
     for a_cls in CLASSES {
         for b_cls in CLASSES {
-            for d in [DstCls::Mem, DstCls::Acc] {
+            for d in DSTS {
                 let off = e.here();
                 let ra = src_a(e, a_cls, X10);
                 let rb = src_b(e, b_cls, X11);
@@ -1526,11 +1612,11 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 e.cmp_x(X13, 31);
                 let rd = dst_target(d);
                 e.csel_x(rd, ra, rb, NE);
-                if d == DstCls::Mem {
+                if d != DstCls::Acc {
                     e.mov_w(X12, X12); // dst slot byte offset
                     e.str_x_reg(rd, FRAME, X12);
                 }
-                tail(e);
+                tail(e, counted(a_cls, b_cls, d));
                 def(handlers, Op::Select, variant(a_cls, b_cls, d), off);
             }
         }
@@ -1539,9 +1625,9 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     // ---- br_table (a = index slot, b = flat table ptr, c = len-1) ----
     // The flat table is `[targets..., default]`; clamping the index to
     // len-1 selects the default for any out-of-range value.
-    for a_cls in [Cls::Slot, Cls::Acc, Cls::L0] {
+    for a_cls in [Cls::Slot, Cls::Acc, Cls::L0, Cls::L1] {
         let off = e.here();
-        e.add_x_imm(DCNT, DCNT, 1);
+        bump(e, counted(a_cls, Cls::Slot, DstCls::Mem));
         let ra = src_a(e, a_cls, X10);
         e.ldr_x_imm(X11, PC, 16);
         e.ldr_x_imm(X12, PC, 24);
@@ -1567,7 +1653,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         let rd = dst_target(d);
         e.ldr_x_reg(rd, GLOB, X10);
         finish(e, d, rd);
-        tail(e);
+        tail(e, counted(Cls::Slot, Cls::Slot, d));
         def(
             handlers,
             Op::GlobalGet,
@@ -1580,7 +1666,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         let ra = src_a(e, a_cls, X10); // value operand
         e.ldr_x_imm(X12, PC, 24); // c = index*8
         e.str_x_reg(ra, GLOB, X12);
-        tail(e);
+        tail(e, counted(a_cls, Cls::Slot, DstCls::Mem));
         def(
             handlers,
             Op::GlobalSet,
@@ -1787,7 +1873,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                             _ => unreachable!(),
                         }
                     }
-                    tail(e);
+                    tail(e, counted(a_cls, b_cls, d));
                     def(handlers, m.op, variant(a_cls, b_cls, d), off);
                 }
             }
