@@ -5,6 +5,7 @@ Usage:
     python3 run_tests.py              # run full benchmark suite
     python3 run_tests.py --fast       # run with reduced workloads for CI/QEMU
     python3 run_tests.py --exec PATH  # run with a different runtime
+    python3 run_tests.py --interp     # run with the interpreter engine
 """
 
 import argparse
@@ -269,12 +270,16 @@ def main():
                         help="Extra args for the runtime (e.g. '--dir .' for wasmtime)")
     parser.add_argument("--fast", action="store_true",
                         help="Use reduced workloads for CI/QEMU iteration")
+    parser.add_argument("--interp", action="store_true",
+                        help="Run with the interpreter (passes --interp to sf-nano-cli)")
     args = parser.parse_args()
 
     cli_parts = args.cli.split()
     cli_parts[0] = os.path.expanduser(cli_parts[0])
     cli = cli_parts[0]
     cli_extra = cli_parts[1:] + (args.cli_args.split() if args.cli_args else [])
+    if args.interp:
+        cli_extra = ["--interp"] + cli_extra
     if not os.path.exists(cli) and not shutil.which(cli):
         print(f"ERROR: runtime not found: {cli}", file=sys.stderr)
         if cli == DEFAULT_CLI:
@@ -282,6 +287,8 @@ def main():
         sys.exit(1)
 
     mode = "fast" if args.fast else "full"
+    if args.interp:
+        mode += ", interp"
     print(f"Runtime: {' '.join(cli_parts)} ({mode} mode)")
     print()
 

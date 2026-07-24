@@ -384,7 +384,9 @@ fn run_interp(data: &[u8], module_name: &str, stats: bool) -> i32 {
                 return 1;
             }
         };
-        println!("runtime engine: interpreter (native dispatch)");
+        // stderr: stdout belongs to the guest program (checksummed by
+        // the benchmark harness).
+        eprintln!("runtime engine: interpreter (native dispatch)");
 
         inst.set_host(Box::new(move |m, n, mem, args, results| {
             let key = (m.to_string(), n.to_string());
