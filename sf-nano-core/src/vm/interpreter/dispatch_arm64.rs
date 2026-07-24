@@ -67,6 +67,8 @@ pub(super) struct EnterState {
     pub dispatches: u64,  // 80: handler dispatch count (in and out)
     pub l0_value: u64,    // 88: current function's l0 local value (in only)
     pub l1_value: u64,    // 96: current function's l1 local value (in only)
+    pub acc_value: u64,   // 104: the accumulator (in AND out — call results
+                          // ride it across activation boundaries)
 }
 
 /// One 32-byte dispatch cell; `Instr` with the leading word replaced by the
@@ -483,7 +485,8 @@ impl NativeEngine {
                 continue;
             }
             let ok = j > 0
-                && writes_acc(func.code[j - 1].op)
+                && (writes_acc(func.code[j - 1].op)
+                    || matches!(func.code[j - 1].op, Op::Call | Op::CallIndirect))
                 && self.h(
                     func.code[j - 1].op,
                     op_variant(&func.code[j - 1], flags[j - 1], l0_slot, l1_slot),
@@ -988,6 +991,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     e.str_x_imm(FRAME, STATE, 16); // calls move the frame; write it back
     e.str_x_imm(RETSP, STATE, 56); // ...and the return-stack cursor
     e.str_x_imm(DCNT, STATE, 80); // ...and the dispatch counter
+    e.str_x_imm(ACC, STATE, 104); // ...and the accumulator (call results)
     e.ldp_x_off(19, 20, 16);
     e.ldp_x_off(21, 22, 32);
     e.ldp_x_off(23, 24, 48);
@@ -1029,6 +1033,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     e.ldr_x_imm(DCNT, STATE, 80);
     e.ldr_x_imm(L0R, STATE, 88);
     e.ldr_x_imm(L1R, STATE, 96);
+    e.ldr_x_imm(ACC, STATE, 104);
     e.ldr_x_imm(X9, PC, 0);
     e.br(X9);
 
@@ -1100,9 +1105,14 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         e.ldr_x_imm(X11, PC, 16);
         e.add_x_reg(X10, FRAME, X10);
         e.mov_x(X12, FRAME);
-        e.cbz_x(X11, 5); // -> pop
-        e.ldr_x_post(X13, X10, 8); // cl:
-        e.str_x_post(X13, X12, 8);
+        e.cbz_x(X11, 5); // -> pop (skipping the copy loop)
+                         // The accumulator doubles as the copy scratch: after a
+                         // single-result copy it holds result 0, which is the
+                         // call-result-in-acc convention at zero extra instructions
+                         // (multi-result leaves the last result, a skipped copy leaves
+                         // stale acc — neither case is ever marked).
+        e.ldr_x_post(ACC, X10, 8); // cl:
+        e.str_x_post(ACC, X12, 8);
         e.sub_x_imm(X11, X11, 1);
         e.cbnz_x(X11, -3); // -> cl
         e.ldp_x_pre(X13, FRAME, RETSP, -(RET_RECORD as i32)); // pop:

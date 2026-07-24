@@ -79,6 +79,9 @@ struct DriveCtx {
     ret_stack: Vec<u64>,
     /// Byte cursor into `ret_stack`.
     ret_cursor: usize,
+    /// The accumulator relayed across native sessions: call results ride
+    /// it over activation boundaries (sentinel returns, host calls).
+    acc: u64,
 }
 
 #[cfg(all(sf_jit, sf_backend_arm64))]
@@ -568,6 +571,7 @@ impl<'m> InterpInstance<'m> {
             stack: vec![0u64; VALUE_STACK_SLOTS],
             ret_stack: vec![0u64; (MAX_CALL_DEPTH as usize + 8) * (RET_RECORD / 8)],
             ret_cursor: 0,
+            acc: 0,
         };
         ctx.stack[..args.len()].copy_from_slice(args);
 
@@ -582,9 +586,12 @@ impl<'m> InterpInstance<'m> {
                     let f = match self.funcs.get(callee) {
                         Some(Some(f)) => f.clone(),
                         Some(None) => {
-                            // Imported function: dispatch to the host.
+                            // Imported function: dispatch to the host. Its
+                            // first result rides the accumulator relay like
+                            // any other call result.
                             let base = act.base;
                             self.call_host(callee, &mut ctx.stack[base..], arg_base)?;
+                            ctx.acc = ctx.stack[base + arg_base];
                             continue;
                         }
                         None => return Err(WasmError::trap("undefined element")),
@@ -765,6 +772,7 @@ impl<'m> InterpInstance<'m> {
             dispatches: 0,
             l0_value: 0,
             l1_value: 0,
+            acc_value: 0,
         };
         let mut cur_base = act.base;
         let mut cur_l0_slot = (l0_off / 8) as usize;
@@ -778,7 +786,9 @@ impl<'m> InterpInstance<'m> {
             // hence authoritative) slots at every chain entry.
             state.l0_value = ctx.stack[cur_base + cur_l0_slot];
             state.l1_value = ctx.stack[cur_base + cur_l1_slot];
+            state.acc_value = ctx.acc;
             enter(&mut state);
+            ctx.acc = state.acc_value;
             ctx.ret_cursor = (state.ret_cursor - ret_ptr) as usize;
             if let Some(native) = self.native.as_mut() {
                 native.dispatches += state.dispatches;

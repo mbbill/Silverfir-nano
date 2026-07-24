@@ -77,6 +77,9 @@ pub fn predecode_function(
         max_height: 0,
         n_locals,
         n_results,
+        last_call_idx: NO_DEF,
+        last_call_height: 0,
+        last_call_region: 0,
     };
     {
         let mut decoder = Decoder::new(spec.code());
@@ -154,6 +157,13 @@ struct Predecoder<'m> {
     max_height: u32,
     n_locals: u32,
     n_results: u32,
+    /// Cell index / result height / region of the last emitted
+    /// SINGLE-result call (u32::MAX = none). An adjacent consumer of that
+    /// result reads the accumulator: the native Return leaves result 0
+    /// in it, and the driver carries it across activation boundaries.
+    last_call_idx: u32,
+    last_call_height: u32,
+    last_call_region: u32,
 }
 
 fn block_arity(types: &TypeContext, bt: &BlockType) -> Result<(u32, u32), WasmError> {
@@ -370,9 +380,20 @@ impl<'m> Predecoder<'m> {
     /// valid either way: the hints are droppable by construction.
     fn acc_operand(&mut self, d: Desc, which_flag: u16) -> u16 {
         match d {
-            Desc::Temp { .. } => {
+            Desc::Temp { height, def, .. } => {
                 if let Some(def) = self.rewritable_producer(d) {
                     self.code[def as usize].flags |= FLAG_DST_ACC;
+                    which_flag
+                } else if def == NO_DEF
+                    && self.last_call_idx != NO_DEF
+                    && self.last_call_idx + 1 == self.code.len() as u32
+                    && height == self.last_call_height
+                    && self.last_call_region == self.region
+                {
+                    // Adjacent consumer of a single-result call: the native
+                    // Return leaves result 0 in the accumulator, and the
+                    // driver carries it across activation boundaries. No
+                    // producer-side mark exists.
                     which_flag
                 } else {
                     0
@@ -647,6 +668,11 @@ impl<'m> Predecoder<'m> {
         // Results are written by the callee into the argument overlap area:
         // they are already materialized at their canonical heights.
         self.push_unknown_temps(results);
+        if results == 1 {
+            self.last_call_idx = self.code.len() as u32 - 1;
+            self.last_call_height = self.height() - 1;
+            self.last_call_region = self.region;
+        }
         Ok(())
     }
 
