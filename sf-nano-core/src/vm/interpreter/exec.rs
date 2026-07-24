@@ -362,7 +362,11 @@ impl<'m> InterpInstance<'m> {
         // handler now that every callee's cell block has its final address.
         // Imports and oversized frames stay on the slow path.
         let call_h = engine.call_handler_addr();
-        let callee_info: Vec<Option<(u64, u64)>> = self
+        // Callee side: cells base, callee l0 offset (b high bits), and
+        // frame metadata (c low 48). The caller's own l0 offset rides in
+        // c bits 48-63 so the call handler can stamp it into the return
+        // record.
+        let callee_info: Vec<Option<(u64, u64, u64)>> = self
             .funcs
             .iter()
             .enumerate()
@@ -373,7 +377,7 @@ impl<'m> InterpInstance<'m> {
                         return None;
                     }
                     let packed = fs << 32 | (f.n_locals as u64) << 16 | f.n_params as u64;
-                    Some((lf.cells.as_ptr() as u64, packed))
+                    Some((lf.cells.as_ptr() as u64, packed, lf.l0_off as u64))
                 }
                 _ => None,
             })
@@ -382,14 +386,16 @@ impl<'m> InterpInstance<'m> {
             let (Some(f), Some(lf)) = (&self.funcs[i], lf) else {
                 continue;
             };
+            let caller_l0 = lf.l0_off as u64;
             for (k, ins) in f.code.iter().enumerate() {
                 if ins.op == Op::Call {
-                    if let Some(Some((cells, packed))) = callee_info.get(ins.a as usize) {
+                    if let Some(Some((cells, packed, callee_l0))) = callee_info.get(ins.a as usize)
+                    {
                         lf.cells[k] = DCell {
                             h: call_h,
                             a: *cells,
-                            b: ins.b * 8,
-                            c: *packed,
+                            b: callee_l0 << 32 | ins.b * 8,
+                            c: caller_l0 << 48 | *packed,
                         };
                     }
                 }
@@ -703,10 +709,11 @@ impl<'m> InterpInstance<'m> {
                         native.engine.entry_fn(),
                         native.engine.exit_cell_addr(),
                         lf.cells.as_ptr() as u64,
+                        lf.l0_off,
                     )
                 })
         };
-        let (enter, exit_cell, cells_base) = match info {
+        let (enter, exit_cell, cells_base, l0_off) = match info {
             Some(x) => x,
             // An activation always has a linked body (imports never
             // become activations).
@@ -714,13 +721,16 @@ impl<'m> InterpInstance<'m> {
         };
         // First entry of a Rust-created activation: plant the sentinel
         // record so this activation's native `Return` comes back to Rust.
+        // The frame word must be a READABLE dummy (never 0): the native
+        // Return handler reloads the caller's l0 through it before
+        // routing into the exit cell.
         if !act.route_established {
             if ctx.ret_cursor + RET_RECORD > ctx.ret_stack.len() * 8 {
                 return Err(WasmError::trap("call stack exhausted"));
             }
             let at = ctx.ret_cursor / 8;
             ctx.ret_stack[at] = exit_cell;
-            ctx.ret_stack[at + 1] = 0;
+            ctx.ret_stack[at + 1] = exit_cell;
             ctx.ret_stack[at + 2] = 0;
             ctx.ret_cursor += RET_RECORD;
             act.route_established = true;
@@ -744,12 +754,18 @@ impl<'m> InterpInstance<'m> {
             ret_limit: ret_ptr + (ctx.ret_stack.len() * 8 - RET_RECORD) as u64,
             stack_limit: stack_ptr + (VALUE_STACK_SLOTS as u64) * 8,
             dispatches: 0,
+            l0_value: 0,
         };
+        let mut cur_base = act.base;
+        let mut cur_l0_slot = (l0_off / 8) as usize;
         loop {
             if let Some(m) = self.memories.first_mut() {
                 state.mem_base = m.bytes.as_mut_ptr() as u64;
                 state.mem_len = m.bytes.len() as u64;
             }
+            // The l0 register is reloaded from its (write-through, hence
+            // authoritative) slot at every chain entry.
+            state.l0_value = ctx.stack[cur_base + cur_l0_slot];
             enter(&mut state);
             ctx.ret_cursor = (state.ret_cursor - ret_ptr) as usize;
             if let Some(native) = self.native.as_mut() {
@@ -765,6 +781,11 @@ impl<'m> InterpInstance<'m> {
                     act.func = f.clone();
                     act.func_index = fi;
                     act.base = base;
+                    cur_base = base;
+                    cur_l0_slot = {
+                        let native = self.native.as_ref().expect("native state");
+                        (native.linked[fi].as_ref().expect("linked").l0_off / 8) as usize
+                    };
                     let ins = *f
                         .code
                         .get(idx)
