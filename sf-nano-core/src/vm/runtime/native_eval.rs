@@ -2,8 +2,9 @@ use crate::collections;
 use crate::{
     error::WasmError,
     vm::{
-        arch, build,
         entities::{Caller, FunctionInst},
+        jit::arch,
+        jit::build,
         result_buffer::ResultBuffer,
         store::Store,
         value::Value,

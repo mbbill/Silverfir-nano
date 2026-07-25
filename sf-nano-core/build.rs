@@ -191,10 +191,11 @@ fn emit_interp_engine() {
         Some(SelectedBackend::Armv7a) | Some(SelectedBackend::ThumbM) => {
             Box::new(interp_gen::arm32::Arm32 {
                 thumb,
-                // Every M-profile core has sdiv/udiv, and this project's
-                // ARMv7-A profiles are the IDIV ones (build.rs already
-                // assumes VFPv3-D16, which implies it).
-                idiv: true,
+                // Both profiles have sdiv/udiv — this project's ARMv7-A
+                // targets are the IDIV ones (build.rs already assumes
+                // VFPv3-D16, which implies it), and every M-profile core
+                // has them. Only the A-profile assembler needs telling.
+                idiv_directive: matches!(selected_backend(), Some(SelectedBackend::Armv7a)),
             })
         }
         // Targets with no interpreter backend yet: the crate still builds,

@@ -66,7 +66,7 @@ pub fn active_runtime_engine() -> Result<RuntimeEngine, &'static str> {
             #[cfg(sf_jit)]
             {
                 Ok(RuntimeEngine::Jit(
-                    crate::vm::arch::active_native_backend_name()?,
+                    crate::vm::jit::arch::active_native_backend_name()?,
                 ))
             }
 

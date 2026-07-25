@@ -1,37 +1,41 @@
-//! VM architecture.
+//! The VM: a shared substrate with one sibling engine per execution strategy.
 //!
-//! Pipeline layers:
-//! - `wasm/` decodes Wasm bytecode into Semantic IR (SIR)
-//! - `middle/` prepares SIR into SSA-IR with explicit spill/fill
-//! - `machine/` lowers SSA-IR into MachineIR (MIR)
-//! - `arch/` compiles MIR into native code
-//! - `runtime/` provides execution infrastructure
+//! The substrate is everything both engines need and neither owns — the
+//! `Store`, instances, entities, the value model, the reference and GC heaps,
+//! constant-expression evaluation. It makes no assumption about how a
+//! function body actually runs.
+//!
+//! The engines sit beside each other on top of it:
+//! - [`jit`] compiles each function to native code before it runs, through
+//!   its own four-stage pipeline.
+//! - [`interpreter`] predecodes each function into a threaded instruction
+//!   stream and runs it through handlers generated at build time.
+//!
+//! Each is gated on its own feature and at least one must be present (the
+//! crate root enforces it). Neither is privileged in the layout: the
+//! substrate does not reach into either engine, and the engines do not reach
+//! into each other.
+//!
+//! `runtime/` is the host boundary — traps, result marshalling, and the
+//! native-execution plumbing.
 
-#[cfg(sf_jit)]
-pub(crate) mod arch;
 pub(crate) mod backend;
-#[cfg(sf_jit)]
-pub(crate) mod build;
-pub(crate) mod debug;
 pub(crate) mod entities;
 pub(crate) mod exn_heap;
 pub(crate) mod expr_eval;
 pub(crate) mod gc_heap;
 pub(crate) mod gc_type_check;
 pub(crate) mod instance;
-#[cfg(sf_interp)]
-pub(crate) mod interpreter;
-#[cfg(sf_jit)]
-pub(crate) mod machine;
-#[cfg(sf_jit)]
-pub(crate) mod middle;
 pub(crate) mod result_buffer;
 pub(crate) mod runtime;
 pub(crate) mod store;
 pub(crate) mod tag;
-#[cfg(sf_jit)]
-pub(crate) mod template;
 pub(crate) mod value;
 pub(crate) mod value_encoding;
+
+// --- Execution engines ---
+
+#[cfg(sf_interp)]
+pub(crate) mod interpreter;
 #[cfg(sf_jit)]
-pub(crate) mod wasm;
+pub(crate) mod jit;

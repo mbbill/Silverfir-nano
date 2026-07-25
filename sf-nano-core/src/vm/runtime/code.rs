@@ -5,9 +5,9 @@ use crate::collections;
 use crate::{
     error::WasmError,
     vm::{
-        arch::NativeBackend,
         backend::BackendConfig,
-        machine::machine_ir::{
+        jit::arch::NativeBackend,
+        jit::machine::machine_ir::{
             MachineConstData, MachineConstId, MachineFuncId, MachineFunctionAbi, MachineModule,
             MachineModuleAbi,
         },
@@ -171,7 +171,7 @@ impl CompiledNativeModule {
     pub(crate) fn function(
         &self,
         id: MachineFuncId,
-    ) -> Option<&super::super::machine::machine_ir::MachineFunction> {
+    ) -> Option<&crate::vm::jit::machine::machine_ir::MachineFunction> {
         self.module().functions.get(id.0 as usize)
     }
 

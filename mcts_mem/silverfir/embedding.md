@@ -8,9 +8,13 @@
   contract from the embedder; the engine itself stays `no_std` and pulls in no
   runtime dependency beyond `alloc`.
 
-- The product ships separate binary crates over the core engine — a full WASI
-  CLI and a minimal `no_std` CLI — keeping the embeddable core and the
-  host-tooling front ends in distinct crates.
+- The product ships binary crates over the core engine rather than folding a
+  front end into it, keeping the embeddable core and the host tooling in
+  distinct crates.
+
+- What a build contains is chosen by feature configuration on those crates,
+  not by maintaining a separate stripped-down front end: the size floor is a
+  feature selection over the same CLI.
 
 - SIMD is a build-time feature (`sf_has_simd`): when it is off, a v128 value type
   is rejected at each parse site where it can appear (signature, field, local,
@@ -47,3 +51,14 @@
   only — relaxed-SIMD opcodes are detected separately and rejected at decode as
   relaxed SIMD is not supported, a boundary that still held at the end of the
   SIMD bring-up (x64 done) (code).
+
+- 2026-07-25 (d4dc0be9) pitfall: a second front end kept only to demonstrate a
+  configuration is not exercised by the work that changes that configuration,
+  so it drifts out of date while still being cited as evidence (code).
+
+## Moves
+
+- 2026-07-25 (d4dc0be9) dropped: the separate minimal `no_std` front-end
+  crate: a front end maintained purely as a size demonstration went stale,
+  and the same floor is now expressed as a feature configuration of the CLI
+  that the test suite actually runs (sourced)

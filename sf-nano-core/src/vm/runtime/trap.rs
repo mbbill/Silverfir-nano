@@ -1,6 +1,6 @@
 use crate::error::WasmError;
-use crate::vm::arch::common::helpers::trap_error;
-use crate::vm::machine::machine_ir::MachineTrapKind;
+use crate::vm::jit::arch::common::helpers::trap_error;
+use crate::vm::jit::machine::machine_ir::MachineTrapKind;
 
 use super::{
     common::{set_ctx_error, NativeCallStatus},

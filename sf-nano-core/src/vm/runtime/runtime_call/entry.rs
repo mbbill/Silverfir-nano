@@ -6,8 +6,8 @@ use crate::{
     error::WasmError,
     module::type_context::{check_function_types_equivalent, concrete_type_matches_cross_context},
     vm::{
-        arch::active_backend_config,
         entities::{Caller, FunctionInst},
+        jit::arch::active_backend_config,
         runtime,
         runtime::{
             common::{

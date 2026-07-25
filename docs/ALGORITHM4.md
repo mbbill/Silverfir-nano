@@ -408,7 +408,7 @@ Deterministic, but not edge-optimal.
 
 *Status.* This history is now historical. The current machine backend has a
 dedicated cache-layout pass in
-`sf-nano-core/src/vm/machine/lower_cache_layout.rs` implementing sticky
+`sf-nano-core/src/vm/jit/machine/lower_cache_layout.rs` implementing sticky
 inheritance, hole filling, and GP exact repack. What remains unimplemented
 is lane-remap cost feedback into `ALGORITHM4` and the subtree-stickiness
 objective described in §4.6.

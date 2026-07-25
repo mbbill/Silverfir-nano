@@ -65,6 +65,19 @@
   request `m`, `f` and `d` explicitly or `mul` and every float
   instruction is rejected on rv64gc (code).
 
+- 2026-07-25 pitfall: the mirror case also bites — a feature that is an
+  extension on one profile is BASELINE on another, and the assembler
+  rejects being asked for it there (`.arch_extension idiv` is required on
+  ARMv7-A and an error on ARMv8-M). "The target has this instruction" and
+  "the assembler must be told about it" are separate questions, and a
+  backend flag that conflates them builds on one profile only (code).
+
+- 2026-07-25 pitfall: `cargo check` stops at metadata and never runs the
+  assembler, so a handler set that does not assemble passes it clean (code).
+
+- 2026-07-25 statement: the smoke row for a backend with no spectest
+  harness has to be a build (code).
+
 - 2026-07-25 rationale: a handler may bail to the slow path only where the
   bail leads to a trap, because the slow path is accumulator-oblivious and
   writes the frame slot, so a producer that bailed and then SUCCEEDED would

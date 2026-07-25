@@ -1,0 +1,1001 @@
+//! Prepared backend-facing SSA-IR.
+//!
+//! This is the frontend/native handoff for the engine's prepared pipeline:
+//! - canonical locals and deep stack values live in frame slots
+//! - only a bounded set of transient values stays live as SSA values
+//! - explicit slot traffic publishes and reloads transient values through
+//!   operand slots so the backend never needs general register allocation
+//!
+//! # Layout
+//!
+//! `SsaInst` is a flat 16-byte struct (not an enum) so that `SsaBlock.ops`
+//! stays cache-dense. Variant dispatch is encoded in `SsaInst.op` (a `SsaOp`):
+//! opcodes `0..=9` are reserved for non-primitive variants (Fill, Spill,
+//! Local*, Call); opcodes `10..=u16::MAX` are primitive-pool indices shifted
+//! by `PRIMITIVE_BASE`. Primitive op payloads (constants, memargs, etc.) stay
+//! inside `PrimitiveOpKind` and are kept once per unique op in
+//! `SsaProgram.primitive_pool`.
+//!
+//! Two pools live on the program:
+//! - `const_pool: Vec<u64>` backs `SsaOperand::Const` (the 4-byte packed
+//!   operand carries only a const-pool index)
+//! - `primitive_pool: Vec<PrimitiveOpKind>` is dedup-inserted; `SsaInst.op`
+//!   holds its index
+//! - `call_ops: Vec<SsaCallOp>` backs the `Call` variant; `SsaInst.meta` is
+//!   the index
+//!
+//! Primitive ops with more than two operands spill the overflow operands into
+//! `SsaBlock.extra_args`; `SsaInst.meta` holds the start index.
+//!
+//! Use [`SsaInst::view`] or [`SsaBlock::view`] to decode an instruction into
+//! a pattern-matchable [`SsaInstView`] enum.
+
+use crate::collections;
+
+use crate::error::WasmError;
+use crate::value_type::ValueType;
+
+use super::target::SsaTarget;
+use crate::vm::jit::middle::cell::CellId;
+use crate::vm::jit::middle::frame::{FrameSlot, FrameSpan};
+use crate::vm::jit::wasm::primitive_op::{self, PrimitiveOpKind};
+
+/// One SSA value in prepared SSA-IR. `SsaValue::NONE` is a sentinel.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct SsaValue(pub u32);
+
+impl SsaValue {
+    /// Sentinel for "no value" (used for missing results or unused fields).
+    pub(crate) const NONE: Self = Self(u32::MAX);
+
+    #[inline]
+    pub(crate) fn is_none(self) -> bool {
+        self.0 == u32::MAX
+    }
+
+    #[inline]
+    pub(crate) fn is_some(self) -> bool {
+        self.0 != u32::MAX
+    }
+}
+
+/// Packed 4-byte operand.
+///
+/// Encoding:
+/// - `u32::MAX` — `NONE` sentinel (unused arg slot)
+/// - bit 31 = 0 — `Value` operand; low 31 bits are the `SsaValue` id
+/// - bit 31 = 1 — `Const` operand; low 31 bits are an index into
+///   `SsaProgram.const_pool`
+///
+/// Use [`SsaOperand::value`] / [`SsaOperand::const_idx`] to construct and
+/// [`SsaOperand::decode`] / [`SsaOperand::as_value`] to read.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[repr(transparent)]
+pub(crate) struct SsaOperand(u32);
+
+/// Decoded view of [`SsaOperand`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum DecodedOperand {
+    None,
+    Value(SsaValue),
+    /// Index into `SsaProgram.const_pool`.
+    Const(u32),
+}
+
+impl SsaOperand {
+    const CONST_TAG: u32 = 0x8000_0000;
+    const INDEX_MASK: u32 = 0x7FFF_FFFF;
+
+    /// Sentinel for "no operand" (unused arg slot).
+    pub(crate) const NONE: Self = Self(u32::MAX);
+
+    #[inline]
+    pub(crate) fn value(v: SsaValue) -> Self {
+        debug_assert!(v.0 < Self::CONST_TAG, "SsaValue out of range for operand");
+        debug_assert!(!v.is_none(), "cannot pack NONE SsaValue as operand");
+        Self(v.0)
+    }
+
+    #[inline]
+    pub(crate) fn const_idx(idx: u32) -> Self {
+        debug_assert!(
+            idx < Self::CONST_TAG,
+            "const pool index out of range for operand"
+        );
+        Self(Self::CONST_TAG | idx)
+    }
+
+    #[inline]
+    pub(crate) fn is_none(self) -> bool {
+        self.0 == u32::MAX
+    }
+
+    #[inline]
+    pub(crate) fn as_value(self) -> Option<SsaValue> {
+        if self.is_none() || (self.0 & Self::CONST_TAG) != 0 {
+            None
+        } else {
+            Some(SsaValue(self.0 & Self::INDEX_MASK))
+        }
+    }
+
+    /// Convenience: extract the inner `SsaValue`, panicking otherwise.
+    #[inline]
+    pub(crate) fn unwrap_value(self) -> SsaValue {
+        self.as_value()
+            .expect("SsaOperand::unwrap_value called on non-Value operand")
+    }
+
+    #[inline]
+    pub(crate) fn decode(self) -> DecodedOperand {
+        if self.is_none() {
+            DecodedOperand::None
+        } else if (self.0 & Self::CONST_TAG) != 0 {
+            DecodedOperand::Const(self.0 & Self::INDEX_MASK)
+        } else {
+            DecodedOperand::Value(SsaValue(self.0))
+        }
+    }
+}
+
+/// Instruction opcode / variant discriminator.
+///
+/// Values `0..=9` are reserved for non-primitive variants. Values starting
+/// at [`SsaOp::PRIMITIVE_BASE`] (= 10) are primitive pool indices shifted by
+/// `PRIMITIVE_BASE`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[repr(transparent)]
+pub(crate) struct SsaOp(u16);
+
+impl SsaOp {
+    pub(crate) const FILL: Self = Self(0);
+    pub(crate) const SPILL: Self = Self(1);
+    pub(crate) const CELL_GET_SLOT: Self = Self(2);
+    pub(crate) const CELL_GET_CACHE: Self = Self(3);
+    pub(crate) const CELL_SET_SLOT: Self = Self(4);
+    pub(crate) const CELL_SET_CACHE: Self = Self(5);
+    pub(crate) const CELL_ENSURE_CACHE: Self = Self(6);
+    pub(crate) const CELL_RESERVE_CACHE: Self = Self(7);
+    pub(crate) const CELL_DROP_CACHE: Self = Self(8);
+    pub(crate) const CALL: Self = Self(9);
+
+    /// First opcode value used for primitive pool indices.
+    pub(crate) const PRIMITIVE_BASE: u16 = 10;
+
+    /// Maximum number of primitive-pool entries a single function can have.
+    /// `SsaOp` encodes them as `PRIMITIVE_BASE + pool_idx` in a u16, so the
+    /// largest encodable pool index is `u16::MAX - PRIMITIVE_BASE`, giving
+    /// `u16::MAX - PRIMITIVE_BASE + 1` entries.
+    pub(crate) const MAX_PRIMITIVE_POOL: usize =
+        (u16::MAX as usize) - (Self::PRIMITIVE_BASE as usize) + 1;
+
+    /// Build a primitive opcode for pool index `pool_idx`. Callers must
+    /// guarantee `pool_idx < MAX_PRIMITIVE_POOL`; interning code in
+    /// `ProgramBuilder` / `SsaProgram::intern_primitive` returns an error
+    /// rather than overflowing.
+    #[inline]
+    pub(crate) fn primitive(pool_idx: u32) -> Self {
+        let code = Self::PRIMITIVE_BASE as u32 + pool_idx;
+        debug_assert!(code <= u16::MAX as u32, "primitive op pool overflow");
+        Self(code as u16)
+    }
+
+    #[inline]
+    pub(crate) fn as_primitive_idx(self) -> Option<u32> {
+        if self.0 >= Self::PRIMITIVE_BASE {
+            Some(self.0 as u32 - Self::PRIMITIVE_BASE as u32)
+        } else {
+            None
+        }
+    }
+
+    #[inline]
+    pub(crate) fn is_primitive(self) -> bool {
+        self.0 >= Self::PRIMITIVE_BASE
+    }
+}
+
+/// Stable facts about a local slot, carried from preparation to the backend.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct CellInfo {
+    pub is_param: bool,
+    pub reads_before_write: bool,
+}
+
+/// One SSA operation inside a block body.
+///
+/// Flat 16-byte layout. See the module doc for the opcode encoding.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SsaInst {
+    pub op: SsaOp,
+    /// Secondary scalar: slot index for Fill/Spill/Local*, call-op index for
+    /// Call index for `Call`, start index into `extra_args` for primitive ops
+    /// with more than two operands, unused (0) otherwise.
+    pub meta: u16,
+    /// Destination value; `SsaValue::NONE` when the op has no result.
+    pub result: SsaValue,
+    /// Inline operand slots; `SsaOperand::NONE` for unused positions.
+    pub args: [SsaOperand; 2],
+}
+
+impl SsaInst {
+    #[inline]
+    pub(crate) fn fill(slot: FrameSlot, dst: SsaValue) -> Self {
+        Self {
+            op: SsaOp::FILL,
+            meta: slot.0,
+            result: dst,
+            args: [SsaOperand::NONE, SsaOperand::NONE],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn spill(slot: FrameSlot, src: SsaValue) -> Self {
+        Self {
+            op: SsaOp::SPILL,
+            meta: slot.0,
+            result: SsaValue::NONE,
+            args: [SsaOperand::value(src), SsaOperand::NONE],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn cell_get_slot(cell: CellId, dst: SsaValue) -> Self {
+        Self {
+            op: SsaOp::CELL_GET_SLOT,
+            meta: cell.0,
+            result: dst,
+            args: [SsaOperand::NONE, SsaOperand::NONE],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn cell_get_cache(cell: CellId, dst: SsaValue) -> Self {
+        Self {
+            op: SsaOp::CELL_GET_CACHE,
+            meta: cell.0,
+            result: dst,
+            args: [SsaOperand::NONE, SsaOperand::NONE],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn cell_set_slot(cell: CellId, src: SsaValue) -> Self {
+        Self {
+            op: SsaOp::CELL_SET_SLOT,
+            meta: cell.0,
+            result: SsaValue::NONE,
+            args: [SsaOperand::value(src), SsaOperand::NONE],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn cell_set_cache(cell: CellId, src: SsaValue) -> Self {
+        Self {
+            op: SsaOp::CELL_SET_CACHE,
+            meta: cell.0,
+            result: SsaValue::NONE,
+            args: [SsaOperand::value(src), SsaOperand::NONE],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn cell_ensure_cache(cell: CellId) -> Self {
+        Self {
+            op: SsaOp::CELL_ENSURE_CACHE,
+            meta: cell.0,
+            result: SsaValue::NONE,
+            args: [SsaOperand::NONE, SsaOperand::NONE],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn cell_reserve_cache(cell: CellId) -> Self {
+        Self {
+            op: SsaOp::CELL_RESERVE_CACHE,
+            meta: cell.0,
+            result: SsaValue::NONE,
+            args: [SsaOperand::NONE, SsaOperand::NONE],
+        }
+    }
+
+    #[inline]
+    pub(crate) fn cell_drop_cache(cell: CellId) -> Self {
+        Self {
+            op: SsaOp::CELL_DROP_CACHE,
+            meta: cell.0,
+            result: SsaValue::NONE,
+            args: [SsaOperand::NONE, SsaOperand::NONE],
+        }
+    }
+
+    /// Build a Call instruction. Callers must guarantee
+    /// `call_idx <= u16::MAX` (the `meta` slot is u16); `ProgramBuilder` /
+    /// `SsaProgram::push_call_op` returns an error before reaching this.
+    #[inline]
+    pub(crate) fn call(call_idx: u32) -> Self {
+        debug_assert!(
+            call_idx <= u16::MAX as u32,
+            "call_ops index exceeds SsaInst.meta (u16) capacity"
+        );
+        Self {
+            op: SsaOp::CALL,
+            meta: call_idx as u16,
+            result: SsaValue::NONE,
+            args: [SsaOperand::NONE, SsaOperand::NONE],
+        }
+    }
+
+    /// Build a Call instruction that defines one live scalar result.
+    #[inline]
+    pub(crate) fn call_result(call_idx: u32, result: SsaValue) -> Self {
+        debug_assert!(
+            call_idx <= u16::MAX as u32,
+            "call_ops index exceeds SsaInst.meta (u16) capacity"
+        );
+        Self {
+            op: SsaOp::CALL,
+            meta: call_idx as u16,
+            result,
+            args: [SsaOperand::NONE, SsaOperand::NONE],
+        }
+    }
+
+    /// Build a primitive op instruction.
+    ///
+    /// `args` must contain the inline operands. Any operands beyond the first
+    /// two must already have been pushed into the enclosing
+    /// `SsaBlock.extra_args`, and `extra_args_idx` must point at their start.
+    #[inline]
+    pub(crate) fn primitive(
+        pool_idx: u32,
+        result: SsaValue,
+        args: [SsaOperand; 2],
+        extra_args_idx: u16,
+    ) -> Self {
+        Self {
+            op: SsaOp::primitive(pool_idx),
+            meta: extra_args_idx,
+            result,
+            args,
+        }
+    }
+
+    /// Decode into a pattern-matchable view. Primitive ops and call ops need
+    /// `program` for their pool lookups; non-primitive variants only need
+    /// the enclosing block for extra_args.
+    #[inline]
+    pub(crate) fn view<'a>(&self, program: &'a SsaProgram, block: &'a SsaBlock) -> SsaInstView<'a> {
+        decode_view(*self, program, block)
+    }
+}
+
+/// Type-safe pattern-matchable view over one SsaInst.
+///
+/// Each variant carries the full decoded payload for a given op kind so
+/// callers can destructure directly. A release-build consumer that only
+/// needs `Value` / `Call` can fall through non-primitive variants with `_`;
+/// debug-mode validation and tests destructure everything. `dead_code` is
+/// allowed because validation (which reads most fields) is gated behind
+/// `#[cfg(any(debug_assertions, test))]`, leaving some fields produce-only
+/// in release.
+#[derive(Clone, Copy, Debug)]
+#[allow(dead_code)]
+pub(crate) enum SsaInstView<'a> {
+    Fill {
+        slot: FrameSlot,
+        dst: SsaValue,
+    },
+    Spill {
+        slot: FrameSlot,
+        src: SsaValue,
+    },
+    CellGetSlot {
+        cell: CellId,
+        dst: SsaValue,
+    },
+    CellGetCache {
+        cell: CellId,
+        dst: SsaValue,
+    },
+    CellSetSlot {
+        cell: CellId,
+        src: SsaValue,
+    },
+    CellSetCache {
+        cell: CellId,
+        src: SsaValue,
+    },
+    CellEnsureCache {
+        cell: CellId,
+    },
+    CellReserveCache {
+        cell: CellId,
+    },
+    CellDropCache {
+        cell: CellId,
+    },
+    Call(&'a SsaCallOp),
+    Value {
+        op: &'a PrimitiveOpKind,
+        result: SsaValue,
+        args: SsaArgs<'a>,
+    },
+}
+
+/// Argument list view for a Value instruction: up to 2 inline slots plus any
+/// overflow args drawn from the enclosing block's `extra_args`.
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct SsaArgs<'a> {
+    inline: [SsaOperand; 2],
+    extra: &'a [SsaOperand],
+}
+
+impl<'a> SsaArgs<'a> {
+    #[inline]
+    fn from_parts(inline: [SsaOperand; 2], extra: &'a [SsaOperand]) -> Self {
+        Self { inline, extra }
+    }
+
+    #[inline]
+    pub(crate) fn len(&self) -> usize {
+        let mut n = 0;
+        for a in &self.inline {
+            if !a.is_none() {
+                n += 1;
+            } else {
+                break;
+            }
+        }
+        n + self.extra.len()
+    }
+
+    #[inline]
+    pub(crate) fn get(&self, idx: usize) -> Option<SsaOperand> {
+        if idx < 2 {
+            let a = self.inline[idx];
+            if a.is_none() {
+                None
+            } else {
+                Some(a)
+            }
+        } else {
+            self.extra.get(idx - 2).copied().filter(|a| !a.is_none())
+        }
+    }
+
+    /// Iterator over all present operands in order.
+    pub(crate) fn iter(&self) -> SsaArgIter<'_> {
+        SsaArgIter {
+            args: *self,
+            index: 0,
+        }
+    }
+
+    /// Collect operands into a Vec — convenience for rare non-hot paths.
+    pub(crate) fn to_vec(&self) -> collections::Vec<SsaOperand> {
+        let mut v = collections::Vec::with_capacity(self.len());
+        for a in self.iter() {
+            v.push(a);
+        }
+        v
+    }
+}
+
+pub(crate) struct SsaArgIter<'a> {
+    args: SsaArgs<'a>,
+    index: usize,
+}
+
+impl<'a> Iterator for SsaArgIter<'a> {
+    type Item = SsaOperand;
+
+    fn next(&mut self) -> Option<SsaOperand> {
+        let v = self.args.get(self.index)?;
+        self.index += 1;
+        Some(v)
+    }
+}
+
+fn decode_view<'a>(inst: SsaInst, program: &'a SsaProgram, block: &'a SsaBlock) -> SsaInstView<'a> {
+    match inst.op {
+        SsaOp::FILL => SsaInstView::Fill {
+            slot: FrameSlot(inst.meta),
+            dst: inst.result,
+        },
+        SsaOp::SPILL => SsaInstView::Spill {
+            slot: FrameSlot(inst.meta),
+            src: inst.args[0]
+                .as_value()
+                .expect("Spill src must be an SsaValue"),
+        },
+        SsaOp::CELL_GET_SLOT => SsaInstView::CellGetSlot {
+            cell: CellId(inst.meta),
+            dst: inst.result,
+        },
+        SsaOp::CELL_GET_CACHE => SsaInstView::CellGetCache {
+            cell: CellId(inst.meta),
+            dst: inst.result,
+        },
+        SsaOp::CELL_SET_SLOT => SsaInstView::CellSetSlot {
+            cell: CellId(inst.meta),
+            src: inst.args[0]
+                .as_value()
+                .expect("CellSetSlot src must be an SsaValue"),
+        },
+        SsaOp::CELL_SET_CACHE => SsaInstView::CellSetCache {
+            cell: CellId(inst.meta),
+            src: inst.args[0]
+                .as_value()
+                .expect("CellSetCache src must be an SsaValue"),
+        },
+        SsaOp::CELL_ENSURE_CACHE => SsaInstView::CellEnsureCache {
+            cell: CellId(inst.meta),
+        },
+        SsaOp::CELL_RESERVE_CACHE => SsaInstView::CellReserveCache {
+            cell: CellId(inst.meta),
+        },
+        SsaOp::CELL_DROP_CACHE => SsaInstView::CellDropCache {
+            cell: CellId(inst.meta),
+        },
+        SsaOp::CALL => {
+            let call = program
+                .call_ops
+                .get(inst.meta as usize)
+                .expect("Call meta out of range for call_ops");
+            SsaInstView::Call(call)
+        }
+        _ => {
+            debug_assert!(inst.op.is_primitive(), "unknown SsaOp");
+            let pool_idx = inst.op.as_primitive_idx().expect("primitive op") as usize;
+            let kind = program
+                .primitive_pool
+                .get(pool_idx)
+                .expect("primitive op index out of range for primitive_pool");
+            let extra_count = primitive_op::stack_effect(kind).0.saturating_sub(2);
+            let start = inst.meta as usize;
+            let end = start
+                .checked_add(extra_count)
+                .expect("primitive extra_args index overflow");
+            let extra = if extra_count == 0 {
+                &[][..]
+            } else {
+                block
+                    .extra_args
+                    .get(start..end)
+                    .expect("primitive extra_args range out of bounds")
+            };
+            SsaInstView::Value {
+                op: kind,
+                result: inst.result,
+                args: SsaArgs::from_parts(inst.args, extra),
+            }
+        }
+    }
+}
+
+/// Full prepared SSA-IR program for one function.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SsaProgram {
+    pub entry: SsaTarget,
+    pub blocks: collections::Vec<SsaBlock>,
+    pub cell_types: collections::Vec<ValueType>,
+    pub result_types: collections::Vec<ValueType>,
+    pub cell_info: collections::Vec<CellInfo>,
+    pub block_entry_cached_cells: collections::Vec<collections::Vec<CellId>>,
+    /// Per-block entry-cache requirement, parallel 1:1 to
+    /// [`Self::block_entry_cached_cells`] (same outer index, same inner length and
+    /// order): each entry slot's `Ensure` (value must be materialized) vs
+    /// `Reserve` (write-first lane). Derived once by the middle (pass D) so the
+    /// machine reads it here instead of re-scanning ops. The machine owns the
+    /// physical lane layout; the plan owns only this context-free requirement.
+    /// This outer vector is intentionally empty during rewrite and structural
+    /// cleanup; once derived from final SSA it is maintained positionally
+    /// alongside `block_entry_cached_cells`.
+    pub block_entry_cache_requirements: collections::Vec<collections::Vec<EntryCacheRequirement>>,
+    /// Whole-function preserved-cache preference, per cell (indexed by
+    /// `CellId.0`): `true` when the residency solver nominated the cell for
+    /// the preserved class (pass D). The machine's restored lane layout reads
+    /// this instead of recomputing it.
+    pub preferred_preserved: collections::Vec<bool>,
+    /// Each cell's frame home, indexed by `CellId.0`. Cells mirror their home
+    /// slot; frame addressing goes through this table, never through the cell
+    /// id itself.
+    pub cell_homes: collections::Vec<FrameSlot>,
+    pub value_types: collections::Vec<ValueType>,
+    pub value_sink_cell: collections::Vec<Option<CellId>>,
+    /// Backing store for `SsaOperand::Const` — each entry is a 64-bit value.
+    pub const_pool: collections::Vec<u64>,
+    /// Deduplicated primitive op vocabulary; `SsaOp` carries a pool index.
+    pub primitive_pool: collections::Vec<PrimitiveOpKind>,
+    /// Backing store for `Call` variants; `SsaInst.meta` is the index.
+    pub call_ops: collections::Vec<SsaCallOp>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum EntryCacheRequirement {
+    Ensure,
+    Reserve,
+}
+
+impl SsaProgram {
+    #[inline]
+    pub(crate) fn value_sink(&self, value: SsaValue) -> Option<CellId> {
+        self.value_sink_cell
+            .get(value.0 as usize)
+            .copied()
+            .flatten()
+    }
+
+    /// Append a constant to the const pool and return its operand. No dedup.
+    pub(crate) fn intern_const(&mut self, bits: u64) -> SsaOperand {
+        let idx = self.const_pool.len() as u32;
+        self.const_pool.push(bits);
+        SsaOperand::const_idx(idx)
+    }
+
+    /// Insert a primitive op into the pool, deduplicating against existing
+    /// entries. Returns the pool index, or an error if the pool already
+    /// holds the maximum number of entries `SsaOp` can encode
+    /// (`SsaOp::MAX_PRIMITIVE_POOL`).
+    ///
+    /// Production rewrite uses its own `ProgramBuilder`; this variant exists
+    /// for later passes (optimize) and test fixtures that mutate an existing
+    /// `SsaProgram`.
+    pub(crate) fn intern_primitive(&mut self, kind: PrimitiveOpKind) -> Result<u32, WasmError> {
+        if let Some(idx) = self.primitive_pool.iter().position(|k| k == &kind) {
+            return Ok(idx as u32);
+        }
+        if self.primitive_pool.len() >= SsaOp::MAX_PRIMITIVE_POOL {
+            return Err(WasmError::internal(
+                "SSA-IR primitive op pool overflow: function has more distinct primitive ops than a u16 opcode can address",
+            ));
+        }
+        let idx = self.primitive_pool.len() as u32;
+        self.primitive_pool.push(kind);
+        Ok(idx)
+    }
+
+    /// Append a call op; returns its index.
+    ///
+    /// Test-only: production rewrite pushes through `ProgramBuilder`, which
+    /// also propagates overflow errors. Tests that deliberately craft more
+    /// than `u16::MAX + 1` calls would be malformed, so `assert!` is
+    /// acceptable here.
+    #[cfg(test)]
+    pub(crate) fn push_call_op(&mut self, call: SsaCallOp) -> u32 {
+        assert!(
+            self.call_ops.len() <= u16::MAX as usize,
+            "call_ops index would exceed SsaInst.meta (u16) capacity"
+        );
+        let idx = self.call_ops.len() as u32;
+        self.call_ops.push(call);
+        idx
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn entry_cache_requirement_from_ops(
+    ops: &[SsaInst],
+    slot: CellId,
+) -> Option<EntryCacheRequirement> {
+    for inst in ops {
+        match inst.op {
+            SsaOp::CELL_GET_CACHE | SsaOp::CELL_ENSURE_CACHE => {
+                if CellId(inst.meta) == slot {
+                    return Some(EntryCacheRequirement::Ensure);
+                }
+            }
+            SsaOp::CELL_SET_CACHE | SsaOp::CELL_RESERVE_CACHE => {
+                if CellId(inst.meta) == slot {
+                    return Some(EntryCacheRequirement::Reserve);
+                }
+            }
+            SsaOp::CELL_GET_SLOT | SsaOp::CELL_SET_SLOT | SsaOp::CELL_DROP_CACHE => {
+                if CellId(inst.meta) == slot {
+                    return None;
+                }
+            }
+            SsaOp::CALL => return None,
+            _ => {}
+        }
+    }
+    None
+}
+
+#[inline]
+#[cfg(test)]
+pub(crate) fn entry_cache_requirement(
+    ops: &[SsaInst],
+    slot: CellId,
+    carried_through: bool,
+) -> Option<EntryCacheRequirement> {
+    entry_cache_requirement_from_ops(ops, slot)
+        .or_else(|| carried_through.then_some(EntryCacheRequirement::Ensure))
+}
+
+/// Classify the first cache-relevant touch of several sorted slots in one
+/// block walk.
+///
+/// The scalar [`entry_cache_requirement`] helper is convenient when querying
+/// one edge slot. Preparation, however, asks the same question for every
+/// planned entry resident. Replaying the block once per resident multiplies
+/// the hottest part of that classification by the register-cache budget.
+/// This batched form preserves the scalar helper's exact first-touch and call
+/// barrier semantics while walking `ops` only once.
+pub(crate) fn entry_cache_requirements(
+    ops: &[SsaInst],
+    slots: &[CellId],
+    carried_through: &[CellId],
+) -> collections::Vec<Option<EntryCacheRequirement>> {
+    const UNRESOLVED: u8 = 0;
+    const NONE: u8 = 1;
+    const ENSURE: u8 = 2;
+    const RESERVE: u8 = 3;
+
+    debug_assert!(slots.windows(2).all(|pair| pair[0] < pair[1]));
+    debug_assert!(carried_through.windows(2).all(|pair| pair[0] < pair[1]));
+
+    let mut states = collections::vec![UNRESOLVED; slots.len()];
+    let mut unresolved = slots.len();
+    for inst in ops {
+        let state = match inst.op {
+            SsaOp::CELL_GET_CACHE | SsaOp::CELL_ENSURE_CACHE => ENSURE,
+            SsaOp::CELL_SET_CACHE | SsaOp::CELL_RESERVE_CACHE => RESERVE,
+            SsaOp::CELL_GET_SLOT | SsaOp::CELL_SET_SLOT | SsaOp::CELL_DROP_CACHE => NONE,
+            SsaOp::CALL => break,
+            _ => continue,
+        };
+        let Ok(index) = slots.binary_search(&CellId(inst.meta)) else {
+            continue;
+        };
+        if states[index] != UNRESOLVED {
+            continue;
+        }
+        states[index] = state;
+        unresolved -= 1;
+        if unresolved == 0 {
+            break;
+        }
+    }
+
+    states
+        .into_iter()
+        .zip(slots.iter().copied())
+        .map(|(state, slot)| match state {
+            ENSURE => Some(EntryCacheRequirement::Ensure),
+            RESERVE => Some(EntryCacheRequirement::Reserve),
+            NONE | UNRESOLVED if carried_through.binary_search(&slot).is_ok() => {
+                Some(EntryCacheRequirement::Ensure)
+            }
+            NONE | UNRESOLVED => None,
+            _ => unreachable!("invalid entry-cache first-touch state"),
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod entry_cache_requirement_tests {
+    use super::*;
+
+    #[test]
+    fn batched_requirements_match_scalar_first_touch_semantics() {
+        let slots = collections::vec![
+            CellId(0),
+            CellId(1),
+            CellId(2),
+            CellId(3),
+            CellId(4),
+            CellId(5),
+        ];
+        let carried = collections::vec![CellId(1), CellId(2), CellId(3)];
+        let value = SsaValue(0);
+        let ops = collections::vec![
+            SsaInst::cell_set_cache(CellId(0), value),
+            SsaInst::cell_get_cache(CellId(0), SsaValue(1)),
+            SsaInst::cell_get_cache(CellId(1), SsaValue(2)),
+            SsaInst::cell_drop_cache(CellId(2)),
+            SsaInst::cell_set_slot(CellId(5), value),
+            SsaInst::call(0),
+            SsaInst::cell_set_cache(CellId(3), value),
+            SsaInst::cell_set_cache(CellId(4), value),
+        ];
+
+        let expected = slots
+            .iter()
+            .copied()
+            .map(|slot| entry_cache_requirement(&ops, slot, carried.binary_search(&slot).is_ok()))
+            .collect::<collections::Vec<_>>();
+        assert_eq!(entry_cache_requirements(&ops, &slots, &carried), expected);
+    }
+}
+
+/// One SSA-IR basic block.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SsaBlock {
+    pub id: SsaTarget,
+    pub params: collections::Vec<SsaValue>,
+    pub ops: collections::Vec<SsaInst>,
+    /// Overflow storage for primitive operands beyond the first two.
+    /// `SsaInst.meta` stores the start index for the current instruction.
+    pub extra_args: collections::Vec<SsaOperand>,
+    pub terminator: SsaTerminator,
+}
+
+impl SsaBlock {
+    #[inline]
+    pub(crate) fn view<'a>(&'a self, inst_idx: usize, program: &'a SsaProgram) -> SsaInstView<'a> {
+        decode_view(self.ops[inst_idx], program, self)
+    }
+
+    /// Append `extra` to `extra_args` and return its index (cast to u16).
+    ///
+    /// Convenience for test fixtures — production construction uses the
+    /// rewrite-time `ProgramBuilder`.
+    #[cfg(test)]
+    pub(crate) fn push_extra_arg(&mut self, extra: SsaOperand) -> u16 {
+        let idx = self.extra_args.len();
+        debug_assert!(idx < u16::MAX as usize, "block extra_args overflow");
+        self.extra_args.push(extra);
+        idx as u16
+    }
+}
+
+/// One explicit mapping from a predecessor live-out value to a successor block parameter.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct SsaBinding {
+    pub param: SsaValue,
+    pub value: SsaValue,
+}
+
+/// One control-flow edge with explicit live-in bindings for the successor.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SsaEdge {
+    pub target: SsaTarget,
+    pub bindings: collections::Vec<SsaBinding>,
+}
+
+/// Prepared call operand split.
+///
+/// The middle end does not choose ABI registers. It records the operand-stack
+/// shape that already exists at the call boundary: an older frame-published
+/// prefix plus a bounded live SSA suffix.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SsaCallArgs {
+    /// Caller-frame slot corresponding to callee local 0.
+    pub frame_base: FrameSlot,
+    /// Total formal parameter count consumed by this call.
+    pub total_params: u16,
+    /// Formal parameter types in wasm order. This lets MachineIR derive the
+    /// same abstract register-lane split for direct and indirect transfers
+    /// without asking `middle/` to know physical registers.
+    pub param_types: collections::Vec<ValueType>,
+    /// Parameters `[0, stack_prefix_count)` are already authoritative in
+    /// canonical frame slots starting at `frame_base`.
+    pub stack_prefix_count: u16,
+    /// Parameters `[stack_prefix_count, total_params)` that are still in the
+    /// bounded live SSA suffix.
+    pub live_suffix: collections::Vec<SsaCallLiveArg>,
+}
+
+impl SsaCallArgs {
+    #[inline]
+    pub(crate) fn frame_span(&self) -> FrameSpan {
+        FrameSpan::new(self.frame_base, self.total_params)
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct SsaCallLiveArg {
+    pub param_index: u16,
+    pub value: SsaValue,
+    pub ty: ValueType,
+    pub frame_slot: FrameSlot,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SsaCallOperandLoc {
+    Stack {
+        slot: FrameSlot,
+    },
+    Live {
+        value: SsaValue,
+        ty: ValueType,
+        slot: FrameSlot,
+    },
+}
+
+/// One scalar return value at a return boundary.
+///
+/// The middle end records where the value already lives without choosing a
+/// physical return register. MachineIR may lower this to the backend's scalar
+/// return lane or publish it back to the canonical return frame slot when the
+/// backend keeps frame-based returns.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SsaScalarResultLoc {
+    Stack {
+        slot: FrameSlot,
+        ty: ValueType,
+    },
+    Live {
+        value: SsaValue,
+        ty: ValueType,
+        slot: FrameSlot,
+    },
+}
+
+/// Prepared call operations.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SsaCallOp {
+    CallDirect {
+        callee: u32,
+        args: SsaCallArgs,
+        results: FrameSpan,
+        result_types: collections::Vec<ValueType>,
+    },
+    CallIndirect {
+        type_idx: u32,
+        table_idx: u32,
+        index: SsaCallOperandLoc,
+        args: SsaCallArgs,
+        results: FrameSpan,
+        result_types: collections::Vec<ValueType>,
+    },
+    CallRef {
+        type_idx: u32,
+        callee_ref: SsaCallOperandLoc,
+        args: SsaCallArgs,
+        results: FrameSpan,
+        result_types: collections::Vec<ValueType>,
+    },
+}
+
+/// Explicit CFG terminator.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) enum SsaTerminator {
+    Goto(SsaEdge),
+    Branch {
+        cond: SsaValue,
+        then_edge: SsaEdge,
+        else_edge: SsaEdge,
+    },
+    BrTable {
+        index: SsaValue,
+        entries: collections::Vec<SsaEdge>,
+    },
+    Return {
+        results: Option<FrameSpan>,
+    },
+    ReturnScalar {
+        result: SsaScalarResultLoc,
+        results: FrameSpan,
+    },
+    TailCallDirect {
+        callee: u32,
+        args: SsaCallArgs,
+        return_results: Option<FrameSpan>,
+    },
+    TailCallIndirect {
+        type_idx: u32,
+        table_idx: u32,
+        index: SsaCallOperandLoc,
+        args: SsaCallArgs,
+        return_results: Option<FrameSpan>,
+    },
+    TailCallRef {
+        type_idx: u32,
+        callee_ref: SsaCallOperandLoc,
+        args: SsaCallArgs,
+        return_results: Option<FrameSpan>,
+    },
+    TrapUnreachable,
+    /// `throw tag_idx` — payload values are already published to the
+    /// `args` frame slots before this terminator fires.
+    EhThrow {
+        tag_idx: u32,
+        args: FrameSpan,
+    },
+    EhThrowRef {
+        exnref_slot: FrameSlot,
+    },
+}

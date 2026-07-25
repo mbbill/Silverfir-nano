@@ -1372,15 +1372,21 @@ def run_interp_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_args
     # failure this catches is a backend whose emitted assembly stops
     # assembling — for Windows, the only COFF coverage outside a Windows
     # host.
+    #
+    # This must be a build, not a check. `cargo check` stops at metadata and
+    # never runs the assembler, so a `global_asm!` block that does not
+    # assemble passes it clean — which is precisely the failure these rows
+    # exist to catch. It needs no linker, so bare-metal rows are fine.
     for extra in [*BARE_SMOKE_TARGETS, WINDOWS_GNU_TARGET]:
         if not target_installed_or_install(runner, extra, f"interp engine {extra}"):
             continue
-        cargo_check(
+        cargo_build(
             runner,
-            f"cargo check: interp engine {extra}",
+            f"cargo build: interp engine {extra}",
             "sf-nano-core",
+            profile_name="dev",
             target=extra,
-            feature_spec="jit,interp",
+            features="jit,interp",
             log_name=f"interp-engine-{extra.split('-')[0]}",
         )
 

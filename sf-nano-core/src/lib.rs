@@ -37,12 +37,6 @@ pub use error::WasmError;
 pub use module::type_defs::FunctionType;
 pub use utils::limits::{Limitable, Limits};
 pub use vm::backend::{active_backend, backend_mode, set_backend_mode, BackendKind, BackendMode};
-#[cfg(sf_jit)]
-pub use vm::build::{
-    native_capacity_skips, native_capacity_skips as jit_capacity_skips, native_stats,
-    native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
-    NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
-};
 pub use vm::entities::{Caller, FunctionInst, HostCallback, HostFn};
 pub use vm::instance::{
     Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,
@@ -52,6 +46,12 @@ pub use vm::instance::{
 pub use vm::interpreter::{
     predecode_function, HostDispatch as InterpHostDispatch, Instr as InterpInstr, InterpInstance,
     Op as InterpOp, PredecodedFunction, FLAG_A_CONST, FLAG_B_CONST,
+};
+#[cfg(sf_jit)]
+pub use vm::jit::build::{
+    native_capacity_skips, native_capacity_skips as jit_capacity_skips, native_stats,
+    native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
+    NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
 };
 #[cfg(sf_has_guard_pages)]
 use vm::runtime::trap_signal;

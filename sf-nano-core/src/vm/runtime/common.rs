@@ -22,7 +22,7 @@ pub(crate) enum NativeCallStatus {
 #[inline]
 pub(crate) fn set_ctx_error(ctx: &mut NativeContext, error: WasmError) {
     #[cfg(sf_call_trace)]
-    crate::vm::debug::function_trace::native_trap_current(ctx, &error);
+    crate::vm::jit::debug::function_trace::native_trap_current(ctx, &error);
     ctx.error = Some(error);
 }
 

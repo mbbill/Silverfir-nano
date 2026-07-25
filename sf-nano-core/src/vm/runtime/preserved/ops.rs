@@ -5,9 +5,9 @@ use crate::{
     module::type_defs::{CompositeType, FieldType, PackedType, StorageType},
     value_type::ValueType,
     vm::{
-        arch::active_backend_config,
         entities::{MemInst, TableInst},
         gc_type_check::check_ref_type_match,
+        jit::arch::active_backend_config,
         runtime::{
             common::{internal_error, trap_error, value_matches_value_type},
             context::{NativeContext, PendingEscape},

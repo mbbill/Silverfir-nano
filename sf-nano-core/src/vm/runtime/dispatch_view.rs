@@ -6,7 +6,7 @@ use crate::collections;
 use core::cell::Cell;
 use tracked_alloc::boxed::Box;
 
-use crate::vm::{backend::BackendConfig, machine::machine_ir::MachineModuleAbi};
+use crate::vm::{backend::BackendConfig, jit::machine::machine_ir::MachineModuleAbi};
 
 pub(crate) mod function_kind {
     pub(crate) const LOCAL: u32 = 0;

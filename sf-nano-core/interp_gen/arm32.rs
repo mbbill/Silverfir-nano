@@ -205,10 +205,10 @@ fn native_op(op: Op) -> bool {
 pub struct Arm32 {
     /// Emit Thumb-2 rather than A32.
     pub thumb: bool,
-    /// Whether the target has hardware integer divide (`sdiv`/`udiv`).
-    /// True for every M-profile core and for the ARMv7-A profiles this
-    /// project targets.
-    pub idiv: bool,
+    /// Whether the assembler has to be *told* about `sdiv`/`udiv`. The
+    /// backend always emits them; the question is only whether the target's
+    /// base architecture already includes them.
+    pub idiv_directive: bool,
 }
 
 impl Arm32 {
@@ -357,10 +357,11 @@ impl Isa for Arm32 {
     }
 
     fn emit_prelude(&mut self, a: &mut Asm, st: &Stubs) {
-        if self.idiv {
-            // `sdiv`/`udiv` are an extension in the A32 profile and
-            // baseline in the M profile; asking for it explicitly makes
-            // both assemble the same source.
+        if self.idiv_directive {
+            // In the A-profile `sdiv`/`udiv` are an optional extension that
+            // the bare `armv7` CPU model leaves off, so the directive is
+            // required. In the M-profile they are baseline and the
+            // assembler rejects the directive outright.
             a.raw("\t.arch_extension idiv");
         }
 

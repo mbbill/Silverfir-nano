@@ -1273,7 +1273,7 @@ impl Instance {
 
         let init_result = (|| -> Result<(), WasmError> {
             #[cfg(sf_jit)]
-            crate::vm::build::ensure_module_compiled(&store)?;
+            crate::vm::jit::build::ensure_module_compiled(&store)?;
 
             for (i, global) in mod_globals.iter().enumerate() {
                 if let GlobalDef::Local(spec) = global.def() {

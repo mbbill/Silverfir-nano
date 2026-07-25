@@ -1,6 +1,6 @@
 # Optimization-Oriented Micro-JIT Pipeline
 
-Entry point: `sf-nano-core/src/vm/build.rs` -> `ensure_module_compiled()`
+Entry point: `sf-nano-core/src/vm/jit/build.rs` -> `ensure_module_compiled()`
 
 This engine is fast not because it runs a huge optimizer, but because the
 pipeline is arranged so that most profitable optimizations become cheap local
@@ -47,11 +47,11 @@ has a home.
 
 Main code:
 
-- `sf-nano-core/src/vm/build.rs` (`decode_function_semantic`)
-- `sf-nano-core/src/vm/wasm/decode.rs`
-- `sf-nano-core/src/vm/wasm/sir/semantic_ir.rs`
-- `sf-nano-core/src/vm/wasm/sir/primitive_op.rs`
-- `sf-nano-core/src/vm/wasm/inline.rs` (dormant — retained but not wired
+- `sf-nano-core/src/vm/jit/build.rs` (`decode_function_semantic`)
+- `sf-nano-core/src/vm/jit/wasm/decode.rs`
+- `sf-nano-core/src/vm/jit/wasm/sir/semantic_ir.rs`
+- `sf-nano-core/src/vm/jit/wasm/sir/primitive_op.rs`
+- `sf-nano-core/src/vm/jit/wasm/inline.rs` (dormant — retained but not wired
   into the current pipeline)
 
 ### Optimization-enabling representation
@@ -139,29 +139,29 @@ How the pipeline design enables it:
 
 Main code (pipeline entry is `prepare_function` in `middle/mod.rs`):
 
-- `sf-nano-core/src/vm/middle/mod.rs` — drives the stage
-- `sf-nano-core/src/vm/middle/frame.rs` — canonical frame-slot layout
-- `sf-nano-core/src/vm/middle/cfg.rs` — explicit semantic CFG + reachability
-- `sf-nano-core/src/vm/middle/slot_ssa.rs` — slot-only SSA skeleton
-- `sf-nano-core/src/vm/middle/joint_plan/` — joint transient/cache planner
+- `sf-nano-core/src/vm/jit/middle/mod.rs` — drives the stage
+- `sf-nano-core/src/vm/jit/middle/frame.rs` — canonical frame-slot layout
+- `sf-nano-core/src/vm/jit/middle/cfg.rs` — explicit semantic CFG + reachability
+- `sf-nano-core/src/vm/jit/middle/slot_ssa.rs` — slot-only SSA skeleton
+- `sf-nano-core/src/vm/jit/middle/joint_plan/` — joint transient/cache planner
   (entry-region analysis, local-access decisions, init-local facts,
   region solver, and the exact-simulation walker in `exact.rs` that produces
   the plan-authoritative per-block cache entry/exit rows + per-edge repair
   actions)
-- `sf-nano-core/src/vm/middle/rewrite/` — final SSA-IR materialization
+- `sf-nano-core/src/vm/jit/middle/rewrite/` — final SSA-IR materialization
   (function body + edge repair), seeded from the plan's exact rows
-- `sf-nano-core/src/vm/middle/cleanup.rs` — structural CFG cleanups
+- `sf-nano-core/src/vm/jit/middle/cleanup.rs` — structural CFG cleanups
   (cache-run canonicalization, jump threading, single-predecessor merge,
   unreachable-block removal)
-- `sf-nano-core/src/vm/middle/optimize.rs` — constant folding and
+- `sf-nano-core/src/vm/jit/middle/optimize.rs` — constant folding and
   constant-operand absorption
-- `sf-nano-core/src/vm/middle/sink_plan.rs` — cached-local sink planning
-- `sf-nano-core/src/vm/middle/final_signals.rs` — derives the two
+- `sf-nano-core/src/vm/jit/middle/sink_plan.rs` — cached-local sink planning
+- `sf-nano-core/src/vm/jit/middle/final_signals.rs` — derives the two
   machine-facing cache signals (per-entry `Ensure`/`Reserve` requirement rows
   + whole-function preferred-preserved flags) over the FINAL SSA, after
   cleanup's block merges, using `ModuleFacts` (callee locality + table
   dispatch modes) to classify local-JIT-call crosses
-- `sf-nano-core/src/vm/middle/ssa_ir/ir.rs` — SSA-IR definitions
+- `sf-nano-core/src/vm/jit/middle/ssa_ir/ir.rs` — SSA-IR definitions
 
 Pipeline order in `prepare_function`:
 
@@ -530,20 +530,20 @@ How the pipeline enables it:
 
 Main code:
 
-- `sf-nano-core/src/vm/machine/lower_module.rs`
-- `sf-nano-core/src/vm/machine/lower_context.rs`
-- `sf-nano-core/src/vm/machine/lower_regalloc.rs`
-- `sf-nano-core/src/vm/machine/lower_cache_layout.rs`
-- `sf-nano-core/src/vm/machine/lower_cached.rs`
-- `sf-nano-core/src/vm/machine/lower_inst.rs`
-- `sf-nano-core/src/vm/machine/lower_leaf_arith.rs`
-- `sf-nano-core/src/vm/machine/lower_leaf_special.rs`
-- `sf-nano-core/src/vm/machine/lower_call.rs`
-- `sf-nano-core/src/vm/machine/lower_const_pool.rs`
-- `sf-nano-core/src/vm/machine/lower_i64.rs`
-- `sf-nano-core/src/vm/machine/lower_i64_gp64.rs`
-- `sf-nano-core/src/vm/machine/gp32/lower_leaf.rs`
-- `sf-nano-core/src/vm/machine/validate.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_module.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_context.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_regalloc.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_cache_layout.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_cached.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_inst.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_leaf_arith.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_leaf_special.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_call.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_const_pool.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_i64.rs`
+- `sf-nano-core/src/vm/jit/machine/lower_i64_gp64.rs`
+- `sf-nano-core/src/vm/jit/machine/gp32/lower_leaf.rs`
+- `sf-nano-core/src/vm/jit/machine/validate.rs`
 
 This stage is where the "simple pipeline" claim becomes concrete. Because the
 SSA stage already bounded transient pressure and assigned canonical homes, the
@@ -795,9 +795,9 @@ What this optimizes:
 
 Main code:
 
-- `sf-nano-core/src/vm/machine/machine_ir/module.rs`
-- `sf-nano-core/src/vm/machine/peephole/mod.rs`
-- `sf-nano-core/src/vm/machine/peephole/*.rs`
+- `sf-nano-core/src/vm/jit/machine/machine_ir/module.rs`
+- `sf-nano-core/src/vm/jit/machine/peephole/mod.rs`
+- `sf-nano-core/src/vm/jit/machine/peephole/*.rs`
 
 This stage is intentionally small. It wins because MachineIR is already shaped
 to expose profitable local patterns.
@@ -972,19 +972,19 @@ steps that do not fit a single generic branch condition.
 
 Main code:
 
-- `sf-nano-core/src/vm/arch/common/pipeline.rs`
-- `sf-nano-core/src/vm/arch/common/scratch_pool.rs`
-- `sf-nano-core/src/vm/arch/abi.md`
-- `sf-nano-core/src/vm/arch/common/core.rs`
-- `sf-nano-core/src/vm/arch/arm64/*`
-- `sf-nano-core/src/vm/arch/arm32/*` (shared by the `armv7a` and `thumbm`
+- `sf-nano-core/src/vm/jit/arch/common/pipeline.rs`
+- `sf-nano-core/src/vm/jit/arch/common/scratch_pool.rs`
+- `sf-nano-core/src/vm/jit/arch/abi.md`
+- `sf-nano-core/src/vm/jit/arch/common/core.rs`
+- `sf-nano-core/src/vm/jit/arch/arm64/*`
+- `sf-nano-core/src/vm/jit/arch/arm32/*` (shared by the `armv7a` and `thumbm`
   backends)
-- `sf-nano-core/src/vm/arch/riscv/*` (shared RISC-V ABI, encoder, and
+- `sf-nano-core/src/vm/jit/arch/riscv/*` (shared RISC-V ABI, encoder, and
   register mapping)
-- `sf-nano-core/src/vm/arch/riscv64/*`
-- `sf-nano-core/src/vm/arch/riscv32/*`
-- `sf-nano-core/src/vm/arch/x86_64/*`
-- `sf-nano-core/src/vm/arch/emulator/*` (debug MachineIR execution backend,
+- `sf-nano-core/src/vm/jit/arch/riscv64/*`
+- `sf-nano-core/src/vm/jit/arch/riscv32/*`
+- `sf-nano-core/src/vm/jit/arch/x86_64/*`
+- `sf-nano-core/src/vm/jit/arch/emulator/*` (debug MachineIR execution backend,
   used for testing and the `emu64` / `emu32` configs)
 - `sf-nano-core/src/vm/runtime/runtime_call/*`
 - `sf-nano-core/src/vm/runtime/preserved/*`
@@ -1007,7 +1007,7 @@ This stage is also where the backend ownership rules matter most. These rules
 exist to keep native lowering honest: the backend is selecting encodings, not
 reinterpreting MachineIR liveness or inventing a second register allocator.
 
-Shared ABI background lives in `sf-nano-core/src/vm/arch/abi.md`. The rules
+Shared ABI background lives in `sf-nano-core/src/vm/jit/arch/abi.md`. The rules
 below are the practical coding invariants that current native backends are
 expected to follow.
 
@@ -1053,7 +1053,7 @@ root visibility.
 
 #### 3. Scratch registers must come from the scratch pool
 
-`sf-nano-core/src/vm/arch/common/scratch_pool.rs` is the ownership mechanism
+`sf-nano-core/src/vm/jit/arch/common/scratch_pool.rs` is the ownership mechanism
 for backend scratch use.
 
 Use it this way:
@@ -1085,9 +1085,9 @@ not in terms of hard-coded physical register names.
 ARM64 and RISC-V are the current examples of the intended structure:
 
 - the physical register plan lives in `abi.rs`
-  (`sf-nano-core/src/vm/arch/arm64/abi.rs`,
-  `sf-nano-core/src/vm/arch/riscv64/abi.rs`,
-  `sf-nano-core/src/vm/arch/riscv32/abi.rs`, etc.)
+  (`sf-nano-core/src/vm/jit/arch/arm64/abi.rs`,
+  `sf-nano-core/src/vm/jit/arch/riscv64/abi.rs`,
+  `sf-nano-core/src/vm/jit/arch/riscv32/abi.rs`, etc.)
 - raw register construction is hidden there
 - lowering code gets temps from the scratch pool
 - zero/SP-like forms are expressed through semantic helpers instead of raw
