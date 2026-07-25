@@ -25,7 +25,7 @@ use super::dispatch_arm64::{
 };
 use super::instr::Op;
 #[cfg(all(sf_jit, sf_backend_arm64))]
-use super::instr::{Instr, FLAG_A_CONST, FLAG_B_CONST};
+use super::instr::{Instr, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
 use super::predecode::{predecode_function, PredecodedFunction};
 
 const PAGE: usize = 65536;
@@ -539,6 +539,28 @@ impl<'m> InterpInstance<'m> {
 
     /// Slow-path exit counts by op since instantiation, descending —
     /// empty when native dispatch is not active.
+    /// Static adjacent-pair census over the predecoded streams: a pair
+    /// is counted only when the first op falls through (no control
+    /// transfer), i.e. exactly where a fused handler could replace two
+    /// dispatches with one. Descending by count.
+    pub fn bigram_stats(&self) -> Vec<((Op, Op), u64)> {
+        let mut map: tracked_alloc::BTreeMap<(u16, u16), u64> = tracked_alloc::BTreeMap::new();
+        for f in self.funcs.iter().flatten() {
+            for w in f.code.windows(2) {
+                if w[0].op as u16 >= Op::Br as u16 {
+                    continue; // control transfer: never a fusible pair
+                }
+                *map.entry((w[0].op as u16, w[1].op as u16)).or_insert(0) += 1;
+            }
+        }
+        let mut out: Vec<((Op, Op), u64)> = map
+            .into_iter()
+            .map(|((a, b), n)| ((op_from_index(a as usize), op_from_index(b as usize)), n))
+            .collect();
+        out.sort_by(|x, y| y.1.cmp(&x.1));
+        out
+    }
+
     pub fn slow_exit_stats(&self) -> Vec<(Op, u64)> {
         #[cfg(all(sf_jit, sf_backend_arm64))]
         if let Some(native) = &self.native {
@@ -1079,18 +1101,34 @@ impl<'m> InterpInstance<'m> {
         }
         macro_rules! load {
             ($ins:expr, $size:expr, $conv:expr) => {{
-                let addr = opa!($ins) as u32 as u64;
+                let (addr, dst) = if $ins.flags & FLAG_FUSED != 0 {
+                    let a2 = frame[($ins.c >> 32) as usize] as u32;
+                    (
+                        (opa!($ins) as u32).wrapping_add(a2) as u64,
+                        ($ins.c & 0xffff_ffff) as usize,
+                    )
+                } else {
+                    (opa!($ins) as u32 as u64, $ins.c as usize)
+                };
                 let bytes = self.mem_load(addr, $ins.b, $size)?;
                 let mut buf = [0u8; 8];
                 buf[..$size].copy_from_slice(bytes);
-                frame[$ins.c as usize] = $conv(u64::from_le_bytes(buf));
+                frame[dst] = $conv(u64::from_le_bytes(buf));
             }};
         }
         macro_rules! store {
             ($ins:expr, $size:expr) => {{
-                let addr = opa!($ins) as u32 as u64;
+                let (addr, off) = if $ins.flags & FLAG_FUSED != 0 {
+                    let a2 = frame[($ins.c >> 32) as usize] as u32;
+                    (
+                        (opa!($ins) as u32).wrapping_add(a2) as u64,
+                        $ins.c & 0xffff_ffff,
+                    )
+                } else {
+                    (opa!($ins) as u32 as u64, $ins.c)
+                };
                 let val = opb!($ins);
-                let bytes = self.mem_store(addr, $ins.c, $size)?;
+                let bytes = self.mem_store(addr, off, $size)?;
                 bytes.copy_from_slice(&val.to_le_bytes()[..$size]);
             }};
         }

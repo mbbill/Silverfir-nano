@@ -25,7 +25,7 @@ use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 
 use super::instr::{
     operand_is_float, result_is_float, Instr, Op, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC,
-    FLAG_B_CONST, FLAG_DST_ACC,
+    FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
 };
 
 /// Producer index meaning "no patchable producer" (call results, block
@@ -364,11 +364,16 @@ impl<'m> Predecoder<'m> {
         else {
             return None;
         };
-        if def == NO_DEF
-            || def + 1 != self.code.len() as u32
-            || region != self.region
-            || self.code[def as usize].c != self.temp_slot(height)
-        {
+        if def == NO_DEF || def + 1 != self.code.len() as u32 || region != self.region {
+            return None;
+        }
+        let ins = &self.code[def as usize];
+        let cdst = if ins.op == Op::Select || ins.flags & FLAG_FUSED != 0 {
+            ins.c & 0xffff_ffff
+        } else {
+            ins.c
+        };
+        if cdst != self.temp_slot(height) {
             return None;
         }
         Some(def)
@@ -485,7 +490,7 @@ impl<'m> Predecoder<'m> {
     /// Retro-patch the destination field of a producer instruction.
     fn patch_dst(&mut self, def: u32, slot: u64) {
         let instr = &mut self.code[def as usize];
-        if instr.op == Op::Select {
+        if instr.op == Op::Select || instr.flags & FLAG_FUSED != 0 {
             instr.c = (instr.c & !0xffff_ffff) | slot;
         } else {
             instr.c = slot;
@@ -1585,13 +1590,45 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         let at = self.code.len() as u32;
                         let d = self.pop()?;
                         let (a, a_const) = self.operand(d, at);
-                        let mut flags = self.acc_operand(d, FLAG_A_ACC, false);
-                        if a_const {
-                            flags |= FLAG_A_CONST;
+                        // Address-add fusion: a single-use, just-emitted
+                        // i32.add producing this address folds into the
+                        // load (the corpus-universal base+index pattern).
+                        let mut fused = false;
+                        if let Some(def) = self.rewritable_producer(d) {
+                            let add = self.code[def as usize];
+                            let dst = self.temp_slot_used(self.height());
+                            if add.op == Op::I32_Add
+                                && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
+                                && offset >> 48 == 0
+                                && add.a < 1 << 16
+                                && add.b < 1 << 16
+                                && dst < 1 << 16
+                            {
+                                let (a1, a2, afl) = if add.flags & FLAG_B_ACC != 0 {
+                                    (add.b, add.a, FLAG_A_ACC)
+                                } else {
+                                    (add.a, add.b, add.flags & FLAG_A_ACC)
+                                };
+                                self.code[def as usize] = Instr {
+                                    op: lop,
+                                    flags: afl | FLAG_FUSED,
+                                    a: a1,
+                                    b: offset,
+                                    c: a2 << 32 | dst,
+                                };
+                                self.push_result_temp(def);
+                                fused = true;
+                            }
                         }
-                        let dst = self.temp_slot_used(self.height());
-                        let idx = self.emit(lop, flags, a, offset, dst);
-                        self.push_result_temp(idx);
+                        if !fused {
+                            let mut flags = self.acc_operand(d, FLAG_A_ACC, false);
+                            if a_const {
+                                flags |= FLAG_A_CONST;
+                            }
+                            let dst = self.temp_slot_used(self.height());
+                            let idx = self.emit(lop, flags, a, offset, dst);
+                            self.push_result_temp(idx);
+                        }
                     } else if let Some(sop) = wasm_store(o) {
                         let offset = match &imm {
                             Immediate::MemArg { offset, memidx, .. } => {
@@ -1607,16 +1644,46 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         let (b, b_const) = self.operand(v, at);
                         let mut flags =
                             self.acc_operand(v, FLAG_B_ACC, operand_is_float(sop, true));
-                        let ad = self.pop()?;
-                        let (a, a_const) = self.operand(ad, at);
-                        flags |= self.acc_operand(ad, FLAG_A_ACC, false);
-                        if a_const {
-                            flags |= FLAG_A_CONST;
-                        }
                         if b_const {
                             flags |= FLAG_B_CONST;
                         }
-                        self.emit(sop, flags, a, b, offset);
+                        let ad = self.pop()?;
+                        let (a, a_const) = self.operand(ad, at);
+                        // Address-add fusion (see the load arm). When it
+                        // fires the value was necessarily folded (the add
+                        // is the last instruction), so the value's flags
+                        // carry no adjacency marks.
+                        let mut fused = false;
+                        if let Some(def) = self.rewritable_producer(ad) {
+                            let add = self.code[def as usize];
+                            if add.op == Op::I32_Add
+                                && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
+                                && offset >> 32 == 0
+                                && add.a < 1 << 16
+                                && add.b < 1 << 16
+                            {
+                                let (a1, a2, afl) = if add.flags & FLAG_B_ACC != 0 {
+                                    (add.b, add.a, FLAG_A_ACC)
+                                } else {
+                                    (add.a, add.b, add.flags & FLAG_A_ACC)
+                                };
+                                self.code[def as usize] = Instr {
+                                    op: sop,
+                                    flags: flags | afl | FLAG_FUSED,
+                                    a: a1,
+                                    b,
+                                    c: a2 << 32 | offset,
+                                };
+                                fused = true;
+                            }
+                        }
+                        if !fused {
+                            flags |= self.acc_operand(ad, FLAG_A_ACC, false);
+                            if a_const {
+                                flags |= FLAG_A_CONST;
+                            }
+                            self.emit(sop, flags, a, b, offset);
+                        }
                     } else {
                         return Err(unsupported());
                     }

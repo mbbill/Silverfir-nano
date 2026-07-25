@@ -36,7 +36,7 @@ use crate::vm::runtime::code_buf::CodeBuffer;
 
 use super::instr::{
     operand_is_float, result_is_float, Instr, Op, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC,
-    FLAG_B_CONST, FLAG_DST_ACC,
+    FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
 };
 use super::predecode::PredecodedFunction;
 
@@ -108,7 +108,8 @@ pub(super) struct LinkedFunction {
 const N_OPS: usize = Op::Unreachable as usize + 1;
 /// Variant slots per op: operand classes a×b ∈ {slot, const, acc, l0,
 /// l1}², destination ∈ {mem, acc, l0, l1} — densely mapped, 5·5·4 = 100.
-const N_VARIANTS: usize = 100;
+/// Address-fused memory ops occupy a second bank at +100.
+const N_VARIANTS: usize = 200;
 
 /// Operand residency class for handler emission and link classification.
 #[derive(Clone, Copy, PartialEq)]
@@ -345,6 +346,18 @@ fn op_variant(ins: &Instr, flags: u16, l0_slot: u64, l1_slot: u64, l0f: bool, l1
         } else {
             DstCls::Mem
         }
+    } else if flags & FLAG_FUSED != 0 && c_d {
+        // fused loads pack addr2 in c's high half; the dst is the low
+        let dslot = ins.c & 0xffff_ffff;
+        if dslot == l0_slot && rf == l0f {
+            DstCls::L0
+        } else if dslot == l1_slot && rf == l1f {
+            DstCls::L1
+        } else if flags & FLAG_DST_ACC != 0 {
+            DstCls::Acc
+        } else {
+            DstCls::Mem
+        }
     } else if c_d && ins.c == l0_slot && rf == l0f {
         DstCls::L0
     } else if c_d && ins.c == l1_slot && rf == l1f {
@@ -354,7 +367,12 @@ fn op_variant(ins: &Instr, flags: u16, l0_slot: u64, l1_slot: u64, l0f: bool, l1
     } else {
         DstCls::Mem
     };
-    variant(a, b, d)
+    let v = variant(a, b, d);
+    if flags & FLAG_FUSED != 0 {
+        v + 100
+    } else {
+        v
+    }
 }
 
 /// Whether an op's native handler leaves a result in the accumulator
@@ -400,6 +418,20 @@ fn native_guard(ins: &Instr) -> bool {
 /// the link-resolved flags (acc hints possibly stripped).
 fn transform_bc(ins: &Instr, flags: u16) -> (u64, u64) {
     use Op::*;
+    if flags & FLAG_FUSED != 0 {
+        return if between(ins.op, I32_Load, I64_Load32U) {
+            // loads: b = static offset (raw), c = addr2*8 << 32 | dst*8
+            (ins.b, ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8)
+        } else {
+            // stores: b = value, c = addr2*8 << 32 | static offset (raw)
+            let b = if flags & FLAG_B_CONST != 0 {
+                ins.b
+            } else {
+                ins.b * 8
+            };
+            (b, ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff))
+        };
+    }
     match ins.op {
         // control: c = target cell byte offset; b unused
         Br | BrIf | BrIfNot => (ins.b, ins.c * CELL as u64),
@@ -2243,6 +2275,128 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                     }
                     tail(e, counted(a_cls, b_cls, d));
                     def(handlers, m.op, variant(a_cls, b_cls, d), off);
+                }
+            }
+        }
+    }
+
+    // ---- address-fused memory ops (FLAG_FUSED bank at variant+100):
+    // ea = zext32(addr1 + addr2) + static offset, the corpus-universal
+    // base+index pattern folded into one dispatch. addr2 always loads
+    // from its slot (packed in c's high half, like Select's cond);
+    // addr1 takes the register classes. ----
+    for m in mems.iter() {
+        if matches!(
+            m.op,
+            Op::I64_Load8S
+                | Op::I64_Load8U
+                | Op::I64_Load16S
+                | Op::I64_Load16U
+                | Op::I64_Load32S
+                | Op::I64_Load32U
+        ) {
+            continue;
+        }
+        let fp = matches!(
+            m.op,
+            Op::F32_Load | Op::F64_Load | Op::F32_Store | Op::F64_Store
+        );
+        if m.load {
+            for a_cls in [Cls::Slot, Cls::Acc, Cls::L0, Cls::L1] {
+                for d in DSTS {
+                    let off = e.here();
+                    pre(e);
+                    let ra1 = src_a(e, a_cls, X10);
+                    e.ldr_x_imm(X11, PC, 24); // addr2*8 << 32 | dst*8
+                    e.lsr_x(X13, X11, 32);
+                    e.ubfx_x(X11, X11, 0, 32); // dst byte offset
+                    e.ldr_x_reg(X13, FRAME, X13); // addr2
+                    e.alu_reg(0x0B00_0000, X13, ra1, X13); // wrapping i32 sum
+                    e.ldr_x_imm(X12, PC, 16); // static offset
+                    e.add_x_uxtw(X12, X12, X13); // ea
+                    e.add_x_imm(X13, X12, m.size);
+                    e.cmp_x(X13, MEMLEN);
+                    {
+                        let delta = (trap_oob as i64 - e.here() as i64) / 4;
+                        e.b_cond(HI, delta as i32);
+                    }
+                    if fp {
+                        if m.kind == 0 {
+                            e.ldr_s_reg(fp_target(d), MEM, X12);
+                        } else {
+                            e.ldr_d_reg(fp_target(d), MEM, X12);
+                        }
+                        if d != DstCls::Acc {
+                            e.str_d_reg(fp_target(d), FRAME, X11);
+                        }
+                    } else {
+                        let rd = dst_target(d);
+                        match m.kind {
+                            0 => e.ldr_w_reg(rd, MEM, X12),
+                            1 => e.ldr_x_reg(rd, MEM, X12),
+                            2 => e.ldrb_reg(rd, MEM, X12),
+                            3 => e.ldrh_reg(rd, MEM, X12),
+                            4 => e.ldrsb_w_reg(rd, MEM, X12),
+                            5 => e.ldrsh_w_reg(rd, MEM, X12),
+                            6 => e.ldrsb_x_reg(rd, MEM, X12),
+                            7 => e.ldrsh_x_reg(rd, MEM, X12),
+                            8 => e.ldrsw_reg(rd, MEM, X12),
+                            _ => unreachable!(),
+                        }
+                        if d != DstCls::Acc {
+                            e.str_x_reg(rd, FRAME, X11);
+                        }
+                    }
+                    tail(e, counted(a_cls, Cls::Slot, d));
+                    def(handlers, m.op, variant(a_cls, Cls::Slot, d) + 100, off);
+                }
+            }
+        } else {
+            for a_cls in [Cls::Slot, Cls::Acc, Cls::L0, Cls::L1] {
+                for b_cls in CLASSES {
+                    let off = e.here();
+                    pre(e);
+                    let ra1 = src_a(e, a_cls, X10);
+                    e.ldr_x_imm(X11, PC, 24); // addr2*8 << 32 | offset
+                    e.lsr_x(X13, X11, 32);
+                    e.ldr_x_reg(X13, FRAME, X13); // addr2
+                    e.alu_reg(0x0B00_0000, X13, ra1, X13); // wrapping i32 sum
+                    e.ubfx_x(X12, X11, 0, 32); // static offset
+                    e.add_x_uxtw(X12, X12, X13); // ea
+                    e.add_x_imm(X13, X12, m.size);
+                    e.cmp_x(X13, MEMLEN);
+                    {
+                        let delta = (trap_oob as i64 - e.here() as i64) / 4;
+                        e.b_cond(HI, delta as i32);
+                    }
+                    if fp && matches!(b_cls, Cls::Acc | Cls::L0 | Cls::L1) {
+                        let v = match b_cls {
+                            Cls::L0 => FL0R,
+                            Cls::L1 => FL1R,
+                            _ => FACC,
+                        };
+                        if m.kind == 0 {
+                            e.str_s_reg(v, MEM, X12);
+                        } else {
+                            e.str_d_reg(v, MEM, X12);
+                        }
+                    } else {
+                        let rb = src_b(e, b_cls, X11);
+                        match m.kind {
+                            0 => e.str_w_reg(rb, MEM, X12),
+                            1 => e.str_x_reg(rb, MEM, X12),
+                            2 => e.strb_reg(rb, MEM, X12),
+                            3 => e.strh_reg(rb, MEM, X12),
+                            _ => unreachable!(),
+                        }
+                    }
+                    tail(e, counted(a_cls, b_cls, DstCls::Mem));
+                    def(
+                        handlers,
+                        m.op,
+                        variant(a_cls, b_cls, DstCls::Mem) + 100,
+                        off,
+                    );
                 }
             }
         }

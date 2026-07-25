@@ -30,6 +30,11 @@ pub(crate) const FLAG_B_ACC: u16 = 1 << 3;
 /// This instruction's result lives in the accumulator; the frame-slot
 /// write is skipped by acc-honoring backends.
 pub(crate) const FLAG_DST_ACC: u16 = 1 << 4;
+/// Address-add fusion: this memory op's effective address is the
+/// wrapping i32 sum of TWO slot operands (the census's universal
+/// base+index pattern). Loads pack `addr2 << 32 | dst` in c; stores
+/// pack `addr2 << 32 | static_offset` (offset < 2^32, memory 0 only).
+pub(crate) const FLAG_FUSED: u16 = 1 << 5;
 
 /// Value-domain classification for accumulator pairing: the accumulator
 /// is a PER-DOMAIN register (x8 for integer bits, a NEON register for

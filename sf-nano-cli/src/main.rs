@@ -442,6 +442,13 @@ fn run_interp(data: &[u8], module_name: &str, stats: bool) -> i32 {
             if native > 0 {
                 eprintln!("[interp] native dispatches: {native}");
             }
+            let bigrams = inst.bigram_stats();
+            if !bigrams.is_empty() {
+                eprintln!("[interp] top fallthrough bigrams (static):");
+                for ((a, b), n) in bigrams.iter().take(16) {
+                    eprintln!("[interp]   {a:?} -> {b:?}: {n}");
+                }
+            }
             let slow = inst.slow_exit_stats();
             if !slow.is_empty() {
                 let total: u64 = slow.iter().map(|(_, n)| n).sum();
