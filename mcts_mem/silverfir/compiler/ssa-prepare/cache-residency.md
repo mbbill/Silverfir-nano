@@ -246,6 +246,32 @@
   probe alongside every capture and compare per-GHz (scripts/freqprobe.c),
   or A/B interleaved within one session (sourced).
 
+- 2026-07-24 method: residency changes can be accepted or killed without any
+  timing run. Per-block emitted bytes come free in the `SF_NATIVE_DUMP_DIR`
+  region table and loop depth from natural loops over the MachineIR CFG, so
+  summing block size weighted by loop depth answers the hot-path question a
+  whole-module total cannot (a change can shrink the module and grow the loop
+  bodies, or the reverse). The gate is deterministic to a single instruction,
+  runs on cross-compiled targets that cannot be executed here, and costs about
+  two minutes per iteration — cheap enough to falsify several hypotheses in one
+  sitting. Its boundary: it decides changes that alter how much code runs and
+  where, and says nothing about changes that alter where values live at equal
+  instruction count (the interpreter's l0 class was +16% CoreMark through a
+  store→load chain and would have measured as noise here). For that class,
+  deterministic counters confirm engagement and only a clock confirms payoff
+  (code).
+
+- 2026-07-24 rejected: [[pressure-tiered-regions]] — splitting a region's
+  high-pressure block runs into priced sub-regions so one spiky block stops
+  taxing its whole region's capacity. It widens the calm blocks' capacity as
+  designed and still grows native code on all three measured targets
+  (arm64 +0.14..+2.47%, armv7 +1.10..+2.01%, x86_64 +1.84..+4.91%), because
+  the objective prices a resident cell's accesses but not the code residency
+  itself costs. The region-max headroom rule is load-bearing beyond interior
+  pressure: it is also how the entry block's incoming-param footprint
+  constrains residency, and on 32-bit backends unit-count feasibility is not
+  lane-assignment feasibility (i64 cached cells need register pairs) (code).
+
 ## Moves
 
 - 2026-04-06 (0b5d2ea0) replaced [[per-block-residency]]: choosing a resident set

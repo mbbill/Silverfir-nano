@@ -1,21 +1,35 @@
-- The execution-backend enum carries a single kind: every Wasm function is
-  compiled to native code and there is no interpreter or fusion tier to select
-  among at build or run time (`BackendKind::Native`).
+- The engine carries two execution engines: the native JIT (the default,
+  eager, full 3.0 feature set) and the [[interpreter]] (the folded stack
+  machine, wasm 2.0 + multi-memory coverage). There is no automatic
+  tiering: the engine is chosen per instance by the embedder (the CLI
+  exposes it as a flag), and an instance runs entirely on one engine.
+
+- The two engines share the runtime substrate — module parsing and
+  validation, `Store`, instances, WASI host layer — but none of the
+  compile/execute pipeline: the interpreter never touches the JIT's IRs,
+  register allocator, or encoders.
+
+- The interpreter executes only through its own native dispatch chain;
+  on hosts without executable memory or targets without an interpreter
+  backend, interpreter instantiation fails with a clean error and the
+  JIT remains the only engine.
 
 ## Facts
 
-- 2026-06-14 rationale: the kill-fact for dropping the interpreter tier and
-  going JIT-only is the ceiling gap — the fast interpreter peaks at roughly
-  Cranelift's baseline (Winch) tier, about as fast as an interpreter can get,
-  while the JIT exceeds Cranelift's optimizing JIT and reaches V8-class; keeping
-  an interpreter tier that can never close that gap was not worth its weight once
-  the JIT was working (sourced).
+- 2026-07-23 rationale: the interpreter tier was reopened performance-first
+  for two scenarios the JIT cannot serve — platforms that forbid runtime
+  code generation, and tier-0 execution while the JIT compiles — with the
+  explicit constraint that no large fusion pattern library returns (size
+  explosion and app-dependent coverage were its recorded costs) (sourced).
+
+- 2026-07-23 measurement: CoreMark on Apple M-series, release, 5 runs
+  each: interpreter 5454.6±48.9 vs JIT 39314.3±505 — the interpreter runs
+  at 13.9% of the JIT on the same module and WASI stack (code).
 
 ## Moves
 
-- 2026-04-07 (38809e62) replaced [[interp-opt-in-feature]]: the interpreter
-  (base) and fusion execution tiers had already been shelved behind disabled
-  cargo features and the native JIT carried all execution; this commit deletes
-  the entire interp subsystem, the fast-interp C-handler/trampoline build
-  pipeline, and their backend enum variants, collapsing the execution-backend
-  enum to a single Native kind and making the engine JIT-only (code)
+- 2026-07-23 replaced [[jit-only]]: a new no-fusion interpreter
+  (the folded stack machine) reopened the execution tier for platforms
+  where runtime code generation is impossible and for tier-0 startup,
+  measured at 13.9% of the JIT on CoreMark; the JIT remains the default
+  engine (sourced)

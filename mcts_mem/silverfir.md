@@ -7,10 +7,10 @@
   value model, reference and GC heaps, and in-tree WASI host layer rather than
   delegating any of these to external WebAssembly or WASI crates.
 
-- Execution is JIT-only: every Wasm function is compiled to native machine
-  code before it runs, and there is no bytecode interpreter or fallback
-  execution tier in the engine. The runtime backend enum carries a single
-  kind (`BackendKind::Native`).
+- Execution has two engines, chosen per instance by the embedder: the
+  native JIT (the default — every Wasm function compiles to machine code
+  before it runs) and a folded-stack-machine interpreter tier; see
+  [[execution-model]] and [[interpreter]].
 
 - Verification and code generation both run on the target device from the
   shipped `.wasm` artifact; the deployment input is portable Wasm, never a
