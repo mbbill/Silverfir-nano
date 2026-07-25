@@ -18,9 +18,10 @@
 
 use crate::collections;
 use crate::error::WasmError;
+use crate::module::type_defs::FunctionType;
 use crate::module::Module;
 use crate::vm::engine::{Engine, Tier};
-use crate::vm::value::Value;
+use crate::vm::value::{RefHandle, Value};
 
 #[cfg(sf_interp)]
 use crate::vm::interpreter::InterpInstance;
@@ -195,6 +196,87 @@ impl Instance {
             Inner::Jit(inst) => inst.memory_mut(),
             #[cfg(sf_interp)]
             Inner::Interp(inst) => inst.memory_mut(),
+        }
+    }
+
+    // --- The surface the spec runner drives both engines through ---
+    //
+    // Each of these delegates to the JIT unchanged. The interpreter answers
+    // what it can and returns a named error otherwise, so the shared runner
+    // reports a real failure rather than quietly skipping -- which is the
+    // only way the gap between the engines stays visible.
+
+    /// Call an exported function by index.
+    pub fn invoke_function_index(
+        &mut self,
+        idx: usize,
+        args: &[Value],
+    ) -> Result<collections::Vec<Value>, WasmError> {
+        match &mut self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.invoke_function_index(idx, args),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => interp_imports::invoke_by_index(inst, idx, args),
+        }
+    }
+
+    /// A global's value by index.
+    pub fn global_at(&self, idx: usize) -> Result<Option<Value>, WasmError> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.global_at(idx),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => interp_imports::global_at(inst, idx),
+        }
+    }
+
+    /// Overwrite a global by index.
+    pub fn replace_global_at(&mut self, idx: usize, value: Value) -> Result<(), WasmError> {
+        match &mut self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.replace_global_at(idx, value),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => interp_imports::replace_global_at(inst, idx, value),
+        }
+    }
+
+    /// An exported global's value by name.
+    pub fn get_global(&self, name: &str) -> Result<Option<Value>, WasmError> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.get_global(name),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => match inst.find_export_global(name) {
+                Some(idx) => interp_imports::global_at(inst, idx),
+                None => Ok(None),
+            },
+        }
+    }
+
+    /// The declared type of a function by index.
+    pub fn function_type_at(&self, idx: usize) -> Option<FunctionType> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.function_type_at(idx),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => inst
+                .module()
+                .functions()
+                .get(idx)
+                .map(|f| f.func_type().clone()),
+        }
+    }
+
+    /// A reference handle for a function, for `ref.func` across instances.
+    pub fn function_handle_at(&self, idx: usize) -> Option<RefHandle> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.function_handle_at(idx),
+            #[cfg(sf_interp)]
+            Inner::Interp(_) => {
+                let _ = idx;
+                None
+            }
         }
     }
 

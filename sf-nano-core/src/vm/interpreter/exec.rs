@@ -845,6 +845,30 @@ impl InterpInstance {
         })
     }
 
+    /// A global's raw 64-bit value by index.
+    pub fn global_at(&self, idx: usize) -> Option<u64> {
+        self.globals.get(idx).copied()
+    }
+
+    /// Overwrite a global's raw 64-bit value by index.
+    pub fn set_global_at(&mut self, idx: usize, raw: u64) -> Result<(), WasmError> {
+        match self.globals.get_mut(idx) {
+            Some(slot) => {
+                *slot = raw;
+                Ok(())
+            }
+            None => Err(WasmError::invalid("interp: global index out of range")),
+        }
+    }
+
+    /// The index of an exported global, if the module exports one.
+    pub fn find_export_global(&self, name: &str) -> Option<usize> {
+        self.module
+            .globals()
+            .iter()
+            .position(|g| g.export_names().iter().any(|n| n == name))
+    }
+
     /// Read an exported global's raw 64-bit value.
     pub fn get_export_global(&self, name: &str) -> Option<u64> {
         self.module

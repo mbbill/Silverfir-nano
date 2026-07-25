@@ -190,6 +190,47 @@ pub(super) fn call_by_index(
     Ok(())
 }
 
+/// Call an export by index with typed values.
+pub(super) fn invoke_by_index(
+    inst: &mut InterpInstance,
+    idx: usize,
+    args: &[Value],
+) -> Result<Vec<Value>, WasmError> {
+    let (n_params, n_results) = inst
+        .func_arity(idx)
+        .ok_or(WasmError::invalid("function index out of range"))?;
+    if args.len() != n_params {
+        return Err(WasmError::invalid("argument arity mismatch"));
+    }
+    let mut out = crate::collections::vec![Value::I32(0); n_results];
+    call_by_index(inst, idx, args, &mut out)?;
+    Ok(out)
+}
+
+/// A global's value by index, typed from the module's declaration.
+pub(super) fn global_at(inst: &InterpInstance, idx: usize) -> Result<Option<Value>, WasmError> {
+    let Some(raw) = inst.global_at(idx) else {
+        return Ok(None);
+    };
+    let ty = inst
+        .module()
+        .globals()
+        .get(idx)
+        .ok_or(WasmError::invalid("global index out of range"))?
+        .value_type();
+    raw_to_value(ty, raw).map(Some)
+}
+
+/// Overwrite a global by index, checked against its declared type.
+pub(super) fn replace_global_at(
+    inst: &mut InterpInstance,
+    idx: usize,
+    value: Value,
+) -> Result<(), WasmError> {
+    let raw = value_to_raw(&value)?;
+    inst.set_global_at(idx, raw)
+}
+
 /// The numeric value types this boundary carries, or `None` for a type
 /// that has no raw-word representation here.
 #[inline]
