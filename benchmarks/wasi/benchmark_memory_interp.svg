@@ -50,8 +50,8 @@
   <text class="unit" x="176" y="94">MB/s</text>
   <text class="note" x="740" y="94" text-anchor="end">lowered to memory.copy — measures the engine's bulk copy, not dispatch</text>
   <text class="name" x="168" y="117" text-anchor="end">Silverfir (interp)</text>
-  <rect class="s-si" x="176" y="104" width="324.6" height="18" rx="4"/>
-  <text class="val" x="506.6" y="117">64,127</text>
+  <rect class="s-si" x="176" y="104" width="420.6" height="18" rx="4"/>
+  <text class="val" x="602.6" y="117">83,092</text>
   <text class="name" x="168" y="137" text-anchor="end">wasm3</text>
   <rect class="s-w3" x="176" y="124" width="450.5" height="18" rx="4"/>
   <text class="val" x="632.5" y="137">88,992</text>

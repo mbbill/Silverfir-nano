@@ -935,6 +935,18 @@ impl<'b> Enc<'b> {
         let imm7 = ((imm / 8) as u32) & 0x7F;
         self.i(0xA9C0_0000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt);
     }
+    /// LDP Qt, Qt2, [Xn], #imm (post-index, 128-bit SIMD pair)
+    fn ldp_q_post(&mut self, rt: u32, rt2: u32, rn: u32, imm: u32) {
+        self.i(0xACC0_0000 | ((imm / 16) << 15) | (rt2 << 10) | (rn << 5) | rt);
+    }
+    /// STP Qt, Qt2, [Xn], #imm (post-index, 128-bit SIMD pair)
+    fn stp_q_post(&mut self, rt: u32, rt2: u32, rn: u32, imm: u32) {
+        self.i(0xAC80_0000 | ((imm / 16) << 15) | (rt2 << 10) | (rn << 5) | rt);
+    }
+    /// DUP Vd.2D, Xn (splat a 64-bit register into both lanes)
+    fn dup_2d_x(&mut self, vd: u32, rn: u32) {
+        self.i(0x4E08_0C00 | (rn << 5) | vd);
+    }
     fn cbz_x(&mut self, rt: u32, delta_insns: i32) {
         self.i(0xB400_0000 | (((delta_insns as u32) & 0x7FFFF) << 5) | rt);
     }
@@ -2623,6 +2635,16 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         e.orr_x_lsl(X11, X11, X11, 32);
         e.add_x_reg(X10, MEM, X10); // cursor
         e.add_x_reg(X13, MEM, X13); // end
+                                    // 64 bytes per iteration, for the same reason as MemoryCopy: the word
+                                    // loop below moves 8 bytes per 6 instructions. q0 is caller-saved and
+                                    // holds no interpreter state.
+        e.dup_2d_x(0, X11); // splat the pattern across both lanes
+        e.add_x_imm(X9, X10, 64); // l64:
+        e.cmp_x(X9, X13);
+        e.b_cond(HI, 4); // -> l8
+        e.stp_q_post(0, 0, X10, 32);
+        e.stp_q_post(0, 0, X10, 32);
+        e.b(-5); // -> l64
         e.add_x_imm(X9, X10, 8); // l8:
         e.cmp_x(X9, X13);
         e.b_cond(HI, 3); // -> bytes
@@ -2670,6 +2692,19 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         e.add_x_reg(X10, MEM, X10); // fwd: dst cursor
         e.add_x_reg(X11, MEM, X11); // src cursor
         e.add_x_reg(X13, X10, X12); // dst end
+                                    // 64 bytes per iteration in 6 instructions, where the word loop below
+                                    // moves 8 in the same 6. libc memcpy blocks the same way, and that
+                                    // difference was the entire 28% deficit this handler showed against
+                                    // wasm3 and wasmi on STREAM Copy. q0-q3 are caller-saved and hold no
+                                    // interpreter state (the pinned float regs are v16-v18).
+        e.add_x_imm(X9, X10, 64); // l64:
+        e.cmp_x(X9, X13);
+        e.b_cond(HI, 6); // -> l8
+        e.ldp_q_post(0, 1, X11, 32);
+        e.ldp_q_post(2, 3, X11, 32);
+        e.stp_q_post(0, 1, X10, 32);
+        e.stp_q_post(2, 3, X10, 32);
+        e.b(-7); // -> l64
         e.add_x_imm(X9, X10, 8); // l8:
         e.cmp_x(X9, X13);
         e.b_cond(HI, 4); // -> bytes

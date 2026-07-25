@@ -69,7 +69,7 @@ re-measure both sides.
 <!-- chart file="benchmark_memory.svg" title="Memory-Bound Benchmarks (STREAM)" note="STREAM Copy=lowered to memory.copy — measures the engine's bulk copy, not dispatch" -->
 | Benchmark | SF (JIT) | Cranelift | V8 | SF (interp) | wasm3 | wasmi |
 |---|---:|---:|---:|---:|---:|---:|
-| STREAM Copy (MB/s)¹ | 88,302 | **89,610** | 88,012 | 64,127 | 88,992 | **89,288** |
+| STREAM Copy (MB/s)¹ | 88,302 | **89,610** | 88,012 | 83,092 | 88,992 | **89,288** |
 | STREAM Scale (MB/s) | 61,116 | **65,655** | 31,193 | **7,779** | 6,328 | 3,848 |
 | STREAM Add (MB/s) | 68,640 | **69,730** | 38,162 | **7,369** | 6,188 | 3,968 |
 | STREAM Triad (MB/s) | 60,211 | **62,247** | 37,802 | **6,617** | 5,600 | 3,602 |
@@ -78,8 +78,11 @@ re-measure both sides.
 ¹ The current clang lowers STREAM's copy loop to a bulk `memory.copy`, so this
 row measures each engine's bulk-copy path — not its dispatch. That is why three
 very different compilers land within 1% of each other here. It is kept because
-it is still a fair comparison of that path, and it is how we noticed the
-Silverfir interpreter sitting ~28% below wasm3 and wasmi on bulk copy. Scale,
+it is still a fair comparison of that path, and it is how we caught the
+Silverfir interpreter's bulk copy sitting 28% below wasm3 and wasmi: its
+handler moved 8 bytes per iteration. Widening it to 64-byte NEON blocks took
+this row from 64,127 to 83,092 MB/s (~7% off the pack) and `memory.fill` from
+30,650 to 67,630 MB/s — 2.2×, which puts fill ahead of wasm3's 55,658. Scale,
 Add and Triad are arithmetic loops that cannot become `memcpy`, so they remain
 the dispatch-sensitive kernels.
 
