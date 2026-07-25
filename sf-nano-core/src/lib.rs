@@ -7,6 +7,17 @@ extern crate alloc;
 extern crate std;
 
 pub(crate) mod collections;
+// At least one execution engine has to be compiled in; a crate that can parse
+// and validate Wasm but not run it is not a useful build. This is deliberately
+// a FEATURE-level check rather than a backend-level one: a target whose
+// interpreter backend is not written yet must still `cargo check`, and it
+// already fails cleanly at instantiation.
+#[cfg(not(any(sf_jit, sf_interp)))]
+compile_error!(
+    "sf-nano-core needs at least one execution engine: enable the `jit` feature, \
+     the `interp` feature, or both (the default)."
+);
+
 pub mod config;
 pub mod constants;
 pub mod error;

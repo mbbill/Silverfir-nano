@@ -388,7 +388,6 @@ dependencies = [
  "log",
  "serde",
  "serde_json",
- "sf-nano-core",
  "structopt",
 ]
 

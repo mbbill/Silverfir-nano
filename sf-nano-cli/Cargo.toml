@@ -11,8 +11,11 @@ name = "sf-nano-cli"
 path = "src/main.rs"
 
 [features]
+# Engine selection is the CLI's own: the core dependency takes
+# `default-features = false`, so these features are what decide which engines
+# are compiled in rather than decorating a core that already had both.
 default = ["jit", "interp"]
-jit = ["sf-nano-core/jit"]
+jit = ["sf-nano-core/jit", "sf-nano-core/guard-pages"]
 interp = ["sf-nano-core/interp"]
 call-trace = ["sf-nano-core/call-trace"]
 memprof = ["sf-nano-core/memprof", "dep:tracked_alloc", "dep:memprof_report"]
@@ -24,6 +27,8 @@ backend-emu32 = ["sf-nano-core/backend-emu32"]
 thumb2-test = ["sf-nano-core/thumb2-test"]
 
 [dependencies]
-sf-nano-core = { path = "../sf-nano-core", features = ["wasi"] }
+sf-nano-core = { path = "../sf-nano-core", default-features = false, features = [
+    "wasi",
+] }
 tracked_alloc = { package = "sf-nano-tracked-alloc", path = "../tools/tracked-alloc", features = ["memprof"], optional = true }
 memprof_report = { package = "sf-nano-memprof-report", path = "../tools/memprof-report", optional = true }

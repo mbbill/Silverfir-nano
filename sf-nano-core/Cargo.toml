@@ -17,37 +17,80 @@ filetime = { version = "0.2", optional = true }
 wat = "1.246.2"
 
 [features]
-default = ["jit", "guard-pages"]
+# ---------------------------------------------------------------------------
+# Execution engines. At least one is required -- `lib.rs` turns "neither" into
+# a compile error rather than a crate that parses Wasm and cannot run it. The
+# two are independent: neither implies the other, and both are on by default.
+# ---------------------------------------------------------------------------
+
+default = ["jit", "interp", "guard-pages"]
+
+# The optimizing JIT: Wasm -> Semantic IR -> SSA-IR -> MachineIR -> native
+# code, compiled on the target device.
 jit = []
-# Interpreter v2 (folded stack machine, docs/INTERPRETER_V2.md). Non-default,
-# and independent of the JIT compile/execute pipeline: the dispatch handlers
-# are generated per target by build.rs (interp_gen/) and linked into .text,
-# so the interpreter allocates no executable memory and does not require
-# `jit`. A target with no generated engine still builds; instantiating an
-# interpreter instance there fails with a clean error.
+
+# The folded stack machine interpreter (docs/INTERPRETER_V2.md). Its dispatch
+# handlers are generated per target at BUILD time and linked into `.text`, so
+# it needs no executable memory and does not imply `jit`. A target with no
+# generated engine still builds; instantiating an interpreter there fails with
+# a clean error.
 interp = []
-# Compile the interpreter's dispatch counter into every handler. Off by
-# default: it costs one ALU instruction on 100% of dispatches (measured ~1% of
-# cycles) and only --interp-stats consumes it, so timing builds should not pay
-# for it. Enable when you need dispatch counts: they are deterministic, so
-# measuring them in a separate binary is sound.
-interp-count = ["interp"]
+
+# ---------------------------------------------------------------------------
+# JIT options. Each implies `jit`, because none of them means anything without
+# it -- asking for one is asking for the JIT.
+# ---------------------------------------------------------------------------
+
+# Reserve guard pages after linear memory so the JIT can elide bounds checks.
+# Applies only where the OS and backend support it; build.rs decides.
+guard-pages = ["jit"]
+
+# Reference MachineIR emulators, used as a codegen oracle rather than as
+# production backends. They replace the host-native backend selection.
 backend-emu64 = ["jit"]
 backend-emu32 = ["jit"]
-wasi = ["dep:filetime"]
-validator = []
-call-trace = ["jit"]
-guard-pages = ["jit"]
-ir-dump = ["jit"]
-jitdump = ["jit"]
-memprof = ["tracked_alloc/memprof"]
-# Force the arm32 backend to emit Thumb-2 (via enc_t2.rs) instead of A32
-# (via enc_a32.rs). Intended for running the armv7-linux-musleabihf test
-# harness against cortex-a15 to validate Thumb-2 encodings end-to-end; the
-# resulting binary relies on ARM/Thumb interworking at the A32↔Thumb call
-# boundary. Real M-profile targets select enc_t2.rs via sf_backend_thumbm
-# instead, and don't need this feature.
+
+# Force the arm32 backend to emit Thumb-2 (via enc_t2.rs) instead of A32 (via
+# enc_a32.rs). Intended for running the armv7-linux-musleabihf harness against
+# cortex-a15 to validate Thumb-2 encodings end to end; the resulting binary
+# relies on ARM/Thumb interworking at the A32<->Thumb call boundary. Real
+# M-profile targets select enc_t2.rs via sf_backend_thumbm and do not need it.
 thumb2-test = ["jit"]
+
+# ---------------------------------------------------------------------------
+# Host-facing subsystems. Engine-independent.
+# ---------------------------------------------------------------------------
+
+# In-tree WASI preview1 host layer.
+wasi = ["dep:filetime"]
+
+# The standalone Wasm validator, used by the spec-suite harness.
+validator = []
+
+# ---------------------------------------------------------------------------
+# Diagnostics. All off by default: each costs either binary size or run time,
+# and nothing in the engines depends on them.
+# ---------------------------------------------------------------------------
+
+# Compile the interpreter's dispatch counter into every handler. It costs one
+# ALU instruction on 100% of dispatches (measured ~1% of cycles, and -3.7% of
+# CoreMark once the larger handler set is counted too), and only --interp-stats
+# reads it. Dispatch counts are deterministic, so taking them from a separate
+# binary loses nothing.
+interp-count = ["interp"]
+
+# Per-call tracing through the JIT's runtime boundary.
+call-trace = ["jit"]
+
+# Dump the JIT's IR at each pipeline stage. Auto-on in debug builds.
+ir-dump = ["jit"]
+
+# Emit jitdump records so external profilers (samply, perf) can resolve
+# JIT-compiled code to symbols.
+jitdump = ["jit"]
+
+# Route every allocation through the tracked-alloc facade and report phases.
+memprof = ["tracked_alloc/memprof"]
 
 [[example]]
 name = "invoke_export"

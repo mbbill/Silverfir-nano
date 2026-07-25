@@ -1098,18 +1098,6 @@ def run_feature_checks(runner: CheckRunner, *, profiles: Sequence[str]) -> None:
             log_name=f"workspace-{profile_name}",
         )
 
-    cli_minimal = ROOT / "sf-nano-cli-minimal"
-    if cli_minimal.is_dir():
-        for profile_name in profiles:
-            cargo_check(
-                runner,
-                f"cargo check: cli-minimal ({profile_name})",
-                None,
-                profile_name=profile_name,
-                cwd=cli_minimal,
-                log_name=f"cli-minimal-{profile_name}",
-            )
-
 
 def run_target_matrix(
     runner: CheckRunner,

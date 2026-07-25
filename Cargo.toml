@@ -8,9 +8,6 @@ members = [
     "tools/memprof-report",
     "tools/foldsim",
 ]
-exclude = [
-    "sf-nano-cli-minimal",
-]
 resolver = "2"
 
 [profile.release]

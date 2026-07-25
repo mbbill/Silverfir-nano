@@ -177,8 +177,8 @@ make -C benchmarks/wasi
 # Run benchmarks under V8 (Node.js) for comparison
 node benchmarks/wasi/run_v8.mjs
 
-# Minimal no_std build
-cd sf-nano-cli-minimal && cargo run --release
+# Interpreter-only build (no JIT, no executable memory)
+cargo run --release -p sf-nano-cli --no-default-features --features interp -- program.wasm
 ```
 
 ## Validation
