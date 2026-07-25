@@ -40,6 +40,8 @@ mod instr;
 mod layout;
 mod predecode;
 
-pub use exec::{HostDispatch, InterpInstance};
-pub use instr::{Instr, Op, FLAG_A_CONST, FLAG_B_CONST};
-pub use predecode::{predecode_function, PredecodedFunction};
+// `InterpInstance` is the engine's public face. The predecoded
+// representation behind it -- instructions, the opcode enum, operand
+// flags -- stays inside the engine: it is how a function is stored, not
+// an interface anything outside builds against.
+pub use exec::InterpInstance;

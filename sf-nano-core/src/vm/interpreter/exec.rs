@@ -84,7 +84,7 @@ fn configured_ret_records(stack_slots: usize) -> usize {
 /// and field names, the linear memory, argument slots, and result slots.
 /// The signature carries only std types (`&mut [u8]`, not this crate's
 /// tracked collections), so external callers stay feature-independent.
-pub type HostDispatch =
+pub(crate) type HostDispatch =
     Box<dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError>>;
 
 /// `max` is a growth limit, consulted only by `table.grow`; the executor

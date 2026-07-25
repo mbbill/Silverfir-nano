@@ -1,5 +1,5 @@
 #[cfg(feature = "jit")]
-use sf_nano_core::native_stats_snapshot;
+use sf_nano_core::jit_stats_snapshot;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
 use sf_nano_core::{runtime_config, set_engine, set_runtime_config, Engine, RuntimeConfig};
 
@@ -449,7 +449,7 @@ fn parse_byte_size(text: &str) -> Option<u32> {
 fn print_native_stats() {
     #[cfg(feature = "jit")]
     {
-        let s = native_stats_snapshot();
+        let s = jit_stats_snapshot();
         if s.groups > 0 {
             let arch = if cfg!(target_arch = "aarch64") {
                 "arm64"

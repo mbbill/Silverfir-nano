@@ -7,7 +7,7 @@ use crate::module::entities::FunctionSpec;
 
 /// Minimal native stats surface for CLI/debug output.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
-pub struct NativeStatsSnapshot {
+pub struct JitStatsSnapshot {
     pub groups: usize,
     pub ssa_ops: usize,
     pub mir_ops: usize,
@@ -34,8 +34,8 @@ pub(crate) fn set_native_stats(
 }
 
 #[inline]
-pub fn native_stats_snapshot() -> NativeStatsSnapshot {
-    NativeStatsSnapshot {
+pub fn jit_stats_snapshot() -> JitStatsSnapshot {
+    JitStatsSnapshot {
         groups: STATS_GROUPS.load(Ordering::Relaxed),
         ssa_ops: STATS_SSA_OPS.load(Ordering::Relaxed),
         mir_ops: STATS_MIR_OPS.load(Ordering::Relaxed),
@@ -43,19 +43,6 @@ pub fn native_stats_snapshot() -> NativeStatsSnapshot {
         groups_skipped: 0,
         ops_skipped: 0,
     }
-}
-
-#[inline]
-pub fn native_stats() -> (usize, usize) {
-    (
-        STATS_GROUPS.load(Ordering::Relaxed),
-        STATS_SSA_OPS.load(Ordering::Relaxed),
-    )
-}
-
-#[inline]
-pub const fn native_capacity_skips() -> (usize, usize) {
-    (0, 0)
 }
 
 use crate::vm::entities::TableDispatchMode;

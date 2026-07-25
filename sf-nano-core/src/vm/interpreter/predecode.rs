@@ -36,7 +36,7 @@ const FIXUP: u64 = u64::MAX;
 /// Null funcref representation (function indices are table/ref values).
 pub(super) const NULL_FUNCREF: u64 = u32::MAX as u64;
 
-pub struct PredecodedFunction {
+pub(crate) struct PredecodedFunction {
     pub code: Vec<Instr>,
     /// Side tables for `BrTable`: resolved instruction indices, the last
     /// entry is the default target.
@@ -50,7 +50,7 @@ pub struct PredecodedFunction {
 }
 
 /// Predecode one local (non-import) function of a parsed module.
-pub fn predecode_function(
+pub(crate) fn predecode_function(
     module: &Module,
     func_index: usize,
 ) -> Result<PredecodedFunction, WasmError> {

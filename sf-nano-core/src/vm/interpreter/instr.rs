@@ -17,9 +17,9 @@
 //! index) for control ops, or op-specific payload as documented on [`Op`].
 
 /// Source operand `a` is an inline constant, not a frame-slot index.
-pub const FLAG_A_CONST: u16 = 1 << 0;
+pub(crate) const FLAG_A_CONST: u16 = 1 << 0;
 /// Source operand `b` is an inline constant, not a frame-slot index.
-pub const FLAG_B_CONST: u16 = 1 << 1;
+pub(crate) const FLAG_B_CONST: u16 = 1 << 1;
 /// Acc residency hints (design doc §8): the producer immediately before
 /// this instruction keeps its result in the accumulator register, and this
 /// instruction reads it from there. Slot fields stay valid — a backend is
@@ -378,7 +378,7 @@ pub enum Op {
 /// index×stride); the operand layout is shared by both stages.
 #[repr(C, align(32))]
 #[derive(Clone, Copy, Debug)]
-pub struct Instr {
+pub(crate) struct Instr {
     pub op: Op,
     pub flags: u16,
     pub a: u64,
@@ -387,7 +387,7 @@ pub struct Instr {
 }
 
 impl Instr {
-    pub fn new(op: Op, flags: u16, a: u64, b: u64, c: u64) -> Self {
+    pub(crate) fn new(op: Op, flags: u16, a: u64, b: u64, c: u64) -> Self {
         Instr { op, flags, a, b, c }
     }
 }

@@ -41,19 +41,20 @@ pub use vm::entities::{Caller, FunctionInst, HostCallback, HostFn};
 pub use vm::instance::{
     Func, Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,
 };
+// The interpreter's instance is public as the counterpart to
+// `JitInstance` -- the escape hatch for what only this engine can answer.
+// Its predecoded representation (instructions, opcode enum, operand flags)
+// is not: it is how the engine stores a function, not something an
+// embedder builds against.
 #[cfg(sf_interp)]
-pub use vm::interpreter::{
-    predecode_function, HostDispatch as InterpHostDispatch, Instr as InterpInstr, InterpInstance,
-    Op as InterpOp, PredecodedFunction, FLAG_A_CONST, FLAG_B_CONST,
-};
+pub use vm::interpreter::InterpInstance;
 #[cfg(sf_jit)]
 pub use vm::jit::arch::active_native_backend_name;
+// Compile statistics belong to the JIT *engine*, so they carry its name.
+// "Native" is this tree's word for the ISA, which is a different axis --
+// see `Engine` versus `active_native_backend_name`.
 #[cfg(sf_jit)]
-pub use vm::jit::build::{
-    native_capacity_skips, native_capacity_skips as jit_capacity_skips, native_stats,
-    native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
-    NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
-};
+pub use vm::jit::build::{jit_stats_snapshot, JitStatsSnapshot};
 #[cfg(sf_jit)]
 pub use vm::jit::instance::{InstanceInstantiationError, JitInstance};
 #[cfg(sf_has_guard_pages)]
