@@ -4,15 +4,16 @@
 Usage:
     python3 run_tests.py                # run the suite (2s per benchmark)
     python3 run_tests.py --time 10      # 10s per benchmark, for formal runs
-    python3 run_tests.py --fast         # alias for --time 1, for CI/QEMU
     python3 run_tests.py --interp       # run with the interpreter engine
     python3 run_tests.py --exec PATH    # run with a different runtime
 
 Every benchmark is self-timing: it takes a wall-clock target in seconds as
 its LAST argument and sizes its own workload to hit it, so a run costs
 about the same on a native JIT as on an interpreter under qemu. That is why
-there is no second "reduced workload" variant to keep in sync -- the target
-is the only knob. See common/bench.h for the ramp and its one rule.
+there is no "fast" or reduced-workload variant to keep in sync, and no
+CI-only mode -- the time target is the only knob, and every caller (CI,
+QEMU wrappers, local runs) uses the same one. See common/bench.h for the
+ramp and its one rule.
 
 Validation is always a fixed, target-independent check (a checksum, a hash,
 a CRC), never anything that scales with the workload.
@@ -88,15 +89,6 @@ TESTS = [
           r"^\s*(TOTAL\.+\s+\S+s)",
           size_arg=True),  # --memdb needs no filesystem, so no --dir
 ]
-
-
-def resolve_test(test, fast=False):
-    """Kept for API compatibility (scripts/bench_publish.py).
-
-    Reduced "fast" workloads no longer exist: --fast is now just a smaller
-    time target, which every benchmark honours on its own.
-    """
-    return test
 
 
 def _invoke(cli, test, cli_extra, prog_args, stdin_data):
@@ -225,15 +217,13 @@ def main():
                    help="Path to the WASM runtime executable")
     p.add_argument("--cli-args", default="",
                    help="Extra args for the runtime (e.g. '--dir .' for wasmtime)")
-    p.add_argument("--time", type=float, default=None,
+    p.add_argument("--time", type=float, default=DEFAULT_TARGET,
                    help=f"Seconds per benchmark (default {DEFAULT_TARGET})")
-    p.add_argument("--fast", action="store_true",
-                   help="Alias for --time 1, for CI/QEMU")
     p.add_argument("--interp", action="store_true",
                    help="Run with the interpreter (passes --interp to sf-nano-cli)")
     args = p.parse_args()
 
-    target = args.time if args.time is not None else (1.0 if args.fast else DEFAULT_TARGET)
+    target = args.time
 
     cli_parts = args.cli.split()
     cli_parts[0] = os.path.expanduser(cli_parts[0])

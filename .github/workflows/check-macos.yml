@@ -47,18 +47,18 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Run check.py full
+      - name: Run check.py
         # --default-targets keeps the cargo-check target matrix to the
         # host-friendly rows. The cross-arch rows (armv7/riscv64/riscv32) are
         # owned by check-linux.yml, where the qemu-user-static + Zig toolchain
         # is installed.
-        run: python3 scripts/check.py full --install-targets --default-targets
+        run: python3 scripts/check.py --install-targets --default-targets
 
       - name: Upload check logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: check-macos-logs
-          path: target/check-*-logs/
+          path: target/check*-logs/
           if-no-files-found: ignore
           retention-days: 14

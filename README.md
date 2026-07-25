@@ -176,17 +176,17 @@ cd sf-nano-cli-minimal && cargo run --release
 Use the Python runner as the canonical validation entry point:
 
 ```bash
-# Fast day-to-day gate: release build, workspace tests, selected compile checks, and release spectests.
-python3 scripts/check.py fast
+# The gate: workspace tests, full feature matrix, target matrix, spectests, and WASI tests.
+python3 scripts/check.py
 
-# Full gate: workspace tests, full feature matrix, target matrix, spectests, and WASI tests.
-python3 scripts/check.py full
+# Narrow it when iterating: one profile, host-friendly target rows only.
+python3 scripts/check.py --release-only --default-targets
 
 # Show the full platform-specific plan without running subprocesses.
-python3 scripts/check.py full --release-only --default-targets --dry-run
+python3 scripts/check.py --release-only --default-targets --dry-run
 
 # Forward extra spectest arguments after --.
-python3 scripts/check.py fast -- i32 --log-level info
+python3 scripts/check.py -- i32 --log-level info
 ```
 
 ## License

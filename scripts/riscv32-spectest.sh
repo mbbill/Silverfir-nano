@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deprecated direct entry point. Prefer `python3 scripts/check.py fast` or
-# `python3 scripts/check.py full`; this script is kept as a low-level helper.
+# Deprecated direct entry point. Prefer `python3 scripts/check.py`; this script is kept as a low-level helper.
 #
 # Run the RV32GC spectest under QEMU user-mode emulation. On macOS this uses
 # qemu-riscv32-static inside Colima; on Linux/WSL it uses qemu-riscv32-static

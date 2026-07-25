@@ -52,14 +52,14 @@ jobs:
       - name: Cargo cache
         uses: Swatinem/rust-cache@v2
 
-      - name: Run check.py full (native phase only)
-        run: python scripts\check.py full --install-targets
+      - name: Run check.py (native phase only)
+        run: python scripts\check.py --install-targets
 
       - name: Upload check logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: check-windows-logs
-          path: target/check-*-logs/
+          path: target/check*-logs/
           if-no-files-found: ignore
           retention-days: 14

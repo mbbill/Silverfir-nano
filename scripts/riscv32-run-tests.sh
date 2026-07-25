@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deprecated direct entry point. Prefer `python3 scripts/check.py full`; this
+# Deprecated direct entry point. Prefer `python3 scripts/check.py`; this
 # script is kept as a low-level helper.
 #
 # Run the WASI benchmark tests on RV32GC under QEMU. On macOS this uses
@@ -13,15 +13,13 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET=riscv32gc-unknown-linux-musl
 PROFILE=release
 CARGO_PROFILE_FLAG=(--release)
-FAST_RUN=1
 RV32_RUSTFLAGS="-C linker=$REPO_ROOT/scripts/zig-riscv32-linux-musl-cc.sh -C target-feature=+crt-static -C link-self-contained=no -C panic=abort"
 export ZIG_GLOBAL_CACHE_DIR="${ZIG_GLOBAL_CACHE_DIR:-$REPO_ROOT/target/zig-cache}"
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --full) FAST_RUN=0; shift ;;
         --debug) PROFILE=debug; CARGO_PROFILE_FLAG=(); shift ;;
-        *) echo "Unknown option: $1"; echo "Usage: $0 [--full] [--debug]"; exit 1 ;;
+        *) echo "Unknown option: $1"; echo "Usage: $0 [--debug]"; exit 1 ;;
     esac
 done
 
@@ -159,12 +157,6 @@ WRAPPER_EOF
 fi
 chmod +x "$WRAPPER"
 
-FAST_FLAG=""
-if [[ "$FAST_RUN" -eq 1 ]]; then
-    FAST_FLAG="--fast"
-    echo "[riscv32-run-tests] Running benchmarks under QEMU ($PROFILE, fast)..."
-else
-    echo "[riscv32-run-tests] Running benchmarks under QEMU ($PROFILE, full)..."
-fi
+echo "[riscv32-run-tests] Running benchmarks under QEMU ($PROFILE)..."
 echo
-python3 "$RUN_TESTS" $FAST_FLAG --exec "$WRAPPER" --cli-args "$CLI_BIN"
+python3 "$RUN_TESTS" --exec "$WRAPPER" --cli-args "$CLI_BIN"

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deprecated direct entry point. Prefer `python3 scripts/check.py full`; this
+# Deprecated direct entry point. Prefer `python3 scripts/check.py`; this
 # script is kept as a low-level helper.
 #
 # Run the WASI benchmark tests with the arm32 backend emitting Thumb-2
@@ -14,11 +14,13 @@
 # qemu-arm-static executes both modes happily.
 #
 # Usage:
-#   ./scripts/armv7m-run-tests.sh [--full] [--debug]
+#   ./scripts/armv7m-run-tests.sh [--debug]
 #
-# By default builds a release binary and runs the reduced-workload
-# (fast) benchmark suite. Pass --full to run the complete benchmark
-# suite. Pass --debug to build in debug mode (much slower under QEMU).
+# Builds a release binary and runs the benchmark suite. The benchmarks
+# are self-timing -- they size their own workload to a wall-clock target
+# -- so a QEMU run costs about the same as a native one and needs no
+# reduced variant. Pass --debug to build in debug mode (much slower
+# under QEMU).
 
 set -euo pipefail
 
@@ -26,13 +28,11 @@ REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TARGET=armv7-unknown-linux-musleabihf
 PROFILE=release
 CARGO_PROFILE_FLAG=(--release)
-FAST_RUN=1
 
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --full) FAST_RUN=0; shift ;;
         --debug) PROFILE=debug; CARGO_PROFILE_FLAG=(); shift ;;
-        *) echo "Unknown option: $1"; echo "Usage: $0 [--full] [--debug]"; exit 1 ;;
+        *) echo "Unknown option: $1"; echo "Usage: $0 [--debug]"; exit 1 ;;
     esac
 done
 
@@ -125,12 +125,6 @@ exec colima ssh -- sh -lc 'exec qemu-arm-static -cpu cortex-a15 "$@"' \
 WRAPPER_EOF
 chmod +x "$WRAPPER"
 
-FAST_FLAG=""
-if [[ "$FAST_RUN" -eq 1 ]]; then
-    FAST_FLAG="--fast"
-    echo "[armv7m-run-tests] Running benchmarks under QEMU ($PROFILE, Thumb-2, fast)..."
-else
-    echo "[armv7m-run-tests] Running benchmarks under QEMU ($PROFILE, Thumb-2, full)..."
-fi
+echo "[armv7m-run-tests] Running benchmarks under QEMU ($PROFILE, Thumb-2)..."
 echo
-python3 "$RUN_TESTS" $FAST_FLAG --exec "$WRAPPER" --cli-args "$CLI_BIN"
+python3 "$RUN_TESTS" --exec "$WRAPPER" --cli-args "$CLI_BIN"

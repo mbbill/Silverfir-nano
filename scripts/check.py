@@ -1,12 +1,17 @@
 #!/usr/bin/env python3
 """Concise validation runner for Silverfir Nano.
 
-Public modes:
-  python3 scripts/check.py fast
-  python3 scripts/check.py full
+Usage:
+  python3 scripts/check.py
+
+There is one validation mode. A reduced "fast" mode used to exist because
+the benchmark suite dominated a full run; the benchmarks are self-timing
+now, so the run is the same work everywhere and the second code path was
+only a way to be validated less. Narrow a run with --release-only /
+--debug-only / --default-targets instead.
 
 The runner keeps stdout compact and writes detailed command output to
-target/check-<mode>-logs/. Failures and warnings are summarized with the
+target/check-logs/. Failures and warnings are summarized with the
 exact command, log path, and the most useful diagnostic headers/locations.
 """
 
@@ -58,25 +63,6 @@ CLI_OPTIONAL_FEATURES = [
     "call-trace",
     "memprof",
     "thumb2-test",
-]
-
-CORE_FAST_COMBOS = [
-    ("default", "DEFAULT"),
-    ("all-features", "ALL"),
-    ("only-jit", "jit"),
-    ("full-runtime", FULL_RUNTIME_FEATURES),
-    ("full-dev", "jit,wasi,validator,call-trace,guard-pages,ir-dump,jitdump,memprof"),
-    ("emu64", "jit,wasi,validator,guard-pages,backend-emu64"),
-    ("emu32", "jit,wasi,validator,guard-pages,backend-emu32"),
-    ("thumb2", "jit,validator,guard-pages,thumb2-test"),
-]
-
-CLI_FAST_COMBOS = [
-    ("default", "DEFAULT"),
-    ("all-features", "ALL"),
-    ("only-jit", "jit"),
-    ("jit+memprof", "jit,memprof"),
-    ("jit+thumb2", "jit,thumb2-test"),
 ]
 
 DEFAULT_TARGET_ROWS = [
@@ -432,7 +418,6 @@ def parse_log(log_path: Path, rc: int, max_diagnostics: int) -> Tuple[int, int, 
 class CheckRunner:
     def __init__(
         self,
-        mode: str,
         host: Host,
         strict: bool,
         install_targets: bool,
@@ -440,7 +425,6 @@ class CheckRunner:
         phase: Optional[str] = None,
         dry_run: bool = False,
     ) -> None:
-        self.mode = mode
         self.host = host
         self.strict = strict
         self.install_targets = install_targets
@@ -448,7 +432,7 @@ class CheckRunner:
         self.phase = phase
         self.dry_run = dry_run
         log_suffix = f"-{phase}" if phase else ""
-        self.log_dir = TARGET_DIR / f"check-{mode}{log_suffix}-logs"
+        self.log_dir = TARGET_DIR / f"check{log_suffix}-logs"
         self.log_dir.mkdir(parents=True, exist_ok=True)
         self.tmp_dir = self.log_dir / "tmp"
         self.tmp_dir.mkdir(parents=True, exist_ok=True)
@@ -607,9 +591,9 @@ class CheckRunner:
 
         print()
         print("=== Summary ===")
-        phase = f" phase={self.phase}" if self.phase else ""
+        phase = f"phase={self.phase} " if self.phase else ""
         print(
-            f"mode={self.mode}{phase} host={self.host.kind}/{self.host.machine} "
+            f"{phase}host={self.host.kind}/{self.host.machine} "
             f"ok={counts['OK']} warn={counts['WARN']} fail={counts['FAIL']} skip={counts['SKIP']}"
         )
         print(f"logs: {rel(self.log_dir)}")
@@ -1075,9 +1059,9 @@ def full_cli_combos() -> List[Tuple[str, str]]:
     return combos
 
 
-def run_feature_checks(runner: CheckRunner, *, full: bool, profiles: Sequence[str]) -> None:
-    core_combos = full_core_combos() if full else CORE_FAST_COMBOS
-    cli_combos = full_cli_combos() if full else CLI_FAST_COMBOS
+def run_feature_checks(runner: CheckRunner, *, profiles: Sequence[str]) -> None:
+    core_combos = full_core_combos()
+    cli_combos = full_cli_combos()
 
     for profile_name in profiles:
         for label, spec in core_combos:
@@ -2100,27 +2084,6 @@ def run_windows_native_spectest(
             )
 
 
-def run_windows_native_fast(runner: CheckRunner, extra_args: Sequence[str]) -> None:
-    # This deliberately uses the plain command users type at the workspace
-    # root, with no environment of its own, so it exercises whatever
-    # .cargo/config.toml provides for the host target.
-    runner.run(
-        "windows x64 release build",
-        ["cargo", "build", "--release"],
-        log_name="windows-cargo-build-release",
-    )
-    run_workspace_tests(runner, "release")
-    run_target_matrix(
-        runner,
-        include_all=False,
-        include_bare_smoke=False,
-        only_labels=WINDOWS_TARGET_MATRIX_LABELS,
-        unsupported_labels=UNSUPPORTED_ON_WINDOWS_TARGET_LABELS,
-    )
-    run_bare_smoke_checks(runner)
-    run_windows_native_spectest(runner, profiles=["release"], extra_args=extra_args)
-
-
 def run_windows_native_full(
     runner: CheckRunner,
     *,
@@ -2161,7 +2124,6 @@ def run_windows_native_full(
 
 def run_windows_native_phase(args: argparse.Namespace, host: Host, *, print_report: bool = True) -> int:
     runner = CheckRunner(
-        args.mode,
         host,
         strict=args.strict,
         install_targets=args.install_targets,
@@ -2170,28 +2132,22 @@ def run_windows_native_phase(args: argparse.Namespace, host: Host, *, print_repo
         phase="windows",
     )
 
-    print(f"Silverfir check: mode={args.mode} phase=windows host={host.kind}/{host.machine}")
+    print(f"Silverfir check: phase=windows host={host.kind}/{host.machine}")
     if args.dry_run:
         print("dry-run: listing steps only; no subprocesses will execute")
     print(f"log dir: {rel(runner.log_dir)}")
 
-    if args.mode == "fast":
-        if args.debug_only:
-            runner.fail("argument check", "fast mode is release-only; remove --debug-only.")
-        else:
-            run_windows_native_fast(runner, args.extra_args)
-    else:
-        run_windows_native_full(
-            runner,
-            debug_only=args.debug_only,
-            release_only=args.release_only,
-            extra_args=args.extra_args,
-        )
+    run_windows_native_full(
+        runner,
+        debug_only=args.debug_only,
+        release_only=args.release_only,
+        extra_args=args.extra_args,
+    )
 
     return runner.final_report(print_report=print_report)
 
 
-def print_overall_summary(mode: str, windows_rc: int, wsl_rc: int) -> None:
+def print_overall_summary(windows_rc: int, wsl_rc: int) -> None:
     overall_rc = 1 if windows_rc or wsl_rc else 0
     windows_status = "PASSED" if windows_rc == 0 else "FAILED"
     wsl_status = "PASSED" if wsl_rc == 0 else "FAILED"
@@ -2199,31 +2155,13 @@ def print_overall_summary(mode: str, windows_rc: int, wsl_rc: int) -> None:
 
     print()
     print("=== Summary ===")
-    print(f"mode={mode} host=windows+WSL windows={windows_status} wsl={wsl_status}")
+    print(f"host=windows+WSL windows={windows_status} wsl={wsl_status}")
     print()
     print(overall_status)
 
 
 def skipped_target_labels_from_env() -> set[str]:
     return {label for label in os.environ.get("SF_CHECK_SKIP_TARGET_LABELS", "").split(",") if label}
-
-
-def run_fast(runner: CheckRunner, extra_args: Sequence[str], *, skip_target_labels: Optional[set[str]] = None) -> None:
-    runner.run(
-        "workspace release build",
-        ["cargo", "build", "--workspace", "--release"],
-        env=cargo_env(None),
-        log_name="cargo-workspace-release",
-    )
-    run_workspace_tests(runner, "release")
-    run_feature_checks(runner, full=False, profiles=["release"])
-    run_target_matrix(
-        runner,
-        include_all=False,
-        include_bare_smoke=not os.environ.get("SF_CHECK_SKIP_BARE_SMOKE"),
-        exclude_labels=skip_target_labels,
-    )
-    run_spectest_suite(runner, profiles=["release"], extra_args=extra_args)
 
 
 def run_full(
@@ -2238,7 +2176,7 @@ def run_full(
     profiles = selected_profiles(debug_only, release_only)
     for profile_name in profiles:
         run_workspace_tests(runner, profile_name)
-    run_feature_checks(runner, full=True, profiles=profiles)
+    run_feature_checks(runner, profiles=profiles)
     run_target_matrix(
         runner,
         include_all=include_all_targets,
@@ -2273,18 +2211,17 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         epilog=textwrap.dedent(
             """\
             Examples:
-              python3 scripts/check.py fast
-              python3 scripts/check.py full --release-only --install-targets
-              python3 scripts/check.py fast -- i32 --log-level info
+              python3 scripts/check.py
+              python3 scripts/check.py --release-only --install-targets
+              python3 scripts/check.py -- i32 --log-level info
             """
         ),
     )
-    parser.add_argument("mode", choices=["fast", "full"], help="validation mode")
     parser.add_argument("--strict", action="store_true", help="make warnings fail where supported")
     parser.add_argument("--install-targets", action="store_true", help="install missing rustup targets")
     parser.add_argument("--max-diagnostics", type=int, default=8, help="diagnostics to print per issue step")
-    parser.add_argument("--debug-only", action="store_true", help="full mode: run debug profile checks only")
-    parser.add_argument("--release-only", action="store_true", help="full mode: run release profile checks only")
+    parser.add_argument("--debug-only", action="store_true", help="run debug profile checks only")
+    parser.add_argument("--release-only", action="store_true", help="run release profile checks only")
     parser.add_argument(
         "--dry-run",
         action="store_true",
@@ -2292,8 +2229,8 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
         "(lists every scheduled step without running any subprocess)",
     )
     target_group = parser.add_mutually_exclusive_group()
-    target_group.add_argument("--all-targets", action="store_true", help="full mode: include extra target rows")
-    target_group.add_argument("--default-targets", action="store_true", help="full mode: use default target rows")
+    target_group.add_argument("--all-targets", action="store_true", help="include extra target rows")
+    target_group.add_argument("--default-targets", action="store_true", help="use default target rows")
     args = parser.parse_args(parse_argv)
     args.extra_args = extra_args
     return args
@@ -2314,11 +2251,10 @@ def main(argv: Sequence[str]) -> int:
         print()
         print("Silverfir check: starting WSL/Linux phase", flush=True)
         wsl_rc = reexec_in_wsl(argv)
-        print_overall_summary(args.mode, windows_rc, wsl_rc)
+        print_overall_summary(windows_rc, wsl_rc)
         return 1 if windows_rc or wsl_rc else 0
 
     runner = CheckRunner(
-        args.mode,
         host,
         strict=args.strict,
         install_targets=args.install_targets,
@@ -2326,31 +2262,21 @@ def main(argv: Sequence[str]) -> int:
         dry_run=args.dry_run,
     )
 
-    print(f"Silverfir check: mode={args.mode} host={host.kind}/{host.machine}")
+    print(f"Silverfir check: host={host.kind}/{host.machine}")
     if args.dry_run:
         print("dry-run: listing steps only; no subprocesses will execute")
     print(f"log dir: {rel(runner.log_dir)}")
 
     try:
-        if args.mode == "fast":
-            if args.debug_only:
-                runner.fail("argument check", "fast mode is release-only; remove --debug-only.")
-            else:
-                run_fast(runner, args.extra_args, skip_target_labels=skipped_target_labels_from_env())
-        else:
-            include_all_targets = True
-            if args.default_targets:
-                include_all_targets = False
-            if args.all_targets:
-                include_all_targets = True
-            run_full(
-                runner,
-                debug_only=args.debug_only,
-                release_only=args.release_only,
-                include_all_targets=include_all_targets,
-                extra_args=args.extra_args,
-                skip_target_labels=skipped_target_labels_from_env(),
-            )
+        include_all_targets = not args.default_targets
+        run_full(
+            runner,
+            debug_only=args.debug_only,
+            release_only=args.release_only,
+            include_all_targets=include_all_targets,
+            extra_args=args.extra_args,
+            skip_target_labels=skipped_target_labels_from_env(),
+        )
     finally:
         cleanup_colima(runner)
 

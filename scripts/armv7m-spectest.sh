@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deprecated direct entry point. Prefer `python3 scripts/check.py fast` or
-# `python3 scripts/check.py full`; this script is kept as a low-level helper.
+# Deprecated direct entry point. Prefer `python3 scripts/check.py`; this script is kept as a low-level helper.
 #
 # Run the WebAssembly spectest with the arm32 backend emitting Thumb-2
 # under QEMU user-mode emulation inside Colima. Companion to

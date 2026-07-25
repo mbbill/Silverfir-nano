@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """Run WASI benchmarks and emit benchmark-action JSON files.
 
-Imports benchmarks/wasi/run_tests.py and re-runs each test in --fast mode,
-then converts each test's metric string into benchmark-action's customBigger
-/ customSmaller JSON format. Two files are produced in --out-dir:
+Imports benchmarks/wasi/run_tests.py and runs each test exactly as a local
+run does -- the benchmarks are self-timing, so there is no CI-only reduced
+mode -- then converts each test's metric string into benchmark-action's
+customBigger / customSmaller JSON format. Two files are produced in
+--out-dir:
 
   higher.json -- metrics where bigger is better (Iter/s, MB/s, Score)
   lower.json  -- metrics where smaller is better (seconds)
@@ -98,7 +100,7 @@ def main() -> int:
     lower: list[dict] = []
     failed: list[str] = []
 
-    tests = [run_tests.resolve_test(t, fast=True) for t in run_tests.TESTS]
+    tests = run_tests.TESTS
     for i, test in enumerate(tests, 1):
         name = test["name"]
         print(f"[{i}/{len(tests)}] {name} ...", end=" ", flush=True)

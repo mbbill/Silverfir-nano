@@ -52,11 +52,11 @@ cargo run --bin sf-nano-spectest -- --backend native
 Run the project validation gates:
 
 ```bash
-# Fast day-to-day gate: release build, workspace tests, selected compile checks, and release spectests.
-python3 scripts/check.py fast
+# The gate: workspace tests, full feature matrix, target matrix, spectests, and WASI tests.
+python3 scripts/check.py
 
-# Full gate: workspace tests, full feature matrix, target matrix, spectests, and WASI tests.
-python3 scripts/check.py full
+# Narrow it when iterating.
+python3 scripts/check.py --release-only --default-targets
 ```
 
 ## Backend Modes
@@ -603,8 +603,8 @@ and x86_64.
 For normal validation, use the unified runner:
 
 ```bash
-python3 scripts/check.py fast
-python3 scripts/check.py full --release-only
+python3 scripts/check.py
+python3 scripts/check.py --release-only
 ```
 
 The runner uses Colima plus `qemu-*-static` on macOS, and local

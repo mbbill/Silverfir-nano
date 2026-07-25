@@ -59,14 +59,14 @@ jobs:
         with:
           version: 0.14.0
 
-      - name: Run check.py full --all-targets
-        run: python3 scripts/check.py full --install-targets --all-targets
+      - name: Run check.py --all-targets
+        run: python3 scripts/check.py --install-targets --all-targets
 
       - name: Upload check logs on failure
         if: failure()
         uses: actions/upload-artifact@v4
         with:
           name: check-linux-logs
-          path: target/check-*-logs/
+          path: target/check*-logs/
           if-no-files-found: ignore
           retention-days: 14

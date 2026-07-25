@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 #
-# Deprecated direct entry point. Prefer `python3 scripts/check.py full`; this
+# Deprecated direct entry point. Prefer `python3 scripts/check.py`; this
 # script is kept as a low-level helper.
 #
 # Run the WASI benchmark tests on x86_64 under Rosetta on macOS.
