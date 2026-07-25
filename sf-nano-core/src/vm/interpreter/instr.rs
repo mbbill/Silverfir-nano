@@ -31,6 +31,44 @@ pub(crate) const FLAG_B_ACC: u16 = 1 << 3;
 /// write is skipped by acc-honoring backends.
 pub(crate) const FLAG_DST_ACC: u16 = 1 << 4;
 
+/// Value-domain classification for accumulator pairing: the accumulator
+/// is a PER-DOMAIN register (x8 for integer bits, a NEON register for
+/// float values), so a producer/consumer pair is only valid when the
+/// produced value's domain matches the register the consumer reads.
+/// Domain-agnostic bit movers (MovSlot, Select, globals) classify as
+/// integer: float values flowing through them simply fall back to slots.
+pub(crate) fn result_is_float(op: Op) -> bool {
+    use Op::*;
+    let d = op as u16;
+    (d >= F32_Abs as u16 && d <= F32_Copysign as u16)
+        || (d >= F64_Abs as u16 && d <= F64_Copysign as u16)
+        || (d >= F32_ConvertI32S as u16 && d <= F64_PromoteF32 as u16)
+        || matches!(
+            op,
+            F32_ReinterpretI32 | F64_ReinterpretI64 | F32_Load | F64_Load
+        )
+}
+
+/// Whether the a (is_b = false) or b (is_b = true) operand of `op` is
+/// read in the float domain.
+pub(crate) fn operand_is_float(op: Op, is_b: bool) -> bool {
+    use Op::*;
+    let d = op as u16;
+    // float arithmetic, unary, and compares read float operands
+    if (d >= F32_Abs as u16 && d <= F32_Ge as u16) || (d >= F64_Abs as u16 && d <= F64_Ge as u16) {
+        return true;
+    }
+    if is_b {
+        // a store's b operand is the stored value
+        return matches!(op, F32_Store | F64_Store);
+    }
+    (d >= I32_TruncF32S as u16 && d <= I64_TruncSatF64U as u16)
+        || matches!(
+            op,
+            F32_DemoteF64 | F64_PromoteF32 | I32_ReinterpretF32 | I64_ReinterpretF64
+        )
+}
+
 /// Semantic operations. One dispatch each; routing opcodes never appear.
 ///
 /// Field conventions unless noted: `a`/`b` sources per flags, `c` = dst slot.

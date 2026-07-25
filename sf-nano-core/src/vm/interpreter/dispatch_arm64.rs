@@ -34,7 +34,10 @@ use crate::collections::{vec, Vec};
 use crate::error::WasmError;
 use crate::vm::runtime::code_buf::CodeBuffer;
 
-use super::instr::{Instr, Op, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC};
+use super::instr::{
+    operand_is_float, result_is_float, Instr, Op, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC,
+    FLAG_B_CONST, FLAG_DST_ACC,
+};
 use super::predecode::PredecodedFunction;
 
 /// Exit reasons written to `EnterState::reason`.
@@ -97,6 +100,9 @@ pub(super) struct LinkedFunction {
     /// cell consumes as a pinned class).
     pub l0_off: u32,
     pub l1_off: u32,
+    /// Whether any pinned slot is float-mode: drives the conditional
+    /// float-twin reloads on the call and return paths.
+    pub fp_pinned: bool,
 }
 
 const N_OPS: usize = Op::Unreachable as usize + 1;
@@ -225,27 +231,49 @@ fn slot_fields(op: Op) -> (bool, bool, bool) {
 /// read-mostly slot loads are independent and the OoO core hides them
 /// anyway. A write-biased score (reads + 2·writes) measured
 /// inconclusive (flips only cold functions on CoreMark).
-fn select_pinned(func: &PredecodedFunction) -> (u64, u64) {
+fn select_pinned(func: &PredecodedFunction) -> (u64, u64, bool, bool) {
     let n = func.n_locals as u64;
     if n == 0 {
-        return (u64::MAX, u64::MAX);
+        return (u64::MAX, u64::MAX, false, false);
     }
     let mut counts = vec![0u64; func.n_locals as usize];
+    // Per-slot domain sets (bit 0 = integer/agnostic, bit 1 = float):
+    // writers decide the pinned register file; mixed writers make the
+    // slot unpinnable (neither file could stay authoritative). Readers
+    // only break the tie when no writer exists.
+    let mut wdom = vec![0u8; func.n_locals as usize];
+    let mut rdom = vec![0u8; func.n_locals as usize];
     for ins in func.code.iter() {
         let (a_s, b_s, c_d) = slot_fields(ins.op);
         if a_s && ins.flags & FLAG_A_CONST == 0 && ins.a < n {
             counts[ins.a as usize] += 1;
+            rdom[ins.a as usize] |= if operand_is_float(ins.op, false) {
+                2
+            } else {
+                1
+            };
         }
         if b_s && ins.flags & FLAG_B_CONST == 0 && ins.b < n {
             counts[ins.b as usize] += 1;
+            rdom[ins.b as usize] |= if operand_is_float(ins.op, true) { 2 } else { 1 };
         }
         if c_d && ins.c < n {
             counts[ins.c as usize] += 1;
+            wdom[ins.c as usize] |= if result_is_float(ins.op) { 2 } else { 1 };
+        }
+        if ins.op == Op::Select {
+            let dslot = ins.c & 0xffff_ffff;
+            if dslot < n {
+                wdom[dslot as usize] |= 1;
+            }
         }
     }
     let mut best = (usize::MAX, 0u64);
     let mut second = (usize::MAX, 0u64);
     for (i, &c) in counts.iter().enumerate() {
+        if wdom[i] == 3 {
+            continue; // mixed-domain writers: unpinnable
+        }
         if c > best.1 {
             second = best;
             best = (i, c);
@@ -255,26 +283,37 @@ fn select_pinned(func: &PredecodedFunction) -> (u64, u64) {
     }
     // Byte offsets must fit the 16-bit packing in call cells / records.
     let ok = |(i, c): (usize, u64)| c > 0 && i * 8 < 1 << 16;
-    let l0 = if ok(best) { best.0 as u64 } else { u64::MAX };
-    let l1 = if l0 != u64::MAX && ok(second) {
-        second.0 as u64
+    let mode = |i: usize| wdom[i] == 2 || (wdom[i] == 0 && rdom[i] == 2);
+    let (l0, l0f) = if ok(best) {
+        (best.0 as u64, mode(best.0))
     } else {
-        u64::MAX
+        (u64::MAX, false)
     };
-    (l0, l1)
+    let (l1, l1f) = if l0 != u64::MAX && ok(second) {
+        (second.0 as u64, mode(second.0))
+    } else {
+        (u64::MAX, false)
+    };
+    (l0, l1, l0f, l1f)
 }
 
 /// Classify one cell into its dense variant, given link-resolved flags
 /// and the function's pinned slots (`u64::MAX` = none). Pinned classes
 /// take precedence over acc hints on the same operand; a `const` flag
 /// wins over both.
-fn op_variant(ins: &Instr, flags: u16, l0_slot: u64, l1_slot: u64) -> usize {
+fn op_variant(ins: &Instr, flags: u16, l0_slot: u64, l1_slot: u64, l0f: bool, l1f: bool) -> usize {
     let (a_s, b_s, c_d) = slot_fields(ins.op);
+    // Domain demotion: a pinned class is taken only when the access's
+    // value domain matches the slot's pinned register file; otherwise
+    // the access falls back to the (write-through, hence current) slot.
+    let af = operand_is_float(ins.op, false);
+    let bf = operand_is_float(ins.op, true);
+    let rf = result_is_float(ins.op);
     let a = if flags & FLAG_A_CONST != 0 {
         Cls::Const
-    } else if a_s && ins.a == l0_slot {
+    } else if a_s && ins.a == l0_slot && af == l0f {
         Cls::L0
-    } else if a_s && ins.a == l1_slot {
+    } else if a_s && ins.a == l1_slot && af == l1f {
         Cls::L1
     } else if flags & FLAG_A_ACC != 0 {
         Cls::Acc
@@ -283,9 +322,9 @@ fn op_variant(ins: &Instr, flags: u16, l0_slot: u64, l1_slot: u64) -> usize {
     };
     let b = if flags & FLAG_B_CONST != 0 {
         Cls::Const
-    } else if b_s && ins.b == l0_slot {
+    } else if b_s && ins.b == l0_slot && bf == l0f {
         Cls::L0
-    } else if b_s && ins.b == l1_slot {
+    } else if b_s && ins.b == l1_slot && bf == l1f {
         Cls::L1
     } else if flags & FLAG_B_ACC != 0 {
         Cls::Acc
@@ -293,20 +332,22 @@ fn op_variant(ins: &Instr, flags: u16, l0_slot: u64, l1_slot: u64) -> usize {
         Cls::Slot
     };
     let d = if ins.op == Op::Select {
-        // Select's dst slot is packed in c's low half.
+        // Select's dst slot is packed in c's low half (integer-domain
+        // writer: a float-pinned dst slot cannot occur — the writer
+        // scan would have made it unpinnable).
         let dslot = ins.c & 0xffff_ffff;
-        if dslot == l0_slot {
+        if dslot == l0_slot && !l0f {
             DstCls::L0
-        } else if dslot == l1_slot {
+        } else if dslot == l1_slot && !l1f {
             DstCls::L1
         } else if flags & FLAG_DST_ACC != 0 {
             DstCls::Acc
         } else {
             DstCls::Mem
         }
-    } else if c_d && ins.c == l0_slot {
+    } else if c_d && ins.c == l0_slot && rf == l0f {
         DstCls::L0
-    } else if c_d && ins.c == l1_slot {
+    } else if c_d && ins.c == l1_slot && rf == l1f {
         DstCls::L1
     } else if flags & FLAG_DST_ACC != 0 {
         DstCls::Acc
@@ -483,7 +524,7 @@ impl NativeEngine {
         // Pick the function's l0: the most-referenced local slot. Static
         // unweighted counts; byte offset must fit the 16-bit packing in
         // call cells and return records.
-        let (l0_slot, l1_slot) = select_pinned(func);
+        let (l0_slot, l1_slot, l0f, l1f) = select_pinned(func);
 
         // Resolve the predecoder's acc hints: an acc consumer's producer
         // is EXACTLY the preceding cell (strict adjacency). Honor the
@@ -507,11 +548,11 @@ impl NativeEngine {
                 && (prev_is_call
                     || self.h(
                         func.code[j - 1].op,
-                        op_variant(&func.code[j - 1], flags[j - 1], l0_slot, l1_slot),
+                        op_variant(&func.code[j - 1], flags[j - 1], l0_slot, l1_slot, l0f, l1f),
                     ) != u32::MAX)
                 && self.h(
                     func.code[j].op,
-                    op_variant(&func.code[j], flags[j], l0_slot, l1_slot),
+                    op_variant(&func.code[j], flags[j], l0_slot, l1_slot, l0f, l1f),
                 ) != u32::MAX
                 && native_guard(&func.code[j - 1])
                 && native_guard(&func.code[j]);
@@ -548,7 +589,7 @@ impl NativeEngine {
         let mut brtable_native = vec![false; func.code.len()];
         for (i, ins) in func.code.iter().enumerate() {
             let fl = flags[i];
-            let off = self.h(ins.op, op_variant(ins, fl, l0_slot, l1_slot));
+            let off = self.h(ins.op, op_variant(ins, fl, l0_slot, l1_slot, l0f, l1f));
             if ins.op == Op::BrTable && off != u32::MAX {
                 let table = &func.br_tables[ins.c as usize];
                 brtable_native[i] = true;
@@ -590,6 +631,7 @@ impl NativeEngine {
             br_flat,
             l0_off: off_of(l0_slot),
             l1_off: off_of(l1_slot),
+            fp_pinned: (l0_slot != u64::MAX && l0f) || (l1_slot != u64::MAX && l1f),
         };
         // The flat buffer has its final allocation now; resolve BrTable
         // base offsets to absolute addresses.
@@ -623,6 +665,18 @@ const ACC: u32 = 8;
 const L0R: u32 = 17;
 const L1R: u32 = 14;
 const X9: u32 = 9;
+const X7: u32 = 7;
+/// The float accumulator: v16, caller-saved, so the entry/exit paths
+/// never touch it. Strict-adjacency pairing means it is never live
+/// across a chain exit (float acc producers only bail to traps).
+const FACC: u32 = 16;
+/// Float views of the pinned-local slots (v17/v18, caller-saved,
+/// reloaded at every chain entry / call / return like their integer
+/// twins x17/x14). A slot is float-pinned only when every writer is
+/// float-domain, so exactly one register file is authoritative per
+/// slot; reads from the other domain are demoted to the slot at link.
+const FL0R: u32 = 17;
+const FL1R: u32 = 18;
 const X10: u32 = 10;
 /// Extra scratch for the indirect-call handler (safe: handlers never
 /// call out, so the platform's IP0 role is irrelevant here).
@@ -874,6 +928,12 @@ impl<'b> Enc<'b> {
     fn ldr_d_imm(&mut self, vt: u32, rn: u32, imm: u32) {
         self.i(0xFD40_0000 | (imm / 8) << 10 | rn << 5 | vt);
     }
+    fn str_d_reg(&mut self, vt: u32, rn: u32, rm: u32) {
+        self.i(0xFC20_6800 | rm << 16 | rn << 5 | vt);
+    }
+    fn str_s_reg(&mut self, vt: u32, rn: u32, rm: u32) {
+        self.i(0xBC20_6800 | rm << 16 | rn << 5 | vt);
+    }
     fn ldr_s_imm(&mut self, vt: u32, rn: u32, imm: u32) {
         self.i(0xBD40_0000 | (imm / 4) << 10 | rn << 5 | vt);
     }
@@ -900,6 +960,14 @@ impl<'b> Enc<'b> {
     fn fcmp(&mut self, f32w: bool, vn: u32, vm: u32) {
         let base = if f32w { 0x1E20_2000 } else { 0x1E60_2000 };
         self.i(base | vm << 16 | vn << 5);
+    }
+    fn tbz(&mut self, rt: u32, bit: u32, delta_insns: i32) {
+        debug_assert!(bit < 32);
+        self.i(0x3600_0000 | bit << 19 | ((delta_insns as u32) & 0x3FFF) << 5 | rt);
+    }
+    fn tbnz(&mut self, rt: u32, bit: u32, delta_insns: i32) {
+        debug_assert!(bit < 32);
+        self.i(0x3700_0000 | bit << 19 | ((delta_insns as u32) & 0x3FFF) << 5 | rt);
     }
     fn movz_hw(&mut self, rd: u32, imm16: u32, hw: u32) {
         self.i(0xD280_0000 | hw << 21 | imm16 << 5 | rd);
@@ -959,11 +1027,18 @@ fn bump(e: &mut Enc<'_>, on: bool) {
 /// one-instruction counter. (A pre-index `ldr x9, [pc, #32]!` form
 /// measured no better on Apple silicon: the writeback µop serializes
 /// against the load, while the separate `add` schedules freely.)
+/// Prefetch the NEXT cell's handler word at handler entry: the load
+/// issues in parallel with the handler body, so the dispatch branch's
+/// operand is ready (and a misprediction resolves) sooner. Every
+/// handler that ends in [`tail`] must open with this.
+fn pre(e: &mut Enc<'_>) {
+    e.ldr_x_imm(X7, PC, CELL);
+}
+
 fn tail(e: &mut Enc<'_>, count: bool) {
     bump(e, count);
     e.add_x_imm(PC, PC, CELL);
-    e.ldr_x_imm(X9, PC, 0);
-    e.br(X9);
+    e.br(X7);
 }
 
 /// Materialize operand a in a register: the acc IS a register (no code);
@@ -1037,7 +1112,7 @@ fn finish(e: &mut Enc<'_>, d: DstCls, src: u32) {
 /// Load a floating operand into FP register `v`. Register classes move
 /// raw bits over (f32 values are zero-extended in slots and registers,
 /// so an S-view read is always exact).
-fn src_fp(e: &mut Enc<'_>, cls: Cls, f32w: bool, v: u32, pcoff: u32, tmp: u32) {
+fn src_fp(e: &mut Enc<'_>, cls: Cls, f32w: bool, v: u32, pcoff: u32, tmp: u32) -> u32 {
     match cls {
         Cls::Slot => {
             e.ldr_x_imm(tmp, PC, pcoff);
@@ -1046,6 +1121,7 @@ fn src_fp(e: &mut Enc<'_>, cls: Cls, f32w: bool, v: u32, pcoff: u32, tmp: u32) {
             } else {
                 e.ldr_d_reg(v, FRAME, tmp);
             }
+            v
         }
         Cls::Const => {
             if f32w {
@@ -1053,28 +1129,37 @@ fn src_fp(e: &mut Enc<'_>, cls: Cls, f32w: bool, v: u32, pcoff: u32, tmp: u32) {
             } else {
                 e.ldr_d_imm(v, PC, pcoff);
             }
+            v
         }
-        Cls::Acc => {
-            if f32w {
-                e.fmov_s_w(v, ACC);
-            } else {
-                e.fmov_d_x(v, ACC);
-            }
-        }
-        Cls::L0 => {
-            if f32w {
-                e.fmov_s_w(v, L0R);
-            } else {
-                e.fmov_d_x(v, L0R);
-            }
-        }
-        Cls::L1 => {
-            if f32w {
-                e.fmov_s_w(v, L1R);
-            } else {
-                e.fmov_d_x(v, L1R);
-            }
-        }
+        Cls::Acc => FACC,
+        // A float-domain access classed L0/L1 only links inside a
+        // float-pinned function, where the value is register-resident
+        // in the NEON file — no cross-domain move.
+        Cls::L0 => FL0R,
+        Cls::L1 => FL1R,
+    }
+}
+
+/// The NEON register a float result computes into, per destination
+/// class: pinned destinations ARE registers, everything else stages in
+/// the float accumulator (which doubles as the Mem-dst mirror).
+fn fp_target(d: DstCls) -> u32 {
+    match d {
+        DstCls::L0 => FL0R,
+        DstCls::L1 => FL1R,
+        _ => FACC,
+    }
+}
+
+/// Land a float result: it was computed into `fp_target(d)`. Non-acc
+/// destinations store to the slot straight from the NEON register
+/// (D-width even for f32 — S-form producers zero the upper bits, so
+/// the slot zero-extension convention holds for free); for pinned
+/// destinations this is the write-through.
+fn finish_fp(e: &mut Enc<'_>, d: DstCls) {
+    if d != DstCls::Acc {
+        e.ldr_x_imm(X12, PC, 24);
+        e.str_d_reg(fp_target(d), FRAME, X12);
     }
 }
 
@@ -1174,6 +1259,8 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     e.ldr_x_imm(L0R, STATE, 88);
     e.ldr_x_imm(L1R, STATE, 96);
     e.ldr_x_imm(ACC, STATE, 104);
+    e.ldr_d_imm(FL0R, STATE, 88);
+    e.ldr_d_imm(FL1R, STATE, 96);
     e.ldr_x_imm(X9, PC, 0);
     e.br(X9);
 
@@ -1201,7 +1288,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             let delta = (trap_exhaust as i64 - e.here() as i64) / 4;
             e.b_cond(HS, delta as i32);
         }
-        e.mov_w(X10, X11); // arg_base*8 (low 32, zero-extended)
+        e.ubfx_x(X10, X11, 0, 31); // arg_base*8 (bit 31 is the fp flag)
         e.add_x_reg(X10, FRAME, X10); // new frame base
         e.ubfx_x(X13, X12, 32, 16); // frame_slots
         e.add_x_lsl(X13, X10, X13, 3);
@@ -1234,10 +1321,18 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         e.ldr_x_reg(L0R, FRAME, X13);
         e.lsr_x(X13, X11, 48); // callee l1off
         e.ldr_x_reg(L1R, FRAME, X13);
-        e.ubfx_x(CODE, X9, 0, 48);
+        // Float twins only when the callee has float-pinned slots
+        // (cell b bit 31, stamped by the fixup): int->FP transfers are
+        // expensive on this core, and integer-only code predicts the
+        // skip perfectly.
+        e.tbnz(X11, 31, 5); // -> fp (out of line: int code never jumps)
+        e.ubfx_x(CODE, X9, 0, 48); // cont:
         e.mov_x(PC, CODE);
         e.ldr_x_imm(X9, PC, 0);
         e.br(X9);
+        e.fmov_d_x(FL0R, L0R); // fp:
+        e.fmov_d_x(FL1R, L1R);
+        e.b(-6); // -> cont
     }
 
     // ---- call_indirect (rewired by the fixup pass; not in `handlers`)
@@ -1280,21 +1375,27 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             let delta = (slow_stub as i64 - e.here() as i64) / 4;
             e.b_cond(NE, delta as i32); // type mismatch
         }
-        e.ldr_x_imm(X12, X13, 0); // callee cells (0 = import/unlinked)
+        e.ldr_x_imm(X12, X13, 0); // callee cells | fp flag (0 = slow)
         {
             let delta = (slow_stub as i64 - e.here() as i64) / 4;
             e.cbz_x(X12, delta as i32);
         }
-        e.ldr_x_imm(X16, X13, 16); // frame metadata
-                                   // compose the call_core inputs from cell + info entry
+        e.ldr_x_imm(X16, X13, 16); // frame metadata (entry ptr consumed)
+                                   // compose the call_core inputs; the callee fp flag moves from
+                                   // entry bit 0 (cells are 32-byte aligned, low bits free) to
+                                   // the b-equiv bit 31
+        e.ubfx_x(X13, X12, 0, 1); // fp flag
+        e.lsr_x(X12, X12, 5);
+        e.lsl_x(X12, X12, 5); // clean cells address
         e.lsr_x(X9, X9, 48);
         e.orr_x_lsl(X9, X12, X9, 48); // a-equiv: caller_l1off | cells
-        e.lsr_x(X13, X10, 48);
-        e.orr_x_lsl(X12, X16, X13, 48); // c-equiv: caller_l0off | meta
+        e.lsr_x(X12, X10, 48);
+        e.orr_x_lsl(X12, X16, X12, 48); // c-equiv: caller_l0off | meta
         e.lsr_x(X11, X11, 32);
         e.lsl_x(X11, X11, 32); // callee l0/l1 offsets, canon cleared
-        e.ubfx_x(X13, X10, 0, 32);
-        e.orr_x_lsl(X11, X11, X13, 0); // b-equiv: | arg_base*8
+        e.ubfx_x(X16, X10, 0, 32);
+        e.orr_x_lsl(X11, X11, X16, 0); // b-equiv: | arg_base*8
+        e.orr_x_lsl(X11, X11, X13, 31); // | callee fp flag
         {
             let delta = (call_core as i64 - e.here() as i64) / 4;
             e.b(delta as i32);
@@ -1329,11 +1430,21 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         e.ubfx_x(CODE, X12, 0, 48);
         // reload the caller's pinned locals (sentinel records carry a
         // readable dummy frame, so these loads are always safe)
+        // The caller's float-pinned flag rides bit 0 of its recorded
+        // l0 offset (offsets are byte-scaled, so bit 0 is structurally
+        // free); integer-only callers take the flagless path.
+        e.tbnz(X11, 0, 6); // -> fp (out of line: int callers fall through)
         e.ldr_x_reg(L0R, FRAME, X11);
         e.ldr_x_reg(L1R, FRAME, X10);
-        e.mov_x(PC, X13);
+        e.mov_x(PC, X13); // join:
         e.ldr_x_imm(X9, PC, 0);
         e.br(X9);
+        e.sub_x_imm(X11, X11, 1); // fp:
+        e.ldr_x_reg(L0R, FRAME, X11);
+        e.ldr_x_reg(L1R, FRAME, X10);
+        e.fmov_d_x(FL0R, L0R);
+        e.fmov_d_x(FL1R, L1R);
+        e.b(-8); // -> join
         def(handlers, Op::Return, 0, off);
     }
 
@@ -1347,6 +1458,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     for &(op, a) in mov_variants.iter() {
         for d in DSTS {
             let off = e.here();
+            pre(e);
             let rd = dst_target(d);
             let v = match a {
                 Cls::Acc => ACC,
@@ -1518,6 +1630,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             for b_cls in CLASSES {
                 for d in DSTS {
                     let off = e.here();
+                    pre(e);
                     let ra = src_a(e, a_cls, X10);
                     let mut rb = src_b(e, b_cls, X11);
                     if b.kind == 1 {
@@ -1652,6 +1765,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             for b_cls in CLASSES {
                 for d in DSTS {
                     let off = e.here();
+                    pre(e);
                     let ra = src_a(e, a_cls, X10);
                     let rb = src_b(e, b_cls, X11);
                     if c.w {
@@ -1672,6 +1786,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         for a_cls in CLASSES {
             for d in DSTS {
                 let off = e.here();
+                pre(e);
                 let ra = src_a(e, a_cls, X10);
                 if w {
                     e.cmp_w(ra, 31); // wzr
@@ -1705,6 +1820,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         for a_cls in CLASSES {
             for d in DSTS {
                 let off = e.here();
+                pre(e);
                 let ra = src_a(e, a_cls, X10);
                 let rd = dst_target(d);
                 match op {
@@ -1749,6 +1865,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         for a_cls in CLASSES {
             let cnt = counted(a_cls, Cls::Slot, DstCls::Mem);
             let off = e.here();
+            pre(e);
             let ra = src_a(e, a_cls, X10);
             // not-taken: skip the taken path into the tail (its length
             // depends on whether this variant bumps the counter)
@@ -1794,6 +1911,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         for a_cls in CLASSES {
             for b_cls in CLASSES {
                 let off = e.here();
+                pre(e);
                 let ra = src_a(e, a_cls, X10);
                 let rb = src_b(e, b_cls, X11);
                 if w {
@@ -1821,6 +1939,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         for b_cls in CLASSES {
             for d in DSTS {
                 let off = e.here();
+                pre(e);
                 let ra = src_a(e, a_cls, X10);
                 let rb = src_b(e, b_cls, X11);
                 e.ldr_x_imm(X12, PC, 24);
@@ -1866,6 +1985,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     // ---- globals (indices pre-scaled ×8 at link) ----
     for d in DSTS {
         let off = e.here();
+        pre(e);
         e.ldr_x_imm(X10, PC, 8); // a = index*8
         let rd = dst_target(d);
         e.ldr_x_reg(rd, GLOB, X10);
@@ -1880,6 +2000,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     }
     for a_cls in CLASSES {
         let off = e.here();
+        pre(e);
         let ra = src_a(e, a_cls, X10); // value operand
         e.ldr_x_imm(X12, PC, 24); // c = index*8
         e.str_x_reg(ra, GLOB, X12);
@@ -2051,6 +2172,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                         continue;
                     }
                     let off = e.here();
+                    pre(e);
                     let ra = src_a(e, a_cls, X10); // address (u32 low bits)
                     if m.load {
                         e.ldr_x_imm(X11, PC, 16); // static offset
@@ -2064,21 +2186,50 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                         let delta = (trap_oob as i64 - e.here() as i64) / 4;
                         e.b_cond(HI, delta as i32);
                     }
+                    let fp = matches!(
+                        m.op,
+                        Op::F32_Load | Op::F64_Load | Op::F32_Store | Op::F64_Store
+                    );
                     if m.load {
-                        let rd = dst_target(d);
-                        match m.kind {
-                            0 => e.ldr_w_reg(rd, MEM, X12),
-                            1 => e.ldr_x_reg(rd, MEM, X12),
-                            2 => e.ldrb_reg(rd, MEM, X12),
-                            3 => e.ldrh_reg(rd, MEM, X12),
-                            4 => e.ldrsb_w_reg(rd, MEM, X12),
-                            5 => e.ldrsh_w_reg(rd, MEM, X12),
-                            6 => e.ldrsb_x_reg(rd, MEM, X12),
-                            7 => e.ldrsh_x_reg(rd, MEM, X12),
-                            8 => e.ldrsw_reg(rd, MEM, X12),
-                            _ => unreachable!(),
+                        if fp {
+                            // float loads land in their destination's
+                            // NEON register (acc or pinned) and write
+                            // through from it — no integer round trip
+                            if m.kind == 0 {
+                                e.ldr_s_reg(fp_target(d), MEM, X12);
+                            } else {
+                                e.ldr_d_reg(fp_target(d), MEM, X12);
+                            }
+                            finish_fp(e, d);
+                        } else {
+                            let rd = dst_target(d);
+                            match m.kind {
+                                0 => e.ldr_w_reg(rd, MEM, X12),
+                                1 => e.ldr_x_reg(rd, MEM, X12),
+                                2 => e.ldrb_reg(rd, MEM, X12),
+                                3 => e.ldrh_reg(rd, MEM, X12),
+                                4 => e.ldrsb_w_reg(rd, MEM, X12),
+                                5 => e.ldrsh_w_reg(rd, MEM, X12),
+                                6 => e.ldrsb_x_reg(rd, MEM, X12),
+                                7 => e.ldrsh_x_reg(rd, MEM, X12),
+                                8 => e.ldrsw_reg(rd, MEM, X12),
+                                _ => unreachable!(),
+                            }
+                            finish(e, d, rd);
                         }
-                        finish(e, d, rd);
+                    } else if fp && matches!(b_cls, Cls::Acc | Cls::L0 | Cls::L1) {
+                        // float store value is register-resident (acc or
+                        // pinned NEON register)
+                        let v = match b_cls {
+                            Cls::L0 => FL0R,
+                            Cls::L1 => FL1R,
+                            _ => FACC,
+                        };
+                        if m.kind == 0 {
+                            e.str_s_reg(v, MEM, X12);
+                        } else {
+                            e.str_d_reg(v, MEM, X12);
+                        }
                     } else {
                         // value operand (the offset in X11 is consumed)
                         let rb = src_b(e, b_cls, X11);
@@ -2169,6 +2320,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             for b_cls in CLASSES {
                 for d in DSTS {
                     let off = e.here();
+                    pre(e);
                     let ra = src_a(e, a_cls, X10);
                     let rb = src_b(e, b_cls, X11);
                     {
@@ -2241,6 +2393,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     }
     {
         let off = e.here();
+        pre(e);
         bump(e, COUNT_MODE == 0);
         e.ldr_x_imm(X9, PC, 8);
         e.add_x_reg(X9, FRAME, X9);
@@ -2274,6 +2427,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     }
     {
         let off = e.here();
+        pre(e);
         bump(e, COUNT_MODE == 0);
         e.ldr_x_imm(X9, PC, 8);
         e.add_x_reg(X9, FRAME, X9);
@@ -2351,12 +2505,11 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             for b_cls in CLASSES {
                 for d in DSTS {
                     let off = e.here();
-                    src_fp(e, a_cls, f32w, 0, 8, X10);
-                    src_fp(e, b_cls, f32w, 1, 16, X11);
-                    e.fp2(enc, 0, 0, 1);
-                    let rd = dst_target(d);
-                    fp_result(e, f32w, rd, 0);
-                    finish(e, d, rd);
+                    pre(e);
+                    let va = src_fp(e, a_cls, f32w, 0, 8, X10);
+                    let vb = src_fp(e, b_cls, f32w, 1, 16, X11);
+                    e.fp2(enc, fp_target(d), va, vb);
+                    finish_fp(e, d);
                     tail(e, counted(a_cls, b_cls, d));
                     def(handlers, op, variant(a_cls, b_cls, d), off);
                 }
@@ -2370,21 +2523,39 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             for b_cls in CLASSES {
                 for d in DSTS {
                     let off = e.here();
-                    let ra = src_a(e, a_cls, X10);
-                    let rb = src_b(e, b_cls, X11);
-                    let rd = dst_target(d);
+                    pre(e);
+                    // float-domain operands arrive in the float acc; the
+                    // splice itself runs on integer registers
+                    let ra = match a_cls {
+                        Cls::Acc | Cls::L0 | Cls::L1 => {
+                            let v = src_fp(e, a_cls, f32w, 0, 8, X10);
+                            fp_result(e, f32w, X10, v);
+                            X10
+                        }
+                        _ => src_a(e, a_cls, X10),
+                    };
+                    let rb = match b_cls {
+                        Cls::Acc | Cls::L0 | Cls::L1 => {
+                            let v = src_fp(e, b_cls, f32w, 1, 16, X11);
+                            fp_result(e, f32w, X11, v);
+                            X11
+                        }
+                        _ => src_b(e, b_cls, X11),
+                    };
                     if f32w {
                         e.lsl_x(X12, ra, 33);
                         e.lsr_x(X12, X12, 33);
                         e.ubfx_x(X13, rb, 31, 1);
-                        e.orr_x_lsl(rd, X12, X13, 31);
+                        e.orr_x_lsl(X12, X12, X13, 31);
+                        e.fmov_s_w(fp_target(d), X12);
                     } else {
                         e.lsl_x(X12, ra, 1);
                         e.lsr_x(X12, X12, 1);
                         e.lsr_x(X13, rb, 63);
-                        e.orr_x_lsl(rd, X12, X13, 63);
+                        e.orr_x_lsl(X12, X12, X13, 63);
+                        e.fmov_d_x(fp_target(d), X12);
                     }
-                    finish(e, d, rd);
+                    finish_fp(e, d);
                     tail(e, counted(a_cls, b_cls, d));
                     def(handlers, op, variant(a_cls, b_cls, d), off);
                 }
@@ -2413,9 +2584,10 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             for b_cls in CLASSES {
                 for d in DSTS {
                     let off = e.here();
-                    src_fp(e, a_cls, f32w, 0, 8, X10);
-                    src_fp(e, b_cls, f32w, 1, 16, X11);
-                    e.fcmp(f32w, 0, 1);
+                    pre(e);
+                    let va = src_fp(e, a_cls, f32w, 0, 8, X10);
+                    let vb = src_fp(e, b_cls, f32w, 1, 16, X11);
+                    e.fcmp(f32w, va, vb);
                     let rd = dst_target(d);
                     e.cset_w(rd, cond);
                     finish(e, d, rd);
@@ -2448,11 +2620,10 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         for a_cls in CLASSES {
             for d in DSTS {
                 let off = e.here();
-                src_fp(e, a_cls, f32w, 0, 8, X10);
-                e.fp1(enc, 0, 0);
-                let rd = dst_target(d);
-                fp_result(e, f32w, rd, 0);
-                finish(e, d, rd);
+                pre(e);
+                let va = src_fp(e, a_cls, f32w, 0, 8, X10);
+                e.fp1(enc, fp_target(d), va);
+                finish_fp(e, d);
                 tail(e, counted(a_cls, Cls::Slot, d));
                 def(handlers, op, variant(a_cls, Cls::Slot, d), off);
             }
@@ -2487,11 +2658,10 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         for a_cls in CLASSES {
             for d in DSTS {
                 let off = e.here();
+                pre(e);
                 let ra = src_a(e, a_cls, X10);
-                e.fp1(enc, 0, ra);
-                let rd = dst_target(d);
-                fp_result(e, dst32, rd, 0);
-                finish(e, d, rd);
+                e.fp1(enc, fp_target(d), ra);
+                finish_fp(e, d);
                 tail(e, counted(a_cls, Cls::Slot, d));
                 def(handlers, op, variant(a_cls, Cls::Slot, d), off);
             }
@@ -2504,11 +2674,10 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         for a_cls in CLASSES {
             for d in DSTS {
                 let off = e.here();
-                src_fp(e, a_cls, !to32, 0, 8, X10);
-                e.fp1(enc, 0, 0);
-                let rd = dst_target(d);
-                fp_result(e, to32, rd, 0);
-                finish(e, d, rd);
+                pre(e);
+                let va = src_fp(e, a_cls, !to32, 0, 8, X10);
+                e.fp1(enc, fp_target(d), va);
+                finish_fp(e, d);
                 tail(e, counted(a_cls, Cls::Slot, d));
                 def(handlers, op, variant(a_cls, Cls::Slot, d), off);
             }
@@ -2546,9 +2715,10 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         for a_cls in CLASSES {
             for d in DSTS {
                 let off = e.here();
-                src_fp(e, a_cls, src32, 0, 8, X10);
+                pre(e);
+                let va = src_fp(e, a_cls, src32, 0, 8, X10);
                 let rd = dst_target(d);
-                e.fp1(enc, rd, 0);
+                e.fp1(enc, rd, va);
                 finish(e, d, rd);
                 tail(e, counted(a_cls, Cls::Slot, d));
                 def(handlers, op, variant(a_cls, Cls::Slot, d), off);
@@ -2634,14 +2804,15 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         for a_cls in CLASSES {
             for d in DSTS {
                 let off = e.here();
-                src_fp(e, a_cls, src32, 0, 8, X10);
+                pre(e);
+                let va = src_fp(e, a_cls, src32, 0, 8, X10);
                 mov_imm64(e, X13, lo);
                 if src32 {
                     e.fmov_s_w(1, X13);
                 } else {
                     e.fmov_d_x(1, X13);
                 }
-                e.fcmp(src32, 0, 1);
+                e.fcmp(src32, va, 1);
                 {
                     let delta = (slow_stub as i64 - e.here() as i64) / 4;
                     e.b_cond(LE, delta as i32); // x <= lo, or NaN
@@ -2652,13 +2823,13 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 } else {
                     e.fmov_d_x(1, X13);
                 }
-                e.fcmp(src32, 0, 1);
+                e.fcmp(src32, va, 1);
                 {
                     let delta = (slow_stub as i64 - e.here() as i64) / 4;
                     e.b_cond(GE, delta as i32); // x >= hi
                 }
                 let rd = dst_target(d);
-                e.fp1(enc, rd, 0);
+                e.fp1(enc, rd, va);
                 finish(e, d, rd);
                 tail(e, counted(a_cls, Cls::Slot, d));
                 def(handlers, op, variant(a_cls, Cls::Slot, d), off);
@@ -2672,6 +2843,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         for a_cls in CLASSES {
             for d in DSTS {
                 let off = e.here();
+                pre(e);
                 let ra = src_a(e, a_cls, X10);
                 e.fmov_d_x(0, ra);
                 e.i(0x0E20_5800); // cnt v0.8b, v0.8b
@@ -2685,24 +2857,52 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         }
     }
 
-    // reinterpret: slots and registers already hold raw bits — a pure
-    // 64-bit copy in the integer domain
-    let reints = [
-        Op::I32_ReinterpretF32,
-        Op::I64_ReinterpretF64,
-        Op::F32_ReinterpretI32,
-        Op::F64_ReinterpretI64,
-    ];
-    for &op in reints.iter() {
+    // reinterpret: raw-bit moves, but the accumulator edges are
+    // domain-typed — float->int reads the float acc, int->float lands
+    // in it
+    for &(op, f32w) in [
+        (Op::I32_ReinterpretF32, true),
+        (Op::I64_ReinterpretF64, false),
+    ]
+    .iter()
+    {
         for a_cls in CLASSES {
             for d in DSTS {
                 let off = e.here();
-                let ra = src_a(e, a_cls, X10);
+                pre(e);
                 let rd = dst_target(d);
-                if ra != rd {
-                    e.mov_x(rd, ra);
+                if matches!(a_cls, Cls::Acc | Cls::L0 | Cls::L1) {
+                    let v = src_fp(e, a_cls, f32w, 0, 8, X10);
+                    fp_result(e, f32w, rd, v);
+                } else {
+                    let ra = src_a(e, a_cls, X10);
+                    if ra != rd {
+                        e.mov_x(rd, ra);
+                    }
                 }
                 finish(e, d, rd);
+                tail(e, counted(a_cls, Cls::Slot, d));
+                def(handlers, op, variant(a_cls, Cls::Slot, d), off);
+            }
+        }
+    }
+    for &(op, f32w) in [
+        (Op::F32_ReinterpretI32, true),
+        (Op::F64_ReinterpretI64, false),
+    ]
+    .iter()
+    {
+        for a_cls in CLASSES {
+            for d in DSTS {
+                let off = e.here();
+                pre(e);
+                let ra = src_a(e, a_cls, X10);
+                if f32w {
+                    e.fmov_s_w(fp_target(d), ra);
+                } else {
+                    e.fmov_d_x(fp_target(d), ra);
+                }
+                finish_fp(e, d);
                 tail(e, counted(a_cls, Cls::Slot, d));
                 def(handlers, op, variant(a_cls, Cls::Slot, d), off);
             }

@@ -23,7 +23,10 @@ use crate::module::Module;
 use crate::op_decoder::{BlockType, Decoder, Immediate, OpStream, OpcodeHandler};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 
-use super::instr::{Instr, Op, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC};
+use super::instr::{
+    operand_is_float, result_is_float, Instr, Op, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC,
+    FLAG_B_CONST, FLAG_DST_ACC,
+};
 
 /// Producer index meaning "no patchable producer" (call results, block
 /// results arriving over a merge).
@@ -378,22 +381,30 @@ impl<'m> Predecoder<'m> {
     /// the operand's acc flag, or 0. At most one operand of a consumer can
     /// match (only one instruction sits at `len-1`), and slot fields stay
     /// valid either way: the hints are droppable by construction.
-    fn acc_operand(&mut self, d: Desc, which_flag: u16) -> u16 {
+    fn acc_operand(&mut self, d: Desc, which_flag: u16, want_float: bool) -> u16 {
         match d {
             Desc::Temp { height, def, .. } => {
                 if let Some(def) = self.rewritable_producer(d) {
+                    // Domain agreement: the producer's result rides the
+                    // accumulator of ITS domain; a consumer reading the
+                    // other domain's register must fall back to the slot.
+                    if result_is_float(self.code[def as usize].op) != want_float {
+                        return 0;
+                    }
                     self.code[def as usize].flags |= FLAG_DST_ACC;
                     which_flag
                 } else if def == NO_DEF
+                    && !want_float
                     && self.last_call_idx != NO_DEF
                     && self.last_call_idx + 1 == self.code.len() as u32
                     && height == self.last_call_height
                     && self.last_call_region == self.region
                 {
                     // Adjacent consumer of a single-result call: the native
-                    // Return leaves result 0 in the accumulator, and the
-                    // driver carries it across activation boundaries. No
-                    // producer-side mark exists.
+                    // Return leaves result 0 in the INTEGER accumulator (it
+                    // is a raw-bits copy), and the driver carries it across
+                    // activation boundaries. No producer-side mark exists;
+                    // float-domain consumers read the slot instead.
                     which_flag
                 } else {
                     0
@@ -414,6 +425,8 @@ impl<'m> Predecoder<'m> {
                 if self.last_write[x as usize] > 0
                     && self.last_write[x as usize] == self.code.len() as u32
                     && self.last_write_region[x as usize] == self.region
+                    && result_is_float(self.code[self.last_write[x as usize] as usize - 1].op)
+                        == want_float
                 {
                     which_flag
                 } else {
@@ -445,14 +458,14 @@ impl<'m> Predecoder<'m> {
         let (b, b_const) = if n == 2 {
             let d = self.pop()?;
             let r = self.operand(d, at);
-            flags |= self.acc_operand(d, FLAG_B_ACC);
+            flags |= self.acc_operand(d, FLAG_B_ACC, operand_is_float(op, true));
             r
         } else {
             (0, false)
         };
         let d = self.pop()?;
         let (a, a_const) = self.operand(d, at);
-        flags |= self.acc_operand(d, FLAG_A_ACC);
+        flags |= self.acc_operand(d, FLAG_A_ACC, operand_is_float(op, false));
         if a_const {
             flags |= FLAG_A_CONST;
         }
@@ -517,12 +530,12 @@ impl<'m> Predecoder<'m> {
             let (op, flags, a) = match top {
                 Desc::Local(src) => {
                     self.last_read[src as usize] = at + 1;
-                    let acc = self.acc_operand(top, FLAG_A_ACC);
+                    let acc = self.acc_operand(top, FLAG_A_ACC, false);
                     (Op::MovSlot, acc, src as u64)
                 }
                 Desc::ConstV(k) => (Op::MovConst, FLAG_A_CONST, k),
                 Desc::Temp { height, .. } => {
-                    let acc = self.acc_operand(top, FLAG_A_ACC);
+                    let acc = self.acc_operand(top, FLAG_A_ACC, false);
                     (Op::MovSlot, acc, self.temp_slot_used(height))
                 }
             };
@@ -1130,7 +1143,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     } else {
                         let at = self.code.len() as u32;
                         let (a, a_const) = self.operand(cond, at);
-                        let mut flags = self.acc_operand(cond, FLAG_A_ACC);
+                        let mut flags = self.acc_operand(cond, FLAG_A_ACC, false);
                         if a_const {
                             flags |= FLAG_A_CONST;
                         }
@@ -1258,7 +1271,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     } else {
                         let at = self.code.len() as u32;
                         let (a, a_const) = self.operand(cond, at);
-                        let mut flags = self.acc_operand(cond, FLAG_A_ACC);
+                        let mut flags = self.acc_operand(cond, FLAG_A_ACC, false);
                         if a_const {
                             flags |= FLAG_A_CONST;
                         }
@@ -1339,10 +1352,10 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     };
                     let v2 = self.pop()?;
                     let (b, b_const) = self.operand(v2, at);
-                    let mut flags = self.acc_operand(v2, FLAG_B_ACC);
+                    let mut flags = self.acc_operand(v2, FLAG_B_ACC, false);
                     let v1 = self.pop()?;
                     let (a, a_const) = self.operand(v1, at);
-                    flags |= self.acc_operand(v1, FLAG_A_ACC);
+                    flags |= self.acc_operand(v1, FLAG_A_ACC, false);
                     if a_const {
                         flags |= FLAG_A_CONST;
                     }
@@ -1448,7 +1461,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     let at = self.code.len() as u32;
                     let d = self.pop()?;
                     let (a, a_const) = self.operand(d, at);
-                    let mut flags = self.acc_operand(d, FLAG_A_ACC);
+                    let mut flags = self.acc_operand(d, FLAG_A_ACC, false);
                     if a_const {
                         flags |= FLAG_A_CONST;
                     }
@@ -1496,7 +1509,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     // between the producer and the BrTable cell (movs
                     // clobber the accumulator — every value handler
                     // computes into it).
-                    flags |= self.acc_operand(d0, FLAG_A_ACC);
+                    flags |= self.acc_operand(d0, FLAG_A_ACC, false);
                     // v1 restriction: every target must need no value moves
                     // (LLVM switch tables are arity-0). Reject otherwise.
                     for &d in labels.iter().chain(core::iter::once(&default)) {
@@ -1572,7 +1585,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         let at = self.code.len() as u32;
                         let d = self.pop()?;
                         let (a, a_const) = self.operand(d, at);
-                        let mut flags = self.acc_operand(d, FLAG_A_ACC);
+                        let mut flags = self.acc_operand(d, FLAG_A_ACC, false);
                         if a_const {
                             flags |= FLAG_A_CONST;
                         }
@@ -1592,10 +1605,11 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         let at = self.code.len() as u32;
                         let v = self.pop()?;
                         let (b, b_const) = self.operand(v, at);
-                        let mut flags = self.acc_operand(v, FLAG_B_ACC);
+                        let mut flags =
+                            self.acc_operand(v, FLAG_B_ACC, operand_is_float(sop, true));
                         let ad = self.pop()?;
                         let (a, a_const) = self.operand(ad, at);
-                        flags |= self.acc_operand(ad, FLAG_A_ACC);
+                        flags |= self.acc_operand(ad, FLAG_A_ACC, false);
                         if a_const {
                             flags |= FLAG_A_CONST;
                         }

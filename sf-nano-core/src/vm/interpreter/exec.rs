@@ -380,7 +380,7 @@ impl<'m> InterpInstance<'m> {
         // (b bits 32-47 / 48-63), frame metadata (c low 48). The caller's
         // own l0/l1 offsets ride in c bits 48-63 and a bits 48-63 so the
         // call handler can stamp them into the return record.
-        let callee_info: Vec<Option<(u64, u64, u64, u64)>> = self
+        let callee_info: Vec<Option<(u64, u64, u64, u64, bool)>> = self
             .funcs
             .iter()
             .enumerate()
@@ -396,6 +396,7 @@ impl<'m> InterpInstance<'m> {
                         packed,
                         lf.l0_off as u64,
                         lf.l1_off as u64,
+                        lf.fp_pinned,
                     ))
                 }
                 _ => None,
@@ -435,7 +436,7 @@ impl<'m> InterpInstance<'m> {
 
         let indirect_info: Vec<[u64; 3]> = (0..self.funcs.len())
             .map(|i| {
-                let (Some(Some((cells, packed, l0, l1))), Some(func)) =
+                let (Some(Some((cells, packed, l0, l1, fp))), Some(func)) =
                     (callee_info.get(i), self.module.functions().get(i))
                 else {
                     return [0; 3];
@@ -443,7 +444,7 @@ impl<'m> InterpInstance<'m> {
                 let Some(Some(canon)) = canon_of.get(func.type_index() as usize) else {
                     return [0; 3];
                 };
-                [*cells, l1 << 48 | l0 << 32 | canon, *packed]
+                [*cells | *fp as u64, l1 << 48 | l0 << 32 | canon, *packed]
             })
             .collect();
 
@@ -454,16 +455,22 @@ impl<'m> InterpInstance<'m> {
             };
             let caller_l0 = lf.l0_off as u64;
             let caller_l1 = lf.l1_off as u64;
+            // Rides bit 0 of the recorded l0 offset (byte-scaled, so the
+            // bit is structurally free) into every return record.
+            let caller_fp = lf.fp_pinned as u64;
             for (k, ins) in f.code.iter().enumerate() {
                 if ins.op == Op::Call {
-                    if let Some(Some((cells, packed, callee_l0, callee_l1))) =
+                    if let Some(Some((cells, packed, callee_l0, callee_l1, callee_fp))) =
                         callee_info.get(ins.a as usize)
                     {
                         lf.cells[k] = DCell {
                             h: call_h,
                             a: caller_l1 << 48 | *cells,
-                            b: callee_l1 << 48 | callee_l0 << 32 | ins.b * 8,
-                            c: caller_l0 << 48 | *packed,
+                            b: callee_l1 << 48
+                                | callee_l0 << 32
+                                | (*callee_fp as u64) << 31
+                                | ins.b * 8,
+                            c: (caller_l0 | caller_fp) << 48 | *packed,
                         };
                     }
                 }
@@ -476,7 +483,7 @@ impl<'m> InterpInstance<'m> {
                             lf.cells[k] = DCell {
                                 h: ci_h,
                                 a: caller_l1 << 48 | ins.a * 8,
-                                b: caller_l0 << 48 | canon << 32 | ins.b * 8,
+                                b: (caller_l0 | caller_fp) << 48 | canon << 32 | ins.b * 8,
                                 c: 0,
                             };
                         }
