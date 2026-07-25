@@ -1,134 +1,252 @@
 #!/usr/bin/env python3
-"""Generate benchmark SVG charts from data. Run after updating DATA below."""
+"""Generate the benchmark charts from measured data.
+
+Design notes, so the next person does not have to reverse-engineer them:
+
+* Grouped horizontal bars. The job is magnitude comparison across named
+  entities, and the entity names are long, so horizontal bars with direct
+  labels beat any vertical or radial form.
+* Bars are normalised to the best value IN THEIR ROW, and the absolute
+  number is printed at the end of every bar. Cross-row comparison is
+  meaningless anyway (different units), so each row gets its own scale.
+* Two groups per row, split by engine class (compiled vs interpreted).
+  A compiler is ~7x an interpreter here; mixing them on one scale would
+  crush the interpreter bars into unreadable slivers, so they are grouped
+  and separated by a rule.
+* Colour is categorical (identity = runtime), assigned in a fixed order and
+  never cycled. The palette is validated for the adjacent-pair CVD and
+  normal-vision floors in BOTH light and dark mode -- see SERIES below.
+  Three light-mode hues fall under 3:1 contrast on the light surface, which
+  is why every bar carries a visible direct label and RESULTS.md carries the
+  table view: that is the required relief, not an oversight.
+* No animation. These are static comparison charts read in a README; a
+  growing bar adds nothing and makes the file diff noisily.
+
+Run after updating the DATA section below:  python3 gen_svg.py
+"""
 
 import os
+import re
 
-MW = 490  # max bar width
-X0 = 175  # bar start x
+# ── geometry ────────────────────────────────────────────────────────────
+W = 760          # canvas width
+GUTTER = 168     # left column: runtime names, right-aligned to here
+X0 = 176         # bar origin
+BAR_MAX = 452    # longest bar
+BAR_H = 18       # thin marks
+BAR_PITCH = 20   # leaves a 2px surface gap between adjacent bars
+GROUP_GAP = 10   # extra space between the two engine classes
+ROW_HEAD = 24    # metric name + unit line
+ROW_PAD = 12
+HEADER = 80
+
+# ── palette ─────────────────────────────────────────────────────────────
+# (key, label, light, dark). Order is fixed. Checked with the palette
+# validator on the adjacent pairlist (the correct list for grouped bars):
+#   light: worst adjacent CVD dE 9.2, normal-vision 27.6  -> all PASS
+#   dark:  worst adjacent CVD dE 9.4, normal-vision 24.6  -> all PASS
+# Both Silverfir engines wear the same violet family on purpose, so "ours"
+# reads at a glance; they are never adjacent in this order, and the hues
+# beside them are deliberately far from violet (orange, teal, amber).
+# 'column' is the header text this series has in the RESULTS.md tables.
+SERIES = [
+    ('sf', 'Silverfir (JIT)',    'SF (JIT)',    '#7c3aed', '#8b5cf6'),
+    ('cl', 'Cranelift 47.0.2',   'Cranelift',   '#eb6834', '#d95926'),
+    ('v8', 'V8 / Node 25.9',     'V8',          '#1baf7a', '#199e70'),
+    ('si', 'Silverfir (interp)', 'SF (interp)', '#a855f7', '#9085e9'),
+    ('w3', 'wasm3',              'wasm3',       '#eda100', '#c98500'),
+    ('wi', 'wasmi 1.1.0',        'wasmi',       '#4a9ede', '#3987e5'),
+]
+# Each entry produces its OWN chart file: comparing a JIT to an interpreter on
+# one scale is ~7x, which crushes the interpreter bars into slivers. Split by
+# class and every row renormalises within its class, so the comparisons that
+# matter stay legible.
+GROUPS = [
+    ('',        'Compiled (JIT)', ['sf', 'cl', 'v8']),
+    ('_interp', 'Interpreters',   ['si', 'w3', 'wi']),
+]
+LABEL = {k: n for k, n, _c, _l, _d in SERIES}
+BY_COLUMN = {c: k for k, _n, c, _l, _d in SERIES}
+
 
 def fmt(n):
-    if n != int(n):
-        s = f"{n:.3f}" if n < 100 else f"{n:.2f}"
-    else:
-        s = str(int(n))
-    parts = s.split('.')
-    p = parts[0]
-    r = ''
-    for i, c in enumerate(reversed(p)):
-        if i and i % 3 == 0: r = ',' + r
-        r = c + r
-    parts[0] = r
-    return '.'.join(parts)
+    if float(n).is_integer():        # scores are whole numbers; no ".0"
+        return f'{n:,.0f}'
+    if n >= 10000:
+        return f'{n:,.0f}'
+    if n >= 1000:
+        return f'{n:,.1f}'
+    if n >= 100:
+        return f'{n:.1f}'
+    return f'{n:.2f}'
 
-def bar_w(val, ref, inv):
-    return MW * ref / val if inv else MW * val / ref
 
-def make_benchmark_section(idx, name, unit, d, inv, is_first):
-    """Generate SVG snippet for one benchmark."""
-    ref = min(d['sf'], d['cl'], d['v8']) if inv else max(d['sf'], d['cl'], d['v8'])
-    ws = bar_w(d['sf'], ref, inv)
-    wc = bar_w(d['cl'], ref, inv)
-    wv = bar_w(d['v8'], ref, inv)
-    y_base = 84 + idx * 130
-    dur_base = 0.35 + idx * 0.04
-    lines = []
-    if not is_first:
-        lines.append(f'  <line x1="20" y1="{y_base}" x2="680" y2="{y_base}" stroke="#eaeef2" stroke-width="1"/>')
-    # label
-    lines.append(f'  <text x="168" y="{y_base+20.0}" text-anchor="end" fill="#656d76" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600">{name}</text>')
-    lines.append(f'  <text x="182" y="{y_base+20.0}" fill="#8b949e" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="10">{unit}</text>')
-    # Silverfir row
-    lines.append(f'  <rect x="4" y="{y_base+28}" width="692" height="32" rx="4" fill="#f3e8ff" opacity="0.5"/>')
-    lines.append(f'  <text x="168" y="{y_base+48.5}" text-anchor="end" fill="#581c87" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">Silverfir</text>')
-    lines.append(f'  <rect x="175" y="{y_base+30}" width="{ws:.1f}" height="28" rx="4" fill="url(#hlGrad)" filter="url(#glow)"><animate attributeName="width" from="0" to="{ws:.1f}" dur="{dur_base:.2f}s" fill="freeze"/></rect>')
-    lines.append(f'  <text x="{X0+ws-8:.1f}" y="{y_base+49.0}" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">{fmt(d["sf"])}</text>')
-    # Cranelift row
-    lines.append(f'  <text x="168" y="{y_base+79.5}" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">Cranelift</text>')
-    lines.append(f'  <rect x="175" y="{y_base+61}" width="{wc:.1f}" height="28" rx="4" fill="#e8873d" opacity="0.85"><animate attributeName="width" from="0" to="{wc:.1f}" dur="{dur_base+0.04:.2f}s" fill="freeze"/></rect>')
-    lines.append(f'  <text x="{X0+wc-8:.1f}" y="{y_base+80.0}" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">{fmt(d["cl"])}</text>')
-    # V8 row
-    lines.append(f'  <text x="168" y="{y_base+110.5}" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">V8</text>')
-    lines.append(f'  <rect x="175" y="{y_base+92}" width="{wv:.1f}" height="28" rx="4" fill="#4a9ede" opacity="0.85"><animate attributeName="width" from="0" to="{wv:.1f}" dur="{dur_base+0.08:.2f}s" fill="freeze"/></rect>')
-    lines.append(f'  <text x="{X0+wv-8:.1f}" y="{y_base+111.0}" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">{fmt(d["v8"])}</text>')
-    return '\n'.join(lines)
+def esc(t):
+    return t.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
 
-def make_svg(title, subtitle, benchmarks, filename):
-    """Generate a complete SVG file."""
-    n = len(benchmarks)
-    h = 84 + n * 130 + 10
-    body_parts = []
-    for i, b in enumerate(benchmarks):
-        body_parts.append(make_benchmark_section(i, b['name'], b['unit'], b['data'], b.get('inv', False), i == 0))
-        body_parts.append('')
 
-    body = '\n'.join(body_parts)
-    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="0 0 700 {h}" width="700" height="{h}">
-  <title>{title}</title>
-  <defs>
-    <linearGradient id="hlGrad" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#7c3aed"/><stop offset="100%" stop-color="#a855f7"/></linearGradient>
-    <filter id="glow"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-  </defs>
-  <rect width="700" height="{h}" rx="8" ry="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
-  <text x="350.0" y="32" text-anchor="middle" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="18" font-weight="600">{title}</text>
-  <text x="350.0" y="51" text-anchor="middle" fill="#656d76" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="12">{subtitle}</text>
-  <rect x="150.0" y="64" width="12" height="12" rx="2" fill="url(#hlGrad)"/>
-  <text x="167.0" y="74" fill="#581c87" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="11">Silverfir (micro-JIT)</text>
-  <rect x="305.0" y="64" width="12" height="12" rx="2" fill="#e8873d" opacity="0.85"/>
-  <text x="322.0" y="74" fill="#bf6a1f" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="11">Cranelift (wasmtime)</text>
-  <rect x="460.0" y="64" width="12" height="12" rx="2" fill="#4a9ede" opacity="0.85"/>
-  <text x="477.0" y="74" fill="#2b7cbf" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="11">V8 (Node.js 25.4)</text>
-  <line x1="175" y1="84" x2="175" y2="{h-12}" stroke="#d0d7de" stroke-width="1"/>
+def row_svg(y, bench, keys):
+    """One benchmark: a heading line, then one bar per runtime in this chart."""
+    out = []
+    best = max(bench['data'][k] for k in keys)
+    out.append(f'<text class="metric" x="{GUTTER}" y="{y + 14}" '
+               f'text-anchor="end">{esc(bench["name"])}</text>')
+    out.append(f'<text class="unit" x="{X0}" y="{y + 14}">{esc(bench["unit"])}</text>')
+    if bench.get('note'):
+        out.append(f'<text class="note" x="{W - 20}" y="{y + 14}" '
+                   f'text-anchor="end">{esc(bench["note"])}</text>')
 
-{body}</svg>
+    by = y + ROW_HEAD
+    for key in keys:
+        val = bench['data'][key]
+        w = max(2.0, BAR_MAX * val / best)
+        out.append(f'<text class="name" x="{GUTTER}" y="{by + 13}" '
+                   f'text-anchor="end">{esc(LABEL[key])}</text>')
+        out.append(f'<rect class="s-{key}" x="{X0}" y="{by}" '
+                   f'width="{w:.1f}" height="{BAR_H}" rx="4"/>')
+        # Value labels always sit just past the bar end, in ink tokens.
+        # Inside-the-bar white text was tried and dropped: some of the hues
+        # are light (amber 2.1:1 against the surface), so white-on-fill fell
+        # below text contrast for them.
+        out.append(f'<text class="val" x="{X0 + w + 6:.1f}" '
+                   f'y="{by + 13}">{fmt(val)}</text>')
+        by += BAR_PITCH
+    return '\n  '.join(out), by + ROW_PAD
+
+
+def legend_svg(keys):
+    out = []
+    for i, key in enumerate(keys):
+        label = LABEL[key]
+        x = 176 + (i % 3) * 196
+        y = 62 + (i // 3) * 18
+        out.append(f'<rect class="s-{key}" x="{x}" y="{y - 9}" width="10" '
+                   f'height="10" rx="2"/>')
+        out.append(f'<text class="legend" x="{x + 15}" y="{y}">{esc(label)}</text>')
+    return '\n  '.join(out)
+
+
+def make_svg(title, subtitle, benches, filename, keys):
+    body, y = [], HEADER
+    for b in benches:
+        chunk, y = row_svg(y, b, keys)
+        body.append('  ' + chunk)
+    h = y + 6
+
+    light = '\n'.join(f'    .s-{k} {{ fill: {l}; }}' for k, _n, _c, l, _d in SERIES)
+    dark = '\n'.join(f'      .s-{k} {{ fill: {d}; }}' for k, _n, _c, _l, d in SERIES)
+    nl = chr(10)
+
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="0 0 {W} {h}" width="{W}" height="{h}">
+  <title>{esc(title)}</title>
+  <style>
+    text     {{ font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }}
+    .surface {{ fill: #fcfcfb; stroke: #d8d8d4; }}
+    .title   {{ fill: #0b0b0b; font-size: 17px; font-weight: 600; }}
+    .sub     {{ fill: #52514e; font-size: 11.5px; }}
+    .metric  {{ fill: #0b0b0b; font-size: 12.5px; font-weight: 600; }}
+    .unit    {{ fill: #77756e; font-size: 10.5px; }}
+    .note    {{ fill: #77756e; font-size: 10px; font-style: italic; }}
+    .name    {{ fill: #52514e; font-size: 11.5px; }}
+    .legend  {{ fill: #52514e; font-size: 11px; }}
+    .val     {{ fill: #0b0b0b; font-size: 11.5px; font-weight: 600; }}
+    .rule    {{ stroke: #e4e4e0; stroke-width: 1; stroke-dasharray: 2 3; }}
+    .axis    {{ stroke: #d8d8d4; stroke-width: 1; }}
+{light}
+    @media (prefers-color-scheme: dark) {{
+      .surface {{ fill: #1a1a19; stroke: #3a3a37; }}
+      .title, .metric {{ fill: #ffffff; }}
+      .sub, .name, .legend {{ fill: #c3c2b7; }}
+      .val     {{ fill: #ffffff; }}
+      .unit, .note {{ fill: #96958c; }}
+      .rule    {{ stroke: #3a3a37; }}
+      .axis    {{ stroke: #3a3a37; }}
+{dark}
+    }}
+  </style>
+  <rect class="surface" width="{W}" height="{h}" rx="8" ry="8" stroke-width="1"/>
+  <text class="title" x="{W // 2}" y="30" text-anchor="middle">{esc(title)}</text>
+  <text class="sub" x="{W // 2}" y="47" text-anchor="middle">{esc(subtitle)}</text>
+  {legend_svg(keys)}
+  <line class="axis" x1="{X0}" y1="{HEADER - 4}" x2="{X0}" y2="{h - 10}"/>
+
+{nl.join(body)}
+</svg>
 '''
     with open(filename, 'w') as f:
         f.write(svg)
-    print(f"Generated: {filename}")
+    print(f'Generated: {filename}  ({h}px tall)')
 
 
-# ══════════════════════════════════════════════════
-#  UPDATE THESE VALUES
-# ══════════════════════════════════════════════════
+# ══════════════════════════════════════════════════════════════════════
+#  DATA SOURCE — RESULTS.md is the single source of truth.
+#
+#  Numbers live in the RESULTS.md tables and nowhere else; this script reads
+#  them so the charts and the tables can never disagree. Each chart is a
+#  table wrapped in markers:
+#
+#    <!-- chart file="benchmark_x.svg" title="..." [note="Row Name=text"] -->
+#    | Benchmark | SF (JIT) | ... |
+#    |---|---:|...|
+#    | CoreMark (score) | 44,958 | ... |
+#    <!-- endchart -->
+#
+#  Column headers are matched to series via SERIES[].column, and a row label
+#  is parsed as "Name (unit)". Bold (**best**) and footnote marks are
+#  ignored. To add a chart, wrap another table -- no code change needed.
+# ══════════════════════════════════════════════════════════════════════
 
-INTEGER_DATA = [
-    {'name': 'CoreMark',       'unit': 'score', 'data': {'sf': 38697,   'cl': 14669,   'v8': 37869  }},
-    {'name': 'SHA-256',        'unit': 'MB/s',  'data': {'sf': 275.29,  'cl': 249.26,  'v8': 201.20 }},
-    {'name': 'bzip2',          'unit': 'MB/s',  'data': {'sf': 20.55,   'cl': 19.41,   'v8': 19.88  }},
-    {'name': 'LZ4 compress',   'unit': 'MB/s',  'data': {'sf': 747.27,  'cl': 736.45,  'v8': 704.01 }},
-    {'name': 'LZ4 decompress', 'unit': 'MB/s',  'data': {'sf': 3248.22, 'cl': 3455.15, 'v8': 2908.07}},
-]
+RESULTS = 'RESULTS.md'
+CHART_RE = re.compile(r'<!--\s*chart\s+(?P<attrs>.*?)-->\n(?P<table>.*?)<!--\s*endchart\s*-->',
+                      re.S)
+ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
+SUB = 'Apple M4 · longer bar = better · each row scaled to its own best'
 
-LUA_DATA = [
-    {'name': 'lua / fib38',     'unit': 's',     'data': {'sf': 2.260, 'cl': 12.18, 'v8': 3.14}, 'inv': True},
-    {'name': 'lua / sunfish',   'unit': 'score', 'data': {'sf': 10953, 'cl': 2896,  'v8': 11101}},
-    {'name': 'lua / json_bench','unit': 'score', 'data': {'sf': 27552, 'cl': 9616,  'v8': 30179}},
-]
 
-FP_DATA = [
-    {'name': 'mandelbrot', 'unit': 'ms', 'data': {'sf': 848,  'cl': 855,  'v8': 2035}, 'inv': True},
-    {'name': 'c-ray (4K)', 'unit': 'ms', 'data': {'sf': 2098, 'cl': 2055, 'v8': 1947}, 'inv': True},
-]
+def parse_number(cell):
+    return float(cell.replace('**', '').replace(',', '').strip())
 
-MEMORY_DATA = [
-    {'name': 'STREAM Copy',  'unit': 'MB/s', 'data': {'sf': 44124, 'cl': 44124, 'v8': 39714}},
-    {'name': 'STREAM Scale', 'unit': 'MB/s', 'data': {'sf': 49574, 'cl': 49692, 'v8': 18332}},
-    {'name': 'STREAM Add',   'unit': 'MB/s', 'data': {'sf': 64258, 'cl': 48398, 'v8': 29989}},
-    {'name': 'STREAM Triad', 'unit': 'MB/s', 'data': {'sf': 48349, 'cl': 47864, 'v8': 30869}},
-]
 
-# ══════════════════════════════════════════════════
+def parse_charts(path):
+    text = open(path, encoding='utf-8').read()
+    charts = []
+    for m in CHART_RE.finditer(text):
+        attrs = dict(ATTR_RE.findall(m.group('attrs')))
+        notes = {}
+        if attrs.get('note'):
+            row, _, msg = attrs['note'].partition('=')
+            notes[row.strip()] = msg.strip()
+
+        rows = [ln for ln in m.group('table').splitlines() if ln.strip().startswith('|')]
+        header = [c.strip() for c in rows[0].strip().strip('|').split('|')]
+        # header[0] is the benchmark-name column; the rest are runtimes
+        keys = [BY_COLUMN.get(h) for h in header[1:]]
+        missing = [h for h, k in zip(header[1:], keys) if k is None]
+        if missing:
+            raise SystemExit(f'{path}: unknown runtime column(s) {missing}; '
+                             f'add them to SERIES')
+
+        benches = []
+        for line in rows[2:]:                      # skip the |---| separator
+            cells = [c.strip() for c in line.strip().strip('|').split('|')]
+            label = cells[0].replace('**', '').strip(' ¹²³*')
+            name, _, unit = label.rpartition('(')
+            name, unit = (name.strip(), unit.rstrip(')').strip()) if name else (label, '')
+            data = {k: parse_number(c) for k, c in zip(keys, cells[1:])}
+            bench = {'name': name, 'unit': unit, 'data': data}
+            if name in notes:
+                bench['note'] = notes[name]
+            benches.append(bench)
+        charts.append((attrs['title'], attrs['file'], benches))
+    if not charts:
+        raise SystemExit(f'{path}: no <!-- chart ... --> blocks found')
+    return charts
+
 
 if __name__ == '__main__':
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    make_svg('Integer / Control Flow — WebAssembly Runtimes',
-             'Apple M4  \u00b7  longer bar = better',
-             INTEGER_DATA, 'benchmark_integer.svg')
-    make_svg('Lua Interpreter Benchmarks — WebAssembly Runtimes',
-             'Apple M4  \u00b7  longer bar = better  \u00b7  time metrics inverted',
-             LUA_DATA, 'benchmark_lua.svg')
-    make_svg('Floating-Point Benchmarks — WebAssembly Runtimes',
-             'Apple M4  \u00b7  longer bar = better (lower time)  \u00b7  bars inverted',
-             FP_DATA, 'benchmark_fp.svg')
-    make_svg('Memory-Bound Benchmarks (STREAM) — WebAssembly Runtimes',
-             'Apple M4  \u00b7  longer bar = better',
-             MEMORY_DATA, 'benchmark_memory.svg')
+    for title, filename, benches in parse_charts(RESULTS):
+        stem, ext = os.path.splitext(filename)
+        for suffix, group_title, keys in GROUPS:
+            make_svg(f'{title} — {group_title}', SUB, benches,
+                     f'{stem}{suffix}{ext}', keys)

@@ -504,20 +504,21 @@ end
 ---------------------------------------------------------------------------
 -- Benchmark (self-regulating, like CoreMark)
 ---------------------------------------------------------------------------
--- arg[1]: time budget override; arg[2]: N_USERS override
-local TIME_BUDGET = tonumber(arg and arg[1]) or tonumber(os.getenv("BENCH_TIME")) or 10
+-- The time budget is the LAST argument (see bench.lua); an optional N_USERS
+-- may precede it.
+local TIME_BUDGET = (arg and #arg > 0 and tonumber(arg[#arg]))
+    or tonumber(os.getenv("BENCH_TIME")) or 2
 
--- Portable timer: os.clock() returns 0 on some WASI runtimes (e.g. wasmtime)
-local function gettime()
-    local c = os.clock()
-    if c > 0 then return c end
-    return os.time()
-end
+-- Shared timer. os.clock() returns 0 on some WASI runtimes (wasmtime 47),
+-- leaving only whole seconds; bench.align() puts the start of a measurement
+-- on a tick edge so a coarse clock is still accurate (see bench.lua).
+local bench = dofile("bench.lua")
+local gettime = bench.now
 
 local decode = newdecoder()
 local encode = newencoder()
 
-local N_USERS = tonumber(arg and arg[2]) or 200
+local N_USERS = (arg and #arg >= 2 and tonumber(arg[1])) or 200
 
 print(string.format("Generating dataset: %d users...", N_USERS))
 local data = generate_data(N_USERS)
@@ -527,15 +528,16 @@ print(string.format("JSON size: %d bytes (%.1f KB)", #json_str, #json_str / 1024
 
 -- Run round-trips until time budget is exhausted.
 -- Check time every `batch` iterations to amortize gettime() overhead.
-print(string.format("Running for ~%ds...\n", TIME_BUDGET))
+print(string.format("Running for ~%.1fs...\n", TIME_BUDGET))
 
-local t_start = gettime()
+local t_start = bench.align()
 local total_bytes = 0
 local iters_done = 0
 local batch = 1
 
--- Calibrate batch size: find how many iters fit in ~0.5s
-local t0 = gettime()
+-- Calibrate the check interval. Scaled to the budget: a fixed cost here
+-- would dominate the whole run at a small target.
+local t0 = bench.align()
 while true do
     for _ = 1, batch do
         local obj = decode(json_str, 1)
@@ -543,14 +545,14 @@ while true do
     end
     iters_done = iters_done + batch
     total_bytes = total_bytes + batch * (#json_str + #json_str)
-    if gettime() - t0 >= 1.0 then break end
+    if gettime() - t0 >= TIME_BUDGET / 8 then break end
     batch = batch * 2
 end
--- Now `batch` iterations take roughly 0.5-1s; use that as check interval
+-- `batch` now covers about an eighth of the budget; use it as the interval
 local check_interval = math.max(1, math.floor(batch / 2))
 
 -- Main loop
-t_start = gettime()
+t_start = bench.align()
 iters_done = 0
 total_bytes = 0
 

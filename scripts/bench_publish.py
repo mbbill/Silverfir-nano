@@ -30,8 +30,7 @@ import run_tests  # noqa: E402
 # (label, regex, unit, direction) tuples. The regex is applied to the metric
 # string returned by run_tests.run_test; group(1) is parsed as float.
 #
-# Test names not listed here are simply skipped (e.g. lua/fib produces no
-# parseable metric).
+# Test names not listed here are simply skipped.
 METRIC_EXTRACTORS = {
     "coremark/coremark.wasm": [
         ("coremark", r"^([\d.]+)", "Iter/s", "higher"),
@@ -46,6 +45,9 @@ METRIC_EXTRACTORS = {
         ("lz4-compress", r"lz4 compress: throughput = ([\d.]+)", "MB/s", "higher"),
         ("lz4-decompress", r"lz4 decompress: throughput = ([\d.]+)", "MB/s", "higher"),
     ],
+    "lua/fib": [
+        ("lua-fib", r"^([\d.]+)\s*fib20/s", "fib20/s", "higher"),
+    ],
     "lua/sunfish": [
         ("lua-sunfish", r"^([\d.]+)", "Score", "higher"),
     ],
@@ -53,10 +55,10 @@ METRIC_EXTRACTORS = {
         ("lua-json", r"^([\d.]+)", "Score", "higher"),
     ],
     "mandelbrot/mandel.wasm": [
-        ("mandelbrot", r"^([\d.]+)", "seconds", "lower"),
+        ("mandelbrot", r"^([\d.]+)\s*Kpixel/s", "Kpixel/s", "higher"),
     ],
     "c-ray/c-ray.wasm": [
-        ("c-ray", r"^([\d.]+)", "seconds", "lower"),
+        ("c-ray", r"^([\d.]+)\s*Kpixel/s", "Kpixel/s", "higher"),
     ],
     "stream/stream.wasm": [
         ("stream-Copy", r"Copy:\s*([\d.]+)", "MB/s", "higher"),
@@ -65,7 +67,7 @@ METRIC_EXTRACTORS = {
         ("stream-Triad", r"Triad:\s*([\d.]+)", "MB/s", "higher"),
     ],
     "sqlite/speedtest1.wasm": [
-        ("sqlite-total", r"([\d.]+)\s*s", "seconds", "lower"),
+        ("sqlite", r"^([\d.]+)\s*size/s", "size/s", "higher"),
     ],
 }
 

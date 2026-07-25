@@ -46,6 +46,7 @@
 # include <float.h>
 # include <limits.h>
 # include <sys/time.h>
+# include "../common/bench.h"
 
 /*-----------------------------------------------------------------------
  * INSTRUCTIONS:
@@ -194,7 +195,7 @@ static double	bytes[4] = {
     };
 
 extern double mysecond();
-extern void checkSTREAMresults();
+extern void checkSTREAMresults(int ntrials);
 #ifdef TUNED
 extern void tuned_STREAM_Copy();
 extern void tuned_STREAM_Scale(STREAM_TYPE scalar);
@@ -205,9 +206,10 @@ extern void tuned_STREAM_Triad(STREAM_TYPE scalar);
 extern int omp_get_num_threads();
 #endif
 int
-main()
+main(int argc, char **argv)
     {
     int			quantum, checktick();
+    int			ntrials = NTIMES;	/* chosen at run time, see below */
     int			BytesPerWord;
     int			k;
     ssize_t		j;
@@ -239,7 +241,7 @@ main()
     printf("Total memory required = %.1f MiB (= %.1f GiB).\n",
 	(3.0 * BytesPerWord) * ( (double) STREAM_ARRAY_SIZE / 1024.0/1024.),
 	(3.0 * BytesPerWord) * ( (double) STREAM_ARRAY_SIZE / 1024.0/1024./1024.));
-    printf("Each kernel will be executed %d times.\n", NTIMES);
+    printf("Each kernel will be executed at most %d times.\n", NTIMES);
     printf(" The *best* time for each kernel (excluding the first iteration)\n"); 
     printf(" will be used to compute the reported bandwidth.\n");
 
@@ -304,7 +306,7 @@ main()
     /*	--- MAIN LOOP --- repeat test cases NTIMES times --- */
 
     scalar = 3.0;
-    for (k=0; k<NTIMES; k++)
+    for (k=0; k<ntrials; k++)
 	{
 	times[0][k] = mysecond();
 #ifdef TUNED
@@ -345,11 +347,20 @@ main()
 	    a[j] = b[j]+scalar*c[j];
 #endif
 	times[3][k] = mysecond() - times[3][k];
+
+	/* The first trial is discarded anyway, so use it to measure what one
+	 * trial costs and pick how many fit the time budget. A memory-bound
+	 * kernel cannot be chunked below one array pass, so one trial is the
+	 * floor; this bounds the whole run at roughly that plus the budget. */
+	if (k == 0)
+	    ntrials = (int)bench_plan(times[0][0] + times[1][0] + times[2][0]
+				      + times[3][0], bench_target(argc, argv),
+				      2, NTIMES);
 	}
 
     /*	--- SUMMARY --- */
 
-    for (k=1; k<NTIMES; k++) /* note -- skip first iteration */
+    for (k=1; k<ntrials; k++) /* note -- skip first iteration */
 	{
 	for (j=0; j<4; j++)
 	    {
@@ -361,7 +372,7 @@ main()
     
     printf("Function    Best Rate MB/s  Avg time     Min time     Max time\n");
     for (j=0; j<4; j++) {
-		avgtime[j] = avgtime[j]/(double)(NTIMES-1);
+		avgtime[j] = avgtime[j]/(double)(ntrials-1);
 
 		printf("%s%12.1f  %11.6f  %11.6f  %11.6f\n", label[j],
 	       1.0E-06 * bytes[j]/mintime[j],
@@ -372,7 +383,7 @@ main()
     printf(HLINE);
 
     /* --- Check Results --- */
-    checkSTREAMresults();
+    checkSTREAMresults(ntrials);
     printf(HLINE);
 
     return 0;
@@ -430,7 +441,7 @@ double mysecond()
 #ifndef abs
 #define abs(a) ((a) >= 0 ? (a) : -(a))
 #endif
-void checkSTREAMresults ()
+void checkSTREAMresults (int ntrials)
 {
 	STREAM_TYPE aj,bj,cj,scalar;
 	STREAM_TYPE aSumErr,bSumErr,cSumErr;
@@ -447,7 +458,7 @@ void checkSTREAMresults ()
 	aj = 2.0E0 * aj;
     /* now execute timing loop */
 	scalar = 3.0;
-	for (k=0; k<NTIMES; k++)
+	for (k=0; k<ntrials; k++)
         {
             cj = aj;
             bj = scalar*cj;

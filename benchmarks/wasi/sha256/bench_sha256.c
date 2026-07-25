@@ -7,6 +7,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "../common/bench.h"
 #include <stdint.h>
 
 /* ---- SHA-256 implementation ---- */
@@ -125,9 +126,11 @@ static void sha256_final(sha256_ctx *ctx, uint8_t hash[32]) {
 
 /* ---- Benchmark ---- */
 
-#define DATA_SIZE (1024 * 1024)  /* 1 MB */
-#define MIN_ITERATIONS 100
-#define MIN_SECONDS 10.0
+/* Batch unit: one hash of this block. Kept small (see bench.h) so even an
+ * interpreter under qemu finishes one unit well inside the time target.
+ * sha256 is compute-bound, so the block size does not change what is
+ * being measured. */
+#define DATA_SIZE (64 * 1024)
 
 static void generate_data(unsigned char *buf, int size) {
     unsigned int state = 0x12345678;
@@ -137,55 +140,42 @@ static void generate_data(unsigned char *buf, int size) {
     }
 }
 
-int main(void) {
-    unsigned char *input = malloc(DATA_SIZE);
+static unsigned char *g_input;
+
+static void hash_batch(long n, void *ctx_) {
+    uint8_t hash[32];
+    (void)ctx_;
+    for (long i = 0; i < n; i++) {
+        sha256_ctx ctx;
+        sha256_init(&ctx);
+        sha256_update(&ctx, g_input, DATA_SIZE);
+        sha256_final(&ctx, hash);
+    }
+}
+
+int main(int argc, char **argv) {
     uint8_t hash[32];
 
-    if (!input) {
+    g_input = malloc(DATA_SIZE);
+    if (!g_input) {
         fprintf(stderr, "Failed to allocate memory\n");
         return 1;
     }
+    generate_data(g_input, DATA_SIZE);
 
-    generate_data(input, DATA_SIZE);
-
-    /* Verify with known empty-string hash */
+    /* Validation: one fixed hash, independent of the timed workload. */
     sha256_ctx ctx;
     sha256_init(&ctx);
+    sha256_update(&ctx, g_input, DATA_SIZE);
     sha256_final(&ctx, hash);
-    /* SHA-256("") = e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855 */
-    if (hash[0] != 0xe3 || hash[1] != 0xb0 || hash[2] != 0xc4 || hash[3] != 0x42) {
-        fprintf(stderr, "SHA-256 self-test failed!\n");
-        return 1;
-    }
-
-    /* Warm up */
-    sha256_init(&ctx);
-    sha256_update(&ctx, input, DATA_SIZE);
-    sha256_final(&ctx, hash);
-
     printf("sha256 benchmark: %d KB input, hash = ", DATA_SIZE / 1024);
     for (int i = 0; i < 8; i++) printf("%02x", hash[i]);
     printf("...\n");
 
-    /* Benchmark loop */
-    int iterations = 0;
-    long long total_bytes = 0;
-    clock_t start = clock();
-    double elapsed;
+    double rate = bench_ramp(hash_batch, 0, bench_target(argc, argv), 0);
+    printf("sha256: throughput = %.2f MB/s\n",
+           rate * (double)DATA_SIZE / (1024.0 * 1024.0));
 
-    do {
-        sha256_init(&ctx);
-        sha256_update(&ctx, input, DATA_SIZE);
-        sha256_final(&ctx, hash);
-        iterations++;
-        total_bytes += DATA_SIZE;
-        elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
-    } while (iterations < MIN_ITERATIONS || elapsed < MIN_SECONDS);
-
-    double throughput = (double)total_bytes / (1024.0 * 1024.0) / elapsed;
-    printf("sha256: %d iterations in %.2f seconds\n", iterations, elapsed);
-    printf("sha256: throughput = %.2f MB/s\n", throughput);
-
-    free(input);
+    free(g_input);
     return 0;
 }

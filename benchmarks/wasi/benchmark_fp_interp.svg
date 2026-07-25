@@ -1,5 +1,5 @@
 <svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="0 0 760 278" width="760" height="278">
-  <title>Floating-Point Benchmarks — Compiled (JIT)</title>
+  <title>Floating-Point Benchmarks — Interpreters</title>
   <style>
     text     { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
     .surface { fill: #fcfcfb; stroke: #d8d8d4; }
@@ -36,36 +36,36 @@
     }
   </style>
   <rect class="surface" width="760" height="278" rx="8" ry="8" stroke-width="1"/>
-  <text class="title" x="380" y="30" text-anchor="middle">Floating-Point Benchmarks — Compiled (JIT)</text>
+  <text class="title" x="380" y="30" text-anchor="middle">Floating-Point Benchmarks — Interpreters</text>
   <text class="sub" x="380" y="47" text-anchor="middle">Apple M4 · longer bar = better · each row scaled to its own best</text>
-  <rect class="s-sf" x="176" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="191" y="62">Silverfir (JIT)</text>
-  <rect class="s-cl" x="372" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="387" y="62">Cranelift 47.0.2</text>
-  <rect class="s-v8" x="568" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="583" y="62">V8 / Node 25.9</text>
+  <rect class="s-si" x="176" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="191" y="62">Silverfir (interp)</text>
+  <rect class="s-w3" x="372" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="387" y="62">wasm3</text>
+  <rect class="s-wi" x="568" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="583" y="62">wasmi 1.1.0</text>
   <line class="axis" x1="176" y1="76" x2="176" y2="268"/>
 
   <text class="metric" x="168" y="94" text-anchor="end">mandelbrot</text>
   <text class="unit" x="176" y="94">Kpixel/s</text>
-  <text class="name" x="168" y="117" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="104" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="117">503.3</text>
-  <text class="name" x="168" y="137" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="124" width="451.4" height="18" rx="4"/>
-  <text class="val" x="633.4" y="137">502.6</text>
-  <text class="name" x="168" y="157" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="144" width="268.4" height="18" rx="4"/>
-  <text class="val" x="450.4" y="157">298.9</text>
+  <text class="name" x="168" y="117" text-anchor="end">Silverfir (interp)</text>
+  <rect class="s-si" x="176" y="104" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="117">156.1</text>
+  <text class="name" x="168" y="137" text-anchor="end">wasm3</text>
+  <rect class="s-w3" x="176" y="124" width="388.0" height="18" rx="4"/>
+  <text class="val" x="570.0" y="137">134</text>
+  <text class="name" x="168" y="157" text-anchor="end">wasmi 1.1.0</text>
+  <rect class="s-wi" x="176" y="144" width="166.8" height="18" rx="4"/>
+  <text class="val" x="348.8" y="157">57.59</text>
   <text class="metric" x="168" y="190" text-anchor="end">c-ray</text>
   <text class="unit" x="176" y="190">Kpixel/s</text>
-  <text class="name" x="168" y="213" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="200" width="414.2" height="18" rx="4"/>
-  <text class="val" x="596.2" y="213">9,809</text>
-  <text class="name" x="168" y="233" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="220" width="444.0" height="18" rx="4"/>
-  <text class="val" x="626.0" y="233">10,515</text>
-  <text class="name" x="168" y="253" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="240" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="253">10,705</text>
+  <text class="name" x="168" y="213" text-anchor="end">Silverfir (interp)</text>
+  <rect class="s-si" x="176" y="200" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="213">1,380</text>
+  <text class="name" x="168" y="233" text-anchor="end">wasm3</text>
+  <rect class="s-w3" x="176" y="220" width="308.7" height="18" rx="4"/>
+  <text class="val" x="490.7" y="233">942.4</text>
+  <text class="name" x="168" y="253" text-anchor="end">wasmi 1.1.0</text>
+  <rect class="s-wi" x="176" y="240" width="160.8" height="18" rx="4"/>
+  <text class="val" x="342.8" y="253">490.8</text>
 </svg>

@@ -1,71 +1,132 @@
 # WASI Benchmark Results
 
-Run with `run_tests.py` on macOS (Apple M4).
+Measured 2026-07-24 on an Apple M4 (macOS), via `run_tests.py` for the native
+runtimes and `run_v8.mjs` for Node.
 
-Silverfir column: best observed as of 2026-07-15 (post middle-v2 campaign).
-Benchmarks that improved on a 2026-07-15 run were updated to the new peak;
-the rest retain their 2026-07-13 (mean-of-2) values.
-Cranelift / V8 columns: 2026-05 capture, re-run pending (see Notes).
+| Runtime | Version | Class |
+|---|---|---|
+| Silverfir (JIT) | this tree, `--release` | compiled |
+| Silverfir (interpreter) | this tree, `--interp` | interpreted |
+| Cranelift / wasmtime | 47.0.2 (built from source, rustc 1.97.0) | compiled |
+| V8 / Node.js | Node 25.9.0, V8 14.1.146 | compiled (TurboFan) |
+| wasm3 | `~/Dev/wasm3` build-release | interpreted |
+| wasmi | 1.1.0 (`cargo install wasmi_cli`) | interpreted |
+
+Charts: [README.md](README.md) · Internal tracking dashboard: https://mbbill.github.io/Silverfir-nano/dev/bench/
+
+## How to read these numbers
+
+**Every metric is a rate, and higher is always better.** No time-based metrics
+remain: each benchmark self-times to a wall-clock target (2 s by default) and
+reports work per second, so the same binary costs about the same wherever it
+runs. That is also why a runtime being 7× slower no longer means a 7× longer
+benchmark run.
+
+Silverfir JIT, Cranelift and V8 are the **mean of two interleaved rounds**, with
+the machine allowed to cool between runs; run-to-run spread was ≤3% on every
+benchmark and ≤1% on most. The three interpreters are single runs.
+
+**These numbers share no baseline with any earlier revision of this file.** All
+benchmark binaries were regenerated from source on 2026-07-24 with the current
+wasi-sdk clang, and several changed their working-set sizes; same-engine figures
+moved substantially for that reason alone. Do not compare across that line —
+re-measure both sides.
 
 ## Integer / Control Flow
 
-| Benchmark             | Silverfir (JIT) | Cranelift |       V8 |  SF/CL |  SF/V8 |
-|-----------------------|----------------:|----------:|---------:|-------:|-------:|
-| CoreMark (score)      |      **38,697** |    14,669 |   37,869 | 263.8% | 102.2% |
-| SHA-256 (MB/s)        |      **275.29** |    249.26 |   201.20 | 110.4% | 136.8% |
-| bzip2 (MB/s)          |       **20.55** |     19.41 |    19.88 | 105.9% | 103.4% |
-| LZ4 compress (MB/s)   |      **747.27** |    736.45 |   704.01 | 101.5% | 106.1% |
-| LZ4 decompress (MB/s) |    **3,248.22** |  3,455.15 | 2,908.07 |  94.0% | 111.7% |
+<!-- chart file="benchmark_integer.svg" title="Integer / Control Flow" -->
+| Benchmark | SF (JIT) | Cranelift | V8 | SF (interp) | wasm3 | wasmi |
+|---|---:|---:|---:|---:|---:|---:|
+| CoreMark (score) | 44,958 | **45,874** | 44,378 | **7,556** | 4,746 | 3,813 |
+| SHA-256 (MB/s) | **250.6** | 216.8 | 212.4 | **38.08** | 29.14 | 18.42 |
+| bzip2 (MB/s) | **30.68** | 26.86 | 29.66 | **4.99** | 3.10 | 2.61 |
+| LZ4 compress (MB/s) | **926.0** | 916.3 | 911.2 | **314.9** | 206.7 | 154.8 |
+| LZ4 decompress (MB/s) | 3,241 | **3,478** | 3,046 | **620.0** | 408.7 | 311.3 |
+| sqlite speedtest1 (size/s) | 59.88 | 62.66 | **65.66** | **10.00** | 7.13 | 6.86 |
+<!-- endchart -->
 
-### Lua
+## Lua
 
-| Benchmark             | Silverfir (JIT) | Cranelift |       V8 |  SF/CL |  SF/V8 |
-|-----------------------|----------------:|----------:|---------:|-------:|-------:|
-| lua/fib38 (s)         |       **2.260** |     12.18 |     3.14 | 538.9% | 138.9% |
-| lua/sunfish (score)   |      **10,953** |     2,896 |   11,101 | 378.2% |  98.7% |
-| lua/json_bench (score)|      **27,552** |     9,616 |   30,179 | 286.5% |  91.3% |
+<!-- chart file="benchmark_lua.svg" title="Lua Benchmarks" -->
+| Benchmark | SF (JIT) | Cranelift | V8 | SF (interp) | wasm3 | wasmi |
+|---|---:|---:|---:|---:|---:|---:|
+| lua / fib (fib20/s) | 2,747 | **2,915** | 1,876 | **356.9** | 221.6 | 181.5 |
+| lua / sunfish (score) | 10,494 | **11,558** | 10,847 | **1,191** | 782 | 734 |
+| lua / json (score) | 28,996 | **31,019** | 30,280 | **2,498** | 1,609 | 1,939 |
+<!-- endchart -->
 
 ## Floating Point
 
-| Benchmark             | Silverfir (JIT) | Cranelift |       V8 |  SF/CL |  SF/V8 |
-|-----------------------|----------------:|----------:|---------:|-------:|-------:|
-| mandelbrot (ms)       |         **848** |       855 |    2,035 | 100.8% | 240.0% |
-| c-ray (ms)            |       **2,098** |     2,055 |    1,947 |  97.9% |  92.8% |
+<!-- chart file="benchmark_fp.svg" title="Floating-Point Benchmarks" -->
+| Benchmark | SF (JIT) | Cranelift | V8 | SF (interp) | wasm3 | wasmi |
+|---|---:|---:|---:|---:|---:|---:|
+| mandelbrot (Kpixel/s) | **503.3** | 502.6 | 298.9 | **156.1** | 134.0 | 57.59 |
+| c-ray (Kpixel/s) | 9,809 | 10,515 | **10,705** | **1,380** | 942.4 | 490.8 |
+<!-- endchart -->
 
 ## Memory Bound
 
-| Benchmark             | Silverfir (JIT) | Cranelift |       V8 |  SF/CL |  SF/V8 |
-|-----------------------|----------------:|----------:|---------:|-------:|-------:|
-| STREAM Copy (MB/s)    |      **44,124** |    44,124 |   39,714 | 100.0% | 111.1% |
-| STREAM Scale (MB/s)   |      **49,574** |    49,692 |   18,332 |  99.8% | 270.4% |
-| STREAM Add (MB/s)     |      **64,258** |    48,398 |   29,989 | 132.8% | 214.3% |
-| STREAM Triad (MB/s)   |      **48,349** |    47,864 |   30,869 | 101.0% | 156.6% |
+<!-- chart file="benchmark_memory.svg" title="Memory-Bound Benchmarks (STREAM)" note="STREAM Copy=lowered to memory.copy — measures the engine's bulk copy, not dispatch" -->
+| Benchmark | SF (JIT) | Cranelift | V8 | SF (interp) | wasm3 | wasmi |
+|---|---:|---:|---:|---:|---:|---:|
+| STREAM Copy (MB/s)¹ | 88,302 | **89,610** | 88,012 | 64,127 | 88,992 | **89,288** |
+| STREAM Scale (MB/s) | 61,116 | **65,655** | 31,193 | **7,779** | 6,328 | 3,848 |
+| STREAM Add (MB/s) | 68,640 | **69,730** | 38,162 | **7,369** | 6,188 | 3,968 |
+| STREAM Triad (MB/s) | 60,211 | **62,247** | 37,802 | **6,617** | 5,600 | 3,602 |
+<!-- endchart -->
+
+¹ The current clang lowers STREAM's copy loop to a bulk `memory.copy`, so this
+row measures each engine's bulk-copy path — not its dispatch. That is why three
+very different compilers land within 1% of each other here. It is kept because
+it is still a fair comparison of that path, and it is how we noticed the
+Silverfir interpreter sitting ~28% below wasm3 and wasmi on bulk copy. Scale,
+Add and Triad are arithmetic loops that cannot become `memcpy`, so they remain
+the dispatch-sensitive kernels.
 
 ## Summary
 
-**SF vs Cranelift** (optimizing JIT): SF wins 10, CL wins 2, tied 2
-- SF wins: Lua fib (539%), Lua sunfish (378%), Lua json (287%), CoreMark (264%), STREAM Add (133%), SHA-256 (110%), bzip2 (106%), LZ4 compress (102%), STREAM Triad (101%), mandelbrot (100.8%)
-- Ties: STREAM Copy (100.0%), STREAM Scale (99.8%)
-- Closest losses: c-ray (98%), LZ4 decompress (94%)
+**Against the other compilers, Silverfir is at parity, not ahead.** Counting
+best-of-three across the 15 metrics: Cranelift 9, Silverfir 4, V8 2.
 
-**SF vs V8** (TurboFan JIT): SF wins 11, V8 wins 3
-- SF wins: STREAM Scale (270%), mandelbrot (240%), STREAM Add (214%), STREAM Triad (157%), Lua fib (139%), SHA-256 (137%), LZ4 decompress (112%), STREAM Copy (111%), LZ4 compress (106%), bzip2 (103%), CoreMark (102%)
-- Closest losses: Lua sunfish (99%), c-ray (93%), Lua json (91%)
+- Silverfir JIT wins: SHA-256 (+16% over both), bzip2 (+14% vs CL), LZ4
+  compress (+1%), mandelbrot (+0.1% — a tie in practice).
+- Roughly tied: CoreMark (−2% vs CL), STREAM Copy.
+- Behind: the three Lua benchmarks (−6% to −9% vs CL), LZ4 decompress (−7%),
+  STREAM Scale (−7%), c-ray (−8% vs V8).
+- Clear wins over V8 on numeric code: mandelbrot 1.68×, STREAM Scale 1.96×,
+  Add 1.80×, Triad 1.59×, Lua fib 1.46×.
 
-**Overall best** (absolute winner per benchmark): SF wins 8, V8 wins 3, CL wins 2, tied 1
-- SF wins: CoreMark, SHA-256, bzip2, LZ4 compress, Lua fib, mandelbrot, STREAM Add, STREAM Triad
-- V8 wins: Lua sunfish, Lua json, c-ray
-- CL wins: LZ4 decompress, STREAM Scale
-- Tied (SF ≈ CL): STREAM Copy (100.0%)
+**Against the other interpreters, Silverfir's interpreter wins every
+dispatch-sensitive benchmark** — 14 of the 15 metrics, the exception being the
+`memory.copy` row above.
 
-## Notes
+| vs | worst | best | median |
+|---|---:|---:|---:|
+| wasm3 | 1.17× (mandelbrot) | 1.61× (lua fib) | ~1.49× |
+| wasmi 1.1.0 | 1.29× (lua json) | 2.81× (c-ray) | ~1.97× |
 
-- Silverfir: `sf-nano-cli` (release build, jit, `main` branch)
-- Cranelift: wasmtime (`-C compiler=cranelift`, optimizing JIT)
-- V8: Node.js 25.4.0, V8 14.1.146.11 (`run_v8.mjs`)
-- Higher is better for score/MB/s metrics; lower is better for ms/s metrics
-- Internal tracking dashboard: https://mbbill.github.io/Silverfir-nano/dev/bench/
-- The Silverfir column was re-captured 2026-07-13 against the 2026-05
-  Cranelift/V8 numbers; ratio shifts under ~6% may be machine-state, not
-  code (see frequency caveat below). Re-run all three in one warm session
-  for the next revision.
+The float-heavy pair carries the largest margin against wasmi (mandelbrot
+2.71×, c-ray 2.81×) — the domain-split float residency work paying off.
+
+## Caveats worth knowing
+
+- **The Lua benchmarks on wasmtime run on a 1-second clock.** wasmtime 47
+  returns `0.0` from Lua's `os.clock()` (no process-CPU clock), so the scripts
+  fall back to `os.time()`. Read naively that is up to 1 s of error — 50% at a
+  2 s target. `bench.lua` therefore aligns the start of every measurement to a
+  tick edge, bounding the error by the check interval instead: Lua fib reads
+  2,863 at a 2 s target vs 2,858 at 10 s, 0.2% apart. A side effect is that
+  Cranelift's Lua scores are quantised and repeat exactly, so repeated runs
+  cannot estimate their noise.
+- **sqlite reports `size/s`, not its `TOTAL … s` line.** Its work is set by
+  `--size`, which the harness picks to hit the target, so elapsed time is ~the
+  target on every runtime and carries no information. Work per second does.
+- **The interpreter column is a single run**, taken on an idle machine after
+  an earlier pass was discarded for CPU interference (that one read CoreMark
+  7,187 against 7,556 here — the contamination was real and cost ~5%, mostly on
+  CoreMark; every other metric moved under ~2%).
+- `sunfish` scores rise with a longer target because its cold first game gets
+  amortised away. All runtimes are measured at the same target so the
+  comparison is fair, but never compare a 2 s sunfish score to a 10 s one.
+- wasmi needs a `--` separator before guest arguments (`--cli-args "--dir . --"`)
+  or its argument parser consumes flags like `--memdb` itself.

@@ -6,11 +6,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "../common/bench.h"
 #include "lz4.h"
 
-#define DATA_SIZE (1024 * 1024)  /* 1 MB input buffer */
-#define MIN_ITERATIONS 50
-#define MIN_SECONDS 10.0
+/* Batch unit: one compress (or decompress) of this block. Kept small (see
+ * bench.h) so one unit fits inside the target even on a slow engine, and
+ * so the roundtrip validation below stays cheap. */
+#define DATA_SIZE (64 * 1024)
 
 /* Generate pseudo-random but compressible data (English-like text patterns) */
 static void generate_data(unsigned char *buf, int size) {
@@ -32,7 +34,22 @@ static void generate_data(unsigned char *buf, int size) {
     }
 }
 
-int main(void) {
+struct lz_ctx_fwd {
+    char *input; char *compressed; char *decompressed;
+    int comp_size; int max_compressed;
+};
+static void lz_compress_batch(long n, void *p) {
+    struct lz_ctx_fwd *c = (struct lz_ctx_fwd *)p;
+    for (long i = 0; i < n; i++)
+        LZ4_compress_default(c->input, c->compressed, DATA_SIZE, c->max_compressed);
+}
+static void lz_decompress_batch(long n, void *p) {
+    struct lz_ctx_fwd *c = (struct lz_ctx_fwd *)p;
+    for (long i = 0; i < n; i++)
+        LZ4_decompress_safe(c->compressed, c->decompressed, c->comp_size, DATA_SIZE);
+}
+
+int main(int argc, char **argv) {
     unsigned char *input = malloc(DATA_SIZE);
     int max_compressed = LZ4_compressBound(DATA_SIZE);
     char *compressed = malloc(max_compressed);
@@ -65,38 +82,16 @@ int main(void) {
     printf("lz4 benchmark: %d KB input -> %d KB compressed (%.1fx)\n",
            DATA_SIZE / 1024, comp_size / 1024, (double)DATA_SIZE / comp_size);
 
-    /* Benchmark compression */
-    int iterations = 0;
-    long long total_bytes = 0;
-    clock_t start = clock();
-    double elapsed;
-
-    do {
-        comp_size = LZ4_compress_default((char *)input, compressed, DATA_SIZE, max_compressed);
-        iterations++;
-        total_bytes += DATA_SIZE;
-        elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
-    } while (iterations < MIN_ITERATIONS || elapsed < MIN_SECONDS);
-
-    double compress_tp = (double)total_bytes / (1024.0 * 1024.0) / elapsed;
-    printf("lz4 compress: %d iterations in %.2f seconds\n", iterations, elapsed);
-    printf("lz4 compress: throughput = %.2f MB/s\n", compress_tp);
-
-    /* Benchmark decompression */
-    iterations = 0;
-    total_bytes = 0;
-    start = clock();
-
-    do {
-        decomp_size = LZ4_decompress_safe(compressed, decompressed, comp_size, DATA_SIZE);
-        iterations++;
-        total_bytes += DATA_SIZE;
-        elapsed = (double)(clock() - start) / CLOCKS_PER_SEC;
-    } while (iterations < MIN_ITERATIONS || elapsed < MIN_SECONDS);
-
-    double decompress_tp = (double)total_bytes / (1024.0 * 1024.0) / elapsed;
-    printf("lz4 decompress: %d iterations in %.2f seconds\n", iterations, elapsed);
-    printf("lz4 decompress: throughput = %.2f MB/s\n", decompress_tp);
+    struct lz_ctx_fwd lc = { (char *)input, compressed, decompressed, comp_size,
+                             max_compressed };
+    /* Two timed phases share one budget, so the whole run honours the target. */
+    double phase = bench_target(argc, argv) / 2.0;
+    double crate = bench_ramp(lz_compress_batch, &lc, phase, 0);
+    printf("lz4 compress: throughput = %.2f MB/s\n",
+           crate * (double)DATA_SIZE / (1024.0 * 1024.0));
+    double drate = bench_ramp(lz_decompress_batch, &lc, phase, 0);
+    printf("lz4 decompress: throughput = %.2f MB/s\n",
+           drate * (double)DATA_SIZE / (1024.0 * 1024.0));
 
     free(input);
     free(compressed);

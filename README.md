@@ -107,21 +107,17 @@ What makes that credible is not any one trick but the shape of the compiler:
 
 ## Performance (Apple M4)
 
-Silverfir vs Wasmtime Cranelift (optimizing JIT) and V8 TurboFan (Node.js 25.4).
+Six runtimes, measured 2026-07-24: Silverfir's JIT and interpreter against
+Wasmtime Cranelift 47.0.2, V8 TurboFan (Node.js 25.9), wasm3 and wasmi 1.1.0.
+Every metric is a rate — higher is better — because each benchmark self-times to
+a wall-clock target rather than running a fixed workload.
 
-### Integer / Control Flow
-![Integer benchmarks](benchmarks/wasi/benchmark_integer.svg)
+Against the other compilers Silverfir is at **parity**: it leads on SHA-256
+(+16%) and bzip2 (+14%), ties CoreMark and mandelbrot, and trails Cranelift by
+6–9% on the Lua benchmarks. Its **interpreter** beats wasm3 by 1.17–1.61× and
+wasmi by 1.29–2.81× on every dispatch-sensitive benchmark.
 
-### Lua Interpreter
-![Lua benchmarks](benchmarks/wasi/benchmark_lua.svg)
-
-### Floating Point
-![FP benchmarks](benchmarks/wasi/benchmark_fp.svg)
-
-### Memory Bound (STREAM)
-![Memory benchmarks](benchmarks/wasi/benchmark_memory.svg)
-
-See [full benchmark results](benchmarks/wasi/RESULTS.md)
+**[See the benchmark charts and full results →](benchmarks/wasi/README.md)**
 
 ## WebAssembly Compatibility
 
@@ -160,8 +156,13 @@ cargo build --release
 # Run a WASI program
 cargo run --release --bin sf-nano-cli -- program.wasm [args...]
 
-# Run benchmarks
+# Run benchmarks (each one self-times to ~2s, on any engine)
 python3 benchmarks/wasi/run_tests.py
+python3 benchmarks/wasi/run_tests.py --time 10   # longer, for formal runs
+python3 benchmarks/wasi/run_tests.py --interp    # interpreter instead of JIT
+
+# Rebuild the benchmark wasm binaries from source (needs wasi-sdk clang)
+make -C benchmarks/wasi
 
 # Run benchmarks under V8 (Node.js) for comparison
 node benchmarks/wasi/run_v8.mjs

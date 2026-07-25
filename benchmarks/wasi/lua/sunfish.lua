@@ -7,7 +7,11 @@ local TABLE_SIZE = 1e6
 
 -- This constant controls how much time we spend on looking for optimal moves.
 -- Can be overridden via first CLI arg (e.g. "sunfish.lua 100" for profiling).
-local NODES_SEARCHED = tonumber(arg and arg[1]) or 1e3
+-- Tuning arg is only honoured when an explicit budget follows it, so a lone
+-- argument is unambiguously the time target (see bench.lua).
+-- One search is the smallest unit this benchmark has, so it must be cheap
+-- enough that a slow engine can still regulate against the time target.
+local NODES_SEARCHED = (arg and #arg >= 2 and tonumber(arg[1])) or 1e2
 
 -- Mate value must be greater than 8*queen + 2*(rook+knight+bishop)
 -- King value is set to twice this value such that if the opponent is
@@ -539,14 +543,14 @@ local function printboard(board)
    end
 end
 
-local TIME_BUDGET = tonumber(arg and arg[2]) or tonumber(os.getenv("BENCH_TIME")) or 10 -- seconds
+local TIME_BUDGET = (arg and #arg > 0 and tonumber(arg[#arg]))
+   or tonumber(os.getenv("BENCH_TIME")) or 2 -- seconds
 
--- Portable timer: os.clock() returns 0 on some WASI runtimes (e.g. wasmtime)
-local function gettime()
-   local c = os.clock()
-   if c > 0 then return c end
-   return os.time()
-end
+-- Shared timer. os.clock() returns 0 on some WASI runtimes (wasmtime 47),
+-- leaving only whole seconds; bench.align() puts the start of a measurement
+-- on a tick edge so a coarse clock is still accurate (see bench.lua).
+local bench = dofile("bench.lua")
+local gettime = bench.now
 
 local function main()
    -- Calibration: search from starting position, repeat until measurable
@@ -555,18 +559,18 @@ local function main()
    local cal_n = 0
    local cal_nodes_total = 0
    local cal_time
-   local t0 = gettime()
+   local t0 = bench.align()
    repeat
       local pos0 = Position.new(initial, 0, {true,true}, {true,true}, 0, 0)
       search(pos0)
       cal_n = cal_n + 1
       cal_nodes_total = cal_nodes_total + nodes
       cal_time = gettime() - t0
-   until cal_time >= 1.0
+   until cal_time >= TIME_BUDGET / 8
    print(string.format("%.3fs for %d searches, %d nodes", cal_time, cal_n, cal_nodes_total))
 
    -- Play moves across games, checking time after each move
-   local t_start = gettime()
+   local t_start = bench.align()
    local total_nodes = 0
    local total_moves = 0
    local games_done = 0

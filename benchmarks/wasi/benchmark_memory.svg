@@ -1,72 +1,94 @@
-<svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="0 0 700 614" width="700" height="614">
-  <title>Memory-Bound Benchmarks (STREAM) — WebAssembly Runtimes</title>
-  <defs>
-    <linearGradient id="hlGrad" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="#7c3aed"/><stop offset="100%" stop-color="#a855f7"/></linearGradient>
-    <filter id="glow"><feGaussianBlur stdDeviation="2" result="blur"/><feMerge><feMergeNode in="blur"/><feMergeNode in="SourceGraphic"/></feMerge></filter>
-  </defs>
-  <rect width="700" height="614" rx="8" ry="8" fill="#ffffff" stroke="#d0d7de" stroke-width="1"/>
-  <text x="350.0" y="32" text-anchor="middle" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="18" font-weight="600">Memory-Bound Benchmarks (STREAM) — WebAssembly Runtimes</text>
-  <text x="350.0" y="51" text-anchor="middle" fill="#656d76" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="12">Apple M4  ·  longer bar = better</text>
-  <rect x="150.0" y="64" width="12" height="12" rx="2" fill="url(#hlGrad)"/>
-  <text x="167.0" y="74" fill="#581c87" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="11">Silverfir (micro-JIT)</text>
-  <rect x="305.0" y="64" width="12" height="12" rx="2" fill="#e8873d" opacity="0.85"/>
-  <text x="322.0" y="74" fill="#bf6a1f" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="11">Cranelift (wasmtime)</text>
-  <rect x="460.0" y="64" width="12" height="12" rx="2" fill="#4a9ede" opacity="0.85"/>
-  <text x="477.0" y="74" fill="#2b7cbf" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="11">V8 (Node.js 25.4)</text>
-  <line x1="175" y1="84" x2="175" y2="602" stroke="#d0d7de" stroke-width="1"/>
+<svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="0 0 760 470" width="760" height="470">
+  <title>Memory-Bound Benchmarks (STREAM) — Compiled (JIT)</title>
+  <style>
+    text     { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
+    .surface { fill: #fcfcfb; stroke: #d8d8d4; }
+    .title   { fill: #0b0b0b; font-size: 17px; font-weight: 600; }
+    .sub     { fill: #52514e; font-size: 11.5px; }
+    .metric  { fill: #0b0b0b; font-size: 12.5px; font-weight: 600; }
+    .unit    { fill: #77756e; font-size: 10.5px; }
+    .note    { fill: #77756e; font-size: 10px; font-style: italic; }
+    .name    { fill: #52514e; font-size: 11.5px; }
+    .legend  { fill: #52514e; font-size: 11px; }
+    .val     { fill: #0b0b0b; font-size: 11.5px; font-weight: 600; }
+    .rule    { stroke: #e4e4e0; stroke-width: 1; stroke-dasharray: 2 3; }
+    .axis    { stroke: #d8d8d4; stroke-width: 1; }
+    .s-sf { fill: #7c3aed; }
+    .s-cl { fill: #eb6834; }
+    .s-v8 { fill: #1baf7a; }
+    .s-si { fill: #a855f7; }
+    .s-w3 { fill: #eda100; }
+    .s-wi { fill: #4a9ede; }
+    @media (prefers-color-scheme: dark) {
+      .surface { fill: #1a1a19; stroke: #3a3a37; }
+      .title, .metric { fill: #ffffff; }
+      .sub, .name, .legend { fill: #c3c2b7; }
+      .val     { fill: #ffffff; }
+      .unit, .note { fill: #96958c; }
+      .rule    { stroke: #3a3a37; }
+      .axis    { stroke: #3a3a37; }
+      .s-sf { fill: #8b5cf6; }
+      .s-cl { fill: #d95926; }
+      .s-v8 { fill: #199e70; }
+      .s-si { fill: #9085e9; }
+      .s-w3 { fill: #c98500; }
+      .s-wi { fill: #3987e5; }
+    }
+  </style>
+  <rect class="surface" width="760" height="470" rx="8" ry="8" stroke-width="1"/>
+  <text class="title" x="380" y="30" text-anchor="middle">Memory-Bound Benchmarks (STREAM) — Compiled (JIT)</text>
+  <text class="sub" x="380" y="47" text-anchor="middle">Apple M4 · longer bar = better · each row scaled to its own best</text>
+  <rect class="s-sf" x="176" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="191" y="62">Silverfir (JIT)</text>
+  <rect class="s-cl" x="372" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="387" y="62">Cranelift 47.0.2</text>
+  <rect class="s-v8" x="568" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="583" y="62">V8 / Node 25.9</text>
+  <line class="axis" x1="176" y1="76" x2="176" y2="460"/>
 
-  <text x="168" y="104.0" text-anchor="end" fill="#656d76" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600">STREAM Copy</text>
-  <text x="182" y="104.0" fill="#8b949e" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="10">MB/s</text>
-  <rect x="4" y="112" width="692" height="32" rx="4" fill="#f3e8ff" opacity="0.5"/>
-  <text x="168" y="132.5" text-anchor="end" fill="#581c87" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">Silverfir</text>
-  <rect x="175" y="114" width="490.0" height="28" rx="4" fill="url(#hlGrad)" filter="url(#glow)"><animate attributeName="width" from="0" to="490.0" dur="0.35s" fill="freeze"/></rect>
-  <text x="657.0" y="133.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">44,124</text>
-  <text x="168" y="163.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">Cranelift</text>
-  <rect x="175" y="145" width="490.0" height="28" rx="4" fill="#e8873d" opacity="0.85"><animate attributeName="width" from="0" to="490.0" dur="0.39s" fill="freeze"/></rect>
-  <text x="657.0" y="164.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">44,124</text>
-  <text x="168" y="194.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">V8</text>
-  <rect x="175" y="176" width="441.0" height="28" rx="4" fill="#4a9ede" opacity="0.85"><animate attributeName="width" from="0" to="441.0" dur="0.43s" fill="freeze"/></rect>
-  <text x="608.0" y="195.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">39,714</text>
-
-  <line x1="20" y1="214" x2="680" y2="214" stroke="#eaeef2" stroke-width="1"/>
-  <text x="168" y="234.0" text-anchor="end" fill="#656d76" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600">STREAM Scale</text>
-  <text x="182" y="234.0" fill="#8b949e" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="10">MB/s</text>
-  <rect x="4" y="242" width="692" height="32" rx="4" fill="#f3e8ff" opacity="0.5"/>
-  <text x="168" y="262.5" text-anchor="end" fill="#581c87" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">Silverfir</text>
-  <rect x="175" y="244" width="488.8" height="28" rx="4" fill="url(#hlGrad)" filter="url(#glow)"><animate attributeName="width" from="0" to="488.8" dur="0.39s" fill="freeze"/></rect>
-  <text x="655.8" y="263.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">49,574</text>
-  <text x="168" y="293.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">Cranelift</text>
-  <rect x="175" y="275" width="490.0" height="28" rx="4" fill="#e8873d" opacity="0.85"><animate attributeName="width" from="0" to="490.0" dur="0.43s" fill="freeze"/></rect>
-  <text x="657.0" y="294.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">49,692</text>
-  <text x="168" y="324.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">V8</text>
-  <rect x="175" y="306" width="180.8" height="28" rx="4" fill="#4a9ede" opacity="0.85"><animate attributeName="width" from="0" to="180.8" dur="0.47s" fill="freeze"/></rect>
-  <text x="347.8" y="325.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">18,332</text>
-
-  <line x1="20" y1="344" x2="680" y2="344" stroke="#eaeef2" stroke-width="1"/>
-  <text x="168" y="364.0" text-anchor="end" fill="#656d76" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600">STREAM Add</text>
-  <text x="182" y="364.0" fill="#8b949e" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="10">MB/s</text>
-  <rect x="4" y="372" width="692" height="32" rx="4" fill="#f3e8ff" opacity="0.5"/>
-  <text x="168" y="392.5" text-anchor="end" fill="#581c87" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">Silverfir</text>
-  <rect x="175" y="374" width="490.0" height="28" rx="4" fill="url(#hlGrad)" filter="url(#glow)"><animate attributeName="width" from="0" to="490.0" dur="0.43s" fill="freeze"/></rect>
-  <text x="657.0" y="393.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">64,258</text>
-  <text x="168" y="423.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">Cranelift</text>
-  <rect x="175" y="405" width="369.1" height="28" rx="4" fill="#e8873d" opacity="0.85"><animate attributeName="width" from="0" to="369.1" dur="0.47s" fill="freeze"/></rect>
-  <text x="536.1" y="424.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">48,398</text>
-  <text x="168" y="454.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">V8</text>
-  <rect x="175" y="436" width="228.7" height="28" rx="4" fill="#4a9ede" opacity="0.85"><animate attributeName="width" from="0" to="228.7" dur="0.51s" fill="freeze"/></rect>
-  <text x="395.7" y="455.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">29,989</text>
-
-  <line x1="20" y1="474" x2="680" y2="474" stroke="#eaeef2" stroke-width="1"/>
-  <text x="168" y="494.0" text-anchor="end" fill="#656d76" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="12" font-weight="600">STREAM Triad</text>
-  <text x="182" y="494.0" fill="#8b949e" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="10">MB/s</text>
-  <rect x="4" y="502" width="692" height="32" rx="4" fill="#f3e8ff" opacity="0.5"/>
-  <text x="168" y="522.5" text-anchor="end" fill="#581c87" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">Silverfir</text>
-  <rect x="175" y="504" width="490.0" height="28" rx="4" fill="url(#hlGrad)" filter="url(#glow)"><animate attributeName="width" from="0" to="490.0" dur="0.47s" fill="freeze"/></rect>
-  <text x="657.0" y="523.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">48,349</text>
-  <text x="168" y="553.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">Cranelift</text>
-  <rect x="175" y="535" width="485.1" height="28" rx="4" fill="#e8873d" opacity="0.85"><animate attributeName="width" from="0" to="485.1" dur="0.51s" fill="freeze"/></rect>
-  <text x="652.1" y="554.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">47,864</text>
-  <text x="168" y="584.5" text-anchor="end" fill="#1f2328" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="400">V8</text>
-  <rect x="175" y="566" width="312.8" height="28" rx="4" fill="#4a9ede" opacity="0.85"><animate attributeName="width" from="0" to="312.8" dur="0.55s" fill="freeze"/></rect>
-  <text x="479.8" y="585.0" text-anchor="end" fill="#ffffff" font-family="Segoe UI,Helvetica,Arial,sans-serif" font-size="13" font-weight="700">30,869</text>
+  <text class="metric" x="168" y="94" text-anchor="end">STREAM Copy</text>
+  <text class="unit" x="176" y="94">MB/s</text>
+  <text class="note" x="740" y="94" text-anchor="end">lowered to memory.copy — measures the engine's bulk copy, not dispatch</text>
+  <text class="name" x="168" y="117" text-anchor="end">Silverfir (JIT)</text>
+  <rect class="s-sf" x="176" y="104" width="445.4" height="18" rx="4"/>
+  <text class="val" x="627.4" y="117">88,302</text>
+  <text class="name" x="168" y="137" text-anchor="end">Cranelift 47.0.2</text>
+  <rect class="s-cl" x="176" y="124" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="137">89,610</text>
+  <text class="name" x="168" y="157" text-anchor="end">V8 / Node 25.9</text>
+  <rect class="s-v8" x="176" y="144" width="443.9" height="18" rx="4"/>
+  <text class="val" x="625.9" y="157">88,012</text>
+  <text class="metric" x="168" y="190" text-anchor="end">STREAM Scale</text>
+  <text class="unit" x="176" y="190">MB/s</text>
+  <text class="name" x="168" y="213" text-anchor="end">Silverfir (JIT)</text>
+  <rect class="s-sf" x="176" y="200" width="420.8" height="18" rx="4"/>
+  <text class="val" x="602.8" y="213">61,116</text>
+  <text class="name" x="168" y="233" text-anchor="end">Cranelift 47.0.2</text>
+  <rect class="s-cl" x="176" y="220" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="233">65,655</text>
+  <text class="name" x="168" y="253" text-anchor="end">V8 / Node 25.9</text>
+  <rect class="s-v8" x="176" y="240" width="214.7" height="18" rx="4"/>
+  <text class="val" x="396.7" y="253">31,193</text>
+  <text class="metric" x="168" y="286" text-anchor="end">STREAM Add</text>
+  <text class="unit" x="176" y="286">MB/s</text>
+  <text class="name" x="168" y="309" text-anchor="end">Silverfir (JIT)</text>
+  <rect class="s-sf" x="176" y="296" width="444.9" height="18" rx="4"/>
+  <text class="val" x="626.9" y="309">68,640</text>
+  <text class="name" x="168" y="329" text-anchor="end">Cranelift 47.0.2</text>
+  <rect class="s-cl" x="176" y="316" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="329">69,730</text>
+  <text class="name" x="168" y="349" text-anchor="end">V8 / Node 25.9</text>
+  <rect class="s-v8" x="176" y="336" width="247.4" height="18" rx="4"/>
+  <text class="val" x="429.4" y="349">38,162</text>
+  <text class="metric" x="168" y="382" text-anchor="end">STREAM Triad</text>
+  <text class="unit" x="176" y="382">MB/s</text>
+  <text class="name" x="168" y="405" text-anchor="end">Silverfir (JIT)</text>
+  <rect class="s-sf" x="176" y="392" width="437.2" height="18" rx="4"/>
+  <text class="val" x="619.2" y="405">60,211</text>
+  <text class="name" x="168" y="425" text-anchor="end">Cranelift 47.0.2</text>
+  <rect class="s-cl" x="176" y="412" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="425">62,247</text>
+  <text class="name" x="168" y="445" text-anchor="end">V8 / Node 25.9</text>
+  <rect class="s-v8" x="176" y="432" width="274.5" height="18" rx="4"/>
+  <text class="val" x="456.5" y="445">37,802</text>
 </svg>
