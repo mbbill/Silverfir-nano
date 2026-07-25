@@ -31,6 +31,15 @@ struct Totals {
     asserts_failed: usize,
     directives_skipped: usize,
     failures: Vec<String>,
+    /// Why modules were turned away, counted by reason. A bare skip total
+    /// says nothing about what would unblock it.
+    skip_reasons: std::collections::BTreeMap<String, usize>,
+}
+
+impl Totals {
+    fn note_skip(&mut self, reason: &str) {
+        *self.skip_reasons.entry(reason.to_string()).or_insert(0) += 1;
+    }
 }
 
 enum Converted {
@@ -156,9 +165,12 @@ fn run_file(path: &PathBuf, totals: &mut Totals) {
                 };
                 match instantiate(bytes) {
                     Ok(inst) => run.inst = Some(inst),
-                    Err(_) => {
+                    Err(err) => {
                         // Unsupported feature in this module: everything
                         // after it depends on it — skip the file's rest.
+                        // Keep the reason: "205 skipped" on its own says
+                        // nothing about what would unblock them.
+                        totals.note_skip(err.message());
                         run.skip_rest = Some("module unsupported");
                         skipped += 1;
                     }
@@ -246,6 +258,7 @@ fn run_file(path: &PathBuf, totals: &mut Totals) {
             WastDirective::Register { .. }
             | WastDirective::ModuleDefinition(_)
             | WastDirective::ModuleInstance { .. } => {
+                totals.note_skip("multi-module linking");
                 run.skip_rest = Some("linking unsupported");
                 skipped += 1;
             }
@@ -417,6 +430,14 @@ pub fn run(filters: &[String]) -> i32 {
     println!("asserts passed:   {}", totals.asserts_passed);
     println!("asserts FAILED:   {}", totals.asserts_failed);
     println!("directives skipped: {}", totals.directives_skipped);
+    if !totals.skip_reasons.is_empty() {
+        println!("modules turned away, by reason:");
+        let mut reasons: Vec<_> = totals.skip_reasons.iter().collect();
+        reasons.sort_by(|a, b| b.1.cmp(a.1));
+        for (reason, n) in reasons {
+            println!("  {n:5}  {reason}");
+        }
+    }
     for f in totals.failures.iter().take(40) {
         println!("FAIL {f}");
     }
