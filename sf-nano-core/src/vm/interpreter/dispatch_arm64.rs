@@ -1029,10 +1029,6 @@ impl<'b> Enc<'b> {
         let base = if f32w { 0x1E20_2000 } else { 0x1E60_2000 };
         self.i(base | vm << 16 | vn << 5);
     }
-    fn tbz(&mut self, rt: u32, bit: u32, delta_insns: i32) {
-        debug_assert!(bit < 32);
-        self.i(0x3600_0000 | bit << 19 | ((delta_insns as u32) & 0x3FFF) << 5 | rt);
-    }
     fn tbnz(&mut self, rt: u32, bit: u32, delta_insns: i32) {
         debug_assert!(bit < 32);
         self.i(0x3700_0000 | bit << 19 | ((delta_insns as u32) & 0x3FFF) << 5 | rt);

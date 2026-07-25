@@ -129,6 +129,7 @@ pub(crate) fn jal(rd: RiscvReg, offset: i32) -> u32 {
 }
 
 #[inline]
+#[cfg(sf_backend_riscv32)]
 pub(crate) fn lui(rd: RiscvReg, imm20: u32) -> u32 {
     u_type(imm20 & 0x000f_ffff, rd, 0b0110111)
 }

@@ -602,6 +602,11 @@ impl<'a> Arm32Backend<'a> {
     /// `push {r5}` — save the dynamic GP register we're about to use as a
     /// helper-scratch base pointer. The JIT may have a live SSA value in
     /// R5; we restore it before returning to JIT-managed code.
+    ///
+    /// Only the D3-D7 helper-scratch save/restore pair needs a base
+    /// register it does not own, so this follows their `sf_fp_dp` gate;
+    /// without an FPU (thumbm) there is nothing to spill around.
+    #[cfg(sf_fp_dp)]
     fn spill_helper_base_reg(&mut self) {
         // sub sp, sp, #8  (8-byte alignment for AAPCS)
         // str r5, [sp, #0]
@@ -613,7 +618,8 @@ impl<'a> Arm32Backend<'a> {
             .emit_u32(enc::str_imm(Arm32Reg::R5, Arm32Reg::SP, 0));
     }
 
-    /// `pop {r5}` — counterpart to `spill_helper_base_reg`.
+    /// `pop {r5}` — counterpart to `spill_helper_base_reg`, and gated with it.
+    #[cfg(sf_fp_dp)]
     fn restore_helper_base_reg(&mut self) {
         // ldr r5, [sp, #0]
         // add sp, sp, #8

@@ -30,10 +30,12 @@ use super::predecode::{predecode_function, PredecodedFunction};
 
 const PAGE: usize = 65536;
 const NULL_FUNC: u32 = u32::MAX;
+#[cfg(all(sf_jit, sf_backend_arm64))]
 const MAX_CALL_DEPTH: u32 = 4096;
 /// Value-stack budget per invoke. Frames overlap on one contiguous stack
 /// (a callee's frame base is its caller's staged-argument slot); running
 /// past the budget traps "call stack exhausted" on every backend.
+#[cfg(all(sf_jit, sf_backend_arm64))]
 const VALUE_STACK_SLOTS: usize = 256 * 1024;
 
 /// Host dispatcher for imported functions: called with the import's module
@@ -43,13 +45,20 @@ const VALUE_STACK_SLOTS: usize = 256 * 1024;
 pub type HostDispatch<'h> =
     Box<dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'h>;
 
+/// `max` is a growth limit, consulted only by `table.grow`; the executor
+/// that implements it is arm64-only, so the field follows that gate.
+/// `entries` is not gated: instantiation reads its length to bounds-check
+/// active element segments on every target.
 struct TableState {
     entries: Vec<u32>,
+    #[cfg(all(sf_jit, sf_backend_arm64))]
     max: u64,
 }
 
+/// `max_pages` mirrors `TableState::max`: only `memory.grow` reads it.
 struct MemoryState {
     bytes: Vec<u8>,
+    #[cfg(all(sf_jit, sf_backend_arm64))]
     max_pages: u64,
 }
 
@@ -126,10 +135,19 @@ struct NativeState {
 pub struct InterpInstance<'m> {
     module: &'m Module,
     funcs: Vec<Option<Rc<PredecodedFunction>>>,
+    /// Runtime state only the executor touches. `new()` still builds it on
+    /// every target -- doing so is what rejects imported/64-bit/non-funcref
+    /// memories and tables and traps out-of-range active segments -- but a
+    /// target without an executor validates and drops it rather than
+    /// carrying it.
+    #[cfg(all(sf_jit, sf_backend_arm64))]
     memories: Vec<MemoryState>,
+    #[cfg(all(sf_jit, sf_backend_arm64))]
     dropped_data: Vec<bool>,
+    #[cfg(all(sf_jit, sf_backend_arm64))]
     dropped_elems: Vec<bool>,
     globals: Vec<u64>,
+    #[cfg(all(sf_jit, sf_backend_arm64))]
     tables: Vec<TableState>,
     host: Option<HostDispatch<'m>>,
     #[cfg(all(sf_jit, sf_backend_arm64))]
@@ -144,6 +162,7 @@ fn op_from_index(i: usize) -> Op {
 }
 
 /// Nonzero per-op counts, descending.
+#[cfg(all(sf_jit, sf_backend_arm64))]
 fn op_counts(table: &[u64]) -> Vec<(Op, u64)> {
     let mut out: Vec<(Op, u64)> = Vec::new();
     for (i, &n) in table.iter().enumerate() {
@@ -239,6 +258,7 @@ impl<'m> InterpInstance<'m> {
             }
             memories.push(MemoryState {
                 bytes: vec![0u8; limits.min() as usize * PAGE],
+                #[cfg(all(sf_jit, sf_backend_arm64))]
                 max_pages: limits.max().unwrap_or(65536) as u64,
             });
         }
@@ -269,6 +289,7 @@ impl<'m> InterpInstance<'m> {
             }
             tables.push(TableState {
                 entries: vec![NULL_FUNC; limits.min() as usize],
+                #[cfg(all(sf_jit, sf_backend_arm64))]
                 max: limits.max().unwrap_or(u32::MAX as usize) as u64,
             });
         }
@@ -330,10 +351,14 @@ impl<'m> InterpInstance<'m> {
         let mut inst = InterpInstance {
             module,
             funcs,
+            #[cfg(all(sf_jit, sf_backend_arm64))]
             memories,
+            #[cfg(all(sf_jit, sf_backend_arm64))]
             dropped_data,
+            #[cfg(all(sf_jit, sf_backend_arm64))]
             dropped_elems,
             globals,
+            #[cfg(all(sf_jit, sf_backend_arm64))]
             tables,
             host: None,
             #[cfg(all(sf_jit, sf_backend_arm64))]
@@ -537,8 +562,6 @@ impl<'m> InterpInstance<'m> {
         }
     }
 
-    /// Slow-path exit counts by op since instantiation, descending —
-    /// empty when native dispatch is not active.
     /// Static adjacent-pair census over the predecoded streams: a pair
     /// is counted only when the first op falls through (no control
     /// transfer), i.e. exactly where a fused handler could replace two
@@ -561,6 +584,8 @@ impl<'m> InterpInstance<'m> {
         out
     }
 
+    /// Slow-path exit counts by op since instantiation, descending —
+    /// empty when native dispatch is not active.
     pub fn slow_exit_stats(&self) -> Vec<(Op, u64)> {
         #[cfg(all(sf_jit, sf_backend_arm64))]
         if let Some(native) = &self.native {
@@ -1791,6 +1816,7 @@ impl<'m> InterpInstance<'m> {
 /// lower bound of the truncated value (0.0 for the unsigned cases — a
 /// truncated -0.0 compares equal to 0.0 and is valid), `hi_excl` the
 /// exclusive upper bound. Both bounds are exactly representable in f64.
+#[cfg(all(sf_jit, sf_backend_arm64))]
 fn trunc_checked(x: f64, lo: f64, hi_excl: f64) -> Result<f64, WasmError> {
     if x.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer"));
@@ -1802,6 +1828,7 @@ fn trunc_checked(x: f64, lo: f64, hi_excl: f64) -> Result<f64, WasmError> {
     Ok(t)
 }
 
+#[cfg(all(sf_jit, sf_backend_arm64))]
 fn wasm_min_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
         f32::NAN
@@ -1816,6 +1843,7 @@ fn wasm_min_f32(a: f32, b: f32) -> f32 {
     }
 }
 
+#[cfg(all(sf_jit, sf_backend_arm64))]
 fn wasm_max_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
         f32::NAN
@@ -1830,6 +1858,7 @@ fn wasm_max_f32(a: f32, b: f32) -> f32 {
     }
 }
 
+#[cfg(all(sf_jit, sf_backend_arm64))]
 fn wasm_min_f64(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         f64::NAN
@@ -1844,6 +1873,7 @@ fn wasm_min_f64(a: f64, b: f64) -> f64 {
     }
 }
 
+#[cfg(all(sf_jit, sf_backend_arm64))]
 fn wasm_max_f64(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         f64::NAN
