@@ -373,6 +373,16 @@
   mix lands 0.557 cycles BELOW the linear blend, because consecutive taken paths
   serialise their dependency chains while a mixed sequence overlaps them (code)
 
+- 2026-07-25 measurement: the bulk-memory double-count was real but its
+  magnitude is negligible. Removing the duplicate increment left STREAM's
+  dispatch total unchanged at 1.218G, because one memory.copy dispatch performs
+  an entire 80 MB kernel pass -- the over-count is a few thousand dispatches in
+  a billion. It would only distort a workload issuing millions of small copies
+  or fills (code)
+- 2026-07-25 measurement: the emitted engine is 378,344 bytes -- 369.5 KB --
+  measured by reporting the buffer length after emission, leaving about 142 KB
+  of headroom under the 512 KB assert (code)
+
 ## Moves
 
 - 2026-07-23 replaced [[stage-a-loop]]: one high-performance interpreter,

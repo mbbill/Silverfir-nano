@@ -442,6 +442,13 @@ fn run_interp(data: &[u8], module_name: &str, stats: bool) -> i32 {
             if native > 0 {
                 eprintln!("[interp] native dispatches: {native}");
             }
+            let code_len = inst.engine_code_len();
+            if code_len > 0 {
+                eprintln!(
+                    "[interp] engine code: {code_len} bytes ({:.1} KB)",
+                    code_len as f64 / 1024.0
+                );
+            }
             let bigrams = inst.bigram_stats();
             if !bigrams.is_empty() {
                 eprintln!("[interp] top fallthrough bigrams (static):");

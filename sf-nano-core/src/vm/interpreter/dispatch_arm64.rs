@@ -538,6 +538,14 @@ impl NativeEngine {
         })
     }
 
+    /// Emitted engine size in bytes. Every change that adds handlers or
+    /// operand classes grows this, and it is a hard budget: the buffer is
+    /// asserted, and the plan is to move emission to build time, where this
+    /// becomes binary size.
+    pub(super) fn code_len(&self) -> usize {
+        self.buf.len()
+    }
+
     /// Address of the sentinel exit cell (see `exit_cell`).
     pub(super) fn exit_cell_addr(&self) -> u64 {
         &*self.exit_cell as *const DCell as u64
@@ -2613,7 +2621,9 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     {
         let off = e.here();
         pre(e);
-        bump(e, COUNT_MODE == 0);
+        // No bump here: this handler's exits all run through tail() (or the
+        // shared backward block's tail), which counts. Bumping at entry as
+        // well counted every fill and copy dispatch TWICE.
         e.ldr_x_imm(X9, PC, 8);
         e.add_x_reg(X9, FRAME, X9);
         e.ldr_x_imm(X10, X9, 0); // d
@@ -2657,7 +2667,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     {
         let off = e.here();
         pre(e);
-        bump(e, COUNT_MODE == 0);
+        // No bump here -- see MemoryFill above; tail() does the counting.
         e.ldr_x_imm(X9, PC, 8);
         e.add_x_reg(X9, FRAME, X9);
         e.ldr_x_imm(X10, X9, 0); // d

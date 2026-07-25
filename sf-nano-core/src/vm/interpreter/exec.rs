@@ -586,6 +586,18 @@ impl<'m> InterpInstance<'m> {
 
     /// Slow-path exit counts by op since instantiation, descending —
     /// empty when native dispatch is not active.
+    /// Size in bytes of the emitted dispatch engine, 0 when there is none.
+    /// Worth watching: every added handler family or operand class grows it
+    /// against a hard buffer assert, and once emission moves to build time
+    /// this becomes binary size.
+    pub fn engine_code_len(&self) -> usize {
+        #[cfg(all(sf_jit, sf_backend_arm64))]
+        if let Some(native) = &self.native {
+            return native.engine.code_len();
+        }
+        0
+    }
+
     pub fn slow_exit_stats(&self) -> Vec<(Op, u64)> {
         #[cfg(all(sf_jit, sf_backend_arm64))]
         if let Some(native) = &self.native {
