@@ -383,6 +383,16 @@
   measured by reporting the buffer length after emission, leaving about 142 KB
   of headroom under the 512 KB assert (code)
 
+- 2026-07-25 measurement: storing branch targets as absolute cell addresses and
+  loading the target's handler word at handler ENTRY rather than after the
+  condition resolves is worth -4.80% of CoreMark cycles at fixed work, with
+  +4.3% sha256, +3.4% bzip2, +2.6% mandelbrot and +2.3% lua/fib, at unchanged
+  emitted engine size (code)
+- 2026-07-25 rationale: that change RAISES retired instructions 1.83% while
+  lowering cycles, which is only possible because it broke a dependency chain
+  rather than removing work -- the not-taken path now pays two loads it did not
+  before, and the taken path no longer stalls on them (code)
+
 ## Moves
 
 - 2026-07-23 replaced [[stage-a-loop]]: one high-performance interpreter,
