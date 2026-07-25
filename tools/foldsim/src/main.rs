@@ -127,6 +127,13 @@ struct Counters {
     // fixed-combo opportunities
     cmp_br: C2,    // compare feeding br_if/if at span 1
     induction: C2, // local.set folding an add/sub of (local, const)
+    ind_br: C2,    // induction-update immediately feeding a cmp+br (loop back-edge)
+    // why a local.set could not dst-fold -- decides whether the fix is copy
+    // propagation (Local), const rematerialization (Const), or hazard-aware
+    // folding (Temp blocked by an intervening read/write of the target)
+    su_local: C2,
+    su_const: C2,
+    su_temp_hazard: C2,
 
     // short-span (<=2) local-read concentration across locals, per function
     sr_total: f64,
@@ -171,7 +178,11 @@ impl Counters {
             lspan_gt8,
             lspan_none,
             cmp_br,
-            induction
+            induction,
+            ind_br,
+            su_local,
+            su_const,
+            su_temp_hazard
         );
         for a in 0..3 {
             for b in 0..3 {
@@ -221,6 +232,7 @@ struct Sim<'m> {
     em_idx: u64,
     region: u64,
     last_emit: LastEmit,
+    last_ind_em: u64,
     last_write_em: HashMap<u32, u64>,
     last_read_em: HashMap<u32, u64>,
     last_consumed_local: Option<u32>,
@@ -260,6 +272,7 @@ impl<'m> Sim<'m> {
             em_idx: 0,
             region: 0,
             last_emit: LastEmit::Other,
+            last_ind_em: u64::MAX,
             last_write_em: HashMap::new(),
             last_read_em: HashMap::new(),
             last_consumed_local: None,
@@ -523,6 +536,7 @@ impl<'m> Sim<'m> {
                 && matches!(self.last_emit, LastEmit::AddSubLocalConst(l) if l == idx)
             {
                 self.c.induction.add(w);
+                self.last_ind_em = self.em_idx.saturating_sub(1);
             }
             self.stack.pop();
             self.last_write_em.insert(idx, def_em);
@@ -532,10 +546,21 @@ impl<'m> Sim<'m> {
                 Desc::Local(y) => {
                     self.c.get_folded.add(w);
                     self.last_read_em.insert(y, self.em_idx);
+                    if !is_tee {
+                        self.c.su_local.add(w);
+                    }
                 }
-                Desc::Const => self.c.const_folded.add(w),
+                Desc::Const => {
+                    self.c.const_folded.add(w);
+                    if !is_tee {
+                        self.c.su_const.add(w);
+                    }
+                }
                 Desc::Temp { def_em, .. } if def_em != u64::MAX => {
                     self.note_temp_span(def_em, w);
+                    if !is_tee {
+                        self.c.su_temp_hazard.add(w);
+                    }
                 }
                 _ => {}
             }
@@ -567,6 +592,12 @@ impl<'m> Sim<'m> {
         {
             // the immediately-preceding compare feeds this branch
             self.c.cmp_br.add(w);
+            // ...and if the compare itself was immediately preceded by the
+            // induction update, this is a counted loop's back-edge: today it
+            // costs two dispatches (update, then fused compare-branch).
+            if self.em_idx >= 2 && self.last_ind_em == self.em_idx - 2 {
+                self.c.ind_br.add(w);
+            }
         }
     }
 
@@ -1273,9 +1304,17 @@ fn report(name: &str, c: &Counters, bailed: usize, desynced: usize, total_funcs:
     }
     line!("  mat depth cum  : {}", depth_line);
     line!(
-        "  fixed combos   : cmp+br {:.2}% of dispatches | induction-update {:.2}%",
+        "  fixed combos   : cmp+br {:.2}% of dispatches | induction-update {:.2}% | \
+back-edge (update+cmp+br) {:.2}%",
         pct(c.cmp_br.w, em_total),
-        pct(c.induction.w, em_total)
+        pct(c.induction.w, em_total),
+        pct(c.ind_br.w, em_total)
+    );
+    line!(
+        "  set-unfold why : local-copy {:.2}% of dispatches | const {:.2}% | temp-hazard {:.2}%",
+        pct(c.su_local.w, em_total),
+        pct(c.su_const.w, em_total),
+        pct(c.su_temp_hazard.w, em_total)
     );
     line!(
         "  short-read conc: per-func top1 {:.1}% top2 {:.1}% top3 {:.1}% of short-span reads (short = {:.1}% of consumed local reads)",
