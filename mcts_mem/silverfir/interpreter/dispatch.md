@@ -424,6 +424,21 @@
   many more pairs -- and an effect whose dispatch delta caps it near 0.03% can
   never be resolved by the clock at all (code)
 
+- 2026-07-25 measurement: pairing the dst descriptor with the next-handler
+  prefetch into one ldp cut retired instructions 1.92% and moved cycles +0.48%
+  and the CoreMark score -0.11% -- no gain, against a predicted -4.6% (code)
+- 2026-07-25 rationale: an ldp of two 64-bit words saves an INSTRUCTION, not a
+  memory uop, so pairing cell fields buys ~0.034 cycles rather than the ~0.093 a
+  removed load is worth (code)
+- 2026-07-25 pitfall: memory-uop counting overstates the value of cell-field
+  pairing several-fold (code)
+- 2026-07-25 rationale: true descriptor packing remains open and is a different
+  change -- one load plus bitfield extracts genuinely reduces the uop count,
+  where pairing does not (code)
+- 2026-07-25 measurement: that pairing did shrink the emitted engine 6,600
+  bytes, so it remains a size and instruction-count lever for narrow cores even
+  though it is neutral on this one (code)
+
 ## Moves
 
 - 2026-07-23 replaced [[stage-a-loop]]: one high-performance interpreter,
