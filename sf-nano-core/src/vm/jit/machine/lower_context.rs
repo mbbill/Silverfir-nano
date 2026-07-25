@@ -17,7 +17,7 @@ use crate::{
             frame::FrameSlot,
             ssa_ir::ir::{CellInfo, SsaBlock, SsaInstView, SsaProgram, SsaTerminator, SsaValue},
         },
-        runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
+        jit::runtime::layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},
     },
 };
 

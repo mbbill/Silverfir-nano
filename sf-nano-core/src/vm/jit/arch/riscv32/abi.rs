@@ -3,7 +3,7 @@
 use crate::{
     error::WasmError,
     vm::{
-        backend::BackendConfig, jit::arch::common::scratch_pool::ScratchPool,
+        jit::arch::common::scratch_pool::ScratchPool, jit::backend::BackendConfig,
         jit::machine::machine_ir::MachineReg,
     },
 };

@@ -8,7 +8,7 @@ use crate::{
     collections,
     error::WasmError,
     vm::{
-        backend::BackendConfig,
+        jit::backend::BackendConfig,
         jit::middle::{
             cell::CellId,
             cfg::{CfgBlockId, SemanticCfg},

@@ -24,7 +24,7 @@ use crate::vm::jit::arch::common::template::{
     decode_template_chain_next, encode_template_chain_next, TemplateBranchSense,
 };
 use crate::vm::jit::arch::common::types::{DirectCallPatch, LocalPtrPatch, PendingLocalPtrPatch};
-use crate::vm::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
+use crate::vm::jit::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
 
 fn caller_results_base_delta(results: &MachineCallResults) -> u32 {
     match results {

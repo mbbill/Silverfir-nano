@@ -1,6 +1,6 @@
 //! ABI-visible metadata for the runtime-call entry.
 
-use crate::{error::WasmError, vm::runtime::common::internal_error};
+use crate::{error::WasmError, vm::jit::runtime::common::internal_error};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 #[repr(u32)]

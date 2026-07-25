@@ -7,7 +7,7 @@ use crate::{
             MachineAddr, MachineFloatWidth, MachineInst, MachineInstKind, MachineReg,
             MachineStorageType, MachineValue, MACHINE_CTX_REG,
         },
-        runtime::preserved::{io as preserved_io, op as preserved_op, preserved_entry},
+        jit::runtime::preserved::{io as preserved_io, op as preserved_op, preserved_entry},
     },
 };
 

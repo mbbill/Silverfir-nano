@@ -44,7 +44,7 @@ pub(crate) const fn thumb_interworking_bit(addr: usize) -> usize {
 use crate::{
     error::WasmError,
     vm::{
-        runtime::{context::NativeContext, trap::raise_trap},
+        jit::runtime::{context::NativeContext, trap::raise_trap},
         value_encoding::{as_f32, as_f64, from_f32, from_f64, from_i32, from_i64},
     },
 };

@@ -13,7 +13,7 @@ use crate::{
     error::WasmError,
     value_type::ValueType,
     vm::{
-        backend::BackendConfig,
+        jit::backend::BackendConfig,
         jit::middle::{
             budget::gp_value_budget_units,
             cell::{CellId, CellSet},

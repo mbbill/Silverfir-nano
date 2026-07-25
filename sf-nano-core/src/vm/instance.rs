@@ -30,11 +30,35 @@ use crate::vm::entities::{
     ModuleInst, TableInst, TagInst,
 };
 use crate::vm::expr_eval::eval_const_expr;
-use crate::vm::runtime;
 use crate::vm::store::{LinkRegistry, Store};
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 use crate::vm::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store};
+
+/// Run one function body on the engine that owns this instance.
+///
+/// `Instance` is the JIT's runtime model: its `Store`, entities, and frame
+/// layout are the shapes the emitted native code reads directly. With the
+/// JIT left out there is nothing here that can run a body, and the
+/// interpreter's own instance type is what an embedder reaches for instead.
+#[inline]
+fn eval_on_engine(
+    func_inst: &FunctionInst,
+    store: &mut Store,
+    args: &[Value],
+) -> Result<crate::vm::result_buffer::ResultBuffer, WasmError> {
+    #[cfg(sf_jit)]
+    {
+        crate::vm::jit::runtime::eval(func_inst, store, args)
+    }
+    #[cfg(not(sf_jit))]
+    {
+        let _ = (func_inst, store, args);
+        Err(WasmError::invalid(
+            "Instance runs on the jit engine, which this build does not have; use InterpInstance",
+        ))
+    }
+}
 
 pub struct Import {
     pub module: String,
@@ -1377,7 +1401,7 @@ impl Instance {
             if let Some(start_idx) = start_func_index {
                 let func_ptr = &store.module().functions[start_idx] as *const FunctionInst;
                 let func_ref = unsafe { &*func_ptr };
-                runtime::eval(func_ref, &mut store, &[])?;
+                eval_on_engine(func_ref, &mut store, &[])?;
             }
 
             Ok(())
@@ -1407,7 +1431,7 @@ impl Instance {
         let func_ptr = &self.store.module().functions[idx] as *const FunctionInst;
         let func_ref = unsafe { &*func_ptr };
 
-        let result_stack = runtime::eval(func_ref, &mut self.store, args)?;
+        let result_stack = eval_on_engine(func_ref, &mut self.store, args)?;
         let ft = func_ref.func_type();
         let result_types = ft.results();
 
@@ -1433,7 +1457,7 @@ impl Instance {
             as *const FunctionInst;
         let func_ref = unsafe { &*func_ptr };
 
-        let result_stack = runtime::eval(func_ref, &mut self.store, args)?;
+        let result_stack = eval_on_engine(func_ref, &mut self.store, args)?;
         let ft = func_ref.func_type();
         let result_types = ft.results();
 

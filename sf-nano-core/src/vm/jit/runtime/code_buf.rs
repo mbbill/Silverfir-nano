@@ -4,7 +4,7 @@
 //! backend uses it as a module-wide arena for finalized native code.
 //!
 //! All OS coupling — page allocation, W^X toggling, instruction-cache
-//! invalidation — is delegated to [`crate::vm::runtime::os`]. This module
+//! invalidation — is delegated to [`crate::vm::jit::runtime::os`]. This module
 //! holds only the per-buffer state (`base`, `capacity`, `offset`) and the
 //! offset-bumping emit helpers.
 

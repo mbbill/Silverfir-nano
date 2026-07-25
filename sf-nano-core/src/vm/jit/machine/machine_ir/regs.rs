@@ -1,5 +1,5 @@
 use super::MachineReg;
-use crate::vm::backend::BackendConfig;
+use crate::vm::jit::backend::BackendConfig;
 
 /// Fixed machine-register roles shared by all MachineIR backends.
 pub(crate) const MACHINE_CTX_REG: MachineReg = MachineReg(0);

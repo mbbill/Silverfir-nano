@@ -12,7 +12,7 @@ use crate::{
 use super::core::CompilerCore;
 use super::types::ParallelSource;
 
-use crate::vm::runtime::code_buf::CodeBuffer;
+use crate::vm::jit::runtime::code_buf::CodeBuffer;
 
 /// Trait that each architecture backend implements.
 ///

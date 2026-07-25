@@ -6,11 +6,11 @@
 //! cfgs. All modules export a single entry point:
 //!
 //! ```ignore
-//! pub(in crate::vm::runtime) unsafe fn install_platform_handler();
+//! pub(in crate::vm::jit::runtime) unsafe fn install_platform_handler();
 //! ```
 //!
 //! They cooperate with the generic trap table in
-//! [`crate::vm::runtime::trap_signal`] through two small accessors:
+//! [`crate::vm::jit::runtime::trap_signal`] through two small accessors:
 //!
 //! - `trap_signal::signal_count_inc_and_check()` — abort-on-storm guard
 //! - `trap_signal::try_resolve_trap(pc)` — returns the JIT error-return
@@ -26,24 +26,24 @@
 #[cfg(all(sf_os_macos, sf_backend_arm64))]
 mod arm64_macos;
 #[cfg(all(sf_os_macos, sf_backend_arm64))]
-pub(in crate::vm::runtime) use arm64_macos::install_platform_handler;
+pub(in crate::vm::jit::runtime) use arm64_macos::install_platform_handler;
 
 #[cfg(all(sf_os_linux, sf_backend_arm64))]
 mod arm64_linux;
 #[cfg(all(sf_os_linux, sf_backend_arm64))]
-pub(in crate::vm::runtime) use arm64_linux::install_platform_handler;
+pub(in crate::vm::jit::runtime) use arm64_linux::install_platform_handler;
 
 #[cfg(all(sf_os_macos, sf_backend_x64))]
 mod x64_macos;
 #[cfg(all(sf_os_macos, sf_backend_x64))]
-pub(in crate::vm::runtime) use x64_macos::install_platform_handler;
+pub(in crate::vm::jit::runtime) use x64_macos::install_platform_handler;
 
 #[cfg(all(sf_os_linux, sf_backend_x64))]
 mod x64_linux;
 #[cfg(all(sf_os_linux, sf_backend_x64))]
-pub(in crate::vm::runtime) use x64_linux::install_platform_handler;
+pub(in crate::vm::jit::runtime) use x64_linux::install_platform_handler;
 
 #[cfg(all(sf_os_windows, sf_backend_x64))]
 mod x64_windows;
 #[cfg(all(sf_os_windows, sf_backend_x64))]
-pub(in crate::vm::runtime) use x64_windows::install_platform_handler;
+pub(in crate::vm::jit::runtime) use x64_windows::install_platform_handler;

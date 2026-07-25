@@ -18,13 +18,13 @@ use super::{
 
 use super::backend::BranchFixup;
 use super::fusion::{cmp_imm_inst, int_binary_imm_inst, map_float_cond, map_int_cond};
-use crate::vm::backend::BackendConfig;
 use crate::vm::jit::arch::common::helpers::convert_result_float_width;
 use crate::vm::jit::arch::common::scratch_pool::ScratchPool;
 use crate::vm::jit::arch::common::text_emitter::TextEmitter;
 use crate::vm::jit::arch::common::types::ParallelSource;
+use crate::vm::jit::backend::BackendConfig;
 use crate::vm::jit::machine::machine_ir::{fp_reg_index, is_fp_reg};
-use crate::vm::runtime::preserved::{io as preserved_io, op as preserved_op};
+use crate::vm::jit::runtime::preserved::{io as preserved_io, op as preserved_op};
 
 unsafe extern "C" {
     fn memset(dest: *mut core::ffi::c_void, value: i32, len: usize) -> *mut core::ffi::c_void;
@@ -4336,7 +4336,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             return Ok(());
         }
 
-        use crate::vm::runtime::preserved::memory_fill_entry;
+        use crate::vm::jit::runtime::preserved::memory_fill_entry;
 
         self.emit_preserved_frame_open();
         self.emit_io_store_imm(preserved_io::IMM0, mem_idx);
@@ -4385,7 +4385,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
             return Ok(());
         }
 
-        use crate::vm::runtime::preserved::memory_copy_entry;
+        use crate::vm::jit::runtime::preserved::memory_copy_entry;
 
         self.emit_preserved_frame_open();
         self.emit_io_store_imm(preserved_io::IMM0, dst_mem);

@@ -8,7 +8,7 @@ use crate::{
         entities::{MemInst, TableInst},
         gc_type_check::check_ref_type_match,
         jit::arch::active_backend_config,
-        runtime::{
+        jit::runtime::{
             common::{internal_error, trap_error, value_matches_value_type},
             context::{NativeContext, PendingEscape},
         },

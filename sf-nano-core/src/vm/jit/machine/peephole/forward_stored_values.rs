@@ -15,7 +15,7 @@
 
 use crate::collections;
 
-use crate::vm::backend::BackendConfig;
+use crate::vm::jit::backend::BackendConfig;
 use crate::vm::jit::machine::machine_ir::{
     MachineBlock, MachineInstKind, MachineLoadExtension, MachineMemWidth, MachineValue,
 };

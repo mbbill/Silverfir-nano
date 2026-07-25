@@ -61,7 +61,7 @@ pub const fn native_capacity_skips() -> (usize, usize) {
 use crate::vm::entities::TableDispatchMode;
 #[cfg(sf_ir_dump)]
 use crate::vm::jit::debug::ir_dump;
-use crate::vm::{backend::BackendConfig, entities::ModuleInst};
+use crate::vm::{entities::ModuleInst, jit::backend::BackendConfig};
 use crate::{
     error::WasmError,
     vm::{
@@ -85,9 +85,7 @@ use crate::{
             frame::{plan_frame_layout, FrameLayoutPlan, FrameSpan},
             prepare_function, ModuleFacts, PrepareInput,
         },
-        jit::template,
-        jit::wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
-        runtime::{
+        jit::runtime::{
             code::{
                 AlignedConstData, CodegenModuleView, CompiledNativeModule, NativeCode,
                 NativeCodeCache, NativeRootEntry,
@@ -95,6 +93,8 @@ use crate::{
             code_buf::CodeBuffer,
             dispatch_view::{NativeLocalCallInfo32, NativeLocalCallInfo64},
         },
+        jit::template,
+        jit::wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
         store::Store,
     },
 };
@@ -361,7 +361,7 @@ fn frame_span_region(span: FrameSpan) -> MachineFrameRegion {
 
 fn patch_code_buffer_word(
     active_backend: arch::NativeBackend,
-    executable: &mut crate::vm::runtime::code_buf::CodeBuffer,
+    executable: &mut crate::vm::jit::runtime::code_buf::CodeBuffer,
     code_offset: usize,
     value: usize,
 ) {
@@ -397,7 +397,7 @@ fn patch_code_buffer_word(
 
 fn patch_direct_call_code_buffer(
     active_backend: arch::NativeBackend,
-    executable: &mut crate::vm::runtime::code_buf::CodeBuffer,
+    executable: &mut crate::vm::jit::runtime::code_buf::CodeBuffer,
     function_base: usize,
     patch: &DirectCallPatch,
     callee_addr: usize,
@@ -443,7 +443,7 @@ fn patch_direct_call_code_buffer(
 
 #[cfg(sf_backend_arm64)]
 fn patch_arm64_direct_branch_code_buffer(
-    executable: &mut crate::vm::runtime::code_buf::CodeBuffer,
+    executable: &mut crate::vm::jit::runtime::code_buf::CodeBuffer,
     function_base: usize,
     inst_offset: usize,
     fallback_veneer_offset: usize,
@@ -1346,7 +1346,7 @@ fn finish_native_compile_streaming(
                 )
             })
             .collect();
-        crate::vm::runtime::trap_signal::register_jit_ranges(&ranges);
+        crate::vm::jit::runtime::trap_signal::register_jit_ranges(&ranges);
     }
 
     let bytes: usize = emitted

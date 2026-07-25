@@ -1,7 +1,7 @@
 use crate::{
     error::WasmError,
     vm::{
-        runtime::{
+        jit::runtime::{
             common::{internal_error, set_ctx_error, trap_error, NativeCallStatus},
             context::NativeContext,
         },

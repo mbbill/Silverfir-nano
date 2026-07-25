@@ -10,7 +10,7 @@ use crate::{
             MachineMemWidth, MachineReg, MachineShiftOp, MachineSign, MachineStorageType,
             MachineTrapKind, MachineValue, MACHINE_FP_REG,
         },
-        runtime::preserved,
+        jit::runtime::preserved,
     },
 };
 

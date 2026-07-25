@@ -187,7 +187,7 @@ impl<'a> Riscv32Backend<'a> {
         result_scratch_idx: Option<u8>,
         prefix_bytes: u32,
     ) {
-        use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
+        use crate::vm::jit::runtime::preserved::{io as preserved_io, preserved_entry};
 
         let call_scratch = self.alloc_host_call_scratch();
 
@@ -246,7 +246,7 @@ impl<'a> Riscv32Backend<'a> {
         result: PreservedResultTarget,
         prefix_bytes: u32,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::preserved_entry;
+        use crate::vm::jit::runtime::preserved::preserved_entry;
 
         let call_scratch = self.alloc_host_call_scratch();
 
@@ -365,7 +365,7 @@ impl<'a> Riscv32Backend<'a> {
         prefix_bytes: u32,
         result: PreservedResultTarget,
     ) -> Result<(), WasmError> {
-        let ret0 = prefix_bytes as i32 + (crate::vm::runtime::preserved::io::RET0 as i32 * 8);
+        let ret0 = prefix_bytes as i32 + (crate::vm::jit::runtime::preserved::io::RET0 as i32 * 8);
         match result {
             PreservedResultTarget::GpWord(dst) => {
                 let dst = self.map_gp_reg(dst)?;

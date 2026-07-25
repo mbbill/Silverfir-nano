@@ -8,12 +8,12 @@
 use crate::{
     error::WasmError,
     vm::{
-        backend::BackendConfig,
+        jit::backend::BackendConfig,
         jit::machine::machine_ir::{
             gp_dynamic_index, MachineReg, MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG,
             MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
-        runtime::preserved::io as preserved_io,
+        jit::runtime::preserved::io as preserved_io,
     },
 };
 

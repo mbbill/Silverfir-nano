@@ -13,7 +13,7 @@ mod template;
 use crate::{
     error::WasmError,
     vm::{
-        runtime::context::NativeContext,
+        jit::runtime::context::NativeContext,
         value_encoding::{as_f32, as_f64, from_f32, from_f64, from_i64},
     },
 };

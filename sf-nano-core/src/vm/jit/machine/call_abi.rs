@@ -8,7 +8,7 @@
 use crate::collections;
 
 use crate::vm::{
-    backend::BackendConfig,
+    jit::backend::BackendConfig,
     jit::machine::machine_ir::{
         is_preserved_dynamic_reg, MachineCallResults, MachineProgram, MachineReg, MachineResultDst,
         MachineTerminator,

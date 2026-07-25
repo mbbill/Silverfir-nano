@@ -10,8 +10,10 @@ use crate::{
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
+        jit::runtime::{
+            code::NativeCode, collect_native_results_from_stack, context::NativeContext,
+        },
         result_buffer::ResultBuffer,
-        runtime::{code::NativeCode, collect_native_results_from_stack, context::NativeContext},
         store::Store,
         value::Value,
         value_encoding::value_to_machine_raw_in_store,
@@ -23,7 +25,7 @@ use super::helpers::trap_error;
 #[cfg(sf_has_guard_pages)]
 use crate::vm::jit::machine::machine_ir::MachineTrapKind;
 #[cfg(sf_has_guard_pages)]
-use crate::vm::runtime::trap_signal;
+use crate::vm::jit::runtime::trap_signal;
 
 #[cfg(sf_call_trace)]
 use crate::vm::jit::debug::function_trace;
@@ -64,7 +66,9 @@ pub(crate) fn eval(
     #[cfg(sf_has_guard_pages)]
     let stack = match store.take_native_stack_cache() {
         Some(stack) if stack.supports(stack_bytes, max_frame_bytes) => stack,
-        _ => crate::vm::runtime::guard_pages::GuardPageStack::new(stack_bytes, max_frame_bytes)?,
+        _ => {
+            crate::vm::jit::runtime::guard_pages::GuardPageStack::new(stack_bytes, max_frame_bytes)?
+        }
     };
     #[cfg(sf_has_guard_pages)]
     let stack_base = stack.base();
@@ -129,7 +133,7 @@ pub(crate) fn eval(
 
     #[cfg(sf_has_guard_pages)]
     {
-        use crate::vm::runtime::context::ctx_offset;
+        use crate::vm::jit::runtime::context::ctx_offset;
         trap_signal::install_signal_handler();
         trap_signal::set_context_offsets(
             ctx_offset::TRAP_KIND as usize,

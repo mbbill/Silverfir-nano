@@ -19,7 +19,7 @@ use crate::{
     error::WasmError,
     vm::{
         jit::machine::machine_ir::{MachineFloatWidth, MachineReg, MachineValue, MACHINE_CTX_REG},
-        runtime::preserved::io as preserved_io,
+        jit::runtime::preserved::io as preserved_io,
     },
 };
 
@@ -254,7 +254,7 @@ impl<'a> Arm32Backend<'a> {
         payload_ptr_slot: Option<usize>,
         result: PreservedResultTarget,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
+        use crate::vm::jit::runtime::preserved::{io as preserved_io, preserved_entry};
         let payload_bytes = payload_words.len() as u32 * 8;
 
         // Step 1: spill R0..R3, R9 onto the host stack so the JIT register

@@ -1,4 +1,5 @@
-//! The optimizing JIT: everything between Wasm bytecode and native code.
+//! The optimizing JIT: everything between Wasm bytecode and native code, and
+//! the native runtime that executes the result.
 //!
 //! The whole subtree is gated on `sf_jit` at the [`super`] level, which is
 //! the point of it having a subtree at all. "Belongs to the JIT" is now a
@@ -13,14 +14,24 @@
 //! - `arch/` compiles MIR into native code for the selected backend
 //! - `build` drives those stages; `template` is the fast path that skips them
 //!
-//! `debug/` is the IR/jitdump tooling for the same pipeline. What is NOT here
-//! is the substrate both engines share -- module parsing, `Store`, instances,
-//! entities, values -- which stays in [`super`].
+//! `backend` is the register-ABI contract those stages plan against, and
+//! `runtime/` is what the emitted code runs inside: executable memory, the
+//! native context and frame layout, traps, and the runtime-call boundary.
+//! Every module here was already individually `sf_jit`-gated; the directory
+//! states it once instead.
+//!
+//! `debug/` is the IR/jitdump tooling for the same pipeline.
+//!
+//! Note the word "backend" carries two meanings in this tree, and they are
+//! not the same axis: here it is the *ISA* (`arch::NativeBackend`), while
+//! which engine runs a module at all is [`crate::vm::engine::Engine`].
 
 pub(crate) mod arch;
+pub(crate) mod backend;
 pub(crate) mod build;
 pub(crate) mod debug;
 pub(crate) mod machine;
 pub(crate) mod middle;
+pub(crate) mod runtime;
 pub(crate) mod template;
 pub(crate) mod wasm;

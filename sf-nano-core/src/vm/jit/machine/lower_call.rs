@@ -14,7 +14,7 @@ use crate::{
             frame::{FrameSlot, FrameSpan},
             ssa_ir::ir::{SsaCallArgs, SsaCallOperandLoc, SsaValue},
         },
-        runtime::runtime_call::{
+        jit::runtime::runtime_call::{
             RuntimeCallFrameRegion, RuntimeCallMeta, RuntimeCallTargetKind,
             RuntimeCallTypeCheckKind,
         },

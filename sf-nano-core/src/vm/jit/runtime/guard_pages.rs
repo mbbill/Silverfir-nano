@@ -8,7 +8,7 @@
 //!
 //! This module is gated on `#[cfg(sf_has_guard_pages)]`. All OS coupling
 //! — reservation, per-page commit, release — is delegated to
-//! [`crate::vm::runtime::os`].
+//! [`crate::vm::jit::runtime::os`].
 
 use crate::error::WasmError;
 

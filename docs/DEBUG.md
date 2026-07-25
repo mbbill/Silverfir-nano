@@ -59,25 +59,40 @@ python3 scripts/check.py
 python3 scripts/check.py --release-only --default-targets
 ```
 
-## Backend Modes
+## Engines
+
+Which engine runs a module, and which ISA the JIT emits for, are two
+different axes. The engine is the runtime choice; the ISA is fixed at build
+time by the target triple.
 
 The CLI accepts:
 
-- `--backend native` (alias: `--backend jit`)
-- `--backend auto`
-- `--emu64` / `--emu32` for the debug-only native emulator backend
+- `--engine jit` (aliases: `--engine native`, `--backend native`)
+- `--engine interp` (shorthand: `--interp`)
+- `--engine auto`
+- `--emu64` / `--emu32` for the debug-only native emulator *backend* — an
+  ISA choice under the JIT engine, not an engine of its own
 
-| Mode | What it does |
+| Engine | What it does |
 |---|---|
-| `native` | Native JIT backend. On supported release targets this is the real architecture backend. |
-| `auto` | Resolve best available backend. Today that always means `native` because the JIT (`jit` feature) is the only compiled-in execution backend. |
+| `jit` | Compiles each function to native code before running it. |
+| `interp` | Runs the threaded dispatch chain generated for this target at build time. |
+| `auto` | The JIT where it is compiled in, the interpreter otherwise. |
 
 Details that matter:
 
-1. The CLI default is `native`, not `auto`.
-2. `jit` is a default feature of `sf-nano-core`, so `native` is usually available without extra feature flags.
-3. `--emu64` / `--emu32` are only accepted in debug builds. Release builds reject them.
-4. The previous `base` (interpreter) and `fusion` backends have been removed; the interpreter was rewritten as the folded stack machine (`docs/INTERPRETER_V2.md`) and is selected with `--interp`.
+1. `--engine` only accepts engines the binary was built with. Asking for one
+   that was left out is an error that lists what this build has; the
+   corresponding `Engine` variant does not exist at all in the API, so an
+   embedder gets a compile error rather than a runtime one.
+2. `jit` and `interp` are both default features of `sf-nano-core`, so both
+   are usually available without extra feature flags. `--no-default-features
+   --features interp` builds an interpreter-only binary with no JIT in it.
+3. `--emu64` / `--emu32` are only accepted in debug builds. Release builds
+   reject them.
+4. The previous `base` (interpreter) and `fusion` backends have been removed;
+   the interpreter was rewritten as the folded stack machine
+   (`docs/INTERPRETER_V2.md`).
 
 ## Native vs Reference
 

@@ -5,7 +5,7 @@ use core::mem::{align_of, size_of};
 
 use crate::vm::{
     jit::machine::machine_ir::{MachineConstData, MachineConstId},
-    runtime::runtime_call::RuntimeCallMeta,
+    jit::runtime::runtime_call::RuntimeCallMeta,
 };
 
 pub(crate) struct ConstPoolBuilder {

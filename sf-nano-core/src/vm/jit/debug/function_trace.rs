@@ -19,7 +19,7 @@ mod imp {
     use crate::module::entities::FunctionSpec;
     use crate::value_type::ValueType;
     use crate::vm::entities::{FunctionInst, ModuleInst};
-    use crate::vm::runtime::context::NativeContext;
+    use crate::vm::jit::runtime::context::NativeContext;
     use crate::vm::store::Store;
 
     const TRACE_ENV: &str = "SF_FUNCTION_TRACE";
@@ -447,7 +447,7 @@ mod tests {
 
     use super::imp::*;
     use crate::module::type_context::TypeContext;
-    use crate::vm::{entities::ModuleInst, runtime::context::NativeContext, store::Store};
+    use crate::vm::{entities::ModuleInst, jit::runtime::context::NativeContext, store::Store};
 
     struct TraceTestGuard {
         path: PathBuf,

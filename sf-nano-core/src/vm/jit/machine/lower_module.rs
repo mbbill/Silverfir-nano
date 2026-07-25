@@ -8,8 +8,8 @@ use crate::{
     error::WasmError,
     value_type::ValueType,
     vm::{
-        backend::BackendConfig,
         entities::TableDispatchMode,
+        jit::backend::BackendConfig,
         jit::machine::machine_ir::{
             MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineBlock, MachineBlockId,
             MachineBlockParam, MachineBranchCond, MachineCallArgs, MachineCallLaneArg,
@@ -33,7 +33,7 @@ use crate::{
                 validate::validate_program,
             },
         },
-        runtime::{
+        jit::runtime::{
             context::function_kind,
             layout::{
                 fixed_call_table_entry_abi_layout, fixed_call_table_view_abi_layout,

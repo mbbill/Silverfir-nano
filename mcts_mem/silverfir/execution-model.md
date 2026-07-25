@@ -4,10 +4,17 @@
   tiering: the engine is chosen per instance by the embedder (the CLI
   exposes it as a flag), and an instance runs entirely on one engine.
 
-- The two engines share the runtime substrate — module parsing and
-  validation, `Store`, instances, WASI host layer — but none of the
-  compile/execute pipeline: the interpreter never touches the JIT's IRs,
-  register allocator, or encoders.
+- What the two engines share is the module layer — parsing and validation,
+  the opcode decoder, the value-type model — and the WASI host layer. They
+  share no runtime state: the store, the instance model, and the entity
+  and heap representations belong to the JIT, and the interpreter carries
+  its own instance type with its own flat host-dispatch boundary.
+
+- Neither engine touches the other's execution machinery: the interpreter
+  never sees the JIT's IRs, register allocator, or encoders.
+
+- Which engine runs a module is one selector, [[engine-selection]],
+  separate from which ISA the JIT emits for ([[backend-selection]]).
 
 - The interpreter executes only through its own native dispatch chain,
   whose handlers are generated per target at build time and linked into

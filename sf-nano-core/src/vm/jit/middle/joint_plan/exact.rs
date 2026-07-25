@@ -28,7 +28,7 @@ use crate::{
     error::WasmError,
     value_type::ValueType,
     vm::{
-        backend::BackendConfig,
+        jit::backend::BackendConfig,
         jit::middle::{
             cell::{CellId, CellSet},
             cfg::{CfgBlockId, CfgTerminator, SemanticCfg},

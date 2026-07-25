@@ -1,15 +1,9 @@
-//! Backend selection.
+//! The register ABI the shared compiler plans against.
 //!
-//! This module carries only backend identity and runtime backend selection.
-//! Backend-specific planning configuration belongs to the backend
-//! implementation, not to shared VM code.
-use core::sync::atomic::{AtomicU8, Ordering};
-
-/// High-level execution backend.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BackendKind {
-    Native,
-}
+//! This is the JIT's own contract between its middle-end and its backends,
+//! not a VM-wide concept: which engine runs a module is [`crate::vm::engine`],
+//! and which ISA the JIT targets is `arch::NativeBackend`. "Backend" means
+//! the ISA here.
 
 /// Planning-time backend configuration.
 ///
@@ -243,75 +237,4 @@ mod tests {
         assert_eq!(config.fp_arg_lanes, 2);
         assert!(config.scalar_return_lanes);
     }
-}
-
-impl BackendKind {
-    #[inline]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-        }
-    }
-}
-
-/// Runtime backend selection.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum BackendMode {
-    Auto,
-    Native,
-}
-
-impl BackendMode {
-    #[inline]
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::Auto => "auto",
-            Self::Native => "native",
-        }
-    }
-
-    #[inline]
-    pub fn parse_str(name: &str) -> Option<Self> {
-        match name {
-            "auto" => Some(Self::Auto),
-            "native" | "jit" => Some(Self::Native),
-            _ => None,
-        }
-    }
-}
-
-static ACTIVE_BACKEND_MODE: AtomicU8 = AtomicU8::new(BackendMode::Native as u8);
-
-pub fn set_backend_mode(mode: BackendMode) {
-    ACTIVE_BACKEND_MODE.store(mode as u8, Ordering::Relaxed);
-}
-
-pub(crate) fn active_backend_mode() -> BackendMode {
-    match ACTIVE_BACKEND_MODE.load(Ordering::Relaxed) {
-        x if x == BackendMode::Native as u8 => BackendMode::Native,
-        _ => BackendMode::Auto,
-    }
-}
-
-pub fn backend_mode() -> BackendMode {
-    active_backend_mode()
-}
-
-pub(crate) fn resolve_backend_mode(mode: BackendMode) -> Result<BackendKind, &'static str> {
-    match mode {
-        BackendMode::Native | BackendMode::Auto => {
-            #[cfg(sf_jit)]
-            {
-                Ok(BackendKind::Native)
-            }
-            #[cfg(not(sf_jit))]
-            {
-                Err("native backend not compiled in")
-            }
-        }
-    }
-}
-
-pub fn active_backend() -> Result<BackendKind, &'static str> {
-    resolve_backend_mode(active_backend_mode())
 }

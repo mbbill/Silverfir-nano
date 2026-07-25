@@ -5,7 +5,7 @@ use crate::vm::jit::middle::ssa_ir::ir::SsaOp;
 use crate::vm::jit::wasm::primitive_op::PrimitiveOpKind;
 use crate::vm::jit::wasm::semantic_ir::SemanticOpKind;
 
-use crate::vm::backend::BackendConfig;
+use crate::vm::jit::backend::BackendConfig;
 
 use super::helpers::{
     all_inst_kinds, contains_ensure_cache, count_ensure_cache, first_local_get_for, i32_program,

@@ -1,17 +1,12 @@
-//! Linux ARM64 signal handler using the glibc/musl ucontext_t layout.
+//! Linux x86_64 signal handler using the glibc/musl ucontext_t layout.
 
-use crate::vm::runtime::trap_signal;
+use crate::vm::jit::runtime::trap_signal;
 
 const SIGSEGV: i32 = 11;
 const SIGBUS: i32 = 7;
 const SA_SIGINFO: i32 = 4;
 const SIGINFO_SI_ADDR_OFFSET: usize = 16;
 
-// The userspace libc `struct sigaction` on Linux uses a 128-byte sigset_t
-// (`_SIGSET_NWORDS * sizeof(unsigned long)` = 16 * 8 on 64-bit) and lays the
-// fields out as: sa_handler/sa_sigaction, sa_mask, sa_flags, sa_restorer.
-// The kernel-ABI `rt_sigaction` struct is different (8-byte sa_mask, fields
-// in a different order) and must not be passed to libc's wrapper.
 #[repr(C)]
 struct SigSet {
     __val: [u64; 16],
@@ -33,33 +28,38 @@ unsafe fn siginfo_fault_addr(info: *mut u8) -> usize {
     unsafe { *(info.add(SIGINFO_SI_ADDR_OFFSET) as *const usize) }
 }
 
-// Linux aarch64 ucontext layout:
-//   ucontext.uc_mcontext.regs[0..31] = X0-X30
-//   ucontext.uc_mcontext.sp
-//   ucontext.uc_mcontext.pc
-const UCONTEXT_MCONTEXT_REGS_OFFSET: usize = 184; // offsetof(ucontext_t, uc_mcontext.regs)
-
-#[repr(C)]
-struct McontextRegs {
-    regs: [u64; 31],
-    sp: u64,
-    pc: u64,
-    pstate: u64,
-}
+// Linux x86_64 ucontext layout (glibc / musl sys/ucontext.h):
+//   uc_flags           u64   @ 0
+//   uc_link            ptr   @ 8
+//   uc_stack           24    @ 16
+//   uc_mcontext.gregs  23*u64@ 40   (gregs first inside mcontext_t)
+//   ...
+//
+// On this platform `uc_sigmask` sits *after* `uc_mcontext`, not before,
+// so the mcontext offset is a flat 40 bytes from the start of ucontext_t.
+//
+// gregs index constants from Linux sys/ucontext.h:
+//   REG_R8=0, R9=1, R10=2, R11=3, R12=4, R13=5, R14=6, R15=7,
+//   REG_RDI=8, RSI=9, RBP=10, RBX=11, RDX=12, RAX=13, RCX=14, RSP=15, RIP=16
+const UCONTEXT_GREGS_OFFSET: usize = 40;
+const REG_RAX: usize = 13;
+const REG_RBX: usize = 11;
+const REG_RIP: usize = 16;
 
 unsafe extern "C" fn signal_handler(_sig: i32, info: *mut u8, ucontext: *mut u8) {
     if trap_signal::signal_count_inc_and_check() {
         std::process::abort();
     }
 
-    let mregs = unsafe { &mut *(ucontext.add(UCONTEXT_MCONTEXT_REGS_OFFSET) as *mut McontextRegs) };
-    let pc = mregs.pc as usize;
+    let gregs = unsafe { ucontext.add(UCONTEXT_GREGS_OFFSET) as *mut u64 };
+    let pc = unsafe { *gregs.add(REG_RIP) } as usize;
 
     let Some(resolution) = (unsafe { trap_signal::try_resolve_trap(pc) }) else {
         std::process::abort();
     };
 
-    let ctx_ptr = mregs.regs[19] as *mut u8;
+    // RBX = MACHINE_CTX_REG (NativeContext pointer) in our x86_64 mapping.
+    let ctx_ptr = unsafe { *gregs.add(REG_RBX) } as *mut u8;
     if resolution.trap_kind_offset > 0 {
         let fault_addr = unsafe { siginfo_fault_addr(info) };
         let trap_kind = unsafe { trap_signal::classify_trap_kind(ctx_ptr, fault_addr, resolution) };
@@ -67,11 +67,13 @@ unsafe extern "C" fn signal_handler(_sig: i32, info: *mut u8, ucontext: *mut u8)
         unsafe { *trap_kind_ptr = trap_kind };
     }
 
-    mregs.regs[0] = 1;
-    mregs.pc = resolution.error_ret as u64;
+    unsafe {
+        *gregs.add(REG_RAX) = 1;
+        *gregs.add(REG_RIP) = resolution.error_ret as u64;
+    }
 }
 
-pub(in crate::vm::runtime) unsafe fn install_platform_handler() {
+pub(in crate::vm::jit::runtime) unsafe fn install_platform_handler() {
     let act = libc_sigaction {
         sa_sigaction: signal_handler,
         sa_mask: SigSet { __val: [0; 16] },
@@ -90,7 +92,7 @@ mod tests {
     use core::mem::{offset_of, size_of};
 
     #[test]
-    fn glibc_arm64_sigaction_layout_matches_expected_abi() {
+    fn glibc_x64_sigaction_layout_matches_expected_abi() {
         assert_eq!(size_of::<SigSet>(), 128);
         assert_eq!(offset_of!(libc_sigaction, sa_sigaction), 0);
         assert_eq!(offset_of!(libc_sigaction, sa_mask), 8);

@@ -26,8 +26,7 @@ use crate::{
             MACHINE_CTX_REG, MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
             MACHINE_MEM0_SIZE_REG,
         },
-        result_buffer::ResultBuffer,
-        runtime::{
+        jit::runtime::{
             code::{CompiledNativeModule, NativeCode},
             collect_native_results_from_stack,
             common::NativeCallStatus,
@@ -35,6 +34,7 @@ use crate::{
             preserved::{self, io as preserved_io, op as preserved_op},
             runtime_call::call_runtime_entry_ptr,
         },
+        result_buffer::ResultBuffer,
         store::Store,
         value::Value,
         value_encoding::{
@@ -3137,7 +3137,7 @@ mod tests {
                 MachineSign, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
                 MACHINE_FIXED_REG_COUNT, MACHINE_MEM0_BASE_REG,
             },
-            runtime::{self, code::CompiledNativeModule},
+            jit::runtime::{self, code::CompiledNativeModule},
             store::Store,
             value::{RefHandle, Value},
         },
@@ -3188,7 +3188,7 @@ mod tests {
         unreachable!("emulator tests require an emulator backend build")
     }
 
-    const fn compiled_backend_config() -> crate::vm::backend::BackendConfig {
+    const fn compiled_backend_config() -> crate::vm::jit::backend::BackendConfig {
         super::config::compile_backend_config()
     }
 
@@ -3723,7 +3723,7 @@ mod tests {
             TypeContext::new(collections::vec![]),
         ));
         let n_globals = store.module().globals.len();
-        let mut ctx = crate::vm::runtime::context::NativeContext::new(
+        let mut ctx = crate::vm::jit::runtime::context::NativeContext::new(
             (&mut store) as *mut Store,
             core::ptr::null_mut(),
             n_globals,
@@ -3795,7 +3795,7 @@ mod tests {
             TypeContext::new(collections::vec![]),
         ));
         let n_globals = store.module().globals.len();
-        let mut ctx = crate::vm::runtime::context::NativeContext::new(
+        let mut ctx = crate::vm::jit::runtime::context::NativeContext::new(
             (&mut store) as *mut Store,
             core::ptr::null_mut(),
             n_globals,

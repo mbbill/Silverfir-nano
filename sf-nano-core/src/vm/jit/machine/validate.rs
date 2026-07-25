@@ -1,5 +1,5 @@
 use crate::error::WasmError;
-use crate::vm::backend::BackendConfig;
+use crate::vm::jit::backend::BackendConfig;
 
 #[cfg(any(debug_assertions, test))]
 use super::machine_ir::is_fp_reg;

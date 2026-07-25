@@ -28,7 +28,7 @@
 //! indirections that expose the adjacent ShrU+And / shift+binop pairs.
 //! Running before copy propagation finds almost no matches.
 
-use crate::vm::backend::BackendConfig;
+use crate::vm::jit::backend::BackendConfig;
 use crate::vm::jit::machine::machine_ir::{
     MachineBlock, MachineCompareKind, MachineInst, MachineInstKind, MachineIntBinaryOp,
     MachineIntWidth, MachineReg, MachineRegOwner, MachineShiftOp, MachineSign, MachineTerminator,

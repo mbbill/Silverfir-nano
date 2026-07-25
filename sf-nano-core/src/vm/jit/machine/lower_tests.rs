@@ -4,7 +4,7 @@ use crate::opcodes::OpcodeFD;
 use crate::value_type::ValueType;
 
 use crate::vm::{
-    backend::BackendConfig,
+    jit::backend::BackendConfig,
     jit::machine::{
         lower_module,
         machine_ir::{
@@ -4947,7 +4947,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     };
     assert_eq!(
         type_canon_offset,
-        crate::vm::runtime::context::ctx_offset::TYPE_CANON_BASE as i32
+        crate::vm::jit::runtime::context::ctx_offset::TYPE_CANON_BASE as i32
     );
     assert!(matches!(
         type_check_ops[4].kind,

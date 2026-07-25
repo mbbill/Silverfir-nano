@@ -21,7 +21,7 @@ use crate::{
             MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
             MACHINE_MEM0_SIZE_REG,
         },
-        runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
+        jit::runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
 };
 

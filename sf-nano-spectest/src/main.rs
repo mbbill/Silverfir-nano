@@ -8,8 +8,8 @@ mod wast_test_runner;
 use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
 use sf_nano_core::{
-    active_runtime_engine, reset_native_runtime_state, runtime_config, set_backend_mode,
-    set_runtime_config, target_has_simd, BackendMode, RuntimeConfig,
+    reset_native_runtime_state, runtime_config, set_engine, set_runtime_config, target_has_simd,
+    Engine, RuntimeConfig,
 };
 use std::{
     env,
@@ -68,34 +68,23 @@ fn main() {
         }
     }
 
-    if let Some(backend) = &args.backend {
-        let mode = BackendMode::parse_str(backend).unwrap_or_else(|| {
+    let mut engine = Engine::DEFAULT;
+    if let Some(requested) = &args.backend {
+        engine = Engine::parse_str(requested).unwrap_or_else(|| {
             eprintln!(
-                "invalid backend '{}'; expected one of: auto, native (alias: jit)",
-                backend
+                "engine '{}' is not in this build; it has: {}",
+                requested,
+                engine_names()
             );
             std::process::exit(1);
         });
-        set_backend_mode(mode);
     }
+    set_engine(engine);
     if let Err(err) = apply_compiler_ram_budget(args.compiler_ram_budget.as_deref()) {
         eprintln!("{}", err);
         std::process::exit(1);
     }
-    let runtime_engine = active_runtime_engine().unwrap_or_else(|err| {
-        let requested = args
-            .backend
-            .as_deref()
-            .and_then(BackendMode::parse_str)
-            .unwrap_or(BackendMode::Native);
-        eprintln!(
-            "backend '{}' is unavailable in this build: {}",
-            requested.as_str(),
-            err
-        );
-        std::process::exit(1);
-    });
-    print_runtime_engine(runtime_engine);
+    print_engine(engine);
 
     // Initialize logging
     if let Some(level_str) = &args.log_level {
@@ -233,11 +222,22 @@ fn parse_byte_size(text: &str) -> Option<u32> {
     value.checked_mul(multiplier)?.try_into().ok()
 }
 
-fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {
+/// The engine names this build accepts, for error messages.
+fn engine_names() -> String {
+    let mut names: Vec<&str> = Engine::ALL.iter().map(|e| e.as_str()).collect();
+    names.push("auto");
+    names.join(", ")
+}
+
+fn print_engine(engine: Engine) {
     match engine {
-        sf_nano_core::RuntimeEngine::Jit(backend) => {
-            eprintln!("[runtime] jit backend={backend}");
-        }
+        #[cfg(feature = "jit")]
+        Engine::Jit => match sf_nano_core::active_native_backend_name() {
+            Ok(backend) => eprintln!("[runtime] jit backend={backend}"),
+            Err(err) => eprintln!("[runtime] jit backend unavailable: {err}"),
+        },
+        #[cfg(feature = "interp")]
+        Engine::Interp => eprintln!("[runtime] interpreter (native dispatch)"),
     }
 }
 

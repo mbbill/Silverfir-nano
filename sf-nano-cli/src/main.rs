@@ -1,11 +1,7 @@
 #[cfg(feature = "jit")]
 use sf_nano_core::native_stats_snapshot;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
-use sf_nano_core::Instance;
-use sf_nano_core::{
-    active_runtime_engine, runtime_config, set_backend_mode, set_runtime_config, BackendMode,
-    RuntimeConfig,
-};
+use sf_nano_core::{runtime_config, set_engine, set_runtime_config, Engine, RuntimeConfig};
 
 use std::path::PathBuf;
 use std::{env, fs, process};
@@ -37,8 +33,7 @@ fn run_cli(args: &[String]) -> i32 {
     }
 
     let mut preopens: Vec<(String, PathBuf)> = Vec::new();
-    let mut backend_mode = BackendMode::Native;
-    let mut use_interp = false;
+    let mut engine = Engine::DEFAULT;
     #[cfg(feature = "interp")]
     let mut interp_stats = false;
     let mut compile_only = false;
@@ -99,27 +94,38 @@ fn run_cli(args: &[String]) -> i32 {
                 eprintln!("Error: --dir requires <guest::host> or <path>");
                 return 1;
             }
-        } else if args[i] == "--backend" {
+        } else if args[i] == "--engine" || args[i] == "--backend" {
+            let flag = args[i].clone();
             i += 1;
             if i >= args.len() {
-                eprintln!("Error: --backend requires one of: auto, native (alias: jit)");
+                eprintln!("Error: {} requires one of: {}", flag, engine_names());
                 return 1;
             }
-            let Some(parsed) = BackendMode::parse_str(&args[i]) else {
+            let Some(parsed) = Engine::parse_str(&args[i]) else {
                 eprintln!(
-                    "Error: invalid backend '{}'; expected one of: auto, native (alias: jit)",
-                    args[i]
+                    "Error: engine '{}' is not in this build; it has: {}",
+                    args[i],
+                    engine_names(),
                 );
                 return 1;
             };
-            backend_mode = parsed;
+            engine = parsed;
         } else if args[i] == "--interp" || args[i] == "--interp-stats" {
-            use_interp = true;
             #[cfg(feature = "interp")]
             {
+                engine = Engine::Interp;
                 if args[i] == "--interp-stats" {
                     interp_stats = true;
                 }
+            }
+            #[cfg(not(feature = "interp"))]
+            {
+                eprintln!(
+                    "Error: {} requires the interp feature; this build has: {}",
+                    args[i],
+                    engine_names()
+                );
+                return 1;
             }
         } else if args[i] == "--compile-only" || args[i] == "--no-run" {
             compile_only = true;
@@ -162,7 +168,7 @@ fn run_cli(args: &[String]) -> i32 {
             return 1;
         }
 
-        set_backend_mode(backend_mode);
+        set_engine(engine);
         if compiler_ram_budget.is_none() {
             match env::var("SF_NANO_COMPILER_RAM_BUDGET") {
                 Ok(value) => match parse_byte_size(&value) {
@@ -196,20 +202,7 @@ fn run_cli(args: &[String]) -> i32 {
                 return 1;
             }
         }
-        if !use_interp {
-            let runtime_engine = match active_runtime_engine() {
-                Ok(engine) => engine,
-                Err(err) => {
-                    eprintln!(
-                        "Error: backend '{}' is unavailable in this build: {}",
-                        backend_mode.as_str(),
-                        err,
-                    );
-                    return 1;
-                }
-            };
-            print_runtime_engine(runtime_engine);
-        }
+        print_engine(engine);
 
         let path = PathBuf::from(&remaining_args[0]);
         let prog_args: Vec<String> = remaining_args[1..].to_vec();
@@ -252,50 +245,15 @@ fn run_cli(args: &[String]) -> i32 {
         let ctx = ctx_builder.build();
         set_wasi_ctx(ctx);
 
-        if use_interp {
+        // The whole engine choice, in one place. Each arm is gated on its
+        // own feature, so a single-engine build has a one-arm match on a
+        // zero-sized value -- the branch and the engine it does not have
+        // both leave the binary.
+        match engine {
+            #[cfg(feature = "jit")]
+            Engine::Jit => run_jit(&data, compile_only),
             #[cfg(feature = "interp")]
-            {
-                return run_interp(&data, module_name, interp_stats);
-            }
-            #[cfg(not(feature = "interp"))]
-            {
-                eprintln!("Error: --interp requires building sf-nano-cli with the interp feature");
-                return 1;
-            }
-        }
-
-        let imports = wasi_imports();
-        let mut instance = match Instance::new(&data, &imports) {
-            Ok(instance) => instance,
-            Err(err) => {
-                eprintln!("Error instantiating module: {}", err);
-                return 1;
-            }
-        };
-
-        if compile_only {
-            print_native_stats();
-            return 0;
-        }
-
-        let entry = if instance.has_function_export("_start") {
-            "_start"
-        } else {
-            "main"
-        };
-        let result = instance.invoke(entry, &[]);
-
-        print_native_stats();
-
-        match result {
-            Ok(_) => 0,
-            Err(err) => {
-                if let Some(code) = err.exit_code() {
-                    return code;
-                }
-                eprintln!("Error: {}", err);
-                1
-            }
+            Engine::Interp => run_interp(&data, module_name, interp_stats),
         }
     })();
 
@@ -313,6 +271,50 @@ fn run_cli(args: &[String]) -> i32 {
     }
 
     exit_code
+}
+
+/// Run the module through the JIT.
+///
+/// `Instance` and everything it reaches -- the store, the entity model, the
+/// native runtime -- is named only from here, so an interpreter-only build
+/// never links it.
+#[cfg(feature = "jit")]
+fn run_jit(data: &[u8], compile_only: bool) -> i32 {
+    use sf_nano_core::Instance;
+
+    let imports = wasi_imports();
+    let mut instance = match Instance::new(data, &imports) {
+        Ok(instance) => instance,
+        Err(err) => {
+            eprintln!("Error instantiating module: {}", err);
+            return 1;
+        }
+    };
+
+    if compile_only {
+        print_native_stats();
+        return 0;
+    }
+
+    let entry = if instance.has_function_export("_start") {
+        "_start"
+    } else {
+        "main"
+    };
+    let result = instance.invoke(entry, &[]);
+
+    print_native_stats();
+
+    match result {
+        Ok(_) => 0,
+        Err(err) => {
+            if let Some(code) = err.exit_code() {
+                return code;
+            }
+            eprintln!("Error: {}", err);
+            1
+        }
+    }
 }
 
 /// Run the module through the interpreter, bridging its host-dispatch
@@ -386,9 +388,6 @@ fn run_interp(data: &[u8], module_name: &str, stats: bool) -> i32 {
                 return 1;
             }
         };
-        // stderr: stdout belongs to the guest program (checksummed by
-        // the benchmark harness).
-        eprintln!("runtime engine: interpreter (native dispatch)");
 
         inst.set_host(
             move |m: &str, n: &str, mem: &mut [u8], args: &[u64], results: &mut [u64]| {
@@ -490,14 +489,17 @@ fn print_usage(program_name: &str) {
     eprintln!();
     eprintln!("USAGE:");
     eprintln!(
-        "  {program_name} [--backend <auto|native>] [--compile-only] [--no-parallel-compilation] [--dir <guest::host|path>] [--memprof] [--memprof-report <html>] <wasm-file> [args...]"
+        "  {program_name} [--engine <name>] [--compile-only] [--no-parallel-compilation] [--dir <guest::host|path>] [--memprof] [--memprof-report <html>] <wasm-file> [args...]"
     );
     eprintln!();
     eprintln!("Run a WebAssembly module with WASI support.");
     eprintln!();
     eprintln!("OPTIONS:");
-    eprintln!("  --backend <auto|native>   Select the execution backend.");
-    eprintln!("  --interp                  Run through the interpreter instead of the JIT.");
+    eprintln!(
+        "  --engine <name>           Select the execution engine: {} (--backend is an alias).",
+        engine_names()
+    );
+    eprintln!("  --interp                  Shorthand for --engine interp.");
     eprintln!(
         "  --interp-stats            Interpreter: print dispatch statistics (implies --interp)."
     );
@@ -589,10 +591,23 @@ fn print_native_stats() {
     }
 }
 
-fn print_runtime_engine(engine: sf_nano_core::RuntimeEngine) {
+/// The engine names this build accepts, for error messages.
+fn engine_names() -> String {
+    let mut names: Vec<&str> = Engine::ALL.iter().map(|e| e.as_str()).collect();
+    names.push("auto");
+    names.join(", ")
+}
+
+/// Announce the engine on stderr: stdout belongs to the guest program, which
+/// the benchmark harness checksums.
+fn print_engine(engine: Engine) {
     match engine {
-        sf_nano_core::RuntimeEngine::Jit(backend) => {
-            eprintln!("[runtime] jit backend={backend}");
-        }
+        #[cfg(feature = "jit")]
+        Engine::Jit => match sf_nano_core::active_native_backend_name() {
+            Ok(backend) => eprintln!("[runtime] jit backend={backend}"),
+            Err(err) => eprintln!("[runtime] jit backend unavailable: {err}"),
+        },
+        #[cfg(feature = "interp")]
+        Engine::Interp => eprintln!("[runtime] interpreter (native dispatch)"),
     }
 }

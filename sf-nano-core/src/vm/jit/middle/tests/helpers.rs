@@ -4,7 +4,7 @@ use crate::collections;
 
 use crate::value_type::ValueType;
 use crate::vm::{
-    backend::BackendConfig,
+    jit::backend::BackendConfig,
     jit::middle::{
         cell::{CellId, CellSet},
         cfg::{self, CfgBlockId, SemanticCfg},

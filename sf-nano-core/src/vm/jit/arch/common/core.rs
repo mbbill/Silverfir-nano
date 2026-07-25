@@ -3,7 +3,7 @@ use crate::collections;
 use crate::{
     error::WasmError,
     vm::{
-        backend::BackendConfig,
+        jit::backend::BackendConfig,
         jit::machine::machine_ir::{
             fp_reg_index, is_fp_reg, MachineBlock, MachineBlockId, MachineFloatWidth,
             MachineFuncId, MachineFunction, MachineFunctionAbi, MachineParamLoc, MachineReg,
@@ -15,7 +15,7 @@ use crate::{
 
 #[cfg(any(sf_backend_armv7a, sf_backend_thumbm, sf_backend_riscv32))]
 use crate::vm::jit::machine::low32_liveness::Low32DeadHiDefs;
-use crate::vm::runtime::code::CodegenModuleView;
+use crate::vm::jit::runtime::code::CodegenModuleView;
 
 use super::helpers::{trap_kind_index, MACHINE_TRAP_KIND_COUNT};
 use super::text_emitter::TextEmitter;

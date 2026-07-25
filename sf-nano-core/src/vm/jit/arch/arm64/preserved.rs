@@ -201,7 +201,7 @@ impl<'a> Arm64Backend<'a> {
         result_scratch_idx: Option<u8>,
         prefix_bytes: u32,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::preserved_entry;
+        use crate::vm::jit::runtime::preserved::preserved_entry;
 
         self.emit_preserved_call_and_close_impl(
             Some(op_code),
@@ -264,7 +264,7 @@ impl<'a> Arm64Backend<'a> {
         result_scratch_idx: Option<u8>,
         prefix_bytes: u32,
     ) -> Result<(), WasmError> {
-        use crate::vm::runtime::preserved::io as preserved_io;
+        use crate::vm::jit::runtime::preserved::io as preserved_io;
 
         let call_scratch_idx = result_scratch_idx.unwrap_or_else(|| self.gp_scratch.alloc());
         let call_scratch = self.gp_scratch.reg(call_scratch_idx);

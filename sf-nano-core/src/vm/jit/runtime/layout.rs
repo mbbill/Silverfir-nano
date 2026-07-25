@@ -240,11 +240,11 @@ mod tests {
         function_view_abi_layout, local_call_info_abi_layout, native_runtime_abi_layout,
         pointer_len_abi_layout,
     };
-    use crate::vm::runtime::context::{
+    use crate::vm::jit::runtime::context::{
         ctx_offset, fixed_call_table_view_offset, function_view_offset, memory_view_offset,
         table_view_offset, NativeContext,
     };
-    use crate::vm::runtime::dispatch_view::{
+    use crate::vm::jit::runtime::dispatch_view::{
         NativeFixedCallTableEntry, NativeFixedCallTableView, NativeLocalCallInfo32,
         NativeLocalCallInfo64,
     };

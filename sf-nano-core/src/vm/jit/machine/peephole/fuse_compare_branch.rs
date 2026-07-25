@@ -7,7 +7,7 @@
 //! This is a cross-block pass: it reads successor blocks to check liveness,
 //! so it must run after the per-block optimizations are done.
 
-use crate::vm::backend::BackendConfig;
+use crate::vm::jit::backend::BackendConfig;
 use crate::vm::jit::machine::machine_ir::{
     MachineBlock, MachineBlockId, MachineBranchCond, MachineEdge, MachineInstKind, MachineIntWidth,
     MachineReg, MachineRegOwner, MachineTerminator, MachineValue,

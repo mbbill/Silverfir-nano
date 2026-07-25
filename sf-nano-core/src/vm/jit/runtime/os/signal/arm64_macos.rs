@@ -1,6 +1,6 @@
 //! macOS ARM64 signal handler using Darwin's ucontext_t layout.
 
-use crate::vm::runtime::trap_signal;
+use crate::vm::jit::runtime::trap_signal;
 
 const SIGSEGV: i32 = 11;
 const SIGBUS: i32 = 10;
@@ -81,7 +81,7 @@ unsafe extern "C" fn signal_handler(_sig: i32, info: *mut u8, ucontext: *mut u8)
     unsafe { (*ts).pc = resolution.error_ret as u64 };
 }
 
-pub(in crate::vm::runtime) unsafe fn install_platform_handler() {
+pub(in crate::vm::jit::runtime) unsafe fn install_platform_handler() {
     let act = sigaction {
         sa_sigaction: signal_handler,
         sa_mask: 0,

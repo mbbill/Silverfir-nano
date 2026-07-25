@@ -13,8 +13,8 @@ use crate::{
             MachineTrapKind, MachineValue, MACHINE_FP_REG,
         },
         jit::middle::frame::FrameSlot,
-        runtime::code::CodegenModuleView,
-        runtime::code_buf::CodeBuffer,
+        jit::runtime::code::CodegenModuleView,
+        jit::runtime::code_buf::CodeBuffer,
     },
 };
 

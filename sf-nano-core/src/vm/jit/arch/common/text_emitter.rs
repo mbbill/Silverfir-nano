@@ -3,7 +3,7 @@
 ///
 /// Used by all arch backends to build function text sections.
 use crate::collections;
-use crate::vm::runtime::code_buf::CodeBuffer;
+use crate::vm::jit::runtime::code_buf::CodeBuffer;
 
 pub(crate) struct TextEmitter {
     storage: TextStorage,

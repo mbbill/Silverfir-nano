@@ -40,7 +40,7 @@ mod reuse_loaded_values;
 mod reuse_loop_context_loads;
 mod reuse_loop_frame_values;
 
-use crate::vm::backend::BackendConfig;
+use crate::vm::jit::backend::BackendConfig;
 use crate::vm::jit::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineInstKind, MachineIntBinaryOp, MachineLoadExtension,
     MachineMemWidth, MachineProgram, MachineReg, MachineStorageType, MachineValue,

@@ -5,14 +5,14 @@ use crate::{
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
-        backend::BackendConfig,
         entities::ModuleInst,
+        jit::backend::BackendConfig,
         jit::machine::machine_ir::{MachineFuncId, MachineFunction},
-        result_buffer::ResultBuffer,
-        runtime::{
+        jit::runtime::{
             code::{CodegenModuleView, CompiledNativeModule, NativeCode, NativeRootEntry},
             code_buf::CodeBuffer,
         },
+        result_buffer::ResultBuffer,
         store::Store,
         value::Value,
     },
@@ -175,8 +175,12 @@ pub(crate) fn backend_display_name(backend: NativeBackend) -> &'static str {
     backend.as_str()
 }
 
+/// Which ISA the JIT targets on this build, for embedders that report it.
+///
+/// Distinct from [`crate::vm::engine::Engine`]: that says *which engine*
+/// runs a module, this says which machine the JIT emits for.
 #[inline]
-pub(crate) fn active_native_backend_name() -> Result<&'static str, &'static str> {
+pub fn active_native_backend_name() -> Result<&'static str, &'static str> {
     active_native_backend().map(backend_display_name)
 }
 

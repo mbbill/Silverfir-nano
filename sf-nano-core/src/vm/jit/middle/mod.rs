@@ -27,7 +27,7 @@ use crate::collections::{self, phase_span_with_function};
 
 use crate::{
     error::WasmError,
-    vm::{backend::BackendConfig, jit::wasm::semantic_ir::SemanticProgram},
+    vm::{jit::backend::BackendConfig, jit::wasm::semantic_ir::SemanticProgram},
 };
 
 use self::{

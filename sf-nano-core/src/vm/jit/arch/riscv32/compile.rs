@@ -13,7 +13,7 @@ use crate::{
         jit::arch::common::{
             backend::ArchBackend, helpers::page_align_function, pipeline, types::FunctionArtifact,
         },
-        runtime::{
+        jit::runtime::{
             code::{CompiledNativeModule, NativeRootEntry},
             dispatch_view::NativeLocalCallInfo32,
         },

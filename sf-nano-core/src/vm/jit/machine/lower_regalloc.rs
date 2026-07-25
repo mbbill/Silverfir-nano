@@ -6,7 +6,7 @@ use crate::{
     error::WasmError,
     value_type::ValueType,
     vm::{
-        backend::BackendConfig,
+        jit::backend::BackendConfig,
         jit::machine::machine_ir::{
             machine_ptr_width, machine_word_int_width, MachineAddr, MachineArgSrc,
             MachineArgSrcPair, MachineBlockParam, MachineBranchCond, MachineCallArgs,
@@ -1498,7 +1498,7 @@ mod tests {
     use crate::{
         value_type::ValueType,
         vm::{
-            backend::BackendConfig,
+            jit::backend::BackendConfig,
             jit::machine::machine_ir::{MachineFunctionAbi, MachineStorageType},
             jit::middle::ssa_ir::{
                 ir::{SsaBlock, SsaProgram, SsaTerminator, SsaValue},

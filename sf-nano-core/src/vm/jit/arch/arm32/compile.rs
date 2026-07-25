@@ -14,7 +14,7 @@ use crate::{
             helpers::page_align_function, pipeline, text_emitter::TextEmitter,
             types::FunctionArtifact,
         },
-        runtime::{
+        jit::runtime::{
             code::{CompiledNativeModule, NativeRootEntry},
             code_buf::CodeBuffer,
             dispatch_view::NativeLocalCallInfo32,
@@ -29,7 +29,7 @@ use super::thumb_interworking_bit;
 use crate::vm::jit::arch::common::backend::ArchBackend;
 use crate::vm::jit::arch::common::types::DirectCallPatchSite;
 #[cfg(sf_has_guard_pages)]
-use crate::vm::runtime::trap_signal;
+use crate::vm::jit::runtime::trap_signal;
 
 // ── ARM32-specific patch helper ──────────────────────────────────────────────
 

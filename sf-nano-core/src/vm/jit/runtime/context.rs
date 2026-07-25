@@ -33,7 +33,7 @@ use crate::{
     module::type_defs::CompositeType,
     vm::{
         entities::{FunctionInst, ModuleInst, TableDispatchMode, TableInst},
-        runtime::{
+        jit::runtime::{
             code::CompiledNativeModule,
             dispatch_view::{
                 NativeDispatchMetadata, NativeFixedCallTableEntry, NativeFixedCallTableView,

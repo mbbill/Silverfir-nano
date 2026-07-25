@@ -4,7 +4,7 @@ use crate::collections;
 use crate::{
     value_type::ValueType,
     vm::{
-        backend::BackendConfig,
+        jit::backend::BackendConfig,
         jit::middle::{prepare_function, ModuleFacts, PrepareInput},
         jit::wasm::{
             primitive_op::PrimitiveOpKind,

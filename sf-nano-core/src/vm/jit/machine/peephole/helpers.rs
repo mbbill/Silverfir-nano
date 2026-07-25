@@ -2,7 +2,7 @@
 
 use crate::collections;
 
-use crate::vm::backend::BackendConfig;
+use crate::vm::jit::backend::BackendConfig;
 use crate::vm::jit::machine::machine_ir::{
     is_fp_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineBranchCond, MachineCallArgs,
     MachineCallLaneArg, MachineCallResults, MachineCallTarget, MachineEdge, MachineInst,

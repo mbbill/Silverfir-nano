@@ -14,7 +14,7 @@ use crate::vm::jit::machine::machine_ir::MACHINE_CTX_REG;
 
 use crate::error::WasmError;
 use crate::vm::jit::arch::common::text_emitter::TextEmitter;
-use crate::vm::runtime::context::NativeContext;
+use crate::vm::jit::runtime::context::NativeContext;
 
 use super::super::abi::map_fixed_reg;
 use super::super::backend::X86_64Backend;

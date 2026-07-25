@@ -9,7 +9,7 @@
 //! exception in the process and aborting on non-JIT faults would break
 //! legitimate exception flows in the host.
 
-use crate::vm::runtime::trap_signal;
+use crate::vm::jit::runtime::trap_signal;
 
 const EXCEPTION_ACCESS_VIOLATION: u32 = 0xC000_0005;
 const EXCEPTION_CONTINUE_SEARCH: i32 = 0;
@@ -84,7 +84,7 @@ unsafe extern "system" fn veh(info: *mut ExceptionPointers) -> i32 {
     EXCEPTION_CONTINUE_EXECUTION
 }
 
-pub(in crate::vm::runtime) unsafe fn install_platform_handler() {
+pub(in crate::vm::jit::runtime) unsafe fn install_platform_handler() {
     // First = 1 inserts the handler at the head of the VEH chain so we get
     // first crack at access violations before any user-installed handler.
     let _ = unsafe { AddVectoredExceptionHandler(1, veh) };

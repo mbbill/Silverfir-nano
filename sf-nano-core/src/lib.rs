@@ -36,7 +36,7 @@ pub use config::{runtime_config, set_runtime_config, ConfigError, RuntimeConfig}
 pub use error::WasmError;
 pub use module::type_defs::FunctionType;
 pub use utils::limits::{Limitable, Limits};
-pub use vm::backend::{active_backend, backend_mode, set_backend_mode, BackendKind, BackendMode};
+pub use vm::engine::{engine, set_engine, Engine};
 pub use vm::entities::{Caller, FunctionInst, HostCallback, HostFn};
 pub use vm::instance::{
     Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,
@@ -48,14 +48,15 @@ pub use vm::interpreter::{
     Op as InterpOp, PredecodedFunction, FLAG_A_CONST, FLAG_B_CONST,
 };
 #[cfg(sf_jit)]
+pub use vm::jit::arch::active_native_backend_name;
+#[cfg(sf_jit)]
 pub use vm::jit::build::{
     native_capacity_skips, native_capacity_skips as jit_capacity_skips, native_stats,
     native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
     NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
 };
 #[cfg(sf_has_guard_pages)]
-use vm::runtime::trap_signal;
-pub use vm::runtime::{active_runtime_engine, RuntimeEngine};
+use vm::jit::runtime::trap_signal;
 pub use vm::store::LinkRegistry;
 pub use vm::tag::TagHandle;
 pub use vm::value::{RefHandle, Value};

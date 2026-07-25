@@ -26,7 +26,7 @@ use crate::{
     vm::{
         jit::arch::common::text_emitter::TextEmitter,
         jit::machine::machine_ir::{MachineValue, MACHINE_CTX_REG},
-        runtime::preserved::io as preserved_io,
+        jit::runtime::preserved::io as preserved_io,
     },
 };
 
@@ -177,7 +177,7 @@ impl<'a> X86_64Backend<'a> {
         result_dst: Option<X86Reg>,
         prefix_bytes: u32,
     ) {
-        use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
+        use crate::vm::jit::runtime::preserved::{io as preserved_io, preserved_entry};
 
         // `R11` is volatile on both SysV and Win64 and is not used for any
         // argument slot here, so it can carry the helper target without

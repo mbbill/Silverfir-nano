@@ -16,10 +16,11 @@
 //! substrate does not reach into either engine, and the engines do not reach
 //! into each other.
 //!
-//! `runtime/` is the host boundary — traps, result marshalling, and the
-//! native-execution plumbing.
+//! [`engine`] is how an embedder says which one to use. Its variants are
+//! gated on the same features, so in a single-engine build the choice is a
+//! zero-sized type and the switch disappears.
 
-pub(crate) mod backend;
+pub(crate) mod engine;
 pub(crate) mod entities;
 pub(crate) mod exn_heap;
 pub(crate) mod expr_eval;
@@ -27,7 +28,6 @@ pub(crate) mod gc_heap;
 pub(crate) mod gc_type_check;
 pub(crate) mod instance;
 pub(crate) mod result_buffer;
-pub(crate) mod runtime;
 pub(crate) mod store;
 pub(crate) mod tag;
 pub(crate) mod value;

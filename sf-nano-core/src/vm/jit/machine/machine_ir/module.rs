@@ -3,7 +3,7 @@ use super::types::MachineFloatWidth;
 use crate::collections;
 
 use super::types::{MachineBlockId, MachineConstId, MachineFuncId, MachineReg};
-use crate::vm::backend::BackendConfig;
+use crate::vm::jit::backend::BackendConfig;
 
 /// One read-only constant-pool record referenced from machine IR.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]

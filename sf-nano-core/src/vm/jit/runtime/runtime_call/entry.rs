@@ -8,8 +8,8 @@ use crate::{
     vm::{
         entities::{Caller, FunctionInst},
         jit::arch::active_backend_config,
-        runtime,
-        runtime::{
+        jit::runtime,
+        jit::runtime::{
             common::{
                 internal_error, run_frame_call_with_status, trap_error, value_matches_value_type,
                 NativeCallStatus,
@@ -387,7 +387,7 @@ mod tests {
         value_type::ValueType,
         vm::{
             entities::{HostFn, MemInst, ModuleInst},
-            runtime::{common::NativeCallStatus, context::NativeContextBox},
+            jit::runtime::{common::NativeCallStatus, context::NativeContextBox},
             store::Store,
         },
     };

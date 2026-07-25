@@ -183,9 +183,9 @@ pub struct Store {
     exn_heap: Rc<RefCell<ExnHeap>>,
     module_revision: u64,
     #[cfg(sf_jit)]
-    native_context_cache: Option<crate::vm::runtime::context::NativeContextBox>,
+    native_context_cache: Option<crate::vm::jit::runtime::context::NativeContextBox>,
     #[cfg(all(sf_jit, sf_has_guard_pages))]
-    native_stack_cache: Option<crate::vm::runtime::guard_pages::GuardPageStack>,
+    native_stack_cache: Option<crate::vm::jit::runtime::guard_pages::GuardPageStack>,
     #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
     native_stack_cache: Option<collections::Vec<u64>>,
 }
@@ -293,7 +293,7 @@ impl Store {
     #[inline]
     pub(crate) fn take_native_context_cache(
         &mut self,
-    ) -> Option<crate::vm::runtime::context::NativeContextBox> {
+    ) -> Option<crate::vm::jit::runtime::context::NativeContextBox> {
         self.native_context_cache.take()
     }
 
@@ -301,7 +301,7 @@ impl Store {
     #[inline]
     pub(crate) fn cache_native_context(
         &mut self,
-        context: crate::vm::runtime::context::NativeContextBox,
+        context: crate::vm::jit::runtime::context::NativeContextBox,
     ) {
         if self.native_context_cache.is_none() {
             self.native_context_cache = Some(context);
@@ -312,7 +312,7 @@ impl Store {
     #[inline]
     pub(crate) fn take_native_stack_cache(
         &mut self,
-    ) -> Option<crate::vm::runtime::guard_pages::GuardPageStack> {
+    ) -> Option<crate::vm::jit::runtime::guard_pages::GuardPageStack> {
         self.native_stack_cache.take()
     }
 
@@ -320,7 +320,7 @@ impl Store {
     #[inline]
     pub(crate) fn cache_native_stack(
         &mut self,
-        stack: crate::vm::runtime::guard_pages::GuardPageStack,
+        stack: crate::vm::jit::runtime::guard_pages::GuardPageStack,
     ) {
         if self.native_stack_cache.is_none() {
             self.native_stack_cache = Some(stack);

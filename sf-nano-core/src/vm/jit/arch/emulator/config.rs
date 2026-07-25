@@ -1,4 +1,4 @@
-use crate::vm::backend::BackendConfig;
+use crate::vm::jit::backend::BackendConfig;
 
 #[cfg(sf_backend_emu64)]
 #[inline]

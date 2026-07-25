@@ -13,7 +13,7 @@
 use crate::collections;
 
 use crate::vm::{
-    backend::BackendConfig,
+    jit::backend::BackendConfig,
     jit::machine::machine_ir::{
         is_dynamic_reg, MachineBlock, MachineInstKind, MachineReg, MachineRegOwner,
     },

@@ -17,8 +17,8 @@ use crate::{
             MACHINE_MEM0_BASE_REG,
         },
         jit::middle::ssa_ir::ir::{SsaOperand, SsaValue},
+        jit::runtime::layout::native_runtime_abi_layout,
         jit::wasm::primitive_op::PrimitiveOpKind,
-        runtime::layout::native_runtime_abi_layout,
     },
 };
 

@@ -60,7 +60,7 @@ mod posix;
 // `trap_signal`. Exactly one platform submodule is active for a given
 // build; see `signal/mod.rs`.
 #[cfg(sf_has_guard_pages)]
-pub(in crate::vm::runtime) mod signal;
+pub(in crate::vm::jit::runtime) mod signal;
 
 #[cfg(sf_os_linux)]
 mod linux;

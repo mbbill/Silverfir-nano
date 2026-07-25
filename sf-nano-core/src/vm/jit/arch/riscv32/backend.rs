@@ -25,7 +25,7 @@ use crate::{
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue, MACHINE_CTX_REG,
             MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
-        runtime::{
+        jit::runtime::{
             code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset,
             runtime_call::call_runtime_entry_ptr, trap::raise_trap,
         },
@@ -43,7 +43,7 @@ use crate::vm::jit::arch::common::{
     helpers::{convert_result_float_width, is_fallthrough_edge, trap_code},
     types::DirectCallPatch,
 };
-use crate::vm::runtime::preserved::{io as preserved_io, op as preserved_op};
+use crate::vm::jit::runtime::preserved::{io as preserved_io, op as preserved_op};
 
 const STACK_SLOT_BYTES: i32 = 8;
 const GP_SAVE_BYTES: i32 = abi::GP_SAVE_BYTES as i32;

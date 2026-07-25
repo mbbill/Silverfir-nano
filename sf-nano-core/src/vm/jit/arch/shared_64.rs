@@ -7,7 +7,7 @@ use crate::{
         jit::arch::common::{
             backend::ArchBackend, helpers::page_align_function, pipeline::compile_function,
         },
-        runtime::{
+        jit::runtime::{
             code::CompiledNativeModule, code_buf::CodeBuffer, dispatch_view::NativeLocalCallInfo64,
         },
     },
@@ -17,7 +17,7 @@ use crate::{
 use crate::vm::jit::arch::common::types::DebugRegion;
 use crate::vm::jit::arch::common::types::{DirectCallPatch, DirectCallPatchSite};
 #[cfg(sf_has_guard_pages)]
-use crate::vm::runtime::trap_signal;
+use crate::vm::jit::runtime::trap_signal;
 
 /// Metadata needed by the shared 64-bit module linker for each emitted function.
 pub(crate) struct EmittedFunction64 {

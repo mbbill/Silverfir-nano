@@ -12,9 +12,9 @@ use crate::utils::limits::Limits;
 use crate::value_type::ValueType;
 
 #[cfg(sf_jit)]
-use crate::vm::runtime::code_buf::CodeBuffer;
+use crate::vm::jit::runtime::code_buf::CodeBuffer;
 #[cfg(sf_has_guard_pages)]
-use crate::vm::runtime::guard_pages::GuardPageMemory;
+use crate::vm::jit::runtime::guard_pages::GuardPageMemory;
 use crate::vm::store::Store;
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};

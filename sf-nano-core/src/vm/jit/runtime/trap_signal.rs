@@ -10,9 +10,9 @@
 //! - the one-shot install latch for the OS-specific signal handler.
 //!
 //! The per-(arch × os) ucontext parsing, register surgery, and sigaction
-//! wiring live under [`crate::vm::runtime::os::signal`]. Each platform
+//! wiring live under [`crate::vm::jit::runtime::os::signal`]. Each platform
 //! module there exports a single `install_platform_handler()` and reads
-//! back into this module through the two `pub(in crate::vm::runtime)`
+//! back into this module through the two `pub(in crate::vm::jit::runtime)`
 //! accessors below:
 //!
 //! - [`signal_count_inc_and_check`] — bumps the storm counter, returns
@@ -61,7 +61,7 @@ pub(crate) const TRAP_MEMORY_OUT_OF_BOUNDS: u32 = 1;
 pub(crate) const TRAP_STACK_OVERFLOW: u32 = 8;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(in crate::vm::runtime) struct TrapResolution {
+pub(in crate::vm::jit::runtime) struct TrapResolution {
     pub error_ret: usize,
     pub trap_kind_offset: usize,
     pub stack_end_offset: usize,
@@ -143,7 +143,7 @@ unsafe fn lookup_return_error(pc: usize) -> Option<usize> {
 /// infinite-loop detector that prevents a bad trap-table from producing
 /// an unbounded re-entry loop.
 #[inline]
-pub(in crate::vm::runtime) fn signal_count_inc_and_check() -> bool {
+pub(in crate::vm::jit::runtime) fn signal_count_inc_and_check() -> bool {
     SIGNAL_COUNT.fetch_add(1, Ordering::Relaxed) > 100
 }
 
@@ -165,7 +165,7 @@ pub(in crate::vm::runtime) fn signal_count_inc_and_check() -> bool {
 /// append-only during compilation and stable during execution, so this
 /// holds as long as signals only fire during `eval()`.
 #[inline]
-pub(in crate::vm::runtime) unsafe fn try_resolve_trap(pc: usize) -> Option<TrapResolution> {
+pub(in crate::vm::jit::runtime) unsafe fn try_resolve_trap(pc: usize) -> Option<TrapResolution> {
     let error_ret = unsafe { lookup_return_error(pc) }?;
     let trap_kind_offset = TRAP_KIND_OFFSET.load(Ordering::Relaxed);
     let stack_end_offset = STACK_END_OFFSET.load(Ordering::Relaxed);
@@ -184,7 +184,7 @@ pub(in crate::vm::runtime) unsafe fn try_resolve_trap(pc: usize) -> Option<TrapR
 /// faulting address lands in the wasm-stack guard range, report stack
 /// overflow; otherwise keep the historical guarded-memory classification.
 #[inline]
-pub(in crate::vm::runtime) unsafe fn classify_trap_kind(
+pub(in crate::vm::jit::runtime) unsafe fn classify_trap_kind(
     ctx_ptr: *mut u8,
     fault_addr: usize,
     resolution: TrapResolution,

@@ -2,7 +2,7 @@ use crate::{
     error::WasmError,
     vm::{
         jit::machine::machine_ir::MachineMemWidth,
-        runtime::{
+        jit::runtime::{
             code::CompiledNativeModule,
             context::NativeContext,
             layout::{native_runtime_abi_layout, NativeRuntimeAbiLayout},

@@ -1,5 +1,5 @@
 use crate::vm::{
-    backend::BackendConfig,
+    jit::backend::BackendConfig,
     jit::machine::{
         machine_ir::{MachineEdge, MachineFunction, MachineModule, MachineTerminator},
         peephole,

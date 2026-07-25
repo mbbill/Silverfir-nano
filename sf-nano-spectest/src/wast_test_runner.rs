@@ -2071,15 +2071,15 @@ mod tests {
     use super::*;
     #[cfg(target_arch = "aarch64")]
     use sf_nano_core::FunctionInst;
-    use sf_nano_core::{set_backend_mode, BackendMode, Value};
+    use sf_nano_core::{set_engine, Engine, Value};
     use std::path::PathBuf;
 
     fn expect_values(values: impl AsRef<[Value]>, expected: &[Value]) {
         assert_eq!(values.as_ref(), expected);
     }
 
-    fn instantiate_first_module_with_backend(path: &str, backend: BackendMode) -> WastTestRunner {
-        set_backend_mode(backend);
+    fn instantiate_first_module_with_backend(path: &str, engine: Engine) -> WastTestRunner {
+        set_engine(engine);
         let full_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target")
@@ -2106,11 +2106,11 @@ mod tests {
     }
 
     fn instantiate_first_module(path: &str) -> WastTestRunner {
-        instantiate_first_module_with_backend(path, BackendMode::Auto)
+        instantiate_first_module_with_backend(path, Engine::DEFAULT)
     }
 
     fn run_wast_fixture(path: &str) -> TestResult {
-        set_backend_mode(BackendMode::Auto);
+        set_engine(Engine::DEFAULT);
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target")
@@ -2153,7 +2153,7 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_repeated_local_calls_and_aliasing() {
-        set_backend_mode(BackendMode::Native);
+        set_engine(Engine::Jit);
 
         let wasm_bytes = wat::parse_str(
             r#"
@@ -2222,7 +2222,7 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_br_on_cast_with_i31ref() {
-        set_backend_mode(BackendMode::Native);
+        set_engine(Engine::Jit);
 
         let wasm_bytes = wat::parse_str(
             r#"
@@ -2279,7 +2279,7 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_struct_new_and_struct_get() {
-        set_backend_mode(BackendMode::Native);
+        set_engine(Engine::Jit);
 
         let wasm_bytes = wat::parse_str(
             r#"
@@ -2309,7 +2309,7 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_set_and_get() {
-        set_backend_mode(BackendMode::Native);
+        set_engine(Engine::Jit);
 
         let wasm_bytes = wat::parse_str(
             r#"
@@ -2347,7 +2347,7 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_fixed_fill_and_copy() {
-        set_backend_mode(BackendMode::Native);
+        set_engine(Engine::Jit);
 
         let wasm_bytes = wat::parse_str(
             r#"
@@ -2416,7 +2416,7 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_fixed_const_expr() {
-        set_backend_mode(BackendMode::Native);
+        set_engine(Engine::Jit);
 
         let wasm_bytes = wat::parse_str(
             r#"
@@ -2448,7 +2448,7 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_data_and_init_data() {
-        set_backend_mode(BackendMode::Native);
+        set_engine(Engine::Jit);
 
         let wasm_bytes = wat::parse_str(
             r#"
@@ -2500,7 +2500,7 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_elem_and_init_elem() {
-        set_backend_mode(BackendMode::Native);
+        set_engine(Engine::Jit);
 
         let wasm_bytes = wat::parse_str(
             r#"
@@ -2585,7 +2585,7 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn native_if_mixed_operands_uses_direct_arm64() {
-        let mut runner = instantiate_first_module_with_backend("if.wast", BackendMode::Native);
+        let mut runner = instantiate_first_module_with_backend("if.wast", Engine::Jit);
         let wasm_bytes = runner
             .module_bytes
             .values()
@@ -2625,7 +2625,7 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_if_params_id_break_uses_emulator_join_payload() {
-        let mut runner = instantiate_first_module_with_backend("if.wast", BackendMode::Native);
+        let mut runner = instantiate_first_module_with_backend("if.wast", Engine::Jit);
         let instance = runner.instances.values_mut().next().expect("instance");
 
         let ret_false = instance

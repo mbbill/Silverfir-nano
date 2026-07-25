@@ -5,13 +5,13 @@ use crate::collections;
 use crate::{
     error::WasmError,
     vm::{
-        backend::BackendConfig,
         jit::arch::NativeBackend,
+        jit::backend::BackendConfig,
         jit::machine::machine_ir::{
             MachineConstData, MachineConstId, MachineFuncId, MachineFunctionAbi, MachineModule,
             MachineModuleAbi,
         },
-        runtime::{context::NativeContext, dispatch_view::NativeDispatchMetadata},
+        jit::runtime::{context::NativeContext, dispatch_view::NativeDispatchMetadata},
     },
 };
 

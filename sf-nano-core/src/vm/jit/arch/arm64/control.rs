@@ -21,7 +21,7 @@ use crate::vm::jit::arch::common::template::{
     decode_template_chain_next, encode_template_chain_next, template_i32_delta, TemplateBranchSense,
 };
 use crate::vm::jit::arch::common::types::{LocalPtrPatch, PendingLocalPtrPatch};
-use crate::vm::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
+use crate::vm::jit::runtime::{runtime_call::call_runtime_entry_ptr, trap::raise_trap};
 
 fn checked_arm64_template_words(
     delta: i32,

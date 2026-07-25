@@ -1,5 +1,5 @@
 use crate::collections;
-use crate::vm::backend::BackendConfig;
+use crate::vm::jit::backend::BackendConfig;
 use crate::vm::jit::machine::machine_ir::{
     MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineBranchCond,
     MachineCallRuntime, MachineCompareKind, MachineConstId, MachineConvertOp, MachineEdge,

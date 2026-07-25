@@ -12,7 +12,7 @@
 
 use crate::collections;
 use crate::vm::{
-    backend::BackendConfig,
+    jit::backend::BackendConfig,
     jit::machine::machine_ir::{
         MachineAddr, MachineBlock, MachineBlockId, MachineBlockParam, MachineConvertOp,
         MachineIndexExtend, MachineInst, MachineInstKind, MachineIntBinaryOp, MachineIntWidth,

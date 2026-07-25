@@ -11,20 +11,20 @@ use crate::{
     utils::payload::Payload,
     value_type::ValueType,
     vm::{
-        backend::BackendConfig,
         jit::arch,
         jit::arch::common::{
             pipeline,
             template::{TemplateBackend, TemplateBranchSense, TEMPLATE_PATCH_CHAIN_END},
             types::FunctionArtifact,
         },
+        jit::backend::BackendConfig,
         jit::machine::machine_ir::{
             MachineAddr, MachineBranchCond, MachineCompareKind, MachineConvertOp, MachineFuncId,
             MachineIntBinaryOp, MachineIntUnaryOp, MachineIntWidth, MachineLoadExtension,
             MachineMemWidth, MachineReg, MachineRegOwner, MachineSign, MachineStorageType,
             MachineTrapKind, MachineValue, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
-        runtime::{code::CodegenModuleView, code_buf::CodeBuffer},
+        jit::runtime::{code::CodegenModuleView, code_buf::CodeBuffer},
     },
 };
 
@@ -1483,7 +1483,7 @@ mod tests {
         collections,
         module::{entities::FunctionSpec, type_defs::FunctionType},
         value_type::ValueType,
-        vm::backend::BackendConfig,
+        vm::jit::backend::BackendConfig,
     };
 
     fn test_config(gp_unit_bytes: u8) -> BackendConfig {

@@ -16,7 +16,7 @@ use crate::{
             MachineReg, MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
             MACHINE_CTX_REG, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG, MACHINE_MEM0_SIZE_REG,
         },
-        runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
+        jit::runtime::{code::NativeRootEntry, code_buf::CodeBuffer, context::ctx_offset},
     },
 };
 
@@ -349,8 +349,9 @@ impl<'a> crate::vm::jit::arch::shared_64::ModuleLinkBackend64<'a> for X86_64Back
         buf: &CodeBuffer,
         emitted: &crate::vm::jit::arch::shared_64::EmittedFunction64,
     ) -> Self::CompiledEntry {
-        let entry =
-            unsafe { buf.fn_ptr::<crate::vm::runtime::code::NativeRootEntry>(emitted.text_offset) };
+        let entry = unsafe {
+            buf.fn_ptr::<crate::vm::jit::runtime::code::NativeRootEntry>(emitted.text_offset)
+        };
         CompiledX86_64Entry {
             entry,
             text_len: emitted.text_len,

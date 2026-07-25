@@ -96,7 +96,7 @@ impl<'a> Riscv64Backend<'a> {
         result_scratch_idx: Option<u8>,
         prefix_bytes: u32,
     ) {
-        use crate::vm::runtime::preserved::{io as preserved_io, preserved_entry};
+        use crate::vm::jit::runtime::preserved::{io as preserved_io, preserved_entry};
 
         let call_scratch_idx = result_scratch_idx.unwrap_or_else(|| self.gp_scratch.alloc());
         let call_scratch = self.gp_scratch.reg(call_scratch_idx);

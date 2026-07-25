@@ -20,7 +20,7 @@ use crate::{
             MachineLoadExtension, MachineMemWidth, MachineReg, MachineShiftOp, MachineSign,
             MachineStorageType, MachineTrapKind, MachineValue, MACHINE_CTX_REG, MACHINE_FP_REG,
         },
-        runtime::{
+        jit::runtime::{
             preserved::{io as preserved_io, op as preserved_op},
             runtime_call::call_runtime_entry_ptr,
         },
