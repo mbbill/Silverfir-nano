@@ -32,8 +32,11 @@
 
 ## Highlights
 
-Silverfir-nano is a `no_std` WebAssembly JIT engine built to be strong on
-every axis a Wasm runtime is judged on, not just one:
+Silverfir-nano is a `no_std` WebAssembly runtime built to be strong on
+every axis a Wasm runtime is judged on, not just one. It carries two
+engines: a full Wasm 3.0 optimizing JIT, and a Wasm 2.0 interpreter that
+needs no executable memory. The same API runs either
+([compatibility](#webassembly-compatibility)).
 
 1. **Fast** — register-allocated, region-optimized native code. On Apple M4
    it runs at parity with Wasmtime's fully-optimizing Cranelift and V8
@@ -147,7 +150,34 @@ What makes that credible is not any one trick but the shape of the compiler:
 
 Validated against the official
 [WebAssembly spec testsuite](https://github.com/WebAssembly/spec/tree/main/test).
-Feature groups supported:
+The two engines cover different amounts of the language:
+
+| | JIT | interpreter |
+|---|---|---|
+| Wasm 1.0 / 2.0 core | yes | yes |
+| Bulk memory, reference types, `table.*` | yes | yes |
+| Multiple memories | yes | yes |
+| SIMD / relaxed SIMD | yes | no |
+| Extended const expressions | yes | no |
+| Garbage collection | yes | no |
+| Exception handling | yes | no |
+| Tail calls | yes | no |
+| `memory64` / `table64` | yes | no |
+| Imported memories, tables, globals | yes | no |
+
+**The JIT is the full Wasm 3.0 engine.** The interpreter targets Wasm 2.0
+plus multiple memories; constant expressions there are a single
+`t.const` / `ref.func` / `ref.null`. Anything outside that is refused at
+instantiation or predecode with a named error rather than mis-executed, so
+a module it cannot run fails loudly rather than subtly. Pick the JIT if you
+need 3.0; pick the interpreter for size, or where runtime code generation
+is forbidden or impossible.
+
+The interpreter's spec-suite run reflects this: it executes 21,001 asserts
+with zero failures, and *counts every unsupported directive as a skip,
+never as a pass*.
+
+The JIT's feature groups in detail:
 
 - **Extended constant expressions** — arithmetic in const expressions and
   `global.get` of previously declared immutable globals.
