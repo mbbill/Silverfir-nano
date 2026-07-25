@@ -9,8 +9,7 @@ use tracked_alloc::{
 
 use crate::error::WasmError;
 use crate::module::entities::{
-    ConstExpr, Data, Element, ElementInit, FunctionDef, FunctionSpec, GlobalDef, MemoryDef,
-    TableDef, TagDef,
+    ConstExpr, Data, Element, ElementInit, FunctionDef, GlobalDef, MemoryDef, TableDef, TagDef,
 };
 use crate::module::type_context::{
     check_function_types_equivalent, concrete_type_matches_cross_context,
@@ -609,6 +608,9 @@ impl OpcodeHandler for TableMutationScan {
         Ok(())
     }
 }
+
+#[cfg(sf_jit)]
+use crate::module::entities::FunctionSpec;
 
 #[cfg(sf_jit)]
 fn function_has_table_mutation(spec: &FunctionSpec) -> Result<bool, WasmError> {

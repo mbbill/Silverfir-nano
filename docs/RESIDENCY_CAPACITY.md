@@ -250,7 +250,7 @@ and would have measured as noise on this gate — gated statically, l0 would hav
 been rejected.
 
 For that class the analogue is a deterministic *counter* (the interpreter's
-`COUNT_MODE` in `dispatch_arm64.rs`, which counts only handlers whose variant
+`COUNT_MODE` in `interp_gen/mod.rs`, which counts only handlers whose variant
 involves L0 or L1). The general rule both domains share:
 
 > Deterministic metrics falsify cheaply and confirm that a mechanism *engages*.

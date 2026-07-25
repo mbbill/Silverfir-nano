@@ -4,6 +4,7 @@ use crate::vm::entities::FunctionInst;
 use crate::vm::result_buffer::ResultBuffer;
 use crate::vm::store::Store;
 use crate::vm::value::Value;
+#[cfg(sf_jit)]
 use crate::vm::value_encoding::normalize_machine_raw_in_store;
 
 // --- Native runtime infrastructure (jit only) ---

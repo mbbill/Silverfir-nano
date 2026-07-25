@@ -122,6 +122,11 @@ wasmtime columns is what the optimizing tier buys. Silverfir's **interpreter**
 beats wasm3 by 1.16–1.73× and wasmi by 1.31–2.89× on every dispatch-sensitive
 benchmark.
 
+The interpreter runs on the same six backends as the JIT, and its dispatch
+handlers are generated per target at **build time** and linked into the
+binary — it allocates no executable memory, so it also runs where runtime
+code generation is forbidden (strict W^X) or impossible (XIP-only, MCU).
+
 **[See the benchmark charts and full results →](benchmarks/wasi/README.md)**
 
 ## WebAssembly Compatibility

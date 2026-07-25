@@ -77,7 +77,7 @@ Details that matter:
 1. The CLI default is `native`, not `auto`.
 2. `jit` is a default feature of `sf-nano-core`, so `native` is usually available without extra feature flags.
 3. `--emu64` / `--emu32` are only accepted in debug builds. Release builds reject them.
-4. The previous `base` (interpreter) and `fusion` backends have been removed; the interpreter will be rewritten later.
+4. The previous `base` (interpreter) and `fusion` backends have been removed; the interpreter was rewritten as the folded stack machine (`docs/INTERPRETER_V2.md`) and is selected with `--interp`.
 
 ## Native vs Reference
 

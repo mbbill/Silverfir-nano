@@ -36,6 +36,13 @@ pub(crate) const FLAG_DST_ACC: u16 = 1 << 4;
 /// pack `addr2 << 32 | static_offset` (offset < 2^32, memory 0 only).
 pub(crate) const FLAG_FUSED: u16 = 1 << 5;
 
+/// Recover an `Op` from its dense `#[repr(u16)]` discriminant — the same
+/// invariant the packed handler-slot key relies on.
+pub(crate) fn op_from_index(i: usize) -> Op {
+    debug_assert!(i <= Op::Unreachable as usize);
+    unsafe { core::mem::transmute(i as u16) }
+}
+
 /// Value-domain classification for accumulator pairing: the accumulator
 /// is a PER-DOMAIN register (x8 for integer bits, a NEON register for
 /// float values), so a producer/consumer pair is only valid when the

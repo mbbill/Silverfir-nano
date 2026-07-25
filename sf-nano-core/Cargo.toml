@@ -19,8 +19,12 @@ wat = "1.246.2"
 [features]
 default = ["jit", "guard-pages"]
 jit = []
-# Interpreter v2 (folded stack machine, docs/INTERPRETER_V2.md). Non-default
-# and independent of the JIT compile/execute pipeline during bring-up.
+# Interpreter v2 (folded stack machine, docs/INTERPRETER_V2.md). Non-default,
+# and independent of the JIT compile/execute pipeline: the dispatch handlers
+# are generated per target by build.rs (interp_gen/) and linked into .text,
+# so the interpreter allocates no executable memory and does not require
+# `jit`. A target with no generated engine still builds; instantiating an
+# interpreter instance there fails with a clean error.
 interp = []
 # Compile the interpreter's dispatch counter into every handler. Off by
 # default: it costs one ALU instruction on 100% of dispatches (measured ~1% of

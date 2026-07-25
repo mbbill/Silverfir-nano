@@ -4,17 +4,12 @@
 //! from host functions, and program output all flow through the
 //! interpreter's own execution.
 //!
-//! TEMPORARY: gated to the one target that currently has an interpreter
-//! dispatch backend. The interpreter is meant to run everywhere; the other
-//! targets are simply unfinished, so `InterpInstance::new` fails there via
-//! the `#[cfg(not(all(sf_jit, sf_backend_arm64)))]` arm of
-//! `enable_native_dispatch` (see `vm::interpreter::exec`). Without this
-//! guard `cargo test --workspace` fails on x64 and Windows, because
-//! `interp` is a default feature of sf-nano-cli/sf-nano-spectest and so
-//! reaches sf-nano-core on every platform. Drop this guard — keeping only
-//! `sf_interp` — as each target gains a dispatch backend; the condition
-//! deliberately matches `enable_native_dispatch`'s so one grep finds both.
-#![cfg(all(sf_interp, sf_jit, sf_backend_arm64))]
+//! Gated on the target having a generated dispatch engine — the same
+//! condition `enable_native_dispatch` uses, so one grep finds both. A
+//! target without one fails `InterpInstance::new` cleanly, and `interp` is
+//! a default feature of the CLI and spectest crates, so an ungated test
+//! would fail `cargo test --workspace` there.
+#![cfg(sf_interp_engine)]
 
 use std::cell::{Cell, RefCell};
 

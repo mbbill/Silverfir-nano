@@ -2,7 +2,7 @@
 //! on identical modules. This is the interpreter's whole-pipeline oracle
 //! role from `docs/INTERPRETER_V2.md` §1 exercised in reverse: while the
 //! interpreter is young, the JIT is the reference.
-#![cfg(all(sf_interp, sf_jit, sf_backend_arm64))]
+#![cfg(all(sf_interp_engine, sf_jit))]
 
 use sf_nano_core::module::Module;
 use sf_nano_core::{Instance, InterpInstance, Value};

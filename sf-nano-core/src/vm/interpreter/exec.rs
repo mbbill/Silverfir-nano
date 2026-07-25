@@ -1,11 +1,19 @@
-//! Stage A2 executor: a correctness-first Rust dispatch loop over the
-//! folded instruction stream. Performance is explicitly not a goal of this
-//! stage (see `docs/INTERPRETER_V2.md` §7); it exists to pin the predecoder
-//! and value semantics before the generated-handler dispatch substrate.
+//! Driver and slow path for the native dispatch chain.
 //!
-//! v1 scope: single-module, no imports (host functions, imported
-//! memories/tables/globals all rejected at instantiation), one linear
-//! memory, funcref tables for `call_indirect`.
+//! Two responsibilities, both outside the chain itself:
+//!
+//! - The activation trampoline. Calls and returns between local functions
+//!   run entirely inside the chain on one contiguous overlapped value
+//!   stack; Rust sees only host calls, the invocation root, slow ops, and
+//!   traps. Call depth is interpreter data, never host recursion.
+//! - `exec_ins`, the single-instruction executor. It is the chain's slow
+//!   path, not a second engine: every op without a native handler, every
+//!   import, and every trap that needs a message routes through it by one
+//!   uniform exit/re-enter protocol, so native coverage can grow op by op
+//!   without touching the driver.
+//!
+//! Instantiation is self-contained: globals, active data and element
+//! segments, and funcref tables are built directly from the parsed module.
 
 use tracked_alloc::boxed::Box;
 use tracked_alloc::rc::Rc;
@@ -18,24 +26,26 @@ use crate::opcodes::Opcode;
 use crate::utils::limits::Limitable;
 use crate::value_type::ValueType;
 
-#[cfg(all(sf_jit, sf_backend_arm64))]
-use super::dispatch_arm64::{
+#[cfg(sf_interp_engine)]
+use super::engine::{
     DCell, EnterState, LinkedFunction, NativeEngine, EXIT_RETURN, EXIT_SLOW, EXIT_TRAP_BASE,
-    RET_RECORD, TRAP_KINDS,
+    NATIVE_CALLS, RET_RECORD, TRAP_KINDS,
 };
-use super::instr::Op;
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
+use super::fmath;
+use super::instr::{op_from_index, Op};
+#[cfg(sf_interp_engine)]
 use super::instr::{Instr, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
 use super::predecode::{predecode_function, PredecodedFunction};
 
 const PAGE: usize = 65536;
 const NULL_FUNC: u32 = u32::MAX;
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 const MAX_CALL_DEPTH: u32 = 4096;
 /// Value-stack budget per invoke. Frames overlap on one contiguous stack
 /// (a callee's frame base is its caller's staged-argument slot); running
 /// past the budget traps "call stack exhausted" on every backend.
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 const VALUE_STACK_SLOTS: usize = 256 * 1024;
 
 /// Host dispatcher for imported functions: called with the import's module
@@ -51,21 +61,21 @@ pub type HostDispatch<'h> =
 /// active element segments on every target.
 struct TableState {
     entries: Vec<u32>,
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     max: u64,
 }
 
 /// `max_pages` mirrors `TableState::max`: only `memory.grow` reads it.
 struct MemoryState {
     bytes: Vec<u8>,
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     max_pages: u64,
 }
 
 /// One live call frame. Calls and returns are driven by an explicit
 /// activation stack in the driver loop, never by host recursion, so call
 /// depth is interpreter data (the classic-interpreter lesson).
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 struct Activation {
     func: Rc<PredecodedFunction>,
     /// Index of `func` in the module's function space (native dispatch
@@ -84,7 +94,7 @@ struct Activation {
 /// Per-invoke execution resources: the shared value stack and the native
 /// return stack (records of `(ret_pc, frame, code_base)`, with
 /// Rust-planted sentinel records routing a `Return` back to Rust).
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 struct DriveCtx {
     stack: Vec<u64>,
     ret_stack: Vec<u64>,
@@ -95,14 +105,14 @@ struct DriveCtx {
     acc: u64,
 }
 
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 enum StepExit {
     Call { callee: usize, arg_base: usize },
     Return,
 }
 
 /// Result of executing exactly one instruction.
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 pub(super) enum Effect {
     Next,
     Jump(usize),
@@ -112,7 +122,7 @@ pub(super) enum Effect {
 
 /// Stage-B state: the emitted handler engine plus per-function dispatch
 /// cells (parallel to `InterpInstance::funcs`).
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 struct NativeState {
     engine: NativeEngine,
     linked: Vec<Option<LinkedFunction>>,
@@ -140,29 +150,22 @@ pub struct InterpInstance<'m> {
     /// memories and tables and traps out-of-range active segments -- but a
     /// target without an executor validates and drops it rather than
     /// carrying it.
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     memories: Vec<MemoryState>,
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     dropped_data: Vec<bool>,
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     dropped_elems: Vec<bool>,
     globals: Vec<u64>,
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     tables: Vec<TableState>,
     host: Option<HostDispatch<'m>>,
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     native: Option<NativeState>,
 }
 
-/// Recover an `Op` from its dense `#[repr(u16)]` discriminant (the same
-/// invariant the dispatch key relies on).
-fn op_from_index(i: usize) -> Op {
-    debug_assert!(i <= Op::Unreachable as usize);
-    unsafe { core::mem::transmute(i as u16) }
-}
-
 /// Nonzero per-op counts, descending.
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 fn op_counts(table: &[u64]) -> Vec<(Op, u64)> {
     let mut out: Vec<(Op, u64)> = Vec::new();
     for (i, &n) in table.iter().enumerate() {
@@ -258,7 +261,7 @@ impl<'m> InterpInstance<'m> {
             }
             memories.push(MemoryState {
                 bytes: vec![0u8; limits.min() as usize * PAGE],
-                #[cfg(all(sf_jit, sf_backend_arm64))]
+                #[cfg(sf_interp_engine)]
                 max_pages: limits.max().unwrap_or(65536) as u64,
             });
         }
@@ -289,7 +292,7 @@ impl<'m> InterpInstance<'m> {
             }
             tables.push(TableState {
                 entries: vec![NULL_FUNC; limits.min() as usize],
-                #[cfg(all(sf_jit, sf_backend_arm64))]
+                #[cfg(sf_interp_engine)]
                 max: limits.max().unwrap_or(u32::MAX as usize) as u64,
             });
         }
@@ -301,25 +304,30 @@ impl<'m> InterpInstance<'m> {
                 init,
             } = e
             {
-                let off = eval_simple_const(offset_expr)? as usize;
+                // The offset is guest-controlled and can be any u32, so
+                // the bound has to be computed without wrapping: on a
+                // 32-bit host `off + len` overflows `usize` and turns an
+                // out-of-range segment into an in-range one.
+                let off = eval_simple_const(offset_expr)? as u64;
                 let table = tables
                     .get_mut(*table_index)
                     .ok_or(WasmError::invalid("interp: element table out of range"))?;
+                let fits = |n: usize| off + n as u64 <= table.entries.len() as u64;
                 match init {
                     ElementInit::FunctionIndexes(idxs) => {
-                        if off + idxs.len() > table.entries.len() {
+                        if !fits(idxs.len()) {
                             return Err(WasmError::trap("out of bounds table access"));
                         }
                         for (k, &fi) in idxs.iter().enumerate() {
-                            table.entries[off + k] = fi as u32;
+                            table.entries[off as usize + k] = fi as u32;
                         }
                     }
                     ElementInit::InitExprs { exprs, .. } => {
-                        if off + exprs.len() > table.entries.len() {
+                        if !fits(exprs.len()) {
                             return Err(WasmError::trap("out of bounds table access"));
                         }
                         for (k, expr) in exprs.iter().enumerate() {
-                            table.entries[off + k] = eval_simple_const(expr)? as u32;
+                            table.entries[off as usize + k] = eval_simple_const(expr)? as u32;
                         }
                     }
                 }
@@ -336,13 +344,15 @@ impl<'m> InterpInstance<'m> {
                 init,
             } = d
             {
-                let off = eval_simple_const(offset_expr)? as usize;
+                // Same overflow reasoning as the element segments above.
+                let off = eval_simple_const(offset_expr)? as u64;
                 let mem = memories
                     .get_mut(*memory_index)
                     .ok_or(WasmError::trap("out of bounds memory access"))?;
-                if off + init.len() > mem.bytes.len() {
+                if off + init.len() as u64 > mem.bytes.len() as u64 {
                     return Err(WasmError::trap("out of bounds memory access"));
                 }
+                let off = off as usize;
                 mem.bytes[off..off + init.len()].copy_from_slice(init);
                 dropped_data[i] = true; // active segments drop after use
             }
@@ -351,17 +361,17 @@ impl<'m> InterpInstance<'m> {
         let mut inst = InterpInstance {
             module,
             funcs,
-            #[cfg(all(sf_jit, sf_backend_arm64))]
+            #[cfg(sf_interp_engine)]
             memories,
-            #[cfg(all(sf_jit, sf_backend_arm64))]
+            #[cfg(sf_interp_engine)]
             dropped_data,
-            #[cfg(all(sf_jit, sf_backend_arm64))]
+            #[cfg(sf_interp_engine)]
             dropped_elems,
             globals,
-            #[cfg(all(sf_jit, sf_backend_arm64))]
+            #[cfg(sf_interp_engine)]
             tables,
             host: None,
-            #[cfg(all(sf_jit, sf_backend_arm64))]
+            #[cfg(sf_interp_engine)]
             native: None,
         };
         inst.enable_native_dispatch()?;
@@ -374,23 +384,21 @@ impl<'m> InterpInstance<'m> {
 
     /// Native dispatch is the interpreter's only execution engine (the
     /// stage-A Rust loop was removed after B validation; `exec_ins`
-    /// remains as the native chain's slow path). Targets without a
-    /// backend, and hosts without executable memory, fail instantiation
-    /// cleanly here — they get an engine again when build-time handler
-    /// generation lands.
-    #[cfg(not(all(sf_jit, sf_backend_arm64)))]
+    /// remains as the native chain's slow path). A target whose ISA has
+    /// no generated handler set fails instantiation cleanly here.
+    #[cfg(not(sf_interp_engine))]
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
         Err(WasmError::invalid(
             "interp: no native dispatch backend for this target",
         ))
     }
 
-    /// Emit the handler set and link every predecoded function. Failure
-    /// (no executable memory on this host) fails instantiation: there is
-    /// no interpreter without the native chain.
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    /// Link every predecoded function against the handler set that was
+    /// generated into this binary at build time. Nothing is emitted or
+    /// mapped here — the engine is already in `.text`.
+    #[cfg(sf_interp_engine)]
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
-        let engine = NativeEngine::new()?;
+        let engine = NativeEngine::new();
         let mut linked: Vec<Option<LinkedFunction>> = self
             .funcs
             .iter()
@@ -474,7 +482,7 @@ impl<'m> InterpInstance<'m> {
             .collect();
 
         let ci_h = engine.callindirect_handler_addr();
-        for (i, lf) in linked.iter_mut().enumerate() {
+        for (i, lf) in linked.iter_mut().enumerate().filter(|_| NATIVE_CALLS) {
             let (Some(f), Some(lf)) = (&self.funcs[i], lf) else {
                 continue;
             };
@@ -521,7 +529,8 @@ impl<'m> InterpInstance<'m> {
         for (i, lf) in linked.iter().enumerate() {
             if let Some(lf) = lf {
                 let start = lf.cells.as_ptr() as u64;
-                let end = start + lf.cells.len() as u64 * 32;
+                // The trailing prefetch pad is not an instruction.
+                let end = start + (lf.cells.len() as u64 - 1) * 32;
                 ranges.push((start, end, i as u32));
             }
         }
@@ -541,18 +550,18 @@ impl<'m> InterpInstance<'m> {
     /// Total native handler dispatches since instantiation (0 when native
     /// dispatch is not active).
     pub fn dispatch_count(&self) -> u64 {
-        #[cfg(all(sf_jit, sf_backend_arm64))]
+        #[cfg(sf_interp_engine)]
         {
             return self.native.as_ref().map_or(0, |n| n.dispatches);
         }
-        #[cfg(not(all(sf_jit, sf_backend_arm64)))]
+        #[cfg(not(sf_interp_engine))]
         {
             0
         }
     }
 
     /// Map a native pc to `(func_index, cells_start)`.
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     fn native_pc_lookup(&self, pc: u64) -> Result<(usize, u64), WasmError> {
         let ranges = &self.native.as_ref().expect("native state").ranges;
         let i = ranges.partition_point(|r| r.1 <= pc);
@@ -598,7 +607,7 @@ impl<'m> InterpInstance<'m> {
     /// against a hard buffer assert, and once emission moves to build time
     /// this becomes binary size.
     pub fn engine_code_len(&self) -> usize {
-        #[cfg(all(sf_jit, sf_backend_arm64))]
+        #[cfg(sf_interp_engine)]
         if let Some(native) = &self.native {
             return native.engine.code_len();
         }
@@ -606,7 +615,7 @@ impl<'m> InterpInstance<'m> {
     }
 
     pub fn slow_exit_stats(&self) -> Vec<(Op, u64)> {
-        #[cfg(all(sf_jit, sf_backend_arm64))]
+        #[cfg(sf_interp_engine)]
         if let Some(native) = &self.native {
             return op_counts(&native.slow_exits);
         }
@@ -628,7 +637,7 @@ impl<'m> InterpInstance<'m> {
     }
 
     /// Resolve the element-segment function value at `seg[k]`.
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     fn elem_value(&self, seg: usize, k: usize) -> Result<u32, WasmError> {
         match self.module.elements().get(seg).map(|e| e.get_init()) {
             Some(ElementInit::FunctionIndexes(idxs)) => idxs
@@ -670,7 +679,7 @@ impl<'m> InterpInstance<'m> {
 
     /// Invoke a function by index. `args` and `results` are raw 64-bit
     /// value slots (i32/f32 in the low bits).
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     pub fn invoke(
         &mut self,
         func_index: usize,
@@ -700,7 +709,7 @@ impl<'m> InterpInstance<'m> {
     /// Stub for targets without a native backend: [`Self::new`] fails
     /// there, so no instance exists to invoke — this only keeps
     /// cross-target callers compiling.
-    #[cfg(not(all(sf_jit, sf_backend_arm64)))]
+    #[cfg(not(sf_interp_engine))]
     pub fn invoke(
         &mut self,
         _func_index: usize,
@@ -714,7 +723,7 @@ impl<'m> InterpInstance<'m> {
 
     /// The call/return trampoline: runs activations to their next call or
     /// return boundary, keeping call depth as data on `saved`.
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     fn drive(&mut self, root: Activation, args: &[u64]) -> Result<Vec<u64>, WasmError> {
         if root.func.frame_slots as usize > VALUE_STACK_SLOTS {
             return Err(WasmError::trap("call stack exhausted"));
@@ -784,7 +793,7 @@ impl<'m> InterpInstance<'m> {
     }
 
     // `packed` is `memidx << 48 | offset` as emitted by the predecoder.
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     fn mem_load(&self, addr: u64, packed: u64, size: usize) -> Result<&[u8], WasmError> {
         let mem = self
             .memories
@@ -798,7 +807,7 @@ impl<'m> InterpInstance<'m> {
         Ok(&mem.bytes[ea as usize..end as usize])
     }
 
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     fn mem_store(&mut self, addr: u64, packed: u64, size: usize) -> Result<&mut [u8], WasmError> {
         let mem = self
             .memories
@@ -814,7 +823,7 @@ impl<'m> InterpInstance<'m> {
 
     /// Dispatch an imported function to the host. `frame` is the CALLER's
     /// frame slice; arguments and results live at `arg_base` within it.
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     fn call_host(
         &mut self,
         callee: usize,
@@ -861,7 +870,7 @@ impl<'m> InterpInstance<'m> {
     /// current function is recovered from the pc via the range map and the
     /// ORIGINAL instruction is executed by `exec_ins`, then the chain is
     /// re-entered.
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     fn native_step(
         &mut self,
         act: &mut Activation,
@@ -1020,7 +1029,7 @@ impl<'m> InterpInstance<'m> {
     /// returns, and rich trap messages). Acc residency flags are ignored
     /// here by design: slow cells are always linked with their acc hints
     /// stripped, so operands and destinations live in their frame slots.
-    #[cfg(all(sf_jit, sf_backend_arm64))]
+    #[cfg(sf_interp_engine)]
     pub(super) fn exec_ins(
         &mut self,
         frame: &mut [u64],
@@ -1332,11 +1341,11 @@ impl<'m> InterpInstance<'m> {
             // ---- f32 ----
             Op::F32_Abs => fun32!(ins, f32::abs),
             Op::F32_Neg => fun32!(ins, |x: f32| -x),
-            Op::F32_Ceil => fun32!(ins, f32::ceil),
-            Op::F32_Floor => fun32!(ins, f32::floor),
-            Op::F32_Trunc => fun32!(ins, f32::trunc),
-            Op::F32_Nearest => fun32!(ins, f32::round_ties_even),
-            Op::F32_Sqrt => fun32!(ins, f32::sqrt),
+            Op::F32_Ceil => fun32!(ins, fmath::ceil32),
+            Op::F32_Floor => fun32!(ins, fmath::floor32),
+            Op::F32_Trunc => fun32!(ins, fmath::trunc32),
+            Op::F32_Nearest => fun32!(ins, fmath::nearest32),
+            Op::F32_Sqrt => fun32!(ins, fmath::sqrt32),
             Op::F32_Add => fbin32!(ins, |x: f32, y: f32| x + y),
             Op::F32_Sub => fbin32!(ins, |x: f32, y: f32| x - y),
             Op::F32_Mul => fbin32!(ins, |x: f32, y: f32| x * y),
@@ -1354,11 +1363,11 @@ impl<'m> InterpInstance<'m> {
             // ---- f64 ----
             Op::F64_Abs => fun64!(ins, f64::abs),
             Op::F64_Neg => fun64!(ins, |x: f64| -x),
-            Op::F64_Ceil => fun64!(ins, f64::ceil),
-            Op::F64_Floor => fun64!(ins, f64::floor),
-            Op::F64_Trunc => fun64!(ins, f64::trunc),
-            Op::F64_Nearest => fun64!(ins, f64::round_ties_even),
-            Op::F64_Sqrt => fun64!(ins, f64::sqrt),
+            Op::F64_Ceil => fun64!(ins, fmath::ceil64),
+            Op::F64_Floor => fun64!(ins, fmath::floor64),
+            Op::F64_Trunc => fun64!(ins, fmath::trunc64),
+            Op::F64_Nearest => fun64!(ins, fmath::nearest64),
+            Op::F64_Sqrt => fun64!(ins, fmath::sqrt64),
             Op::F64_Add => fbin64!(ins, |x: f64, y: f64| x + y),
             Op::F64_Sub => fbin64!(ins, |x: f64, y: f64| x - y),
             Op::F64_Mul => fbin64!(ins, |x: f64, y: f64| x * y),
@@ -1835,19 +1844,19 @@ impl<'m> InterpInstance<'m> {
 /// lower bound of the truncated value (0.0 for the unsigned cases — a
 /// truncated -0.0 compares equal to 0.0 and is valid), `hi_excl` the
 /// exclusive upper bound. Both bounds are exactly representable in f64.
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 fn trunc_checked(x: f64, lo: f64, hi_excl: f64) -> Result<f64, WasmError> {
     if x.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer"));
     }
-    let t = x.trunc();
+    let t = fmath::trunc64(x);
     if t < lo || t >= hi_excl {
         return Err(WasmError::trap("integer overflow"));
     }
     Ok(t)
 }
 
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 fn wasm_min_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
         f32::NAN
@@ -1862,7 +1871,7 @@ fn wasm_min_f32(a: f32, b: f32) -> f32 {
     }
 }
 
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 fn wasm_max_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
         f32::NAN
@@ -1877,7 +1886,7 @@ fn wasm_max_f32(a: f32, b: f32) -> f32 {
     }
 }
 
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 fn wasm_min_f64(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         f64::NAN
@@ -1892,7 +1901,7 @@ fn wasm_min_f64(a: f64, b: f64) -> f64 {
     }
 }
 
-#[cfg(all(sf_jit, sf_backend_arm64))]
+#[cfg(sf_interp_engine)]
 fn wasm_max_f64(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         f64::NAN
@@ -1907,7 +1916,7 @@ fn wasm_max_f64(a: f64, b: f64) -> f64 {
     }
 }
 
-#[cfg(all(test, sf_jit, sf_backend_arm64))]
+#[cfg(all(test, sf_interp_engine))]
 mod tests {
     use super::*;
     use crate::module::Module;

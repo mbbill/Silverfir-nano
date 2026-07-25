@@ -17,6 +17,8 @@ use crate::utils::limits::{Limitable, Limits};
 use crate::value_type::ValueType;
 #[cfg(sf_jit)]
 use crate::vm::runtime::code::{NativeCode, NativeCodeCache};
+// Only the JIT's per-function native-code cache needs interior mutability.
+#[cfg(sf_jit)]
 use core::cell::UnsafeCell;
 
 pub use super::type_defs::FunctionType;
