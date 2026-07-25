@@ -26,7 +26,7 @@ fn diff(wasm: &[u8], export: &str, args: &[Value]) {
     let module = Module::new("diff", wasm).expect("module parse");
     let iargs: Vec<u64> = args.iter().map(value_bits).collect();
 
-    let mut interp = InterpInstance::new(&module).expect("interp instantiation");
+    let mut interp = InterpInstance::new(module).expect("interp instantiation");
     let idx = interp.find_export(export).expect("export in interp");
     let mut iresults = vec![0u64; jit_results.len()];
     interp

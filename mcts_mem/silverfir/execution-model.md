@@ -6,9 +6,14 @@
 
 - What the two engines share is the module layer — parsing and validation,
   the opcode decoder, the value-type model — and the WASI host layer. They
-  share no runtime state: the store, the instance model, and the entity
-  and heap representations belong to the JIT, and the interpreter carries
-  its own instance type with its own flat host-dispatch boundary.
+  share no runtime state: the store, the entity model, and the heap
+  representations belong to the JIT, and the interpreter carries its own
+  instance representation with its own flat host-dispatch boundary.
+
+- The embedder sees one instance type, one import list, and one call by
+  name with typed values, whichever engine is underneath
+  ([[engine-transparent-api]]). Adapting the interpreter's raw boundary to
+  that shape is the engine's job, not the embedder's.
 
 - Neither engine touches the other's execution machinery: the interpreter
   never sees the JIT's IRs, register allocator, or encoders.

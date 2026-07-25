@@ -6,7 +6,7 @@ use sf_nano_core::module::type_context::TypeContext;
 use sf_nano_core::module::Module;
 use sf_nano_core::value_type::{AbstractHeapType, HeapType, RefType};
 use sf_nano_core::{
-    Caller, HostFn, Import, Instance, Limitable, LinkRegistry, RefHandle, Value, WasmError,
+    Caller, HostFn, Import, JitInstance, Limitable, LinkRegistry, RefHandle, Value, WasmError,
 };
 use std::{cell::RefCell, collections::HashMap, fmt, fs, path::Path};
 use wast::{
@@ -267,19 +267,19 @@ thread_local! {
     static FORWARDING_SLOTS: RefCell<Vec<Option<ForwardingSlot>>> =
         RefCell::new(Vec::new());
     // Raw pointers to instances — valid only during single-threaded test execution.
-    static FORWARDING_INSTANCES: RefCell<HashMap<String, *mut Instance>> =
+    static FORWARDING_INSTANCES: RefCell<HashMap<String, *mut JitInstance>> =
         RefCell::new(HashMap::new());
 }
 
 fn register_forwarding_instances(
-    instances: &mut HashMap<String, Instance>,
+    instances: &mut HashMap<String, JitInstance>,
     registered_as: &HashMap<String, String>,
 ) {
     FORWARDING_INSTANCES.with(|cell| {
         let mut map = cell.borrow_mut();
         map.clear();
         for (internal_name, inst) in instances.iter_mut() {
-            map.insert(internal_name.clone(), inst as *mut Instance);
+            map.insert(internal_name.clone(), inst as *mut JitInstance);
         }
         for (reg_name, internal_name) in registered_as {
             if let Some(inst_ptr) = map.get(internal_name).copied() {
@@ -566,7 +566,7 @@ const FORWARDER_TABLE: [HostFn; 128] = [
 // ---------------------------------------------------------------------------
 
 pub struct WastTestRunner {
-    instances: HashMap<String, Instance>,
+    instances: HashMap<String, JitInstance>,
     module_bytes: HashMap<String, Vec<u8>>,
     module_counter: u32,
     current_module: Option<String>,
@@ -575,7 +575,7 @@ pub struct WastTestRunner {
     module_definitions: HashMap<String, Vec<u8>>,
     linked_function_refs: HashMap<(String, String, usize), usize>,
     function_registry: LinkRegistry,
-    retained_failed_instances: Vec<Instance>,
+    retained_failed_instances: Vec<JitInstance>,
 }
 
 impl WastTestRunner {
@@ -767,7 +767,7 @@ impl WastTestRunner {
 
         let result = {
             let instance = self.instances.get_mut(&internal_name).ok_or_else(|| {
-                TestError::infrastructure(format!("Instance '{}' not found", internal_name))
+                TestError::infrastructure(format!("JitInstance '{}' not found", internal_name))
             })?;
             instance
                 .invoke(invoke.name, &args)
@@ -945,7 +945,7 @@ impl WastTestRunner {
                         let imports = self
                             .build_imports(&bytes)
                             .map_err(|error| TestError::infrastructure(error.to_string()))?;
-                        match Instance::from_module(module, &imports) {
+                        match JitInstance::from_module(module, &imports) {
                             Ok(_) => Err(TestError::infrastructure(format!(
                                 "Expected: malformed module with error '{}', Actual: WASM parsing succeeded ({} bytes)",
                                 expected_message, compiled.wasm_bytes.len()
@@ -1102,7 +1102,7 @@ impl WastTestRunner {
                     .resolve_module_name(module.as_ref())
                     .map_err(TestError::infrastructure)?;
                 let instance = self.instances.get(&internal_name).ok_or_else(|| {
-                    TestError::infrastructure(format!("Instance '{}' not found", internal_name))
+                    TestError::infrastructure(format!("JitInstance '{}' not found", internal_name))
                 })?;
                 let value = instance
                     .get_global(global)
@@ -1215,7 +1215,7 @@ impl WastTestRunner {
     }
 
     /// Try to instantiate a module temporarily (for assert_invalid/assert_unlinkable).
-    fn try_instantiate_temp(&mut self, wasm_bytes: &[u8]) -> Result<Instance, WasmError> {
+    fn try_instantiate_temp(&mut self, wasm_bytes: &[u8]) -> Result<JitInstance, WasmError> {
         register_forwarding_instances(&mut self.instances, &self.registered_as);
         self.instantiate_with_registry(wasm_bytes, true)
     }
@@ -1249,10 +1249,10 @@ impl WastTestRunner {
         &mut self,
         wasm_bytes: &[u8],
         retain_partial: bool,
-    ) -> Result<Instance, WasmError> {
+    ) -> Result<JitInstance, WasmError> {
         let imports = self.build_imports(wasm_bytes)?;
         let module = Module::new("main", wasm_bytes)?;
-        match Instance::from_module_with_registry(module, &imports, &self.function_registry) {
+        match JitInstance::from_module_with_registry(module, &imports, &self.function_registry) {
             Ok(instance) => Ok(instance),
             Err(err) => {
                 let (partial, error) = err.into_parts();

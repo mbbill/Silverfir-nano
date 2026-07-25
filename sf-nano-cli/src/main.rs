@@ -245,16 +245,13 @@ fn run_cli(args: &[String]) -> i32 {
         let ctx = ctx_builder.build();
         set_wasi_ctx(ctx);
 
-        // The whole engine choice, in one place. Each arm is gated on its
-        // own feature, so a single-engine build has a one-arm match on a
-        // zero-sized value -- the branch and the engine it does not have
-        // both leave the binary.
-        match engine {
-            #[cfg(feature = "jit")]
-            Engine::Jit => run_jit(&data, compile_only),
+        run_module(
+            &data,
+            module_name,
+            compile_only,
             #[cfg(feature = "interp")]
-            Engine::Interp => run_interp(&data, module_name, interp_stats),
-        }
+            interp_stats,
+        )
     })();
 
     #[cfg(feature = "memprof")]
@@ -273,17 +270,28 @@ fn run_cli(args: &[String]) -> i32 {
     exit_code
 }
 
-/// Run the module through the JIT.
+/// Run the module on whichever engine was selected.
 ///
-/// `Instance` and everything it reaches -- the store, the entity model, the
-/// native runtime -- is named only from here, so an interpreter-only build
-/// never links it.
-#[cfg(feature = "jit")]
-fn run_jit(data: &[u8], compile_only: bool) -> i32 {
-    use sf_nano_core::Instance;
+/// One path for both. The engine was chosen back in argument parsing and
+/// `Instance` honours it; nothing from here down knows or cares which one
+/// is underneath.
+fn run_module(
+    data: &[u8],
+    module_name: &str,
+    compile_only: bool,
+    #[cfg(feature = "interp")] interp_stats: bool,
+) -> i32 {
+    use sf_nano_core::{module::Module, Instance};
 
+    let module = match Module::new(module_name, data) {
+        Ok(module) => module,
+        Err(err) => {
+            eprintln!("Error parsing module: {}", err);
+            return 1;
+        }
+    };
     let imports = wasi_imports();
-    let mut instance = match Instance::new(data, &imports) {
+    let mut instance = match Instance::from_module(module, &imports) {
         Ok(instance) => instance,
         Err(err) => {
             eprintln!("Error instantiating module: {}", err);
@@ -304,6 +312,10 @@ fn run_jit(data: &[u8], compile_only: bool) -> i32 {
     let result = instance.invoke(entry, &[]);
 
     print_native_stats();
+    #[cfg(feature = "interp")]
+    if interp_stats {
+        print_interp_stats(&instance);
+    }
 
     match result {
         Ok(_) => 0,
@@ -317,171 +329,40 @@ fn run_jit(data: &[u8], compile_only: bool) -> i32 {
     }
 }
 
-/// Run the module through the interpreter, bridging its host-dispatch
-/// interface to the same WASI import set the JIT path uses (the WASI
-/// context installed by the caller applies unchanged).
+/// Dispatch statistics the interpreter keeps and the JIT has no analogue
+/// for -- the one place the CLI still asks which engine ran.
 #[cfg(feature = "interp")]
-fn run_interp(data: &[u8], module_name: &str, stats: bool) -> i32 {
-    use sf_nano_core::module::entities::FunctionDef;
-    use sf_nano_core::module::Module;
-    use sf_nano_core::value_type::ValueType;
-    use sf_nano_core::{
-        Caller, FunctionType, HostCallback, ImportValue, ImportedFunction, InterpInstance, Value,
-        WasmError,
+fn print_interp_stats(instance: &sf_nano_core::Instance) {
+    let Some(inst) = instance.as_interp() else {
+        eprintln!("[interp] --interp-stats: this module ran on another engine");
+        return;
     };
-    use std::collections::HashMap;
-
-    fn raw_to_value(t: &ValueType, raw: u64) -> Option<Value> {
-        match t {
-            ValueType::I32 => Some(Value::I32(raw as u32 as i32)),
-            ValueType::I64 => Some(Value::I64(raw as i64)),
-            ValueType::F32 => Some(Value::F32(f32::from_bits(raw as u32))),
-            ValueType::F64 => Some(Value::F64(f64::from_bits(raw))),
-            _ => None,
-        }
+    let native = inst.dispatch_count();
+    if native > 0 && inst.dispatch_counting_enabled() {
+        eprintln!("[interp] native dispatches: {native}");
     }
-    fn value_to_raw(v: &Value) -> Option<u64> {
-        match v {
-            Value::I32(x) => Some(*x as u32 as u64),
-            Value::I64(x) => Some(*x as u64),
-            Value::F32(x) => Some(x.to_bits() as u64),
-            Value::F64(x) => Some(x.to_bits()),
-            _ => None,
-        }
-    }
-
-    let module = match Module::new(module_name, data) {
-        Ok(m) => m,
-        Err(err) => {
-            eprintln!("Error parsing module: {}", err);
-            return 1;
-        }
-    };
-
-    // Host bridge tables: WASI callbacks by import name, and the module's
-    // declared type for each imported function (drives raw<->Value
-    // conversion).
-    let mut host_fns: HashMap<(String, String), HostCallback> = HashMap::new();
-    for imp in wasi_imports() {
-        if let ImportValue::Func(ImportedFunction::Host { callback, .. }) = imp.value {
-            // Explicit conversion: with the memprof feature unified in,
-            // core strings are tracked_alloc types, not std String.
-            host_fns.insert((imp.module.to_string(), imp.name.to_string()), callback);
-        }
-    }
-    let mut import_types: HashMap<(String, String), FunctionType> = HashMap::new();
-    for f in module.functions() {
-        if let FunctionDef::Import {
-            module: m, name: n, ..
-        } = f.def()
-        {
-            import_types.insert((m.to_string(), n.to_string()), f.func_type().clone());
-        }
-    }
-
-    let exit_code;
-    {
-        let mut inst = match InterpInstance::new(&module) {
-            Ok(inst) => inst,
-            Err(err) => {
-                eprintln!("Error instantiating module: {}", err);
-                return 1;
-            }
-        };
-
-        inst.set_host(
-            move |m: &str, n: &str, mem: &mut [u8], args: &[u64], results: &mut [u64]| {
-                let key = (m.to_string(), n.to_string());
-                let cb = host_fns
-                    .get(&key)
-                    .ok_or(WasmError::invalid("interp cli: unlinked host import"))?;
-                let ft = import_types
-                    .get(&key)
-                    .ok_or(WasmError::invalid("interp cli: untyped host import"))?;
-                let mut params = Vec::with_capacity(args.len());
-                for (t, &raw) in ft.params().iter().zip(args.iter()) {
-                    params.push(raw_to_value(t, raw).ok_or(WasmError::invalid(
-                        "interp cli: non-numeric host import parameter",
-                    ))?);
-                }
-                let mut vresults = Vec::with_capacity(results.len());
-                for t in ft.results().iter() {
-                    vresults.push(raw_to_value(t, 0).ok_or(WasmError::invalid(
-                        "interp cli: non-numeric host import result",
-                    ))?);
-                }
-                let mut caller = Caller::new(Some(&mut mem[..]));
-                cb.call(&mut caller, &params, &mut vresults)?;
-                for (dst, v) in results.iter_mut().zip(vresults.iter()) {
-                    *dst = value_to_raw(v).ok_or(WasmError::invalid(
-                        "interp cli: non-numeric host import result",
-                    ))?;
-                }
-                Ok(())
-            },
+    let code_len = inst.engine_code_len();
+    if code_len > 0 {
+        eprintln!(
+            "[interp] engine code: {code_len} bytes ({:.1} KB)",
+            code_len as f64 / 1024.0
         );
-
-        let entry = inst
-            .find_export("_start")
-            .or_else(|| inst.find_export("main"));
-        let Some(entry) = entry else {
-            eprintln!("Error: module exports neither _start nor main");
-            return 1;
-        };
-        let (n_params, n_results) = inst.func_arity(entry).unwrap_or((0, 0));
-        if n_params != 0 {
-            eprintln!("Error: entry function takes parameters");
-            return 1;
-        }
-        let mut results = vec![0u64; n_results];
-        let result = inst.invoke(entry, &[], &mut results);
-
-        if stats {
-            let native = inst.dispatch_count();
-            if native > 0 {
-                // Only report the total when the counter is compiled in;
-                // otherwise there is no number to report.
-                if inst.dispatch_counting_enabled() {
-                    eprintln!("[interp] native dispatches: {native}");
-                }
-            }
-            let code_len = inst.engine_code_len();
-            if code_len > 0 {
-                eprintln!(
-                    "[interp] engine code: {code_len} bytes ({:.1} KB)",
-                    code_len as f64 / 1024.0
-                );
-            }
-            let bigrams = inst.bigram_stats();
-            if !bigrams.is_empty() {
-                eprintln!("[interp] top fallthrough bigrams (static):");
-                for ((a, b), n) in bigrams.iter().take(16) {
-                    eprintln!("[interp]   {a:?} -> {b:?}: {n}");
-                }
-            }
-            let slow = inst.slow_exit_stats();
-            if !slow.is_empty() {
-                let total: u64 = slow.iter().map(|(_, n)| n).sum();
-                eprintln!("[interp] slow exits: {total}");
-                for (op, n) in slow.iter().take(12) {
-                    eprintln!("[interp]   {op:?}: {n}");
-                }
-            }
-        }
-
-        exit_code = match result {
-            Ok(()) => 0,
-            Err(err) => {
-                if let Some(code) = err.exit_code() {
-                    code
-                } else {
-                    eprintln!("Error: {}", err);
-                    1
-                }
-            }
-        };
     }
-    exit_code
+    let bigrams = inst.bigram_stats();
+    if !bigrams.is_empty() {
+        eprintln!("[interp] top fallthrough bigrams (static):");
+        for ((a, b), n) in bigrams.iter().take(16) {
+            eprintln!("[interp]   {a:?} -> {b:?}: {n}");
+        }
+    }
+    let slow = inst.slow_exit_stats();
+    if !slow.is_empty() {
+        let total: u64 = slow.iter().map(|(_, n)| n).sum();
+        eprintln!("[interp] slow exits: {total}");
+        for (op, n) in slow.iter().take(12) {
+            eprintln!("[interp]   {op:?}: {n}");
+        }
+    }
 }
 
 fn print_usage(program_name: &str) {

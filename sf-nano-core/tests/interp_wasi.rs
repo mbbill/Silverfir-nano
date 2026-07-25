@@ -37,15 +37,18 @@ struct HostState {
 fn run_wasi(path: &str) -> (Result<(), WasmError>, HostState) {
     let wasm = std::fs::read(path).expect("read wasm");
     let module = Module::new("wasi", &wasm).expect("parse");
-    let state = HostState {
+    // The dispatcher is `'static` (the same bound the JIT's host callbacks
+    // carry), so shared state reaches it by refcount rather than by borrow.
+    let state = std::rc::Rc::new(HostState {
         fake_nanos: Cell::new(0),
         output: RefCell::new(Vec::new()),
         exit_code: Cell::new(None),
-    };
+    });
     let result = {
-        let mut inst = InterpInstance::new(&module).expect("instantiate");
+        let state = std::rc::Rc::clone(&state);
+        let mut inst = InterpInstance::new(module).expect("instantiate");
         inst.set_host(
-            |_mod: &str, name: &str, mem: &mut [u8], args: &[u64], results: &mut [u64]| {
+            move |_mod: &str, name: &str, mem: &mut [u8], args: &[u64], results: &mut [u64]| {
                 match name {
                     "clock_time_get" => {
                         // Advance 11 fake seconds per read so self-timing
@@ -100,7 +103,12 @@ fn run_wasi(path: &str) -> (Result<(), WasmError>, HostState) {
         let start = inst.find_export("_start").expect("_start export");
         inst.invoke(start, &[], &mut [])
     };
-    (result, state)
+    (
+        result,
+        std::rc::Rc::try_unwrap(state)
+            .ok()
+            .expect("host state still shared"),
+    )
 }
 
 fn completed_ok(result: &Result<(), WasmError>, state: &HostState) -> bool {

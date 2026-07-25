@@ -52,8 +52,8 @@ const VALUE_STACK_SLOTS: usize = 256 * 1024;
 /// and field names, the linear memory, argument slots, and result slots.
 /// The signature carries only std types (`&mut [u8]`, not this crate's
 /// tracked collections), so external callers stay feature-independent.
-pub type HostDispatch<'h> =
-    Box<dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'h>;
+pub type HostDispatch =
+    Box<dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError>>;
 
 /// `max` is a growth limit, consulted only by `table.grow`; the executor
 /// that implements it is arm64-only, so the field follows that gate.
@@ -142,8 +142,11 @@ struct NativeState {
 }
 
 /// A self-contained interpreter instance over a parsed module.
-pub struct InterpInstance<'m> {
-    module: &'m Module,
+pub struct InterpInstance {
+    /// Owned, not borrowed: a predecoded function carries no reference
+    /// back into the module, so there is nothing to keep alive separately
+    /// and nothing for an embedder to have to outlive.
+    module: Module,
     funcs: Vec<Option<Rc<PredecodedFunction>>>,
     /// Runtime state only the executor touches. `new()` still builds it on
     /// every target -- doing so is what rejects imported/64-bit/non-funcref
@@ -159,7 +162,7 @@ pub struct InterpInstance<'m> {
     globals: Vec<u64>,
     #[cfg(sf_interp_engine)]
     tables: Vec<TableState>,
-    host: Option<HostDispatch<'m>>,
+    host: Option<HostDispatch>,
     #[cfg(sf_interp_engine)]
     native: Option<NativeState>,
 }
@@ -236,8 +239,8 @@ fn eval_simple_const(expr: &[u8]) -> Result<u64, WasmError> {
         .ok_or(WasmError::invalid("interp: empty constant expression"))
 }
 
-impl<'m> InterpInstance<'m> {
-    pub fn new(module: &'m Module) -> Result<Self, WasmError> {
+impl InterpInstance {
+    pub fn new(module: Module) -> Result<Self, WasmError> {
         // Functions: predecode every local function eagerly; imports are
         // rejected on call, not here, so import-free modules always work.
         let mut funcs = Vec::new();
@@ -245,7 +248,7 @@ impl<'m> InterpInstance<'m> {
             if f.is_import() {
                 funcs.push(None);
             } else {
-                funcs.push(Some(Rc::new(predecode_function(module, i)?)));
+                funcs.push(Some(Rc::new(predecode_function(&module, i)?)));
             }
         }
 
@@ -376,7 +379,7 @@ impl<'m> InterpInstance<'m> {
         };
         inst.enable_native_dispatch()?;
         // Run the module's start function, if any.
-        if let Some(si) = module.start_function_index() {
+        if let Some(si) = inst.module.start_function_index() {
             inst.invoke(si, &[], &mut [])?;
         }
         Ok(inst)
@@ -628,10 +631,10 @@ impl<'m> InterpInstance<'m> {
     /// tracked facade — the same pattern as the JIT's host callbacks).
     pub fn set_host<F>(&mut self, host: F)
     where
-        F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'm,
+        F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static,
     {
         let host: alloc::boxed::Box<
-            dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'm,
+            dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError>,
         > = alloc::boxed::Box::new(host);
         self.host = Some(tracked_alloc::box_from_alloc(host));
     }
@@ -649,6 +652,37 @@ impl<'m> InterpInstance<'m> {
                 .ok_or(WasmError::trap("out of bounds table access"))
                 .and_then(|e| eval_simple_const(e).map(|v| v as u32)),
             None => Err(WasmError::trap("out of bounds table access")),
+        }
+    }
+
+    /// The module this instance was built from.
+    #[inline]
+    pub fn module(&self) -> &Module {
+        &self.module
+    }
+
+    /// The first linear memory's contents, if the module defines one.
+    #[inline]
+    pub fn memory(&self) -> Option<&[u8]> {
+        #[cfg(sf_interp_engine)]
+        {
+            self.memories.first().map(|m| m.bytes.as_slice())
+        }
+        #[cfg(not(sf_interp_engine))]
+        {
+            None
+        }
+    }
+
+    #[inline]
+    pub fn memory_mut(&mut self) -> Option<&mut [u8]> {
+        #[cfg(sf_interp_engine)]
+        {
+            self.memories.first_mut().map(|m| m.bytes.as_mut_slice())
+        }
+        #[cfg(not(sf_interp_engine))]
+        {
+            None
         }
     }
 
@@ -830,21 +864,30 @@ impl<'m> InterpInstance<'m> {
         frame: &mut [u64],
         arg_base: usize,
     ) -> Result<(), WasmError> {
-        let func = self
-            .module
+        // Borrow the three fields disjointly. Reading the import's names
+        // through `&self` while the dispatcher is held through `&mut self`
+        // is what used to force a `String` clone of both names on every
+        // single host call; destructuring makes them provably separate.
+        let Self {
+            module,
+            host,
+            memories,
+            ..
+        } = self;
+
+        let func = module
             .functions()
             .get(callee)
             .ok_or(WasmError::trap("undefined element"))?;
         let (mod_name, field) = match func.def() {
             crate::module::entities::FunctionDef::Import { module, name, .. } => {
-                (module.clone(), name.clone())
+                (module.as_str(), name.as_str())
             }
             _ => return Err(WasmError::invalid("interp: not an import")),
         };
         let p = func.func_type().params().len();
         let r = func.func_type().results().len();
-        let host = self
-            .host
+        let host = host
             .as_mut()
             .ok_or(WasmError::invalid("interp: no host dispatcher installed"))?;
         let mut results = [0u64; 8];
@@ -852,12 +895,11 @@ impl<'m> InterpInstance<'m> {
             return Err(WasmError::invalid("interp: too many host results"));
         }
         let args: Vec<u64> = frame[arg_base..arg_base + p].iter().copied().collect();
-        let mem0 = self
-            .memories
+        let mem0 = memories
             .first_mut()
             .map(|m| m.bytes.as_mut_slice())
             .unwrap_or(&mut []);
-        host(&mod_name, &field, mem0, &args, &mut results[..r])?;
+        host(mod_name, field, mem0, &args, &mut results[..r])?;
         frame[arg_base..arg_base + r].copy_from_slice(&results[..r]);
         Ok(())
     }
@@ -1930,7 +1972,7 @@ mod tests {
     fn run1(src: &str, export: &str, args: &[u64]) -> Result<u64, WasmError> {
         let (bin, _) = instantiate(src);
         let module = Module::new("t", &bin).expect("module");
-        let mut inst = InterpInstance::new(&module)?;
+        let mut inst = InterpInstance::new(module)?;
         let idx = inst.find_export(export).expect("export");
         let mut results = [0u64; 1];
         inst.invoke(idx, args, &mut results)?;
@@ -1963,7 +2005,7 @@ mod tests {
                 (func (export "get") (result i32) global.get $g))"#,
         );
         let module = Module::new("t", &bin).expect("module");
-        let mut inst = InterpInstance::new(&module).expect("instantiate");
+        let mut inst = InterpInstance::new(module).expect("instantiate");
         let f = inst.find_export("f").expect("f");
         let g = inst.find_export("get").expect("get");
         inst.invoke(f, &[0], &mut []).expect("invoke cond=0");

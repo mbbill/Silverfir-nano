@@ -26,6 +26,7 @@ pub(crate) mod exn_heap;
 pub(crate) mod expr_eval;
 pub(crate) mod gc_heap;
 pub(crate) mod gc_type_check;
+pub(crate) mod imports;
 pub(crate) mod instance;
 pub(crate) mod result_buffer;
 pub(crate) mod store;

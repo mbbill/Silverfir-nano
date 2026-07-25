@@ -30,6 +30,7 @@ pub(crate) mod arch;
 pub(crate) mod backend;
 pub(crate) mod build;
 pub(crate) mod debug;
+pub(crate) mod instance;
 pub(crate) mod machine;
 pub(crate) mod middle;
 pub(crate) mod runtime;

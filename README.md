@@ -67,15 +67,16 @@ defmt, the RP2350 HAL, and the embedded `.wasm` guest.
 
 | Firmware | Flash |
 |---|---:|
-| Cortex-M33, JIT | 1,066,952 B (1041.9 KiB) |
-| Cortex-M33, interpreter | **303,136 B (296.0 KiB)** |
-| Hazard3 RV32, JIT | 1,032,720 B (1008.5 KiB) |
-| Hazard3 RV32, interpreter | **336,384 B (328.5 KiB)** |
+| Cortex-M33, JIT | 1,066,568 B (1041.6 KiB) |
+| Cortex-M33, interpreter | **308,448 B (301.2 KiB)** |
+| Hazard3 RV32, JIT | 1,032,184 B (1008.0 KiB) |
+| Hazard3 RV32, interpreter | **341,824 B (333.8 KiB)** |
 
 Choosing the interpreter drops the whole compiler pipeline and its
-executable-memory substrate, for **3.1–3.5× smaller** firmware. Of the
-296 KiB Cortex-M33 image, 131 KiB is the generated dispatch engine itself
-and about 30 KiB is the board and demo application.
+executable-memory substrate, for **3.0–3.5× smaller** firmware. Of the
+301 KiB Cortex-M33 image, 131 KiB is the generated dispatch engine itself
+and about 20 KiB is the board and demo application. The same source builds
+either one — the engine is not visible to the embedder.
 
 ```bash
 cd devices/pico2

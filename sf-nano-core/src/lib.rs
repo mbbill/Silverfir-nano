@@ -40,7 +40,6 @@ pub use vm::engine::{engine, set_engine, Engine};
 pub use vm::entities::{Caller, FunctionInst, HostCallback, HostFn};
 pub use vm::instance::{
     Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,
-    InstanceInstantiationError,
 };
 #[cfg(sf_interp)]
 pub use vm::interpreter::{
@@ -55,6 +54,8 @@ pub use vm::jit::build::{
     native_stats as jit_stats, native_stats_snapshot, native_stats_snapshot as jit_stats_snapshot,
     NativeStatsSnapshot, NativeStatsSnapshot as JitStatsSnapshot,
 };
+#[cfg(sf_jit)]
+pub use vm::jit::instance::{InstanceInstantiationError, JitInstance};
 #[cfg(sf_has_guard_pages)]
 use vm::jit::runtime::trap_signal;
 pub use vm::store::LinkRegistry;

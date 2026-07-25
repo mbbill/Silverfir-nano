@@ -102,8 +102,8 @@ fn trap_matches(err: &WasmError, expected: &str) -> bool {
     msg == expected || expected.starts_with(msg) || msg.starts_with(expected)
 }
 
-struct FileRun<'m> {
-    inst: Option<InterpInstance<'m>>,
+struct FileRun {
+    inst: Option<InterpInstance>,
     /// Set when the rest of the file cannot be meaningfully executed.
     skip_rest: Option<&'static str>,
 }
@@ -272,7 +272,7 @@ enum Exec {
 
 #[allow(clippy::too_many_arguments)]
 fn handle_trap_assert(
-    run: &mut FileRun<'_>,
+    run: &mut FileRun,
     exec: WastExecute,
     message: &str,
     name: &str,
@@ -303,7 +303,7 @@ fn handle_trap_assert(
     }
 }
 
-fn execute(run: &mut FileRun<'_>, exec: &WastExecute) -> Exec {
+fn execute(run: &mut FileRun, exec: &WastExecute) -> Exec {
     match exec {
         WastExecute::Invoke(invoke) => {
             if invoke.module.is_some() {
@@ -345,7 +345,7 @@ fn execute(run: &mut FileRun<'_>, exec: &WastExecute) -> Exec {
     }
 }
 
-fn execute_general(run: &mut FileRun<'_>, exec: WastExecute) -> Exec {
+fn execute_general(run: &mut FileRun, exec: WastExecute) -> Exec {
     match exec {
         WastExecute::Wat(mut wat) => {
             // assert_trap on a whole module: instantiation must trap.
@@ -362,9 +362,10 @@ fn execute_general(run: &mut FileRun<'_>, exec: WastExecute) -> Exec {
     }
 }
 
-fn instantiate(bytes: Vec<u8>) -> Result<InterpInstance<'static>, WasmError> {
-    let module: &'static Module = Box::leak(Box::new(Module::new("spec", &bytes)?));
-    let mut inst = InterpInstance::new(module)?;
+fn instantiate(bytes: Vec<u8>) -> Result<InterpInstance, WasmError> {
+    // The instance owns its module, so this no longer leaks one per
+    // instantiation to manufacture a `'static` borrow.
+    let mut inst = InterpInstance::new(Module::new("spec", &bytes)?)?;
     inst.set_host(spectest_host());
     Ok(inst)
 }
