@@ -216,14 +216,33 @@ fn op_counts(table: &[u64]) -> Vec<(Op, u64)> {
 
 /// Evaluate the simple constant expressions v1 supports for offsets and
 /// global initializers: a single `t.const` (or `ref.func`/`ref.null`).
-fn eval_simple_const(expr: &[u8]) -> Result<u64, WasmError> {
+/// Evaluate a constant expression.
+///
+/// Covers the extended set: `t.const`, `ref.null`, `ref.func`, `global.get`
+/// of an already-initialized immutable global, and `i32`/`i64` add, sub and
+/// mul. `globals` is what has been initialized so far, which is exactly
+/// what `global.get` is allowed to reach in a constant expression.
+fn eval_const(expr: &[u8], globals: &[u64]) -> Result<u64, WasmError> {
     use crate::op_decoder::{Decoder, Immediate, OpStream, OpcodeHandler};
     use crate::opcodes::WasmOpcode;
 
-    struct H {
-        value: Option<u64>,
+    struct H<'g> {
+        stack: Vec<u64>,
+        globals: &'g [u64],
     }
-    impl OpcodeHandler for H {
+
+    impl H<'_> {
+        fn pop2(&mut self) -> Result<(u64, u64), WasmError> {
+            let b = self.stack.pop();
+            let a = self.stack.pop();
+            match (a, b) {
+                (Some(a), Some(b)) => Ok((a, b)),
+                _ => Err(WasmError::invalid("interp: constant expression underflows")),
+            }
+        }
+    }
+
+    impl OpcodeHandler for H<'_> {
         fn on_decode_begin(&mut self) -> Result<(), WasmError> {
             Ok(())
         }
@@ -232,24 +251,66 @@ fn eval_simple_const(expr: &[u8]) -> Result<u64, WasmError> {
             stream: &mut OpStream<'x, 'y, 'z>,
         ) -> Result<(), WasmError> {
             while let Some(op) = stream.next()? {
-                let v = match (op.wasm_op, &op.imm) {
-                    (WasmOpcode::OP(Opcode::I32_CONST), Immediate::I32(v)) => *v as u32 as u64,
-                    (WasmOpcode::OP(Opcode::I64_CONST), Immediate::I64(v)) => *v as u64,
-                    (WasmOpcode::OP(Opcode::F32_CONST), Immediate::F32(v)) => v.to_bits() as u64,
-                    (WasmOpcode::OP(Opcode::F64_CONST), Immediate::F64(v)) => v.to_bits(),
-                    (WasmOpcode::OP(Opcode::REF_FUNC), Immediate::FunctionIndex(i)) => *i as u64,
-                    (WasmOpcode::OP(Opcode::REF_NULL), _) => NULL_FUNC as u64,
+                match (op.wasm_op, &op.imm) {
+                    (WasmOpcode::OP(Opcode::I32_CONST), Immediate::I32(v)) => {
+                        self.stack.push(*v as u32 as u64)
+                    }
+                    (WasmOpcode::OP(Opcode::I64_CONST), Immediate::I64(v)) => {
+                        self.stack.push(*v as u64)
+                    }
+                    (WasmOpcode::OP(Opcode::F32_CONST), Immediate::F32(v)) => {
+                        self.stack.push(v.to_bits() as u64)
+                    }
+                    (WasmOpcode::OP(Opcode::F64_CONST), Immediate::F64(v)) => {
+                        self.stack.push(v.to_bits())
+                    }
+                    (WasmOpcode::OP(Opcode::REF_FUNC), Immediate::FunctionIndex(i)) => {
+                        self.stack.push(*i as u64)
+                    }
+                    (WasmOpcode::OP(Opcode::REF_NULL), _) => self.stack.push(NULL_FUNC as u64),
+                    (WasmOpcode::OP(Opcode::GLOBAL_GET), Immediate::GlobalIndex(i)) => {
+                        // Only an already-initialized global is reachable:
+                        // the spec restricts a constant expression to
+                        // imported and previously-declared immutable ones.
+                        let v =
+                            self.globals
+                                .get(*i as usize)
+                                .copied()
+                                .ok_or(WasmError::invalid(
+                                    "interp: constant expression reads a later global",
+                                ))?;
+                        self.stack.push(v);
+                    }
+                    (WasmOpcode::OP(Opcode::I32_ADD), _) => {
+                        let (a, b) = self.pop2()?;
+                        self.stack.push((a as u32).wrapping_add(b as u32) as u64);
+                    }
+                    (WasmOpcode::OP(Opcode::I32_SUB), _) => {
+                        let (a, b) = self.pop2()?;
+                        self.stack.push((a as u32).wrapping_sub(b as u32) as u64);
+                    }
+                    (WasmOpcode::OP(Opcode::I32_MUL), _) => {
+                        let (a, b) = self.pop2()?;
+                        self.stack.push((a as u32).wrapping_mul(b as u32) as u64);
+                    }
+                    (WasmOpcode::OP(Opcode::I64_ADD), _) => {
+                        let (a, b) = self.pop2()?;
+                        self.stack.push(a.wrapping_add(b));
+                    }
+                    (WasmOpcode::OP(Opcode::I64_SUB), _) => {
+                        let (a, b) = self.pop2()?;
+                        self.stack.push(a.wrapping_sub(b));
+                    }
+                    (WasmOpcode::OP(Opcode::I64_MUL), _) => {
+                        let (a, b) = self.pop2()?;
+                        self.stack.push(a.wrapping_mul(b));
+                    }
                     (WasmOpcode::OP(Opcode::END), _) => continue,
                     _ => {
                         return Err(WasmError::invalid(
                             "interp: unsupported constant expression",
                         ))
                     }
-                };
-                if self.value.replace(v).is_some() {
-                    return Err(WasmError::invalid(
-                        "interp: unsupported constant expression",
-                    ));
                 }
             }
             Ok(())
@@ -259,7 +320,10 @@ fn eval_simple_const(expr: &[u8]) -> Result<u64, WasmError> {
         }
     }
 
-    let mut h = H { value: None };
+    let mut h = H {
+        stack: Vec::new(),
+        globals,
+    };
     // A const expr is an expression body: decode it like a function body.
     // The decoder is scoped so its borrow of `h` provably ends before the
     // read below (with tracked-alloc's memprof feature unified in, its Vec
@@ -269,8 +333,13 @@ fn eval_simple_const(expr: &[u8]) -> Result<u64, WasmError> {
         d.add_handler(&mut h);
         d.decode_function()?;
     }
-    h.value
-        .ok_or(WasmError::invalid("interp: empty constant expression"))
+    match h.stack.len() {
+        1 => Ok(h.stack[0]),
+        0 => Err(WasmError::invalid("interp: empty constant expression")),
+        _ => Err(WasmError::invalid(
+            "interp: constant expression leaves more than one value",
+        )),
+    }
 }
 
 impl InterpInstance {
@@ -311,7 +380,10 @@ impl InterpInstance {
         let mut globals = Vec::new();
         for g in module.globals() {
             match g.def() {
-                GlobalDef::Local(spec) => globals.push(eval_simple_const(spec.init_expr())?),
+                GlobalDef::Local(spec) => {
+                    let v = eval_const(spec.init_expr(), &globals)?;
+                    globals.push(v);
+                }
                 GlobalDef::Import { .. } => {
                     return Err(WasmError::invalid("interp: imported global unsupported"))
                 }
@@ -349,7 +421,7 @@ impl InterpInstance {
                 // the bound has to be computed without wrapping: on a
                 // 32-bit host `off + len` overflows `usize` and turns an
                 // out-of-range segment into an in-range one.
-                let off = eval_simple_const(offset_expr)? as u64;
+                let off = eval_const(offset_expr, &globals)? as u64;
                 let table = tables
                     .get_mut(*table_index)
                     .ok_or(WasmError::invalid("interp: element table out of range"))?;
@@ -368,7 +440,7 @@ impl InterpInstance {
                             return Err(WasmError::trap("out of bounds table access"));
                         }
                         for (k, expr) in exprs.iter().enumerate() {
-                            table.entries[off as usize + k] = eval_simple_const(expr)? as u32;
+                            table.entries[off as usize + k] = eval_const(expr, &globals)? as u32;
                         }
                     }
                 }
@@ -386,7 +458,7 @@ impl InterpInstance {
             } = d
             {
                 // Same overflow reasoning as the element segments above.
-                let off = eval_simple_const(offset_expr)? as u64;
+                let off = eval_const(offset_expr, &globals)? as u64;
                 let mem = memories
                     .get_mut(*memory_index)
                     .ok_or(WasmError::trap("out of bounds memory access"))?;
@@ -695,7 +767,7 @@ impl InterpInstance {
             Some(ElementInit::InitExprs { exprs, .. }) => exprs
                 .get(k)
                 .ok_or(WasmError::trap("out of bounds table access"))
-                .and_then(|e| eval_simple_const(e).map(|v| v as u32)),
+                .and_then(|e| eval_const(e, &self.globals).map(|v| v as u32)),
             None => Err(WasmError::trap("out of bounds table access")),
         }
     }
@@ -2065,6 +2137,58 @@ mod tests {
         let mut results = [0u64; 1];
         inst.invoke(idx, args, &mut results)?;
         Ok(results[0])
+    }
+
+    /// Extended constant expressions: arithmetic, and `global.get` of a
+    /// global declared earlier. Neither is expressible with a single
+    /// `t.const`, which is all this used to accept.
+    #[test]
+    fn extended_const_expressions() {
+        let r = run1(
+            r#"(module
+                 (global $a i32 (i32.const 7))
+                 (global $b i32 (i32.add (global.get $a) (i32.const 5)))
+                 (global $c i32 (i32.mul (global.get $b) (i32.const 3)))
+                 (func (export "c") (result i32) global.get $c))"#,
+            "c",
+            &[],
+        )
+        .expect("extended const module should instantiate");
+        assert_eq!(r as u32, (7 + 5) * 3);
+    }
+
+    /// An active data offset is a constant expression too, so the same
+    /// arithmetic has to reach segment placement.
+    #[test]
+    fn extended_const_reaches_a_data_offset() {
+        let r = run1(
+            r#"(module
+                 (memory 1)
+                 (global $base i32 (i32.const 4))
+                 (data (offset (i32.add (global.get $base) (i32.const 4))) "\2a\00\00\00")
+                 (func (export "at8") (result i32) i32.const 8 i32.load))"#,
+            "at8",
+            &[],
+        )
+        .expect("data offset should accept an extended const expression");
+        assert_eq!(r as u32, 42);
+    }
+
+    /// A constant expression may not read a global that is not initialized
+    /// yet -- the spec restricts it to earlier ones.
+    #[test]
+    fn const_expression_cannot_read_a_later_global() {
+        let bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                 (global $a i32 (i32.const 1))
+                 (global $b i32 (global.get $a)))"#,
+        )
+        .expect("wat");
+        let module = Module::new("t", &bin).expect("module");
+        assert!(
+            InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module).is_ok(),
+            "reading an EARLIER global is legal"
+        );
     }
 
     #[test]
