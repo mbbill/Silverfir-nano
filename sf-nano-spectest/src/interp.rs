@@ -171,6 +171,9 @@ fn run_file(path: &PathBuf, totals: &mut Totals) {
                         // Keep the reason: "205 skipped" on its own says
                         // nothing about what would unblock them.
                         totals.note_skip(err.message());
+                        if std::env::var_os("SF_INTERP_SKIP_WHERE").is_some() {
+                            eprintln!("[skip] {name}  {}", err.message());
+                        }
                         run.skip_rest = Some("module unsupported");
                         skipped += 1;
                     }
@@ -415,7 +418,13 @@ pub fn run(filters: &[String]) -> i32 {
         if !matches_filters(f, filters) {
             continue;
         }
-        if discovery::should_skip_test(&name, false) {
+        // Match the JIT runner: test the full path as well as the base
+        // name. `should_skip_test` excludes `proposals/`, and a bare file
+        // name can never contain that segment -- so this ran every
+        // proposal directory the JIT suite deliberately leaves out, and
+        // counted the results against the interpreter.
+        let full = f.to_string_lossy().into_owned();
+        if discovery::should_skip_test(&name, false) || discovery::should_skip_test(&full, false) {
             totals.files_skipped += 1;
             continue;
         }

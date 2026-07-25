@@ -393,7 +393,17 @@ fn parse_memory_limits(payload: &mut Payload) -> Result<Limits, WasmError> {
             let max = narrow_memory_limit_u64(max_raw)?;
             Ok(Limits::new_64(min, Some(max))?)
         }
-        _ => Err(WasmError::malformed("malformed memory limits flag: 0x")),
+        // The message used to end at "0x" with nothing after it: the error
+        // type carries a &'static str, so the byte it saw could not be
+        // formatted in. Naming the proposal each unsupported flag belongs
+        // to is more use than the byte would have been.
+        0x02 | 0x03 => Err(WasmError::malformed(
+            "memory limits flag selects shared memory, which is not supported",
+        )),
+        0x08 | 0x09 => Err(WasmError::malformed(
+            "memory limits flag selects a custom page size, which is not supported",
+        )),
+        _ => Err(WasmError::malformed("malformed memory limits flag")),
     }
 }
 
