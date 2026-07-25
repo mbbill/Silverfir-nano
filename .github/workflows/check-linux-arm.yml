@@ -19,7 +19,7 @@ jobs:
   check:
     name: full (arm64 native)
     runs-on: ubuntu-24.04-arm
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4

@@ -17,7 +17,7 @@ jobs:
   check:
     name: full (x64 native, no WSL)
     runs-on: windows-latest
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       # Some tracked design-tree artifacts have deeply nested .alt/ paths that
       # exceed Windows' 260-char MAX_PATH. Enable Git long-path support before

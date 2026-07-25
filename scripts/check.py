@@ -28,7 +28,7 @@ import textwrap
 import time
 from dataclasses import dataclass, field
 from pathlib import Path, PureWindowsPath
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Dict, List, NamedTuple, Optional, Sequence, Tuple
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -47,6 +47,7 @@ RISCV32_SELECT_REGRESSION_ARGS = RISCV64_SELECT_REGRESSION_ARGS
 
 
 CORE_OPTIONAL_FEATURES = [
+    "interp",
     "backend-emu64",
     "backend-emu32",
     "wasi",
@@ -60,6 +61,7 @@ CORE_OPTIONAL_FEATURES = [
 ]
 
 CLI_OPTIONAL_FEATURES = [
+    "interp",
     "call-trace",
     "memprof",
     "thumb2-test",
@@ -85,6 +87,8 @@ EXTRA_TARGET_ROWS = [
         "--no-default-features --features jit,thumb2-test",
     ),
 ]
+
+WINDOWS_GNU_TARGET = "x86_64-pc-windows-gnu"
 
 BARE_SMOKE_TARGETS = [
     "thumbv8m.main-none-eabihf",
@@ -1229,6 +1233,26 @@ def run_target_package_check(
     )
 
 
+class Engine(NamedTuple):
+    """One execution engine to run the spec suite against.
+
+    The suite is engine-agnostic; only the build features and the runtime
+    flag differ, so the cross-arch helpers below take this rather than
+    being duplicated per engine.
+    """
+
+    # Suffix for step and log names ("" for the JIT, the historical name).
+    tag: str
+    # Cargo feature spec for the spectest binary.
+    features: str
+    # Runtime flags selecting the engine.
+    args: Tuple[str, ...]
+
+
+JIT_ENGINE = Engine(tag="", features="jit", args=("--backend", "native"))
+INTERP_ENGINE = Engine(tag="-interp", features="jit,interp", args=("--interp",))
+
+
 def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_args: Sequence[str]) -> None:
     if not ensure_testsuite(runner):
         return
@@ -1314,6 +1338,79 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
             run_armv7_spectests(runner, profile_name, extra_args, env)
 
 
+def run_interp_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_args: Sequence[str]) -> None:
+    """Run the spec suite a second time, through the interpreter.
+
+    This runs AFTER every JIT phase, so a red interpreter never masks a red
+    JIT. The interpreter shares the runtime substrate but none of the
+    compile-and-execute tier, and its dispatch handlers are generated per
+    target at build time — so "the interpreter passes on x64" says nothing
+    about arm32, and every backend has to be exercised on its own hardware
+    (or under QEMU) exactly like the JIT backends are.
+
+    Cross-arch interpreter runs are release-only. A debug interpreter under
+    QEMU emulation is slow enough to dominate the whole check, and the
+    engine it exercises is the same one either way.
+    """
+    if not ensure_testsuite(runner):
+        return
+
+    env = {"TESTSUITE_DIR": str(TESTSUITE_DIR)}
+    for profile_name in profiles:
+        native_build = cargo_build(
+            runner,
+            f"cargo build: spectest-interp native ({profile_name})",
+            "sf-nano-spectest",
+            profile_name=profile_name,
+            target=None,
+            features=INTERP_ENGINE.features,
+            log_name=f"spectest-interp-build-native-{profile_name}",
+        )
+        host_bin = binary_path("sf-nano-spectest", profile_name, runner.host)
+        if native_build.status == "FAIL":
+            skip_after_failed_dependency(runner, f"run: spectest-interp native ({profile_name})", native_build)
+        else:
+            run_binary_if_present(
+                runner,
+                f"run: spectest-interp native ({profile_name})",
+                [host_bin, *INTERP_ENGINE.args, *extra_args],
+                env=env,
+                log_name=f"spectest-interp-native-{profile_name}",
+            )
+
+    # Targets whose handler set nothing else here compiles: the two
+    # bare-metal profiles have no spectest harness at all, and the Windows
+    # row of the target matrix builds the spectest without `interp`. The
+    # failure this catches is a backend whose emitted assembly stops
+    # assembling — for Windows, the only COFF coverage outside a Windows
+    # host.
+    for extra in [*BARE_SMOKE_TARGETS, WINDOWS_GNU_TARGET]:
+        if not target_installed_or_install(runner, extra, f"interp engine {extra}"):
+            continue
+        cargo_check(
+            runner,
+            f"cargo check: interp engine {extra}",
+            "sf-nano-core",
+            target=extra,
+            feature_spec="jit,interp",
+            log_name=f"interp-engine-{extra.split('-')[0]}",
+        )
+
+    if os.environ.get("SF_CHECK_SKIP_CROSS_RUNTIME"):
+        runner.skip(
+            "run: spectest-interp cross-arch",
+            "SF_CHECK_SKIP_CROSS_RUNTIME=1: x64/armv7/riscv64/riscv32 interpreter checks deferred to the dedicated cross-arch CI job.",
+        )
+        return
+    if "release" not in profiles:
+        runner.skip("run: spectest-interp cross-arch", "cross-arch interpreter checks run on the release profile only.")
+        return
+    run_x64_spectest(runner, "release", extra_args, env, INTERP_ENGINE)
+    run_riscv64_spectest(runner, "release", extra_args, env, INTERP_ENGINE)
+    run_riscv32_spectest(runner, "release", extra_args, env, INTERP_ENGINE)
+    run_armv7_spectests(runner, "release", extra_args, env, INTERP_ENGINE)
+
+
 def run_binary_if_present(
     runner: CheckRunner,
     name: str,
@@ -1344,36 +1441,38 @@ def run_x64_spectest(
     profile_name: str,
     extra_args: Sequence[str],
     env: Dict[str, str],
+    engine: Engine = JIT_ENGINE,
 ) -> None:
+    tag = engine.tag
     target = x64_target_for_host(runner.host)
     if target is None:
-        runner.skip(f"run: spectest x64 ({profile_name})", "x64 runtime checks require macOS, Linux, or WSL.")
+        runner.skip(f"run: spectest{tag} x64 ({profile_name})", "x64 runtime checks require macOS, Linux, or WSL.")
         return
     if not is_runnable_x64_host(runner.host):
-        runner.skip(f"run: spectest x64 ({profile_name})", f"host architecture {runner.host.machine} cannot run x64 binary directly.")
+        runner.skip(f"run: spectest{tag} x64 ({profile_name})", f"host architecture {runner.host.machine} cannot run x64 binary directly.")
         return
     if not ensure_rust_target(runner, target):
         return
 
     build = cargo_build(
         runner,
-        f"cargo build: spectest x64 ({profile_name})",
+        f"cargo build: spectest{tag} x64 ({profile_name})",
         "sf-nano-spectest",
         profile_name=profile_name,
         target=target,
-        features="jit",
-        log_name=f"spectest-build-x64-{profile_name}",
+        features=engine.features,
+        log_name=f"spectest-build{tag}-x64-{profile_name}",
     )
     if build.status == "FAIL":
-        skip_after_failed_dependency(runner, f"run: spectest x64 ({profile_name})", build)
+        skip_after_failed_dependency(runner, f"run: spectest{tag} x64 ({profile_name})", build)
         return
     x64_bin = binary_path("sf-nano-spectest", profile_name, runner.host, target)
     argv: List[object]
     if runner.host.kind == "macos":
-        argv = ["arch", "-x86_64", x64_bin, "--backend", "native", *extra_args]
+        argv = ["arch", "-x86_64", x64_bin, *engine.args, *extra_args]
     else:
-        argv = [x64_bin, "--backend", "native", *extra_args]
-    run_binary_if_present(runner, f"run: spectest x64 ({profile_name})", argv, env=env, log_name=f"spectest-x64-{profile_name}")
+        argv = [x64_bin, *engine.args, *extra_args]
+    run_binary_if_present(runner, f"run: spectest{tag} x64 ({profile_name})", argv, env=env, log_name=f"spectest{tag}-x64-{profile_name}")
 
 
 def run_riscv64_spectest(
@@ -1381,7 +1480,9 @@ def run_riscv64_spectest(
     profile_name: str,
     extra_args: Sequence[str],
     env: Dict[str, str],
+    engine: Engine = JIT_ENGINE,
 ) -> None:
+    tag = engine.tag
     if not ensure_rust_target(runner, RISCV64_TARGET):
         return
     if not ensure_riscv64_runner(runner):
@@ -1389,41 +1490,41 @@ def run_riscv64_spectest(
 
     build = cargo_build(
         runner,
-        f"cargo build: spectest riscv64 ({profile_name})",
+        f"cargo build: spectest{tag} riscv64 ({profile_name})",
         "sf-nano-spectest",
         profile_name=profile_name,
         target=RISCV64_TARGET,
-        features="jit",
-        log_name=f"spectest-build-riscv64-{profile_name}",
+        features=engine.features,
+        log_name=f"spectest-build{tag}-riscv64-{profile_name}",
     )
     if build.status == "FAIL":
-        skip_after_failed_dependency(runner, f"run: spectest riscv64 ({profile_name})", build)
+        skip_after_failed_dependency(runner, f"run: spectest{tag} riscv64 ({profile_name})", build)
         return
 
     rv64_bin = binary_path("sf-nano-spectest", profile_name, runner.host, RISCV64_TARGET)
     smoke = run_riscv64_binary(
         runner,
-        f"run: spectest riscv64 select/call smoke ({profile_name})",
+        f"run: spectest{tag} riscv64 select/call smoke ({profile_name})",
         rv64_bin,
-        ["--backend", "native", *RISCV64_SELECT_REGRESSION_ARGS],
+        [*engine.args, *RISCV64_SELECT_REGRESSION_ARGS],
         env,
-        f"spectest-riscv64-select-call-smoke-{profile_name}",
+        f"spectest{tag}-riscv64-select-call-smoke-{profile_name}",
     )
     if smoke is None:
         return
     if smoke.status == "FAIL":
-        skip_after_failed_dependency(runner, f"run: spectest riscv64 ({profile_name})", smoke)
+        skip_after_failed_dependency(runner, f"run: spectest{tag} riscv64 ({profile_name})", smoke)
         return
 
     if list(extra_args) == RISCV64_SELECT_REGRESSION_ARGS:
         return
     run_riscv64_binary(
         runner,
-        f"run: spectest riscv64 ({profile_name})",
+        f"run: spectest{tag} riscv64 ({profile_name})",
         rv64_bin,
-        ["--backend", "native", *extra_args],
+        [*engine.args, *extra_args],
         env,
-        f"spectest-riscv64-{profile_name}",
+        f"spectest{tag}-riscv64-{profile_name}",
     )
 
 
@@ -1432,7 +1533,9 @@ def run_riscv32_spectest(
     profile_name: str,
     extra_args: Sequence[str],
     env: Dict[str, str],
+    engine: Engine = JIT_ENGINE,
 ) -> None:
+    tag = engine.tag
     if not ensure_rust_target(runner, RISCV32_TARGET):
         return
     if not ensure_riscv32_runner(runner):
@@ -1440,41 +1543,41 @@ def run_riscv32_spectest(
 
     build = cargo_build(
         runner,
-        f"cargo build: spectest riscv32 ({profile_name})",
+        f"cargo build: spectest{tag} riscv32 ({profile_name})",
         "sf-nano-spectest",
         profile_name=profile_name,
         target=RISCV32_TARGET,
-        features="jit",
-        log_name=f"spectest-build-riscv32-{profile_name}",
+        features=engine.features,
+        log_name=f"spectest-build{tag}-riscv32-{profile_name}",
     )
     if build.status == "FAIL":
-        skip_after_failed_dependency(runner, f"run: spectest riscv32 ({profile_name})", build)
+        skip_after_failed_dependency(runner, f"run: spectest{tag} riscv32 ({profile_name})", build)
         return
 
     rv32_bin = binary_path("sf-nano-spectest", profile_name, runner.host, RISCV32_TARGET)
     smoke = run_riscv32_binary(
         runner,
-        f"run: spectest riscv32 select/call smoke ({profile_name})",
+        f"run: spectest{tag} riscv32 select/call smoke ({profile_name})",
         rv32_bin,
-        ["--backend", "native", *RISCV32_SELECT_REGRESSION_ARGS],
+        [*engine.args, *RISCV32_SELECT_REGRESSION_ARGS],
         env,
-        f"spectest-riscv32-select-call-smoke-{profile_name}",
+        f"spectest{tag}-riscv32-select-call-smoke-{profile_name}",
     )
     if smoke is None:
         return
     if smoke.status == "FAIL":
-        skip_after_failed_dependency(runner, f"run: spectest riscv32 ({profile_name})", smoke)
+        skip_after_failed_dependency(runner, f"run: spectest{tag} riscv32 ({profile_name})", smoke)
         return
 
     if list(extra_args) == RISCV32_SELECT_REGRESSION_ARGS:
         return
     run_riscv32_binary(
         runner,
-        f"run: spectest riscv32 ({profile_name})",
+        f"run: spectest{tag} riscv32 ({profile_name})",
         rv32_bin,
-        ["--backend", "native", *extra_args],
+        [*engine.args, *extra_args],
         env,
-        f"spectest-riscv32-{profile_name}",
+        f"spectest{tag}-riscv32-{profile_name}",
     )
 
 
@@ -1483,7 +1586,9 @@ def run_armv7_spectests(
     profile_name: str,
     extra_args: Sequence[str],
     env: Dict[str, str],
+    engine: Engine = JIT_ENGINE,
 ) -> None:
+    tag = engine.tag
     if not ensure_rust_target(runner, ARMV7_TARGET):
         return
     if not ensure_armv7_runner(runner):
@@ -1491,17 +1596,17 @@ def run_armv7_spectests(
 
     build_a = cargo_build(
         runner,
-        f"cargo build: spectest armv7a ({profile_name})",
+        f"cargo build: spectest{tag} armv7a ({profile_name})",
         "sf-nano-spectest",
         profile_name=profile_name,
         target=ARMV7_TARGET,
-        features="jit",
-        log_name=f"spectest-build-armv7a-{profile_name}",
+        features=engine.features,
+        log_name=f"spectest-build{tag}-armv7a-{profile_name}",
     )
     arm_bin = binary_path("sf-nano-spectest", profile_name, runner.host, ARMV7_TARGET)
-    saved_a = arm_bin.with_name(f"{arm_bin.name}.armv7a")
+    saved_a = arm_bin.with_name(f"{arm_bin.name}.armv7a{tag}")
     if build_a.status == "FAIL":
-        skip_after_failed_dependency(runner, f"run: spectest armv7a ({profile_name})", build_a)
+        skip_after_failed_dependency(runner, f"run: spectest{tag} armv7a ({profile_name})", build_a)
     elif arm_bin.exists() or runner.dry_run:
         # In dry-run we skip the copy (the artifact wasn't really built);
         # run_armv7_binary's runner.run still short-circuits to OK below.
@@ -1509,40 +1614,40 @@ def run_armv7_spectests(
             shutil.copy2(arm_bin, saved_a)
         run_armv7_binary(
             runner,
-            f"run: spectest armv7a ({profile_name})",
+            f"run: spectest{tag} armv7a ({profile_name})",
             saved_a,
-            ["--backend", "native", *extra_args],
+            [*engine.args, *extra_args],
             env,
-            f"spectest-armv7a-{profile_name}",
+            f"spectest{tag}-armv7a-{profile_name}",
         )
     else:
-        runner.fail(f"run: spectest armv7a ({profile_name})", f"expected binary not found: {arm_bin}")
+        runner.fail(f"run: spectest{tag} armv7a ({profile_name})", f"expected binary not found: {arm_bin}")
 
     build_m = cargo_build(
         runner,
-        f"cargo build: spectest armv7m ({profile_name})",
+        f"cargo build: spectest{tag} armv7m ({profile_name})",
         "sf-nano-spectest",
         profile_name=profile_name,
         target=ARMV7_TARGET,
-        features="jit,thumb2-test",
-        log_name=f"spectest-build-armv7m-{profile_name}",
+        features=f"{engine.features},thumb2-test",
+        log_name=f"spectest-build{tag}-armv7m-{profile_name}",
     )
-    saved_m = arm_bin.with_name(f"{arm_bin.name}.armv7m")
+    saved_m = arm_bin.with_name(f"{arm_bin.name}.armv7m{tag}")
     if build_m.status == "FAIL":
-        skip_after_failed_dependency(runner, f"run: spectest armv7m ({profile_name})", build_m)
+        skip_after_failed_dependency(runner, f"run: spectest{tag} armv7m ({profile_name})", build_m)
     elif arm_bin.exists() or runner.dry_run:
         if arm_bin.exists():
             shutil.copy2(arm_bin, saved_m)
         run_armv7_binary(
             runner,
-            f"run: spectest armv7m ({profile_name})",
+            f"run: spectest{tag} armv7m ({profile_name})",
             saved_m,
-            ["--backend", "native", *extra_args],
+            [*engine.args, *extra_args],
             env,
-            f"spectest-armv7m-{profile_name}",
+            f"spectest{tag}-armv7m-{profile_name}",
         )
     else:
-        runner.fail(f"run: spectest armv7m ({profile_name})", f"expected binary not found: {arm_bin}")
+        runner.fail(f"run: spectest{tag} armv7m ({profile_name})", f"expected binary not found: {arm_bin}")
 
 
 def run_armv7_binary(
@@ -2185,6 +2290,8 @@ def run_full(
     )
     run_spectest_suite(runner, profiles=profiles, extra_args=extra_args)
     run_wasitest_suite(runner, profiles=profiles, extra_args=[])
+    # The interpreter goes last, after every JIT phase is green.
+    run_interp_suite(runner, profiles=profiles, extra_args=extra_args)
 
 
 def selected_profiles(debug_only: bool, release_only: bool) -> List[str]:

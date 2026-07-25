@@ -19,7 +19,7 @@ jobs:
   check:
     name: full (arm64 native + Rosetta x64)
     runs-on: macos-14
-    timeout-minutes: 90
+    timeout-minutes: 120
     steps:
       - name: Checkout
         uses: actions/checkout@v4
