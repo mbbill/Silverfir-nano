@@ -19,6 +19,7 @@
 
   <p>
     <a href="#performance-apple-m4">Benchmarks</a> |
+    <a href="#binary-size">Binary size</a> |
     <a href="#webassembly-compatibility">Wasm compatibility</a> |
     <a href="#validation">Validation</a> |
     <a href="docs/COMPILER_PIPELINE.md">Compiler pipeline</a>
@@ -56,6 +57,32 @@ every axis a Wasm runtime is judged on, not just one:
 ![CoreMark on Apple M4](assets/coremark.svg)
 
 **[Full benchmark results — every chart, the method, and the caveats →](benchmarks/wasi/README.md)**
+
+## Binary size
+
+Measured on real firmware, not a synthetic link: the Pico 2 demo host built
+for the RP2350's two cores, release, with the engine swapped. Flash is the
+whole loadable image — engine, ST7735 display driver, DMA, embedded-graphics,
+defmt, the RP2350 HAL, and the embedded `.wasm` guest.
+
+| Firmware | Flash |
+|---|---:|
+| Cortex-M33, JIT | 1,066,952 B (1041.9 KiB) |
+| Cortex-M33, interpreter | **303,136 B (296.0 KiB)** |
+| Hazard3 RV32, JIT | 1,032,720 B (1008.5 KiB) |
+| Hazard3 RV32, interpreter | **336,384 B (328.5 KiB)** |
+
+Choosing the interpreter drops the whole compiler pipeline and its
+executable-memory substrate, for **3.1–3.5× smaller** firmware. Of the
+296 KiB Cortex-M33 image, 131 KiB is the generated dispatch engine itself
+and about 30 KiB is the board and demo application.
+
+```bash
+cd devices/pico2
+cargo build --release --bin demo_host --target thumbv8m.main-none-eabihf
+cargo build --release --bin demo_host --target thumbv8m.main-none-eabihf \
+    --no-default-features --features engine-interp,demo-mandelbrot
+```
 
 ## See it running on a Raspberry Pi Pico 2
 

@@ -32,6 +32,10 @@ pub const FB_BYTES: usize = demo::FB_BYTES;
 #[unsafe(no_mangle)]
 static mut FRAMEBUFFER: [u8; FB_BYTES] = [0u8; FB_BYTES];
 
+// The import module has to be named explicitly: wasm-ld no longer turns a
+// leftover undefined symbol into an `env` import, so without this the guest
+// fails to link rather than emitting the import the host binds by name.
+#[link(wasm_import_module = "env")]
 unsafe extern "C" {
     fn push_frame(offset: i32, len: i32);
 }

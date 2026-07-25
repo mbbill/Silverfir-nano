@@ -33,7 +33,11 @@ use hal::{
     fugit::RateExtU32,
 };
 
-use sf_nano_core::{HostFn, Import, Instance, Value, WasmError};
+use sf_nano_core::WasmError;
+#[cfg(feature = "engine-interp")]
+use sf_nano_core::{module::Module, InterpInstance};
+#[cfg(feature = "engine-jit")]
+use sf_nano_core::{HostFn, Import, Instance, Value};
 use sf_nano_pico2 as lib;
 
 use lib::board::{CsPin, DcPin, DisplayCh, DisplaySpi, DISPLAY_SPI_TARGET_HZ, XTAL_FREQ_HZ};
@@ -107,29 +111,14 @@ unsafe impl ReadTarget for WasmMemSource {
 }
 
 // --- The host-imported `env.push_frame` ------------------------------
+//
+// The engines reach this from opposite directions -- the JIT through a
+// typed `Caller` that lends out linear memory, the interpreter through a
+// flat host-dispatch closure that hands the slice over directly -- so the
+// panel work lives in one function both call, and each engine's entry
+// point only unpacks its own argument representation.
 
-fn push_frame(
-    caller: &mut sf_nano_core::Caller,
-    args: &[Value],
-    _returns: &mut [Value],
-) -> Result<(), WasmError> {
-    let offset = match args.first() {
-        Some(Value::I32(v)) => *v,
-        _ => return Err(WasmError::invalid("push_frame: expected i32 offset")),
-    };
-    let len = match args.get(1) {
-        Some(Value::I32(v)) => *v,
-        _ => return Err(WasmError::invalid("push_frame: expected i32 len")),
-    };
-    if offset < 0 || len < 0 {
-        return Err(WasmError::invalid("push_frame: negative offset or len"));
-    }
-    let offset = offset as usize;
-    let len_u = len as usize;
-
-    let mem = caller
-        .memory_mut()
-        .ok_or_else(|| WasmError::invalid("push_frame: wasm module has no memory"))?;
+fn present_frame(mem: &mut [u8], offset: usize, len_u: usize) -> Result<(), WasmError> {
     let end = offset
         .checked_add(len_u)
         .ok_or_else(|| WasmError::invalid("push_frame: offset+len overflow"))?;
@@ -186,6 +175,30 @@ fn push_frame(
     ctx.spi = Some(spi_back);
     ctx.ch = Some(ch_back);
     Ok(())
+}
+
+/// The JIT's host-function shape: typed `Value` arguments and linear
+/// memory borrowed from the `Caller`.
+#[cfg(feature = "engine-jit")]
+fn push_frame(
+    caller: &mut sf_nano_core::Caller,
+    args: &[Value],
+    _returns: &mut [Value],
+) -> Result<(), WasmError> {
+    let (offset, len_u) = match (args.first(), args.get(1)) {
+        (Some(Value::I32(offset)), Some(Value::I32(len))) => {
+            if *offset < 0 || *len < 0 {
+                return Err(WasmError::invalid("push_frame: negative offset or len"));
+            }
+            (*offset as usize, *len as usize)
+        }
+        _ => return Err(WasmError::invalid("push_frame: expected (i32, i32)")),
+    };
+
+    let mem = caller
+        .memory_mut()
+        .ok_or_else(|| WasmError::invalid("push_frame: wasm module has no memory"))?;
+    present_frame(mem, offset, len_u)
 }
 
 #[hal::entry]
@@ -265,11 +278,6 @@ fn main() -> ! {
         });
     }
 
-    // Instantiate the Wasm module. sf-nano-core infers `push_frame`'s
-    // signature from the module's import declaration, so we just bind
-    // the handler by name.
-    let imports = [Import::func("env", "push_frame", push_frame as HostFn)];
-
     {
         let rc = sf_nano_core::runtime_config();
         defmt::info!(
@@ -279,14 +287,72 @@ fn main() -> ! {
             rc.wasm_stack_bytes
         );
     }
+
+    // Instantiate the Wasm module on whichever engine this image was
+    // built with. Only one of these blocks exists in a given firmware.
     defmt::info!("demo_host: instantiating...");
-    let mut instance = match Instance::new(WASM_DEMO, &imports) {
-        Ok(inst) => inst,
+
+    // JIT: sf-nano-core infers `push_frame`'s signature from the module's
+    // import declaration, so the handler binds by name.
+    #[cfg(feature = "engine-jit")]
+    let mut instance = {
+        let imports = [Import::func("env", "push_frame", push_frame as HostFn)];
+        match Instance::new(WASM_DEMO, &imports) {
+            Ok(inst) => inst,
+            Err(e) => {
+                defmt::error!("instantiate failed: {=str}", e.message());
+                halt();
+            }
+        }
+    };
+
+    // Interpreter: the module is parsed first and borrowed for the
+    // instance's lifetime, and imports arrive as one flat dispatch
+    // closure keyed by (module, name) with raw u64 operands.
+    #[cfg(feature = "engine-interp")]
+    let module = match Module::new("demo", WASM_DEMO) {
+        Ok(m) => m,
         Err(e) => {
-            defmt::error!("instantiate failed: {=str}", e.message());
+            defmt::error!("parse failed: {=str}", e.message());
             halt();
         }
     };
+    #[cfg(feature = "engine-interp")]
+    let mut instance = {
+        let mut inst = match InterpInstance::new(&module) {
+            Ok(inst) => inst,
+            Err(e) => {
+                defmt::error!("instantiate failed: {=str}", e.message());
+                halt();
+            }
+        };
+        inst.set_host(
+            |m: &str, n: &str, mem: &mut [u8], args: &[u64], _results: &mut [u64]| {
+                if m != "env" || n != "push_frame" {
+                    return Err(WasmError::invalid("unlinked host import"));
+                }
+                let (Some(&offset), Some(&len)) = (args.first(), args.get(1)) else {
+                    return Err(WasmError::invalid("push_frame: expected (i32, i32)"));
+                };
+                let (offset, len) = (offset as u32 as i32, len as u32 as i32);
+                if offset < 0 || len < 0 {
+                    return Err(WasmError::invalid("push_frame: negative offset or len"));
+                }
+                present_frame(mem, offset as usize, len as usize)
+            },
+        );
+        inst
+    };
+
+    #[cfg(feature = "engine-interp")]
+    let run = match instance.find_export("run") {
+        Some(idx) => idx,
+        None => {
+            defmt::error!("module does not export `run`");
+            halt();
+        }
+    };
+
     defmt::info!("demo_host: instance created; entering render loop");
 
     // Per-frame host loop: invoke `run` once per frame, bracket with
@@ -303,7 +369,13 @@ fn main() -> ! {
 
     loop {
         let t0 = timer.get_counter();
-        if let Err(e) = instance.invoke("run", &[Value::I32(frame as i32)]) {
+        #[cfg(feature = "engine-jit")]
+        let outcome = instance
+            .invoke("run", &[Value::I32(frame as i32)])
+            .map(|_| ());
+        #[cfg(feature = "engine-interp")]
+        let outcome = instance.invoke(run, &[frame as u64], &mut []);
+        if let Err(e) = outcome {
             defmt::error!("invoke run failed: {=str}", e.message());
             halt();
         }

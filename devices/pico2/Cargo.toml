@@ -30,10 +30,10 @@ embedded-graphics = "0.8"
 embedded-hal = "1.0"
 embedded-hal-bus = "0.3"
 
-# Silverfir JIT core. `default-features = false` drops guard-pages
-# (std-requiring) and leaves just the bare JIT. Matches the dep spec
-# in sf-nano-bare-smoke/, which is this crate's no-std link reference.
-sf-nano-core = { path = "../../sf-nano-core", default-features = false, features = ["jit"] }
+# Silverfir core. `default-features = false` drops guard-pages
+# (std-requiring) and leaves the engine choice to this crate's own
+# `engine-jit` / `engine-interp` features (see [features] below).
+sf-nano-core = { path = "../../sf-nano-core", default-features = false }
 
 # rp235x-hal supports both ARM and RV modes via target-specific deps it
 # carries internally (cortex-m / cortex-m-rt on thumbv8m, riscv / riscv-rt
@@ -61,9 +61,20 @@ riscv = "0.11"
 riscv-rt = "0.12"
 
 [features]
-default = ["demo-mandelbrot"]
+default = ["engine-jit", "demo-mandelbrot"]
 demo-mandelbrot = []
 demo-cube = []
+
+# Which engine runs the guest on-device. Exactly one, and the firmware
+# links only that one -- picking `engine-interp` leaves the whole JIT
+# pipeline and its executable-memory substrate out of the image, which
+# is what makes this pair a meaningful flash measurement.
+#
+#   cargo build --release --bin demo_host --target thumbv8m.main-none-eabihf
+#   cargo build --release --bin demo_host --target thumbv8m.main-none-eabihf \
+#       --no-default-features --features engine-interp,demo-mandelbrot
+engine-jit = ["sf-nano-core/jit"]
+engine-interp = ["sf-nano-core/interp"]
 
 # Debug builds stay compact enough to flash quickly while still carrying
 # symbols for probe-rs / defmt. opt-level = 1 keeps RTT timing sane without
