@@ -451,6 +451,20 @@
 - 2026-07-25 uncertain: its case rests on breaking the loop-carried
   store-to-load latency chain (uncertain)
 
+- 2026-07-25 measurement: stamping the branch target's handler word into the
+  unused b field of Br/BrIf/BrIfNot, so target and handler load as one
+  independent ldp instead of two dependent loads, cut instructions 1.35% but
+  cost 1.44% of cycles and 1.04% of the CoreMark score. Rejected (code)
+- 2026-07-25 rationale: an ldp appears to carry more load latency than a single
+  ldr on this core, and here its result feeds the dispatch branch directly, so
+  the extra latency lands ON the critical path -- where the two dependent loads
+  it replaced had already been moved OFF it by loading them at handler entry
+  (code)
+- 2026-07-25 rationale: the taken-branch win came from moving loads off the
+  critical path, not from reducing their number (code)
+- 2026-07-25 rationale: pairing loads helps only where the result is not
+  immediately consumed (code)
+
 ## Moves
 
 - 2026-07-23 replaced [[stage-a-loop]]: one high-performance interpreter,
