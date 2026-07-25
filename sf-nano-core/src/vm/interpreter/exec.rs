@@ -57,11 +57,17 @@ const MAX_RET_RECORDS: u32 = MAX_CALL_DEPTH + 8;
 /// never read it, and a target that lowered it got a 2 MiB allocation
 /// anyway. The hosted default is 2 MiB, which is what the fixed size used
 /// to be, so nothing changes for a hosted embedder.
+///
+/// A bare-metal embedder that has not configured the runtime yet is told
+/// so here. Silently substituting a token stack would turn that mistake
+/// into a "call stack exhausted" trap somewhere further in.
 #[cfg(sf_interp_engine)]
-fn configured_stack_slots() -> usize {
+fn configured_stack_slots() -> Result<usize, WasmError> {
     let bytes = crate::runtime_config().wasm_stack_bytes;
-    // One frame has to fit, whatever the embedder asked for.
-    (bytes / core::mem::size_of::<u64>()).max(64)
+    if bytes == 0 {
+        return Err(WasmError::runtime_not_configured());
+    }
+    Ok(bytes / core::mem::size_of::<u64>())
 }
 
 /// Return-stack records to reserve.
@@ -275,6 +281,12 @@ fn eval_simple_const(expr: &[u8]) -> Result<u64, WasmError> {
 
 impl InterpInstance {
     pub fn new(module: Module) -> Result<Self, WasmError> {
+        // Ask for the operand-stack budget first: on a target whose
+        // runtime has not been configured this is the clean failure, and
+        // it should happen before any work.
+        #[cfg(sf_interp_engine)]
+        let stack_slots = configured_stack_slots()?;
+
         // Functions: predecode every local function eagerly; imports are
         // rejected on call, not here, so import-free modules always work.
         let mut funcs = Vec::new();
@@ -407,18 +419,12 @@ impl InterpInstance {
             globals,
             #[cfg(sf_interp_engine)]
             tables,
+            // Zeroed in full: native dispatch roams the whole region
+            // through raw pointers, so every slot must be initialized.
             #[cfg(sf_interp_engine)]
-            stack: {
-                let slots = configured_stack_slots();
-                // Zeroed in full: native dispatch roams the whole region
-                // through raw pointers, so every slot must be initialized.
-                vec![0u64; slots]
-            },
+            stack: vec![0u64; stack_slots],
             #[cfg(sf_interp_engine)]
-            ret_stack: vec![
-                0u64;
-                configured_ret_records(configured_stack_slots()) * (RET_RECORD / 8)
-            ],
+            ret_stack: vec![0u64; configured_ret_records(stack_slots) * (RET_RECORD / 8)],
             host: None,
             #[cfg(sf_interp_engine)]
             native: None,
@@ -816,7 +822,7 @@ impl InterpInstance {
         let mut ret_stack = core::mem::take(&mut self.ret_stack);
         let reentrant = stack.is_empty();
         if reentrant {
-            let slots = configured_stack_slots();
+            let slots = configured_stack_slots()?;
             stack = vec![0u64; slots];
             ret_stack = vec![0u64; configured_ret_records(slots) * (RET_RECORD / 8)];
         }

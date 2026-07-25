@@ -120,7 +120,7 @@ impl WasmError {
     #[inline(never)]
     pub const fn runtime_not_configured() -> Self {
         Self::Unlinkable(
-            "runtime not configured: embedder must call sf_nano_core::set_runtime_config before JIT use",
+            "runtime not configured: embedder must call sf_nano_core::set_runtime_config before instantiating a module",
         )
     }
 
