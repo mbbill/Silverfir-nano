@@ -440,13 +440,10 @@ fn run_interp(data: &[u8], module_name: &str, stats: bool) -> i32 {
         if stats {
             let native = inst.dispatch_count();
             if native > 0 {
+                // Only report the total when the counter is compiled in;
+                // otherwise there is no number to report.
                 if inst.dispatch_counting_enabled() {
                     eprintln!("[interp] native dispatches: {native}");
-                } else {
-                    eprintln!(
-                        "[interp] native dispatches: not counted \
-                         (rebuild with --features sf-nano-core/interp-count)"
-                    );
                 }
             }
             let code_len = inst.engine_code_len();

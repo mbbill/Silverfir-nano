@@ -402,6 +402,10 @@
   issue cost, so the remaining ~2.7% is the tighter instruction-fetch footprint
   that deleting it also buys (code)
 
+- 2026-07-25 measurement: breaking the taken-branch dependency chain and
+  compiling the dispatch counter out together take the interpreter's CoreMark
+  score from 7,491 to 8,143, +8.71%, median of five interleaved pairs (code)
+
 ## Moves
 
 - 2026-07-23 replaced [[stage-a-loop]]: one high-performance interpreter,
