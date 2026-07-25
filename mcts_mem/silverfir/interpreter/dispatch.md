@@ -406,6 +406,24 @@
   compiling the dispatch counter out together take the interpreter's CoreMark
   score from 7,491 to 8,143, +8.71%, median of five interleaved pairs (code)
 
+- 2026-07-25 measurement: link-time pairing of adjacent slot-to-slot copies
+  removes 617,743 of 1.163 billion dispatches on fixed-work CoreMark, 0.053%,
+  against a 2.2-5.5% static estimate (code)
+- 2026-07-25 measurement: that pairing moved the CoreMark score 8,147 to 8,114,
+  -0.40%, inside run spreads of 2.6% and 1.7% -- indistinguishable from zero,
+  as a 0.053% dispatch delta caps the possible gain near 0.03%. Rejected (code)
+- 2026-07-25 rationale: a fusion family's static pair count is not evidence of
+  its dynamic population, so each family needs the dispatch delta AND the score
+  of a throwaway implementation before its handlers are kept (code)
+- 2026-07-25 measurement: pairing at link time, after select_pinned, held slow
+  exits at 13, confirming that excluding pinned destinations avoids the
+  slow-path fallback that cost 74% of throughput when the same fusion was
+  attempted during predecode (code)
+- 2026-07-25 pitfall: CoreMark at a 2-second self-timed target varies ~2.6%
+  peak-to-peak on an idle machine, so effects below ~1% need a longer target or
+  many more pairs -- and an effect whose dispatch delta caps it near 0.03% can
+  never be resolved by the clock at all (code)
+
 ## Moves
 
 - 2026-07-23 replaced [[stage-a-loop]]: one high-performance interpreter,
