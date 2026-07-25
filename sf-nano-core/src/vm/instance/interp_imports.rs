@@ -159,6 +159,37 @@ pub(super) fn invoke_by_name(
     Ok(out)
 }
 
+/// Call a resolved export by index, writing results into a caller-owned
+/// slice.
+pub(super) fn call_by_index(
+    inst: &mut InterpInstance,
+    index: usize,
+    args: &[Value],
+    results: &mut [Value],
+) -> Result<(), WasmError> {
+    let mut raw_args: Vec<u64> = Vec::with_capacity(args.len());
+    for v in args {
+        raw_args.push(value_to_raw(v)?);
+    }
+    let mut raw_results = crate::collections::vec![0u64; results.len()];
+
+    inst.invoke(index, &raw_args, &mut raw_results)?;
+
+    // Read the signature only after the call: holding it across the
+    // invocation would need a clone of the type, which on a short function
+    // costs more than the call itself.
+    let func_type = inst
+        .module()
+        .functions()
+        .get(index)
+        .ok_or(WasmError::invalid("function index out of range"))?
+        .func_type();
+    for (i, ty) in func_type.results().iter().enumerate() {
+        results[i] = raw_to_value(*ty, raw_results[i])?;
+    }
+    Ok(())
+}
+
 /// The numeric value types this boundary carries, or `None` for a type
 /// that has no raw-word representation here.
 #[inline]

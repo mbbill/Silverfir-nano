@@ -39,7 +39,7 @@ pub use utils::limits::{Limitable, Limits};
 pub use vm::engine::{engine, set_engine, Engine};
 pub use vm::entities::{Caller, FunctionInst, HostCallback, HostFn};
 pub use vm::instance::{
-    Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,
+    Func, Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,
 };
 #[cfg(sf_interp)]
 pub use vm::interpreter::{

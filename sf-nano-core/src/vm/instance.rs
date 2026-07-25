@@ -49,6 +49,28 @@ pub struct Instance {
     inner: Inner,
 }
 
+/// An export resolved once, so calling it again does not look it up again.
+///
+/// [`Instance::invoke`] searches the export list by name and allocates a
+/// result vector on every call. A caller that runs the same function
+/// repeatedly -- a render loop, a benchmark harness -- resolves it once
+/// with [`Instance::get_func`] and calls it through [`Instance::call`],
+/// which writes results into a slice the caller already owns.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Func {
+    index: usize,
+    params: usize,
+    results: usize,
+}
+
+impl Func {
+    /// How many arguments this function takes, and how many it returns.
+    #[inline]
+    pub const fn arity(&self) -> (usize, usize) {
+        (self.params, self.results)
+    }
+}
+
 impl Instance {
     /// Instantiate on the engine currently selected by
     /// [`crate::set_engine`].
@@ -106,6 +128,50 @@ impl Instance {
             Inner::Jit(inst) => inst.invoke(name, args),
             #[cfg(sf_interp)]
             Inner::Interp(inst) => interp_imports::invoke_by_name(inst, name, args),
+        }
+    }
+
+    /// Resolve an exported function once for repeated calls.
+    pub fn get_func(&self, name: &str) -> Option<Func> {
+        let (index, params, results) = match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => {
+                let index = inst.function_index_of_export(name)?;
+                let ft = inst.function_type_at(index)?;
+                (index, ft.params().len(), ft.results().len())
+            }
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => {
+                let index = inst.find_export(name)?;
+                let (params, results) = inst.func_arity(index)?;
+                (index, params, results)
+            }
+        };
+        Some(Func {
+            index,
+            params,
+            results,
+        })
+    }
+
+    /// Call a resolved export, writing results into `results`.
+    ///
+    /// No name lookup and no allocation for the return values, so a hot
+    /// call loop pays for neither.
+    pub fn call(
+        &mut self,
+        func: &Func,
+        args: &[Value],
+        results: &mut [Value],
+    ) -> Result<(), WasmError> {
+        if args.len() != func.params || results.len() != func.results {
+            return Err(WasmError::invalid("argument/result arity mismatch"));
+        }
+        match &mut self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.call_function_index(func.index, args, results),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => interp_imports::call_by_index(inst, func.index, args, results),
         }
     }
 

@@ -33,7 +33,9 @@ use hal::{
     fugit::RateExtU32,
 };
 
-use sf_nano_core::{HostFn, Import, Instance, Value, WasmError};
+use alloc::rc::Rc;
+use core::cell::RefCell;
+use sf_nano_core::{Import, Instance, Value, WasmError};
 use sf_nano_pico2 as lib;
 
 use lib::board::{CsPin, DcPin, DisplayCh, DisplaySpi, DISPLAY_SPI_TARGET_HZ, XTAL_FREQ_HZ};
@@ -58,20 +60,12 @@ struct DisplayCtx {
     ch: Option<DisplayCh>,
     cs: CsPin,
     dc: DcPin,
+    /// Latest-computed fps, written by the main loop after each invoke.
+    /// `push_frame` reads it and stamps the overlay onto the framebuffer
+    /// inside Wasm linear memory just before the DMA, so the readout
+    /// lives on-panel without any fps code on the Wasm side.
+    fps: u32,
 }
-
-/// HostFn can't capture — all state lives here, poked by `push_frame`
-/// via `unsafe { addr_of_mut!(...) }`. Single-threaded firmware, so
-/// no locking needed; the discipline is that `push_frame` is the only
-/// caller after `main` finishes initialization.
-static mut DISPLAY_CTX: Option<DisplayCtx> = None;
-
-/// Latest-computed fps, updated by the main loop after each invoke.
-/// `push_frame` reads this and stamps the overlay onto the framebuffer
-/// inside Wasm linear memory just before the DMA transfer, so the fps
-/// readout lives on-panel without any fps-rendering code on the Wasm
-/// side — keeps the guest focused on rendering.
-static mut DISPLAYED_FPS: u32 = 0;
 
 // --- Custom DMA source for Wasm linear memory ------------------------
 
@@ -108,7 +102,12 @@ unsafe impl ReadTarget for WasmMemSource {
 
 // --- The host-imported `env.push_frame` ------------------------------
 
-fn present_frame(mem: &mut [u8], offset: usize, len_u: usize) -> Result<(), WasmError> {
+fn present_frame(
+    ctx: &mut DisplayCtx,
+    mem: &mut [u8],
+    offset: usize,
+    len_u: usize,
+) -> Result<(), WasmError> {
     let end = offset
         .checked_add(len_u)
         .ok_or_else(|| WasmError::invalid("push_frame: offset+len overflow"))?;
@@ -121,15 +120,9 @@ fn present_frame(mem: &mut [u8], offset: usize, len_u: usize) -> Result<(), Wasm
     // writes the background rectangle via a raw loop and the text via
     // embedded-graphics; see `display::overlay` for why the e-g
     // Rectangle path is avoided here.
-    let fps = unsafe { *core::ptr::addr_of!(DISPLAYED_FPS) };
-    display::stamp_fps_overlay(&mut mem[offset..end], (2, 2), fps);
+    display::stamp_fps_overlay(&mut mem[offset..end], (2, 2), ctx.fps);
     display::stamp_sf_nano_overlay(&mut mem[offset..end], (112, 2));
     let src_ptr = unsafe { mem.as_ptr().add(offset) };
-
-    // SAFETY: single-threaded firmware, main is the only setter and
-    // this host function is the only consumer after main.
-    let ctx = unsafe { (*core::ptr::addr_of_mut!(DISPLAY_CTX)).as_mut() }
-        .ok_or_else(|| WasmError::internal("DISPLAY_CTX not initialized"))?;
 
     let mut spi = ctx
         .spi
@@ -167,25 +160,32 @@ fn present_frame(mem: &mut [u8], offset: usize, len_u: usize) -> Result<(), Wasm
     Ok(())
 }
 
-fn push_frame(
-    caller: &mut sf_nano_core::Caller,
-    args: &[Value],
-    _returns: &mut [Value],
-) -> Result<(), WasmError> {
-    let (offset, len_u) = match (args.first(), args.get(1)) {
-        (Some(Value::I32(offset)), Some(Value::I32(len))) => {
-            if *offset < 0 || *len < 0 {
-                return Err(WasmError::invalid("push_frame: negative offset or len"));
+/// Bind `env.push_frame` to the display peripherals.
+///
+/// The handler captures them; nothing here needs a `static mut` or a raw
+/// pointer, because an import callback may own state.
+fn push_frame_handler(
+    ctx: Rc<RefCell<DisplayCtx>>,
+) -> impl Fn(&mut sf_nano_core::Caller, &[Value], &mut [Value]) -> Result<(), WasmError> + 'static {
+    move |caller: &mut sf_nano_core::Caller,
+          args: &[Value],
+          _returns: &mut [Value]|
+          -> Result<(), WasmError> {
+        let (offset, len_u) = match (args.first(), args.get(1)) {
+            (Some(Value::I32(offset)), Some(Value::I32(len))) => {
+                if *offset < 0 || *len < 0 {
+                    return Err(WasmError::invalid("push_frame: negative offset or len"));
+                }
+                (*offset as usize, *len as usize)
             }
-            (*offset as usize, *len as usize)
-        }
-        _ => return Err(WasmError::invalid("push_frame: expected (i32, i32)")),
-    };
+            _ => return Err(WasmError::invalid("push_frame: expected (i32, i32)")),
+        };
 
-    let mem = caller
-        .memory_mut()
-        .ok_or_else(|| WasmError::invalid("push_frame: wasm module has no memory"))?;
-    present_frame(mem, offset, len_u)
+        let mem = caller
+            .memory_mut()
+            .ok_or_else(|| WasmError::invalid("push_frame: wasm module has no memory"))?;
+        present_frame(&mut ctx.borrow_mut(), mem, offset, len_u)
+    }
 }
 
 #[hal::entry]
@@ -255,15 +255,13 @@ fn main() -> ! {
 
     let dma = pac.DMA.split(&mut pac.RESETS);
 
-    // Stash peripherals for `push_frame`.
-    unsafe {
-        *core::ptr::addr_of_mut!(DISPLAY_CTX) = Some(DisplayCtx {
-            spi: Some(spi_bus),
-            ch: Some(dma.ch0),
-            cs,
-            dc,
-        });
-    }
+    let display_ctx = Rc::new(RefCell::new(DisplayCtx {
+        spi: Some(spi_bus),
+        ch: Some(dma.ch0),
+        cs,
+        dc,
+        fps: 0,
+    }));
 
     {
         let rc = sf_nano_core::runtime_config();
@@ -280,11 +278,26 @@ fn main() -> ! {
     // which. sf-nano-core infers `push_frame`'s signature from the
     // module's import declaration, so the handler binds by name.
     defmt::info!("demo_host: instantiating...");
-    let imports = [Import::func("env", "push_frame", push_frame as HostFn)];
+    let imports = [Import::func(
+        "env",
+        "push_frame",
+        push_frame_handler(Rc::clone(&display_ctx)),
+    )];
     let mut instance = match Instance::new(WASM_DEMO, &imports) {
         Ok(inst) => inst,
         Err(e) => {
             defmt::error!("instantiate failed: {=str}", e.message());
+            halt();
+        }
+    };
+
+    // Resolve `run` once. The render loop then calls it without searching
+    // the export list by name or allocating for its (empty) result list
+    // on every frame.
+    let run = match instance.get_func("run") {
+        Some(func) => func,
+        None => {
+            defmt::error!("module does not export `run`");
             halt();
         }
     };
@@ -305,7 +318,7 @@ fn main() -> ! {
 
     loop {
         let t0 = timer.get_counter();
-        if let Err(e) = instance.invoke("run", &[Value::I32(frame as i32)]) {
+        if let Err(e) = instance.call(&run, &[Value::I32(frame as i32)], &mut []) {
             defmt::error!("invoke run failed: {=str}", e.message());
             halt();
         }
@@ -323,7 +336,7 @@ fn main() -> ! {
             } else {
                 0
             };
-            unsafe { *core::ptr::addr_of_mut!(DISPLAYED_FPS) = fps };
+            display_ctx.borrow_mut().fps = fps;
             defmt::info!(
                 "frame {}: {} fps  |  invoke={} us  (n={})",
                 frame,

@@ -1015,6 +1015,39 @@ impl JitInstance {
         Ok(results)
     }
 
+    /// The function index behind an exported name, resolved once.
+    pub fn function_index_of_export(&self, name: &str) -> Option<usize> {
+        self.exports
+            .iter()
+            .find(|(n, k, _)| matches!(k, ExportKind::Func) && n == name)
+            .map(|(_, _, idx)| *idx)
+    }
+
+    /// Call by index, writing results into a caller-owned slice.
+    pub fn call_function_index(
+        &mut self,
+        idx: usize,
+        args: &[Value],
+        results: &mut [Value],
+    ) -> Result<(), WasmError> {
+        let func_ptr = self
+            .store
+            .module()
+            .functions
+            .get(idx)
+            .ok_or_else(|| WasmError::invalid("function index out of range"))?
+            as *const FunctionInst;
+        let func_ref = unsafe { &*func_ptr };
+
+        let result_stack = runtime::eval(func_ref, &mut self.store, args)?;
+        let result_types = func_ref.func_type().results();
+        for (i, ty) in result_types.iter().enumerate() {
+            let raw = result_stack.peek_at_index(i);
+            results[i] = try_raw_to_value_in_store(raw, *ty, &self.store)?;
+        }
+        Ok(())
+    }
+
     pub fn invoke_function_index(
         &mut self,
         idx: usize,

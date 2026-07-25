@@ -16,6 +16,10 @@
 
 - An instance owns its module rather than borrowing it.
 
+- An export can be resolved once into a handle and called repeatedly,
+  with results written into a caller-owned slice. Calling by name stays
+  available and does both lookups itself.
+
 ## Facts
 
 - 2026-07-25 measurement: engine transparency costs 5,312 bytes of flash
@@ -42,6 +46,25 @@
 - 2026-07-25 statement: the adapter carries numeric values only, and a
   host import whose signature is not numeric is rejected when it is bound
   rather than when it is called (code).
+
+- 2026-07-25 measurement: resolving an export once and writing results
+  into a caller-owned slice cuts JIT call overhead from 97.3 ns to 47.7 ns
+  on a trivial function (2.04x), and interpreter overhead from 1745.7 ns
+  to 1604.8 ns (1.09x) (code).
+
+- 2026-07-25 rationale: the interpreter gains little because its per-call
+  cost is not the lookup — it allocates and zeroes a fixed 2 MiB operand
+  stack inside every invocation, which dwarfs everything else at this
+  scale (code).
+
+- 2026-07-25 pitfall: holding a function's signature across the
+  invocation requires cloning it, and on a short function that clone
+  costs more than the call; reading the signature after the call instead
+  is what turned a measured slowdown into a gain (code).
+
+- 2026-07-25 statement: host state reaches an import callback by being
+  captured, since an import may be any owning closure; no separate
+  store-data channel is needed for state that one callback owns (code).
 
 ## Moves
 
