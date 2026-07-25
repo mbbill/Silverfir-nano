@@ -20,10 +20,38 @@
   bails to the slow path.
 
 - Call depth and value-stack budget are both enforced natively and trap
-  as call-stack exhaustion; the value stack is fully zeroed at
-  invocation start and callee locals are re-zeroed per call.
+  as call-stack exhaustion. Both budgets are sized from the embedder's
+  configured operand-stack allowance, and both buffers belong to the
+  instance rather than to a call.
+
+- Every frame's locals are zeroed before entry: callee frames at the call
+  site, the root frame at invocation start. A reused stack carries the
+  previous call's values otherwise.
+
+- A host callback that calls back into the same instance finds the
+  buffers taken and runs on its own pair.
 
 ## Facts
+
+- 2026-07-25 measurement: allocating the operand stack inside each
+  invocation cost 1,745.7 ns per call to a trivial function; taking it
+  from the instance instead brings that to 225.8 ns by name and 114.2 ns
+  through a resolved handle (code).
+
+- 2026-07-25 pitfall: a fixed 2 MiB operand stack allocated per call
+  ignores an embedder that asked for less and cannot be met at all on a
+  target whose whole heap is smaller; the configured allowance already
+  described this buffer and was simply never read (code).
+
+- 2026-07-25 pitfall: the root frame's locals were zero only because
+  every invocation began on freshly allocated memory. Reusing the buffer
+  made the second call to a function with locals read the first call's
+  values, which the spec suite caught on `loop.wast` (code).
+
+- 2026-07-25 rationale: return-stack records scale with the operand-stack
+  allowance rather than sitting at the depth ceiling, because the full
+  4096-deep reservation is 131 KB — a third of the heap on the smallest
+  target that runs this engine (code).
 
 - 2026-07-23 measurement: on one CoreMark run the predecessor paid 62.7M
   call + 62.7M return exits from the native chain, each with a heap

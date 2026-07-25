@@ -46,7 +46,33 @@ const MAX_CALL_DEPTH: u32 = 4096;
 /// (a callee's frame base is its caller's staged-argument slot); running
 /// past the budget traps "call stack exhausted" on every backend.
 #[cfg(sf_interp_engine)]
-const VALUE_STACK_SLOTS: usize = 256 * 1024;
+/// Ceiling on native call depth, and so on the return-stack records the
+/// dispatch chain can plant.
+const MAX_RET_RECORDS: u32 = MAX_CALL_DEPTH + 8;
+
+/// Slots in the operand stack, from the embedder's configured budget.
+///
+/// The knob already existed and already described this ("the Wasm
+/// operand/call stack ... of each `invoke` call"); the interpreter simply
+/// never read it, and a target that lowered it got a 2 MiB allocation
+/// anyway. The hosted default is 2 MiB, which is what the fixed size used
+/// to be, so nothing changes for a hosted embedder.
+#[cfg(sf_interp_engine)]
+fn configured_stack_slots() -> usize {
+    let bytes = crate::runtime_config().wasm_stack_bytes;
+    // One frame has to fit, whatever the embedder asked for.
+    (bytes / core::mem::size_of::<u64>()).max(64)
+}
+
+/// Return-stack records to reserve.
+///
+/// Depth cannot usefully exceed what the operand stack can hold frames
+/// for, so a small budget buys a proportionally small return stack rather
+/// than the full 4096-deep one (131 KB, a third of a Pico 2's heap).
+#[cfg(sf_interp_engine)]
+fn configured_ret_records(stack_slots: usize) -> usize {
+    (stack_slots / 4).clamp(16, MAX_RET_RECORDS as usize)
+}
 
 /// Host dispatcher for imported functions: called with the import's module
 /// and field names, the linear memory, argument slots, and result slots.
@@ -95,9 +121,9 @@ struct Activation {
 /// return stack (records of `(ret_pc, frame, code_base)`, with
 /// Rust-planted sentinel records routing a `Return` back to Rust).
 #[cfg(sf_interp_engine)]
-struct DriveCtx {
-    stack: Vec<u64>,
-    ret_stack: Vec<u64>,
+struct DriveCtx<'s> {
+    stack: &'s mut [u64],
+    ret_stack: &'s mut [u64],
     /// Byte cursor into `ret_stack`.
     ret_cursor: usize,
     /// The accumulator relayed across native sessions: call results ride
@@ -162,6 +188,14 @@ pub struct InterpInstance {
     globals: Vec<u64>,
     #[cfg(sf_interp_engine)]
     tables: Vec<TableState>,
+    /// The operand stack and native return stack, allocated once at
+    /// instantiation and reused by every call. They used to be allocated
+    /// and zeroed inside each invocation, which put a 2 MiB allocation in
+    /// front of every call to a Wasm function.
+    #[cfg(sf_interp_engine)]
+    stack: Vec<u64>,
+    #[cfg(sf_interp_engine)]
+    ret_stack: Vec<u64>,
     host: Option<HostDispatch>,
     #[cfg(sf_interp_engine)]
     native: Option<NativeState>,
@@ -373,6 +407,18 @@ impl InterpInstance {
             globals,
             #[cfg(sf_interp_engine)]
             tables,
+            #[cfg(sf_interp_engine)]
+            stack: {
+                let slots = configured_stack_slots();
+                // Zeroed in full: native dispatch roams the whole region
+                // through raw pointers, so every slot must be initialized.
+                vec![0u64; slots]
+            },
+            #[cfg(sf_interp_engine)]
+            ret_stack: vec![
+                0u64;
+                configured_ret_records(configured_stack_slots()) * (RET_RECORD / 8)
+            ],
             host: None,
             #[cfg(sf_interp_engine)]
             native: None,
@@ -735,9 +781,7 @@ impl InterpInstance {
             pc: 0,
             route_established: false,
         };
-        let stack = self.drive(root, args)?;
-        results.copy_from_slice(&stack[..results.len()]);
-        Ok(())
+        self.drive(root, args, results)
     }
 
     /// Stub for targets without a native backend: [`Self::new`] fails
@@ -758,28 +802,70 @@ impl InterpInstance {
     /// The call/return trampoline: runs activations to their next call or
     /// return boundary, keeping call depth as data on `saved`.
     #[cfg(sf_interp_engine)]
-    fn drive(&mut self, root: Activation, args: &[u64]) -> Result<Vec<u64>, WasmError> {
-        if root.func.frame_slots as usize > VALUE_STACK_SLOTS {
+    fn drive(
+        &mut self,
+        root: Activation,
+        args: &[u64],
+        results: &mut [u64],
+    ) -> Result<(), WasmError> {
+        // Borrow the instance's buffers for the duration. A host callback
+        // that calls back into this same instance finds them taken and
+        // allocates its own pair, so re-entry stays correct without the
+        // common case paying for an allocation.
+        let mut stack = core::mem::take(&mut self.stack);
+        let mut ret_stack = core::mem::take(&mut self.ret_stack);
+        let reentrant = stack.is_empty();
+        if reentrant {
+            let slots = configured_stack_slots();
+            stack = vec![0u64; slots];
+            ret_stack = vec![0u64; configured_ret_records(slots) * (RET_RECORD / 8)];
+        }
+
+        let outcome = self.drive_on(root, args, &mut stack, &mut ret_stack, results);
+
+        // Only the owner hands them back; a nested call drops its own.
+        if !reentrant {
+            self.stack = stack;
+            self.ret_stack = ret_stack;
+        }
+        outcome
+    }
+
+    /// Results are copied out here, while the stack that produced them is
+    /// still in hand -- a nested call runs on a different one.
+    #[cfg(sf_interp_engine)]
+    fn drive_on(
+        &mut self,
+        root: Activation,
+        args: &[u64],
+        stack: &mut [u64],
+        ret_stack: &mut [u64],
+        results: &mut [u64],
+    ) -> Result<(), WasmError> {
+        if root.func.frame_slots as usize > stack.len() {
             return Err(WasmError::trap("call stack exhausted"));
         }
+        let max_depth = (ret_stack.len() / (RET_RECORD / 8)).saturating_sub(8) as u32;
         let mut ctx = DriveCtx {
-            // Full-length and zeroed up front: native dispatch roams the
-            // whole region through raw pointers, so every slot must be
-            // initialized memory (zeroed pages are cheap; only touched
-            // ones are ever committed).
-            stack: vec![0u64; VALUE_STACK_SLOTS],
-            ret_stack: vec![0u64; (MAX_CALL_DEPTH as usize + 8) * (RET_RECORD / 8)],
+            stack,
+            ret_stack,
             ret_cursor: 0,
             acc: 0,
         };
         ctx.stack[..args.len()].copy_from_slice(args);
+        // The root frame's locals get their fresh zeros here. Callee
+        // frames are zeroed at the call site; the root has no call site,
+        // and it used to be covered only because every invocation started
+        // on a newly allocated buffer. Temps above `n_locals` are written
+        // before they are read, by construction in the predecoder.
+        ctx.stack[args.len()..root.func.n_locals as usize].fill(0);
 
         let mut act = root;
         let mut saved: Vec<Activation> = Vec::new();
         loop {
             match self.native_step(&mut act, &mut ctx)? {
                 StepExit::Call { callee, arg_base } => {
-                    if saved.len() as u32 >= MAX_CALL_DEPTH {
+                    if saved.len() as u32 >= max_depth {
                         return Err(WasmError::trap("call stack exhausted"));
                     }
                     let f = match self.funcs.get(callee) {
@@ -796,7 +882,7 @@ impl InterpInstance {
                         None => return Err(WasmError::trap("undefined element")),
                     };
                     let new_base = act.base + arg_base;
-                    if new_base + f.frame_slots as usize > VALUE_STACK_SLOTS {
+                    if new_base + f.frame_slots as usize > ctx.stack.len() {
                         return Err(WasmError::trap("call stack exhausted"));
                     }
                     // The caller already staged the params at the frame
@@ -818,7 +904,10 @@ impl InterpInstance {
                     // Results are already in place: the callee's frame base
                     // IS the caller's staged-argument slot.
                     match saved.pop() {
-                        None => return Ok(ctx.stack),
+                        None => {
+                            results.copy_from_slice(&ctx.stack[..results.len()]);
+                            return Ok(());
+                        }
                         Some(parent) => act = parent,
                     }
                 }
@@ -974,7 +1063,7 @@ impl InterpInstance {
             globals: self.globals.as_mut_ptr() as u64,
             ret_cursor: ret_ptr + ctx.ret_cursor as u64,
             ret_limit: ret_ptr + (ctx.ret_stack.len() * 8 - RET_RECORD) as u64,
-            stack_limit: stack_ptr + (VALUE_STACK_SLOTS as u64) * 8,
+            stack_limit: stack_ptr + (ctx.stack.len() as u64) * 8,
             dispatches: 0,
             l0_value: 0,
             l1_value: 0,
