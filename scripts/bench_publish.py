@@ -74,6 +74,20 @@ METRIC_EXTRACTORS = {
 }
 
 
+def write_json(path: Path, entries: list[dict]) -> None:
+    """Write one result file with LF endings on every host.
+
+    `write_text` uses universal newlines, so on Windows it turns the
+    trailing "\\n" into "\\r\\n". That made the same empty result read as
+    `[]` on Linux and `[]\\r` through the publish workflow's
+    `"$(cat ...)" != "[]"` guard -- command substitution strips the LF but
+    keeps the CR -- so the Windows row alone got past the guard and handed
+    an empty array to the benchmark action, which fails on it.
+    """
+    with path.open("w", encoding="utf-8", newline="\n") as f:
+        f.write(json.dumps(entries, indent=2) + "\n")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--exec", required=True, help="Runtime command (may contain spaces, e.g. 'qemu-arm-static -cpu cortex-a15 path/to/sf-nano-cli')")
@@ -128,8 +142,8 @@ def main() -> int:
             entry = {"name": label, "unit": unit, "value": value}
             (higher if direction == "higher" else lower).append(entry)
 
-    (args.out_dir / "higher.json").write_text(json.dumps(higher, indent=2) + "\n")
-    (args.out_dir / "lower.json").write_text(json.dumps(lower, indent=2) + "\n")
+    write_json(args.out_dir / "higher.json", higher)
+    write_json(args.out_dir / "lower.json", lower)
     print()
     print(f"Wrote {len(higher)} higher-is-better and {len(lower)} lower-is-better metrics to {args.out_dir}/")
 

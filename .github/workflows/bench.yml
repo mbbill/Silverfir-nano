@@ -218,10 +218,15 @@ jobs:
           name: bench-${{ matrix.arch }}
           path: bench-output
 
+      # An empty result set is normal: a direction only has data when some
+      # metric points that way. Strip all whitespace before comparing so no
+      # line-ending or indent difference between producers can smuggle an
+      # empty array past this guard -- the benchmark action errors on one.
       - name: Check artifact present and non-empty
         id: check
         run: |
-          if [ -f "bench-output/${{ matrix.direction }}.json" ] && [ "$(cat bench-output/${{ matrix.direction }}.json)" != "[]" ]; then
+          f="bench-output/${{ matrix.direction }}.json"
+          if [ -f "$f" ] && [ "$(tr -d '[:space:]' < "$f")" != "[]" ]; then
             echo "have_results=true" >> "$GITHUB_OUTPUT"
           else
             echo "have_results=false" >> "$GITHUB_OUTPUT"
