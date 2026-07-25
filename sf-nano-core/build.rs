@@ -273,9 +273,15 @@ fn emit_simd_cfg() {
             println!("cargo:rustc-cfg=sf_has_simd");
         }
         Some(SelectedBackend::X64) => {
-            require_target_feature("sse2", "x64 SIMD support requires SSE2");
-            require_target_feature("ssse3", "x64 SIMD support requires SSSE3");
-            require_target_feature("sse4.1", "x64 SIMD support requires SSE4.1");
+            // The x64 SIMD lowering emits SSSE3 (`pshufb`) and SSE4.1
+            // (`ptest`, `pmovsx*`, `pmovzx*`, `pmulld`, `roundps`/`roundpd`).
+            // Those are requirements of the *emitted* code, not of this
+            // crate's own compilation, so they are probed against the running
+            // CPU in `vm::arch::x86_64::cpu` instead of being asserted here
+            // against the build target's baseline. Asserting at build time
+            // would force `-C target-feature=+ssse3,+sse4.1` on every x64
+            // build via a `.cargo/config.toml` that does not travel with the
+            // published crate.
             println!("cargo:rustc-cfg=sf_has_simd");
         }
         _ => {}

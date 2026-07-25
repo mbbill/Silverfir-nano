@@ -355,6 +355,9 @@ pub(crate) fn dispatch_compile_function_into_buffer(
     }
 }
 
+/// Only the parallel eager-compile path calls this, and that path is
+/// `sf_has_std`-gated in `vm::build`.
+#[cfg(sf_has_std)]
 pub(crate) fn dispatch_compile_function(
     active_backend: NativeBackend,
     compiled: &dyn CodegenModuleView,

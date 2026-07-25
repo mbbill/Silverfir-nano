@@ -2,6 +2,7 @@ pub(super) mod abi;
 pub(crate) mod backend;
 mod callconv;
 mod control;
+mod cpu;
 pub(crate) mod enc;
 mod fusion;
 mod gp_scratch;

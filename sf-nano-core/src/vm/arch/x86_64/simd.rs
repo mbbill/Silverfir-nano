@@ -14,6 +14,7 @@ use crate::{
 use super::{
     abi::{self, map_fixed_reg, C_ARG0, C_ARG1, C_ARG2, C_RET0},
     backend::X86_64Backend,
+    cpu,
     enc::{self, Cc},
     reg::X86Reg,
 };
@@ -655,6 +656,7 @@ fn expect_v128_reg(
 
 impl<'a> X86_64Backend<'a> {
     pub(super) fn lower_simd_inst_dispatch(&mut self, inst: &MachineInst) -> Result<(), WasmError> {
+        cpu::require_simd_support()?;
         match &inst.kind {
             MachineInstKind::Move {
                 ty: MachineStorageType::V128,
@@ -745,6 +747,7 @@ impl<'a> X86_64Backend<'a> {
         on_false: MachineValue,
         cond: MachineValue,
     ) -> Result<(), WasmError> {
+        cpu::require_simd_support()?;
         let dst_fp = self.map_fp_reg(dst)? as u8;
         match cond {
             MachineValue::Imm64(value) => {
