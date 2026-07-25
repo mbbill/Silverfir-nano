@@ -20,27 +20,27 @@ lands about halfway to the interpreters — that gap *is* the optimizing tier.
 
 ## Integer / Control Flow
 
-![integer — compiled](benchmark_integer.svg)
+![integer — compiled](../../assets/benchmark_integer.svg)
 
-![integer — interpreters](benchmark_integer_interp.svg)
+![integer — interpreters](../../assets/benchmark_integer_interp.svg)
 
 ## Lua Interpreter
 
-![lua — compiled](benchmark_lua.svg)
+![lua — compiled](../../assets/benchmark_lua.svg)
 
-![lua — interpreters](benchmark_lua_interp.svg)
+![lua — interpreters](../../assets/benchmark_lua_interp.svg)
 
 ## Floating Point
 
-![fp — compiled](benchmark_fp.svg)
+![fp — compiled](../../assets/benchmark_fp.svg)
 
-![fp — interpreters](benchmark_fp_interp.svg)
+![fp — interpreters](../../assets/benchmark_fp_interp.svg)
 
 ## Memory Bound (STREAM)
 
-![memory — compiled](benchmark_memory.svg)
+![memory — compiled](../../assets/benchmark_memory.svg)
 
-![memory — interpreters](benchmark_memory_interp.svg)
+![memory — interpreters](../../assets/benchmark_memory_interp.svg)
 
 STREAM Copy is the one row that no longer measures the engine: the current clang
 lowers the copy loop to a bulk `memory.copy`, so every runtime ends up in the
@@ -80,4 +80,14 @@ python3 gen_svg.py                   # redraw the charts from RESULTS.md
 ```
 
 `gen_svg.py` reads its numbers out of the RESULTS.md tables, so the charts and
-the tables cannot disagree — update the table, re-run it, done.
+the tables cannot disagree — update the table, re-run it, done. Every chart it
+draws is written to [`assets/`](../../assets) at the repo root, the one place
+this project keeps rendered images; the pages here and the top-level README
+both link into it.
+
+Nine files come out of a run: the eight above, plus
+[`assets/coremark.svg`](../../assets/coremark.svg), the summary the top-level
+README leads with. That one is CoreMark alone, but with all seven runtimes on
+a single shared scale instead of split by class — one row of bars can carry a
+12× spread, which is exactly what the split exists to avoid on a fifteen-row
+chart.

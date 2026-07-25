@@ -51,6 +51,12 @@ every axis a Wasm runtime is judged on, not just one:
    target itself. You ship a `.wasm` artifact, not a relocatable machine-code
    blob; the runtime verifies and JITs it on the chip, even on a Cortex-M.
 
+## Performance (Apple M4)
+
+![CoreMark on Apple M4](assets/coremark.svg)
+
+**[Full benchmark results — every chart, the method, and the caveats →](benchmarks/wasi/README.md)**
+
 ## See it running on a Raspberry Pi Pico 2
 
 The Mandelbrot below is a Wasm guest that Silverfir-nano verifies and
@@ -104,30 +110,6 @@ What makes that credible is not any one trick but the shape of the compiler:
   codegen.** [`ALGORITHM4`](docs/ALGORITHM4.md) is a region-based
   cost-optimal cache residency allocator that runs per-function at JIT
   scale, with output competitive with much heavier optimizing compilers.
-
-## Performance (Apple M4)
-
-Seven runtimes, measured 2026-07-24 (interpreter re-measured 2026-07-25):
-Silverfir's JIT and interpreter against
-Wasmtime Cranelift 47.0.2, V8 TurboFan (Node.js 25.9), Wasmtime Winch 47.0.2,
-wasm3 and wasmi 1.1.0. Every metric is a rate — higher is better — because
-each benchmark self-times to a wall-clock target rather than running a fixed
-workload.
-
-Against the other optimizing compilers Silverfir is at **parity**: it leads on
-SHA-256 (+16%) and bzip2 (+14%), ties CoreMark and mandelbrot, and trails
-Cranelift by 6–9% on the Lua benchmarks. Wasmtime's baseline compiler, **Winch**,
-runs about half that speed (median 0.47× of Cranelift) — the gap between the two
-wasmtime columns is what the optimizing tier buys. Silverfir's **interpreter**
-beats wasm3 by 1.16–1.73× and wasmi by 1.31–2.89× on every dispatch-sensitive
-benchmark.
-
-The interpreter runs on the same six backends as the JIT, and its dispatch
-handlers are generated per target at **build time** and linked into the
-binary — it allocates no executable memory, so it also runs where runtime
-code generation is forbidden (strict W^X) or impossible (XIP-only, MCU).
-
-**[See the benchmark charts and full results →](benchmarks/wasi/README.md)**
 
 ## WebAssembly Compatibility
 

@@ -13,6 +13,9 @@ Design notes, so the next person does not have to reverse-engineer them:
   A compiler is ~7x an interpreter here; mixing them on one scale would
   crush the interpreter bars into unreadable slivers, so they are grouped
   and separated by a rule.
+* One exception: the README hero chart (see HERO_* below) puts a single
+  benchmark's whole field on one shared scale, because there the spread is
+  the point and one row of bars can carry it.
 * Colour is categorical (identity = runtime), assigned in a fixed order and
   never cycled. The palette is validated for the adjacent-pair CVD and
   normal-vision floors in BOTH light and dark mode -- see SERIES below.
@@ -43,6 +46,14 @@ LEGEND_ROW = 18  # legend line height; the header grows by this per wrapped row
 
 CHAR_W = 5.6     # ~advance of 11px UI sans, for layout estimation only
 
+# Hero geometry. One benchmark, so there is room for taller marks, and no
+# legend is needed — every bar already carries its runtime name.
+HERO_BAR_H = 22
+HERO_PITCH = 28
+HERO_TIER_HEAD = 22   # tier caption line above each group of bars
+HERO_TIER_GAP = 8     # after a tier's last bar
+HERO_Y0 = 72          # first tier caption, clear of the title + subtitle
+
 # ── palette ─────────────────────────────────────────────────────────────
 # (key, label, light, dark). Order is fixed. Checked with the palette
 # validator on the adjacent pairlist (the correct list for grouped bars),
@@ -51,9 +62,33 @@ CHAR_W = 5.6     # ~advance of 11px UI sans, for layout estimation only
 #   compiled dark:  worst adjacent CVD dE  9.0, normal-vision 26.5 -> all PASS
 #   interp light:   worst adjacent CVD dE 25.0, normal-vision 29.9 -> all PASS
 #   interp dark:    worst adjacent CVD dE 27.3, normal-vision 27.5 -> all PASS
+#   hero light:     worst adjacent CVD dE  9.2, normal-vision 16.7 -> all PASS
+#   hero dark:      worst adjacent CVD dE  9.0, normal-vision 18.7 -> all PASS
+# The hero is its own pairlist: it is the only chart that puts all seven in
+# one column, so it has adjacencies (Winch-vs-interp-violet) the split charts
+# never form. That pair is the tightest in the file at dE 16.7.
 # Both Silverfir engines wear the same violet family on purpose, so "ours"
 # reads at a glance; they are never adjacent in this order, and the hues
 # beside them are deliberately far from violet (orange, teal, amber).
+#
+# The JIT violet was re-stepped 2026-07-25, from #7c3aed (OKLCH L 0.54,
+# C 0.247 -- the most saturated mark in the file) to #7952d4 (L 0.55,
+# C 0.191). Measured cause: the compiled group sat at mean L 0.603 against
+# the interpreters' 0.689 and mean C 0.190 against 0.173, so it read heavier
+# and hotter beside them; that neon violet was half of the gap. Dropping its
+# chroma closes it without touching depth, so the two-step violet family
+# survives -- JIT vs interp is still dE 9.7 apart in light (was 9.8). No
+# worst pair moved: the binding pairs are orange-aqua and plum-violet and
+# neither involves this slot.
+#
+# Winch's plum stays dark, which is load-bearing rather than an oversight.
+# Lightening it in place walks it into the interpreter violet: a light
+# magenta measures dE 14.2 against #a855f7, under the 15 normal-vision floor,
+# a hard FAIL. Moving it warm collides with Cranelift instead -- a mid rust
+# lands 5.5 from #eb6834, i.e. two bars of the same colour -- and a rust dark
+# enough to separate (dE 20) renders as muddy brown. No teal step passes at
+# all. The slot is boxed in by V8's aqua on the CVD gate and by the two
+# violets on the normal-vision floor; its darkness is what buys the margin.
 # Winch trails the three optimizing compilers rather than sitting beside
 # Cranelift: it is a baseline compiler, a different tier, and keeping
 # Silverfir/Cranelift/V8 adjacent is what makes that trio comparable at a
@@ -63,7 +98,7 @@ CHAR_W = 5.6     # ~advance of 11px UI sans, for layout estimation only
 # magenta clears the dE 8 target at 9.0.
 # 'column' is the header text this series has in the RESULTS.md tables.
 SERIES = [
-    ('sf', 'Silverfir (JIT)',    'SF (JIT)',    '#7c3aed', '#8b5cf6'),
+    ('sf', 'Silverfir (JIT)',    'SF (JIT)',    '#7952d4', '#8b5cf6'),
     ('cl', 'Cranelift 47.0.2',   'Cranelift',   '#eb6834', '#d95926'),
     ('v8', 'V8 / Node 25.9',     'V8',          '#1baf7a', '#199e70'),
     ('wn', 'Winch 47.0.2',       'Winch',       '#b02a8f', '#c13a9d'),
@@ -81,6 +116,24 @@ GROUPS = [
 ]
 LABEL = {k: n for k, n, _c, _l, _d in SERIES}
 BY_COLUMN = {c: k for k, _n, c, _l, _d in SERIES}
+
+# ── README hero ─────────────────────────────────────────────────────────
+# The top-level README wants ONE chart, and it has to carry the whole field:
+# the three optimizing compilers, the baseline compiler, and the three
+# interpreters, on a single shared scale. That deliberately breaks the split
+# above. The split exists so a fifteen-row chart stays legible in both
+# classes; the hero is one row, so the ~12x spread is the story rather than a
+# legibility problem — the smallest bar still lands ~38px wide and prints its
+# score. Tier captions replace the legend so nobody reads a 12x-shorter bar as
+# a bad compiler instead of a different class of engine.
+#
+HERO_FILE = 'coremark.svg'
+HERO_BENCH = 'CoreMark'
+HERO_TIERS = [
+    ('Optimizing compilers', ['sf', 'cl', 'v8']),
+    ('Baseline compiler',    ['wn']),
+    ('Interpreters',         ['si', 'w3', 'wi']),
+]
 
 
 def fmt(n):
@@ -165,19 +218,16 @@ def legend_svg(keys):
     return '\n  '.join(out)
 
 
-def make_svg(title, subtitle, benches, filename, keys):
-    header = header_height(keys)
-    body, y = [], header
-    for b in benches:
-        chunk, y = row_svg(y, b, keys)
-        body.append('  ' + chunk)
-    h = y + 6
+def document(title, subtitle, h, inner):
+    """The shared shell: surface, title, subtitle, styles, and `inner` body.
 
+    Both chart kinds draw the same marks in the same tokens, so the palette,
+    the dark-mode block and the type scale live here once.
+    """
     light = '\n'.join(f'    .s-{k} {{ fill: {l}; }}' for k, _n, _c, l, _d in SERIES)
     dark = '\n'.join(f'      .s-{k} {{ fill: {d}; }}' for k, _n, _c, _l, d in SERIES)
-    nl = chr(10)
 
-    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="0 0 {W} {h}" width="{W}" height="{h}">
+    return f'''<svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="0 0 {W} {h}" width="{W}" height="{h}">
   <title>{esc(title)}</title>
   <style>
     text     {{ font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }}
@@ -189,6 +239,7 @@ def make_svg(title, subtitle, benches, filename, keys):
     .note    {{ fill: #77756e; font-size: 10px; font-style: italic; }}
     .name    {{ fill: #52514e; font-size: 11.5px; }}
     .legend  {{ fill: #52514e; font-size: 11px; }}
+    .tier    {{ fill: #77756e; font-size: 10.5px; font-weight: 600; letter-spacing: 0.04em; }}
     .val     {{ fill: #0b0b0b; font-size: 11.5px; font-weight: 600; }}
     .rule    {{ stroke: #e4e4e0; stroke-width: 1; stroke-dasharray: 2 3; }}
     .axis    {{ stroke: #d8d8d4; stroke-width: 1; }}
@@ -198,7 +249,7 @@ def make_svg(title, subtitle, benches, filename, keys):
       .title, .metric {{ fill: #ffffff; }}
       .sub, .name, .legend {{ fill: #c3c2b7; }}
       .val     {{ fill: #ffffff; }}
-      .unit, .note {{ fill: #96958c; }}
+      .unit, .note, .tier {{ fill: #96958c; }}
       .rule    {{ stroke: #3a3a37; }}
       .axis    {{ stroke: #3a3a37; }}
 {dark}
@@ -207,15 +258,71 @@ def make_svg(title, subtitle, benches, filename, keys):
   <rect class="surface" width="{W}" height="{h}" rx="8" ry="8" stroke-width="1"/>
   <text class="title" x="{W // 2}" y="30" text-anchor="middle">{esc(title)}</text>
   <text class="sub" x="{W // 2}" y="47" text-anchor="middle">{esc(subtitle)}</text>
-  {legend_svg(keys)}
-  <line class="axis" x1="{X0}" y1="{header - 4}" x2="{X0}" y2="{h - 10}"/>
-
-{nl.join(body)}
+{inner}
 </svg>
 '''
+
+
+def write(filename, svg, h):
     with open(filename, 'w') as f:
         f.write(svg)
     print(f'Generated: {filename}  ({h}px tall)')
+
+
+def make_svg(title, subtitle, benches, filename, keys):
+    header = header_height(keys)
+    body, y = [], header
+    for b in benches:
+        chunk, y = row_svg(y, b, keys)
+        body.append('  ' + chunk)
+    h = y + 6
+    nl = chr(10)
+
+    inner = (f'  {legend_svg(keys)}\n'
+             f'  <line class="axis" x1="{X0}" y1="{header - 4}" '
+             f'x2="{X0}" y2="{h - 10}"/>\n\n'
+             + nl.join(body))
+    write(filename, document(title, subtitle, h, inner), h)
+
+
+def make_hero(bench, filename, title, subtitle):
+    """One benchmark, every runtime, one shared scale, grouped by engine tier.
+
+    No legend and no per-row renormalisation: there is only one row, so the
+    bar lengths are directly comparable end to end, which is the whole reason
+    this chart exists.
+    """
+    missing = [k for _c, keys in HERO_TIERS for k in keys if k not in bench['data']]
+    if missing:
+        raise SystemExit(f'{RESULTS}: "{bench["name"]}" has no column for '
+                         f'{[LABEL[k] for k in missing]}; the hero needs every runtime')
+
+    best = max(bench['data'][k] for _c, keys in HERO_TIERS for k in keys)
+    body, y = [], HERO_Y0
+    for caption, keys in HERO_TIERS:
+        body.append(f'<text class="tier" x="{GUTTER}" y="{y + 14}" '
+                    f'text-anchor="end">{esc(caption)}</text>')
+        body.append(f'<line class="rule" x1="{X0}" y1="{y + 10}" '
+                    f'x2="{W - 20}" y2="{y + 10}"/>')
+        y += HERO_TIER_HEAD
+        for key in keys:
+            val = bench['data'][key]
+            w = max(2.0, BAR_MAX * val / best)
+            base = y + HERO_BAR_H / 2 + 4.5
+            body.append(f'<text class="name" x="{GUTTER}" y="{base:.1f}" '
+                        f'text-anchor="end">{esc(LABEL[key])}</text>')
+            body.append(f'<rect class="s-{key}" x="{X0}" y="{y}" '
+                        f'width="{w:.1f}" height="{HERO_BAR_H}" rx="5"/>')
+            body.append(f'<text class="val" x="{X0 + w + 8:.1f}" '
+                        f'y="{base:.1f}">{fmt(val)}</text>')
+            y += HERO_PITCH
+        y += HERO_TIER_GAP
+    h = y - HERO_TIER_GAP + 12
+
+    axis = (f'<line class="axis" x1="{X0}" y1="{HERO_Y0 - 6}" '
+            f'x2="{X0}" y2="{h - 12}"/>')
+    inner = '  ' + '\n  '.join([axis] + body)
+    write(filename, document(title, subtitle, h, inner), h)
 
 
 # ══════════════════════════════════════════════════════════════════════
@@ -237,6 +344,11 @@ def make_svg(title, subtitle, benches, filename, keys):
 # ══════════════════════════════════════════════════════════════════════
 
 RESULTS = 'RESULTS.md'
+# Every image both READMEs embed lives in assets/ at the repo root — one place
+# for rendered artifacts, so a reader following an image link never lands in
+# the benchmark working directory. The script chdir's to its own directory,
+# hence the relative hop. RESULTS.md still names charts by bare filename.
+ASSETS = os.path.join('..', '..', 'assets')
 CHART_RE = re.compile(r'<!--\s*chart\s+(?P<attrs>.*?)-->\n(?P<table>.*?)<!--\s*endchart\s*-->',
                       re.S)
 ATTR_RE = re.compile(r'(\w+)="([^"]*)"')
@@ -285,8 +397,17 @@ def parse_charts(path):
 
 if __name__ == '__main__':
     os.chdir(os.path.dirname(os.path.abspath(__file__)))
-    for title, filename, benches in parse_charts(RESULTS):
+    charts = parse_charts(RESULTS)
+    for title, filename, benches in charts:
         stem, ext = os.path.splitext(filename)
         for suffix, group_title, keys in GROUPS:
             make_svg(f'{title} — {group_title}', SUB, benches,
-                     f'{stem}{suffix}{ext}', keys)
+                     os.path.join(ASSETS, f'{stem}{suffix}{ext}'), keys)
+
+    hero = next((b for _t, _f, benches in charts for b in benches
+                 if b['name'] == HERO_BENCH), None)
+    if hero is None:
+        raise SystemExit(f'{RESULTS}: no "{HERO_BENCH}" row in any chart table; '
+                         f'the README hero has nothing to draw')
+    make_hero(hero, os.path.join(ASSETS, HERO_FILE), f'{HERO_BENCH} — Apple M4',
+              f'{hero["unit"]} · higher is better · seven runtimes on one shared scale')
