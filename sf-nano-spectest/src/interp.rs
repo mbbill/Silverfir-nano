@@ -423,9 +423,12 @@ pub fn run(filters: &[String]) -> i32 {
         // name can never contain that segment -- so this ran every
         // proposal directory the JIT suite deliberately leaves out, and
         // counted the results against the interpreter.
+        // Out of scope entirely, not merely unsupported: proposal
+        // directories are post-3.0 and neither engine targets them. They
+        // are not counted, because counting them would put features
+        // nobody is aiming at into the interpreter's coverage numbers.
         let full = f.to_string_lossy().into_owned();
         if discovery::should_skip_test(&name, false) || discovery::should_skip_test(&full, false) {
-            totals.files_skipped += 1;
             continue;
         }
         run_file(f, &mut totals);
