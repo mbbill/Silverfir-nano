@@ -88,13 +88,14 @@ impl Instance {
             Tier::Jit => Inner::Jit(JitInstance::from_module(engine, module, imports)?),
             #[cfg(sf_interp)]
             Tier::Interp => {
-                // Bind before instantiating: the module's start function
-                // runs inside `InterpInstance::new`, and it may already
-                // call an import.
+                // The host goes in with the module: a start function may
+                // call an import, and it runs during instantiation.
                 let dispatch = interp_imports::bind(&module, imports)?;
-                let mut inst = InterpInstance::new(engine, module)?;
-                inst.set_host(dispatch);
-                Inner::Interp(inst)
+                Inner::Interp(InterpInstance::new(
+                    engine,
+                    module,
+                    Some(InterpInstance::boxed_host(dispatch)),
+                )?)
             }
         };
         Ok(Self { inner })

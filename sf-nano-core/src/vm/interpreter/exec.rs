@@ -343,7 +343,15 @@ fn eval_const(expr: &[u8], globals: &[u64]) -> Result<u64, WasmError> {
 }
 
 impl InterpInstance {
-    pub fn new(engine: &Engine, module: Module) -> Result<Self, WasmError> {
+    /// Instantiate, link the host, then run the start function -- in that
+    /// order, which is why the host arrives here rather than through a
+    /// setter. A start function may call an import, and a setter cannot
+    /// be called before a constructor that already ran it.
+    pub fn new(
+        engine: &Engine,
+        module: Module,
+        host: Option<HostDispatch>,
+    ) -> Result<Self, WasmError> {
         let config = *engine.config();
         #[cfg(sf_interp_engine)]
         let stack_slots = configured_stack_slots(&config);
@@ -490,7 +498,7 @@ impl InterpInstance {
             stack: vec![0u64; stack_slots],
             #[cfg(sf_interp_engine)]
             ret_stack: vec![0u64; configured_ret_records(stack_slots) * (RET_RECORD / 8)],
-            host: None,
+            host,
             #[cfg(sf_interp_engine)]
             native: None,
         };
@@ -746,6 +754,24 @@ impl InterpInstance {
     /// so callers pass a plain closure; boxing happens here (unsizing to
     /// the dyn target through the `alloc` box, then wrapping in the
     /// tracked facade — the same pattern as the JIT's host callbacks).
+    /// Box a host dispatcher for [`Self::new`].
+    ///
+    /// Keeps the engine's allocator-tracked `Box` out of the caller's
+    /// type, so an embedder writes an ordinary closure.
+    pub fn boxed_host<F>(host: F) -> HostDispatch
+    where
+        F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static,
+    {
+        let host: alloc::boxed::Box<
+            dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError>,
+        > = alloc::boxed::Box::new(host);
+        tracked_alloc::box_from_alloc(host)
+    }
+
+    /// Replace the host dispatcher after instantiation.
+    ///
+    /// Prefer passing it to [`Self::new`]: a start function that calls an
+    /// import runs during instantiation, before this could be reached.
     pub fn set_host<F>(&mut self, host: F)
     where
         F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static,
@@ -837,11 +863,20 @@ impl InterpInstance {
         args: &[u64],
         results: &mut [u64],
     ) -> Result<(), WasmError> {
-        let func = self
+        let entry = self
             .funcs
             .get(func_index)
-            .and_then(|f| f.clone())
             .ok_or(WasmError::invalid("interp: bad function index"))?;
+        let Some(func) = entry.clone() else {
+            // An imported function, reached directly rather than through a
+            // call inside a body -- `(start $imported)` does exactly this.
+            // It has no predecoded body to enter; the host is the callee.
+            let mut frame = vec![0u64; args.len().max(results.len())];
+            frame[..args.len()].copy_from_slice(args);
+            self.call_host(func_index, &mut frame, 0)?;
+            results.copy_from_slice(&frame[..results.len()]);
+            return Ok(());
+        };
         if args.len() != func.n_params as usize || results.len() != func.n_results as usize {
             return Err(WasmError::invalid("interp: argument/result arity mismatch"));
         }
@@ -2132,7 +2167,8 @@ mod tests {
     fn run1(src: &str, export: &str, args: &[u64]) -> Result<u64, WasmError> {
         let (bin, _) = instantiate(src);
         let module = Module::new("t", &bin).expect("module");
-        let mut inst = InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module)?;
+        let mut inst =
+            InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module, None)?;
         let idx = inst.find_export(export).expect("export");
         let mut results = [0u64; 1];
         inst.invoke(idx, args, &mut results)?;
@@ -2186,7 +2222,7 @@ mod tests {
         .expect("wat");
         let module = Module::new("t", &bin).expect("module");
         assert!(
-            InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module).is_ok(),
+            InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module, None).is_ok(),
             "reading an EARLIER global is legal"
         );
     }
@@ -2217,8 +2253,9 @@ mod tests {
                 (func (export "get") (result i32) global.get $g))"#,
         );
         let module = Module::new("t", &bin).expect("module");
-        let mut inst = InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module)
-            .expect("instantiate");
+        let mut inst =
+            InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module, None)
+                .expect("instantiate");
         let f = inst.find_export("f").expect("f");
         let g = inst.find_export("get").expect("get");
         inst.invoke(f, &[0], &mut []).expect("invoke cond=0");

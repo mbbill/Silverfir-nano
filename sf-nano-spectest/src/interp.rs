@@ -42,6 +42,19 @@ impl Totals {
     }
 }
 
+/// Whether an error is a gap the interpreter *declares*, as opposed to
+/// something going wrong.
+///
+/// This distinction is the difference between a suite that measures
+/// coverage and one that hides defects. Everything the interpreter cannot
+/// do yet says so in these words; anything else -- an internal invariant
+/// tripping, a bad index, a desynced predecoder -- is a failure, and used
+/// to be counted as a skip alongside the honest gaps.
+fn is_declared_gap(err: &WasmError) -> bool {
+    let m = err.message();
+    m.contains("unsupported") || m.contains("not yet supported")
+}
+
 enum Converted {
     Vals(Vec<u64>),
     Unsupported,
@@ -165,17 +178,24 @@ fn run_file(path: &PathBuf, totals: &mut Totals) {
                 };
                 match instantiate(bytes) {
                     Ok(inst) => run.inst = Some(inst),
-                    Err(err) => {
-                        // Unsupported feature in this module: everything
-                        // after it depends on it — skip the file's rest.
-                        // Keep the reason: "205 skipped" on its own says
-                        // nothing about what would unblock them.
+                    Err(err) if is_declared_gap(&err) => {
+                        // A gap the interpreter declares: everything after
+                        // it depends on this module, so skip the rest of
+                        // the file. Keep the reason -- a bare skip total
+                        // says nothing about what would unblock it.
                         totals.note_skip(err.message());
                         if std::env::var_os("SF_INTERP_SKIP_WHERE").is_some() {
                             eprintln!("[skip] {name}  {}", err.message());
                         }
                         run.skip_rest = Some("module unsupported");
                         skipped += 1;
+                    }
+                    Err(err) => {
+                        totals.asserts_failed += 1;
+                        totals
+                            .failures
+                            .push(format!("{name}: module failed to instantiate: {err:?}"));
+                        run.skip_rest = Some("instantiation failed");
                     }
                 }
             }
@@ -329,15 +349,19 @@ fn execute(run: &mut FileRun, exec: &WastExecute) -> Exec {
                 return Exec::Skip;
             };
             let Some(idx) = inst.find_export(invoke.name) else {
-                return Exec::Skip;
+                return Exec::Err(WasmError::invalid(
+                    "instance is missing an exported function",
+                ));
             };
             let (p, r) = inst.func_arity(idx).unwrap();
             let args = match convert_args(&invoke.args) {
+                // A value shape this bridge cannot express (v128, a typed
+                // reference) -- the interpreter was never reached.
                 Converted::Unsupported => return Exec::Skip,
                 Converted::Vals(v) => v,
             };
             if args.len() != p {
-                return Exec::Skip;
+                return Exec::Err(WasmError::invalid("export has the wrong parameter count"));
             }
             let mut results = vec![0u64; r];
             match inst.invoke(idx, &args, &mut results) {
@@ -371,7 +395,8 @@ fn execute_general(run: &mut FileRun, exec: WastExecute) -> Exec {
             match instantiate(bytes) {
                 Ok(_) => Exec::Vals(Vec::new()),
                 Err(e) if matches!(e, WasmError::Trap(_)) => Exec::Err(e),
-                Err(_) => Exec::Skip, // unsupported, not a trap
+                Err(e) if is_declared_gap(&e) => Exec::Skip,
+                Err(e) => Exec::Err(e),
             }
         }
         other => execute(run, &other),
@@ -382,9 +407,13 @@ fn instantiate(bytes: Vec<u8>) -> Result<InterpInstance, WasmError> {
     // The instance owns its module, so this no longer leaks one per
     // instantiation to manufacture a `'static` borrow.
     let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("interpreter engine");
-    let mut inst = InterpInstance::new(&engine, Module::new("spec", &bytes)?)?;
-    inst.set_host(spectest_host());
-    Ok(inst)
+    // The host goes in with the module: `start.wast` has a start function
+    // that calls an import, which runs during instantiation.
+    InterpInstance::new(
+        &engine,
+        Module::new("spec", &bytes)?,
+        Some(InterpInstance::boxed_host(spectest_host())),
+    )
 }
 
 /// Whether a file passes the CLI filters (same semantics as the JIT
