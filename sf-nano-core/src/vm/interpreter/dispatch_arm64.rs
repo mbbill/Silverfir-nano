@@ -1128,9 +1128,18 @@ impl<'b> Enc<'b> {
 /// dynamic pinned-class engagement.
 const COUNT_MODE: u8 = 0;
 
+/// Whether the dispatch counter is compiled in at all (feature
+/// `interp-count`). It is one ALU instruction on every dispatch, measured at
+/// ~1% of cycles, and only `--interp-stats` reads it. Dispatch counts are
+/// deterministic, so taking them from a separate binary loses nothing.
+const COUNTING: bool = cfg!(feature = "interp-count");
+
 /// Whether a handler of this variant bumps the dispatch counter under
 /// the current COUNT_MODE.
 fn counted(a: Cls, b: Cls, d: DstCls) -> bool {
+    if !COUNTING {
+        return false;
+    }
     match COUNT_MODE {
         1 => a == Cls::L0 || b == Cls::L0 || d == DstCls::L0,
         2 => a == Cls::L1 || b == Cls::L1 || d == DstCls::L1,
@@ -1424,7 +1433,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     //       c = frame_slots<<32 | n_locals<<16 | n_params
     let call_handler = e.here();
     {
-        bump(e, COUNT_MODE == 0);
+        bump(e, COUNTING);
         // Cell layout: a = caller_l1off<<48 | callee cells (48-bit VA),
         // b = callee_l1off<<48 | callee_l0off<<32 | arg_base*8,
         // c = caller_l0off<<48 | frame_slots<<32 | n_locals<<16 | n_params
@@ -1501,7 +1510,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     // routes the host call.
     let callindirect_handler = e.here();
     {
-        bump(e, COUNT_MODE == 0);
+        bump(e, COUNTING);
         e.ldr_x_imm(X9, PC, 8);
         e.ubfx_x(X10, X9, 0, 32); // index_slot*8
         e.ldr_x_reg(X10, FRAME, X10); // t (i32, zero-extended)
@@ -1563,7 +1572,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     // through `exit_cell` into `return_exit`.
     {
         let off = e.here();
-        bump(e, COUNT_MODE == 0);
+        bump(e, COUNTING);
         e.ldr_x_imm(X10, PC, 8);
         e.ldr_x_imm(X11, PC, 16);
         e.add_x_reg(X10, FRAME, X10);
@@ -2007,7 +2016,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
     // ---- branches ----
     {
         let off = e.here();
-        bump(e, COUNT_MODE == 0);
+        bump(e, COUNTING);
         e.ldr_x_imm(X12, PC, 24);
         e.mov_x(PC, X12); // c is absolute
         e.ldr_x_imm(X9, PC, 0);

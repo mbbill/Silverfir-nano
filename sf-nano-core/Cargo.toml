@@ -22,6 +22,12 @@ jit = []
 # Interpreter v2 (folded stack machine, docs/INTERPRETER_V2.md). Non-default
 # and independent of the JIT compile/execute pipeline during bring-up.
 interp = []
+# Compile the interpreter's dispatch counter into every handler. Off by
+# default: it costs one ALU instruction on 100% of dispatches (measured ~1% of
+# cycles) and only --interp-stats consumes it, so timing builds should not pay
+# for it. Enable when you need dispatch counts: they are deterministic, so
+# measuring them in a separate binary is sound.
+interp-count = ["interp"]
 backend-emu64 = ["jit"]
 backend-emu32 = ["jit"]
 wasi = ["dep:filetime"]

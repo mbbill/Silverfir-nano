@@ -586,6 +586,13 @@ impl<'m> InterpInstance<'m> {
 
     /// Slow-path exit counts by op since instantiation, descending —
     /// empty when native dispatch is not active.
+    /// Whether the dispatch counter was compiled into the handlers. When it
+    /// was not, the reported dispatch total is meaningless and callers should
+    /// say so rather than print it.
+    pub fn dispatch_counting_enabled(&self) -> bool {
+        cfg!(feature = "interp-count")
+    }
+
     /// Size in bytes of the emitted dispatch engine, 0 when there is none.
     /// Worth watching: every added handler family or operand class grows it
     /// against a hard buffer assert, and once emission moves to build time

@@ -393,6 +393,15 @@
   rather than removing work -- the not-taken path now pays two loads it did not
   before, and the taken path no longer stalls on them (code)
 
+- 2026-07-25 measurement: compiling the dispatch counter out is worth -3.69% of
+  CoreMark cycles and shrinks the emitted engine from 378,344 to 334,828 bytes,
+  -43.5 KB, since it is one instruction in each of ~10,000 handlers (code)
+- 2026-07-25 rationale: that -3.69% against the 1.0% measured by
+  nop-substitution is the difference the method was designed to expose --
+  substitution holds code size constant and prices only the instruction's
+  issue cost, so the remaining ~2.7% is the tighter instruction-fetch footprint
+  that deleting it also buys (code)
+
 ## Moves
 
 - 2026-07-23 replaced [[stage-a-loop]]: one high-performance interpreter,
