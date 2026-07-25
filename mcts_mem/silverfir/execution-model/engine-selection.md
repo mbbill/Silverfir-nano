@@ -1,7 +1,7 @@
 - One selector names which engine runs a module, and its cases are exactly
   the engines the build has. Naming an engine that was left out is a
   compile error at the embedder's call site, not a runtime failure
-  (`Engine`).
+  (`Tier`).
 
 - A build with a single engine makes the selector a zero-sized value. It
   carries no storage, and every switch on it folds to its one arm.

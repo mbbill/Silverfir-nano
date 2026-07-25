@@ -56,6 +56,9 @@
 //                                          in: sf_ir_dump or sf_jitdump)
 //   (derived)      → sf_has_simd         (arm64 with NEON, x64 with SSE4.1+SSSE3)
 //   jit            → sf_jit
+//   interp         → sf_interp
+//   (derived)      → sf_interp_engine  (interp, on a target this build script
+//                                        generates a dispatch engine for)
 //   backend-emu64  → sf_backend_emu64
 //   backend-emu32  → sf_backend_emu32
 //   wasi           → sf_wasi_host

@@ -177,7 +177,7 @@ pub(crate) fn backend_display_name(backend: NativeBackend) -> &'static str {
 
 /// Which ISA the JIT targets on this build, for embedders that report it.
 ///
-/// Distinct from [`crate::vm::engine::Engine`]: that says *which engine*
+/// Distinct from [`crate::vm::engine::Tier`]: that says *which engine*
 /// runs a module, this says which machine the JIT emits for.
 #[inline]
 pub fn active_native_backend_name() -> Result<&'static str, &'static str> {
@@ -187,7 +187,7 @@ pub fn active_native_backend_name() -> Result<&'static str, &'static str> {
 /// Normalized view of a backend's per-function compile result.
 ///
 /// Each backend-specific module linker returns an entry type carrying whatever
-/// arch-local state it needs. The module-build pipeline in `vm::build` only
+/// arch-local state it needs. The module-build pipeline in `vm::jit::build` only
 /// cares about three facts after compilation is done — the entry pointer, the
 /// function's text size, and the optional IR-dump debug region list — so
 /// `dispatch_compile_module` projects every backend's entry type into this
@@ -360,7 +360,7 @@ pub(crate) fn dispatch_compile_function_into_buffer(
 }
 
 /// Only the parallel eager-compile path calls this, and that path is
-/// `sf_has_std`-gated in `vm::build`.
+/// `sf_has_std`-gated in `vm::jit::build`.
 #[cfg(sf_has_std)]
 pub(crate) fn dispatch_compile_function(
     active_backend: NativeBackend,

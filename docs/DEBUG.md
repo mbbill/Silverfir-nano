@@ -91,8 +91,7 @@ Details that matter:
 3. `--emu64` / `--emu32` are only accepted in debug builds. Release builds
    reject them.
 4. The previous `base` (interpreter) and `fusion` backends have been removed;
-   the interpreter was rewritten as the folded stack machine
-   (`docs/INTERPRETER_V2.md`).
+   the interpreter was rewritten as the folded stack machine.
 
 ## Native vs Reference
 

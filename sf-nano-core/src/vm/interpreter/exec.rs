@@ -44,21 +44,16 @@ const PAGE: usize = 65536;
 const NULL_FUNC: u32 = u32::MAX;
 #[cfg(sf_interp_engine)]
 const MAX_CALL_DEPTH: u32 = 4096;
-/// Value-stack budget per invoke. Frames overlap on one contiguous stack
-/// (a callee's frame base is its caller's staged-argument slot); running
-/// past the budget traps "call stack exhausted" on every backend.
-#[cfg(sf_interp_engine)]
 /// Ceiling on native call depth, and so on the return-stack records the
 /// dispatch chain can plant.
+#[cfg(sf_interp_engine)]
 const MAX_RET_RECORDS: u32 = MAX_CALL_DEPTH + 8;
 
 /// Slots in the operand stack, from the embedder's configured budget.
 ///
-/// The knob already existed and already described this ("the Wasm
-/// operand/call stack ... of each `invoke` call"); the interpreter simply
-/// never read it, and a target that lowered it got a 2 MiB allocation
-/// anyway. The hosted default is 2 MiB, which is what the fixed size used
-/// to be, so nothing changes for a hosted embedder.
+/// The engine's `wasm_stack_bytes`. The hosted default is 2 MiB, which is
+/// what the interpreter's fixed size used to be, so nothing changes for a
+/// hosted embedder -- only how often it is paid for.
 ///
 /// A bare-metal embedder that has not configured the runtime yet is told
 /// so here. Silently substituting a token stack would turn that mistake

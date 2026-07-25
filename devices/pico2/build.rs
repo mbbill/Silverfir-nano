@@ -50,7 +50,7 @@ fn build_wasm_demo(out_dir: &PathBuf) {
     // -zstack-size=16384 caps the Wasm call stack at 16 KiB so the
     // module's initial linear memory stays at 1 page instead of the
     // 17-page default (1 MiB stack + data). See the host-side
-    // RuntimeConfig's wasm_memory_max_pages quota.
+    // Config's wasm_memory_max_pages quota.
     let wasm_rustflags = "-C link-arg=-zstack-size=16384";
     let demo_feature = selected_demo_feature();
     let mut cmd = Command::new(std::env::var_os("CARGO").unwrap_or_else(|| "cargo".into()));

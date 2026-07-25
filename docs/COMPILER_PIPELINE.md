@@ -986,8 +986,8 @@ Main code:
 - `sf-nano-core/src/vm/jit/arch/x86_64/*`
 - `sf-nano-core/src/vm/jit/arch/emulator/*` (debug MachineIR execution backend,
   used for testing and the `emu64` / `emu32` configs)
-- `sf-nano-core/src/vm/runtime/runtime_call/*`
-- `sf-nano-core/src/vm/runtime/preserved/*`
+- `sf-nano-core/src/vm/jit/runtime/runtime_call/*`
+- `sf-nano-core/src/vm/jit/runtime/preserved/*`
 
 This stage is late by design. The shared pipeline keeps enough semantic shape
 alive so each backend can choose the best encoding at the last responsible
@@ -1173,14 +1173,14 @@ The current JIT intentionally keeps two runtime boundary systems:
     any dynamic target that is not representable as a compiled-frame transfer
   - lowered by MachineIR as an inline runtime call
   - uses frame slots as its argument/result transport
-  - implemented under `sf-nano-core/src/vm/runtime/runtime_call/`
+  - implemented under `sf-nano-core/src/vm/jit/runtime/runtime_call/`
 - Preserved-helper system:
   - triggered by engine-internal helper-backed operations such as
     `memory.grow`, `memory.copy`, `table.grow`, `table.init`, `ref.test`,
     `ref.cast`, `struct.get`, `struct.set`, and similar ops
   - owned by native backends rather than MachineIR
   - uses a fixed native-stack I/O layout
-  - implemented under `sf-nano-core/src/vm/runtime/preserved/`
+  - implemented under `sf-nano-core/src/vm/jit/runtime/preserved/`
 
 They share some low-level status/error plumbing, but they are not one generic
 "helper" mechanism. The JIT should keep those boundaries explicit so readers do

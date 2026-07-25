@@ -11,8 +11,6 @@
 //! [`crate::Engine::new`] rejects them, because a sensible number for one
 //! board is a fatal one for the next. That rejection happens once, at
 //! engine construction, before any module is touched.
-//!
-//! Design: see `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md`.
 
 use crate::vm::engine::Tier;
 
@@ -134,7 +132,10 @@ impl Config {
         if self.wasm_memory_max_pages == 0 {
             return Err(ConfigError::Unconfigured("wasm_memory_max_pages"));
         }
-        if self.wasm_stack_bytes == 0 {
+        // Not merely non-zero: the stack is indexed in `u64` slots, and a
+        // budget that rounds down to no slots at all is the same mistake
+        // as not setting one.
+        if self.wasm_stack_bytes < core::mem::size_of::<u64>() {
             return Err(ConfigError::Unconfigured("wasm_stack_bytes"));
         }
         // The code arena is the JIT's. An interpreter-only engine has no

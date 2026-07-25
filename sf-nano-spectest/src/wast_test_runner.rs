@@ -2107,7 +2107,7 @@ mod tests {
         let buf = wast::parser::ParseBuffer::new_with_lexer(lexer).expect("parse buffer");
         let mut wast = wast::parser::parse::<Wast>(&buf).expect("parse wast");
 
-        let mut runner = WastTestRunner::new(test_engine());
+        let mut runner = WastTestRunner::new(engine_for(tier));
         let directive = wast.directives.first_mut().expect("module directive");
         match directive {
             WastDirective::Module(quote_wat) => {

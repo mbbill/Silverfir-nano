@@ -16,16 +16,18 @@
 # `cargo install elf2uf2-rs`.
 #
 # Usage:
-#   ./build-uf2.sh [BIN_NAME] [ARCH] [DEMO]
+#   ./build-uf2.sh [BIN_NAME] [ARCH] [DEMO] [ENGINE]
 #     BIN_NAME defaults to demo_host
 #     ARCH     defaults to arm; pass "rv" for the RV32 build
 #     DEMO     defaults to mandelbrot; pass "cube" for the cube demo
+#     ENGINE   defaults to jit; pass "interp" for the interpreter build
 #
 # Examples:
-#   ./build-uf2.sh                                # demo_host, arm
+#   ./build-uf2.sh                                # demo_host, arm, jit
 #   ./build-uf2.sh native_demo                    # native_demo, arm
 #   ./build-uf2.sh demo_host rv                   # demo_host, RV32
 #   ./build-uf2.sh demo_host arm cube             # demo_host cube, ARM
+#   ./build-uf2.sh demo_host arm mandelbrot interp   # interpreter engine
 #
 # Output: <bin>.uf2 next to the release ELF.
 
@@ -101,6 +103,19 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BIN_NAME="${1:-demo_host}"
 ARCH="${2:-arm}"
 DEMO="${3:-mandelbrot}"
+ENGINE="${4:-jit}"
+
+# The crate takes `default-features = false` below, so the engine has to be
+# named explicitly -- without one, sf-nano-core compiles with no execution
+# engine at all and the build fails deep inside the library.
+case "$ENGINE" in
+    jit)    ENGINE_FEATURE="engine-jit" ;;
+    interp) ENGINE_FEATURE="engine-interp" ;;
+    *)
+        echo "ERROR: unknown ENGINE '$ENGINE' — expected 'jit' or 'interp'." >&2
+        exit 1
+        ;;
+esac
 
 case "$ARCH" in
     arm)
@@ -137,8 +152,8 @@ UF2_PATH="$ELF_PATH.uf2"
 
 cd "$SCRIPT_DIR"
 
-echo "[pico2-uf2] Building release ELF: $BIN_NAME ($ARCH → $TARGET, demo=$DEMO)"
-cargo build --release --bin "$BIN_NAME" --target "$TARGET" --no-default-features --features "$DEMO_FEATURE"
+echo "[pico2-uf2] Building release ELF: $BIN_NAME ($ARCH → $TARGET, demo=$DEMO, engine=$ENGINE)"
+cargo build --release --bin "$BIN_NAME" --target "$TARGET" --no-default-features --features "$DEMO_FEATURE,$ENGINE_FEATURE"
 
 if [[ ! -f "$ELF_PATH" ]]; then
     echo "ERROR: expected ELF not found at $ELF_PATH" >&2

@@ -23,7 +23,7 @@ use crate::vm::jit::runtime::code_buf::CodeBuffer;
 ///   the code buffer, not MachineIR lowering.
 ///
 /// Backends must follow the register-ownership and boundary rules documented in
-/// `vm/arch/abi.md`. In particular: ordinary lowering may touch only explicit
+/// `vm/jit/arch/abi.md`. In particular: ordinary lowering may touch only explicit
 /// operands, fixed regs when semantically required, and backend-owned temp regs
 /// that were explicitly claimed from the relevant ownership tracker.
 ///

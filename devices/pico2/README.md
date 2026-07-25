@@ -6,9 +6,12 @@ It builds a Wasm demo guest, verifies/instantiates it through `sf-nano-core`,
 JITs it to native code in SRAM, and drives a 160x128 ST7735s LCD from the
 Wasm-rendered framebuffer.
 
-This is not an interpreter demo. The guest program stays as a `.wasm` artifact
+By default this is not an interpreter demo: the guest stays a `.wasm` artifact
 until boot time, then the Pico 2 emits and executes native code for the active
-boot architecture.
+boot architecture. The same source also builds on the interpreter
+(`--no-default-features --features engine-interp,demo-mandelbrot`, or
+`./build-uf2.sh demo_host arm mandelbrot interp`), which is how the flash-size
+comparison in the top-level README is measured.
 
 ## Demo Results
 
@@ -225,7 +228,7 @@ JIT work. That installs:
 
 - A 448 KiB `embedded-alloc` global heap for Rust allocation, Wasm module
   metadata, materialized Wasm linear memory, and the per-invoke operand stack.
-- An `sf-nano-core` `RuntimeConfig` with:
+- An `sf-nano-core` `Config`, built into an `Engine` by `config::engine()`, with:
   - 32 KiB JIT code arena.
   - 3 Wasm memory pages max per linear memory (192 KiB).
   - 16 KiB Wasm operand/call stack per invoke.

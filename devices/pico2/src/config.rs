@@ -1,7 +1,7 @@
 //! The engine this board runs modules in.
 //!
 //! The bare-metal build of sf-nano-core ships with a zero default
-//! (see `sf_nano_core::config::RuntimeConfig::DEFAULT` under
+//! (see `sf_nano_core::Config` under
 //! `sf_os_none`). The embedder MUST call [`init`] exactly once at
 //! startup before any JIT / module instantiation, otherwise the
 //! first `Instance::new()` / `CodeBuffer::new()` path will fail with
@@ -9,8 +9,7 @@
 //!
 //! Numbers here must stay in sync with the static arena in
 //! `os_shim.rs` (executable arena) and the heap budget in `heap.rs`
-//! (bookkeeping + materialized Wasm linear memory). Design: see
-//! `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md`.
+//! (bookkeeping + materialized Wasm linear memory).
 
 /// Bytes reserved for the JIT code arena. Backs
 /// `sf_os_alloc_executable` in `os_shim.rs`. The current Pico2 demos
@@ -19,11 +18,11 @@ pub const CODE_ARENA_BYTES: usize = 32 * 1024;
 
 /// Maximum 64-KiB Wasm pages a single linear memory may reach.
 /// Three pages (192 KiB) fits the aggressive heap budget while leaving
-/// room for module metadata and a per-invoke operand stack.
+/// room for module metadata and the per-instance operand stack.
 pub const WASM_MEMORY_MAX_PAGES: u32 = 3;
 
-/// Bytes allocated from the heap for the Wasm operand/call stack on
-/// every `invoke`. 16 KiB = 2048 u64 slots covers the current integer
+/// Bytes for the Wasm operand/call stack. Allocated once per instance
+/// and reused by every call. 16 KiB = 2048 u64 slots covers the current integer
 /// demos while leaving more heap headroom; hosted default is 2 MiB.
 pub const WASM_STACK_BYTES: usize = 16 * 1024;
 

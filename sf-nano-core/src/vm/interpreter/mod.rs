@@ -1,12 +1,14 @@
 //! Interpreter v2: the folded stack machine.
 //!
-//! Design of record: `docs/INTERPRETER_V2.md`. Quantitative basis:
-//! `tools/foldsim` v4 over the `benchmarks/wasi` corpus, plus the measured
-//! record in `mcts_mem/silverfir/interpreter/`.
+//! Design of record: `mcts_mem/silverfir/interpreter/`. Quantitative
+//! basis: `tools/foldsim` v4 over the `benchmarks/wasi` corpus, plus the
+//! measured record in the same subtree.
 //!
-//! Architecture split: the runtime substrate is SHARED — module parsing
-//! and decode (`module`, `op_decoder`), `Store`, instances, entities, and
-//! the `runtime/` layer serve both engines. The compile-and-execute tier
+//! Architecture split: what is SHARED is the module layer — parsing and
+//! decode (`module`, `op_decoder`), the value-type model — and the WASI
+//! host. Runtime state is not: the `Store`, the entity model and the
+//! `jit/runtime/` layer belong to the JIT, and this module imports
+//! nothing from `vm/` outside itself. The compile-and-execute tier
 //! is deliberately independent: this module never touches `middle/`,
 //! `machine/`, or `arch/`, so interpreter work can never break JIT builds.
 //!

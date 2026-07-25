@@ -48,6 +48,7 @@ RISCV32_SELECT_REGRESSION_ARGS = RISCV64_SELECT_REGRESSION_ARGS
 
 CORE_OPTIONAL_FEATURES = [
     "interp",
+    "interp-count",
     "backend-emu64",
     "backend-emu32",
     "wasi",
@@ -933,7 +934,11 @@ def cargo_check(
     cwd: Path = ROOT,
     ignore_warnings: bool = False,
 ) -> StepResult:
-    ignore_warnings = ignore_warnings or feature_spec_enables_emulator_backend(feature_spec)
+    ignore_warnings = (
+        ignore_warnings
+        or feature_spec_enables_emulator_backend(feature_spec)
+        or interpreter_only(feature_spec)
+    )
     argv = cargo_argv("check", target)
     if profile_name == "release":
         argv.append("--release")
@@ -977,7 +982,7 @@ def cargo_build(
         argv,
         env=cargo_env(target),
         log_name=log_name,
-        ignore_warnings=feature_spec_enables_emulator_backend(features),
+        ignore_warnings=feature_spec_enables_emulator_backend(features) or interpreter_only(features),
     )
 
 
@@ -1015,11 +1020,30 @@ def run_workspace_tests(runner: CheckRunner, profile_name: str = "debug") -> Non
     )
 
 
+def interpreter_only(feature_spec: Optional[str]) -> bool:
+    """Whether a feature spec compiles the interpreter without the JIT.
+
+    Such a build warns about dead code across the shared substrate -- the
+    store, the entity model, the value encoding -- because those are the
+    JIT's and the interpreter calls none of them. That is a property of the
+    layout, not of the build, so these rows are compiled for breakage
+    rather than for cleanliness.
+    """
+    if not feature_spec or feature_spec in {"DEFAULT", "ALL"}:
+        return False
+    features = {f.strip() for f in feature_spec.split(",")}
+    return "interp" in features and "jit" not in features
+
+
 def full_core_combos() -> List[Tuple[str, str]]:
     combos = [
         ("default", "DEFAULT"),
         ("all-features", "ALL"),
         ("only-jit", "jit"),
+        # The interpreter alone is a shipping configuration (the Pico 2's
+        # `engine-interp`), so it belongs in the matrix even though every
+        # other row is jit-anchored.
+        ("only-interp", "interp"),
     ]
     for feature in CORE_OPTIONAL_FEATURES:
         combos.append((f"jit+{feature}", f"jit,{feature}"))
@@ -1054,6 +1078,7 @@ def full_cli_combos() -> List[Tuple[str, str]]:
         ("default", "DEFAULT"),
         ("all-features", "ALL"),
         ("only-jit", "jit"),
+        ("only-interp", "interp"),
     ]
     for feature in CLI_OPTIONAL_FEATURES:
         combos.append((f"jit+{feature}", f"jit,{feature}"))
@@ -1377,18 +1402,22 @@ def run_interp_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_args
     # never runs the assembler, so a `global_asm!` block that does not
     # assemble passes it clean — which is precisely the failure these rows
     # exist to catch. It needs no linker, so bare-metal rows are fine.
+    # Both engines together, and the interpreter alone -- the latter is the
+    # configuration the Pico 2 ships as `engine-interp`, and it exercises a
+    # different cfg surface than `jit,interp` does.
     for extra in [*BARE_SMOKE_TARGETS, WINDOWS_GNU_TARGET]:
         if not target_installed_or_install(runner, extra, f"interp engine {extra}"):
             continue
-        cargo_build(
-            runner,
-            f"cargo build: interp engine {extra}",
-            "sf-nano-core",
-            profile_name="dev",
-            target=extra,
-            features="jit,interp",
-            log_name=f"interp-engine-{extra.split('-')[0]}",
-        )
+        for label, features in (("", "jit,interp"), ("-only", "interp")):
+            cargo_build(
+                runner,
+                f"cargo build: interp{label} engine {extra}",
+                "sf-nano-core",
+                profile_name="dev",
+                target=extra,
+                features=features,
+                log_name=f"interp{label}-engine-{extra.split('-')[0]}",
+            )
 
     if os.environ.get("SF_CHECK_SKIP_CROSS_RUNTIME"):
         runner.skip(

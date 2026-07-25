@@ -3,9 +3,9 @@
 //! Single forward pass with a compile-time symbolic stack. Routing opcodes
 //! (`local.get/set/tee`, consts) emit nothing; semantic ops emit one
 //! instruction with the routing folded into operand/destination fields.
-//! See `docs/INTERPRETER_V2.md` §3–§5 for the model and the soundness rules
-//! implemented here; the rules were adversarially reviewed on the `foldsim`
-//! reference model before this port.
+//! See `mcts_mem/silverfir/interpreter/dispatch.md` for the model and the
+//! soundness rules implemented here; the rules were adversarially reviewed
+//! on the `foldsim` reference model before this port.
 //!
 //! v1 (stage A1) coverage: i32/i64 ALU, compares, conversions, locals,
 //! consts, `block`/`loop`/`if`/`else`/`end`/`br`/`br_if`, `select`,

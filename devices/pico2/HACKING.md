@@ -450,7 +450,7 @@ Expected RV32 boot layout, matching upstream `rp235x-hal` examples:
   40 MHz. The PL022 flush / CS-deassert race is documented in 5.6.1.
 - **sf-nano runtime bring-up (completed).** Linked `sf-nano-core`,
   installed the embedded allocator and executable arena, and moved to
-  explicit `RuntimeConfig` limits for code arena, Wasm memory, and
+  explicit runtime-config limits for code arena, Wasm memory, and
   operand stack.
 - **Demo cleanup (completed).** Shared render kernels live under
   `src/kernels`; `native_demo` and `demo_host` select Mandelbrot or

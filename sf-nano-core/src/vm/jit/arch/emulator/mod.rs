@@ -174,10 +174,9 @@ pub(crate) fn eval(
         .get(func_id.0 as usize)
         .ok_or_else(|| WasmError::internal("native entry function is missing runtime metadata"))?;
 
+    // At least one slot is guaranteed: `Engine::new` refuses a budget that
+    // rounds down to none.
     let stack_slots = store.config().get_wasm_stack_bytes() / core::mem::size_of::<u64>();
-    if stack_slots == 0 {
-        return Err(WasmError::runtime_not_configured());
-    }
     let mut stack = collections::vec![0u64; stack_slots];
     let stack_base = stack.as_mut_ptr();
     let stack_end = unsafe { stack_base.add(stack_slots) };

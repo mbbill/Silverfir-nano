@@ -36,11 +36,13 @@ Silverfir-nano is a `no_std` WebAssembly JIT engine built to be strong on
 every axis a Wasm runtime is judged on, not just one:
 
 1. **Fast** — register-allocated, region-optimized native code. On Apple M4
-   it beats Wasmtime's fully-optimizing Cranelift on most workloads and goes
-   head-to-head with V8 TurboFan.
-2. **Small** — the minimal stripped binary lives in the few-hundred-KB range,
-   with zero runtime dependencies and only `alloc` required. Fits comfortably
-   inside 512 KB of SRAM.
+   it runs at parity with Wasmtime's fully-optimizing Cranelift and V8
+   TurboFan, leading on some workloads and trailing on others
+   ([full results](benchmarks/wasi/README.md)).
+2. **Small** — pick the engine and pay for what you use: real RP2350 firmware
+   is 301 KiB with the interpreter and 1,042 KiB with the JIT
+   ([measured](#binary-size)). Zero runtime dependencies, `alloc` only, and
+   `no_std` throughout.
 3. **Portable** — six native backends, the same compiler from x86_64 and
    ARM64 down to RV32 and Thumb-2. The compiler that competes with Cranelift
    on M4 emits Thumb-2 on a Cortex-M33 — codegen quality doesn't degrade as

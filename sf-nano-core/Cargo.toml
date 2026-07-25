@@ -29,7 +29,7 @@ default = ["jit", "interp", "guard-pages"]
 # code, compiled on the target device.
 jit = []
 
-# The folded stack machine interpreter (docs/INTERPRETER_V2.md). Its dispatch
+# The folded stack machine interpreter. Its dispatch
 # handlers are generated per target at BUILD time and linked into `.text`, so
 # it needs no executable memory and does not imply `jit`. A target with no
 # generated engine still builds; instantiating an interpreter there fails with

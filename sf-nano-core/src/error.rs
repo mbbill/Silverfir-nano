@@ -103,25 +103,13 @@ impl WasmError {
 
     /// Constructed at instantiation / `memory.grow` when a module would
     /// reach more Wasm memory pages than
-    /// `runtime_config().wasm_memory_max_pages` allows. Unlinkable per
+    /// the engine's `wasm_memory_max_pages` allows. Unlinkable per
     /// the spec's taxonomy — the module is valid, it just cannot be
     /// instantiated or grown in this configuration.
     #[cold]
     #[inline(never)]
     pub const fn memory_exceeds_runtime_limit() -> Self {
         Self::Unlinkable("memory exceeds runtime configured limit (wasm_memory_max_pages)")
-    }
-
-    /// Constructed when a bare-metal embedder reaches a sf-nano-core
-    /// code path that requires `RuntimeConfig` values without having
-    /// called `set_runtime_config` first. Hosted builds never surface
-    /// this because their default config is non-zero.
-    #[cold]
-    #[inline(never)]
-    pub const fn runtime_not_configured() -> Self {
-        Self::Unlinkable(
-            "runtime not configured: embedder must call sf_nano_core::set_runtime_config before instantiating a module",
-        )
     }
 
     pub const fn is_malformed(&self) -> bool {

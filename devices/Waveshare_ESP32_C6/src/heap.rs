@@ -1,7 +1,7 @@
 //! Pico2-style fixed global heap for `alloc`.
 //!
 //! The Wasm/JIT path uses this heap for module metadata, materialized linear
-//! memory, and per-invoke stacks. JIT compilation runs before local linear
+//! memory, and the per-instance operand stack. JIT compilation runs before local linear
 //! memories are materialized so the framebuffer-sized memory is not live
 //! during peak compile-time allocation pressure.
 

@@ -6,12 +6,11 @@
 //! linked-list allocator from `embedded-alloc`.
 //!
 //! Sized to fit: module metadata, materialized Wasm linear memory, and
-//! the per-invoke Wasm operand stack (`WASM_STACK_BYTES` bytes each).
+//! the per-instance Wasm operand stack (`WASM_STACK_BYTES` bytes each).
 //! JIT builds compile before materializing local linear memory to reduce
 //! peak heap pressure. The JIT code arena lives in its own static region
 //! in `os_shim.rs`, not here.
-//! Keep this value paired with the `config.rs` constants — see
-//! `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md` when tuning.
+//! Keep this value paired with the `config.rs` constants.
 
 use core::alloc::{GlobalAlloc, Layout};
 use core::mem::MaybeUninit;

@@ -13,10 +13,10 @@
   module's whole executable arena is freed wholesale on drop, with its stale
   per-buffer state purged; the OS may reuse the virtual address.
 
-- A single global runtime configuration is installed write-once by the embedder
-  before any instance is created; hosted targets default it to the pre-config
-  numbers, while the bare-metal target defaults to zeros that an unconfigured
-  embedder hits as a clean error (`RuntimeConfig`).
+- Runtime sizing is a value the embedder builds and hands to an engine,
+  which copies it into every instance it creates ([[runtime-config]]).
+  Hosted targets default it to the pre-config numbers; the bare-metal
+  target defaults to zeros that engine construction rejects by name.
 
 - The Wasm operand/call stack and native dispatch context are cached per Store
   and reused across exported invocations. `eval` temporarily takes ownership;

@@ -120,14 +120,12 @@ For intrinsic compiler-throughput comparisons, the adapter should install a
 Nano `RuntimeConfig` once, before any other sf-nano-core API is used:
 
 ```rust
-use sf_nano_core::{
-    runtime_config, set_runtime_config, RuntimeConfig,
-};
+use sf_nano_core::{Config, Engine};
 
-let mut config: RuntimeConfig = *runtime_config();
-config.parallel_compilation =
-    std::env::var_os("SF_NANO_BENCH_SERIAL").is_none();
-set_runtime_config(config).expect("install compilation config");
+let config = Config::new()
+    .parallel_compilation(std::env::var_os("SF_NANO_BENCH_SERIAL").is_none());
+let engine = Engine::new(config).expect("engine configuration");
+// then instantiate through it: Instance::new(&engine, wasm, &imports)
 ```
 
 `SF_NANO_BENCH_SERIAL=1` then selects the serial implementation of the same

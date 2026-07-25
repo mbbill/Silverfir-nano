@@ -1,6 +1,6 @@
 //! Bare-metal smoke test for sf-nano-core on `target_os = "none"`.
 //!
-//! sf-nano-core's `runtime/os/none.rs` declares the extern "C" symbols
+//! sf-nano-core's `vm/jit/runtime/os/none.rs` declares the extern "C" symbols
 //! that a bare-metal embedder must provide in order to allocate and
 //! manage executable JIT code memory without a hosted OS. This crate
 //! provides stub implementations of those symbols and links against
@@ -15,7 +15,7 @@
 //! The stubs here return trivial placeholder values. They are not a
 //! working allocator: a real embedder would back them with a static
 //! RWX pool, an MMU-driven allocator, or whatever their runtime has.
-//! Calling `CodeBuffer::new()` against these stubs would return
+//! Calling `CodeBuffer::new(&config)` against these stubs would return
 //! `Err("sf_os_alloc_executable returned null")` — which is expected:
 //! this crate proves the *contract* compiles, not that the *runtime*
 //! functions.
