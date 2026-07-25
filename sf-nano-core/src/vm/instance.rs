@@ -21,12 +21,15 @@ use crate::error::WasmError;
 use crate::module::type_defs::FunctionType;
 use crate::module::Module;
 use crate::vm::engine::{Engine, Tier};
+use crate::vm::entities::{Caller, MemInst};
+use crate::vm::imports::ImportedGlobalState;
+use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 
 #[cfg(sf_interp)]
 use crate::vm::interpreter::InterpInstance;
 #[cfg(sf_jit)]
-use crate::vm::jit::instance::JitInstance;
+use crate::vm::jit::instance::{InstanceInstantiationError, JitInstance};
 
 // One import model for both engines. The interpreter's raw host-dispatch
 // boundary is an implementation detail that `interp_imports` drives from
@@ -76,6 +79,29 @@ impl Instance {
     /// Instantiate in `engine`, which decides the tier and the budgets.
     pub fn new(engine: &Engine, wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError> {
         Self::from_module(engine, Module::new("main", wasm_bytes)?, imports)
+    }
+
+    /// Instantiate against a shared link registry, so instances can
+    /// resolve each other's exports.
+    ///
+    /// The registry is the JIT's linking machinery; an interpreter
+    /// instance ignores it and links only what its import list carries.
+    #[cfg(sf_jit)]
+    pub fn from_module_with_registry(
+        engine: &Engine,
+        module: Module,
+        imports: &[Import],
+        registry: &crate::vm::store::LinkRegistry,
+    ) -> Result<Self, InstanceInstantiationError> {
+        match engine.tier() {
+            Tier::Jit => JitInstance::from_module_with_registry(engine, module, imports, registry)
+                .map(|inst| Self {
+                    inner: Inner::Jit(inst),
+                }),
+            #[cfg(sf_interp)]
+            Tier::Interp => Self::from_module(engine, module, imports)
+                .map_err(InstanceInstantiationError::Complete),
+        }
     }
 
     /// Instantiate an already-parsed module in `engine`.
@@ -276,6 +302,118 @@ impl Instance {
             Inner::Interp(_) => {
                 let _ = idx;
                 None
+            }
+        }
+    }
+
+    /// The type index of a function, for cross-instance identity checks.
+    pub fn function_type_index_at(&self, idx: usize) -> Option<u32> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.function_type_index_at(idx),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => inst.module().functions().get(idx).map(|f| f.type_index()),
+        }
+    }
+
+    /// Page count of an exported memory.
+    pub fn memory_pages(&self, name: &str) -> Option<usize> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.memory_pages(name),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => {
+                let _ = name;
+                inst.memory()
+                    .map(|m| m.len() / crate::constants::WASM_PAGE_SIZE)
+            }
+        }
+    }
+
+    /// Element count of an exported table.
+    pub fn table_size(&self, name: &str) -> Option<usize> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.table_size(name),
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => {
+                let _ = (inst, name);
+                None
+            }
+        }
+    }
+
+    /// A tag handle for exception handling.
+    pub fn tag_handle(&self, name: &str) -> Option<TagHandle> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.tag_handle(name),
+            // The interpreter has no exception handling, so it mints no tags.
+            #[cfg(sf_interp)]
+            Inner::Interp(_) => {
+                let _ = name;
+                None
+            }
+        }
+    }
+
+    /// Shared entity state, for linking one instance's exports into
+    /// another's imports. The interpreter does not link yet, so it offers
+    /// nothing to share.
+    pub fn shared_memory_at(&self, idx: usize) -> Option<MemInst> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.shared_memory_at(idx),
+            #[cfg(sf_interp)]
+            Inner::Interp(_) => {
+                let _ = idx;
+                None
+            }
+        }
+    }
+
+    pub fn shared_table_state_at(&self, idx: usize) -> Option<ImportedTableState> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.shared_table_state_at(idx),
+            #[cfg(sf_interp)]
+            Inner::Interp(_) => {
+                let _ = idx;
+                None
+            }
+        }
+    }
+
+    pub fn shared_global_state_at(&self, idx: usize) -> Option<ImportedGlobalState> {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.shared_global_state_at(idx),
+            #[cfg(sf_interp)]
+            Inner::Interp(_) => {
+                let _ = idx;
+                None
+            }
+        }
+    }
+
+    /// Append a host function after instantiation, for the spec runner's
+    /// late-bound imports.
+    pub fn append_host_function<F>(&mut self, func_type: FunctionType, callback: F) -> usize
+    where
+        F: for<'a, 'b, 'c, 'd> Fn(
+                &'a mut Caller<'b>,
+                &'c [Value],
+                &'d mut [Value],
+            ) -> Result<(), WasmError>
+            + 'static,
+    {
+        match &mut self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(inst) => inst.append_host_function(func_type, callback),
+            #[cfg(sf_interp)]
+            Inner::Interp(_) => {
+                let _ = (func_type, callback);
+                usize::MAX
             }
         }
     }

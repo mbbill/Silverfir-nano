@@ -59,10 +59,15 @@ struct Cli {
 fn main() {
     let args = Cli::from_args();
 
+    // `--interp` selects the engine, not a different suite. One runner
+    // drives both, so a directive means the same thing on either and the
+    // gap between them shows up as a failure rather than as a difference
+    // of opinion between two test harnesses.
+    let mut tier = Tier::DEFAULT;
     if args.interp {
         #[cfg(feature = "interp")]
         {
-            std::process::exit(interp::run(&args.filters));
+            tier = Tier::Interp;
         }
         #[cfg(not(feature = "interp"))]
         {
@@ -70,8 +75,6 @@ fn main() {
             std::process::exit(1);
         }
     }
-
-    let mut tier = Tier::DEFAULT;
     if let Some(requested) = &args.backend {
         tier = Tier::parse_str(requested).unwrap_or_else(|| {
             eprintln!(

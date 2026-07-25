@@ -6,8 +6,7 @@ use sf_nano_core::module::type_context::TypeContext;
 use sf_nano_core::module::Module;
 use sf_nano_core::value_type::{AbstractHeapType, HeapType, RefType};
 use sf_nano_core::{
-    Caller, Engine, HostFn, Import, JitInstance, Limitable, LinkRegistry, RefHandle, Value,
-    WasmError,
+    Caller, Engine, HostFn, Import, Instance, Limitable, LinkRegistry, RefHandle, Value, WasmError,
 };
 use std::{cell::RefCell, collections::HashMap, fmt, fs, path::Path};
 use wast::{
@@ -268,19 +267,19 @@ thread_local! {
     static FORWARDING_SLOTS: RefCell<Vec<Option<ForwardingSlot>>> =
         RefCell::new(Vec::new());
     // Raw pointers to instances — valid only during single-threaded test execution.
-    static FORWARDING_INSTANCES: RefCell<HashMap<String, *mut JitInstance>> =
+    static FORWARDING_INSTANCES: RefCell<HashMap<String, *mut Instance>> =
         RefCell::new(HashMap::new());
 }
 
 fn register_forwarding_instances(
-    instances: &mut HashMap<String, JitInstance>,
+    instances: &mut HashMap<String, Instance>,
     registered_as: &HashMap<String, String>,
 ) {
     FORWARDING_INSTANCES.with(|cell| {
         let mut map = cell.borrow_mut();
         map.clear();
         for (internal_name, inst) in instances.iter_mut() {
-            map.insert(internal_name.clone(), inst as *mut JitInstance);
+            map.insert(internal_name.clone(), inst as *mut Instance);
         }
         for (reg_name, internal_name) in registered_as {
             if let Some(inst_ptr) = map.get(internal_name).copied() {
@@ -568,7 +567,7 @@ const FORWARDER_TABLE: [HostFn; 128] = [
 
 pub struct WastTestRunner {
     engine: Engine,
-    instances: HashMap<String, JitInstance>,
+    instances: HashMap<String, Instance>,
     module_bytes: HashMap<String, Vec<u8>>,
     module_counter: u32,
     current_module: Option<String>,
@@ -577,7 +576,10 @@ pub struct WastTestRunner {
     module_definitions: HashMap<String, Vec<u8>>,
     linked_function_refs: HashMap<(String, String, usize), usize>,
     function_registry: LinkRegistry,
-    retained_failed_instances: Vec<JitInstance>,
+    /// Partially-instantiated JIT instances, kept alive so their
+    /// memories outlive a failed instantiation. The error type hands back
+    /// the JIT's own instance, not the engine-neutral one.
+    retained_failed_instances: Vec<sf_nano_core::JitInstance>,
 }
 
 impl WastTestRunner {
@@ -770,7 +772,7 @@ impl WastTestRunner {
 
         let result = {
             let instance = self.instances.get_mut(&internal_name).ok_or_else(|| {
-                TestError::infrastructure(format!("JitInstance '{}' not found", internal_name))
+                TestError::infrastructure(format!("Instance '{}' not found", internal_name))
             })?;
             instance
                 .invoke(invoke.name, &args)
@@ -948,7 +950,7 @@ impl WastTestRunner {
                         let imports = self
                             .build_imports(&bytes)
                             .map_err(|error| TestError::infrastructure(error.to_string()))?;
-                        match JitInstance::from_module(&self.engine, module, &imports) {
+                        match Instance::from_module(&self.engine, module, &imports) {
                             Ok(_) => Err(TestError::infrastructure(format!(
                                 "Expected: malformed module with error '{}', Actual: WASM parsing succeeded ({} bytes)",
                                 expected_message, compiled.wasm_bytes.len()
@@ -1105,7 +1107,7 @@ impl WastTestRunner {
                     .resolve_module_name(module.as_ref())
                     .map_err(TestError::infrastructure)?;
                 let instance = self.instances.get(&internal_name).ok_or_else(|| {
-                    TestError::infrastructure(format!("JitInstance '{}' not found", internal_name))
+                    TestError::infrastructure(format!("Instance '{}' not found", internal_name))
                 })?;
                 let value = instance
                     .get_global(global)
@@ -1218,7 +1220,7 @@ impl WastTestRunner {
     }
 
     /// Try to instantiate a module temporarily (for assert_invalid/assert_unlinkable).
-    fn try_instantiate_temp(&mut self, wasm_bytes: &[u8]) -> Result<JitInstance, WasmError> {
+    fn try_instantiate_temp(&mut self, wasm_bytes: &[u8]) -> Result<Instance, WasmError> {
         register_forwarding_instances(&mut self.instances, &self.registered_as);
         self.instantiate_with_registry(wasm_bytes, true)
     }
@@ -1252,10 +1254,10 @@ impl WastTestRunner {
         &mut self,
         wasm_bytes: &[u8],
         retain_partial: bool,
-    ) -> Result<JitInstance, WasmError> {
+    ) -> Result<Instance, WasmError> {
         let imports = self.build_imports(wasm_bytes)?;
         let module = Module::new("main", wasm_bytes)?;
-        match JitInstance::from_module_with_registry(
+        match Instance::from_module_with_registry(
             &self.engine,
             module,
             &imports,
@@ -2609,7 +2611,10 @@ mod tests {
             .expect("invoke export");
         assert_eq!(ret.as_slice(), &[Value::I32(-3)]);
 
-        match &instance.store().module().functions[func_index] {
+        // Native code is the JIT's business, so this assertion reaches
+        // through to its instance rather than the engine-neutral one.
+        let jit = instance.as_jit().expect("this test runs on the jit");
+        match &jit.store().module().functions[func_index] {
             FunctionInst::Local { spec, .. } => {
                 assert!(
                     spec.has_native_code(),
