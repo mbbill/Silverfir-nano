@@ -39,10 +39,10 @@ every axis a Wasm runtime is judged on, not just one:
    it runs at parity with Wasmtime's fully-optimizing Cranelift and V8
    TurboFan, leading on some workloads and trailing on others
    ([full results](benchmarks/wasi/README.md)).
-2. **Small** — pick the engine and pay for what you use: real RP2350 firmware
-   is 301 KiB with the interpreter and 1,042 KiB with the JIT
-   ([measured](#binary-size)). Zero runtime dependencies, `alloc` only, and
-   `no_std` throughout.
+2. **Small** — pick the engine and pay for what you use. Measured on real
+   RP2350 firmware, flash is 301 KiB with the interpreter and 1,042 KiB with
+   the JIT ([details](#binary-size)); both run inside the board's 512 KB of
+   SRAM. Zero runtime dependencies, `alloc` only, `no_std` throughout.
 3. **Portable** — six native backends, the same compiler from x86_64 and
    ARM64 down to RV32 and Thumb-2. The compiler that competes with Cranelift
    on M4 emits Thumb-2 on a Cortex-M33 — codegen quality doesn't degrade as
@@ -65,7 +65,9 @@ every axis a Wasm runtime is judged on, not just one:
 Measured on real firmware, not a synthetic link: the Pico 2 demo host built
 for the RP2350's two cores, release, with the engine swapped. Flash is the
 whole loadable image — engine, ST7735 display driver, DMA, embedded-graphics,
-defmt, the RP2350 HAL, and the embedded `.wasm` guest.
+defmt, the RP2350 HAL, and the embedded `.wasm` guest. SRAM is a separate
+axis and is not what this table measures; the demo statically reserves a
+448 KiB heap regardless of engine.
 
 | Firmware | Flash |
 |---|---:|
