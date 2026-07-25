@@ -1,12 +1,10 @@
 mod discovery;
-#[cfg(feature = "interp")]
-mod interp;
 mod summary;
 mod types;
-// The wast runner drives the JIT's entity model directly -- linking
-// modules against each other, reading and replacing globals by index,
-// minting tags -- which the interpreter has no counterpart for. Its
-// suite is `interp` instead.
+// One runner for both engines. It is gated on `jit` because it drives
+// entity-model operations the JIT provides; the interpreter answers what
+// it can and reports the rest, which is how the gap between them stays
+// measurable instead of becoming two suites that disagree.
 #[cfg(feature = "jit")]
 mod wast_test_runner;
 
@@ -374,9 +372,12 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
             .to_string_lossy();
         let display_name = full_path.as_ref();
 
+        // Out of scope rather than unsupported: post-3.0 proposals, the
+        // superseded exception-handling spelling, and custom-section
+        // annotations. They are not counted, because a total that mixes
+        // "we do not do this" with "nobody targets this" cannot answer
+        // the only question worth asking -- do we pass Wasm 3.0.
         if should_skip_test(test_name, simd_enabled) || should_skip_test(&full_path, simd_enabled) {
-            stats.skipped += 1;
-            warn!("SKIP {}: Feature not supported in sf-nano", display_name);
             continue;
         }
 

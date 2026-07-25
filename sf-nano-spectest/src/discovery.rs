@@ -165,7 +165,15 @@ pub fn should_skip_test(test_name: &str, simd_enabled: bool) -> bool {
         return true;
     }
 
-    // Skip proposal tests (advanced WebAssembly features)
+    // What is OUT OF SCOPE, as opposed to unsupported. These never enter
+    // the totals for either engine, because a suite total that mixes "we
+    // do not do this" with "nobody targets this" cannot answer the only
+    // question worth asking: does this engine pass Wasm 3.0.
+    //
+    // Above: the superseded exception-handling spelling (`try_table` is
+    // the 3.0 one, and it runs), and custom-section annotations. Below:
+    // post-3.0 proposals -- GC descriptors, exact references, custom page
+    // sizes, threads, wide arithmetic.
     test_name.starts_with("proposals/") ||  // Unix paths
     test_name.starts_with("proposals\\") || // Windows paths
     test_name.contains("/proposals/") ||    // Unix paths (anywhere in path)
