@@ -203,7 +203,7 @@ fn slot_fields(op: Op) -> (bool, bool, bool) {
         return (true, true, false);
     }
     // Fused compare-branches: a, b operands, c = target.
-    if between(op, I32_BrEq, I64_BrGeU) {
+    if between(op, I32_BrEq, I32_BrAndNot) {
         return (true, true, false);
     }
     match op {
@@ -217,6 +217,7 @@ fn slot_fields(op: Op) -> (bool, bool, bool) {
         Select => (true, true, false),
         BrIf | BrIfNot | BrTable => (true, false, false),
         RefIsNull | TableGet => (true, false, true),
+        MovPair => (true, true, false),
         _ => (false, false, false),
     }
 }
@@ -438,7 +439,8 @@ fn transform_bc(ins: &Instr, flags: u16) -> (u64, u64) {
         // fused compare-branches: b = compare operand, c = target
         I32_BrEq | I32_BrNe | I32_BrLtS | I32_BrLtU | I32_BrGtS | I32_BrGtU | I32_BrLeS
         | I32_BrLeU | I32_BrGeS | I32_BrGeU | I64_BrEq | I64_BrNe | I64_BrLtS | I64_BrLtU
-        | I64_BrGtS | I64_BrGtU | I64_BrLeS | I64_BrLeU | I64_BrGeS | I64_BrGeU => {
+        | I64_BrGtS | I64_BrGtU | I64_BrLeS | I64_BrLeU | I64_BrGeS | I64_BrGeU | I32_BrAnd
+        | I32_BrAndNot => {
             let b = if flags & FLAG_B_CONST != 0 {
                 ins.b
             } else {
@@ -462,6 +464,11 @@ fn transform_bc(ins: &Instr, flags: u16) -> (u64, u64) {
         }
         // GlobalSet: c = global index
         GlobalSet => (ins.b, ins.c * 8),
+        // MovPair: b = second source slot, c = dst1<<32 | dst2
+        MovPair => (
+            ins.b * 8,
+            ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8,
+        ),
         // Return: b = result count, c unused — both stay raw
         Return => (ins.b, ins.c),
         // Select: c = cond_slot << 32 | dst_slot, both scaled
@@ -621,7 +628,18 @@ impl NativeEngine {
         let mut brtable_native = vec![false; func.code.len()];
         for (i, ins) in func.code.iter().enumerate() {
             let fl = flags[i];
-            let off = self.h(ins.op, op_variant(ins, fl, l0_slot, l1_slot, l0f, l1f));
+            let mut off = self.h(ins.op, op_variant(ins, fl, l0_slot, l1_slot, l0f, l1f));
+            // MovPair's packed dsts are never classed: one that writes a
+            // pinned slot must run slow so the re-entry reload keeps the
+            // pinned register current.
+            if ins.op == Op::MovPair
+                && (ins.c >> 32 == l0_slot
+                    || ins.c >> 32 == l1_slot
+                    || ins.c & 0xffff_ffff == l0_slot
+                    || ins.c & 0xffff_ffff == l1_slot)
+            {
+                off = u32::MAX;
+            }
             if ins.op == Op::BrTable && off != u32::MAX {
                 let table = &func.br_tables[ins.c as usize];
                 brtable_native[i] = true;
@@ -824,6 +842,9 @@ impl<'b> Enc<'b> {
     fn cmp_x(&mut self, rn: u32, rm: u32) {
         self.i(0xEB00_001F | (rm << 16) | (rn << 5));
     }
+    fn tst_w(&mut self, rn: u32, rm: u32) {
+        self.i(0x6A00_0000 | rm << 16 | rn << 5 | 31);
+    }
     fn cmp_w(&mut self, rn: u32, rm: u32) {
         self.i(0x6B00_001F | (rm << 16) | (rn << 5));
     }
@@ -907,6 +928,9 @@ impl<'b> Enc<'b> {
         self.i(0xA900_0000 | (rt2 << 10) | (rn << 5) | rt);
     }
     /// LDP Xt, Xt2, [Xn, #imm]! (pre-index)
+    fn ldp_x_base_imm(&mut self, rt: u32, rt2: u32, rn: u32, imm: u32) {
+        self.i(0xA940_0000 | (imm / 8) << 15 | rt2 << 10 | rn << 5 | rt);
+    }
     fn ldp_x_pre(&mut self, rt: u32, rt2: u32, rn: u32, imm: i32) {
         let imm7 = ((imm / 8) as u32) & 0x7F;
         self.i(0xA9C0_0000 | (imm7 << 15) | (rt2 << 10) | (rn << 5) | rt);
@@ -1090,6 +1114,40 @@ fn src_a(e: &mut Enc<'_>, cls: Cls, tmp: u32) -> u32 {
             e.ldr_x_reg(tmp, FRAME, tmp);
             tmp
         }
+    }
+}
+
+/// Fetch both operands; when both live in slots the two cell fields
+/// load with a single ldp (one instruction saved on the hottest binop
+/// variant).
+fn src_ab(e: &mut Enc<'_>, a_cls: Cls, b_cls: Cls) -> (u32, u32) {
+    if a_cls == Cls::Slot && b_cls == Cls::Slot {
+        e.ldp_x_base_imm(X10, X11, PC, 8);
+        e.ldr_x_reg(X10, FRAME, X10);
+        e.ldr_x_reg(X11, FRAME, X11);
+        (X10, X11)
+    } else {
+        (src_a(e, a_cls, X10), src_b(e, b_cls, X11))
+    }
+}
+
+/// Float twin of [`src_ab`].
+fn src_fp_ab(e: &mut Enc<'_>, a_cls: Cls, b_cls: Cls, f32w: bool) -> (u32, u32) {
+    if a_cls == Cls::Slot && b_cls == Cls::Slot {
+        e.ldp_x_base_imm(X10, X11, PC, 8);
+        if f32w {
+            e.ldr_s_reg(0, FRAME, X10);
+            e.ldr_s_reg(1, FRAME, X11);
+        } else {
+            e.ldr_d_reg(0, FRAME, X10);
+            e.ldr_d_reg(1, FRAME, X11);
+        }
+        (0, 1)
+    } else {
+        (
+            src_fp(e, a_cls, f32w, 0, 8, X10),
+            src_fp(e, b_cls, f32w, 1, 16, X11),
+        )
     }
 }
 
@@ -1663,8 +1721,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 for d in DSTS {
                     let off = e.here();
                     pre(e);
-                    let ra = src_a(e, a_cls, X10);
-                    let mut rb = src_b(e, b_cls, X11);
+                    let (ra, mut rb) = src_ab(e, a_cls, b_cls);
                     if b.kind == 1 {
                         // rotl x, n == rotr x, -n (rorv masks the amount)
                         if b.w {
@@ -1798,8 +1855,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 for d in DSTS {
                     let off = e.here();
                     pre(e);
-                    let ra = src_a(e, a_cls, X10);
-                    let rb = src_b(e, b_cls, X11);
+                    let (ra, rb) = src_ab(e, a_cls, b_cls);
                     if c.w {
                         e.cmp_w(ra, rb);
                     } else {
@@ -1938,15 +1994,18 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
         (Op::I64_BrLeU, false, LS),
         (Op::I64_BrGeS, false, GE),
         (Op::I64_BrGeU, false, HS),
+        (Op::I32_BrAnd, true, NE),
+        (Op::I32_BrAndNot, true, EQ),
     ];
     for &(op, w, cond) in cmp_brs.iter() {
         for a_cls in CLASSES {
             for b_cls in CLASSES {
                 let off = e.here();
                 pre(e);
-                let ra = src_a(e, a_cls, X10);
-                let rb = src_b(e, b_cls, X11);
-                if w {
+                let (ra, rb) = src_ab(e, a_cls, b_cls);
+                if matches!(op, Op::I32_BrAnd | Op::I32_BrAndNot) {
+                    e.tst_w(ra, rb);
+                } else if w {
                     e.cmp_w(ra, rb);
                 } else {
                     e.cmp_x(ra, rb);
@@ -1972,8 +2031,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
             for d in DSTS {
                 let off = e.here();
                 pre(e);
-                let ra = src_a(e, a_cls, X10);
-                let rb = src_b(e, b_cls, X11);
+                let (ra, rb) = src_ab(e, a_cls, b_cls);
                 e.ldr_x_imm(X12, PC, 24);
                 e.lsr_x(X13, X12, 32); // cond slot byte offset
                 e.ldr_x_reg(X13, FRAME, X13);
@@ -2475,8 +2533,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 for d in DSTS {
                     let off = e.here();
                     pre(e);
-                    let ra = src_a(e, a_cls, X10);
-                    let rb = src_b(e, b_cls, X11);
+                    let (ra, rb) = src_ab(e, a_cls, b_cls);
                     {
                         let delta = (slow_stub as i64 - e.here() as i64) / 4;
                         if dv.w {
@@ -2660,8 +2717,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 for d in DSTS {
                     let off = e.here();
                     pre(e);
-                    let va = src_fp(e, a_cls, f32w, 0, 8, X10);
-                    let vb = src_fp(e, b_cls, f32w, 1, 16, X11);
+                    let (va, vb) = src_fp_ab(e, a_cls, b_cls, f32w);
                     e.fp2(enc, fp_target(d), va, vb);
                     finish_fp(e, d);
                     tail(e, counted(a_cls, b_cls, d));
@@ -2739,8 +2795,7 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 for d in DSTS {
                     let off = e.here();
                     pre(e);
-                    let va = src_fp(e, a_cls, f32w, 0, 8, X10);
-                    let vb = src_fp(e, b_cls, f32w, 1, 16, X11);
+                    let (va, vb) = src_fp_ab(e, a_cls, b_cls, f32w);
                     e.fcmp(f32w, va, vb);
                     let rd = dst_target(d);
                     e.cset_w(rd, cond);
@@ -3060,6 +3115,49 @@ fn emit_engine(e: &mut Enc<'_>, handlers: &mut [u32]) -> EmitOut {
                 tail(e, counted(a_cls, Cls::Slot, d));
                 def(handlers, op, variant(a_cls, Cls::Slot, d), off);
             }
+        }
+    }
+
+    // ---- fused staging-mov pairs (strict order: src2 may be dst1) ----
+    for a_cls in [Cls::Slot, Cls::L0, Cls::L1] {
+        for b_cls in [Cls::Slot, Cls::L0, Cls::L1] {
+            let off = e.here();
+            pre(e);
+            if a_cls == Cls::Slot && b_cls == Cls::Slot {
+                e.ldp_x_base_imm(X10, X11, PC, 8);
+            } else if a_cls == Cls::Slot {
+                e.ldr_x_imm(X10, PC, 8);
+            } else if b_cls == Cls::Slot {
+                e.ldr_x_imm(X11, PC, 16);
+            }
+            e.ldr_x_imm(X12, PC, 24); // dst1*8 << 32 | dst2*8
+            let v1 = match a_cls {
+                Cls::L0 => L0R,
+                Cls::L1 => L1R,
+                _ => {
+                    e.ldr_x_reg(X13, FRAME, X10);
+                    X13
+                }
+            };
+            e.lsr_x(X9, X12, 32);
+            e.str_x_reg(v1, FRAME, X9);
+            let v2 = match b_cls {
+                Cls::L0 => L0R,
+                Cls::L1 => L1R,
+                _ => {
+                    e.ldr_x_reg(X13, FRAME, X11);
+                    X13
+                }
+            };
+            e.ubfx_x(X12, X12, 0, 32);
+            e.str_x_reg(v2, FRAME, X12);
+            tail(e, counted(a_cls, b_cls, DstCls::Mem));
+            def(
+                handlers,
+                Op::MovPair,
+                variant(a_cls, b_cls, DstCls::Mem),
+                off,
+            );
         }
     }
 

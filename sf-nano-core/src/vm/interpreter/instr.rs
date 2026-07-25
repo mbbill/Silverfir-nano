@@ -349,12 +349,20 @@ pub enum Op {
     I64_BrLeU,
     I64_BrGeS,
     I64_BrGeU,
+    /// Fused `i32.and` + branch: taken when (a & b) != 0.
+    I32_BrAnd,
+    /// Fused `i32.and` + `br_if_not`: taken when (a & b) == 0.
+    I32_BrAndNot,
     /// `a` = index operand, `c` = side-table id in
     /// `PredecodedFunction::br_tables` (last entry is the default).
     BrTable,
     Return,
     Call,
     CallIndirect,
+    /// Two fused materialization movs: `frame[c>>32] = frame[a]` then
+    /// `frame[c & 0xffffffff] = frame[b]`, in that order (src2 may be
+    /// dst1). Emitted by the predecoder for adjacent staging movs.
+    MovPair,
     Unreachable,
 }
 

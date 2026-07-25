@@ -75,6 +75,8 @@ pub fn predecode_function(
         region: 0,
         last_read: vec![0u32; n_locals as usize],
         last_write: vec![0u32; n_locals as usize],
+        last_mat_mov: NO_DEF,
+        last_mat_region: 0,
         last_write_region: vec![0u32; n_locals as usize],
         br_tables: Vec::new(),
         max_height: 0,
@@ -151,6 +153,10 @@ struct Predecoder<'m> {
     /// writing it (0 = never). Used by the dst-folding soundness rules.
     last_read: Vec<u32>,
     last_write: Vec<u32>,
+    /// Index of an immediately preceding materialization MovSlot that a
+    /// next one may merge with (NO_DEF = none), and its region.
+    last_mat_mov: u32,
+    last_mat_region: u32,
     /// Control region of the last write per local (acc write-through:
     /// a consumer may read the accumulator only when the write happened
     /// in the same region — a merge between them means the consumer can
@@ -214,6 +220,7 @@ fn fuse_cmp_br(op: Op, invert: bool) -> Option<Op> {
         I64_GeS => (I64_BrGeS, I64_BrLtS),
         I64_GeU => (I64_BrGeU, I64_BrLtU),
         I32_Eqz => (BrIfNot, BrIf),
+        I32_And => (I32_BrAnd, I32_BrAndNot),
         _ => return None,
     };
     Some(if invert { inverted } else { taken })
@@ -326,7 +333,31 @@ impl<'m> Predecoder<'m> {
                 let slot = self.temp_slot_used(height);
                 let at = self.code.len() as u32;
                 self.last_read[l as usize] = at + 1;
-                self.emit(Op::MovSlot, 0, l as u64, 0, slot)
+                // Adjacent staging movs merge into one MovPair dispatch
+                // (strict in-order copies, so src2 == dst1 stays exact).
+                if self.last_mat_mov != NO_DEF
+                    && self.last_mat_mov + 1 == at
+                    && self.last_mat_region == self.region
+                    && self.code[self.last_mat_mov as usize].op == Op::MovSlot
+                    && self.code[self.last_mat_mov as usize].flags == 0
+                {
+                    let prev = self.last_mat_mov;
+                    let pm = self.code[prev as usize];
+                    self.code[prev as usize] = Instr {
+                        op: Op::MovPair,
+                        flags: 0,
+                        a: pm.a,
+                        b: l as u64,
+                        c: pm.c << 32 | slot,
+                    };
+                    self.last_mat_mov = NO_DEF; // pairs never re-pair
+                    prev
+                } else {
+                    let idx = self.emit(Op::MovSlot, 0, l as u64, 0, slot);
+                    self.last_mat_mov = idx;
+                    self.last_mat_region = self.region;
+                    idx
+                }
             }
             Desc::ConstV(k) => {
                 let slot = self.temp_slot_used(height);
@@ -368,7 +399,7 @@ impl<'m> Predecoder<'m> {
             return None;
         }
         let ins = &self.code[def as usize];
-        let cdst = if ins.op == Op::Select || ins.flags & FLAG_FUSED != 0 {
+        let cdst = if ins.op == Op::Select || ins.op == Op::MovPair || ins.flags & FLAG_FUSED != 0 {
             ins.c & 0xffff_ffff
         } else {
             ins.c
@@ -518,6 +549,7 @@ impl<'m> Predecoder<'m> {
                 if def != NO_DEF
                     && region == self.region
                     && !flushed
+                    && self.code[def as usize].op != Op::MovPair
                     && self.last_read[idx as usize] <= def + 1
                     && self.last_write[idx as usize] <= def + 1 =>
             {

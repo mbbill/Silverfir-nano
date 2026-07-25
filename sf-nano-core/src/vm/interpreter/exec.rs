@@ -1138,6 +1138,10 @@ impl<'m> InterpInstance<'m> {
                 let v = opa!(ins);
                 frame[ins.c as usize] = v;
             }
+            Op::MovPair => {
+                frame[(ins.c >> 32) as usize] = frame[ins.a as usize];
+                frame[(ins.c & 0xffff_ffff) as usize] = frame[ins.b as usize];
+            }
 
             // ---- i32 ----
             Op::I32_Add => bin32!(ins, u32::wrapping_add),
@@ -1721,6 +1725,8 @@ impl<'m> InterpInstance<'m> {
             Op::I64_BrLeU => cmp_br64!(ins, |x: u64, y: u64| x <= y),
             Op::I64_BrGeS => cmp_br64!(ins, |x: u64, y: u64| (x as i64) >= (y as i64)),
             Op::I64_BrGeU => cmp_br64!(ins, |x: u64, y: u64| x >= y),
+            Op::I32_BrAnd => cmp_br32!(ins, |x: u32, y: u32| x & y != 0),
+            Op::I32_BrAndNot => cmp_br32!(ins, |x: u32, y: u32| x & y == 0),
             Op::BrIfNot => {
                 if opa!(ins) as u32 == 0 {
                     return Ok(Effect::Jump(ins.c as usize));
