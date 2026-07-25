@@ -16,6 +16,7 @@
     .s-sf { fill: #7c3aed; }
     .s-cl { fill: #eb6834; }
     .s-v8 { fill: #1baf7a; }
+    .s-wn { fill: #b02a8f; }
     .s-si { fill: #a855f7; }
     .s-w3 { fill: #eda100; }
     .s-wi { fill: #4a9ede; }
@@ -30,6 +31,7 @@
       .s-sf { fill: #8b5cf6; }
       .s-cl { fill: #d95926; }
       .s-v8 { fill: #199e70; }
+      .s-wn { fill: #c13a9d; }
       .s-si { fill: #9085e9; }
       .s-w3 { fill: #c98500; }
       .s-wi { fill: #3987e5; }
@@ -38,12 +40,12 @@
   <rect class="surface" width="760" height="278" rx="8" ry="8" stroke-width="1"/>
   <text class="title" x="380" y="30" text-anchor="middle">Floating-Point Benchmarks — Interpreters</text>
   <text class="sub" x="380" y="47" text-anchor="middle">Apple M4 · longer bar = better · each row scaled to its own best</text>
-  <rect class="s-si" x="176" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="191" y="62">Silverfir (interp)</text>
-  <rect class="s-w3" x="372" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="387" y="62">wasm3</text>
-  <rect class="s-wi" x="568" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="583" y="62">wasmi 1.1.0</text>
+  <rect class="s-si" x="176.0" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="191.0" y="62">Silverfir (interp)</text>
+  <rect class="s-w3" x="364.0" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="379.0" y="62">wasm3</text>
+  <rect class="s-wi" x="552.0" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="567.0" y="62">wasmi 1.1.0</text>
   <line class="axis" x1="176" y1="76" x2="176" y2="268"/>
 
   <text class="metric" x="168" y="94" text-anchor="end">mandelbrot</text>

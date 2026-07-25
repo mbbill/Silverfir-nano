@@ -1,5 +1,5 @@
-<svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="0 0 760 470" width="760" height="470">
-  <title>Memory-Bound Benchmarks (STREAM) — Compiled (JIT)</title>
+<svg xmlns="http://www.w3.org/2000/svg" role="img" viewBox="0 0 760 550" width="760" height="550">
+  <title>Memory-Bound Benchmarks (STREAM) — Compiled</title>
   <style>
     text     { font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; }
     .surface { fill: #fcfcfb; stroke: #d8d8d4; }
@@ -16,6 +16,7 @@
     .s-sf { fill: #7c3aed; }
     .s-cl { fill: #eb6834; }
     .s-v8 { fill: #1baf7a; }
+    .s-wn { fill: #b02a8f; }
     .s-si { fill: #a855f7; }
     .s-w3 { fill: #eda100; }
     .s-wi { fill: #4a9ede; }
@@ -30,21 +31,24 @@
       .s-sf { fill: #8b5cf6; }
       .s-cl { fill: #d95926; }
       .s-v8 { fill: #199e70; }
+      .s-wn { fill: #c13a9d; }
       .s-si { fill: #9085e9; }
       .s-w3 { fill: #c98500; }
       .s-wi { fill: #3987e5; }
     }
   </style>
-  <rect class="surface" width="760" height="470" rx="8" ry="8" stroke-width="1"/>
-  <text class="title" x="380" y="30" text-anchor="middle">Memory-Bound Benchmarks (STREAM) — Compiled (JIT)</text>
+  <rect class="surface" width="760" height="550" rx="8" ry="8" stroke-width="1"/>
+  <text class="title" x="380" y="30" text-anchor="middle">Memory-Bound Benchmarks (STREAM) — Compiled</text>
   <text class="sub" x="380" y="47" text-anchor="middle">Apple M4 · longer bar = better · each row scaled to its own best</text>
-  <rect class="s-sf" x="176" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="191" y="62">Silverfir (JIT)</text>
-  <rect class="s-cl" x="372" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="387" y="62">Cranelift 47.0.2</text>
-  <rect class="s-v8" x="568" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="583" y="62">V8 / Node 25.9</text>
-  <line class="axis" x1="176" y1="76" x2="176" y2="460"/>
+  <rect class="s-sf" x="176.0" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="191.0" y="62">Silverfir (JIT)</text>
+  <rect class="s-cl" x="317.0" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="332.0" y="62">Cranelift 47.0.2</text>
+  <rect class="s-v8" x="458.0" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="473.0" y="62">V8 / Node 25.9</text>
+  <rect class="s-wn" x="599.0" y="53" width="10" height="10" rx="2"/>
+  <text class="legend" x="614.0" y="62">Winch 47.0.2</text>
+  <line class="axis" x1="176" y1="76" x2="176" y2="540"/>
 
   <text class="metric" x="168" y="94" text-anchor="end">STREAM Copy</text>
   <text class="unit" x="176" y="94">MB/s</text>
@@ -58,37 +62,49 @@
   <text class="name" x="168" y="157" text-anchor="end">V8 / Node 25.9</text>
   <rect class="s-v8" x="176" y="144" width="443.9" height="18" rx="4"/>
   <text class="val" x="625.9" y="157">88,012</text>
-  <text class="metric" x="168" y="190" text-anchor="end">STREAM Scale</text>
-  <text class="unit" x="176" y="190">MB/s</text>
-  <text class="name" x="168" y="213" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="200" width="420.8" height="18" rx="4"/>
-  <text class="val" x="602.8" y="213">61,116</text>
-  <text class="name" x="168" y="233" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="220" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="233">65,655</text>
-  <text class="name" x="168" y="253" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="240" width="214.7" height="18" rx="4"/>
-  <text class="val" x="396.7" y="253">31,193</text>
-  <text class="metric" x="168" y="286" text-anchor="end">STREAM Add</text>
-  <text class="unit" x="176" y="286">MB/s</text>
-  <text class="name" x="168" y="309" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="296" width="444.9" height="18" rx="4"/>
-  <text class="val" x="626.9" y="309">68,640</text>
-  <text class="name" x="168" y="329" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="316" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="329">69,730</text>
-  <text class="name" x="168" y="349" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="336" width="247.4" height="18" rx="4"/>
-  <text class="val" x="429.4" y="349">38,162</text>
-  <text class="metric" x="168" y="382" text-anchor="end">STREAM Triad</text>
-  <text class="unit" x="176" y="382">MB/s</text>
-  <text class="name" x="168" y="405" text-anchor="end">Silverfir (JIT)</text>
-  <rect class="s-sf" x="176" y="392" width="437.2" height="18" rx="4"/>
-  <text class="val" x="619.2" y="405">60,211</text>
-  <text class="name" x="168" y="425" text-anchor="end">Cranelift 47.0.2</text>
-  <rect class="s-cl" x="176" y="412" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="425">62,247</text>
-  <text class="name" x="168" y="445" text-anchor="end">V8 / Node 25.9</text>
-  <rect class="s-v8" x="176" y="432" width="274.5" height="18" rx="4"/>
-  <text class="val" x="456.5" y="445">37,802</text>
+  <text class="name" x="168" y="177" text-anchor="end">Winch 47.0.2</text>
+  <rect class="s-wn" x="176" y="164" width="443.1" height="18" rx="4"/>
+  <text class="val" x="625.1" y="177">87,845</text>
+  <text class="metric" x="168" y="210" text-anchor="end">STREAM Scale</text>
+  <text class="unit" x="176" y="210">MB/s</text>
+  <text class="name" x="168" y="233" text-anchor="end">Silverfir (JIT)</text>
+  <rect class="s-sf" x="176" y="220" width="420.8" height="18" rx="4"/>
+  <text class="val" x="602.8" y="233">61,116</text>
+  <text class="name" x="168" y="253" text-anchor="end">Cranelift 47.0.2</text>
+  <rect class="s-cl" x="176" y="240" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="253">65,655</text>
+  <text class="name" x="168" y="273" text-anchor="end">V8 / Node 25.9</text>
+  <rect class="s-v8" x="176" y="260" width="214.7" height="18" rx="4"/>
+  <text class="val" x="396.7" y="273">31,193</text>
+  <text class="name" x="168" y="293" text-anchor="end">Winch 47.0.2</text>
+  <rect class="s-wn" x="176" y="280" width="229.2" height="18" rx="4"/>
+  <text class="val" x="411.2" y="293">33,297</text>
+  <text class="metric" x="168" y="326" text-anchor="end">STREAM Add</text>
+  <text class="unit" x="176" y="326">MB/s</text>
+  <text class="name" x="168" y="349" text-anchor="end">Silverfir (JIT)</text>
+  <rect class="s-sf" x="176" y="336" width="444.9" height="18" rx="4"/>
+  <text class="val" x="626.9" y="349">68,640</text>
+  <text class="name" x="168" y="369" text-anchor="end">Cranelift 47.0.2</text>
+  <rect class="s-cl" x="176" y="356" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="369">69,730</text>
+  <text class="name" x="168" y="389" text-anchor="end">V8 / Node 25.9</text>
+  <rect class="s-v8" x="176" y="376" width="247.4" height="18" rx="4"/>
+  <text class="val" x="429.4" y="389">38,162</text>
+  <text class="name" x="168" y="409" text-anchor="end">Winch 47.0.2</text>
+  <rect class="s-wn" x="176" y="396" width="189.3" height="18" rx="4"/>
+  <text class="val" x="371.3" y="409">29,205</text>
+  <text class="metric" x="168" y="442" text-anchor="end">STREAM Triad</text>
+  <text class="unit" x="176" y="442">MB/s</text>
+  <text class="name" x="168" y="465" text-anchor="end">Silverfir (JIT)</text>
+  <rect class="s-sf" x="176" y="452" width="437.2" height="18" rx="4"/>
+  <text class="val" x="619.2" y="465">60,211</text>
+  <text class="name" x="168" y="485" text-anchor="end">Cranelift 47.0.2</text>
+  <rect class="s-cl" x="176" y="472" width="452.0" height="18" rx="4"/>
+  <text class="val" x="634.0" y="485">62,247</text>
+  <text class="name" x="168" y="505" text-anchor="end">V8 / Node 25.9</text>
+  <rect class="s-v8" x="176" y="492" width="274.5" height="18" rx="4"/>
+  <text class="val" x="456.5" y="505">37,802</text>
+  <text class="name" x="168" y="525" text-anchor="end">Winch 47.0.2</text>
+  <rect class="s-wn" x="176" y="512" width="211.7" height="18" rx="4"/>
+  <text class="val" x="393.7" y="525">29,154</text>
 </svg>

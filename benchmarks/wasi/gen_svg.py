@@ -38,21 +38,35 @@ BAR_PITCH = 20   # leaves a 2px surface gap between adjacent bars
 GROUP_GAP = 10   # extra space between the two engine classes
 ROW_HEAD = 24    # metric name + unit line
 ROW_PAD = 12
-HEADER = 80
+LEGEND_Y0 = 62   # baseline of the first legend row
+LEGEND_ROW = 18  # legend line height; the header grows by this per wrapped row
+
+CHAR_W = 5.6     # ~advance of 11px UI sans, for layout estimation only
 
 # ── palette ─────────────────────────────────────────────────────────────
 # (key, label, light, dark). Order is fixed. Checked with the palette
-# validator on the adjacent pairlist (the correct list for grouped bars):
-#   light: worst adjacent CVD dE 9.2, normal-vision 27.6  -> all PASS
-#   dark:  worst adjacent CVD dE 9.4, normal-vision 24.6  -> all PASS
+# validator on the adjacent pairlist (the correct list for grouped bars),
+# per chart, since adjacency only exists within a chart:
+#   compiled light: worst adjacent CVD dE  9.2, normal-vision 27.6 -> all PASS
+#   compiled dark:  worst adjacent CVD dE  9.0, normal-vision 26.5 -> all PASS
+#   interp light:   worst adjacent CVD dE 25.0, normal-vision 29.9 -> all PASS
+#   interp dark:    worst adjacent CVD dE 27.3, normal-vision 27.5 -> all PASS
 # Both Silverfir engines wear the same violet family on purpose, so "ours"
 # reads at a glance; they are never adjacent in this order, and the hues
 # beside them are deliberately far from violet (orange, teal, amber).
+# Winch trails the three optimizing compilers rather than sitting beside
+# Cranelift: it is a baseline compiler, a different tier, and keeping
+# Silverfir/Cranelift/V8 adjacent is what makes that trio comparable at a
+# glance. It is magenta rather than a second orange because the warm
+# wasmtime-family steps only reach dE 7.7-7.9 against V8's dark green --
+# inside the 6-8 band that is legal only with secondary encoding -- while
+# magenta clears the dE 8 target at 9.0.
 # 'column' is the header text this series has in the RESULTS.md tables.
 SERIES = [
     ('sf', 'Silverfir (JIT)',    'SF (JIT)',    '#7c3aed', '#8b5cf6'),
     ('cl', 'Cranelift 47.0.2',   'Cranelift',   '#eb6834', '#d95926'),
     ('v8', 'V8 / Node 25.9',     'V8',          '#1baf7a', '#199e70'),
+    ('wn', 'Winch 47.0.2',       'Winch',       '#b02a8f', '#c13a9d'),
     ('si', 'Silverfir (interp)', 'SF (interp)', '#a855f7', '#9085e9'),
     ('w3', 'wasm3',              'wasm3',       '#eda100', '#c98500'),
     ('wi', 'wasmi 1.1.0',        'wasmi',       '#4a9ede', '#3987e5'),
@@ -62,7 +76,7 @@ SERIES = [
 # class and every row renormalises within its class, so the comparisons that
 # matter stay legible.
 GROUPS = [
-    ('',        'Compiled (JIT)', ['sf', 'cl', 'v8']),
+    ('',        'Compiled', ['sf', 'cl', 'v8', 'wn']),
     ('_interp', 'Interpreters',   ['si', 'w3', 'wi']),
 ]
 LABEL = {k: n for k, n, _c, _l, _d in SERIES}
@@ -114,20 +128,46 @@ def row_svg(y, bench, keys):
     return '\n  '.join(out), by + ROW_PAD
 
 
+def legend_layout(keys):
+    """Spread the legend evenly across the bar band, wrapping only if needed.
+
+    Item widths are estimated from label length -- an SVG carries no text
+    metrics at build time, and the estimate only has to be good enough to
+    decide how many fit per row. Returns (row_count, [(key, x, row), ...]).
+
+    This replaced a fixed 3-per-row, 196px grid. That grid silently overlapped
+    the first bar row as soon as a chart carried a fourth series: the second
+    legend row landed at exactly the old constant header. Deriving the pitch
+    from the item count keeps every chart's legend on one evenly spaced row
+    for as long as the labels actually fit.
+    """
+    avail = W - 20 - X0
+    widest = max(15 + len(LABEL[k]) * CHAR_W for k in keys)
+    per_row = max(1, min(len(keys), int(avail // widest)))
+    pitch = avail / per_row
+    placed = [(k, X0 + (i % per_row) * pitch, i // per_row)
+              for i, k in enumerate(keys)]
+    return (len(keys) + per_row - 1) // per_row, placed
+
+
+def header_height(keys):
+    """Top band: title, subtitle, and however many rows the legend needs."""
+    return LEGEND_Y0 + legend_layout(keys)[0] * LEGEND_ROW
+
+
 def legend_svg(keys):
     out = []
-    for i, key in enumerate(keys):
-        label = LABEL[key]
-        x = 176 + (i % 3) * 196
-        y = 62 + (i // 3) * 18
+    for key, x, row in legend_layout(keys)[1]:
+        y = LEGEND_Y0 + row * LEGEND_ROW
         out.append(f'<rect class="s-{key}" x="{x}" y="{y - 9}" width="10" '
                    f'height="10" rx="2"/>')
-        out.append(f'<text class="legend" x="{x + 15}" y="{y}">{esc(label)}</text>')
+        out.append(f'<text class="legend" x="{x + 15}" y="{y}">{esc(LABEL[key])}</text>')
     return '\n  '.join(out)
 
 
 def make_svg(title, subtitle, benches, filename, keys):
-    body, y = [], HEADER
+    header = header_height(keys)
+    body, y = [], header
     for b in benches:
         chunk, y = row_svg(y, b, keys)
         body.append('  ' + chunk)
@@ -168,7 +208,7 @@ def make_svg(title, subtitle, benches, filename, keys):
   <text class="title" x="{W // 2}" y="30" text-anchor="middle">{esc(title)}</text>
   <text class="sub" x="{W // 2}" y="47" text-anchor="middle">{esc(subtitle)}</text>
   {legend_svg(keys)}
-  <line class="axis" x1="{X0}" y1="{HEADER - 4}" x2="{X0}" y2="{h - 10}"/>
+  <line class="axis" x1="{X0}" y1="{header - 4}" x2="{X0}" y2="{h - 10}"/>
 
 {nl.join(body)}
 </svg>

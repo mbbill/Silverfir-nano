@@ -107,15 +107,19 @@ What makes that credible is not any one trick but the shape of the compiler:
 
 ## Performance (Apple M4)
 
-Six runtimes, measured 2026-07-24: Silverfir's JIT and interpreter against
-Wasmtime Cranelift 47.0.2, V8 TurboFan (Node.js 25.9), wasm3 and wasmi 1.1.0.
-Every metric is a rate — higher is better — because each benchmark self-times to
-a wall-clock target rather than running a fixed workload.
+Seven runtimes, measured 2026-07-24: Silverfir's JIT and interpreter against
+Wasmtime Cranelift 47.0.2, V8 TurboFan (Node.js 25.9), Wasmtime Winch 47.0.2,
+wasm3 and wasmi 1.1.0. Every metric is a rate — higher is better — because
+each benchmark self-times to a wall-clock target rather than running a fixed
+workload.
 
-Against the other compilers Silverfir is at **parity**: it leads on SHA-256
-(+16%) and bzip2 (+14%), ties CoreMark and mandelbrot, and trails Cranelift by
-6–9% on the Lua benchmarks. Its **interpreter** beats wasm3 by 1.17–1.61× and
-wasmi by 1.29–2.81× on every dispatch-sensitive benchmark.
+Against the other optimizing compilers Silverfir is at **parity**: it leads on
+SHA-256 (+16%) and bzip2 (+14%), ties CoreMark and mandelbrot, and trails
+Cranelift by 6–9% on the Lua benchmarks. Wasmtime's baseline compiler, **Winch**,
+runs about half that speed (median 0.47× of Cranelift) — the gap between the two
+wasmtime columns is what the optimizing tier buys. Silverfir's **interpreter**
+beats wasm3 by 1.17–1.61× and wasmi by 1.29–2.81× on every dispatch-sensitive
+benchmark.
 
 **[See the benchmark charts and full results →](benchmarks/wasi/README.md)**
 
