@@ -9,10 +9,14 @@
   compile/execute pipeline: the interpreter never touches the JIT's IRs,
   register allocator, or encoders.
 
-- The interpreter executes only through its own native dispatch chain;
-  on hosts without executable memory or targets without an interpreter
-  backend, interpreter instantiation fails with a clean error and the
-  JIT remains the only engine.
+- The interpreter executes only through its own native dispatch chain,
+  whose handlers are generated per target at build time and linked into
+  the binary; it allocates no executable memory and does not require the
+  JIT subsystem to be compiled in. On a target with no generated engine,
+  interpreter instantiation fails with a clean error.
+
+- Both engines cover the same backend set, and each is validated against
+  the spec suite on every one of them.
 
 ## Facts
 
@@ -26,6 +30,13 @@
   each: interpreter 5454.6±48.9 vs JIT 39314.3±505 — the interpreter runs
   at 13.9% of the JIT on the same module and WASI stack (code).
 
+- 2026-07-25 rationale: build-time handler generation is what lets the
+  interpreter serve its first stated purpose, running where runtime code
+  generation is forbidden or impossible (code)
+
+- 2026-07-25 rationale: it also turns engine size from a heap allocation
+  into a link-time budget, which on an MCU is flash (code)
+
 ## Moves
 
 - 2026-07-23 replaced [[jit-only]]: a new no-fusion interpreter
@@ -33,3 +44,4 @@
   where runtime code generation is impossible and for tier-0 startup,
   measured at 13.9% of the JIT on CoreMark; the JIT remains the default
   engine (sourced)
+
