@@ -52,33 +52,33 @@
   <text class="unit" x="176" y="94">fib20/s</text>
   <text class="name" x="168" y="117" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="104" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="117">356.9</text>
+  <text class="val" x="634.0" y="117">377.1</text>
   <text class="name" x="168" y="137" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="124" width="280.6" height="18" rx="4"/>
-  <text class="val" x="462.6" y="137">221.6</text>
+  <rect class="s-w3" x="176" y="124" width="265.6" height="18" rx="4"/>
+  <text class="val" x="447.6" y="137">221.6</text>
   <text class="name" x="168" y="157" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="144" width="229.9" height="18" rx="4"/>
-  <text class="val" x="411.9" y="157">181.5</text>
+  <rect class="s-wi" x="176" y="144" width="217.5" height="18" rx="4"/>
+  <text class="val" x="399.5" y="157">181.5</text>
   <text class="metric" x="168" y="190" text-anchor="end">lua / sunfish</text>
   <text class="unit" x="176" y="190">score</text>
   <text class="name" x="168" y="213" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="200" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="213">1,191</text>
+  <text class="val" x="634.0" y="213">1,221</text>
   <text class="name" x="168" y="233" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="220" width="296.8" height="18" rx="4"/>
-  <text class="val" x="478.8" y="233">782</text>
+  <rect class="s-w3" x="176" y="220" width="289.5" height="18" rx="4"/>
+  <text class="val" x="471.5" y="233">782</text>
   <text class="name" x="168" y="253" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="240" width="278.6" height="18" rx="4"/>
-  <text class="val" x="460.6" y="253">734</text>
+  <rect class="s-wi" x="176" y="240" width="271.7" height="18" rx="4"/>
+  <text class="val" x="453.7" y="253">734</text>
   <text class="metric" x="168" y="286" text-anchor="end">lua / json</text>
   <text class="unit" x="176" y="286">score</text>
   <text class="name" x="168" y="309" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="296" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="309">2,498</text>
+  <text class="val" x="634.0" y="309">2,548</text>
   <text class="name" x="168" y="329" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="316" width="291.1" height="18" rx="4"/>
-  <text class="val" x="473.1" y="329">1,609</text>
+  <rect class="s-w3" x="176" y="316" width="285.4" height="18" rx="4"/>
+  <text class="val" x="467.4" y="329">1,609</text>
   <text class="name" x="168" y="349" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="336" width="350.9" height="18" rx="4"/>
-  <text class="val" x="532.9" y="349">1,939</text>
+  <rect class="s-wi" x="176" y="336" width="344.0" height="18" rx="4"/>
+  <text class="val" x="526.0" y="349">1,939</text>
 </svg>

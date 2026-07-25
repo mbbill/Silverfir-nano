@@ -2,7 +2,8 @@
 
 Seven WebAssembly runtimes on an Apple M4, measured 2026-07-24: Silverfir's JIT
 and interpreter, Wasmtime Cranelift 47.0.2, V8 TurboFan (Node.js 25.9), Wasmtime
-Winch 47.0.2 (added 2026-07-25), wasm3, and wasmi 1.1.0.
+Winch 47.0.2, wasm3, and wasmi 1.1.0. Winch was added and the Silverfir
+interpreter re-measured on 2026-07-25.
 
 Every metric is a **rate — higher is better**. Each benchmark self-times to a
 wall-clock target (2 s by default) and reports work per second, so a run costs
@@ -57,11 +58,11 @@ the 15 metrics is Cranelift 9, Silverfir 4, V8 2, Winch 0. It leads on SHA-256
 
 **Winch** takes no row, as expected of a baseline compiler: a median 0.47× of
 Cranelift and 0.46× of Silverfir's JIT, over a wide 0.27–0.98× spread. It is
-still a median 2.99× of Silverfir's interpreter — except on mandelbrot, where
-that lead narrows to 1.18×.
+still a median 2.93× of Silverfir's interpreter — except on mandelbrot, where
+that lead narrows to 1.11×.
 
 Its **interpreter** wins every dispatch-sensitive benchmark — 14 of 15 metrics —
-by 1.17–1.61× over wasm3 and 1.29–2.81× over wasmi.
+by 1.16–1.73× over wasm3 and 1.31–2.89× over wasmi.
 
 ## Running them
 

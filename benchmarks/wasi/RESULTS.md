@@ -2,7 +2,10 @@
 
 Measured 2026-07-24 on an Apple M4 (macOS), via `run_tests.py` for the native
 runtimes and `run_v8.mjs` for Node. Winch was added 2026-07-25 — see
-[the note on its column](#the-winch-column) for why it is comparable.
+[the note on its column](#the-winch-column) for why it is comparable. The
+Silverfir interpreter column was re-measured 2026-07-25 after the dispatch
+work (absolute branch targets, and the dispatch counter compiled out); no
+other column moved.
 
 | Runtime | Version | Class |
 |---|---|---|
@@ -58,12 +61,12 @@ re-measure both sides.
 <!-- chart file="benchmark_integer.svg" title="Integer / Control Flow" -->
 | Benchmark | SF (JIT) | Cranelift | V8 | Winch | SF (interp) | wasm3 | wasmi |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| CoreMark (score) | 44,958 | **45,874** | 44,378 | 21,379 | **7,556** | 4,746 | 3,813 |
-| SHA-256 (MB/s) | **250.6** | 216.8 | 212.4 | 128.0 | **38.08** | 29.14 | 18.42 |
-| bzip2 (MB/s) | **30.68** | 26.86 | 29.66 | 13.88 | **4.99** | 3.10 | 2.61 |
-| LZ4 compress (MB/s) | **926.0** | 916.3 | 911.2 | 587.4 | **314.9** | 206.7 | 154.8 |
-| LZ4 decompress (MB/s) | 3,241 | **3,478** | 3,046 | 1,200 | **620.0** | 408.7 | 311.3 |
-| sqlite speedtest1 (size/s) | 59.88 | 62.66 | **65.66** | 29.89 | **10.00** | 7.13 | 6.86 |
+| CoreMark (score) | 44,958 | **45,874** | 44,378 | 21,379 | **8,188** | 4,746 | 3,813 |
+| SHA-256 (MB/s) | **250.6** | 216.8 | 212.4 | 128.0 | **40.69** | 29.14 | 18.42 |
+| bzip2 (MB/s) | **30.68** | 26.86 | 29.66 | 13.88 | **5.21** | 3.10 | 2.61 |
+| LZ4 compress (MB/s) | **926.0** | 916.3 | 911.2 | 587.4 | **313.8** | 206.7 | 154.8 |
+| LZ4 decompress (MB/s) | 3,241 | **3,478** | 3,046 | 1,200 | **590.1** | 408.7 | 311.3 |
+| sqlite speedtest1 (size/s) | 59.88 | 62.66 | **65.66** | 29.89 | **10.19** | 7.13 | 6.86 |
 <!-- endchart -->
 
 ## Lua
@@ -71,9 +74,9 @@ re-measure both sides.
 <!-- chart file="benchmark_lua.svg" title="Lua Benchmarks" -->
 | Benchmark | SF (JIT) | Cranelift | V8 | Winch | SF (interp) | wasm3 | wasmi |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| lua / fib (fib20/s) | 2,747 | **2,915** | 1,876 | 1,253 | **356.9** | 221.6 | 181.5 |
-| lua / sunfish (score) | 10,494 | **11,558** | 10,847 | 4,356 | **1,191** | 782 | 734 |
-| lua / json (score) | 28,996 | **31,019** | 30,280 | 10,857 | **2,498** | 1,609 | 1,939 |
+| lua / fib (fib20/s) | 2,747 | **2,915** | 1,876 | 1,253 | **377.1** | 221.6 | 181.5 |
+| lua / sunfish (score) | 10,494 | **11,558** | 10,847 | 4,356 | **1,221** | 782 | 734 |
+| lua / json (score) | 28,996 | **31,019** | 30,280 | 10,857 | **2,548** | 1,609 | 1,939 |
 <!-- endchart -->
 
 ## Floating Point
@@ -81,8 +84,8 @@ re-measure both sides.
 <!-- chart file="benchmark_fp.svg" title="Floating-Point Benchmarks" -->
 | Benchmark | SF (JIT) | Cranelift | V8 | Winch | SF (interp) | wasm3 | wasmi |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| mandelbrot (Kpixel/s) | **503.3** | 502.6 | 298.9 | 184.0 | **156.1** | 134.0 | 57.59 |
-| c-ray (Kpixel/s) | 9,809 | 10,515 | **10,705** | 2,792 | **1,380** | 942.4 | 490.8 |
+| mandelbrot (Kpixel/s) | **503.3** | 502.6 | 298.9 | 184.0 | **166.3** | 134.0 | 57.59 |
+| c-ray (Kpixel/s) | 9,809 | 10,515 | **10,705** | 2,792 | **1,413** | 942.4 | 490.8 |
 <!-- endchart -->
 
 ## Memory Bound
@@ -90,10 +93,10 @@ re-measure both sides.
 <!-- chart file="benchmark_memory.svg" title="Memory-Bound Benchmarks (STREAM)" note="STREAM Copy=lowered to memory.copy — measures the engine's bulk copy, not dispatch" -->
 | Benchmark | SF (JIT) | Cranelift | V8 | Winch | SF (interp) | wasm3 | wasmi |
 |---|---:|---:|---:|---:|---:|---:|---:|
-| STREAM Copy (MB/s)¹ | 88,302 | **89,610** | 88,012 | 87,845 | 83,092 | 88,992 | **89,288** |
-| STREAM Scale (MB/s) | 61,116 | **65,655** | 31,193 | 33,297 | **7,779** | 6,328 | 3,848 |
-| STREAM Add (MB/s) | 68,640 | **69,730** | 38,162 | 29,205 | **7,369** | 6,188 | 3,968 |
-| STREAM Triad (MB/s) | 60,211 | **62,247** | 37,802 | 29,154 | **6,617** | 5,600 | 3,602 |
+| STREAM Copy (MB/s)¹ | 88,302 | **89,610** | 88,012 | 87,845 | 86,816 | 88,992 | **89,288** |
+| STREAM Scale (MB/s) | 61,116 | **65,655** | 31,193 | 33,297 | **8,646** | 6,328 | 3,848 |
+| STREAM Add (MB/s) | 68,640 | **69,730** | 38,162 | 29,205 | **7,167** | 6,188 | 3,968 |
+| STREAM Triad (MB/s) | 60,211 | **62,247** | 37,802 | 29,154 | **7,084** | 5,600 | 3,602 |
 <!-- endchart -->
 
 ¹ The current clang lowers STREAM's copy loop to a bulk `memory.copy`, so this
@@ -102,8 +105,10 @@ very different compilers land within 1% of each other here. It is kept because
 it is still a fair comparison of that path, and it is how we caught the
 Silverfir interpreter's bulk copy sitting 28% below wasm3 and wasmi: its
 handler moved 8 bytes per iteration. Widening it to 64-byte NEON blocks took
-this row from 64,127 to 83,092 MB/s (~7% off the pack) and `memory.fill` from
-30,650 to 67,630 MB/s — 2.2×, which puts fill ahead of wasm3's 55,658. Scale,
+this row from 64,127 to 83,092 MB/s and `memory.fill` from 30,650 to 67,630
+MB/s — 2.2×, which puts fill ahead of wasm3's 55,658. It reads 86,816 now,
+2.8% off the pack; that last step is within this row's noise, so read it as
+"joined the pack", not as a further win. Scale,
 Add and Triad are arithmetic loops that cannot become `memcpy`, so they remain
 the dispatch-sensitive kernels.
 
@@ -124,7 +129,7 @@ compiler and the reason the count reads the same as it did before it was added.
 
 **Winch sits about halfway between the two classes**, which is what a baseline
 compiler is for: a median 0.47× of Cranelift and 0.46× of Silverfir's JIT, and
-a median 2.99× of Silverfir's interpreter. The spread matters more than the
+a median 2.93× of Silverfir's interpreter. The spread matters more than the
 median — it is 0.27–0.98× of Cranelift, so how much the optimizing tier buys
 depends entirely on the kernel:
 
@@ -134,9 +139,10 @@ depends entirely on the kernel:
   0.35×, LZ4 decompress 0.35×.
 - It clears V8 on exactly one row, STREAM Scale (1.07×), where V8 is itself
   well off the pace.
-- Its narrowest margin over Silverfir's *interpreter* is mandelbrot, 1.18× —
-  the float-residency work is what makes that row close, and it is the one
-  place a baseline compiler's advantage over this interpreter nearly vanishes.
+- Its narrowest margin over Silverfir's *interpreter* is mandelbrot, 1.11×
+  (it was 1.18× before the interpreter was re-measured) — the float-residency
+  work is what makes that row close, and it is the one place a baseline
+  compiler's advantage over this interpreter nearly vanishes.
 
 **Against the other interpreters, Silverfir's interpreter wins every
 dispatch-sensitive benchmark** — 14 of the 15 metrics, the exception being the
@@ -144,11 +150,11 @@ dispatch-sensitive benchmark** — 14 of the 15 metrics, the exception being the
 
 | vs | worst | best | median |
 |---|---:|---:|---:|
-| wasm3 | 1.17× (mandelbrot) | 1.61× (lua fib) | ~1.49× |
-| wasmi 1.1.0 | 1.29× (lua json) | 2.81× (c-ray) | ~1.97× |
+| wasm3 | 1.16× (STREAM Add) | 1.73× (CoreMark) | ~1.47× |
+| wasmi 1.1.0 | 1.31× (lua json) | 2.89× (mandelbrot) | ~2.01× |
 
 The float-heavy pair carries the largest margin against wasmi (mandelbrot
-2.71×, c-ray 2.81×) — the domain-split float residency work paying off.
+2.89×, c-ray 2.88×) — the domain-split float residency work paying off.
 
 ## Caveats worth knowing
 
@@ -166,10 +172,17 @@ The float-heavy pair carries the largest margin against wasmi (mandelbrot
 - **sqlite reports `size/s`, not its `TOTAL … s` line.** Its work is set by
   `--size`, which the harness picks to hit the target, so elapsed time is ~the
   target on every runtime and carries no information. Work per second does.
-- **The interpreter column is a single run**, taken on an idle machine after
-  an earlier pass was discarded for CPU interference (that one read CoreMark
-  7,187 against 7,556 here — the contamination was real and cost ~5%, mostly on
-  CoreMark; every other metric moved under ~2%).
+- **The interpreter column is a single run**, re-measured 2026-07-25 after the
+  dispatch work. Single runs on this suite have been contaminated before: an
+  earlier pass was discarded for CPU interference, reading CoreMark 7,187
+  against 7,556 — real, and worth ~5%, mostly on CoreMark. Treat any single
+  interpreter figure as ±5% until a second round agrees with it.
+- **Two interpreter rows moved backwards in that re-measure** and a single run
+  cannot say whether that is real: LZ4 decompress 620.0 → 590.1 (−4.8%) and
+  STREAM Add 7,369 → 7,167 (−2.7%). The rest moved up, several well past the
+  noise band — CoreMark 7,556 → 8,188 (+8.4%), STREAM Scale +11.1%, STREAM
+  Triad +7.1%, SHA-256 +6.9%, mandelbrot +6.5%. If the two regressions matter,
+  re-run those two rows specifically rather than reading them from this column.
 - `sunfish` scores rise with a longer target because its cold first game gets
   amortised away. All runtimes are measured at the same target so the
   comparison is fair, but never compare a 2 s sunfish score to a 10 s one.

@@ -52,66 +52,66 @@
   <text class="unit" x="176" y="94">score</text>
   <text class="name" x="168" y="117" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="104" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="117">7,556</text>
+  <text class="val" x="634.0" y="117">8,188</text>
   <text class="name" x="168" y="137" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="124" width="283.9" height="18" rx="4"/>
-  <text class="val" x="465.9" y="137">4,746</text>
+  <rect class="s-w3" x="176" y="124" width="262.0" height="18" rx="4"/>
+  <text class="val" x="444.0" y="137">4,746</text>
   <text class="name" x="168" y="157" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="144" width="228.1" height="18" rx="4"/>
-  <text class="val" x="410.1" y="157">3,813</text>
+  <rect class="s-wi" x="176" y="144" width="210.5" height="18" rx="4"/>
+  <text class="val" x="392.5" y="157">3,813</text>
   <text class="metric" x="168" y="190" text-anchor="end">SHA-256</text>
   <text class="unit" x="176" y="190">MB/s</text>
   <text class="name" x="168" y="213" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="200" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="213">38.08</text>
+  <text class="val" x="634.0" y="213">40.69</text>
   <text class="name" x="168" y="233" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="220" width="345.9" height="18" rx="4"/>
-  <text class="val" x="527.9" y="233">29.14</text>
+  <rect class="s-w3" x="176" y="220" width="323.7" height="18" rx="4"/>
+  <text class="val" x="505.7" y="233">29.14</text>
   <text class="name" x="168" y="253" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="240" width="218.6" height="18" rx="4"/>
-  <text class="val" x="400.6" y="253">18.42</text>
+  <rect class="s-wi" x="176" y="240" width="204.6" height="18" rx="4"/>
+  <text class="val" x="386.6" y="253">18.42</text>
   <text class="metric" x="168" y="286" text-anchor="end">bzip2</text>
   <text class="unit" x="176" y="286">MB/s</text>
   <text class="name" x="168" y="309" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="296" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="309">4.99</text>
+  <text class="val" x="634.0" y="309">5.21</text>
   <text class="name" x="168" y="329" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="316" width="280.8" height="18" rx="4"/>
-  <text class="val" x="462.8" y="329">3.10</text>
+  <rect class="s-w3" x="176" y="316" width="268.9" height="18" rx="4"/>
+  <text class="val" x="450.9" y="329">3.10</text>
   <text class="name" x="168" y="349" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="336" width="236.4" height="18" rx="4"/>
-  <text class="val" x="418.4" y="349">2.61</text>
+  <rect class="s-wi" x="176" y="336" width="226.4" height="18" rx="4"/>
+  <text class="val" x="408.4" y="349">2.61</text>
   <text class="metric" x="168" y="382" text-anchor="end">LZ4 compress</text>
   <text class="unit" x="176" y="382">MB/s</text>
   <text class="name" x="168" y="405" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="392" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="405">314.9</text>
+  <text class="val" x="634.0" y="405">313.8</text>
   <text class="name" x="168" y="425" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="412" width="296.7" height="18" rx="4"/>
-  <text class="val" x="478.7" y="425">206.7</text>
+  <rect class="s-w3" x="176" y="412" width="297.7" height="18" rx="4"/>
+  <text class="val" x="479.7" y="425">206.7</text>
   <text class="name" x="168" y="445" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="432" width="222.2" height="18" rx="4"/>
-  <text class="val" x="404.2" y="445">154.8</text>
+  <rect class="s-wi" x="176" y="432" width="223.0" height="18" rx="4"/>
+  <text class="val" x="405.0" y="445">154.8</text>
   <text class="metric" x="168" y="478" text-anchor="end">LZ4 decompress</text>
   <text class="unit" x="176" y="478">MB/s</text>
   <text class="name" x="168" y="501" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="488" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="501">620</text>
+  <text class="val" x="634.0" y="501">590.1</text>
   <text class="name" x="168" y="521" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="508" width="298.0" height="18" rx="4"/>
-  <text class="val" x="480.0" y="521">408.7</text>
+  <rect class="s-w3" x="176" y="508" width="313.1" height="18" rx="4"/>
+  <text class="val" x="495.1" y="521">408.7</text>
   <text class="name" x="168" y="541" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="528" width="226.9" height="18" rx="4"/>
-  <text class="val" x="408.9" y="541">311.3</text>
+  <rect class="s-wi" x="176" y="528" width="238.4" height="18" rx="4"/>
+  <text class="val" x="420.4" y="541">311.3</text>
   <text class="metric" x="168" y="574" text-anchor="end">sqlite speedtest1</text>
   <text class="unit" x="176" y="574">size/s</text>
   <text class="name" x="168" y="597" text-anchor="end">Silverfir (interp)</text>
   <rect class="s-si" x="176" y="584" width="452.0" height="18" rx="4"/>
-  <text class="val" x="634.0" y="597">10</text>
+  <text class="val" x="634.0" y="597">10.19</text>
   <text class="name" x="168" y="617" text-anchor="end">wasm3</text>
-  <rect class="s-w3" x="176" y="604" width="322.3" height="18" rx="4"/>
-  <text class="val" x="504.3" y="617">7.13</text>
+  <rect class="s-w3" x="176" y="604" width="316.3" height="18" rx="4"/>
+  <text class="val" x="498.3" y="617">7.13</text>
   <text class="name" x="168" y="637" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="624" width="310.1" height="18" rx="4"/>
-  <text class="val" x="492.1" y="637">6.86</text>
+  <rect class="s-wi" x="176" y="624" width="304.3" height="18" rx="4"/>
+  <text class="val" x="486.3" y="637">6.86</text>
 </svg>
