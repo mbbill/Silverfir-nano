@@ -983,7 +983,7 @@ mod tests {
             is_final: true,
             rec_group: None,
         })]);
-        let mut module = ModuleInst::new(String::from(name), types);
+        let mut module = ModuleInst::new(crate::config::Config::new(), String::from(name), types);
         module.functions.push(FunctionInst::Local {
             spec: FunctionSpec::new(func_type, 1),
             type_index: 0,
@@ -1003,7 +1003,7 @@ mod tests {
                 collections::vec![ValueType::I64],
             ),
         ]);
-        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
         module.functions.push(FunctionInst::Local {
             spec: FunctionSpec::new(
                 Rc::new(FunctionType::new(
@@ -1087,7 +1087,7 @@ mod tests {
                 collections::vec![ValueType::I64],
             ),
         ]);
-        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
         module.functions.push(FunctionInst::Host {
             func_type: Rc::new(FunctionType::new(
                 collections::vec![ValueType::I32],

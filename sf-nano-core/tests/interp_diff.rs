@@ -19,14 +19,14 @@ fn value_bits(v: &Value) -> u64 {
 
 /// Run one exported function on both engines and compare raw result bits.
 fn diff(wasm: &[u8], export: &str, args: &[Value]) {
-    let mut jit = Instance::new(wasm, &[]).expect("jit instantiation");
+    let mut jit = Instance::new(&engine(), wasm, &[]).expect("jit instantiation");
     let jit_results = jit.invoke(export, args).expect("jit invoke");
     let jbits: Vec<u64> = jit_results.iter().map(value_bits).collect();
 
     let module = Module::new("diff", wasm).expect("module parse");
     let iargs: Vec<u64> = args.iter().map(value_bits).collect();
 
-    let mut interp = InterpInstance::new(module).expect("interp instantiation");
+    let mut interp = InterpInstance::new(&engine(), module).expect("interp instantiation");
     let idx = interp.find_export(export).expect("export in interp");
     let mut iresults = vec![0u64; jit_results.len()];
     interp
@@ -185,4 +185,9 @@ fn diff_fib_min_wasm_from_disk() {
     for n in [1, 5, 10, 20, 25] {
         diff(&wasm, "fib", &[Value::I32(n)]);
     }
+}
+
+/// One engine on this target's defaults, for the tests in this file.
+fn engine() -> sf_nano_core::Engine {
+    sf_nano_core::Engine::with_defaults()
 }

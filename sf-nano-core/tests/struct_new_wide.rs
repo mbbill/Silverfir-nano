@@ -43,7 +43,7 @@ fn struct_new_five_i32_fields_roundtrip() {
         )
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
     for (i, expected) in [100, 200, 300, 400, 500].iter().enumerate() {
         let name = format!("get{}", i);
         let result = instance.invoke(&name, &[]).expect("invoke failed");
@@ -82,7 +82,7 @@ fn struct_new_eight_mixed_fields_roundtrip() {
         )
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
 
     let r = instance
         .invoke("build_and_get_i32", &[Value::I32(1111), Value::I32(2222)])
@@ -98,4 +98,9 @@ fn struct_new_eight_mixed_fields_roundtrip() {
         .invoke("build_and_get_f64", &[Value::F64(3.14)])
         .expect("invoke failed");
     expect_values(r, &[Value::F64(3.14)]);
+}
+
+/// One engine on this target's defaults, for the tests in this file.
+fn engine() -> sf_nano_core::Engine {
+    sf_nano_core::Engine::with_defaults()
 }

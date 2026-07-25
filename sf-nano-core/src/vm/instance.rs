@@ -19,7 +19,7 @@
 use crate::collections;
 use crate::error::WasmError;
 use crate::module::Module;
-use crate::vm::engine::{engine as active_engine, Engine};
+use crate::vm::engine::{Engine, Tier};
 use crate::vm::value::Value;
 
 #[cfg(sf_interp)]
@@ -72,33 +72,27 @@ impl Func {
 }
 
 impl Instance {
-    /// Instantiate on the engine currently selected by
-    /// [`crate::set_engine`].
-    pub fn new(wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError> {
-        Self::with_engine(active_engine(), Module::new("main", wasm_bytes)?, imports)
+    /// Instantiate in `engine`, which decides the tier and the budgets.
+    pub fn new(engine: &Engine, wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError> {
+        Self::from_module(engine, Module::new("main", wasm_bytes)?, imports)
     }
 
-    /// Instantiate an already-parsed module on the selected engine.
-    pub fn from_module(module: Module, imports: &[Import]) -> Result<Self, WasmError> {
-        Self::with_engine(active_engine(), module, imports)
-    }
-
-    /// Instantiate on a named engine, ignoring the process-wide selection.
-    pub fn with_engine(
-        engine: Engine,
+    /// Instantiate an already-parsed module in `engine`.
+    pub fn from_module(
+        engine: &Engine,
         module: Module,
         imports: &[Import],
     ) -> Result<Self, WasmError> {
-        let inner = match engine {
+        let inner = match engine.tier() {
             #[cfg(sf_jit)]
-            Engine::Jit => Inner::Jit(JitInstance::from_module(module, imports)?),
+            Tier::Jit => Inner::Jit(JitInstance::from_module(engine, module, imports)?),
             #[cfg(sf_interp)]
-            Engine::Interp => {
+            Tier::Interp => {
                 // Bind before instantiating: the module's start function
                 // runs inside `InterpInstance::new`, and it may already
                 // call an import.
                 let dispatch = interp_imports::bind(&module, imports)?;
-                let mut inst = InterpInstance::new(module)?;
+                let mut inst = InterpInstance::new(engine, module)?;
                 inst.set_host(dispatch);
                 Inner::Interp(inst)
             }
@@ -106,14 +100,14 @@ impl Instance {
         Ok(Self { inner })
     }
 
-    /// Which engine is running this instance.
+    /// Which tier is running this instance.
     #[inline]
-    pub fn engine(&self) -> Engine {
+    pub fn tier(&self) -> Tier {
         match &self.inner {
             #[cfg(sf_jit)]
-            Inner::Jit(_) => Engine::Jit,
+            Inner::Jit(_) => Tier::Jit,
             #[cfg(sf_interp)]
-            Inner::Interp(_) => Engine::Interp,
+            Inner::Interp(_) => Tier::Interp,
         }
     }
 

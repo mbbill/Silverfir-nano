@@ -1,20 +1,22 @@
-//! Which execution engine runs a module.
+//! The engine an embedder instantiates modules in, and the tier it runs.
 //!
-//! One concept, chosen by the embedder, resolved once. The variants are
-//! gated on the engine features, so a build with a single engine gets a
-//! *univariant* enum: it occupies no bytes, carries no discriminant, and
-//! every match on it folds to its one arm. The switch is not merely cheap
-//! in that build — it is gone.
+//! [`Engine`] holds a validated [`Config`] and hands a copy to every
+//! instance it creates. It is a value, not a process-wide setting: two
+//! engines can run different tiers with different budgets side by side,
+//! and neither can be disturbed by the other being configured.
 //!
-//! Naming an engine this build does not have is a compile error at the
-//! embedder's call site rather than a runtime `Err`, so a single-engine
-//! embedder cannot ship code that asks for the engine it left out.
+//! [`Tier`]'s variants are gated on the engine features, so a build with a
+//! single engine gets a *univariant* enum: it occupies no bytes, carries no
+//! discriminant, and every match on it folds to its one arm. The switch is
+//! not merely cheap in that build — it is gone. Naming a tier this build
+//! does not have is a compile error at the embedder's call site rather than
+//! a runtime `Err`.
 
-use core::sync::atomic::{AtomicU8, Ordering};
+use crate::config::{Config, ConfigError};
 
 /// An execution engine compiled into this build.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Engine {
+pub enum Tier {
     /// Compile each function to native code before running it.
     #[cfg(sf_jit)]
     Jit = 0,
@@ -24,9 +26,9 @@ pub enum Engine {
     Interp = 1,
 }
 
-impl Engine {
-    /// The engine used when the embedder expresses no preference: the JIT
-    /// where it is compiled in, the interpreter otherwise.
+impl Tier {
+    /// Used when the embedder expresses no preference: the JIT where it is
+    /// compiled in, the interpreter otherwise.
     pub const DEFAULT: Self = {
         #[cfg(sf_jit)]
         {
@@ -38,7 +40,7 @@ impl Engine {
         }
     };
 
-    /// Every engine this build has, in preference order.
+    /// Every tier this build has, in preference order.
     pub const ALL: &'static [Self] = &[
         #[cfg(sf_jit)]
         Self::Jit,
@@ -56,11 +58,17 @@ impl Engine {
         }
     }
 
-    /// Resolve an embedder-facing engine name.
+    #[cfg(sf_jit)]
+    #[inline]
+    pub const fn is_jit(self) -> bool {
+        matches!(self, Self::Jit)
+    }
+
+    /// Resolve an embedder-facing tier name.
     ///
-    /// `None` covers both an unknown name and an engine this build left
-    /// out; [`Engine::ALL`] is what a caller reports back to say which
-    /// names would have worked.
+    /// `None` covers both an unknown name and a tier this build left out;
+    /// [`Tier::ALL`] is what a caller reports back to say which names
+    /// would have worked.
     #[inline]
     pub fn parse_str(name: &str) -> Option<Self> {
         match name {
@@ -74,60 +82,80 @@ impl Engine {
     }
 }
 
-static ACTIVE_ENGINE: AtomicU8 = AtomicU8::new(Engine::DEFAULT as u8);
-
-/// Select the engine subsequent instances run on.
-pub fn set_engine(engine: Engine) {
-    ACTIVE_ENGINE.store(engine as u8, Ordering::Relaxed);
+/// The environment modules are instantiated in.
+#[derive(Clone, Copy, Debug)]
+pub struct Engine {
+    config: Config,
 }
 
-/// The engine currently selected.
-///
-/// In a single-engine build the return type is a ZST, so the load and the
-/// mapping below fold away entirely.
-pub fn engine() -> Engine {
-    match ACTIVE_ENGINE.load(Ordering::Relaxed) {
-        #[cfg(sf_jit)]
-        x if x == Engine::Jit as u8 => Engine::Jit,
-        #[cfg(sf_interp)]
-        x if x == Engine::Interp as u8 => Engine::Interp,
-        _ => Engine::DEFAULT,
+impl Engine {
+    /// Build an engine, rejecting a configuration that cannot run.
+    ///
+    /// This is where a bare-metal embedder finds out it never set a budget
+    /// — once, up front, rather than as a trap somewhere inside a guest.
+    pub const fn new(config: Config) -> Result<Self, ConfigError> {
+        match config.validate() {
+            Ok(()) => Ok(Self { config }),
+            Err(err) => Err(err),
+        }
+    }
+
+    /// An engine on this target's defaults.
+    ///
+    /// Panics on a target that has no defaults (bare metal); use
+    /// [`Engine::new`] there, which reports which budget is missing.
+    pub fn with_defaults() -> Self {
+        match Self::new(Config::new()) {
+            Ok(engine) => engine,
+            Err(err) => panic!("no default engine configuration on this target: {err}"),
+        }
+    }
+
+    #[inline]
+    pub const fn config(&self) -> &Config {
+        &self.config
+    }
+
+    #[inline]
+    pub const fn tier(&self) -> Tier {
+        self.config.get_tier()
     }
 }
 
 #[cfg(test)]
 mod tests {
-    use super::Engine;
+    use super::{Config, Engine, Tier};
 
-    /// The claim the whole design rests on: with one engine compiled in,
-    /// the selector costs nothing to store and nothing to branch on.
+    /// The claim the tier design rests on: with one engine compiled in,
+    /// naming it costs nothing to store and nothing to branch on.
     #[test]
-    fn single_engine_build_makes_the_selector_a_zst() {
-        let engines = Engine::ALL.len();
-        let size = core::mem::size_of::<Engine>();
-        if engines == 1 {
-            assert_eq!(size, 0, "a univariant Engine must not carry a discriminant");
+    fn single_engine_build_makes_the_tier_a_zst() {
+        let tiers = Tier::ALL.len();
+        let size = core::mem::size_of::<Tier>();
+        if tiers == 1 {
+            assert_eq!(size, 0, "a univariant Tier must not carry a discriminant");
         } else {
-            assert_eq!(engines, 2);
+            assert_eq!(tiers, 2);
             assert_eq!(size, 1);
         }
     }
 
     #[test]
-    fn round_trips_through_the_atomic() {
-        for &engine in Engine::ALL {
-            super::set_engine(engine);
-            assert_eq!(super::engine(), engine);
+    fn parses_only_the_names_this_build_has() {
+        assert_eq!(Tier::parse_str("auto"), Some(Tier::DEFAULT));
+        assert_eq!(Tier::parse_str("nonsense"), None);
+        for &tier in Tier::ALL {
+            assert_eq!(Tier::parse_str(tier.as_str()), Some(tier));
         }
-        super::set_engine(Engine::DEFAULT);
     }
 
+    /// Two engines, two budgets, at the same time — which the process-wide
+    /// configuration this replaced could not express at all.
     #[test]
-    fn parses_only_the_names_this_build_has() {
-        assert_eq!(Engine::parse_str("auto"), Some(Engine::DEFAULT));
-        assert_eq!(Engine::parse_str("nonsense"), None);
-        for &engine in Engine::ALL {
-            assert_eq!(Engine::parse_str(engine.as_str()), Some(engine));
-        }
+    fn engines_carry_their_own_configuration() {
+        let small = Engine::new(Config::new().wasm_stack_bytes(4096)).expect("small");
+        let large = Engine::new(Config::new().wasm_stack_bytes(1 << 20)).expect("large");
+        assert_eq!(small.config().get_wasm_stack_bytes(), 4096);
+        assert_eq!(large.config().get_wasm_stack_bytes(), 1 << 20);
     }
 }

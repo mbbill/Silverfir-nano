@@ -3,6 +3,7 @@
 //! This layer should stay backend-agnostic.
 
 use crate::collections;
+use crate::config::Config;
 use tracked_alloc::rc::Rc;
 
 use crate::vm::entities::{FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst};
@@ -223,6 +224,12 @@ impl Store {
             #[cfg(sf_jit)]
             native_stack_cache: None,
         }
+    }
+
+    /// The engine configuration this store's module was created with.
+    #[inline]
+    pub(crate) fn config(&self) -> &Config {
+        self.module.config()
     }
 
     #[inline]

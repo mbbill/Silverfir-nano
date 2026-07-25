@@ -15,7 +15,7 @@ const ADD_WASM: &[u8] = &[
 
 #[test]
 fn test_add() {
-    let mut instance = Instance::new(ADD_WASM, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), ADD_WASM, &[]).expect("instantiation failed");
     let result = instance
         .invoke("add", &[Value::I32(3), Value::I32(4)])
         .expect("invoke failed");
@@ -25,7 +25,7 @@ fn test_add() {
 
 #[test]
 fn test_add_negative() {
-    let mut instance = Instance::new(ADD_WASM, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), ADD_WASM, &[]).expect("instantiation failed");
     let result = instance
         .invoke("add", &[Value::I32(-1), Value::I32(1)])
         .expect("invoke failed");
@@ -34,7 +34,7 @@ fn test_add_negative() {
 
 #[test]
 fn test_missing_export() {
-    let mut instance = Instance::new(ADD_WASM, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), ADD_WASM, &[]).expect("instantiation failed");
     let result = instance.invoke("nonexistent", &[Value::I32(1), Value::I32(2)]);
     assert!(result.is_err());
 }
@@ -52,7 +52,7 @@ const FIB_WASM: &[u8] = &[
 
 #[test]
 fn test_fibonacci() {
-    let mut instance = Instance::new(FIB_WASM, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), FIB_WASM, &[]).expect("instantiation failed");
     let cases = [(0, 0), (1, 1), (2, 1), (3, 2), (5, 5), (10, 55), (20, 6765)];
     for (input, expected) in cases {
         let result = instance
@@ -66,4 +66,9 @@ fn test_fibonacci() {
             expected
         );
     }
+}
+
+/// One engine on this target's defaults, for the tests in this file.
+fn engine() -> sf_nano_core::Engine {
+    sf_nano_core::Engine::with_defaults()
 }

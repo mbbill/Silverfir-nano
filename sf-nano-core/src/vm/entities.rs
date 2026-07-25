@@ -1,6 +1,7 @@
 //! WebAssembly 2.0 Runtime Instances (no_std, single-module).
 
 use crate::collections;
+use crate::config::Config;
 
 use alloc::rc::Rc as AllocRc;
 use core::cell::{Cell, Ref, RefCell, RefMut, UnsafeCell};
@@ -271,12 +272,12 @@ pub struct MemInst {
     pub limits: Limits,
 }
 
-/// Enforce `runtime_config().wasm_memory_max_pages` against the memory's
+/// Enforce the engine's `wasm_memory_max_pages` against the memory's
 /// initial page count. Declared maximums are type-level growth ceilings;
 /// `memory.grow` applies the runtime cap when growth is requested.
-fn check_memory_quota(limits: &Limits) -> Result<(), WasmError> {
+fn check_memory_quota(config: &Config, limits: &Limits) -> Result<(), WasmError> {
     let initial_pages = limits.min();
-    let configured = crate::runtime_config().wasm_memory_max_pages as usize;
+    let configured = config.get_wasm_memory_max_pages() as usize;
     if initial_pages > configured {
         return Err(WasmError::memory_exceeds_runtime_limit());
     }
@@ -284,8 +285,8 @@ fn check_memory_quota(limits: &Limits) -> Result<(), WasmError> {
 }
 
 impl MemInst {
-    pub fn new(limits: Limits) -> Result<Self, WasmError> {
-        check_memory_quota(&limits)?;
+    pub fn new(config: &Config, limits: Limits) -> Result<Self, WasmError> {
+        check_memory_quota(config, &limits)?;
         let initial_bytes = limits.min() * crate::constants::WASM_PAGE_SIZE;
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
@@ -299,8 +300,8 @@ impl MemInst {
     }
 
     #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
-    pub(crate) fn new_unallocated(limits: Limits) -> Result<Self, WasmError> {
-        check_memory_quota(&limits)?;
+    pub(crate) fn new_unallocated(config: &Config, limits: Limits) -> Result<Self, WasmError> {
+        check_memory_quota(config, &limits)?;
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
                 data: collections::Vec::new(),
@@ -314,8 +315,8 @@ impl MemInst {
 
     /// Allocate with guard-page backing (mmap + PROT_NONE guard region).
     #[cfg(sf_has_guard_pages)]
-    pub fn new_guarded(limits: Limits) -> Result<Self, WasmError> {
-        check_memory_quota(&limits)?;
+    pub fn new_guarded(config: &Config, limits: Limits) -> Result<Self, WasmError> {
+        check_memory_quota(config, &limits)?;
         let guard = GuardPageMemory::new(limits.min())?;
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
@@ -542,6 +543,9 @@ impl DataInst {
 
 #[derive(Debug)]
 pub struct ModuleInst {
+    /// The engine's configuration, carried here because every stage that
+    /// needs a budget already has the module in hand.
+    pub(crate) config: Config,
     pub name: String,
     pub types: TypeContext,
     pub functions: collections::Vec<FunctionInst>,
@@ -559,8 +563,9 @@ pub struct ModuleInst {
 }
 
 impl ModuleInst {
-    pub fn new(name: String, types: TypeContext) -> Self {
+    pub fn new(config: Config, name: String, types: TypeContext) -> Self {
         ModuleInst {
+            config,
             name,
             types,
             functions: collections::Vec::new(),
@@ -616,6 +621,10 @@ impl ModuleInst {
         }
     }
 
+    pub fn config(&self) -> &Config {
+        &self.config
+    }
+
     #[cfg(sf_jit)]
     pub fn native_code_buffer(&self) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
         let mut native_buf = self
@@ -623,7 +632,7 @@ impl ModuleInst {
             .try_borrow_mut()
             .map_err(|_| "module native code buffer is already borrowed")?;
         if native_buf.is_none() {
-            *native_buf = Some(CodeBuffer::new()?);
+            *native_buf = Some(CodeBuffer::new(&self.config)?);
         }
         Ok(core::cell::RefMut::map(
             native_buf,
@@ -655,6 +664,7 @@ impl ModuleInst {
 impl Default for ModuleInst {
     fn default() -> Self {
         Self {
+            config: Config::new(),
             name: String::new(),
             types: TypeContext::empty(),
             functions: collections::Vec::new(),

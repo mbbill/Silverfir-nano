@@ -19,12 +19,14 @@ use tracked_alloc::boxed::Box;
 use tracked_alloc::rc::Rc;
 
 use crate::collections::{vec, Vec};
+use crate::config::Config;
 use crate::error::WasmError;
 use crate::module::entities::{Data, Element, ElementInit, GlobalDef};
 use crate::module::Module;
 use crate::opcodes::Opcode;
 use crate::utils::limits::Limitable;
 use crate::value_type::ValueType;
+use crate::vm::engine::Engine;
 
 #[cfg(sf_interp_engine)]
 use super::engine::{
@@ -62,12 +64,8 @@ const MAX_RET_RECORDS: u32 = MAX_CALL_DEPTH + 8;
 /// so here. Silently substituting a token stack would turn that mistake
 /// into a "call stack exhausted" trap somewhere further in.
 #[cfg(sf_interp_engine)]
-fn configured_stack_slots() -> Result<usize, WasmError> {
-    let bytes = crate::runtime_config().wasm_stack_bytes;
-    if bytes == 0 {
-        return Err(WasmError::runtime_not_configured());
-    }
-    Ok(bytes / core::mem::size_of::<u64>())
+fn configured_stack_slots(config: &Config) -> usize {
+    config.get_wasm_stack_bytes() / core::mem::size_of::<u64>()
 }
 
 /// Return-stack records to reserve.
@@ -198,6 +196,7 @@ pub struct InterpInstance {
     /// instantiation and reused by every call. They used to be allocated
     /// and zeroed inside each invocation, which put a 2 MiB allocation in
     /// front of every call to a Wasm function.
+    config: Config,
     #[cfg(sf_interp_engine)]
     stack: Vec<u64>,
     #[cfg(sf_interp_engine)]
@@ -280,12 +279,10 @@ fn eval_simple_const(expr: &[u8]) -> Result<u64, WasmError> {
 }
 
 impl InterpInstance {
-    pub fn new(module: Module) -> Result<Self, WasmError> {
-        // Ask for the operand-stack budget first: on a target whose
-        // runtime has not been configured this is the clean failure, and
-        // it should happen before any work.
+    pub fn new(engine: &Engine, module: Module) -> Result<Self, WasmError> {
+        let config = *engine.config();
         #[cfg(sf_interp_engine)]
-        let stack_slots = configured_stack_slots()?;
+        let stack_slots = configured_stack_slots(&config);
 
         // Functions: predecode every local function eagerly; imports are
         // rejected on call, not here, so import-free modules always work.
@@ -421,6 +418,7 @@ impl InterpInstance {
             tables,
             // Zeroed in full: native dispatch roams the whole region
             // through raw pointers, so every slot must be initialized.
+            config,
             #[cfg(sf_interp_engine)]
             stack: vec![0u64; stack_slots],
             #[cfg(sf_interp_engine)]
@@ -822,7 +820,7 @@ impl InterpInstance {
         let mut ret_stack = core::mem::take(&mut self.ret_stack);
         let reentrant = stack.is_empty();
         if reentrant {
-            let slots = configured_stack_slots()?;
+            let slots = configured_stack_slots(&self.config);
             stack = vec![0u64; slots];
             ret_stack = vec![0u64; configured_ret_records(slots) * (RET_RECORD / 8)];
         }
@@ -2067,7 +2065,7 @@ mod tests {
     fn run1(src: &str, export: &str, args: &[u64]) -> Result<u64, WasmError> {
         let (bin, _) = instantiate(src);
         let module = Module::new("t", &bin).expect("module");
-        let mut inst = InterpInstance::new(module)?;
+        let mut inst = InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module)?;
         let idx = inst.find_export(export).expect("export");
         let mut results = [0u64; 1];
         inst.invoke(idx, args, &mut results)?;
@@ -2100,7 +2098,8 @@ mod tests {
                 (func (export "get") (result i32) global.get $g))"#,
         );
         let module = Module::new("t", &bin).expect("module");
-        let mut inst = InterpInstance::new(module).expect("instantiate");
+        let mut inst = InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module)
+            .expect("instantiate");
         let f = inst.find_export("f").expect("f");
         let g = inst.find_export("get").expect("get");
         inst.invoke(f, &[0], &mut []).expect("invoke cond=0");

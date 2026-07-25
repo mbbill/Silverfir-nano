@@ -263,16 +263,6 @@ fn main() -> ! {
         fps: 0,
     }));
 
-    {
-        let rc = sf_nano_core::runtime_config();
-        defmt::info!(
-            "runtime_config: code_arena={} wasm_max_pages={} wasm_stack={}",
-            rc.code_arena_bytes,
-            rc.wasm_memory_max_pages,
-            rc.wasm_stack_bytes
-        );
-    }
-
     // One instantiation for either engine: `Instance` honours whichever
     // one this image was built with, and nothing below this line knows
     // which. sf-nano-core infers `push_frame`'s signature from the
@@ -283,7 +273,17 @@ fn main() -> ! {
         "push_frame",
         push_frame_handler(Rc::clone(&display_ctx)),
     )];
-    let mut instance = match Instance::new(WASM_DEMO, &imports) {
+    let engine = lib::config::engine();
+    {
+        let cfg = engine.config();
+        defmt::info!(
+            "engine: code_arena={} wasm_max_pages={} wasm_stack={}",
+            cfg.get_code_arena_bytes(),
+            cfg.get_wasm_memory_max_pages(),
+            cfg.get_wasm_stack_bytes()
+        );
+    }
+    let mut instance = match Instance::new(&engine, WASM_DEMO, &imports) {
         Ok(inst) => inst,
         Err(e) => {
             defmt::error!("instantiate failed: {=str}", e.message());

@@ -12,10 +12,7 @@ mod wast_test_runner;
 
 use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
-use sf_nano_core::{
-    reset_native_runtime_state, runtime_config, set_engine, set_runtime_config, target_has_simd,
-    Engine, RuntimeConfig,
-};
+use sf_nano_core::{reset_native_runtime_state, target_has_simd, Config, Engine, Tier};
 use std::{
     env,
     panic::AssertUnwindSafe,
@@ -74,9 +71,9 @@ fn main() {
         }
     }
 
-    let mut engine = Engine::DEFAULT;
+    let mut tier = Tier::DEFAULT;
     if let Some(requested) = &args.backend {
-        engine = Engine::parse_str(requested).unwrap_or_else(|| {
+        tier = Tier::parse_str(requested).unwrap_or_else(|| {
             eprintln!(
                 "engine '{}' is not in this build; it has: {}",
                 requested,
@@ -85,12 +82,20 @@ fn main() {
             std::process::exit(1);
         });
     }
-    set_engine(engine);
-    if let Err(err) = apply_compiler_ram_budget(args.compiler_ram_budget.as_deref()) {
-        eprintln!("{}", err);
-        std::process::exit(1);
+    let mut config = Config::new().tier(tier);
+    match compiler_ram_budget(args.compiler_ram_budget.as_deref()) {
+        Ok(Some(bytes)) => config = config.compiler_ram_budget_bytes(bytes),
+        Ok(None) => {}
+        Err(err) => {
+            eprintln!("{}", err);
+            std::process::exit(1);
+        }
     }
-    print_engine(engine);
+    let engine = Engine::new(config).unwrap_or_else(|err| {
+        eprintln!("{err}");
+        std::process::exit(1);
+    });
+    print_engine(tier);
 
     // Initialize logging
     if let Some(level_str) = &args.log_level {
@@ -155,7 +160,7 @@ fn main() {
     info!("Using testsuite from: {}", testsuite_dir.display());
 
     #[cfg(feature = "jit")]
-    if !run_wast_tests_with_large_stack(testsuite_dir, args.filters) {
+    if !run_wast_tests_with_large_stack(engine, testsuite_dir, args.filters) {
         std::process::exit(1);
     }
     #[cfg(not(feature = "jit"))]
@@ -167,13 +172,17 @@ fn main() {
 }
 
 #[cfg(feature = "jit")]
-fn run_wast_tests_with_large_stack(testsuite_dir: PathBuf, filters: Vec<String>) -> bool {
+fn run_wast_tests_with_large_stack(
+    engine: Engine,
+    testsuite_dir: PathBuf,
+    filters: Vec<String>,
+) -> bool {
     let stack_size = recommended_worker_stack_size();
     let builder = thread::Builder::new()
         .name("sf-nano-spectest".into())
         .stack_size(stack_size);
     let handle = builder
-        .spawn(move || run_wast_tests(&testsuite_dir, &filters))
+        .spawn(move || run_wast_tests(engine, &testsuite_dir, &filters))
         .unwrap_or_else(|err| panic!("failed to spawn spectest worker thread: {err}"));
     handle
         .join()
@@ -181,15 +190,21 @@ fn run_wast_tests_with_large_stack(testsuite_dir: PathBuf, filters: Vec<String>)
 }
 
 #[cfg(feature = "jit")]
+/// The interpreter and JIT stacks are sized per engine now, but this
+/// thread is spawned before one exists, so the sizing constant is local.
+const WASM_STACK_BYTES_FOR_STACK_SIZING: usize = 2 * 1024 * 1024;
+
+#[cfg(feature = "jit")]
 fn recommended_worker_stack_size() -> usize {
     // Sized by sf-nano-core's configured Wasm operand/call stack —
     // the worker OS thread must be large enough to hold everything the
     // JIT might push. 4× headroom over the Wasm stack, with an 8 MiB
     // floor for deep-recursion spec tests.
-    std::cmp::max(runtime_config().wasm_stack_bytes * 4, 8 * 1024 * 1024)
+    std::cmp::max(WASM_STACK_BYTES_FOR_STACK_SIZING * 4, 8 * 1024 * 1024)
 }
 
-fn apply_compiler_ram_budget(arg: Option<&str>) -> Result<(), String> {
+/// The compiler RAM budget the flag or the environment asks for, if any.
+fn compiler_ram_budget(arg: Option<&str>) -> Result<Option<u32>, String> {
     let value = match arg {
         Some(value) => Some(value.to_string()),
         None => match env::var("SF_NANO_COMPILER_RAM_BUDGET") {
@@ -204,14 +219,11 @@ fn apply_compiler_ram_budget(arg: Option<&str>) -> Result<(), String> {
         },
     };
     let Some(value) = value else {
-        return Ok(());
+        return Ok(None);
     };
-    let bytes = parse_byte_size(&value)
-        .ok_or_else(|| format!("invalid compiler RAM budget '{}'", value))?;
-    let mut cfg: RuntimeConfig = *runtime_config();
-    cfg.compiler_ram_budget_bytes = bytes;
-    set_runtime_config(cfg)
-        .map_err(|err| format!("could not install compiler RAM budget: {:?}", err))
+    parse_byte_size(&value)
+        .map(Some)
+        .ok_or_else(|| format!("invalid compiler RAM budget '{}'", value))
 }
 
 fn parse_byte_size(text: &str) -> Option<u32> {
@@ -239,25 +251,25 @@ fn parse_byte_size(text: &str) -> Option<u32> {
 
 /// The engine names this build accepts, for error messages.
 fn engine_names() -> String {
-    let mut names: Vec<&str> = Engine::ALL.iter().map(|e| e.as_str()).collect();
+    let mut names: Vec<&str> = Tier::ALL.iter().map(|t| t.as_str()).collect();
     names.push("auto");
     names.join(", ")
 }
 
-fn print_engine(engine: Engine) {
-    match engine {
+fn print_engine(tier: Tier) {
+    match tier {
         #[cfg(feature = "jit")]
-        Engine::Jit => match sf_nano_core::active_native_backend_name() {
+        Tier::Jit => match sf_nano_core::active_native_backend_name() {
             Ok(backend) => eprintln!("[runtime] jit backend={backend}"),
             Err(err) => eprintln!("[runtime] jit backend unavailable: {err}"),
         },
         #[cfg(feature = "interp")]
-        Engine::Interp => eprintln!("[runtime] interpreter (native dispatch)"),
+        Tier::Interp => eprintln!("[runtime] interpreter (native dispatch)"),
     }
 }
 
 #[cfg(feature = "jit")]
-fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) -> bool {
+fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> bool {
     let start_time = Instant::now();
 
     let wast_files = find_wast_files(testsuite_dir);
@@ -369,7 +381,7 @@ fn run_wast_tests(testsuite_dir: &Path, filters: &[String]) -> bool {
 
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             reset_native_runtime_state();
-            let mut runner = WastTestRunner::new();
+            let mut runner = WastTestRunner::new(engine);
             runner.run_wast_file(&wast_file)
         }));
 

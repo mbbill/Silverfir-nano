@@ -44,7 +44,7 @@ fn bulk_memory_preserves_c_argument_lanes() {
             (i32.load8_u (i32.const 512))))
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
     let fill = instance.invoke("fill", &[]).expect("memory.fill failed");
     assert_eq!(fill.as_slice(), &[Value::I32(82)]);
 
@@ -62,9 +62,14 @@ fn bulk_memory_bounds_trap_unwinds_helper_frame() {
             (memory.fill (local.get $dest) (i32.const 0) (local.get $len))))
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
     let err = instance
         .invoke("fill", &[Value::I32(65_520), Value::I32(32)])
         .expect_err("out-of-bounds fill should trap");
     assert!(err.message().contains("out of bounds"), "{err:?}");
+}
+
+/// One engine on this target's defaults, for the tests in this file.
+fn engine() -> sf_nano_core::Engine {
+    sf_nano_core::Engine::with_defaults()
 }

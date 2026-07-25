@@ -1,28 +1,41 @@
-- Runtime sizing (executable code-arena size, linear-memory page ceiling, Wasm
-  operand/call stack size) comes from a write-once global the embedder installs
-  before any instance, not from compile-time constants (`RuntimeConfig`).
+- Runtime sizing (executable code-arena size, linear-memory page ceiling,
+  Wasm operand/call stack size, compile-time RAM budget, compilation
+  parallelism) and the execution tier are one value the embedder builds
+  and hands to an engine (`Config`).
 
-- The hosted default reproduces the former fixed numbers, while the bare-metal
-  (`sf_os_none`) default is zeroed; a call site that reads an unconfigured
-  size returns a clean not-configured error rather than allocating against a
-  zero size (`runtime_not_configured`).
+- An engine holds a validated configuration and copies it into every
+  instance it creates. Two engines coexist with different budgets and
+  different tiers, and configuring one cannot disturb the other.
+
+- Budgets are read from the instance in hand, never from ambient state.
+
+- The hosted defaults reproduce the former fixed numbers. The bare-metal
+  (`sf_os_none`) defaults are zeroed, and engine construction rejects a
+  zeroed budget naming the field.
 
 ## Facts
 
-- 2026-04-21 (a80b238f) rationale: the Wasm operand/call stack, previously the
-  compile-time constant constants::MAX_STACK_SIZE (a fixed 2 MiB), is folded
-  into the same write-once runtime config as RuntimeConfig.wasm_stack_bytes: the
-  constant is removed and both eval paths now size the per-invoke u64 stack from
-  runtime_config().wasm_stack_bytes; the hosted default preserves the former
-  2 MiB while the bare-metal (sf_os_none) default is zeroed, so a
-  stack_slots == 0 guard returns runtime_not_configured rather than allocating a
-  zero-length stack when the embedder forgot to install a config (code).
+- 2026-07-25 rationale: a write-once global cannot express two
+  differently-configured engines in one process, and it made the
+  configuration a property of the program rather than of the thing being
+  configured (code).
+
+- 2026-07-25 statement: the check that a bare-metal embedder configured
+  anything moved from each reading call site to engine construction, so
+  it reports a missing budget before a module is touched rather than as a
+  trap inside a guest (code).
+
+- 2026-07-25 measurement: reaching the budgets needed no new parameter on
+  the hot paths — the module instance already travels everywhere they are
+  read, so carrying the configuration there covered all ten sites (code).
+
+- 2026-07-25 pitfall: the global's storage needed an `UnsafeCell` behind a
+  hand-written `Sync` impl and a three-state atomic to be sound against a
+  concurrent reader; a value passed by the embedder needs none of it
+  (code).
 
 ## Moves
 
-- 2026-04-21 (b206d2aa) replaced [[hardcoded-runtime-sizes]]: the bare-metal
-  target cannot fit the hosted defaults (12-16 MiB code arena, wasm32 page
-  ceiling) into a few hundred KiB of SRAM, so the fixed constants are replaced
-  by a write-once global the embedder installs before any instance, with hosted
-  defaults preserving the old numbers and the bare-metal default zeroed to force
-  a clean error (code).
+- 2026-07-25 replaced [[write-once-global]]: configuration that is
+  process-wide cannot describe two engines at once, and being write-once
+  made a second call an error rather than an ordinary thing to do (code)

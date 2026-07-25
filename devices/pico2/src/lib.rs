@@ -21,10 +21,10 @@ pub mod heap;
 pub mod kernels;
 pub mod os_shim;
 
-/// Install the heap + runtime configuration for this board. Must be
-/// called exactly once at startup, before any `Box`/`Vec` is
-/// constructed and before sf-nano-core instantiates any module.
+/// Install the heap for this board. Must be called exactly once at
+/// startup, before any `Box`/`Vec` is constructed. The engine is built
+/// separately with [`config::engine`], because it is a value now rather
+/// than a process-wide setting.
 pub fn init() {
     heap::init();
-    config::init();
 }

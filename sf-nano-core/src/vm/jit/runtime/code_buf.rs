@@ -8,6 +8,7 @@
 //! holds only the per-buffer state (`base`, `capacity`, `offset`) and the
 //! offset-bumping emit helpers.
 
+use crate::config::Config;
 use core::ptr;
 
 use super::os;
@@ -51,14 +52,8 @@ impl core::fmt::Debug for CodeBuffer {
 
 impl CodeBuffer {
     #[inline]
-    pub fn new() -> Result<Self, &'static str> {
-        let capacity = crate::runtime_config().code_arena_bytes;
-        if capacity == 0 {
-            return Err(
-                "runtime not configured: embedder must call sf_nano_core::set_runtime_config before JIT use",
-            );
-        }
-        Self::with_capacity(capacity)
+    pub fn new(config: &Config) -> Result<Self, &'static str> {
+        Self::with_capacity(config.get_code_arena_bytes())
     }
 
     pub fn with_capacity(capacity: usize) -> Result<Self, &'static str> {

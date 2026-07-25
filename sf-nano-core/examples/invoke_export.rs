@@ -1,5 +1,5 @@
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
-use sf_nano_core::{set_engine, Engine, Instance, Value};
+use sf_nano_core::{Config, Engine, Instance, Tier, Value};
 
 use std::env;
 use std::fs;
@@ -88,8 +88,6 @@ fn main() {
         }));
     }
 
-    set_engine(Engine::Jit);
-
     let data = fs::read(&wasm_path).unwrap_or_else(|err| {
         eprintln!("error reading '{}': {err}", wasm_path);
         process::exit(1);
@@ -108,7 +106,12 @@ fn main() {
     set_wasi_ctx(ctx);
 
     let imports = wasi_imports();
-    let mut instance = Instance::new(&data, &imports).unwrap_or_else(|err| {
+    let mut instance = Instance::new(
+        &Engine::new(Config::new().tier(Tier::Jit)).expect("engine"),
+        &data,
+        &imports,
+    )
+    .unwrap_or_else(|err| {
         eprintln!("instantiation failed: {err}");
         process::exit(1);
     });

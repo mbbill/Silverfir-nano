@@ -1,4 +1,4 @@
-//! sf-nano-core runtime configuration for this board.
+//! The engine this board runs modules in.
 //!
 //! The bare-metal build of sf-nano-core ships with a zero default
 //! (see `sf_nano_core::config::RuntimeConfig::DEFAULT` under
@@ -31,15 +31,17 @@ pub const WASM_STACK_BYTES: usize = 16 * 1024;
 /// budget use the template JIT path instead of the full compiler pipeline.
 pub const COMPILER_RAM_BUDGET_BYTES: u32 = 500 * 1024;
 
-/// Install the runtime configuration. Panics if called more than once
-/// — `sf_nano_core::set_runtime_config` is write-once by design.
-pub fn init() {
-    sf_nano_core::set_runtime_config(sf_nano_core::RuntimeConfig {
-        code_arena_bytes: CODE_ARENA_BYTES,
-        wasm_memory_max_pages: WASM_MEMORY_MAX_PAGES,
-        wasm_stack_bytes: WASM_STACK_BYTES,
-        compiler_ram_budget_bytes: COMPILER_RAM_BUDGET_BYTES,
-        parallel_compilation: false,
-    })
-    .expect("sf-nano-pico2 config already initialized");
+/// This board's engine. Every budget is explicit: the bare-metal target
+/// ships no defaults, and `Engine::new` names whichever one is missing
+/// rather than inventing a number for a board it knows nothing about.
+pub fn engine() -> sf_nano_core::Engine {
+    sf_nano_core::Engine::new(
+        sf_nano_core::Config::new()
+            .code_arena_bytes(CODE_ARENA_BYTES)
+            .wasm_memory_max_pages(WASM_MEMORY_MAX_PAGES)
+            .wasm_stack_bytes(WASM_STACK_BYTES)
+            .compiler_ram_budget_bytes(COMPILER_RAM_BUDGET_BYTES)
+            .parallel_compilation(false),
+    )
+    .expect("sf-nano-pico2 engine configuration")
 }

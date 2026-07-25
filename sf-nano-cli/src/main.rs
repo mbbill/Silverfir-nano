@@ -1,7 +1,7 @@
 #[cfg(feature = "jit")]
 use sf_nano_core::jit_stats_snapshot;
 use sf_nano_core::wasi::{set_wasi_ctx, wasi_imports, WasiContextBuilder};
-use sf_nano_core::{runtime_config, set_engine, set_runtime_config, Engine, RuntimeConfig};
+use sf_nano_core::{Config, Engine, Tier};
 
 use std::path::PathBuf;
 use std::{env, fs, process};
@@ -33,7 +33,7 @@ fn run_cli(args: &[String]) -> i32 {
     }
 
     let mut preopens: Vec<(String, PathBuf)> = Vec::new();
-    let mut engine = Engine::DEFAULT;
+    let mut tier = Tier::DEFAULT;
     #[cfg(feature = "interp")]
     let mut interp_stats = false;
     let mut compile_only = false;
@@ -101,7 +101,7 @@ fn run_cli(args: &[String]) -> i32 {
                 eprintln!("Error: {} requires one of: {}", flag, engine_names());
                 return 1;
             }
-            let Some(parsed) = Engine::parse_str(&args[i]) else {
+            let Some(parsed) = Tier::parse_str(&args[i]) else {
                 eprintln!(
                     "Error: engine '{}' is not in this build; it has: {}",
                     args[i],
@@ -109,11 +109,11 @@ fn run_cli(args: &[String]) -> i32 {
                 );
                 return 1;
             };
-            engine = parsed;
+            tier = parsed;
         } else if args[i] == "--interp" || args[i] == "--interp-stats" {
             #[cfg(feature = "interp")]
             {
-                engine = Engine::Interp;
+                tier = Tier::Interp;
                 if args[i] == "--interp-stats" {
                     interp_stats = true;
                 }
@@ -168,7 +168,6 @@ fn run_cli(args: &[String]) -> i32 {
             return 1;
         }
 
-        set_engine(engine);
         if compiler_ram_budget.is_none() {
             match env::var("SF_NANO_COMPILER_RAM_BUDGET") {
                 Ok(value) => match parse_byte_size(&value) {
@@ -188,21 +187,20 @@ fn run_cli(args: &[String]) -> i32 {
                 }
             }
         }
-        if compiler_ram_budget.is_some() || !parallel_compilation {
-            let mut cfg: RuntimeConfig = *runtime_config();
-            if let Some(bytes) = compiler_ram_budget {
-                cfg.compiler_ram_budget_bytes = bytes;
-            }
-            cfg.parallel_compilation = parallel_compilation;
-            if let Err(err) = set_runtime_config(cfg) {
-                eprintln!(
-                    "Error: compiler options could not install runtime config: {:?}",
-                    err
-                );
+        let mut config = Config::new()
+            .tier(tier)
+            .parallel_compilation(parallel_compilation);
+        if let Some(bytes) = compiler_ram_budget {
+            config = config.compiler_ram_budget_bytes(bytes);
+        }
+        let engine = match Engine::new(config) {
+            Ok(engine) => engine,
+            Err(err) => {
+                eprintln!("Error: {err}");
                 return 1;
             }
-        }
-        print_engine(engine);
+        };
+        print_engine(tier);
 
         let path = PathBuf::from(&remaining_args[0]);
         let prog_args: Vec<String> = remaining_args[1..].to_vec();
@@ -246,6 +244,7 @@ fn run_cli(args: &[String]) -> i32 {
         set_wasi_ctx(ctx);
 
         run_module(
+            &engine,
             &data,
             module_name,
             compile_only,
@@ -276,6 +275,7 @@ fn run_cli(args: &[String]) -> i32 {
 /// `Instance` honours it; nothing from here down knows or cares which one
 /// is underneath.
 fn run_module(
+    engine: &Engine,
     data: &[u8],
     module_name: &str,
     compile_only: bool,
@@ -291,7 +291,7 @@ fn run_module(
         }
     };
     let imports = wasi_imports();
-    let mut instance = match Instance::from_module(module, &imports) {
+    let mut instance = match Instance::from_module(engine, module, &imports) {
         Ok(instance) => instance,
         Err(err) => {
             eprintln!("Error instantiating module: {}", err);
@@ -474,21 +474,21 @@ fn print_native_stats() {
 
 /// The engine names this build accepts, for error messages.
 fn engine_names() -> String {
-    let mut names: Vec<&str> = Engine::ALL.iter().map(|e| e.as_str()).collect();
+    let mut names: Vec<&str> = Tier::ALL.iter().map(|t| t.as_str()).collect();
     names.push("auto");
     names.join(", ")
 }
 
 /// Announce the engine on stderr: stdout belongs to the guest program, which
 /// the benchmark harness checksums.
-fn print_engine(engine: Engine) {
-    match engine {
+fn print_engine(tier: Tier) {
+    match tier {
         #[cfg(feature = "jit")]
-        Engine::Jit => match sf_nano_core::active_native_backend_name() {
+        Tier::Jit => match sf_nano_core::active_native_backend_name() {
             Ok(backend) => eprintln!("[runtime] jit backend={backend}"),
             Err(err) => eprintln!("[runtime] jit backend unavailable: {err}"),
         },
         #[cfg(feature = "interp")]
-        Engine::Interp => eprintln!("[runtime] interpreter (native dispatch)"),
+        Tier::Interp => eprintln!("[runtime] interpreter (native dispatch)"),
     }
 }

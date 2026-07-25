@@ -33,7 +33,7 @@ fn array_get_oob_traps() {
               (local.get $i))))
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
     let ok = instance
         .invoke("get", &[Value::I32(0)])
         .expect("in-bounds get");
@@ -55,7 +55,7 @@ fn array_get_oob_traps_via_param_ref() {
             (array.get $vec (local.get $v) (local.get $i))))
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
     let mk = instance.invoke("mk", &[]).expect("mk");
     let v = mk.into_iter().next().unwrap();
     expect_values(
@@ -84,7 +84,7 @@ fn array_get_oob_traps_after_unrelated_call() {
               (local.get $i))))
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
     expect_values(
         instance.invoke("get", &[Value::I32(0)]).expect("get0"),
         &[Value::F32(0.0)],
@@ -109,7 +109,7 @@ fn array_get_oob_traps_via_call() {
             (call $get (local.get $i) (call $new))))
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
     expect_values(
         instance.invoke("get", &[Value::I32(0)]).expect("get0"),
         &[Value::F32(0.0)],
@@ -149,7 +149,7 @@ fn array_get_oob_traps_after_many_allocations() {
             (array.len (call $new))))
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
     let _ = instance.invoke("new", &[]).expect("new");
     let _ = instance.invoke("new", &[]).expect("new");
     expect_values(
@@ -183,7 +183,7 @@ fn array_set_roundtrip() {
             (array.get $mvec (local.get $v) (local.get $i))))
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
     let r = instance
         .invoke("set_get", &[Value::I32(1), Value::F32(7.0)])
         .expect("invoke");
@@ -203,7 +203,7 @@ fn array_get_s_u_packed() {
             (array.get_u $v (array.new_data $v $d (i32.const 0) (i32.const 5)) (local.get $i))))
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
     let r = instance.invoke("gets", &[Value::I32(3)]).expect("gets");
     expect_values(r, &[Value::I32(-1)]);
     let r = instance.invoke("getu", &[Value::I32(3)]).expect("getu");
@@ -220,7 +220,12 @@ fn array_len_returns_length() {
             (array.len (array.new_default $v (i32.const 42)))))
         "#,
     );
-    let mut instance = Instance::new(&wasm, &[]).expect("instantiation failed");
+    let mut instance = Instance::new(&engine(), &wasm, &[]).expect("instantiation failed");
     let r = instance.invoke("len", &[]).expect("invoke");
     expect_values(r, &[Value::I32(42)]);
+}
+
+/// One engine on this target's defaults, for the tests in this file.
+fn engine() -> sf_nano_core::Engine {
+    sf_nano_core::Engine::with_defaults()
 }

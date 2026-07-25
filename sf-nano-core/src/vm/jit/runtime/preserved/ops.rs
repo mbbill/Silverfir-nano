@@ -1200,13 +1200,17 @@ pub(super) fn do_memory_grow(
     mem_idx: u32,
     delta_raw: u64,
 ) -> Result<u64, WasmError> {
+    // Read the budget before borrowing the memory out of the context.
+    let runtime_cap = ctx
+        .store()
+        .map(|store| store.config().get_wasm_memory_max_pages() as usize)
+        .unwrap_or(0);
     let mem = memory_mut(ctx, mem_idx)?;
     let is_64 = mem.limits.is64;
     let error_value = memory_grow_error_value(is_64);
     let delta_pages = decode_memory_grow_delta(delta_raw, is_64);
 
     let old_pages = mem.current_pages();
-    let runtime_cap = crate::runtime_config().wasm_memory_max_pages as usize;
     let effective_max = mem.limits.get_max().min(runtime_cap);
     let result = match old_pages.checked_add(delta_pages) {
         None => error_value,

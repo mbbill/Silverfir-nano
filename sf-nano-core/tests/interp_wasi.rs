@@ -46,7 +46,7 @@ fn run_wasi(path: &str) -> (Result<(), WasmError>, HostState) {
     });
     let result = {
         let state = std::rc::Rc::clone(&state);
-        let mut inst = InterpInstance::new(module).expect("instantiate");
+        let mut inst = InterpInstance::new(&engine(), module).expect("instantiate");
         inst.set_host(
             move |_mod: &str, name: &str, mem: &mut [u8], args: &[u64], results: &mut [u64]| {
                 match name {
@@ -153,4 +153,9 @@ fn interpreter_runs_sha256_benchmark() {
     );
     let out = String::from_utf8_lossy(&state.output.borrow()).into_owned();
     assert!(!out.is_empty(), "sha256 produced no output");
+}
+
+/// One engine on this target's defaults, for the tests in this file.
+fn engine() -> sf_nano_core::Engine {
+    sf_nano_core::Engine::with_defaults()
 }

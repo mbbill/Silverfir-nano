@@ -94,8 +94,7 @@ const OVER_BUDGET_TEMPLATE_UNSUPPORTED: &str =
     "function exceeds compiler RAM budget and is not supported by template jit";
 
 #[inline]
-fn full_optimization_for_bytecode_size(bytecode_size: usize) -> bool {
-    let budget = crate::runtime_config().compiler_ram_budget_bytes;
+fn full_optimization_for_bytecode_size(budget: u32, bytecode_size: usize) -> bool {
     if budget == u32::MAX {
         return true;
     }
@@ -530,7 +529,10 @@ fn build_static_summaries(
         let Some(spec) = func.spec() else {
             continue;
         };
-        let template_requested = !full_optimization_for_bytecode_size(spec.code().len());
+        let template_requested = !full_optimization_for_bytecode_size(
+            module.config().get_compiler_ram_budget_bytes(),
+            spec.code().len(),
+        );
         if template_requested {
             let template_scan_phase =
                 phase_span_with_function("template_scan", Some(func_idx as u32));
@@ -646,7 +648,7 @@ fn parallel_eager_worker_count(module: &ModuleInst) -> usize {
     // Read the explicit policy before inspecting the module or probing the
     // host. Besides forcing the serial pipeline, this keeps benchmark runs
     // independent of CPU-count and cgroup detection.
-    if !crate::runtime_config().parallel_compilation {
+    if !module.config().get_parallel_compilation() {
         return 0;
     }
 
@@ -663,7 +665,12 @@ fn parallel_eager_worker_count(module: &ModuleInst) -> usize {
             .functions
             .iter()
             .filter_map(|function| function.spec())
-            .any(|spec| !full_optimization_for_bytecode_size(spec.code().len()))
+            .any(|spec| {
+                !full_optimization_for_bytecode_size(
+                    module.config().get_compiler_ram_budget_bytes(),
+                    spec.code().len(),
+                )
+            })
     {
         return 0;
     }
@@ -1185,7 +1192,7 @@ fn finish_native_compile_streaming(
         }
     };
 
-    let mut executable = CodeBuffer::new().map_err(WasmError::internal)?;
+    let mut executable = CodeBuffer::new(module.config()).map_err(WasmError::internal)?;
     executable.begin_write();
     executable.reset();
     let base_ptr = executable.as_ptr();
@@ -1212,7 +1219,10 @@ fn finish_native_compile_streaming(
         #[cfg(not(sf_has_std))]
         let precompiled_artifact: Option<FunctionArtifact> = None;
 
-        let template_requested = !full_optimization_for_bytecode_size(spec.code().len());
+        let template_requested = !full_optimization_for_bytecode_size(
+            module.config().get_compiler_ram_budget_bytes(),
+            spec.code().len(),
+        );
         let artifact = if let Some(artifact) = precompiled_artifact {
             artifact
         } else if template_requested {
@@ -1697,7 +1707,7 @@ mod tests {
             func_def(collections::vec![], collections::vec![]),
             func_def(collections::vec![ValueType::I32], collections::vec![]),
         ]);
-        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
         let mut spec0 = FunctionSpec::new(
             Rc::new(FunctionType::new(collections::vec![], collections::vec![])),
             0,
@@ -1749,7 +1759,7 @@ mod tests {
                 collections::vec![ValueType::I32],
             ),
         ]);
-        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
 
         let mut spec0 = FunctionSpec::new(
             Rc::new(FunctionType::new(collections::vec![], collections::vec![])),
@@ -1798,7 +1808,7 @@ mod tests {
             collections::vec![ValueType::F64],
             collections::vec![ValueType::F64],
         )]);
-        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
                 collections::vec![ValueType::F64],
@@ -1824,7 +1834,7 @@ mod tests {
             collections::vec![ValueType::F32, ValueType::F32],
             collections::vec![ValueType::F32],
         )]);
-        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
                 collections::vec![ValueType::F32, ValueType::F32],
@@ -1861,7 +1871,7 @@ mod tests {
             collections::vec![ValueType::F32, ValueType::I32],
             collections::vec![ValueType::F32],
         )]);
-        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
                 collections::vec![ValueType::F32, ValueType::I32],
@@ -1911,7 +1921,7 @@ mod tests {
             collections::vec![ValueType::I32, ValueType::I32],
             collections::vec![ValueType::F32],
         )]);
-        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_locals(collections::vec![
             ValueType::F32,
@@ -1958,8 +1968,11 @@ mod tests {
             type_index: 0,
         });
         module.memories.push(
-            MemInst::new(Limits::new(1, Some(1)).unwrap())
-                .expect("test memory within runtime limits"),
+            MemInst::new(
+                &crate::config::Config::new(),
+                Limits::new(1, Some(1)).unwrap(),
+            )
+            .expect("test memory within runtime limits"),
         );
         let store = Box::new(Store::new(module));
 
@@ -2088,7 +2101,7 @@ mod tests {
                 collections::vec![ValueType::I32],
             ),
         ]);
-        let mut module = ModuleInst::new(String::from("m"), types);
+        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
 
         let helper_code = local_get_code((helper_params.len() - 1) as u32);
         let mut helper_spec = FunctionSpec::new(Rc::clone(&helper_type), 0);

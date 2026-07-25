@@ -6,7 +6,8 @@ use sf_nano_core::module::type_context::TypeContext;
 use sf_nano_core::module::Module;
 use sf_nano_core::value_type::{AbstractHeapType, HeapType, RefType};
 use sf_nano_core::{
-    Caller, HostFn, Import, JitInstance, Limitable, LinkRegistry, RefHandle, Value, WasmError,
+    Caller, Engine, HostFn, Import, JitInstance, Limitable, LinkRegistry, RefHandle, Value,
+    WasmError,
 };
 use std::{cell::RefCell, collections::HashMap, fmt, fs, path::Path};
 use wast::{
@@ -566,6 +567,7 @@ const FORWARDER_TABLE: [HostFn; 128] = [
 // ---------------------------------------------------------------------------
 
 pub struct WastTestRunner {
+    engine: Engine,
     instances: HashMap<String, JitInstance>,
     module_bytes: HashMap<String, Vec<u8>>,
     module_counter: u32,
@@ -579,9 +581,10 @@ pub struct WastTestRunner {
 }
 
 impl WastTestRunner {
-    pub fn new() -> Self {
+    pub fn new(engine: Engine) -> Self {
         clear_forwarding();
         WastTestRunner {
+            engine,
             instances: HashMap::new(),
             module_bytes: HashMap::new(),
             module_counter: 0,
@@ -945,7 +948,7 @@ impl WastTestRunner {
                         let imports = self
                             .build_imports(&bytes)
                             .map_err(|error| TestError::infrastructure(error.to_string()))?;
-                        match JitInstance::from_module(module, &imports) {
+                        match JitInstance::from_module(&self.engine, module, &imports) {
                             Ok(_) => Err(TestError::infrastructure(format!(
                                 "Expected: malformed module with error '{}', Actual: WASM parsing succeeded ({} bytes)",
                                 expected_message, compiled.wasm_bytes.len()
@@ -1252,7 +1255,12 @@ impl WastTestRunner {
     ) -> Result<JitInstance, WasmError> {
         let imports = self.build_imports(wasm_bytes)?;
         let module = Module::new("main", wasm_bytes)?;
-        match JitInstance::from_module_with_registry(module, &imports, &self.function_registry) {
+        match JitInstance::from_module_with_registry(
+            &self.engine,
+            module,
+            &imports,
+            &self.function_registry,
+        ) {
             Ok(instance) => Ok(instance),
             Err(err) => {
                 let (partial, error) = err.into_parts();
@@ -2071,15 +2079,23 @@ mod tests {
     use super::*;
     #[cfg(target_arch = "aarch64")]
     use sf_nano_core::FunctionInst;
-    use sf_nano_core::{set_engine, Engine, Value};
+    use sf_nano_core::{Config, Engine, Tier, Value};
     use std::path::PathBuf;
 
     fn expect_values(values: impl AsRef<[Value]>, expected: &[Value]) {
         assert_eq!(values.as_ref(), expected);
     }
 
-    fn instantiate_first_module_with_backend(path: &str, engine: Engine) -> WastTestRunner {
-        set_engine(engine);
+    /// One engine per test, on the tier the test names.
+    fn engine_for(tier: Tier) -> Engine {
+        Engine::new(Config::new().tier(tier)).expect("engine")
+    }
+
+    fn test_engine() -> Engine {
+        engine_for(Tier::DEFAULT)
+    }
+
+    fn instantiate_first_module_with_backend(path: &str, tier: Tier) -> WastTestRunner {
         let full_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target")
@@ -2091,7 +2107,7 @@ mod tests {
         let buf = wast::parser::ParseBuffer::new_with_lexer(lexer).expect("parse buffer");
         let mut wast = wast::parser::parse::<Wast>(&buf).expect("parse wast");
 
-        let mut runner = WastTestRunner::new();
+        let mut runner = WastTestRunner::new(test_engine());
         let directive = wast.directives.first_mut().expect("module directive");
         match directive {
             WastDirective::Module(quote_wat) => {
@@ -2106,17 +2122,16 @@ mod tests {
     }
 
     fn instantiate_first_module(path: &str) -> WastTestRunner {
-        instantiate_first_module_with_backend(path, Engine::DEFAULT)
+        instantiate_first_module_with_backend(path, Tier::DEFAULT)
     }
 
     fn run_wast_fixture(path: &str) -> TestResult {
-        set_engine(Engine::DEFAULT);
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("..")
             .join("target")
             .join("webassembly-testsuite")
             .join(path);
-        let mut runner = WastTestRunner::new();
+        let mut runner = WastTestRunner::new(test_engine());
         runner.run_wast_file(&path)
     }
 
@@ -2153,8 +2168,6 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_repeated_local_calls_and_aliasing() {
-        set_engine(Engine::Jit);
-
         let wasm_bytes = wat::parse_str(
             r#"
             (module
@@ -2193,7 +2206,7 @@ mod tests {
         )
         .expect("compile wat");
 
-        let mut runner = WastTestRunner::new();
+        let mut runner = WastTestRunner::new(test_engine());
         let mut instance = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
@@ -2222,8 +2235,6 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_br_on_cast_with_i31ref() {
-        set_engine(Engine::Jit);
-
         let wasm_bytes = wat::parse_str(
             r#"
             (module
@@ -2248,7 +2259,7 @@ mod tests {
         )
         .expect("compile wat");
 
-        let mut runner = WastTestRunner::new();
+        let mut runner = WastTestRunner::new(test_engine());
         let mut instance = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
@@ -2279,8 +2290,6 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_struct_new_and_struct_get() {
-        set_engine(Engine::Jit);
-
         let wasm_bytes = wat::parse_str(
             r#"
             (module
@@ -2295,7 +2304,7 @@ mod tests {
         )
         .expect("compile wat");
 
-        let mut runner = WastTestRunner::new();
+        let mut runner = WastTestRunner::new(test_engine());
         let mut instance = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
@@ -2309,8 +2318,6 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_set_and_get() {
-        set_engine(Engine::Jit);
-
         let wasm_bytes = wat::parse_str(
             r#"
             (module
@@ -2333,7 +2340,7 @@ mod tests {
         )
         .expect("compile wat");
 
-        let mut runner = WastTestRunner::new();
+        let mut runner = WastTestRunner::new(test_engine());
         let mut instance = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
@@ -2347,8 +2354,6 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_fixed_fill_and_copy() {
-        set_engine(Engine::Jit);
-
         let wasm_bytes = wat::parse_str(
             r#"
             (module
@@ -2401,7 +2406,7 @@ mod tests {
         )
         .expect("compile wat");
 
-        let mut runner = WastTestRunner::new();
+        let mut runner = WastTestRunner::new(test_engine());
         let mut instance = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
@@ -2416,8 +2421,6 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_fixed_const_expr() {
-        set_engine(Engine::Jit);
-
         let wasm_bytes = wat::parse_str(
             r#"
             (module
@@ -2436,7 +2439,7 @@ mod tests {
         )
         .expect("compile wat");
 
-        let mut runner = WastTestRunner::new();
+        let mut runner = WastTestRunner::new(test_engine());
         let mut instance = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
@@ -2448,8 +2451,6 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_data_and_init_data() {
-        set_engine(Engine::Jit);
-
         let wasm_bytes = wat::parse_str(
             r#"
             (module
@@ -2481,7 +2482,7 @@ mod tests {
         )
         .expect("compile wat");
 
-        let mut runner = WastTestRunner::new();
+        let mut runner = WastTestRunner::new(test_engine());
         let mut instance = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
@@ -2500,8 +2501,6 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_regress_array_new_elem_and_init_elem() {
-        set_engine(Engine::Jit);
-
         let wasm_bytes = wat::parse_str(
             r#"
             (module
@@ -2542,7 +2541,7 @@ mod tests {
         )
         .expect("compile wat");
 
-        let mut runner = WastTestRunner::new();
+        let mut runner = WastTestRunner::new(test_engine());
         let mut instance = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
@@ -2585,7 +2584,7 @@ mod tests {
     #[cfg(target_arch = "aarch64")]
     #[test]
     fn native_if_mixed_operands_uses_direct_arm64() {
-        let mut runner = instantiate_first_module_with_backend("if.wast", Engine::Jit);
+        let mut runner = instantiate_first_module_with_backend("if.wast", Tier::Jit);
         let wasm_bytes = runner
             .module_bytes
             .values()
@@ -2625,7 +2624,7 @@ mod tests {
     #[cfg(any(feature = "backend-emu64", feature = "backend-emu32"))]
     #[test]
     fn native_if_params_id_break_uses_emulator_join_payload() {
-        let mut runner = instantiate_first_module_with_backend("if.wast", Engine::Jit);
+        let mut runner = instantiate_first_module_with_backend("if.wast", Tier::Jit);
         let instance = runner.instances.values_mut().next().expect("instance");
 
         let ret_false = instance

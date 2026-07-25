@@ -174,7 +174,7 @@ pub(crate) fn eval(
         .get(func_id.0 as usize)
         .ok_or_else(|| WasmError::internal("native entry function is missing runtime metadata"))?;
 
-    let stack_slots = crate::runtime_config().wasm_stack_bytes / core::mem::size_of::<u64>();
+    let stack_slots = store.config().get_wasm_stack_bytes() / core::mem::size_of::<u64>();
     if stack_slots == 0 {
         return Err(WasmError::runtime_not_configured());
     }

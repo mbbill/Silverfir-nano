@@ -12,7 +12,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use sf_nano_core::module::Module;
-use sf_nano_core::{InterpInstance, WasmError};
+use sf_nano_core::{Config, Engine, InterpInstance, Tier, WasmError};
 use wast::core::{NanPattern, WastArgCore, WastRetCore};
 use wast::parser::{self, ParseBuffer};
 use wast::{Wast, WastArg, WastDirective, WastExecute, WastRet};
@@ -365,7 +365,8 @@ fn execute_general(run: &mut FileRun, exec: WastExecute) -> Exec {
 fn instantiate(bytes: Vec<u8>) -> Result<InterpInstance, WasmError> {
     // The instance owns its module, so this no longer leaks one per
     // instantiation to manufacture a `'static` borrow.
-    let mut inst = InterpInstance::new(Module::new("spec", &bytes)?)?;
+    let engine = Engine::new(Config::new().tier(Tier::Interp)).expect("interpreter engine");
+    let mut inst = InterpInstance::new(&engine, Module::new("spec", &bytes)?)?;
     inst.set_host(spectest_host());
     Ok(inst)
 }

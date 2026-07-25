@@ -32,11 +32,11 @@ pub mod vm;
 pub mod wasi;
 
 // Public re-exports for ergonomic API
-pub use config::{runtime_config, set_runtime_config, ConfigError, RuntimeConfig};
+pub use config::{Config, ConfigError};
 pub use error::WasmError;
 pub use module::type_defs::FunctionType;
 pub use utils::limits::{Limitable, Limits};
-pub use vm::engine::{engine, set_engine, Engine};
+pub use vm::engine::{Engine, Tier};
 pub use vm::entities::{Caller, FunctionInst, HostCallback, HostFn};
 pub use vm::instance::{
     Func, Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,

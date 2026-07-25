@@ -78,8 +78,6 @@ fn main() -> ! {
     heap::init();
 
     #[cfg(feature = "mode-wasm")]
-    crate::config::init();
-
     #[cfg(feature = "mode-native")]
     println!("waveshare-esp32-c6: native {} + spi dma", DEMO_NAME);
     #[cfg(feature = "mode-wasm")]
@@ -238,7 +236,8 @@ where
     SPI: embedded_hal::spi::SpiBus<u8>,
 {
     let imports: [Import; 0] = [];
-    let mut instance = match Instance::new(WASM_DEMO, &imports) {
+    let engine = crate::config::engine();
+    let mut instance = match Instance::new(&engine, WASM_DEMO, &imports) {
         Ok(instance) => instance,
         Err(error) => {
             println!("instantiate failed: {}", error.message());

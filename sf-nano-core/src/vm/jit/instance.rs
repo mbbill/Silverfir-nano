@@ -28,6 +28,7 @@ use crate::op_decoder::{Decoder, OpStream, OpcodeHandler};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
 use crate::value_type::{HeapType, ValueType};
+use crate::vm::engine::Engine;
 #[cfg(sf_jit)]
 use crate::vm::entities::TableDispatchMode;
 use crate::vm::entities::{
@@ -292,22 +293,28 @@ fn compute_static_table_dispatch_modes(
 }
 
 impl JitInstance {
-    pub fn new(wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError> {
+    pub fn new(engine: &Engine, wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError> {
         let module = Module::new("main", wasm_bytes)?;
-        Self::from_module(module, imports)
+        Self::from_module(engine, module, imports)
     }
 
-    pub fn from_module(module: Module, imports: &[Import]) -> Result<Self, WasmError> {
+    pub fn from_module(
+        engine: &Engine,
+        module: Module,
+        imports: &[Import],
+    ) -> Result<Self, WasmError> {
         let registry = LinkRegistry::new();
-        Self::from_module_with_registry(module, imports, &registry)
+        Self::from_module_with_registry(engine, module, imports, &registry)
             .map_err(|err| err.into_parts().1)
     }
 
     pub fn from_module_with_registry(
+        engine: &Engine,
         module: Module,
         imports: &[Import],
         registry: &LinkRegistry,
     ) -> Result<Self, InstanceInstantiationError> {
+        let config = *engine.config();
         module
             .ensure_simd_supported()
             .map_err(InstanceInstantiationError::Complete)?;
@@ -555,15 +562,15 @@ impl JitInstance {
                 MemoryDef::Local(_spec) => {
                     #[cfg(sf_has_guard_pages)]
                     {
-                        memories.push(MemInst::new_guarded(mem.limits().clone())?);
+                        memories.push(MemInst::new_guarded(&config, mem.limits().clone())?);
                     }
                     #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
                     {
-                        memories.push(MemInst::new_unallocated(mem.limits().clone())?);
+                        memories.push(MemInst::new_unallocated(&config, mem.limits().clone())?);
                     }
                     #[cfg(all(not(sf_jit), not(sf_has_guard_pages)))]
                     {
-                        memories.push(MemInst::new(mem.limits().clone())?);
+                        memories.push(MemInst::new(&config, mem.limits().clone())?);
                     }
                 }
                 MemoryDef::Import {
@@ -619,15 +626,15 @@ impl JitInstance {
                             } else {
                                 #[cfg(sf_has_guard_pages)]
                                 {
-                                    MemInst::new_guarded(*import_limits)?
+                                    MemInst::new_guarded(&config, *import_limits)?
                                 }
                                 #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
                                 {
-                                    MemInst::new_unallocated(*import_limits)?
+                                    MemInst::new_unallocated(&config, *import_limits)?
                                 }
                                 #[cfg(all(not(sf_jit), not(sf_has_guard_pages)))]
                                 {
-                                    MemInst::new(*import_limits)?
+                                    MemInst::new(&config, *import_limits)?
                                 }
                             };
                             memories.push(mem_inst);
@@ -840,7 +847,7 @@ impl JitInstance {
             .map(|d| DataInst::new(d.get_init().to_vec().into()))
             .collect();
 
-        let mut module_inst = ModuleInst::new("main".to_string(), types);
+        let mut module_inst = ModuleInst::new(config, "main".to_string(), types);
         module_inst.functions = functions;
         module_inst.tables = tables;
         module_inst.memories = memories;
@@ -1600,8 +1607,11 @@ mod tests {
 
     #[test]
     fn shared_memory_import_uses_live_size_and_shared_cap() {
-        let shared_memory = MemInst::new(Limits::new(1, Some(2)).unwrap())
-            .expect("test memory within runtime limits");
+        let shared_memory = MemInst::new(
+            &crate::config::Config::new(),
+            Limits::new(1, Some(2)).unwrap(),
+        )
+        .expect("test memory within runtime limits");
         grow_shared_memory_for_test(&shared_memory, 2);
         let module = importer_with_memory(Limits::new(2, Some(2)).unwrap());
         let import = Import::memory_with_state(
@@ -1611,8 +1621,12 @@ mod tests {
             Some(shared_memory),
         );
 
-        let instance =
-            JitInstance::from_module(module, &[import]).expect("shared import should link");
+        let instance = JitInstance::from_module(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            &[import],
+        )
+        .expect("shared import should link");
 
         assert_eq!(instance.store.memory(0).current_pages(), 2);
         assert_eq!(instance.store.memory(0).limits.max(), Some(2));
@@ -1633,8 +1647,12 @@ mod tests {
             }),
         );
 
-        let instance =
-            JitInstance::from_module(module, &[import]).expect("shared import should link");
+        let instance = JitInstance::from_module(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            &[import],
+        )
+        .expect("shared import should link");
 
         assert_eq!(instance.store.table(0).size(), 2);
         assert_eq!(instance.store.table(0).limits.max(), Some(2));
@@ -1651,7 +1669,12 @@ mod tests {
             "#,
         )
         .expect("source module should encode");
-        let source = JitInstance::new(&source_wasm, &[]).expect("source module should instantiate");
+        let source = JitInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            &source_wasm,
+            &[],
+        )
+        .expect("source module should instantiate");
         let shared = source
             .shared_global_state_at(0)
             .expect("source global should be shareable");
@@ -1669,6 +1692,7 @@ mod tests {
         )
         .expect("importer module should encode");
         let mut importer = JitInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
             &importer_wasm,
             &[
                 Import::global_with_state("env", "g1", shared.clone()),
@@ -1698,8 +1722,12 @@ mod tests {
             "#,
         )
         .expect("mutable source module should encode");
-        let mutable_source =
-            JitInstance::new(&mutable_source_wasm, &[]).expect("source module should instantiate");
+        let mutable_source = JitInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            &mutable_source_wasm,
+            &[],
+        )
+        .expect("source module should instantiate");
         let mutable_shared = mutable_source
             .shared_global_state_at(0)
             .expect("source global should be shareable");
@@ -1713,6 +1741,7 @@ mod tests {
         .expect("mutable importer module should encode");
 
         assert!(JitInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
             &mutable_importer_wasm,
             &[Import::global_with_state("env", "g", mutable_shared)]
         )
@@ -1727,8 +1756,12 @@ mod tests {
             "#,
         )
         .expect("immutable source module should encode");
-        let immutable_source = JitInstance::new(&immutable_source_wasm, &[])
-            .expect("source module should instantiate");
+        let immutable_source = JitInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            &immutable_source_wasm,
+            &[],
+        )
+        .expect("source module should instantiate");
         let immutable_shared = immutable_source
             .shared_global_state_at(0)
             .expect("source global should be shareable");
@@ -1742,6 +1775,7 @@ mod tests {
         .expect("immutable importer module should encode");
 
         assert!(JitInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
             &immutable_importer_wasm,
             &[Import::global_with_state("env", "g", immutable_shared)]
         )
@@ -1776,7 +1810,8 @@ mod tests {
             },
         )];
         let mut instance =
-            JitInstance::new(&wasm, &imports).expect("capturing callback should instantiate");
+            JitInstance::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &imports)
+                .expect("capturing callback should instantiate");
 
         let first = instance
             .invoke("run", &[Value::I32(2)])
@@ -1819,7 +1854,9 @@ mod tests {
             "#,
         )
         .expect("tail-call module should encode");
-        let mut instance = JitInstance::new(&wasm, &[]).expect("instantiation should succeed");
+        let mut instance =
+            JitInstance::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &[])
+                .expect("instantiation should succeed");
 
         let result = instance
             .invoke("run", &[Value::I64(10)])
@@ -1842,7 +1879,11 @@ mod tests {
 
         #[cfg(not(sf_has_simd))]
         {
-            let err = match JitInstance::from_module(builder.build(), &[]) {
+            let err = match JitInstance::from_module(
+                &crate::vm::engine::Engine::with_defaults(),
+                builder.build(),
+                &[],
+            ) {
                 Ok(_) => panic!("instantiation should reject unsupported SIMD-shaped modules"),
                 Err(err) => err,
             };
@@ -1854,8 +1895,12 @@ mod tests {
 
         #[cfg(sf_has_simd)]
         {
-            JitInstance::from_module(builder.build(), &[])
-                .expect("SIMD-enabled builds should allow unused v128 type definitions");
+            JitInstance::from_module(
+                &crate::vm::engine::Engine::with_defaults(),
+                builder.build(),
+                &[],
+            )
+            .expect("SIMD-enabled builds should allow unused v128 type definitions");
         }
     }
 
@@ -1872,7 +1917,9 @@ mod tests {
         )
         .expect("wat should encode a SIMD module");
 
-        let mut instance = JitInstance::new(&wasm, &[]).expect("instantiation should succeed");
+        let mut instance =
+            JitInstance::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &[])
+                .expect("instantiation should succeed");
         let results = instance
             .invoke("not", &[crate::Value::V128([0; 16])])
             .expect("live SIMD unary ops should lower and execute");
@@ -1891,7 +1938,9 @@ mod tests {
         )
         .expect("wat should encode a SIMD const module");
 
-        let mut instance = JitInstance::new(&wasm, &[]).expect("instantiation should succeed");
+        let mut instance =
+            JitInstance::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &[])
+                .expect("instantiation should succeed");
         let expected = crate::Value::V128([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0]);
         let results = instance
             .invoke("const", &[])

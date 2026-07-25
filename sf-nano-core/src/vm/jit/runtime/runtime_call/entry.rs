@@ -431,14 +431,21 @@ mod tests {
             collections::vec![ValueType::I32, ValueType::I32],
             collections::vec![ValueType::I32],
         ));
-        let mut module = ModuleInst::new(String::from("m"), TypeContext::empty());
+        let mut module = ModuleInst::new(
+            crate::config::Config::new(),
+            String::from("m"),
+            TypeContext::empty(),
+        );
         module.functions.push(FunctionInst::Host {
             func_type,
             callback: crate::vm::entities::HostCallback::new(host_add as HostFn),
         });
         module.memories.push(
-            MemInst::new(Limits::new(1, Some(1)).unwrap())
-                .expect("test memory within runtime limits"),
+            MemInst::new(
+                &crate::config::Config::new(),
+                Limits::new(1, Some(1)).unwrap(),
+            )
+            .expect("test memory within runtime limits"),
         );
         let (_store, mut ctx) = test_context(module);
         let meta = RuntimeCallMeta {
@@ -487,14 +494,21 @@ mod tests {
             collections::vec![ValueType::I32, ValueType::I32],
             collections::vec![ValueType::I32],
         ));
-        let mut module = ModuleInst::new(String::from("m"), TypeContext::empty());
+        let mut module = ModuleInst::new(
+            crate::config::Config::new(),
+            String::from("m"),
+            TypeContext::empty(),
+        );
         module.functions.push(FunctionInst::Host {
             func_type,
             callback: crate::vm::entities::HostCallback::new(host_add as HostFn),
         });
         module.memories.push(
-            MemInst::new(Limits::new(1, Some(1)).unwrap())
-                .expect("test memory within runtime limits"),
+            MemInst::new(
+                &crate::config::Config::new(),
+                Limits::new(1, Some(1)).unwrap(),
+            )
+            .expect("test memory within runtime limits"),
         );
         let (mut store, mut ctx) = test_context(module);
         let _ = store.register_local_function(0);

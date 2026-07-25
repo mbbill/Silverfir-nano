@@ -1,189 +1,232 @@
-//! Runtime configuration for sf-nano-core.
+//! What an engine is configured with.
 //!
-//! A one-shot global installed by the embedder via [`set_runtime_config`].
-//! Hosted targets get defaults suitable for native JIT workloads, while the
-//! bare-metal target (`sf_os_none`) has an explicit zero default — the embedder
-//! **must** call [`set_runtime_config`] before any `Instance::new()` /
-//! `CodeBuffer::new()` path, otherwise those fail with a clear error.
+//! A [`Config`] is a plain value the embedder builds and hands to
+//! [`crate::Engine`]; the engine copies it into every instance it creates.
+//! Nothing here is process-wide, so two engines in one process may run
+//! different tiers with different budgets, and configuring one never
+//! affects the other.
+//!
+//! Hosted targets get defaults suited to native JIT workloads. The
+//! bare-metal target (`sf_os_none`) has none: its defaults are zero and
+//! [`crate::Engine::new`] rejects them, because a sensible number for one
+//! board is a fatal one for the next. That rejection happens once, at
+//! engine construction, before any module is touched.
 //!
 //! Design: see `docs/RUNTIME_CONFIG_AND_OS_MEMORY.md`.
-//!
-//! # Threading
-//!
-//! The configuration is designed for single-threaded startup: the
-//! embedder calls `set_runtime_config` once, before any other
-//! sf-nano-core API is used. No concurrent configure-and-use scenario
-//! is supported. Readers acquire-load a state byte to get a memory
-//! fence against a concurrent writer, but we do not branch on the
-//! state — the underlying storage holds a valid `RuntimeConfig` at
-//! every point (default → user value after init).
 
-use core::cell::UnsafeCell;
-use core::sync::atomic::{AtomicU8, Ordering};
+use crate::vm::engine::Tier;
 
-/// Runtime-wide tunable sizes and limits.
+/// Tunable sizes and limits for one engine.
 #[derive(Debug, Clone, Copy)]
-pub struct RuntimeConfig {
-    /// Module-wide executable-code arena size. This is the hard limit for
-    /// native code emitted for one module and the number of bytes requested
-    /// from the executable-memory allocator when a `CodeBuffer` is created.
-    pub code_arena_bytes: usize,
-
-    /// Maximum 64-KiB Wasm pages a single linear memory is allowed to
-    /// reach. Enforced at instantiation for the initial page count and
-    /// at `memory.grow` for the requested new size. In JIT builds,
-    /// local memory backing is materialized after compilation but this
-    /// quota is still checked before compilation starts.
-    /// `u32` is enough for wasm32 (ceiling 65536). Memory64 modules
-    /// are allowed but cannot exceed `u32::MAX` pages through this
-    /// config; practical MCU targets set this to 1–16 anyway.
-    pub wasm_memory_max_pages: u32,
-
-    /// Bytes reserved for the Wasm operand/call stack that backs every
-    /// JIT invoke. The eval path allocates one of these at the start
-    /// of each `invoke` call. Must be a multiple of 8 (the stack is
-    /// indexed in u64 slots). Hosted default is 2 MiB; MCU targets
-    /// should set this to single-digit KiB for simple modules.
-    pub wasm_stack_bytes: usize,
-
-    /// Per-function compiler-time RAM budget in bytes. Hosted builds
-    /// default this to `u32::MAX`, which preserves the existing full
-    /// optimization path. Embedded targets use this to keep oversized
-    /// functions out of the full compiler pipeline.
-    pub compiler_ram_budget_bytes: u32,
-
-    /// Whether hosted eager compilation may distribute local functions across
-    /// worker threads. Disable this for deterministic compiler benchmarks that
-    /// must not depend on the number of CPU cores available to the process.
-    /// This does not change eager-compilation semantics; it only selects the
-    /// serial implementation of the same pipeline.
-    pub parallel_compilation: bool,
+pub struct Config {
+    tier: Tier,
+    code_arena_bytes: usize,
+    wasm_memory_max_pages: u32,
+    wasm_stack_bytes: usize,
+    compiler_ram_budget_bytes: u32,
+    parallel_compilation: bool,
 }
 
-impl RuntimeConfig {
-    /// Compile-time default. Hosted 64-bit targets reserve enough executable
-    /// address space for large native JIT workloads such as FFmpeg. Hosted
-    /// 32-bit targets retain the smaller arena to avoid exhausting their
-    /// limited address space. `sf_os_none` gets zeros that
-    /// force the embedder to override (see `ConfigError::NotInitialized`
-    /// on the consumer side).
-    #[cfg(not(sf_os_none))]
-    pub const DEFAULT: Self = {
-        #[cfg(target_pointer_width = "64")]
-        const CODE_DEFAULT: usize = 64 * 1024 * 1024;
-        #[cfg(not(target_pointer_width = "64"))]
-        const CODE_DEFAULT: usize = 16 * 1024 * 1024;
+impl Default for Config {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl Config {
+    /// This target's defaults, on the default tier.
+    #[must_use]
+    pub const fn new() -> Self {
         Self {
-            code_arena_bytes: CODE_DEFAULT,
-            wasm_memory_max_pages: 65536,
-            // 2 MiB matches the former `constants::MAX_STACK_SIZE`.
-            wasm_stack_bytes: 2 * 1024 * 1024,
-            compiler_ram_budget_bytes: u32::MAX,
-            parallel_compilation: true,
+            tier: Tier::DEFAULT,
+            code_arena_bytes: DEFAULT_CODE_ARENA_BYTES,
+            wasm_memory_max_pages: DEFAULT_WASM_MEMORY_MAX_PAGES,
+            wasm_stack_bytes: DEFAULT_WASM_STACK_BYTES,
+            compiler_ram_budget_bytes: DEFAULT_COMPILER_RAM_BUDGET_BYTES,
+            parallel_compilation: DEFAULT_PARALLEL_COMPILATION,
         }
-    };
-
-    /// Bare-metal default: zeros. The embedder MUST override via
-    /// [`set_runtime_config`]. Any `Instance::new()` / `CodeBuffer::new()`
-    /// path before that override fails cleanly.
-    #[cfg(sf_os_none)]
-    pub const DEFAULT: Self = Self {
-        code_arena_bytes: 0,
-        wasm_memory_max_pages: 0,
-        wasm_stack_bytes: 0,
-        compiler_ram_budget_bytes: 0,
-        parallel_compilation: false,
-    };
-}
-
-/// Error returned by [`set_runtime_config`].
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum ConfigError {
-    /// [`set_runtime_config`] has already been called successfully.
-    /// sf-nano-core's configuration is write-once.
-    AlreadyInitialized,
-}
-
-// --- Internal state ---------------------------------------------------
-
-const STATE_UNINIT: u8 = 0;
-const STATE_WRITING: u8 = 1;
-const STATE_READY: u8 = 2;
-
-static STATE: AtomicU8 = AtomicU8::new(STATE_UNINIT);
-
-struct ConfigStorage(UnsafeCell<RuntimeConfig>);
-// SAFETY: all mutation is serialized through the STATE CAS. Readers
-// only observe either the compile-time default (STATE_UNINIT) or a
-// fully-written embedder value (STATE_READY). Cross-thread access is
-// not supported — see the module-level threading note.
-unsafe impl Sync for ConfigStorage {}
-
-static STORAGE: ConfigStorage = ConfigStorage(UnsafeCell::new(RuntimeConfig::DEFAULT));
-
-/// Install the runtime configuration. Must be called at most once,
-/// before any Store / CodeBuffer / MemInst is created. Returns
-/// `Err(AlreadyInitialized)` on a second call.
-pub fn set_runtime_config(cfg: RuntimeConfig) -> Result<(), ConfigError> {
-    STATE
-        .compare_exchange(
-            STATE_UNINIT,
-            STATE_WRITING,
-            Ordering::AcqRel,
-            Ordering::Acquire,
-        )
-        .map_err(|_| ConfigError::AlreadyInitialized)?;
-
-    // SAFETY: CAS above serialized us. No other writer can reach this
-    // point until STATE transitions back to something != WRITING,
-    // which only happens via our store below. Readers of STORAGE
-    // either saw STATE_UNINIT (and read the compile-time default from
-    // the same slot, which is valid) or will see STATE_READY after
-    // our release-store and the fully-written value.
-    unsafe {
-        *STORAGE.0.get() = cfg;
     }
 
-    STATE.store(STATE_READY, Ordering::Release);
-    Ok(())
+    /// Which engine runs modules instantiated in this configuration.
+    #[must_use]
+    pub const fn tier(mut self, tier: Tier) -> Self {
+        self.tier = tier;
+        self
+    }
+
+    /// Module-wide executable-code arena size: the hard limit on native
+    /// code emitted for one module, and the bytes requested from the
+    /// executable-memory allocator when a code buffer is created.
+    #[must_use]
+    pub const fn code_arena_bytes(mut self, bytes: usize) -> Self {
+        self.code_arena_bytes = bytes;
+        self
+    }
+
+    /// Maximum 64-KiB Wasm pages a single linear memory may reach.
+    ///
+    /// Enforced at instantiation for the initial page count and at
+    /// `memory.grow` for the requested size. Memory64 modules are allowed
+    /// but cannot exceed `u32::MAX` pages through this.
+    #[must_use]
+    pub const fn wasm_memory_max_pages(mut self, pages: u32) -> Self {
+        self.wasm_memory_max_pages = pages;
+        self
+    }
+
+    /// Bytes for the Wasm operand/call stack backing an invocation.
+    /// Indexed in `u64` slots. Both engines size their stack from this.
+    #[must_use]
+    pub const fn wasm_stack_bytes(mut self, bytes: usize) -> Self {
+        self.wasm_stack_bytes = bytes;
+        self
+    }
+
+    /// Per-function compile-time RAM budget. A function estimated above it
+    /// takes the template path instead of the full pipeline.
+    #[must_use]
+    pub const fn compiler_ram_budget_bytes(mut self, bytes: u32) -> Self {
+        self.compiler_ram_budget_bytes = bytes;
+        self
+    }
+
+    /// Whether hosted eager compilation may spread a module's functions
+    /// across worker threads. Turning it off selects the serial
+    /// implementation of the same pipeline, which is what a compiler
+    /// benchmark wants so its numbers do not depend on core count.
+    #[must_use]
+    pub const fn parallel_compilation(mut self, on: bool) -> Self {
+        self.parallel_compilation = on;
+        self
+    }
+
+    // --- readers ---
+
+    #[inline]
+    pub const fn get_tier(&self) -> Tier {
+        self.tier
+    }
+    #[inline]
+    pub const fn get_code_arena_bytes(&self) -> usize {
+        self.code_arena_bytes
+    }
+    #[inline]
+    pub const fn get_wasm_memory_max_pages(&self) -> u32 {
+        self.wasm_memory_max_pages
+    }
+    #[inline]
+    pub const fn get_wasm_stack_bytes(&self) -> usize {
+        self.wasm_stack_bytes
+    }
+    #[inline]
+    pub const fn get_compiler_ram_budget_bytes(&self) -> u32 {
+        self.compiler_ram_budget_bytes
+    }
+    #[inline]
+    pub const fn get_parallel_compilation(&self) -> bool {
+        self.parallel_compilation
+    }
+
+    /// The budgets that must be set to run anything, checked once by
+    /// [`crate::Engine::new`] so a bare-metal embedder hears about a
+    /// missing number before a module rather than during one.
+    pub(crate) const fn validate(&self) -> Result<(), ConfigError> {
+        if self.wasm_memory_max_pages == 0 {
+            return Err(ConfigError::Unconfigured("wasm_memory_max_pages"));
+        }
+        if self.wasm_stack_bytes == 0 {
+            return Err(ConfigError::Unconfigured("wasm_stack_bytes"));
+        }
+        // The code arena is the JIT's. An interpreter-only engine has no
+        // use for one and should not be made to invent a number.
+        #[cfg(sf_jit)]
+        if self.tier.is_jit() && self.code_arena_bytes == 0 {
+            return Err(ConfigError::Unconfigured("code_arena_bytes"));
+        }
+        Ok(())
+    }
 }
 
-/// Read the active runtime configuration. Returns the compile-time
-/// default if [`set_runtime_config`] has not yet been called.
-#[inline]
-pub fn runtime_config() -> &'static RuntimeConfig {
-    // Acquire fence pairs with the Release store in set_runtime_config.
-    // We don't branch on the value — the storage slot is always a
-    // valid RuntimeConfig (either DEFAULT or the embedder's override).
-    let _ = STATE.load(Ordering::Acquire);
-    // SAFETY: see the Sync impl and module docs. Under the single-
-    // threaded-init contract, no torn reads are possible.
-    unsafe { &*STORAGE.0.get() }
+/// Why a [`Config`] was rejected.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConfigError {
+    /// A budget with no usable default on this target was left at zero.
+    /// The payload names the field.
+    Unconfigured(&'static str),
 }
 
-/// True once an embedder has successfully installed a config via
-/// [`set_runtime_config`]. Useful for bare-metal call sites that
-/// want to give a specific "embedder did not configure" error
-/// instead of proceeding with the zero default.
-#[inline]
-pub fn runtime_config_is_initialized() -> bool {
-    STATE.load(Ordering::Acquire) == STATE_READY
+impl core::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Unconfigured(field) => write!(
+                f,
+                "Config::{field} has no default on this target and must be set"
+            ),
+        }
+    }
 }
+
+// --- Per-target defaults ----------------------------------------------
+
+/// Hosted 64-bit reserves enough executable address space for large
+/// workloads; hosted 32-bit keeps a smaller arena so it does not exhaust
+/// its address space.
+#[cfg(all(not(sf_os_none), target_pointer_width = "64"))]
+const DEFAULT_CODE_ARENA_BYTES: usize = 64 * 1024 * 1024;
+#[cfg(all(not(sf_os_none), not(target_pointer_width = "64")))]
+const DEFAULT_CODE_ARENA_BYTES: usize = 16 * 1024 * 1024;
+#[cfg(not(sf_os_none))]
+const DEFAULT_WASM_MEMORY_MAX_PAGES: u32 = 65536;
+/// 2 MiB, matching the former `constants::MAX_STACK_SIZE`.
+#[cfg(not(sf_os_none))]
+const DEFAULT_WASM_STACK_BYTES: usize = 2 * 1024 * 1024;
+#[cfg(not(sf_os_none))]
+const DEFAULT_COMPILER_RAM_BUDGET_BYTES: u32 = u32::MAX;
+#[cfg(not(sf_os_none))]
+const DEFAULT_PARALLEL_COMPILATION: bool = true;
+
+// Bare metal: zeros, so `Engine::new` refuses rather than inventing a
+// budget for a board it knows nothing about.
+#[cfg(sf_os_none)]
+const DEFAULT_CODE_ARENA_BYTES: usize = 0;
+#[cfg(sf_os_none)]
+const DEFAULT_WASM_MEMORY_MAX_PAGES: u32 = 0;
+#[cfg(sf_os_none)]
+const DEFAULT_WASM_STACK_BYTES: usize = 0;
+#[cfg(sf_os_none)]
+const DEFAULT_COMPILER_RAM_BUDGET_BYTES: u32 = 0;
+#[cfg(sf_os_none)]
+const DEFAULT_PARALLEL_COMPILATION: bool = false;
 
 #[cfg(test)]
 mod tests {
-    use super::RuntimeConfig;
+    use super::{Config, ConfigError};
 
-    #[cfg(all(not(sf_os_none), target_pointer_width = "64"))]
     #[test]
-    fn hosted_64_bit_default_supports_large_jit_modules() {
-        assert_eq!(RuntimeConfig::DEFAULT.code_arena_bytes, 64 * 1024 * 1024);
-        assert!(RuntimeConfig::DEFAULT.parallel_compilation);
+    fn builder_is_chainable_and_readable() {
+        let cfg = Config::new()
+            .wasm_stack_bytes(4096)
+            .parallel_compilation(false);
+        assert_eq!(cfg.get_wasm_stack_bytes(), 4096);
+        assert!(!cfg.get_parallel_compilation());
     }
 
-    #[cfg(all(not(sf_os_none), target_pointer_width = "32"))]
     #[test]
-    fn hosted_32_bit_default_preserves_address_space() {
-        assert_eq!(RuntimeConfig::DEFAULT.code_arena_bytes, 16 * 1024 * 1024);
+    fn a_zeroed_budget_is_rejected_by_name() {
+        let cfg = Config::new().wasm_stack_bytes(0);
+        assert_eq!(
+            cfg.validate(),
+            Err(ConfigError::Unconfigured("wasm_stack_bytes"))
+        );
+    }
+
+    /// The whole point of the change: two configurations coexist, because
+    /// neither is a process-wide setting.
+    #[test]
+    fn configs_are_independent_values() {
+        let a = Config::new().wasm_stack_bytes(1024);
+        let b = Config::new().wasm_stack_bytes(2048);
+        assert_eq!(a.get_wasm_stack_bytes(), 1024);
+        assert_eq!(b.get_wasm_stack_bytes(), 2048);
     }
 }

@@ -54,13 +54,9 @@ pub(crate) fn eval(
         .native_entry()
         .ok_or_else(|| WasmError::internal("native entry is missing finalized code"))?;
 
-    // Sized by runtime config. Hosted default matches the former
-    // 2-MiB `constants::MAX_STACK_SIZE`; MCU embedders override via
-    // `set_runtime_config(.. wasm_stack_bytes: N ..)`.
-    let stack_bytes = crate::runtime_config().wasm_stack_bytes;
-    if stack_bytes < core::mem::size_of::<u64>() {
-        return Err(WasmError::runtime_not_configured());
-    }
+    // Sized by the engine's configuration, which `Engine::new` already
+    // refused to leave unset.
+    let stack_bytes = store.config().get_wasm_stack_bytes();
     #[cfg(sf_has_guard_pages)]
     let max_frame_bytes = compiled.max_frame_bytes();
     #[cfg(sf_has_guard_pages)]
