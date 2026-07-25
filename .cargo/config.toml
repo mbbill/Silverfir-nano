@@ -1,17 +1,37 @@
 [alias]
 memprof = "run --release -p sf-nano-cli --features memprof --bin sf-nano-cli -- --memprof"
 
+# Single source of truth for per-target cross-build settings. `scripts/check.py`
+# and the CI workflows deliberately set no RUSTFLAGS: cargo lets the RUSTFLAGS
+# environment variable *replace* `target.<triple>.rustflags` wholesale rather
+# than merge with it, so any RUSTFLAGS writer would silently drop everything
+# below. `linker` is a separate config key and is not affected, but keeping all
+# of it in one place is the point.
+#
+# Relative `linker` paths resolve against this file's directory, not the
+# invoking cwd, so `cargo build --target ...` works from anywhere in the tree.
+
 [target.armv7-unknown-linux-musleabihf]
+# rust-lld ships in the rustc sysroot, so cross-linking needs no external
+# toolchain. `crt-static` is already in this target's baseline.
 linker = "rust-lld"
 
-[target.x86_64-unknown-linux-gnu]
-rustflags = ["-C", "target-feature=+ssse3,+sse4.1"]
+[target.riscv64gc-unknown-linux-musl]
+# Unlike the armv7 and x86_64 musl targets, riscv64gc-musl does not carry
+# `crt-static` in its baseline, so it is requested explicitly.
+linker = "rust-lld"
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-self-contained=yes",
+    "-C", "panic=abort",
+]
 
-[target.x86_64-unknown-linux-musl]
-rustflags = ["-C", "target-feature=+ssse3,+sse4.1"]
-
-[target.x86_64-pc-windows-msvc]
-rustflags = ["-C", "target-feature=+ssse3,+sse4.1"]
-
-[target.x86_64-pc-windows-gnu]
-rustflags = ["-C", "target-feature=+ssse3,+sse4.1"]
+[target.riscv32gc-unknown-linux-musl]
+# Zig supplies the musl C toolchain rust-lld cannot self-contain for rv32.
+# Requires `cargo +nightly -Z build-std=std,panic_abort`; see scripts/check.py.
+linker = "scripts/zig-riscv32-linux-musl-cc.sh"
+rustflags = [
+    "-C", "target-feature=+crt-static",
+    "-C", "link-self-contained=no",
+    "-C", "panic=abort",
+]

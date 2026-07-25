@@ -112,8 +112,8 @@ jobs:
     name: bench (riscv64, qemu)
     runs-on: ubuntu-latest
     timeout-minutes: 30
-    env:
-      RUSTFLAGS: "-C linker=rust-lld -C target-feature=+crt-static -C link-self-contained=yes -C panic=abort"
+    # Linker and codegen flags come from .cargo/config.toml. Setting RUSTFLAGS
+    # here would replace `target.<triple>.rustflags` instead of merging.
     steps:
       - uses: actions/checkout@v4
 
@@ -151,8 +151,9 @@ jobs:
     name: bench (riscv32, qemu)
     runs-on: ubuntu-latest
     timeout-minutes: 40
+    # Linker and codegen flags come from .cargo/config.toml; the relative
+    # linker path there resolves against the repo root.
     env:
-      RUSTFLAGS: "-C linker=${{ github.workspace }}/scripts/zig-riscv32-linux-musl-cc.sh -C target-feature=+crt-static -C link-self-contained=no -C panic=abort"
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/target/zig-cache
     steps:
       - uses: actions/checkout@v4

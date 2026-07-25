@@ -55,6 +55,9 @@ impl AlignedConstData {
     }
 }
 
+/// Sizes the guard region under the wasm stack; only the guard-page runtime
+/// consumes it.
+#[cfg(sf_has_guard_pages)]
 #[inline]
 fn max_frame_bytes(abi: &MachineModuleAbi) -> usize {
     abi.functions
@@ -72,6 +75,7 @@ pub(crate) struct CompiledNativeModule {
     abi: Option<MachineModuleAbi>,
     aligned_consts: collections::Vec<AlignedConstData>,
     dispatch_metadata: NativeDispatchMetadata,
+    #[cfg(sf_has_guard_pages)]
     max_frame_bytes: usize,
 }
 
@@ -90,6 +94,7 @@ impl CompiledNativeModule {
             aligned_consts.push(AlignedConstData::new(konst)?);
         }
         let dispatch_metadata = NativeDispatchMetadata::new(backend, &abi);
+        #[cfg(sf_has_guard_pages)]
         let max_frame_bytes = max_frame_bytes(&abi);
         Ok(Self {
             backend_kind,
@@ -98,6 +103,7 @@ impl CompiledNativeModule {
             abi: Some(abi),
             aligned_consts,
             dispatch_metadata,
+            #[cfg(sf_has_guard_pages)]
             max_frame_bytes,
         })
     }
@@ -109,6 +115,7 @@ impl CompiledNativeModule {
         aligned_consts: collections::Vec<AlignedConstData>,
     ) -> Self {
         let dispatch_metadata = NativeDispatchMetadata::new(backend, &abi);
+        #[cfg(sf_has_guard_pages)]
         let max_frame_bytes = max_frame_bytes(&abi);
         Self {
             backend_kind,
@@ -117,6 +124,7 @@ impl CompiledNativeModule {
             abi: Some(abi),
             aligned_consts,
             dispatch_metadata,
+            #[cfg(sf_has_guard_pages)]
             max_frame_bytes,
         }
     }
@@ -147,6 +155,7 @@ impl CompiledNativeModule {
         }
     }
 
+    #[cfg(sf_has_guard_pages)]
     #[inline]
     pub(crate) const fn max_frame_bytes(&self) -> usize {
         self.max_frame_bytes

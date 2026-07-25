@@ -1259,6 +1259,7 @@ impl<'a> super::backend::Arm64Backend<'a> {
         Ok(())
     }
 
+    #[cfg(sf_has_guard_pages)]
     pub(super) fn emit_stack_probe(&mut self, addr: MachineAddr) -> Result<(), WasmError> {
         let base = self.map_gp_reg(addr.base)?;
         let offset = addr.offset as i64;

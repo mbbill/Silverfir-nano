@@ -36,9 +36,7 @@ X64_LINUX_TARGET = "x86_64-unknown-linux-gnu"
 TESTSUITE_DIR = Path(os.environ.get("TESTSUITE_DIR", TARGET_DIR / "webassembly-testsuite"))
 FULL_RUNTIME_FEATURES = "jit,wasi,validator,guard-pages"
 EMULATOR_BACKEND_FEATURES = {"backend-emu64", "backend-emu32"}
-RISCV64_RUSTFLAGS = "-C linker=rust-lld -C target-feature=+crt-static -C link-self-contained=yes -C panic=abort"
 RISCV32_LINKER = ROOT / "scripts" / "zig-riscv32-linux-musl-cc.sh"
-RISCV32_RUSTFLAGS = f"-C linker={RISCV32_LINKER} -C target-feature=+crt-static -C link-self-contained=no -C panic=abort"
 RISCV64_SELECT_REGRESSION_ARGS = ["select", "call", "call_indirect", "if"]
 RISCV32_SELECT_REGRESSION_ARGS = RISCV64_SELECT_REGRESSION_ARGS
 
@@ -290,10 +288,6 @@ def feature_spec_enables_emulator_backend(spec: Optional[str]) -> bool:
     return any(feature in EMULATOR_BACKEND_FEATURES for feature in spec.split(","))
 
 
-def feature_spec_enables_memprof(spec: str) -> bool:
-    return spec == "ALL" or "memprof" in spec.split(",")
-
-
 def split_args(text: str) -> List[str]:
     if not text:
         return []
@@ -349,33 +343,15 @@ def is_runnable_x64_host(host: Host) -> bool:
     return False
 
 
-def append_env_word(env: Dict[str, str], name: str, value: str) -> None:
-    existing = env.get(name) or os.environ.get(name, "")
-    env[name] = f"{existing} {value}".strip() if existing else value
-
-
-def target_is_x64(target: Optional[str], host: Host) -> bool:
-    if target is not None:
-        return target.startswith("x86_64-")
-    return host.machine in {"x86_64", "amd64"}
-
-
-def cargo_env(runner: CheckRunner, target: Optional[str], env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+def cargo_env(target: Optional[str], env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    # Per-target linkers and codegen flags live in .cargo/config.toml. Setting
+    # RUSTFLAGS here would *replace* `target.<triple>.rustflags` rather than
+    # merge with it, so this runner deliberately sets no RUSTFLAGS at all;
+    # strict mode fails on warnings via the WARN step count in final_report()
+    # instead of via `-D warnings`.
     proc_env = dict(env or {})
-    # Cargo's RUSTFLAGS environment overrides target rustflags from
-    # .cargo/config.toml. Preserve the repo-required x64 SIMD features when
-    # this runner adds lint flags below.
-    if target_is_x64(target, runner.host):
-        append_env_word(proc_env, "RUSTFLAGS", "-C target-feature=+ssse3,+sse4.1")
-    if target == RISCV64_TARGET:
-        append_env_word(proc_env, "RUSTFLAGS", RISCV64_RUSTFLAGS)
     if target == RISCV32_TARGET:
-        append_env_word(proc_env, "RUSTFLAGS", RISCV32_RUSTFLAGS)
         proc_env.setdefault("ZIG_GLOBAL_CACHE_DIR", str(TARGET_DIR / "zig-cache"))
-    # rustc 1.95 can ICE while rendering dead_code diagnostics for several
-    # feature-gated build rows. Suppress only that lint and keep other warning
-    # diagnostics visible to the runner.
-    append_env_word(proc_env, "RUSTFLAGS", "-A dead_code")
     return proc_env
 
 
@@ -968,7 +944,6 @@ def cargo_check(
     log_name: Optional[str] = None,
     cwd: Path = ROOT,
     ignore_warnings: bool = False,
-    allow_dead_code: bool = False,
 ) -> StepResult:
     ignore_warnings = ignore_warnings or feature_spec_enables_emulator_backend(feature_spec)
     argv = cargo_argv("check", target)
@@ -983,16 +958,10 @@ def cargo_check(
     if extra_args:
         argv.extend(extra_args)
 
-    proc_env = cargo_env(runner, target, env)
-    if runner.strict and not ignore_warnings:
-        append_env_word(proc_env, "RUSTFLAGS", "-D warnings")
-    if runner.strict or allow_dead_code:
-        append_env_word(proc_env, "RUSTFLAGS", "-A dead_code")
-
     return runner.run(
         name,
         argv,
-        env=proc_env,
+        env=cargo_env(target, env),
         cwd=cwd,
         log_name=log_name,
         ignore_warnings=ignore_warnings,
@@ -1018,7 +987,7 @@ def cargo_build(
     return runner.run(
         name,
         argv,
-        env=cargo_env(runner, target),
+        env=cargo_env(target),
         log_name=log_name,
         ignore_warnings=feature_spec_enables_emulator_backend(features),
     )
@@ -1039,7 +1008,7 @@ def cargo_build_package(
     if target:
         argv.extend(["--target", target])
     argv.extend(["-p", package])
-    return runner.run(name, argv, env=cargo_env(runner, target), log_name=log_name)
+    return runner.run(name, argv, env=cargo_env(target), log_name=log_name)
 
 
 def skip_after_failed_dependency(runner: CheckRunner, name: str, dependency: StepResult) -> None:
@@ -1053,7 +1022,7 @@ def run_workspace_tests(runner: CheckRunner, profile_name: str = "debug") -> Non
     runner.run(
         f"cargo test: workspace ({profile_name})",
         argv,
-        env=cargo_env(runner, None),
+        env=cargo_env(None),
         log_name=f"workspace-tests-{profile_name}",
     )
 
@@ -1119,7 +1088,6 @@ def run_feature_checks(runner: CheckRunner, *, full: bool, profiles: Sequence[st
                 profile_name=profile_name,
                 feature_spec=spec,
                 log_name=f"feature-core-{clean_label(label)}-{profile_name}",
-                allow_dead_code=feature_spec_enables_memprof(spec),
             )
 
         for label, spec in cli_combos:
@@ -1130,7 +1098,6 @@ def run_feature_checks(runner: CheckRunner, *, full: bool, profiles: Sequence[st
                 profile_name=profile_name,
                 feature_spec=spec,
                 log_name=f"feature-cli-{clean_label(label)}-{profile_name}",
-                allow_dead_code=feature_spec_enables_memprof(spec),
             )
 
     for profile_name in profiles:
@@ -1218,7 +1185,7 @@ def run_bare_smoke_checks(runner: CheckRunner) -> None:
             f"bare-smoke cargo check ({bare_target})",
             ["cargo", "check", "--target", bare_target],
             cwd=bare_smoke_dir,
-            env=cargo_env(runner, bare_target, {"CARGO_TARGET_DIR": str(target_dir)}),
+            env=cargo_env(bare_target, {"CARGO_TARGET_DIR": str(target_dir)}),
             log_name=f"target-bare-smoke-{clean_label(bare_target)}",
         )
 
@@ -1267,12 +1234,9 @@ def run_target_package_check(
 
     target_dir = TARGET_DIR / "check-targets-build" / f"{label}-{package_key}"
     target_dir.mkdir(parents=True, exist_ok=True)
-    env = cargo_env(runner, target, {"CARGO_TARGET_DIR": str(target_dir)})
+    env = cargo_env(target, {"CARGO_TARGET_DIR": str(target_dir)})
 
     argv = [*cargo_argv("check", target), "--target", target, "-p", package, *extra]
-    if runner.strict:
-        append_env_word(env, "RUSTFLAGS", "-D warnings")
-        append_env_word(env, "RUSTFLAGS", "-A dead_code")
     runner.run(
         f"cargo check: target {label}/{package_key}",
         argv,
@@ -2138,8 +2102,8 @@ def run_windows_native_spectest(
 
 def run_windows_native_fast(runner: CheckRunner, extra_args: Sequence[str]) -> None:
     # This deliberately uses the plain command users type at the workspace
-    # root. Do not route it through cargo_env(), because that would hide
-    # missing repo-level target configuration.
+    # root, with no environment of its own, so it exercises whatever
+    # .cargo/config.toml provides for the host target.
     runner.run(
         "windows x64 release build",
         ["cargo", "build", "--release"],
@@ -2248,7 +2212,7 @@ def run_fast(runner: CheckRunner, extra_args: Sequence[str], *, skip_target_labe
     runner.run(
         "workspace release build",
         ["cargo", "build", "--workspace", "--release"],
-        env=cargo_env(runner, None),
+        env=cargo_env(None),
         log_name="cargo-workspace-release",
     )
     run_workspace_tests(runner, "release")
