@@ -439,6 +439,18 @@
   bytes, so it remains a size and instruction-count lever for narrow cores even
   though it is neutral on this one (code)
 
+- 2026-07-25 measurement: an added STORE costs 0.023 cycles per dispatch on
+  CoreMark, about a quarter of a load's 0.093, so the store ports have slack at
+  the current ~0.48 stores per dispatch (code)
+- 2026-07-25 pitfall: an `add Xn, Xn, #1` probe does NOT price a generic ALU
+  operation -- it is serially dependent across dispatches and measured 0.102
+  cycles here against 0.034 for the same instruction in an earlier session. An
+  independent ALU probe must write a register it does not read (code)
+- 2026-07-25 rationale: removing write-through buys roughly a load plus a store,
+  ~0.116 cycles, and only on pinned-destination dispatches (code)
+- 2026-07-25 uncertain: its case rests on breaking the loop-carried
+  store-to-load latency chain (uncertain)
+
 ## Moves
 
 - 2026-07-23 replaced [[stage-a-loop]]: one high-performance interpreter,
