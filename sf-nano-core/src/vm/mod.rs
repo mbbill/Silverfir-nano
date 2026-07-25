@@ -23,6 +23,7 @@ pub(crate) mod instance;
 pub(crate) mod interpreter;
 #[cfg(sf_jit)]
 pub(crate) mod machine;
+#[cfg(sf_jit)]
 pub(crate) mod middle;
 pub(crate) mod result_buffer;
 pub(crate) mod runtime;
@@ -32,4 +33,5 @@ pub(crate) mod tag;
 pub(crate) mod template;
 pub(crate) mod value;
 pub(crate) mod value_encoding;
+#[cfg(sf_jit)]
 pub(crate) mod wasm;
