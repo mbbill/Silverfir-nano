@@ -188,3 +188,9 @@ The float-heavy pair carries the largest margin against wasmi (mandelbrot
   comparison is fair, but never compare a 2 s sunfish score to a 10 s one.
 - wasmi needs a `--` separator before guest arguments (`--cli-args "--dir . --"`)
   or its argument parser consumes flags like `--memdb` itself.
+- **The wasmi column is 1.1.0, and 2.0 moves it a long way.** wasmi 2.0 is still
+  in beta (`2.0.0-beta.7`), so it is not in this table, but a same-machine
+  comparison on a Linux x86_64 box puts it a median 1.80× ahead of 1.1.0 —
+  enough to change every wasmi-relative statement here once it ships. See
+  [WASMI_2_0.md](WASMI_2_0.md); those numbers are from a different machine and
+  cannot be read against this table.
