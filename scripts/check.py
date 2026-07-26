@@ -2071,10 +2071,17 @@ case "$status" in
 esac
 exit "$status"
 """
+    # The harness clears the environment and sets exactly the variables a test
+    # declares, because the WASI `environ_*` tests assert that exact set. A
+    # shell contributes its own -- PWD, SHLVL, and _ -- to whatever it execs,
+    # and the guest cannot tell those apart from a declared variable, so a
+    # test expecting three sees six and one expecting none sees three. Drop
+    # them on the way through; the macOS branch above rebuilds the environment
+    # explicitly and skips the same names for the same reason.
     return f"""\
 #!/usr/bin/env bash
 set -euo pipefail
-exec {qemu_cmd} -cpu {cpu} {shlex_quote(str(cli_bin))} "$@"
+exec env -u PWD -u SHLVL -u OLDPWD -u _ {qemu_cmd} -cpu {cpu} {shlex_quote(str(cli_bin))} "$@"
 """
 
 
