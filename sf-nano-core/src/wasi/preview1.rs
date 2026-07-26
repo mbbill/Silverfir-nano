@@ -593,6 +593,80 @@ fn stat_path_kind(host_path: &Path, follow_symlink: bool) -> Result<HostPathKind
     Ok(stat_path_metadata(host_path, follow_symlink)?.kind)
 }
 
+#[cfg(windows)]
+mod windows_file_id {
+    // Windows has no inode, but it does have a per-volume file index that two
+    // names for one file share -- which is exactly the identity `path_link`
+    // requires and a path-derived number cannot express. `std::os::windows`
+    // exposes it only behind the unstable `windows_by_handle` feature, so ask
+    // the OS directly, the way `linux_link` below does for `linkat`.
+    use std::os::windows::fs::OpenOptionsExt;
+    use std::os::windows::io::AsRawHandle;
+    use std::path::Path;
+
+    // Needed to open a *directory* handle at all; harmless for files.
+    const FILE_FLAG_BACKUP_SEMANTICS: u32 = 0x0200_0000;
+    // Identify the link itself rather than what it points at.
+    const FILE_FLAG_OPEN_REPARSE_POINT: u32 = 0x0020_0000;
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct Filetime {
+        low: u32,
+        high: u32,
+    }
+
+    #[repr(C)]
+    #[derive(Default)]
+    struct ByHandleFileInformation {
+        file_attributes: u32,
+        creation_time: Filetime,
+        last_access_time: Filetime,
+        last_write_time: Filetime,
+        volume_serial_number: u32,
+        file_size_high: u32,
+        file_size_low: u32,
+        number_of_links: u32,
+        file_index_high: u32,
+        file_index_low: u32,
+    }
+
+    unsafe extern "system" {
+        fn GetFileInformationByHandle(
+            handle: *mut core::ffi::c_void,
+            info: *mut ByHandleFileInformation,
+        ) -> i32;
+    }
+
+    /// The volume-relative file index, or `None` if the file cannot be opened
+    /// or queried. Callers fall back to a synthesized number, so a failure
+    /// here costs hard-link identity rather than the whole stat.
+    pub(super) fn file_index(path: &Path, no_follow: bool) -> Option<u64> {
+        let mut flags = FILE_FLAG_BACKUP_SEMANTICS;
+        if no_follow {
+            flags |= FILE_FLAG_OPEN_REPARSE_POINT;
+        }
+        // `access_mode(0)` asks for no data access at all; the handle can
+        // still answer metadata, and it avoids failing on a file the guest
+        // is not permitted to read.
+        let file = std::fs::OpenOptions::new()
+            .access_mode(0)
+            .custom_flags(flags)
+            .open(path)
+            .ok()?;
+
+        let mut info = ByHandleFileInformation::default();
+        // SAFETY: `file` owns a live handle for the duration of the call, and
+        // `info` is a correctly-shaped, fully-initialized output buffer.
+        let ok =
+            unsafe { GetFileInformationByHandle(file.as_raw_handle().cast(), &mut info as *mut _) };
+        if ok == 0 {
+            return None;
+        }
+        Some(((info.file_index_high as u64) << 32) | info.file_index_low as u64)
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux_link {
     // WASI `path_link` does not follow the source path in this implementation.
@@ -667,6 +741,15 @@ fn derive_ino_from_meta(meta: &std::fs::Metadata, _host_path: &Path) -> u64 {
     }
     #[cfg(not(unix))]
     {
+        // Ask the OS for real file identity where it has one. Hashing the
+        // path below cannot answer it: a hard link is two names for one
+        // file, so a path-derived number reports them as different files.
+        #[cfg(windows)]
+        if let Some(index) = windows_file_id::file_index(_host_path, meta.file_type().is_symlink())
+        {
+            return index & ((1u64 << 53) - 1);
+        }
+
         let mut hasher = std::collections::hash_map::DefaultHasher::new();
         _host_path.to_string_lossy().hash(&mut hasher);
         let ft: u8 = if meta.is_dir() {

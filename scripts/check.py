@@ -2129,31 +2129,33 @@ def run_windows_native_spectest(
     *,
     profiles: Sequence[str],
     extra_args: Sequence[str],
+    engine: Engine = JIT_ENGINE,
 ) -> None:
     if not ensure_testsuite(runner):
         return
 
+    tag = engine.tag
     env = {"TESTSUITE_DIR": str(TESTSUITE_DIR)}
     for profile_name in profiles:
         build = cargo_build(
             runner,
-            f"windows x64 build spectest native ({profile_name})",
+            f"windows x64 build spectest{tag} native ({profile_name})",
             "sf-nano-spectest",
             profile_name=profile_name,
             target=None,
-            features="jit",
-            log_name=f"windows-spectest-build-native-{profile_name}",
+            features=engine.features,
+            log_name=f"windows-spectest-build{tag}-native-{profile_name}",
         )
         host_bin = binary_path("sf-nano-spectest", profile_name, runner.host)
         if build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"windows x64 spectest native ({profile_name})", build)
+            skip_after_failed_dependency(runner, f"windows x64 spectest{tag} native ({profile_name})", build)
         else:
             run_binary_if_present(
                 runner,
-                f"windows x64 spectest native ({profile_name})",
-                [host_bin, "--backend", "native", *extra_args],
+                f"windows x64 spectest{tag} native ({profile_name})",
+                [host_bin, *engine.args, *extra_args],
                 env=env,
-                log_name=f"windows-spectest-native-{profile_name}",
+                log_name=f"windows-spectest{tag}-native-{profile_name}",
             )
 
 
@@ -2193,6 +2195,16 @@ def run_windows_native_full(
 
     for profile_name in profiles:
         run_wasitest_host_profile(runner, profile_name, [])
+
+    # The interpreter goes last here too, after every JIT phase is green.
+    # Windows is the one host whose engine coverage was JIT-only: this phase
+    # does not re-exec into WSL, so nothing else reaches the interpreter on a
+    # COFF target at runtime -- only the build rows did.
+    run_windows_native_spectest(
+        runner, profiles=profiles, extra_args=extra_args, engine=INTERP_ENGINE
+    )
+    for profile_name in profiles:
+        run_wasitest_host_profile(runner, profile_name, [], INTERP_ENGINE)
 
 
 def run_windows_native_phase(args: argparse.Namespace, host: Host, *, print_report: bool = True) -> int:
