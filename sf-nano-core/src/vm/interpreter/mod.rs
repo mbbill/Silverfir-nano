@@ -44,3 +44,6 @@ mod predecode;
 // flags -- stays inside the engine: it is how a function is stored, not
 // an interface anything outside builds against.
 pub use exec::InterpInstance;
+// The slot encoding is the boundary contract: `vm::instance` converts host
+// `Value::Ref`s with the same two functions the engine uses internally.
+pub(crate) use exec::{ref_to_slot, slot_to_ref};

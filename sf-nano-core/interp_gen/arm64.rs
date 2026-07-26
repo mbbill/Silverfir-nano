@@ -645,9 +645,13 @@ impl Isa for Arm64 {
         a.ins("ldr x12, [x21, #120]"); // table 0 len
         a.ins("cmp w10, w12");
         a.ins(&format!("b.hs {}", st.slow)); // out of bounds (or no table)
-        a.ins("ldr w12, [x11, w10, uxtw #2]"); // fi = entries[t]
-        a.ins("cmn w12, #1");
-        a.ins(&format!("b.eq {}", st.slow)); // null entry
+                                             // Entries are `RefHandle` slots (8 bytes). A plain handle's payload
+                                             // is the function index, so the fi*3/fi*24 arithmetic below is
+                                             // unchanged; a null slot is all-ones and a tagged (extern/host)
+                                             // handle has high bits set, and both take the slow path.
+        a.ins("ldr x12, [x11, w10, uxtw #3]"); // fi = entries[t]
+        a.ins("lsr x13, x12, #32");
+        a.ins(&format!("cbnz x13, {}", st.slow)); // null or tagged entry
         a.ins("ldr x13, [x21, #128]"); // info base
         a.ins("add x11, x12, x12, lsl #1"); // fi*3
         a.ins("add x13, x13, x11, lsl #3"); // entry = info + fi*24

@@ -34,7 +34,7 @@ const NO_DEF: u32 = u32::MAX;
 /// Branch-target placeholder while the target's `end` is still ahead.
 const FIXUP: u64 = u64::MAX;
 /// Null funcref representation (function indices are table/ref values).
-pub(super) const NULL_FUNCREF: u64 = u32::MAX as u64;
+pub(super) const NULL_FUNCREF: u64 = u64::MAX;
 
 pub(crate) struct PredecodedFunction {
     pub code: Vec<Instr>,

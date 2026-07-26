@@ -249,9 +249,14 @@ fn raw_to_value(ty: ValueType, raw: u64) -> Result<Value, WasmError> {
         ValueType::I64 => Value::I64(raw as i64),
         ValueType::F32 => Value::F32(f32::from_bits(raw as u32)),
         ValueType::F64 => Value::F64(f64::from_bits(raw)),
+        // A reference slot carries a `RefHandle` verbatim, which is the same
+        // thing the JIT hands across this boundary.
+        ValueType::Ref(ref_type) => {
+            Value::Ref(super::super::interpreter::slot_to_ref(raw), ref_type)
+        }
         _ => {
             return Err(WasmError::invalid(
-                "interp: non-numeric value at the host boundary",
+                "interp: unsupported value type at the host boundary",
             ))
         }
     })
@@ -264,9 +269,10 @@ fn value_to_raw(v: &Value) -> Result<u64, WasmError> {
         Value::I64(x) => *x as u64,
         Value::F32(x) => x.to_bits() as u64,
         Value::F64(x) => x.to_bits(),
+        Value::Ref(handle, _) => super::super::interpreter::ref_to_slot(*handle),
         _ => {
             return Err(WasmError::invalid(
-                "interp: non-numeric value at the host boundary",
+                "interp: unsupported value at the host boundary",
             ))
         }
     })

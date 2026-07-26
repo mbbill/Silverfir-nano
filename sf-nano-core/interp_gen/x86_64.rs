@@ -663,9 +663,13 @@ impl Isa for X86_64 {
         a.ins("cmp rax, [r15 + 120]"); // table 0 length
         a.ins(&format!("jae {}", st.slow));
         a.ins("mov rcx, [r15 + 112]"); // table 0 entries
-        a.ins("mov ecx, [rcx + rax*4]"); // fi
-        a.ins("cmp ecx, -1");
-        a.ins(&format!("je {}", st.slow)); // null entry
+                                       // Entries are `RefHandle` slots (8 bytes); a plain handle's payload
+                                       // is the function index. Null is all-ones and a tagged handle has
+                                       // high bits set, so both fail the bound and take the slow path.
+        a.ins("mov rcx, [rcx + rax*8]"); // fi
+        a.ins("mov rdx, rcx");
+        a.ins("shr rdx, 32");
+        a.ins(&format!("jnz {}", st.slow)); // null or tagged entry
         a.ins("mov rdx, [r15 + 128]"); // info base
         a.ins("lea rax, [rcx + rcx*2]"); // fi*3
         a.ins("lea rdx, [rdx + rax*8]"); // entry = info + fi*24

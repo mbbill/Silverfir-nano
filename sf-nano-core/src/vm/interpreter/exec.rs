@@ -25,11 +25,10 @@ use crate::module::entities::{Data, Element, ElementInit, GlobalDef, MemoryDef};
 use crate::module::Module;
 use crate::opcodes::Opcode;
 use crate::utils::limits::Limitable;
-use crate::value_type::ValueType;
 use crate::vm::engine::Engine;
 use crate::vm::entities::MemInst;
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
-use crate::vm::value::Value;
+use crate::vm::value::{RefHandle, Value};
 
 use super::engine::{
     DCell, EnterState, LinkedFunction, NativeEngine, EXIT_RETURN, EXIT_SLOW, EXIT_TRAP_BASE,
@@ -41,7 +40,37 @@ use super::instr::{Instr, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
 use super::predecode::{predecode_function, PredecodedFunction};
 
 const PAGE: usize = 65536;
-const NULL_FUNC: u32 = u32::MAX;
+/// A null reference, as it sits in an 8-byte slot.
+///
+/// `RefHandle` is `usize`-wide, so its own null (`usize::MAX`) is a different
+/// bit pattern on 32- and 64-bit hosts. Slots are always 8 bytes, so the two
+/// conversions below normalize null to one value and a reference means the
+/// same thing in a slot on every target.
+const NULL_REF_SLOT: u64 = u64::MAX;
+
+/// A reference as stored in a slot, table entry, or global.
+///
+/// A plain handle's payload IS the function index -- the same number the
+/// interpreter used to store as a bare `u32` -- so widening to the full
+/// handle keeps funcrefs bit-identical and brings extern/host refs, which
+/// ride in `RefHandle`'s tag bits, along for free.
+#[inline]
+pub(crate) fn ref_to_slot(handle: RefHandle) -> u64 {
+    if handle.is_null() {
+        NULL_REF_SLOT
+    } else {
+        handle.0 as u64
+    }
+}
+
+#[inline]
+pub(crate) fn slot_to_ref(slot: u64) -> RefHandle {
+    if slot == NULL_REF_SLOT {
+        RefHandle::null()
+    } else {
+        RefHandle::new(slot as usize)
+    }
+}
 const MAX_CALL_DEPTH: u32 = 4096;
 /// Ceiling on native call depth, and so on the return-stack records the
 /// dispatch chain can plant.
@@ -81,7 +110,7 @@ pub(crate) type HostDispatch =
 /// `entries` is not gated: instantiation reads its length to bounds-check
 /// active element segments on every target.
 struct TableState {
-    entries: Vec<u32>,
+    entries: Vec<u64>,
     max: u64,
 }
 
@@ -238,11 +267,8 @@ fn value_to_raw_for_interp(v: &Value) -> Result<u64, WasmError> {
         Value::I64(x) => *x as u64,
         Value::F32(x) => x.to_bits() as u64,
         Value::F64(x) => x.to_bits(),
-        _ => {
-            return Err(WasmError::invalid(
-                "interp: non-numeric global import unsupported",
-            ))
-        }
+        Value::Ref(handle, _) => ref_to_slot(*handle),
+        _ => return Err(WasmError::invalid("interp: unsupported global import type")),
     })
 }
 
@@ -291,7 +317,7 @@ fn eval_const(expr: &[u8], globals: &[u64]) -> Result<u64, WasmError> {
                     (WasmOpcode::OP(Opcode::REF_FUNC), Immediate::FunctionIndex(i)) => {
                         self.stack.push(*i as u64)
                     }
-                    (WasmOpcode::OP(Opcode::REF_NULL), _) => self.stack.push(NULL_FUNC as u64),
+                    (WasmOpcode::OP(Opcode::REF_NULL), _) => self.stack.push(NULL_REF_SLOT),
                     (WasmOpcode::OP(Opcode::GLOBAL_GET), Immediate::GlobalIndex(i)) => {
                         // Only an already-initialized global is reachable:
                         // the spec restricts a constant expression to
@@ -477,21 +503,18 @@ impl InterpInstance {
             }
         }
 
-        // Tables (funcref only) + active element segments.
+        // Tables (any reference type) + active element segments.
         let mut tables = Vec::new();
         for t in module.tables() {
             if t.is_import() {
                 return Err(WasmError::invalid("interp: imported table unsupported"));
-            }
-            if t.value_type() != ValueType::funcref() {
-                return Err(WasmError::invalid("interp: non-funcref table unsupported"));
             }
             let limits = t.spec().limits();
             if limits.is64 {
                 return Err(WasmError::invalid("interp: table64 unsupported"));
             }
             tables.push(TableState {
-                entries: vec![NULL_FUNC; limits.min() as usize],
+                entries: vec![NULL_REF_SLOT; limits.min() as usize],
                 max: limits.max().unwrap_or(u32::MAX as usize) as u64,
             });
         }
@@ -518,7 +541,8 @@ impl InterpInstance {
                             return Err(WasmError::trap("out of bounds table access"));
                         }
                         for (k, &fi) in idxs.iter().enumerate() {
-                            table.entries[off as usize + k] = fi as u32;
+                            table.entries[off as usize + k] =
+                                ref_to_slot(RefHandle::new(fi as usize));
                         }
                     }
                     ElementInit::InitExprs { exprs, .. } => {
@@ -526,7 +550,7 @@ impl InterpInstance {
                             return Err(WasmError::trap("out of bounds table access"));
                         }
                         for (k, expr) in exprs.iter().enumerate() {
-                            table.entries[off as usize + k] = eval_const(expr, &globals)? as u32;
+                            table.entries[off as usize + k] = eval_const(expr, &globals)?;
                         }
                     }
                 }
@@ -839,16 +863,19 @@ impl InterpInstance {
     }
 
     /// Resolve the element-segment function value at `seg[k]`.
-    fn elem_value(&self, seg: usize, k: usize) -> Result<u32, WasmError> {
+    /// One element-segment entry, as the reference slot a table holds.
+    fn elem_value(&self, seg: usize, k: usize) -> Result<u64, WasmError> {
         match self.module.elements().get(seg).map(|e| e.get_init()) {
             Some(ElementInit::FunctionIndexes(idxs)) => idxs
                 .get(k)
-                .map(|&fi| fi as u32)
+                .map(|&fi| ref_to_slot(RefHandle::new(fi as usize)))
                 .ok_or(WasmError::trap("out of bounds table access")),
+            // Already a slot: `eval_const` yields `NULL_REF_SLOT` for
+            // `ref.null` and a plain handle for `ref.func`.
             Some(ElementInit::InitExprs { exprs, .. }) => exprs
                 .get(k)
                 .ok_or(WasmError::trap("out of bounds table access"))
-                .and_then(|e| eval_const(e, &self.globals).map(|v| v as u32)),
+                .and_then(|e| eval_const(e, &self.globals)),
             None => Err(WasmError::trap("out of bounds table access")),
         }
     }
@@ -1908,7 +1935,7 @@ impl InterpInstance {
             // ---- ref/table ----
             Op::RefIsNull => {
                 let v = opa!(ins);
-                frame[ins.c as usize] = (v == NULL_FUNC as u64) as u64;
+                frame[ins.c as usize] = slot_to_ref(v).is_null() as u64;
             }
             Op::TableGet => {
                 let i = opa!(ins) as u32 as usize;
@@ -1924,7 +1951,7 @@ impl InterpInstance {
             }
             Op::TableSet => {
                 let i = opa!(ins) as u32 as usize;
-                let v = opb!(ins) as u32;
+                let v = opb!(ins);
                 let t = &mut self
                     .tables
                     .get_mut(ins.c as usize)
@@ -1942,7 +1969,7 @@ impl InterpInstance {
                 frame[ins.c as usize] = n as u64;
             }
             Op::TableGrow => {
-                let init = opa!(ins) as u32;
+                let init = opa!(ins);
                 let delta = opb!(ins) as u32 as u64;
                 let tidx = (ins.c >> 32) as usize;
                 let dst = (ins.c & 0xffff_ffff) as usize;
@@ -1962,7 +1989,7 @@ impl InterpInstance {
                 let base = ins.a as usize;
                 let (i, val, n) = (
                     frame[base] as u32 as u64,
-                    frame[base + 1] as u32,
+                    frame[base + 1],
                     frame[base + 2] as u32 as u64,
                 );
                 let t = &mut self
@@ -2108,9 +2135,14 @@ impl InterpInstance {
                     .entries
                     .get(t)
                     .ok_or(WasmError::trap("undefined element"))?;
-                if fi == NULL_FUNC {
+                let callee = slot_to_ref(fi);
+                if callee.is_null() {
                     return Err(WasmError::trap("uninitialized element"));
                 }
+                if callee.is_special() {
+                    return Err(WasmError::trap("indirect call type mismatch"));
+                }
+                let fi = callee.0 as u32;
                 let expected = ins.c as u32;
                 let actual = self
                     .module

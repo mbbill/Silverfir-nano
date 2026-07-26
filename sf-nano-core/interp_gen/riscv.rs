@@ -1738,9 +1738,12 @@ impl RiscV {
         a.ins(&format!("ld {T3}, 120({STATE})")); // table 0 length
         self.br_far(a, "bgeu", T2, T3, &st.slow);
         a.ins(&format!("ld {T3}, 112({STATE})")); // table 0 entries
-        a.ins(&format!("slli {T4}, {T2}, 2"));
+                                                  // Entries are `RefHandle` slots (8 bytes); a plain handle's payload
+                                                  // is the function index. Null is all-ones and a tagged handle has
+                                                  // high bits set, so both exceed u32::MAX and take the slow path.
+        a.ins(&format!("slli {T4}, {T2}, 3"));
         a.ins(&format!("add {T3}, {T3}, {T4}"));
-        a.ins(&format!("lw {T4}, 0({T3})")); // fi (-1 = null)
+        a.ins(&format!("ld {T4}, 0({T3})")); // fi (all-ones = null)
         a.ins(&format!("li {T5}, -1"));
         self.br_far(a, "beq", T4, T5, &st.slow);
         a.ins(&format!("ld {T5}, 128({STATE})")); // info base
