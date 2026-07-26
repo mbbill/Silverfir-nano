@@ -434,11 +434,6 @@ impl Instance {
             }),
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.shared_global_state_at(idx),
-            #[cfg(sf_interp)]
-            Inner::Interp(_) => {
-                let _ = idx;
-                None
-            }
         }
     }
 

@@ -323,6 +323,11 @@ pub enum Op {
     /// `ref.eq`: reference identity. A slot holds the handle verbatim, so
     /// two references are equal exactly when their slots are.
     RefEq,
+    /// `throw $tag`: raise an exception carrying the tag's parameters.
+    /// `a` = tag index, `b` = frame slot of the first argument.
+    Throw,
+    /// `throw_ref`: re-raise the exception an `exnref` names. `a` = operand.
+    ThrowRef,
     /// `a` = index operand, `b` = table index, `c` = dst.
     TableGet,
     /// `a` = index operand, `b` = value operand, `c` = table index.

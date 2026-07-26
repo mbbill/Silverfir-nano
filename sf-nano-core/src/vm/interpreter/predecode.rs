@@ -22,6 +22,7 @@ use crate::module::entities::GlobalDef;
 use crate::module::type_context::TypeContext;
 use crate::module::Module;
 use crate::op_decoder::{BlockType, Decoder, Immediate, OpStream, OpcodeHandler};
+use crate::op_decoder::{CatchClause, CatchClauseKind};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
 
@@ -154,6 +155,9 @@ struct CtlFrame {
     else_fixup: Option<u32>,
     /// Sites whose branch target awaits this block's end.
     fixups: Vec<Fixup>,
+    /// `try_table` catch clauses, innermost frame first when searching.
+    /// Empty for every other block kind.
+    catches: Vec<CatchClause>,
 }
 
 struct Predecoder<'m> {
@@ -310,6 +314,33 @@ impl<'m> Predecoder<'m> {
         self.module.globals().get(idx as usize).is_some_and(|g| {
             matches!(g.def(), GlobalDef::Import { .. }) || !g.export_names().is_empty()
         })
+    }
+
+    /// Depth of the innermost enclosing `try_table` whose catch clauses
+    /// accept `tag`, if any.
+    ///
+    /// `catch_all` matches every tag, so it ends the search at its frame.
+    /// Returns `(branch depth, discards_values)`.
+    ///
+    /// The `_ref` clause kinds additionally pass an `exnref`, which this
+    /// engine has no representation for, so they are not matched here and the
+    /// throw leaves the frame instead.
+    fn matching_catch(&self, tag: u32) -> Option<(u32, bool)> {
+        for (back, f) in self.frames.iter().rev().enumerate() {
+            for c in &f.catches {
+                let hit = match c.kind {
+                    CatchClauseKind::Catch => (c.tag_idx == Some(tag), false),
+                    CatchClauseKind::CatchAll => (true, true),
+                    CatchClauseKind::CatchRef | CatchClauseKind::CatchAllRef => (false, false),
+                };
+                if hit.0 {
+                    // `label_idx` counts outward from the try_table frame, so
+                    // add the depth of that frame from here.
+                    return Some((back as u32 + c.label_idx, hit.1));
+                }
+            }
+        }
+        None
     }
 
     fn table_is_shared(&self, idx: u64) -> bool {
@@ -1232,6 +1263,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                             header: 0,
                             else_fixup: None,
                             fixups: Vec::new(),
+                            catches: Vec::new(),
                         });
                     }
                     Opcode::ELSE => {
@@ -1301,6 +1333,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         header,
                         else_fixup: None,
                         fixups: Vec::new(),
+                        catches: Vec::new(),
                     });
                 }
                 Opcode::IF => {
@@ -1344,6 +1377,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         header: 0,
                         else_fixup: Some(fx),
                         fixups: Vec::new(),
+                        catches: Vec::new(),
                     });
                 }
                 Opcode::ELSE => {
@@ -1589,9 +1623,95 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 // Named rather than left to the generic fallthrough: this is
                 // a whole feature the engine lacks, not one stray opcode, and
                 // saying so is what tells a reader where the boundary is.
-                Opcode::THROW | Opcode::THROW_REF | Opcode::TRY_TABLE => {
+                Opcode::TRY_TABLE => {
+                    let (bt, catches) = match &imm {
+                        Immediate::TryTable {
+                            block_type,
+                            catches,
+                        } => (block_type, catches.clone()),
+                        _ => return Err(desync()),
+                    };
+                    let (p, r) = block_arity(self.types, bt)?;
+                    // A try_table is a block that also remembers where a
+                    // matching `throw` should land. The body is ordinary
+                    // code; only the catch search distinguishes it.
+                    for &d in catches.iter().map(|c| &c.label_idx) {
+                        self.mark_branch_target(d);
+                    }
+                    let base = self.height().saturating_sub(p);
+                    self.frames.push(CtlFrame {
+                        base,
+                        params: p,
+                        results: r,
+                        is_loop: false,
+                        is_if: false,
+                        dead_entry: true,
+                        end_targeted: false,
+                        saw_else: false,
+                        then_fell_live: false,
+                        header: 0,
+                        else_fixup: None,
+                        fixups: Vec::new(),
+                        catches,
+                    });
+                }
+                Opcode::THROW => {
+                    let tag = match imm {
+                        Immediate::TagIndex(t) => t,
+                        _ => return Err(desync()),
+                    };
+                    let params = self
+                        .module
+                        .tags()
+                        .get(tag as usize)
+                        .map(|t| t.func_type().params().len() as u32)
+                        .ok_or(WasmError::invalid("interp: bad throw tag"))?;
+                    self.materialize_all();
+                    let h = self.height();
+                    if h < params {
+                        return Err(desync());
+                    }
+                    let base = self.temp_slot(h - params);
+                    // A handler in THIS function is resolvable now: find the
+                    // innermost enclosing try_table whose catch matches, and
+                    // branch to it. Anything else leaves the frame.
+                    match self.matching_catch(tag) {
+                        // `catch $tag $l` hands the tag's PARAMETERS to $l, so
+                        // they stay on the stack and become the branch values.
+                        Some((depth, false)) => {
+                            self.branch_value_moves(depth)?;
+                            self.emit_branch(Op::Br, 0, 0, depth)?;
+                        }
+                        // `catch_all $l` takes no values, so the parameters
+                        // are discarded before the branch.
+                        Some((depth, true)) => {
+                            for _ in 0..params {
+                                let _ = self.pop()?;
+                            }
+                            self.branch_value_moves(depth)?;
+                            self.emit_branch(Op::Br, 0, 0, depth)?;
+                        }
+                        // No handler in this function. The exception would
+                        // have to unwind to a caller's, which needs the native
+                        // chain's return stack unwound with it -- not built.
+                        // Refusing with the feature named beats emitting a
+                        // throw that cannot be caught.
+                        None => {
+                            let _ = base;
+                            return Err(WasmError::invalid(
+                                "interp: exception handling across calls is not supported yet",
+                            ));
+                        }
+                    }
+                    self.bump_region();
+                    self.dead = true;
+                }
+                Opcode::THROW_REF => {
+                    // Re-raising needs an `exnref`, which this engine has no
+                    // representation for -- a caught exception is not a value
+                    // here, only a branch.
                     return Err(WasmError::invalid(
-                        "interp: exception handling is not supported yet",
+                        "interp: exception references are not supported yet",
                     ));
                 }
                 Opcode::BR_ON_NULL | Opcode::BR_ON_NON_NULL => {

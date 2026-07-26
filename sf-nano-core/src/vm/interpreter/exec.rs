@@ -2468,6 +2468,21 @@ impl InterpInstance {
                 let v = opa!(ins);
                 frame[ins.c as usize] = slot_to_ref(v).is_null() as u64;
             }
+            Op::Throw => {
+                // No enclosing `try_table` in this function matched the tag --
+                // predecode would have turned that into a branch -- so the
+                // exception leaves the frame. Cross-function handlers are not
+                // modelled yet, so it surfaces as a trap naming the tag rather
+                // than unwinding to one.
+                let _ = ins.b;
+                return Err(WasmError::trap("uncaught exception"));
+            }
+            Op::ThrowRef => {
+                if slot_to_ref(opa!(ins)).is_null() {
+                    return Err(WasmError::trap("null exception reference"));
+                }
+                return Err(WasmError::trap("uncaught exception"));
+            }
             Op::RefEq => {
                 frame[ins.c as usize] = (opa!(ins) == opb!(ins)) as u64;
             }
@@ -3016,6 +3031,24 @@ mod tests {
         assert_eq!(run1(src, "sw", &[1]).unwrap(), 20);
         assert_eq!(run1(src, "sw", &[2]).unwrap(), 30);
         assert_eq!(run1(src, "sw", &[9]).unwrap(), 30); // default
+    }
+
+    #[test]
+    fn try_table_catches_in_the_same_function() {
+        // The throw is resolved at predecode into a branch to the catch's
+        // label, so no unwinding is involved when handler and throw share a
+        // function.
+        let src = r#"(module
+            (tag $t)
+            (func (export "go") (result i32)
+                (block $h
+                    (try_table (catch_all $h)
+                        (throw $t))
+                    (return (i32.const 1)))
+                (i32.const 2)))"#;
+        // The throw reaches catch_all, which carries no values, so control
+        // lands after the block and returns 2 rather than 1.
+        assert_eq!(run1(src, "go", &[]).unwrap(), 2);
     }
 
     #[test]
