@@ -4,13 +4,15 @@
 //! basis: `tools/foldsim` v4 over the `benchmarks/wasi` corpus, plus the
 //! measured record in the same subtree.
 //!
-//! Architecture split: what is SHARED is the module layer — parsing and
-//! decode (`module`, `op_decoder`), the value-type model — and the WASI
-//! host. Runtime state is not: the `Store`, the entity model and the
-//! `jit/runtime/` layer belong to the JIT, and this module imports
-//! nothing from `vm/` outside itself. The compile-and-execute tier
-//! is deliberately independent: this module never touches `middle/`,
-//! `machine/`, or `arch/`, so interpreter work can never break JIT builds.
+//! Architecture split: the two engines differ only in how code is RUN.
+//! Shared are the module layer (parsing, decode, the value-type model),
+//! validation, the entity model (`vm::entities` — a memory here is the
+//! same `MemInst` the JIT exports, which is what lets one instance import
+//! another's), imports (`vm::imports`), values, config, and the WASI host.
+//!
+//! Not shared is code generation: this module never touches `middle/`,
+//! `machine/`, or `arch/`, and the JIT's `Store` and `jit/runtime/` layer
+//! stay the JIT's, so interpreter work can never break JIT builds.
 //!
 //! Pipeline:
 //! - `predecode` folds wasm bytecode into fixed 32-byte instruction cells.
