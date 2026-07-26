@@ -5,7 +5,6 @@ use crate::collections;
 use crate::{
     error::WasmError,
     vm::{
-        jit::arch::NativeBackend,
         jit::backend::BackendConfig,
         jit::machine::machine_ir::{
             MachineConstData, MachineConstId, MachineFuncId, MachineFunctionAbi, MachineModule,
@@ -69,7 +68,6 @@ fn max_frame_bytes(abi: &MachineModuleAbi) -> usize {
 
 #[derive(Debug)]
 pub(crate) struct CompiledNativeModule {
-    backend_kind: NativeBackend,
     backend: BackendConfig,
     module: Option<MachineModule>,
     abi: Option<MachineModuleAbi>,
@@ -81,7 +79,6 @@ pub(crate) struct CompiledNativeModule {
 
 impl CompiledNativeModule {
     pub(crate) fn new(
-        backend_kind: NativeBackend,
         backend: BackendConfig,
         module: MachineModule,
         abi: MachineModuleAbi,
@@ -97,7 +94,6 @@ impl CompiledNativeModule {
         #[cfg(sf_has_guard_pages)]
         let max_frame_bytes = max_frame_bytes(&abi);
         Ok(Self {
-            backend_kind,
             backend,
             module: Some(module),
             abi: Some(abi),
@@ -109,7 +105,6 @@ impl CompiledNativeModule {
     }
 
     pub(crate) fn from_streamed(
-        backend_kind: NativeBackend,
         backend: BackendConfig,
         abi: MachineModuleAbi,
         aligned_consts: collections::Vec<AlignedConstData>,
@@ -118,7 +113,6 @@ impl CompiledNativeModule {
         #[cfg(sf_has_guard_pages)]
         let max_frame_bytes = max_frame_bytes(&abi);
         Self {
-            backend_kind,
             backend,
             module: None,
             abi: Some(abi),
@@ -132,11 +126,6 @@ impl CompiledNativeModule {
     #[inline]
     pub(crate) const fn backend(&self) -> BackendConfig {
         self.backend
-    }
-
-    #[inline]
-    pub(crate) const fn backend_kind(&self) -> NativeBackend {
-        self.backend_kind
     }
 
     #[inline]

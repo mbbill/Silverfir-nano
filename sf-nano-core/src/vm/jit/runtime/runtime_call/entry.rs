@@ -7,7 +7,7 @@ use crate::{
     module::type_context::{check_function_types_equivalent, concrete_type_matches_cross_context},
     vm::{
         entities::{Caller, FunctionInst},
-        jit::arch::active_backend_config,
+        jit::arch::backend_config,
         jit::runtime,
         jit::runtime::{
             common::{
@@ -42,9 +42,7 @@ pub(crate) fn call_runtime_entry_ptr() -> RuntimeCallEntry {
 
 #[inline]
 fn active_gp_unit_bytes() -> u8 {
-    active_backend_config()
-        .map(|cfg| cfg.gp_unit_bytes)
-        .unwrap_or(core::mem::size_of::<usize>() as u8)
+    backend_config().gp_unit_bytes
 }
 
 unsafe extern "C" fn runtime_call_entry(

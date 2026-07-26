@@ -484,10 +484,10 @@ fn engine_names() -> String {
 fn print_engine(tier: Tier) {
     match tier {
         #[cfg(feature = "jit")]
-        Tier::Jit => match sf_nano_core::active_native_backend_name() {
-            Ok(backend) => eprintln!("[runtime] jit backend={backend}"),
-            Err(err) => eprintln!("[runtime] jit backend unavailable: {err}"),
-        },
+        Tier::Jit => eprintln!(
+            "[runtime] jit backend={}",
+            sf_nano_core::active_native_backend_name()
+        ),
         #[cfg(feature = "interp")]
         Tier::Interp => eprintln!("[runtime] interpreter (native dispatch)"),
     }

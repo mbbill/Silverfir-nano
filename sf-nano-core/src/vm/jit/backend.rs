@@ -2,7 +2,7 @@
 //!
 //! This is the JIT's own contract between its middle-end and its backends,
 //! not a VM-wide concept: which engine runs a module is [`crate::vm::engine`],
-//! and which ISA the JIT targets is `arch::NativeBackend`. "Backend" means
+//! and which ISA the JIT targets is fixed by the target. "Backend" means
 //! the ISA here.
 
 /// Planning-time backend configuration.

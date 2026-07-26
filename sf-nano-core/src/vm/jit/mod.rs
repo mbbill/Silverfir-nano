@@ -23,7 +23,7 @@
 //! `debug/` is the IR/jitdump tooling for the same pipeline.
 //!
 //! Note the word "backend" carries two meanings in this tree, and they are
-//! not the same axis: here it is the *ISA* (`arch::NativeBackend`), while
+//! not the same axis: here it is the *ISA* the JIT emits for, while
 //! which engine runs a module at all is [`crate::vm::engine::Engine`].
 
 pub(crate) mod arch;

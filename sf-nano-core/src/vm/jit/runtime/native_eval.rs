@@ -59,16 +59,10 @@ pub(super) fn eval(
             eval(callee, owner_store, args)
         }
         FunctionInst::Local { spec, .. } => {
-            let active_backend = arch::active_native_backend()
-                .map_err(|_err| WasmError::invalid("native backend unavailable"))?;
-            let active_config = arch::active_backend_config()
-                .map_err(|_err| WasmError::invalid("native backend unavailable"))?;
+            let active_config = arch::backend_config();
             let needs_compile = spec
                 .get_native_code()
-                .map(|code| {
-                    code.compiled().backend_kind() != active_backend
-                        || code.compiled().backend() != active_config
-                })
+                .map(|code| code.compiled().backend() != active_config)
                 .unwrap_or(true);
             if needs_compile {
                 build::ensure_module_compiled(store)?;
@@ -76,7 +70,7 @@ pub(super) fn eval(
             let code = spec.get_native_code().ok_or_else(|| {
                 WasmError::internal("native runtime is missing compiled machine code")
             })?;
-            arch::dispatch_eval(active_backend, spec, code, store, args)
+            arch::dispatch_eval(spec, code, store, args)
         }
     }
 }

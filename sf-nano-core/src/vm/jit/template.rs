@@ -77,7 +77,6 @@ pub(crate) fn scan_function(
 }
 
 pub(crate) fn compile_function_into_buffer(
-    active_backend: arch::NativeBackend,
     compiled: &dyn CodegenModuleView,
     spec: &FunctionSpec,
     func_id: MachineFuncId,
@@ -85,12 +84,7 @@ pub(crate) fn compile_function_into_buffer(
     has_memory: bool,
 ) -> Result<FunctionArtifact, WasmError> {
     arch::dispatch_compile_template_function_into_buffer(
-        active_backend,
-        compiled,
-        spec,
-        func_id,
-        executable,
-        has_memory,
+        compiled, spec, func_id, executable, has_memory,
     )
 }
 

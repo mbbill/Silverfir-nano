@@ -7,7 +7,7 @@ use crate::{
     vm::{
         entities::{MemInst, TableInst},
         gc_type_check::check_ref_type_match,
-        jit::arch::active_backend_config,
+        jit::arch::backend_config,
         jit::runtime::{
             common::{internal_error, trap_error, value_matches_value_type},
             context::{NativeContext, PendingEscape},
@@ -39,9 +39,7 @@ fn current_store_mut(ctx: &mut NativeContext) -> Result<&mut Store, WasmError> {
 
 #[inline]
 pub(super) fn active_gp_unit_bytes() -> u8 {
-    active_backend_config()
-        .map(|cfg| cfg.gp_unit_bytes)
-        .unwrap_or(core::mem::size_of::<usize>() as u8)
+    backend_config().gp_unit_bytes
 }
 
 #[inline]

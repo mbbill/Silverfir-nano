@@ -39,125 +39,76 @@ pub(crate) mod riscv64;
 #[cfg(sf_backend_x64)]
 pub(crate) mod x86_64;
 
-/// Compiled execution backend implementation.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum NativeBackend {
-    #[cfg(sf_backend_arm64)]
-    Arm64,
-    #[cfg(sf_backend_armv7a)]
-    Armv7a,
-    #[cfg(sf_backend_thumbm)]
-    ThumbM,
-    #[cfg(sf_backend_riscv32)]
-    Riscv32,
-    #[cfg(sf_backend_riscv64)]
-    Riscv64,
-    #[cfg(sf_backend_x64)]
-    X86_64,
-}
-
+/// This build's backend, as one value each ISA defines for itself.
+///
+/// There is no backend *selection*: exactly one `sf_backend_*` cfg is set, and
+/// `build.rs` refuses a target where none would be, so the backend is simply
+/// what this target's ISA is. Selection used to be a `NativeBackend` enum
+/// threaded through the compile pipeline; with one variant it was a ZST whose
+/// every match folded to a single arm, so the enum bought nothing that the cfg
+/// did not already say.
+///
+/// ISA choice stays confined to this module -- callers remain free of
+/// `sf_backend_*` cfgs, which is the property that made per-call-site cfg
+/// branching the wrong shape (see `backends.alt/inline-per-arch-dispatch`).
 #[inline]
-pub(crate) fn compile_backend_config(backend: NativeBackend) -> BackendConfig {
-    match backend {
-        // Each backend returns an explicit budget preset. Physical register
-        // mapping and ABI constraints stay in the backend-specific ABI/layout
-        // code; this function selects policy, not hardware facts.
-        #[cfg(sf_backend_arm64)]
-        NativeBackend::Arm64 => arm64::abi::compile_backend_config(),
-        #[cfg(sf_backend_armv7a)]
-        NativeBackend::Armv7a => arm32::abi::compile_backend_config(),
-        #[cfg(sf_backend_thumbm)]
-        NativeBackend::ThumbM => arm32::abi::compile_backend_config(),
-        #[cfg(sf_backend_riscv32)]
-        NativeBackend::Riscv32 => riscv32::abi::compile_backend_config(),
-        #[cfg(sf_backend_riscv64)]
-        NativeBackend::Riscv64 => riscv64::abi::compile_backend_config(),
-        #[cfg(sf_backend_x64)]
-        NativeBackend::X86_64 => x86_64::abi::compile_backend_config(),
-    }
-}
-
-impl NativeBackend {
-    #[inline]
-    pub(crate) const fn as_str(self) -> &'static str {
-        match self {
-            #[cfg(sf_backend_arm64)]
-            Self::Arm64 => "arm64",
-            #[cfg(sf_backend_armv7a)]
-            Self::Armv7a => "armv7a",
-            #[cfg(sf_backend_thumbm)]
-            Self::ThumbM => "thumbm",
-            #[cfg(sf_backend_riscv32)]
-            Self::Riscv32 => "riscv32",
-            #[cfg(sf_backend_riscv64)]
-            Self::Riscv64 => "riscv64",
-            #[cfg(sf_backend_x64)]
-            Self::X86_64 => "x86_64",
-        }
-    }
-}
-
-#[inline]
-const fn compiled_native_backend() -> Option<NativeBackend> {
+pub(crate) fn backend_config() -> BackendConfig {
+    // Each backend returns an explicit budget preset. Physical register
+    // mapping and ABI constraints stay in the backend-specific ABI/layout
+    // code; this selects policy, not hardware facts.
     #[cfg(sf_backend_arm64)]
     {
-        return Some(NativeBackend::Arm64);
+        arm64::abi::compile_backend_config()
     }
-
-    #[cfg(sf_backend_armv7a)]
+    #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
     {
-        return Some(NativeBackend::Armv7a);
+        arm32::abi::compile_backend_config()
     }
-
-    #[cfg(sf_backend_thumbm)]
-    {
-        return Some(NativeBackend::ThumbM);
-    }
-
     #[cfg(sf_backend_riscv32)]
     {
-        return Some(NativeBackend::Riscv32);
+        riscv32::abi::compile_backend_config()
     }
-
     #[cfg(sf_backend_riscv64)]
     {
-        return Some(NativeBackend::Riscv64);
+        riscv64::abi::compile_backend_config()
     }
-
     #[cfg(sf_backend_x64)]
     {
-        return Some(NativeBackend::X86_64);
+        x86_64::abi::compile_backend_config()
     }
-
-    #[allow(unreachable_code)]
-    None
-}
-
-pub(crate) fn active_native_backend() -> Result<NativeBackend, &'static str> {
-    if let Some(backend) = compiled_native_backend() {
-        return Ok(backend);
-    }
-
-    Err("native backend unavailable for this target; rebuild for a supported backend")
-}
-
-#[inline]
-pub(crate) fn active_backend_config() -> Result<BackendConfig, &'static str> {
-    active_native_backend().map(compile_backend_config)
-}
-
-#[inline]
-pub(crate) fn backend_display_name(backend: NativeBackend) -> &'static str {
-    backend.as_str()
 }
 
 /// Which ISA the JIT targets on this build, for embedders that report it.
 ///
-/// Distinct from [`crate::vm::engine::Tier`]: that says *which engine*
-/// runs a module, this says which machine the JIT emits for.
+/// Distinct from [`crate::vm::engine::Tier`]: that says *which engine* runs a
+/// module, this says which machine the JIT emits for. Infallible -- a build
+/// for an ISA with no backend does not exist.
 #[inline]
-pub fn active_native_backend_name() -> Result<&'static str, &'static str> {
-    active_native_backend().map(backend_display_name)
+pub const fn active_native_backend_name() -> &'static str {
+    #[cfg(sf_backend_arm64)]
+    {
+        "arm64"
+    }
+    #[cfg(sf_backend_armv7a)]
+    {
+        "armv7a"
+    }
+    #[cfg(sf_backend_thumbm)]
+    {
+        "thumbm"
+    }
+    #[cfg(sf_backend_riscv32)]
+    {
+        "riscv32"
+    }
+    #[cfg(sf_backend_riscv64)]
+    {
+        "riscv64"
+    }
+    #[cfg(sf_backend_x64)]
+    {
+        "x86_64"
+    }
 }
 
 /// Normalized view of a backend's per-function compile result.
@@ -182,138 +133,144 @@ pub(crate) struct CompiledArchEntry {
 /// Single place in the crate where per-arch `compile_module` calls live.
 /// Callers stay free of `sf_backend_*` cfgs.
 pub(crate) fn dispatch_compile_module(
-    active_backend: NativeBackend,
     module: &ModuleInst,
     compiled: &Rc<CompiledNativeModule>,
 ) -> Result<collections::Vec<Option<CompiledArchEntry>>, WasmError> {
-    match active_backend {
-        #[cfg(sf_backend_arm64)]
-        NativeBackend::Arm64 => {
-            let entries =
-                shared_64::compile_module_64::<arm64::backend::Arm64Backend>(module, compiled)?;
-            Ok(entries
-                .into_iter()
-                .map(|opt| {
-                    opt.map(|e| CompiledArchEntry {
-                        entry: e.entry,
-                        text_len: e.text_len,
-                        #[cfg(sf_ir_dump)]
-                        debug_regions: e.debug_regions,
-                    })
+    #[cfg(sf_backend_arm64)]
+    {
+        let entries =
+            shared_64::compile_module_64::<arm64::backend::Arm64Backend>(module, compiled)?;
+        Ok(entries
+            .into_iter()
+            .map(|opt| {
+                opt.map(|e| CompiledArchEntry {
+                    entry: e.entry,
+                    text_len: e.text_len,
+                    #[cfg(sf_ir_dump)]
+                    debug_regions: e.debug_regions,
                 })
-                .collect())
-        }
-        #[cfg(sf_backend_armv7a)]
-        NativeBackend::Armv7a => {
-            let entries = arm32::compile::compile_module(module, compiled)?;
-            Ok(entries
-                .into_iter()
-                .map(|opt| {
-                    opt.map(|e| CompiledArchEntry {
-                        entry: e.entry,
-                        text_len: e.text_len,
-                        #[cfg(sf_ir_dump)]
-                        debug_regions: e.debug_regions,
-                    })
+            })
+            .collect())
+    }
+    #[cfg(sf_backend_armv7a)]
+    {
+        let entries = arm32::compile::compile_module(module, compiled)?;
+        Ok(entries
+            .into_iter()
+            .map(|opt| {
+                opt.map(|e| CompiledArchEntry {
+                    entry: e.entry,
+                    text_len: e.text_len,
+                    #[cfg(sf_ir_dump)]
+                    debug_regions: e.debug_regions,
                 })
-                .collect())
-        }
-        #[cfg(sf_backend_thumbm)]
-        NativeBackend::ThumbM => {
-            let entries = arm32::compile::compile_module(module, compiled)?;
-            Ok(entries
-                .into_iter()
-                .map(|opt| {
-                    opt.map(|e| CompiledArchEntry {
-                        entry: e.entry,
-                        text_len: e.text_len,
-                        #[cfg(sf_ir_dump)]
-                        debug_regions: e.debug_regions,
-                    })
+            })
+            .collect())
+    }
+    #[cfg(sf_backend_thumbm)]
+    {
+        let entries = arm32::compile::compile_module(module, compiled)?;
+        Ok(entries
+            .into_iter()
+            .map(|opt| {
+                opt.map(|e| CompiledArchEntry {
+                    entry: e.entry,
+                    text_len: e.text_len,
+                    #[cfg(sf_ir_dump)]
+                    debug_regions: e.debug_regions,
                 })
-                .collect())
-        }
-        #[cfg(sf_backend_x64)]
-        NativeBackend::X86_64 => {
-            let entries =
-                shared_64::compile_module_64::<x86_64::backend::X86_64Backend>(module, compiled)?;
-            Ok(entries
-                .into_iter()
-                .map(|opt| {
-                    opt.map(|e| CompiledArchEntry {
-                        entry: e.entry,
-                        text_len: e.text_len,
-                        #[cfg(sf_ir_dump)]
-                        debug_regions: e.debug_regions,
-                    })
+            })
+            .collect())
+    }
+    #[cfg(sf_backend_x64)]
+    {
+        let entries =
+            shared_64::compile_module_64::<x86_64::backend::X86_64Backend>(module, compiled)?;
+        Ok(entries
+            .into_iter()
+            .map(|opt| {
+                opt.map(|e| CompiledArchEntry {
+                    entry: e.entry,
+                    text_len: e.text_len,
+                    #[cfg(sf_ir_dump)]
+                    debug_regions: e.debug_regions,
                 })
-                .collect())
-        }
-        #[cfg(sf_backend_riscv32)]
-        NativeBackend::Riscv32 => {
-            let entries = riscv32::compile::compile_module(module, compiled)?;
-            Ok(entries
-                .into_iter()
-                .map(|opt| {
-                    opt.map(|e| CompiledArchEntry {
-                        entry: e.entry,
-                        text_len: e.text_len,
-                        #[cfg(sf_ir_dump)]
-                        debug_regions: e.debug_regions,
-                    })
+            })
+            .collect())
+    }
+    #[cfg(sf_backend_riscv32)]
+    {
+        let entries = riscv32::compile::compile_module(module, compiled)?;
+        Ok(entries
+            .into_iter()
+            .map(|opt| {
+                opt.map(|e| CompiledArchEntry {
+                    entry: e.entry,
+                    text_len: e.text_len,
+                    #[cfg(sf_ir_dump)]
+                    debug_regions: e.debug_regions,
                 })
-                .collect())
-        }
-        #[cfg(sf_backend_riscv64)]
-        NativeBackend::Riscv64 => {
-            let entries =
-                shared_64::compile_module_64::<riscv64::backend::Riscv64Backend>(module, compiled)?;
-            Ok(entries
-                .into_iter()
-                .map(|opt| {
-                    opt.map(|e| CompiledArchEntry {
-                        entry: e.entry,
-                        text_len: e.text_len,
-                        #[cfg(sf_ir_dump)]
-                        debug_regions: e.debug_regions,
-                    })
+            })
+            .collect())
+    }
+    #[cfg(sf_backend_riscv64)]
+    {
+        let entries =
+            shared_64::compile_module_64::<riscv64::backend::Riscv64Backend>(module, compiled)?;
+        Ok(entries
+            .into_iter()
+            .map(|opt| {
+                opt.map(|e| CompiledArchEntry {
+                    entry: e.entry,
+                    text_len: e.text_len,
+                    #[cfg(sf_ir_dump)]
+                    debug_regions: e.debug_regions,
                 })
-                .collect())
-        }
+            })
+            .collect())
     }
 }
 
 pub(crate) fn dispatch_compile_function_into_buffer(
-    active_backend: NativeBackend,
     compiled: &dyn CodegenModuleView,
     function: &MachineFunction,
     executable: &mut CodeBuffer,
 ) -> Result<FunctionArtifact, WasmError> {
-    match active_backend {
-        #[cfg(sf_backend_arm64)]
-        NativeBackend::Arm64 => common::pipeline::compile_function_into_buffer::<
-            arm64::backend::Arm64Backend,
-        >(compiled, function, executable),
-        #[cfg(sf_backend_armv7a)]
-        NativeBackend::Armv7a => common::pipeline::compile_function_into_buffer::<
-            arm32::backend::Arm32Backend,
-        >(compiled, function, executable),
-        #[cfg(sf_backend_thumbm)]
-        NativeBackend::ThumbM => common::pipeline::compile_function_into_buffer::<
-            arm32::backend::Arm32Backend,
-        >(compiled, function, executable),
-        #[cfg(sf_backend_x64)]
-        NativeBackend::X86_64 => common::pipeline::compile_function_into_buffer::<
-            x86_64::backend::X86_64Backend,
-        >(compiled, function, executable),
-        #[cfg(sf_backend_riscv32)]
-        NativeBackend::Riscv32 => common::pipeline::compile_function_into_buffer::<
-            riscv32::backend::Riscv32Backend,
-        >(compiled, function, executable),
-        #[cfg(sf_backend_riscv64)]
-        NativeBackend::Riscv64 => common::pipeline::compile_function_into_buffer::<
-            riscv64::backend::Riscv64Backend,
-        >(compiled, function, executable),
+    #[cfg(sf_backend_arm64)]
+    {
+        common::pipeline::compile_function_into_buffer::<arm64::backend::Arm64Backend>(
+            compiled, function, executable,
+        )
+    }
+    #[cfg(sf_backend_armv7a)]
+    {
+        common::pipeline::compile_function_into_buffer::<arm32::backend::Arm32Backend>(
+            compiled, function, executable,
+        )
+    }
+    #[cfg(sf_backend_thumbm)]
+    {
+        common::pipeline::compile_function_into_buffer::<arm32::backend::Arm32Backend>(
+            compiled, function, executable,
+        )
+    }
+    #[cfg(sf_backend_x64)]
+    {
+        common::pipeline::compile_function_into_buffer::<x86_64::backend::X86_64Backend>(
+            compiled, function, executable,
+        )
+    }
+    #[cfg(sf_backend_riscv32)]
+    {
+        common::pipeline::compile_function_into_buffer::<riscv32::backend::Riscv32Backend>(
+            compiled, function, executable,
+        )
+    }
+    #[cfg(sf_backend_riscv64)]
+    {
+        common::pipeline::compile_function_into_buffer::<riscv64::backend::Riscv64Backend>(
+            compiled, function, executable,
+        )
     }
 }
 
@@ -321,116 +278,110 @@ pub(crate) fn dispatch_compile_function_into_buffer(
 /// `sf_has_std`-gated in `vm::jit::build`.
 #[cfg(sf_has_std)]
 pub(crate) fn dispatch_compile_function(
-    active_backend: NativeBackend,
     compiled: &dyn CodegenModuleView,
     function: &MachineFunction,
 ) -> Result<FunctionArtifact, WasmError> {
-    match active_backend {
-        #[cfg(sf_backend_arm64)]
-        NativeBackend::Arm64 => {
-            common::pipeline::compile_function::<arm64::backend::Arm64Backend>(compiled, function)
-        }
-        #[cfg(sf_backend_armv7a)]
-        NativeBackend::Armv7a => {
-            common::pipeline::compile_function::<arm32::backend::Arm32Backend>(compiled, function)
-        }
-        #[cfg(sf_backend_thumbm)]
-        NativeBackend::ThumbM => {
-            common::pipeline::compile_function::<arm32::backend::Arm32Backend>(compiled, function)
-        }
-        #[cfg(sf_backend_x64)]
-        NativeBackend::X86_64 => {
-            common::pipeline::compile_function::<x86_64::backend::X86_64Backend>(compiled, function)
-        }
-        #[cfg(sf_backend_riscv32)]
-        NativeBackend::Riscv32 => common::pipeline::compile_function::<
-            riscv32::backend::Riscv32Backend,
-        >(compiled, function),
-        #[cfg(sf_backend_riscv64)]
-        NativeBackend::Riscv64 => common::pipeline::compile_function::<
-            riscv64::backend::Riscv64Backend,
-        >(compiled, function),
+    #[cfg(sf_backend_arm64)]
+    {
+        common::pipeline::compile_function::<arm64::backend::Arm64Backend>(compiled, function)
+    }
+    #[cfg(sf_backend_armv7a)]
+    {
+        common::pipeline::compile_function::<arm32::backend::Arm32Backend>(compiled, function)
+    }
+    #[cfg(sf_backend_thumbm)]
+    {
+        common::pipeline::compile_function::<arm32::backend::Arm32Backend>(compiled, function)
+    }
+    #[cfg(sf_backend_x64)]
+    {
+        common::pipeline::compile_function::<x86_64::backend::X86_64Backend>(compiled, function)
+    }
+    #[cfg(sf_backend_riscv32)]
+    {
+        common::pipeline::compile_function::<riscv32::backend::Riscv32Backend>(compiled, function)
+    }
+    #[cfg(sf_backend_riscv64)]
+    {
+        common::pipeline::compile_function::<riscv64::backend::Riscv64Backend>(compiled, function)
     }
 }
 
 pub(crate) fn dispatch_compile_template_function_into_buffer(
-    active_backend: NativeBackend,
     compiled: &dyn CodegenModuleView,
     spec: &FunctionSpec,
     func_id: MachineFuncId,
     executable: &mut CodeBuffer,
     has_memory: bool,
 ) -> Result<FunctionArtifact, WasmError> {
-    match active_backend {
-        #[cfg(sf_backend_arm64)]
-        NativeBackend::Arm64 => crate::vm::jit::template::compile_template_for_backend::<
-            arm64::backend::Arm64Backend,
-        >(compiled, spec, func_id, executable, has_memory),
-        #[cfg(sf_backend_armv7a)]
-        NativeBackend::Armv7a => crate::vm::jit::template::compile_template_for_backend::<
-            arm32::backend::Arm32Backend,
-        >(compiled, spec, func_id, executable, has_memory),
-        #[cfg(sf_backend_thumbm)]
-        NativeBackend::ThumbM => crate::vm::jit::template::compile_template_for_backend::<
-            arm32::backend::Arm32Backend,
-        >(compiled, spec, func_id, executable, has_memory),
-        #[cfg(sf_backend_x64)]
-        NativeBackend::X86_64 => crate::vm::jit::template::compile_template_for_backend::<
-            x86_64::backend::X86_64Backend,
-        >(compiled, spec, func_id, executable, has_memory),
-        #[cfg(sf_backend_riscv32)]
-        NativeBackend::Riscv32 => crate::vm::jit::template::compile_template_for_backend::<
-            riscv32::backend::Riscv32Backend,
-        >(compiled, spec, func_id, executable, has_memory),
-        #[cfg(sf_backend_riscv64)]
-        NativeBackend::Riscv64 => crate::vm::jit::template::compile_template_for_backend::<
-            riscv64::backend::Riscv64Backend,
-        >(compiled, spec, func_id, executable, has_memory),
+    #[cfg(sf_backend_arm64)]
+    {
+        crate::vm::jit::template::compile_template_for_backend::<arm64::backend::Arm64Backend>(
+            compiled, spec, func_id, executable, has_memory,
+        )
+    }
+    #[cfg(sf_backend_armv7a)]
+    {
+        crate::vm::jit::template::compile_template_for_backend::<arm32::backend::Arm32Backend>(
+            compiled, spec, func_id, executable, has_memory,
+        )
+    }
+    #[cfg(sf_backend_thumbm)]
+    {
+        crate::vm::jit::template::compile_template_for_backend::<arm32::backend::Arm32Backend>(
+            compiled, spec, func_id, executable, has_memory,
+        )
+    }
+    #[cfg(sf_backend_x64)]
+    {
+        crate::vm::jit::template::compile_template_for_backend::<x86_64::backend::X86_64Backend>(
+            compiled, spec, func_id, executable, has_memory,
+        )
+    }
+    #[cfg(sf_backend_riscv32)]
+    {
+        crate::vm::jit::template::compile_template_for_backend::<riscv32::backend::Riscv32Backend>(
+            compiled, spec, func_id, executable, has_memory,
+        )
+    }
+    #[cfg(sf_backend_riscv64)]
+    {
+        crate::vm::jit::template::compile_template_for_backend::<riscv64::backend::Riscv64Backend>(
+            compiled, spec, func_id, executable, has_memory,
+        )
     }
 }
 
-pub(crate) fn dispatch_emit_nop_padding(
-    active_backend: NativeBackend,
-    buf: &mut CodeBuffer,
-    bytes: usize,
-) {
-    match active_backend {
-        #[cfg(sf_backend_arm64)]
-        NativeBackend::Arm64 => {
-            <arm64::backend::Arm64Backend as common::backend::ArchBackend>::emit_nop_padding(
-                buf, bytes,
-            )
-        }
-        #[cfg(sf_backend_armv7a)]
-        NativeBackend::Armv7a => {
-            <arm32::backend::Arm32Backend as common::backend::ArchBackend>::emit_nop_padding(
-                buf, bytes,
-            )
-        }
-        #[cfg(sf_backend_thumbm)]
-        NativeBackend::ThumbM => {
-            <arm32::backend::Arm32Backend as common::backend::ArchBackend>::emit_nop_padding(
-                buf, bytes,
-            )
-        }
-        #[cfg(sf_backend_x64)]
-        NativeBackend::X86_64 => {
-            <x86_64::backend::X86_64Backend as common::backend::ArchBackend>::emit_nop_padding(
-                buf, bytes,
-            )
-        }
-        #[cfg(sf_backend_riscv32)]
-        NativeBackend::Riscv32 => {
-            <riscv32::backend::Riscv32Backend as common::backend::ArchBackend>::emit_nop_padding(
-                buf, bytes,
-            )
-        }
-        #[cfg(sf_backend_riscv64)]
-        NativeBackend::Riscv64 => {
-            <riscv64::backend::Riscv64Backend as common::backend::ArchBackend>::emit_nop_padding(
-                buf, bytes,
-            )
-        }
+pub(crate) fn dispatch_emit_nop_padding(buf: &mut CodeBuffer, bytes: usize) {
+    #[cfg(sf_backend_arm64)]
+    {
+        <arm64::backend::Arm64Backend as common::backend::ArchBackend>::emit_nop_padding(buf, bytes)
+    }
+    #[cfg(sf_backend_armv7a)]
+    {
+        <arm32::backend::Arm32Backend as common::backend::ArchBackend>::emit_nop_padding(buf, bytes)
+    }
+    #[cfg(sf_backend_thumbm)]
+    {
+        <arm32::backend::Arm32Backend as common::backend::ArchBackend>::emit_nop_padding(buf, bytes)
+    }
+    #[cfg(sf_backend_x64)]
+    {
+        <x86_64::backend::X86_64Backend as common::backend::ArchBackend>::emit_nop_padding(
+            buf, bytes,
+        )
+    }
+    #[cfg(sf_backend_riscv32)]
+    {
+        <riscv32::backend::Riscv32Backend as common::backend::ArchBackend>::emit_nop_padding(
+            buf, bytes,
+        )
+    }
+    #[cfg(sf_backend_riscv64)]
+    {
+        <riscv64::backend::Riscv64Backend as common::backend::ArchBackend>::emit_nop_padding(
+            buf, bytes,
+        )
     }
 }
 
@@ -441,25 +392,34 @@ pub(crate) fn dispatch_emit_nop_padding(
 /// free of `sf_backend_*` cfgs.
 #[inline]
 pub(crate) fn dispatch_eval(
-    active_backend: NativeBackend,
     spec: &FunctionSpec,
     code: &NativeCode,
     store: &mut Store,
     args: &[Value],
 ) -> Result<ResultBuffer, WasmError> {
-    let backend_name = backend_display_name(active_backend);
-    match active_backend {
-        #[cfg(sf_backend_arm64)]
-        NativeBackend::Arm64 => common::eval::eval(spec, code, store, args, backend_name),
-        #[cfg(sf_backend_armv7a)]
-        NativeBackend::Armv7a => common::eval::eval(spec, code, store, args, backend_name),
-        #[cfg(sf_backend_thumbm)]
-        NativeBackend::ThumbM => common::eval::eval(spec, code, store, args, backend_name),
-        #[cfg(sf_backend_x64)]
-        NativeBackend::X86_64 => common::eval::eval(spec, code, store, args, backend_name),
-        #[cfg(sf_backend_riscv32)]
-        NativeBackend::Riscv32 => common::eval::eval(spec, code, store, args, backend_name),
-        #[cfg(sf_backend_riscv64)]
-        NativeBackend::Riscv64 => common::eval::eval(spec, code, store, args, backend_name),
+    let backend_name = active_native_backend_name();
+    #[cfg(sf_backend_arm64)]
+    {
+        common::eval::eval(spec, code, store, args, backend_name)
+    }
+    #[cfg(sf_backend_armv7a)]
+    {
+        common::eval::eval(spec, code, store, args, backend_name)
+    }
+    #[cfg(sf_backend_thumbm)]
+    {
+        common::eval::eval(spec, code, store, args, backend_name)
+    }
+    #[cfg(sf_backend_x64)]
+    {
+        common::eval::eval(spec, code, store, args, backend_name)
+    }
+    #[cfg(sf_backend_riscv32)]
+    {
+        common::eval::eval(spec, code, store, args, backend_name)
+    }
+    #[cfg(sf_backend_riscv64)]
+    {
+        common::eval::eval(spec, code, store, args, backend_name)
     }
 }

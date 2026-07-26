@@ -185,16 +185,6 @@ struct FunctionEmitSummary {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum PendingPatchEncoding {
-    #[cfg(sf_backend_riscv32)]
-    U32,
-    #[cfg(any(sf_backend_arm64, sf_backend_riscv64, sf_backend_x64))]
-    U64,
-    #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
-    MovwMovt,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct PendingPatch {
     function_base: usize,
     patch: DirectCallPatch,
@@ -227,13 +217,8 @@ impl StreamingCompiledModule {
         Ok(())
     }
 
-    fn finish(self, active_backend: arch::NativeBackend) -> CompiledNativeModule {
-        CompiledNativeModule::from_streamed(
-            active_backend,
-            self.backend,
-            self.abi,
-            self.aligned_consts,
-        )
+    fn finish(self) -> CompiledNativeModule {
+        CompiledNativeModule::from_streamed(self.backend, self.abi, self.aligned_consts)
     }
 
     #[cfg(sf_has_std)]
@@ -339,38 +324,31 @@ fn frame_span_region(span: FrameSpan) -> MachineFrameRegion {
     }
 }
 
+/// Patch a call target into the code buffer using this ISA's address encoding.
 fn patch_code_buffer_word(
-    active_backend: arch::NativeBackend,
     executable: &mut crate::vm::jit::runtime::code_buf::CodeBuffer,
     code_offset: usize,
     value: usize,
 ) {
-    match patch_encoding(active_backend) {
-        #[cfg(sf_backend_riscv32)]
-        PendingPatchEncoding::U32 => executable.patch_u32(code_offset, value as u32),
-        #[cfg(any(sf_backend_arm64, sf_backend_riscv64, sf_backend_x64))]
-        PendingPatchEncoding::U64 => executable.patch_u64(code_offset, value as u64),
-        #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
-        PendingPatchEncoding::MovwMovt => {
-            #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
-            {
-                crate::vm::jit::arch::arm32::compile::patch_movw_movt_code_buffer(
-                    executable,
-                    code_offset,
-                    value as u32,
-                );
-            }
-            #[cfg(not(any(sf_backend_armv7a, sf_backend_thumbm)))]
-            {
-                let _ = (executable, code_offset, value);
-                unreachable!("movw/movt patching is unavailable on this target");
-            }
-        }
+    #[cfg(sf_backend_riscv32)]
+    {
+        executable.patch_u32(code_offset, value as u32);
+    }
+    #[cfg(any(sf_backend_arm64, sf_backend_riscv64, sf_backend_x64))]
+    {
+        executable.patch_u64(code_offset, value as u64);
+    }
+    #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
+    {
+        crate::vm::jit::arch::arm32::compile::patch_movw_movt_code_buffer(
+            executable,
+            code_offset,
+            value as u32,
+        );
     }
 }
 
 fn patch_direct_call_code_buffer(
-    active_backend: arch::NativeBackend,
     executable: &mut crate::vm::jit::runtime::code_buf::CodeBuffer,
     function_base: usize,
     patch: &DirectCallPatch,
@@ -381,7 +359,7 @@ fn patch_direct_call_code_buffer(
             let code_offset = function_base
                 .checked_add(offset)
                 .ok_or_else(|| WasmError::internal("direct-call patch offset overflow"))?;
-            patch_code_buffer_word(active_backend, executable, code_offset, callee_addr);
+            patch_code_buffer_word(executable, code_offset, callee_addr);
             Ok(())
         }
         #[cfg(sf_backend_arm64)]
@@ -470,24 +448,6 @@ fn arm64_branch_delta_words(from_addr: usize, to_addr: usize) -> Result<i32, Was
         ));
     }
     Ok(delta_words as i32)
-}
-
-#[inline]
-fn patch_encoding(active_backend: arch::NativeBackend) -> PendingPatchEncoding {
-    match active_backend {
-        #[cfg(sf_backend_arm64)]
-        arch::NativeBackend::Arm64 => PendingPatchEncoding::U64,
-        #[cfg(sf_backend_armv7a)]
-        arch::NativeBackend::Armv7a => PendingPatchEncoding::MovwMovt,
-        #[cfg(sf_backend_thumbm)]
-        arch::NativeBackend::ThumbM => PendingPatchEncoding::MovwMovt,
-        #[cfg(sf_backend_riscv32)]
-        arch::NativeBackend::Riscv32 => PendingPatchEncoding::U32,
-        #[cfg(sf_backend_riscv64)]
-        arch::NativeBackend::Riscv64 => PendingPatchEncoding::U64,
-        #[cfg(sf_backend_x64)]
-        arch::NativeBackend::X86_64 => PendingPatchEncoding::U64,
-    }
 }
 
 fn build_static_summaries(
@@ -672,7 +632,6 @@ fn parallel_eager_worker_count(module: &ModuleInst) -> usize {
 
 #[cfg(sf_has_std)]
 fn compile_semantic_function_owned(
-    active_backend: arch::NativeBackend,
     backend: BackendConfig,
     job: ParallelCompileJob,
     compiled_view: &mut StreamingCompiledModule,
@@ -740,7 +699,7 @@ fn compile_semantic_function_owned(
     compiled_view.sync_consts(const_pool)?;
     let arch_lower_function_phase =
         phase_span_with_function("arch_lower_func", Some(func_idx as u32));
-    let artifact = arch::dispatch_compile_function(active_backend, compiled_view, &machine)?;
+    let artifact = arch::dispatch_compile_function(compiled_view, &machine)?;
     drop(arch_lower_function_phase);
 
     Ok(ParallelCompiledFunction {
@@ -753,7 +712,6 @@ fn compile_semantic_function_owned(
 
 #[cfg(sf_has_std)]
 fn compile_full_functions_parallel(
-    active_backend: arch::NativeBackend,
     backend: BackendConfig,
     module: &ModuleInst,
     store: &Store,
@@ -806,7 +764,6 @@ fn compile_full_functions_parallel(
                     };
                     let func_idx = job.func_idx;
                     let result = compile_semantic_function_owned(
-                        active_backend,
                         backend,
                         job,
                         &mut compiled_view,
@@ -886,7 +843,6 @@ fn compile_full_functions_parallel(
 }
 
 fn compile_full_streaming_function(
-    active_backend: arch::NativeBackend,
     backend: BackendConfig,
     module: &ModuleInst,
     store: &Store,
@@ -962,18 +918,13 @@ fn compile_full_streaming_function(
 
     let arch_lower_function_phase =
         phase_span_with_function("arch_lower_func", Some(func_idx as u32));
-    let artifact = arch::dispatch_compile_function_into_buffer(
-        active_backend,
-        compiled_view,
-        &machine,
-        executable,
-    )?;
+    let artifact =
+        arch::dispatch_compile_function_into_buffer(compiled_view, &machine, executable)?;
     drop(arch_lower_function_phase);
     Ok(artifact)
 }
 
 fn link_streaming_artifact(
-    active_backend: arch::NativeBackend,
     executable: &mut CodeBuffer,
     base_ptr: *const u8,
     func_idx: usize,
@@ -1000,7 +951,7 @@ fn link_streaming_artifact(
         let function_base = page_align_function(stream_base, text_len);
         let extra_padding = function_base.saturating_sub(executable.len());
         if extra_padding > 0 {
-            arch::dispatch_emit_nop_padding(active_backend, executable, extra_padding);
+            arch::dispatch_emit_nop_padding(executable, extra_padding);
         }
         executable.emit_bytes(&text);
         function_base
@@ -1010,7 +961,7 @@ fn link_streaming_artifact(
         if extra_padding > 0 {
             executable.move_region(scratch_base, scratch_base + extra_padding, text_len);
             executable.set_len(scratch_base);
-            arch::dispatch_emit_nop_padding(active_backend, executable, extra_padding);
+            arch::dispatch_emit_nop_padding(executable, extra_padding);
             executable.set_len(function_base + text_len);
         }
         function_base
@@ -1021,7 +972,6 @@ fn link_streaming_artifact(
         #[cfg(sf_arm32_isa_thumb)]
         let target_addr = arch::arm32::thumb_interworking_bit(target_addr);
         patch_code_buffer_word(
-            active_backend,
             executable,
             function_base + patch.literal_offset,
             target_addr,
@@ -1035,18 +985,11 @@ fn link_streaming_artifact(
     for patch in &direct_call_patches {
         let callee_idx = patch.callee.0 as usize;
         if callee_idx == func_idx {
-            patch_direct_call_code_buffer(
-                active_backend,
-                executable,
-                function_base,
-                patch,
-                internal_entry_addr,
-            )?;
+            patch_direct_call_code_buffer(executable, function_base, patch, internal_entry_addr)?;
             continue;
         }
         if let Some(summary) = emitted.get(callee_idx).and_then(|slot| slot.as_ref()) {
             patch_direct_call_code_buffer(
-                active_backend,
                 executable,
                 function_base,
                 patch,
@@ -1091,19 +1034,12 @@ fn link_streaming_artifact(
             .get(func_idx)
             .and_then(|slot| slot.as_ref().map(|summary| summary.internal_entry_addr))
             .ok_or_else(|| WasmError::internal("pending direct callee address is missing"))?;
-        patch_direct_call_code_buffer(
-            active_backend,
-            executable,
-            patch.function_base,
-            &patch.patch,
-            callee_addr,
-        )?;
+        patch_direct_call_code_buffer(executable, patch.function_base, &patch.patch, callee_addr)?;
     }
     Ok(())
 }
 
 fn finish_native_compile_streaming(
-    active_backend: arch::NativeBackend,
     backend: BackendConfig,
     module: &ModuleInst,
     store: &Store,
@@ -1138,7 +1074,6 @@ fn finish_native_compile_streaming(
             None
         } else {
             let (mut functions, const_batches) = compile_full_functions_parallel(
-                active_backend,
                 backend,
                 module,
                 store,
@@ -1186,7 +1121,7 @@ fn finish_native_compile_streaming(
         let scratch_base = page_align_function(stream_base, 0);
         let initial_padding = scratch_base.saturating_sub(stream_base);
         if initial_padding > 0 {
-            arch::dispatch_emit_nop_padding(active_backend, &mut executable, initial_padding);
+            arch::dispatch_emit_nop_padding(&mut executable, initial_padding);
         }
 
         #[cfg(sf_has_std)]
@@ -1207,7 +1142,6 @@ fn finish_native_compile_streaming(
         } else if template_requested {
             let template_phase = phase_span_with_function("template_jit", Some(func_idx as u32));
             match template::compile_function_into_buffer(
-                active_backend,
                 &compiled_view,
                 spec,
                 func_id,
@@ -1228,7 +1162,6 @@ fn finish_native_compile_streaming(
             }
         } else {
             compile_full_streaming_function(
-                active_backend,
                 backend,
                 module,
                 store,
@@ -1251,7 +1184,6 @@ fn finish_native_compile_streaming(
         };
 
         link_streaming_artifact(
-            active_backend,
             &mut executable,
             base_ptr,
             func_idx,
@@ -1340,7 +1272,7 @@ fn finish_native_compile_streaming(
         .install_native_code_buffer(executable)
         .map_err(WasmError::internal)?;
 
-    let compiled = Rc::new(compiled_view.finish(active_backend));
+    let compiled = Rc::new(compiled_view.finish());
     compiled.publish_local_call_infos(function_info_base);
 
     for (func_idx, func) in module.functions.iter().enumerate() {
@@ -1360,7 +1292,6 @@ fn finish_native_compile_streaming(
 }
 
 fn finish_native_compile(
-    active_backend: arch::NativeBackend,
     backend: BackendConfig,
     module: &ModuleInst,
     groups: usize,
@@ -1376,12 +1307,11 @@ fn finish_native_compile(
         .sum();
     let arch_lower_phase = phase_span("arch_lower");
     let mut compiled = Rc::new(CompiledNativeModule::new(
-        active_backend,
         backend,
         lowered.module,
         lowered.abi,
     )?);
-    let entries = arch::dispatch_compile_module(active_backend, module, &compiled)?;
+    let entries = arch::dispatch_compile_module(module, &compiled)?;
     drop(arch_lower_phase);
 
     let bytes: usize = entries
@@ -1448,10 +1378,7 @@ fn finish_native_compile(
 }
 
 pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
-    let active_backend = arch::active_native_backend()
-        .map_err(|_err| WasmError::invalid("native backend unavailable"))?;
-    let backend = arch::active_backend_config()
-        .map_err(|_err| WasmError::invalid("native backend unavailable"))?;
+    let backend = arch::backend_config();
     let module = store.module();
     let all_compiled = module
         .functions
@@ -1459,10 +1386,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
         .filter_map(|func| func.spec())
         .all(|spec| {
             spec.get_native_code()
-                .map(|code| {
-                    code.compiled().backend_kind() == active_backend
-                        && code.compiled().backend() == backend
-                })
+                .map(|code| code.compiled().backend() == backend)
                 .unwrap_or(false)
         });
     if all_compiled {
@@ -1476,7 +1400,7 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     // The batch pipeline exists to hold whole-module IR for the dump; without
     // a dump requested, compilation streams.
     if !ir_dump_enabled {
-        return finish_native_compile_streaming(active_backend, backend, module, store);
+        return finish_native_compile_streaming(backend, module, store);
     }
 
     let mut groups = 0usize;
@@ -1576,7 +1500,6 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     drop(module_opt_phase);
 
     finish_native_compile(
-        active_backend,
         backend,
         module,
         groups,
