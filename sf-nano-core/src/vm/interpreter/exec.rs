@@ -538,9 +538,6 @@ impl InterpInstance {
             } else {
                 t.spec().limits().clone()
             };
-            if limits.is64 {
-                return Err(WasmError::invalid("interp: table64 unsupported"));
-            }
             tables.push(TableState {
                 entries: vec![NULL_REF_SLOT; limits.min() as usize],
                 max: limits.max().unwrap_or(u32::MAX as usize) as u64,
@@ -1979,26 +1976,29 @@ impl InterpInstance {
                 frame[ins.c as usize] = slot_to_ref(v).is_null() as u64;
             }
             Op::TableGet => {
-                let i = opa!(ins) as u32 as usize;
+                let i = opa!(ins);
                 let t = &self
                     .tables
                     .get(ins.b as usize)
                     .ok_or(WasmError::trap("out of bounds table access"))?
                     .entries;
-                let v = *t
-                    .get(i)
+                let v = *usize::try_from(i)
+                    .ok()
+                    .and_then(|i| t.get(i))
                     .ok_or(WasmError::trap("out of bounds table access"))?;
                 frame[ins.c as usize] = v as u64;
             }
             Op::TableSet => {
-                let i = opa!(ins) as u32 as usize;
+                let i = opa!(ins);
                 let v = opb!(ins);
                 let t = &mut self
                     .tables
                     .get_mut(ins.c as usize)
                     .ok_or(WasmError::trap("out of bounds table access"))?
                     .entries;
-                *t.get_mut(i)
+                *usize::try_from(i)
+                    .ok()
+                    .and_then(|i| t.get_mut(i))
                     .ok_or(WasmError::trap("out of bounds table access"))? = v;
             }
             Op::TableSize => {
@@ -2167,14 +2167,14 @@ impl InterpInstance {
                 });
             }
             Op::CallIndirect => {
-                let t = opa!(ins) as u32 as usize;
+                let t = opa!(ins);
                 let table = self
                     .tables
                     .get((ins.c >> 32) as usize)
                     .ok_or(WasmError::trap("undefined element"))?;
-                let fi = *table
-                    .entries
-                    .get(t)
+                let fi = *usize::try_from(t)
+                    .ok()
+                    .and_then(|t| table.entries.get(t))
                     .ok_or(WasmError::trap("undefined element"))?;
                 let callee = slot_to_ref(fi);
                 if callee.is_null() {

@@ -279,6 +279,14 @@ impl<'m> Predecoder<'m> {
     ///
     /// Only the memory's own declaration decides this, so an access is marked
     /// once at predecode and never re-checked on the hot path.
+    /// Whether the table at `idx` is 64-bit indexed.
+    fn table_is_64(&self, idx: u64) -> bool {
+        self.module
+            .tables()
+            .get(idx as usize)
+            .is_some_and(|t| t.limits().is64)
+    }
+
     fn memory_is_64(&self, idx: u64) -> bool {
         self.module
             .memories()
@@ -735,7 +743,13 @@ impl<'m> Predecoder<'m> {
                 self.emit(Op::Call, 0, fidx, arg_base, 0);
             }
             Some((target, target_const, type_idx)) => {
-                let flags = if target_const { FLAG_A_CONST } else { 0 };
+                let mut flags = if target_const { FLAG_A_CONST } else { 0 };
+                // The native handler bounds-checks the index with a 32-bit
+                // compare, so a 2^32-aligned 64-bit index would alias entry 0
+                // instead of trapping. Deny it the handler.
+                if self.table_is_64(type_idx >> 32) {
+                    flags |= FLAG_ADDR64;
+                }
                 self.emit(Op::CallIndirect, flags, target, arg_base, type_idx);
             }
         }
