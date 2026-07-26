@@ -319,15 +319,6 @@ impl JitInstance {
             .ensure_simd_supported()
             .map_err(InstanceInstantiationError::Complete)?;
 
-        #[cfg(sf_module_validator)]
-        {
-            use crate::module::validator::Validator;
-            let mut validator = Validator::new(&module);
-            validator
-                .validate()
-                .map_err(InstanceInstantiationError::Complete)?;
-        }
-
         let mut exports = collections::Vec::new();
         for (i, f) in module.functions().iter().enumerate() {
             for name in f.export_names() {

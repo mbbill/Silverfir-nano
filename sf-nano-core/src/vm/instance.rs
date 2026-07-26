@@ -48,6 +48,24 @@ enum Inner {
     Interp(InterpInstance),
 }
 
+/// Reject a module the spec says is invalid.
+///
+/// Ahead of the tier split, because validation is not "how code is run":
+/// a module either conforms or it does not, and which engine is about to
+/// run it cannot change that. It used to live inside the JIT's
+/// instantiation, so an interpreter instance accepted modules the spec
+/// requires be rejected.
+#[inline]
+fn validate(module: &Module) -> Result<(), WasmError> {
+    module.ensure_simd_supported()?;
+    #[cfg(sf_module_validator)]
+    {
+        use crate::module::validator::Validator;
+        Validator::new(module).validate()?;
+    }
+    Ok(())
+}
+
 /// A module instantiated on one engine.
 pub struct Instance {
     inner: Inner,
@@ -93,6 +111,7 @@ impl Instance {
         imports: &[Import],
         registry: &crate::vm::store::LinkRegistry,
     ) -> Result<Self, InstanceInstantiationError> {
+        validate(&module).map_err(InstanceInstantiationError::Complete)?;
         match engine.tier() {
             Tier::Jit => JitInstance::from_module_with_registry(engine, module, imports, registry)
                 .map(|inst| Self {
@@ -110,6 +129,7 @@ impl Instance {
         module: Module,
         imports: &[Import],
     ) -> Result<Self, WasmError> {
+        validate(&module)?;
         let inner = match engine.tier() {
             #[cfg(sf_jit)]
             Tier::Jit => Inner::Jit(JitInstance::from_module(engine, module, imports)?),
