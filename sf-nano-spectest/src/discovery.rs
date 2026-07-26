@@ -180,6 +180,118 @@ pub fn should_skip_test(test_name: &str, simd_enabled: bool) -> bool {
     test_name.contains("\\proposals\\") // Windows paths (anywhere in path)
 }
 
+/// Files the interpreter is not expected to pass, and why.
+///
+/// Curated deliberately, not derived from a name pattern, because the
+/// split is not clean: `type-subtyping` needs GC only incidentally, and
+/// seven relaxed-SIMD files do not start with `simd`. Expect to edit this
+/// entry by entry as the interpreter grows -- removing a line is how a
+/// feature graduates.
+///
+/// Consulted for the interpreter ONLY. The JIT implements both features
+/// and passes every file here; excluding them globally would drop it
+/// below the 100% it holds today.
+pub const INTERPRETER_EXCLUDED: &[(&str, &str)] = &[
+    // SIMD and relaxed SIMD: the folded stack machine works in 8-byte
+    // slots, so a v128 lane is a representation change rather than more
+    // handlers.
+    ("i16x8_relaxed_q15mulr_s", "SIMD"),
+    ("i32x4_relaxed_trunc", "SIMD"),
+    ("i8x16_relaxed_swizzle", "SIMD"),
+    ("relaxed_dot_product", "SIMD"),
+    ("relaxed_laneselect", "SIMD"),
+    ("relaxed_madd_nmadd", "SIMD"),
+    ("relaxed_min_max", "SIMD"),
+    ("simd_address", "SIMD"),
+    ("simd_align", "SIMD"),
+    ("simd_bit_shift", "SIMD"),
+    ("simd_bitwise", "SIMD"),
+    ("simd_boolean", "SIMD"),
+    ("simd_const", "SIMD"),
+    ("simd_conversions", "SIMD"),
+    ("simd_f32x4", "SIMD"),
+    ("simd_f32x4_arith", "SIMD"),
+    ("simd_f32x4_cmp", "SIMD"),
+    ("simd_f32x4_pmin_pmax", "SIMD"),
+    ("simd_f32x4_rounding", "SIMD"),
+    ("simd_f64x2", "SIMD"),
+    ("simd_f64x2_arith", "SIMD"),
+    ("simd_f64x2_cmp", "SIMD"),
+    ("simd_f64x2_pmin_pmax", "SIMD"),
+    ("simd_f64x2_rounding", "SIMD"),
+    ("simd_i16x8_arith", "SIMD"),
+    ("simd_i16x8_arith2", "SIMD"),
+    ("simd_i16x8_cmp", "SIMD"),
+    ("simd_i16x8_extadd_pairwise_i8x16", "SIMD"),
+    ("simd_i16x8_extmul_i8x16", "SIMD"),
+    ("simd_i16x8_q15mulr_sat_s", "SIMD"),
+    ("simd_i16x8_sat_arith", "SIMD"),
+    ("simd_i32x4_arith", "SIMD"),
+    ("simd_i32x4_arith2", "SIMD"),
+    ("simd_i32x4_cmp", "SIMD"),
+    ("simd_i32x4_dot_i16x8", "SIMD"),
+    ("simd_i32x4_extadd_pairwise_i16x8", "SIMD"),
+    ("simd_i32x4_extmul_i16x8", "SIMD"),
+    ("simd_i32x4_trunc_sat_f32x4", "SIMD"),
+    ("simd_i32x4_trunc_sat_f64x2", "SIMD"),
+    ("simd_i64x2_arith", "SIMD"),
+    ("simd_i64x2_arith2", "SIMD"),
+    ("simd_i64x2_cmp", "SIMD"),
+    ("simd_i64x2_extmul_i32x4", "SIMD"),
+    ("simd_i8x16_arith", "SIMD"),
+    ("simd_i8x16_arith2", "SIMD"),
+    ("simd_i8x16_cmp", "SIMD"),
+    ("simd_i8x16_sat_arith", "SIMD"),
+    ("simd_int_to_int_extend", "SIMD"),
+    ("simd_lane", "SIMD"),
+    ("simd_load", "SIMD"),
+    ("simd_load_extend", "SIMD"),
+    ("simd_load_splat", "SIMD"),
+    ("simd_load_zero", "SIMD"),
+    ("simd_load16_lane", "SIMD"),
+    ("simd_load32_lane", "SIMD"),
+    ("simd_load64_lane", "SIMD"),
+    ("simd_load8_lane", "SIMD"),
+    ("simd_memory-multi", "SIMD"),
+    ("simd_splat", "SIMD"),
+    ("simd_store", "SIMD"),
+    ("simd_store16_lane", "SIMD"),
+    ("simd_store32_lane", "SIMD"),
+    ("simd_store64_lane", "SIMD"),
+    ("simd_store8_lane", "SIMD"),
+    // Garbage collection: needs the heap and type-check substrate the
+    // interpreter deliberately does not carry.
+    ("array", "GC"),
+    ("array_copy", "GC"),
+    ("array_fill", "GC"),
+    ("array_init_data", "GC"),
+    ("array_init_elem", "GC"),
+    ("array_new_data", "GC"),
+    ("array_new_elem", "GC"),
+    ("br_on_cast", "GC"),
+    ("br_on_cast_fail", "GC"),
+    ("extern", "GC"),
+    ("i31", "GC"),
+    ("ref_cast", "GC"),
+    ("ref_eq", "GC"),
+    ("ref_test", "GC"),
+    ("struct", "GC"),
+    ("type-subtyping", "GC"),
+];
+
+/// The reason this file is out of scope for the interpreter, if it is.
+pub fn interpreter_excluded(test_name: &str) -> Option<&'static str> {
+    let stem = test_name
+        .rsplit('/')
+        .next()
+        .unwrap_or(test_name)
+        .trim_end_matches(".wast");
+    INTERPRETER_EXCLUDED
+        .iter()
+        .find(|(name, _)| *name == stem)
+        .map(|(_, reason)| *reason)
+}
+
 #[cfg(test)]
 mod tests {
     use super::should_skip_test;

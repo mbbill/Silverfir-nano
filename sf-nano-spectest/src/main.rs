@@ -8,7 +8,7 @@ mod types;
 #[cfg(feature = "jit")]
 mod wast_test_runner;
 
-use discovery::{find_wast_files, should_skip_test};
+use discovery::{find_wast_files, interpreter_excluded, should_skip_test};
 use log::{error, info, warn};
 use sf_nano_core::{reset_native_runtime_state, target_has_simd, Config, Engine, Tier};
 use std::{
@@ -378,6 +378,13 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         // "we do not do this" with "nobody targets this" cannot answer
         // the only question worth asking -- do we pass Wasm 3.0.
         if should_skip_test(test_name, simd_enabled) || should_skip_test(&full_path, simd_enabled) {
+            continue;
+        }
+        // Out of scope for this ENGINE, rather than for the project. The
+        // JIT implements SIMD and GC and runs every one of these, so the
+        // check is tier-aware or it would cost the JIT its 100%.
+        #[cfg(feature = "interp")]
+        if engine.tier() == Tier::Interp && interpreter_excluded(test_name).is_some() {
             continue;
         }
 

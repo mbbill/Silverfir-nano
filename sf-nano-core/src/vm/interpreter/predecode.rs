@@ -254,6 +254,21 @@ fn invert_cmp(op: Op) -> Option<Op> {
     })
 }
 
+/// An opcode this engine does not implement.
+///
+/// Named by family, because "not yet supported" on its own cannot tell
+/// SIMD from GC from a tail call -- and deciding what the interpreter
+/// should implement next is exactly the question that needs answering.
+fn unsupported_opcode(op: WasmOpcode) -> WasmError {
+    match op {
+        WasmOpcode::FD(_) => WasmError::invalid("interp: SIMD is not supported"),
+        WasmOpcode::FB(_) => WasmError::invalid("interp: GC is not supported"),
+        _ => WasmError::invalid("interp: opcode not yet supported by the interpreter"),
+    }
+}
+
+/// A shape the folded stack machine cannot express, as opposed to an
+/// opcode it has never heard of.
 fn unsupported() -> WasmError {
     WasmError::invalid("interp: opcode not yet supported by the interpreter")
 }
@@ -1062,7 +1077,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.fc_op(fc, &op.imm.clone())?;
                     continue;
                 }
-                _ => return Err(unsupported()),
+                other => return Err(unsupported_opcode(other)),
             };
             let imm = op.imm.clone();
 
@@ -1553,14 +1568,18 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         let n = self.frames.len();
                         if (d as usize) >= n {
                             if self.n_results != 0 {
-                                return Err(unsupported());
+                                return Err(WasmError::invalid(
+                                    "interp: branch to a function-level label with results",
+                                ));
                             }
                             continue;
                         }
                         let f = &self.frames[n - 1 - d as usize];
                         let arity = if f.is_loop { f.params } else { f.results };
                         if arity != 0 && self.height() != f.base + arity {
-                            return Err(unsupported());
+                            return Err(WasmError::invalid(
+                                "interp: branch with operands above the target's arity",
+                            ));
                         }
                     }
                     let tbl = self.br_tables.len() as u32;
@@ -1613,7 +1632,9 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         let offset = match &imm {
                             Immediate::MemArg { offset, memidx, .. } => {
                                 if *offset >= 1u64 << 48 {
-                                    return Err(unsupported());
+                                    return Err(WasmError::invalid(
+                                        "interp: static memory offset does not fit the packed form",
+                                    ));
                                 }
                                 ((*memidx as u64) << 48) | *offset
                             }
@@ -1665,7 +1686,9 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         let offset = match &imm {
                             Immediate::MemArg { offset, memidx, .. } => {
                                 if *offset >= 1u64 << 48 {
-                                    return Err(unsupported());
+                                    return Err(WasmError::invalid(
+                                        "interp: static memory offset does not fit the packed form",
+                                    ));
                                 }
                                 ((*memidx as u64) << 48) | *offset
                             }
