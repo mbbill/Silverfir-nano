@@ -627,7 +627,10 @@ impl InterpInstance {
                     globals.push(v);
                 }
                 GlobalDef::Import {
-                    module: md, name, ..
+                    module: md,
+                    name,
+                    value_type,
+                    mutable,
                 } => {
                     let found = imports.iter().find_map(|imp| {
                         if imp.module != *md || imp.name != *name {
@@ -650,6 +653,14 @@ impl InterpInstance {
                         // other's writes. Accesses to it are denied a native
                         // handler, since the chain indexes the array below.
                         Some((ImportedGlobal::State(st), _)) => {
+                            // Mutability must match EXACTLY, in both
+                            // directions: importing a `mut` global as
+                            // immutable would let the importer assume a value
+                            // the exporter can still change.
+                            if st.global.mutable != *mutable || st.global.value_type != *value_type
+                            {
+                                return Err(WasmError::unlinkable("incompatible import type"));
+                            }
                             shared_globals.push(Some(st.global.clone()));
                             globals.push(st.global.raw());
                             continue;
@@ -1242,11 +1253,21 @@ impl InterpInstance {
 
     /// A global's raw 64-bit value by index.
     pub fn global_at(&self, idx: usize) -> Option<u64> {
-        self.globals.get(idx).copied()
+        // Through the shared cell where there is one: the array slot beside a
+        // shared global is stale by design, so reading it would report the
+        // value as of instantiation rather than now.
+        match self.shared_globals.get(idx)?.as_ref() {
+            Some(shared) => Some(shared.raw()),
+            None => self.globals.get(idx).copied(),
+        }
     }
 
     /// Overwrite a global's raw 64-bit value by index.
     pub fn set_global_at(&mut self, idx: usize, raw: u64) -> Result<(), WasmError> {
+        if let Some(Some(shared)) = self.shared_globals.get_mut(idx) {
+            shared.set_raw(raw);
+            return Ok(());
+        }
         match self.globals.get_mut(idx) {
             Some(slot) => {
                 *slot = raw;
