@@ -24,6 +24,11 @@ use crate::op_decoder::{BlockType, Decoder, Immediate, OpStream, OpcodeHandler};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
 
+/// Marks a packed memarg field as a `wide_memargs` index rather than an
+/// inline `memidx << 48 | offset`. Bit 63 is free in the inline form, whose
+/// index occupies bits 48..63.
+pub(super) const WIDE_MEMARG: u64 = 1 << 63;
+
 use super::instr::{
     operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
     FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
@@ -42,6 +47,12 @@ pub(crate) struct PredecodedFunction {
     /// Side tables for `BrTable`: resolved instruction indices, the last
     /// entry is the default target.
     pub br_tables: Vec<Vec<u32>>,
+    /// `(memory index, static offset)` for accesses whose offset does not fit
+    /// the packed `memidx << 48 | offset` form. Memory64 permits a full
+    /// 64-bit offset, which leaves no room to pack an index beside it, so
+    /// those cells carry an index into this table instead. Only `FLAG_ADDR64`
+    /// cells use it, and those never reach a native handler.
+    pub wide_memargs: Vec<(u32, u64)>,
     /// Total frame slots: params + locals + max temp height.
     pub frame_slots: u32,
     /// params + locals (== the base slot index of temps).
@@ -80,6 +91,7 @@ pub(crate) fn predecode_function(
         last_mat_region: 0,
         last_write_region: vec![0u32; n_locals as usize],
         br_tables: Vec::new(),
+        wide_memargs: Vec::new(),
         max_height: 0,
         n_locals,
         n_results,
@@ -96,6 +108,7 @@ pub(crate) fn predecode_function(
         frame_slots: n_locals + p.max_height,
         code: p.code,
         br_tables: p.br_tables,
+        wide_memargs: p.wide_memargs,
         n_locals,
         n_params,
         n_results,
@@ -164,6 +177,7 @@ struct Predecoder<'m> {
     /// be reached with a stale accumulator).
     last_write_region: Vec<u32>,
     br_tables: Vec<Vec<u32>>,
+    wide_memargs: Vec<(u32, u64)>,
     max_height: u32,
     n_locals: u32,
     n_results: u32,
@@ -1786,17 +1800,27 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         self.value_op(vop, 1)?;
                     } else if let Some(lop) = wasm_load(o) {
                         let offset = match &imm {
-                            Immediate::MemArg { offset, memidx, .. } => {
-                                if *offset >= 1u64 << 48 {
-                                    return Err(WasmError::invalid(
-                                        "interp: static memory offset does not fit the packed form",
-                                    ));
-                                }
-                                ((*memidx as u64) << 48) | *offset
-                            }
+                            Immediate::MemArg { offset, memidx, .. } => (*memidx, *offset),
                             _ => return Err(desync()),
                         };
-                        let addr64 = self.memory_is_64(offset >> 48);
+                        let (memidx, raw_offset) = offset;
+                        let addr64 = self.memory_is_64(memidx as u64);
+                        // A memory64 offset can use all 64 bits, leaving no
+                        // room for the index beside it; such a cell carries a
+                        // side-table index instead. It is always a slow cell,
+                        // so nothing native reads the packed form.
+                        let offset = if raw_offset >= 1u64 << 48 {
+                            if !addr64 {
+                                return Err(WasmError::invalid(
+                                    "interp: static memory offset does not fit the packed form",
+                                ));
+                            }
+                            let at = self.wide_memargs.len() as u64;
+                            self.wide_memargs.push((memidx, raw_offset));
+                            WIDE_MEMARG | at
+                        } else {
+                            ((memidx as u64) << 48) | raw_offset
+                        };
                         let at = self.code.len() as u32;
                         let d = self.pop()?;
                         let (a, a_const) = self.operand(d, at);
@@ -1845,17 +1869,27 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         }
                     } else if let Some(sop) = wasm_store(o) {
                         let offset = match &imm {
-                            Immediate::MemArg { offset, memidx, .. } => {
-                                if *offset >= 1u64 << 48 {
-                                    return Err(WasmError::invalid(
-                                        "interp: static memory offset does not fit the packed form",
-                                    ));
-                                }
-                                ((*memidx as u64) << 48) | *offset
-                            }
+                            Immediate::MemArg { offset, memidx, .. } => (*memidx, *offset),
                             _ => return Err(desync()),
                         };
-                        let addr64 = self.memory_is_64(offset >> 48);
+                        let (memidx, raw_offset) = offset;
+                        let addr64 = self.memory_is_64(memidx as u64);
+                        // A memory64 offset can use all 64 bits, leaving no
+                        // room for the index beside it; such a cell carries a
+                        // side-table index instead. It is always a slow cell,
+                        // so nothing native reads the packed form.
+                        let offset = if raw_offset >= 1u64 << 48 {
+                            if !addr64 {
+                                return Err(WasmError::invalid(
+                                    "interp: static memory offset does not fit the packed form",
+                                ));
+                            }
+                            let at = self.wide_memargs.len() as u64;
+                            self.wide_memargs.push((memidx, raw_offset));
+                            WIDE_MEMARG | at
+                        } else {
+                            ((memidx as u64) << 48) | raw_offset
+                        };
                         let at = self.code.len() as u32;
                         let v = self.pop()?;
                         let (b, b_const) = self.operand(v, at);

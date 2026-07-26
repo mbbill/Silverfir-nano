@@ -37,7 +37,7 @@ use super::engine::{
 use super::fmath;
 use super::instr::{op_from_index, Op};
 use super::instr::{Instr, FLAG_ADDR64, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
-use super::predecode::{predecode_function, PredecodedFunction};
+use super::predecode::{predecode_function, PredecodedFunction, WIDE_MEMARG};
 
 const PAGE: usize = 65536;
 /// A null reference, as it sits in an 8-byte slot.
@@ -491,10 +491,14 @@ impl InterpInstance {
             };
             memories.push(MemoryState {
                 inst,
-                max_pages: limits
-                    .max()
-                    .unwrap_or(if limits.is64 { 1 << 48 } else { 65536 })
-                    as u64,
+                // In u64 throughout: memory64's page cap does not fit a
+                // 32-bit `usize`, which is what `Limits::max` yields on the
+                // bare-metal targets.
+                max_pages: limits.max().map(|m| m as u64).unwrap_or(if limits.is64 {
+                    1u64 << 48
+                } else {
+                    65536
+                }),
                 is64: limits.is64,
             });
         }
@@ -1233,15 +1237,37 @@ impl InterpInstance {
     }
 
     // `packed` is `memidx << 48 | offset` as emitted by the predecoder.
-    fn mem_load(&self, addr: u64, packed: u64, size: usize) -> Result<&[u8], WasmError> {
+    /// Split a packed memarg into `(memory index, static offset)`.
+    ///
+    /// Inline form is `memidx << 48 | offset`; a memory64 offset too wide for
+    /// that carries a `wide_memargs` index with bit 63 set.
+    #[inline]
+    fn memarg(func: &PredecodedFunction, packed: u64) -> (usize, u64) {
+        if packed & WIDE_MEMARG != 0 {
+            match func.wide_memargs.get((packed & !WIDE_MEMARG) as usize) {
+                Some(&(mi, off)) => (mi as usize, off),
+                None => (usize::MAX, 0),
+            }
+        } else {
+            ((packed >> 48) as usize, packed & 0xffff_ffff_ffff)
+        }
+    }
+
+    fn mem_load(
+        &self,
+        addr: u64,
+        mem_idx: usize,
+        offset: u64,
+        size: usize,
+    ) -> Result<&[u8], WasmError> {
         let mem = self
             .memories
-            .get((packed >> 48) as usize)
+            .get(mem_idx)
             .ok_or(WasmError::trap("out of bounds memory access"))?;
         // A 64-bit address can carry, so the effective address is computed
         // with checked arithmetic rather than relying on a 2^49 bound.
         let ea = addr
-            .checked_add(packed & 0xffff_ffff_ffff)
+            .checked_add(offset)
             .ok_or(WasmError::trap("out of bounds memory access"))?;
         let end = ea
             .checked_add(size as u64)
@@ -1252,13 +1278,26 @@ impl InterpInstance {
         Ok(&mem.bytes()[ea as usize..end as usize])
     }
 
-    fn mem_store(&mut self, addr: u64, packed: u64, size: usize) -> Result<&mut [u8], WasmError> {
+    fn mem_store(
+        &mut self,
+        addr: u64,
+        mem_idx: usize,
+        offset: u64,
+        size: usize,
+    ) -> Result<&mut [u8], WasmError> {
         let mem = self
             .memories
-            .get_mut((packed >> 48) as usize)
+            .get_mut(mem_idx)
             .ok_or(WasmError::trap("out of bounds memory access"))?;
-        let ea = addr + (packed & 0xffff_ffff_ffff);
-        let end = ea + size as u64;
+        // Checked for the same reason as the load path: a 64-bit address
+        // plus a 64-bit static offset can carry, and carrying must trap
+        // rather than wrap into a valid access.
+        let ea = addr
+            .checked_add(offset)
+            .ok_or(WasmError::trap("out of bounds memory access"))?;
+        let end = ea
+            .checked_add(size as u64)
+            .ok_or(WasmError::trap("out of bounds memory access"))?;
         if end > mem.len() as u64 {
             return Err(WasmError::trap("out of bounds memory access"));
         }
@@ -1621,7 +1660,8 @@ impl InterpInstance {
                 } else {
                     (opa!($ins) as u32 as u64, $ins.c as usize)
                 };
-                let bytes = self.mem_load(addr, $ins.b, $size)?;
+                let (mi, offset) = Self::memarg(func, $ins.b);
+                let bytes = self.mem_load(addr, mi, offset, $size)?;
                 let mut buf = [0u8; 8];
                 buf[..$size].copy_from_slice(bytes);
                 frame[dst] = $conv(u64::from_le_bytes(buf));
@@ -1641,7 +1681,8 @@ impl InterpInstance {
                     (opa!($ins) as u32 as u64, $ins.c)
                 };
                 let val = opb!($ins);
-                let bytes = self.mem_store(addr, off, $size)?;
+                let (mi, offset) = Self::memarg(func, off);
+                let bytes = self.mem_store(addr, mi, offset, $size)?;
                 bytes.copy_from_slice(&val.to_le_bytes()[..$size]);
             }};
         }
