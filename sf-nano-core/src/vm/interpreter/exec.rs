@@ -24,7 +24,7 @@ use crate::error::WasmError;
 use crate::module::entities::{Data, Element, ElementInit, GlobalDef, MemoryDef, TableDef};
 use crate::module::Module;
 use crate::opcodes::Opcode;
-use crate::utils::limits::Limitable;
+use crate::utils::limits::{Limitable, Limits};
 use crate::vm::engine::Engine;
 use crate::vm::entities::MemInst;
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
@@ -114,13 +114,15 @@ struct TableState {
     max: u64,
 }
 
-/// `max_pages` mirrors `TableState::max`: only `memory.grow` reads it.
+/// `max_pages` mirrors `TableState::max`: only `memory.grow` reads it, and
+/// `is64` tells it which index type the grow result and page cap belong to.
 struct MemoryState {
     /// The substrate's memory entity, so a memory can be shared with
     /// whoever exported it. It used to be an owned `Vec<u8>`, which is
     /// why an imported memory could not be represented at all.
     inst: MemInst,
     max_pages: u64,
+    is64: bool,
 }
 
 impl MemoryState {
@@ -423,6 +425,7 @@ impl InterpInstance {
         // refuses, so present-with-no-backing (the embedder saying
         // "allocate") and absent-entirely have to stay distinguishable.
         let mut imported_memories: Vec<Option<MemInst>> = Vec::new();
+        let mut import_limits: Vec<Option<Limits>> = Vec::new();
         for m in module.memories() {
             if let MemoryDef::Import {
                 module: md, name, ..
@@ -432,9 +435,16 @@ impl InterpInstance {
                     .iter()
                     .find(|imp| imp.module == *md && imp.name == *name)
                     .ok_or(WasmError::unlinkable("missing memory import"))?;
-                if !matches!(provided.value, ImportValue::Memory(..)) {
+                let ImportValue::Memory(provided_limits, _) = &provided.value else {
                     return Err(WasmError::unlinkable("incompatible import type"));
-                }
+                };
+                // The provider's limits win, as they do for tables: the
+                // importing module may declare a laxer maximum than the
+                // memory it actually receives, and `memory.grow` must refuse
+                // at the real one.
+                import_limits.push(Some(provided_limits.clone()));
+            } else {
+                import_limits.push(None);
             }
             imported_memories.push(match m.def() {
                 MemoryDef::Import {
@@ -467,7 +477,10 @@ impl InterpInstance {
         // Memories.
         let mut memories = Vec::new();
         for (i, m) in module.memories().iter().enumerate() {
-            let limits = m.limits();
+            let limits = import_limits
+                .get(i)
+                .and_then(|l| l.as_ref())
+                .unwrap_or_else(|| m.limits());
             // An import with a shared backing takes it, so writes are
             // visible on both sides. An import with none declared is the
             // embedder saying "allocate one to these limits" -- the same
@@ -478,7 +491,11 @@ impl InterpInstance {
             };
             memories.push(MemoryState {
                 inst,
-                max_pages: limits.max().unwrap_or(65536) as u64,
+                max_pages: limits
+                    .max()
+                    .unwrap_or(if limits.is64 { 1 << 48 } else { 65536 })
+                    as u64,
+                is64: limits.is64,
             });
         }
 
@@ -1959,15 +1976,22 @@ impl InterpInstance {
                 frame[ins.c as usize] = pages as u64;
             }
             Op::MemoryGrow => {
-                let delta = opa!(ins) as u32 as u64;
                 let mem = self
                     .memories
                     .get_mut(ins.b as usize)
                     .ok_or(WasmError::trap("out of bounds memory access"))?;
+                // Both the delta and the -1 failure result belong to the
+                // memory's index type, so a 64-bit memory must not truncate
+                // either to 32 bits.
+                let (delta, fail, cap) = if mem.is64 {
+                    (opa!(ins), u64::MAX, 1u64 << 48)
+                } else {
+                    (opa!(ins) as u32 as u64, u32::MAX as u64, 65536)
+                };
                 let cur = (mem.len() / PAGE) as u64;
-                let want = cur + delta;
-                if want > mem.max_pages || want > 65536 {
-                    frame[ins.c as usize] = u32::MAX as u64;
+                let want = cur.saturating_add(delta);
+                if want > mem.max_pages || want > cap {
+                    frame[ins.c as usize] = fail;
                 } else {
                     mem.inst.backing_mut().data.resize(want as usize * PAGE, 0);
                     frame[ins.c as usize] = cur;
