@@ -347,7 +347,11 @@ RELEVANT_RE = re.compile(
     re.IGNORECASE,
 )
 APP_ERROR_RE = re.compile(
-    r"(\bERROR\b.*\b(FAIL|ERROR)\b|Some tests failed|Failed:\s+[1-9])",
+    # `^FAIL <name>` is how the WASI harness reports a failing test: no log
+    # level, so the `ERROR ... FAIL` form below does not catch it. Without it
+    # a failure surfaces as the bare count ("Failed: 1"), which names nothing
+    # and cannot be acted on from a CI log alone.
+    r"(\bERROR\b.*\b(FAIL|ERROR)\b|^FAIL\b|Some tests failed|Failed:\s+[1-9])",
     re.IGNORECASE,
 )
 
