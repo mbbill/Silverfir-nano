@@ -108,6 +108,28 @@ fn configured_ret_records(stack_slots: usize) -> usize {
 pub(crate) type HostDispatch =
     Box<dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError>>;
 
+/// How a reference to one of this instance's functions is named so another
+/// instance can call it, and how such a name is called back.
+///
+/// A funcref is a local index and means nothing outside the instance that
+/// wrote it, so one entering a SHARED table needs a global name. Naming is
+/// the embedder's job: resolving a name means calling into another instance,
+/// which needs `&mut` to it while this one is borrowed. The embedder owns
+/// both; an engine-side registry could only manage it with a raw pointer into
+/// storage the embedder is free to move.
+///
+/// The boxes are `alloc`'s, not this crate's tracked ones, for the same reason
+/// `HostDispatch`'s signature carries only std types: an embedder has to be
+/// able to construct one without depending on the allocator this crate is
+/// built with.
+pub struct FuncRefHost {
+    /// Name local function `idx` of this instance.
+    pub publish: alloc::boxed::Box<dyn Fn(usize) -> RefHandle>,
+    /// Call whatever `handle` names, wherever it lives.
+    pub invoke:
+        alloc::boxed::Box<dyn FnMut(RefHandle, &[u64], &mut [u64]) -> Result<(), WasmError>>,
+}
+
 /// `max` is a growth limit, consulted only by `table.grow`; the executor
 /// that implements it is arm64-only, so the field follows that gate.
 /// `entries` is not gated: instantiation reads its length to bounds-check
@@ -329,6 +351,11 @@ pub struct InterpInstance {
     stack: Vec<u64>,
     ret_stack: Vec<u64>,
     host: Option<HostDispatch>,
+    funcref_host: Option<FuncRefHost>,
+    /// Names this instance handed out for its OWN functions, so a reference
+    /// read back from a shared table that we published resolves locally
+    /// instead of going out through the embedder and back.
+    published: Vec<(RefHandle, usize)>,
     native: Option<NativeState>,
 }
 
@@ -561,6 +588,46 @@ impl InterpInstance {
         module: Module,
         host: Option<HostDispatch>,
         imports: &[Import],
+    ) -> Result<Self, WasmError> {
+        Self::new_partial(engine, module, host, imports, None).map_err(|(_, e)| e)
+    }
+
+    /// Instantiate, handing the instance back even when a data segment traps.
+    ///
+    /// Element segments run before data ones, so a module whose data segment
+    /// traps has already written its elements -- possibly into a table another
+    /// instance holds. Those writes stand and anything they reference must
+    /// stay callable, so the caller keeps the instance rather than losing it.
+    pub fn new_partial(
+        engine: &Engine,
+        module: Module,
+        host: Option<HostDispatch>,
+        imports: &[Import],
+        funcref_host: Option<FuncRefHost>,
+    ) -> Result<Self, (Option<Self>, WasmError)> {
+        let mut inst =
+            Self::build(engine, module, host, imports, funcref_host).map_err(|e| (None, e))?;
+        // Link the dispatch chain BEFORE the data segments: a partial
+        // instance handed back after a trap still has to be callable, and
+        // linking is not observable, so its position is free.
+        inst.enable_native_dispatch().map_err(|e| (None, e))?;
+        if let Err(e) = inst.apply_data_segments() {
+            return Err((Some(inst), e));
+        }
+        if let Some(si) = inst.module.start_function_index() {
+            if let Err(e) = inst.invoke(si, &[], &mut []) {
+                return Err((Some(inst), e));
+            }
+        }
+        Ok(inst)
+    }
+
+    fn build(
+        engine: &Engine,
+        module: Module,
+        host: Option<HostDispatch>,
+        imports: &[Import],
+        funcref_host: Option<FuncRefHost>,
     ) -> Result<Self, WasmError> {
         let config = *engine.config();
 
@@ -861,6 +928,7 @@ impl InterpInstance {
         // A DECLARATIVE segment exists only to forward-declare references;
         // it carries no initializer a `table.init` may read, so it starts
         // dropped and any use of it traps.
+        let mut published: Vec<(RefHandle, usize)> = Vec::new();
         let mut dropped_elems: Vec<bool> = module
             .elements()
             .iter()
@@ -881,6 +949,8 @@ impl InterpInstance {
                 let table = tables
                     .get_mut(*table_index)
                     .ok_or(WasmError::invalid("interp: element table out of range"))?;
+                // A funcref entering a SHARED table needs a global name.
+                let shared_now = matches!(table.entries, TableEntries::Shared(_));
                 let fits = |n: usize| off + n as u64 <= table.entries.len() as u64;
                 match init {
                     ElementInit::FunctionIndexes(idxs) => {
@@ -888,9 +958,15 @@ impl InterpInstance {
                             return Err(WasmError::trap("out of bounds table access"));
                         }
                         for (k, &fi) in idxs.iter().enumerate() {
-                            table
-                                .entries
-                                .set(off as usize + k, ref_to_slot(RefHandle::new(fi as usize)))?;
+                            let slot = match (shared_now, funcref_host.as_ref()) {
+                                (true, Some(h)) => {
+                                    let handle = (h.publish)(fi);
+                                    published.push((handle, fi));
+                                    ref_to_slot(handle)
+                                }
+                                _ => ref_to_slot(RefHandle::new(fi)),
+                            };
+                            table.entries.set(off as usize + k, slot)?;
                         }
                     }
                     ElementInit::InitExprs { exprs, .. } => {
@@ -908,30 +984,12 @@ impl InterpInstance {
             }
         }
 
-        // Active data segments.
-        let mut dropped_data = vec![false; module.data().len()];
-        for (i, d) in module.data().iter().enumerate() {
-            if let Data::Active {
-                memory_index,
-                offset_expr,
-                init,
-            } = d
-            {
-                // Same overflow reasoning as the element segments above.
-                let off = eval_const(offset_expr, &globals)? as u64;
-                let mem = memories
-                    .get_mut(*memory_index)
-                    .ok_or(WasmError::trap("out of bounds memory access"))?;
-                if off + init.len() as u64 > mem.len() as u64 {
-                    return Err(WasmError::trap("out of bounds memory access"));
-                }
-                let off = off as usize;
-                mem.bytes_mut()[off..off + init.len()].copy_from_slice(init);
-                dropped_data[i] = true; // active segments drop after use
-            }
-        }
+        // Data segments are applied by `apply_data_segments`, after the
+        // instance exists: one of them trapping must not lose the element
+        // writes that already happened, nor the instance holding them.
+        let dropped_data = vec![false; module.data().len()];
 
-        let mut inst = InterpInstance {
+        let inst = InterpInstance {
             module,
             funcs,
             memories,
@@ -947,14 +1005,49 @@ impl InterpInstance {
             stack: vec![0u64; stack_slots],
             ret_stack: vec![0u64; configured_ret_records(stack_slots) * (RET_RECORD / 8)],
             host,
+            funcref_host,
+            published,
             native: None,
         };
-        inst.enable_native_dispatch()?;
-        // Run the module's start function, if any.
-        if let Some(si) = inst.module.start_function_index() {
-            inst.invoke(si, &[], &mut [])?;
-        }
+        // The dispatch chain, the data segments and the start function are
+        // `new_partial`'s, in that order: start can call an import and must
+        // see initialized memory, and a trap in either has to hand the
+        // instance back rather than lose it.
         Ok(inst)
+    }
+
+    /// Copy every active data segment into its memory.
+    ///
+    /// Separate from `build` because a trap here leaves an instance that must
+    /// survive: element segments ran first, and their writes -- possibly into
+    /// another instance's table -- stand.
+    fn apply_data_segments(&mut self) -> Result<(), WasmError> {
+        for i in 0..self.module.data().len() {
+            let (memory_index, off, init) = {
+                let Some(Data::Active {
+                    memory_index,
+                    offset_expr,
+                    init,
+                }) = self.module.data().get(i)
+                else {
+                    continue;
+                };
+                let off = eval_const(offset_expr, &self.globals)? as u64;
+                (*memory_index, off, init.clone())
+            };
+            let mem = self
+                .memories
+                .get_mut(memory_index)
+                .ok_or(WasmError::trap("out of bounds memory access"))?;
+            // Same overflow reasoning as the element segments.
+            if off + init.len() as u64 > mem.len() as u64 {
+                return Err(WasmError::trap("out of bounds memory access"));
+            }
+            let off = off as usize;
+            mem.bytes_mut()[off..off + init.len()].copy_from_slice(&init);
+            self.dropped_data[i] = true; // active segments drop after use
+        }
+        Ok(())
     }
 
     /// Native dispatch is the interpreter's only execution engine (the
@@ -2728,7 +2821,33 @@ impl InterpInstance {
                     return Err(WasmError::trap("uninitialized element"));
                 }
                 if callee.is_special() {
-                    return Err(WasmError::trap("indirect call type mismatch"));
+                    // A published reference. If WE published it the callee is
+                    // ours: an exported table used from inside its own module
+                    // must not pay a round trip through the embedder.
+                    if let Some(&(_, local)) = self.published.iter().find(|(h, _)| *h == callee) {
+                        return Ok(Effect::Call {
+                            callee: local,
+                            arg_base: ins.b as usize,
+                        });
+                    }
+                    // Otherwise it names a function in another instance, and
+                    // only the embedder can reach that.
+                    let (np, nr) = self
+                        .module
+                        .types()
+                        .get_function_type(ins.c as u32)
+                        .map(|ft| (ft.params().len(), ft.results().len()))
+                        .ok_or(WasmError::trap("indirect call type mismatch"))?;
+                    let base = ins.b as usize;
+                    let mut args: Vec<u64> = Vec::with_capacity(np);
+                    args.extend_from_slice(&frame[base..base + np]);
+                    let mut results = vec![0u64; nr];
+                    match self.funcref_host.as_mut() {
+                        Some(h) => (h.invoke)(callee, &args, &mut results)?,
+                        None => return Err(WasmError::trap("indirect call type mismatch")),
+                    }
+                    frame[base..base + nr].copy_from_slice(&results);
+                    return Ok(Effect::Next);
                 }
                 let fi = callee.0 as u32;
                 let expected = ins.c as u32;

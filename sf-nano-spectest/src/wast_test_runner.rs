@@ -6,7 +6,8 @@ use sf_nano_core::module::type_context::TypeContext;
 use sf_nano_core::module::Module;
 use sf_nano_core::value_type::{AbstractHeapType, HeapType, RefType};
 use sf_nano_core::{
-    Caller, Engine, HostFn, Import, Instance, Limitable, LinkRegistry, RefHandle, Value, WasmError,
+    Caller, Engine, HostFn, Import, Instance, Limitable, LinkRegistry, RefHandle, Tier, Value,
+    WasmError,
 };
 use std::{cell::RefCell, collections::HashMap, fmt, fs, path::Path};
 use wast::{
@@ -385,6 +386,83 @@ fn alloc_forwarding_slot_target(instance_name: &str, target: ForwardingTarget) -
 fn clear_forwarding() {
     FORWARDING_SLOTS.with(|cell| cell.borrow_mut().clear());
     FORWARDING_INSTANCES.with(|cell| cell.borrow_mut().clear());
+}
+
+/// A raw 64-bit slot read as `ty`, and back.
+///
+/// The engine keeps every value in an 8-byte slot and a reference verbatim as
+/// its `RefHandle` -- the same convention its host boundary uses.
+fn raw_slot_to_value(
+    ty: sf_nano_core::value_type::ValueType,
+    raw: u64,
+) -> Result<Value, WasmError> {
+    use sf_nano_core::value_type::ValueType;
+    Ok(match ty {
+        ValueType::I32 => Value::I32(raw as u32 as i32),
+        ValueType::I64 => Value::I64(raw as i64),
+        ValueType::F32 => Value::F32(f32::from_bits(raw as u32)),
+        ValueType::F64 => Value::F64(f64::from_bits(raw)),
+        ValueType::Ref(r) => Value::Ref(RefHandle::new(raw as usize), r),
+        _ => {
+            return Err(WasmError::internal(
+                "published funcref: unsupported value type",
+            ))
+        }
+    })
+}
+
+fn value_to_raw_slot(v: &Value) -> Result<u64, WasmError> {
+    Ok(match v {
+        Value::I32(x) => *x as u32 as u64,
+        Value::I64(x) => *x as u64,
+        Value::F32(x) => x.to_bits() as u64,
+        Value::F64(x) => x.to_bits(),
+        Value::Ref(h, _) => h.raw() as u64,
+        _ => return Err(WasmError::internal("published funcref: unsupported value")),
+    })
+}
+
+/// Call a published funcref, converting raw slots at the boundary.
+///
+/// The engine hands raw slots because that is what its frames hold; the
+/// callee's signature says how to read them, and the harness is the side that
+/// can look that up.
+fn forward_raw_call(handle: RefHandle, args: &[u64], results: &mut [u64]) -> Result<(), WasmError> {
+    let slot = handle
+        .host_index()
+        .ok_or_else(|| WasmError::internal("published funcref without a slot"))?;
+    let (inst_name, func_index) = FORWARDING_SLOTS.with(|cell| {
+        let slots = cell.borrow();
+        match slots.get(slot).and_then(|s| s.as_ref()) {
+            Some(s) => match &s.target {
+                ForwardingTarget::FunctionIndex(idx) => Ok((s.instance_name.clone(), *idx)),
+            },
+            None => Err(WasmError::internal("published funcref slot empty")),
+        }
+    })?;
+    FORWARDING_INSTANCES.with(|cell| {
+        let map = cell.borrow();
+        let inst_ptr = *map
+            .get(&inst_name)
+            .ok_or_else(|| WasmError::internal("published funcref owner is gone"))?;
+        // Safety: as `forward_call` -- single-threaded, and the owning
+        // instance outlives a call through a table it published into.
+        let inst = unsafe { &mut *inst_ptr };
+        let ty = inst
+            .function_type_at(func_index)
+            .ok_or_else(|| WasmError::internal("published funcref has no type"))?;
+        let typed: Vec<Value> = ty
+            .params()
+            .iter()
+            .zip(args)
+            .map(|(t, raw)| raw_slot_to_value(*t, *raw))
+            .collect::<Result<_, _>>()?;
+        let ret = inst.invoke_function_index(func_index, &typed)?;
+        for (dst, v) in results.iter_mut().zip(ret.iter()) {
+            *dst = value_to_raw_slot(v)?;
+        }
+        Ok(())
+    })
 }
 
 fn forward_call(
@@ -1222,7 +1300,7 @@ impl WastTestRunner {
         self.module_counter += 1;
 
         register_forwarding_instances(&mut self.instances, &self.registered_as);
-        let instance = self.instantiate_with_registry(&compiled.wasm_bytes, false)?;
+        let instance = self.instantiate_named(&compiled.wasm_bytes, false, &internal_name)?;
         let previous_current = self.current_module.replace(internal_name.clone());
 
         self.instances.insert(internal_name.clone(), instance);
@@ -1278,8 +1356,49 @@ impl WastTestRunner {
         wasm_bytes: &[u8],
         retain_partial: bool,
     ) -> Result<Instance, WasmError> {
+        // Every instance gets a name, even a throwaway one: it may publish a
+        // funcref into a table another module holds, and that reference has to
+        // stay callable afterwards -- including when this instantiation traps.
+        let owner = format!("anon_{}", self.module_counter);
+        self.module_counter += 1;
+        self.instantiate_named(wasm_bytes, retain_partial, &owner)
+    }
+
+    fn instantiate_named(
+        &mut self,
+        wasm_bytes: &[u8],
+        retain_partial: bool,
+        owner: &str,
+    ) -> Result<Instance, WasmError> {
         let imports = self.build_imports(wasm_bytes)?;
         let module = Module::new("main", wasm_bytes)?;
+        if self.engine.tier() == Tier::Interp {
+            let owner_name = owner.to_string();
+            let host = sf_nano_core::FuncRefHost {
+                publish: Box::new(move |func_index| {
+                    RefHandle::hostref(alloc_forwarding_function_slot(&owner_name, func_index))
+                }),
+                invoke: Box::new(forward_raw_call),
+            };
+            return match Instance::from_module_with_funcref_host(
+                &self.engine,
+                module,
+                &imports,
+                host,
+            ) {
+                Ok(instance) => Ok(instance),
+                Err((partial, error)) => {
+                    // A trapping instantiation still wrote its element
+                    // segments, so anything they reference must remain
+                    // reachable: keep the instance and let it be forwarded to.
+                    if let Some(instance) = partial {
+                        self.instances.insert(owner.to_string(), instance);
+                        register_forwarding_instances(&mut self.instances, &self.registered_as);
+                    }
+                    Err(error)
+                }
+            };
+        }
         match Instance::from_module_with_registry(
             &self.engine,
             module,

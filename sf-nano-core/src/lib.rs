@@ -46,7 +46,7 @@ pub use vm::instance::{
 // is not: it is how the engine stores a function, not something an
 // embedder builds against.
 #[cfg(sf_interp)]
-pub use vm::interpreter::InterpInstance;
+pub use vm::interpreter::{FuncRefHost, InterpInstance};
 #[cfg(sf_jit)]
 pub use vm::jit::arch::active_native_backend_name;
 // Compile statistics belong to the JIT *engine*, so they carry its name.

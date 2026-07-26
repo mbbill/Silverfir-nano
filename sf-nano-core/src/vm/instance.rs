@@ -123,6 +123,36 @@ impl Instance {
         }
     }
 
+    /// Instantiate with a hook for cross-instance function references, and
+    /// keep the instance when a data segment traps.
+    #[cfg(sf_interp)]
+    pub fn from_module_with_funcref_host(
+        engine: &Engine,
+        module: Module,
+        imports: &[Import],
+        funcref_host: crate::vm::interpreter::FuncRefHost,
+    ) -> Result<Self, (Option<Self>, WasmError)> {
+        validate(&module).map_err(|e| (None, e))?;
+        let dispatch = interp_imports::bind(&module, imports).map_err(|e| (None, e))?;
+        match InterpInstance::new_partial(
+            engine,
+            module,
+            Some(InterpInstance::boxed_host(dispatch)),
+            imports,
+            Some(funcref_host),
+        ) {
+            Ok(inst) => Ok(Self {
+                inner: Inner::Interp(inst),
+            }),
+            Err((partial, error)) => Err((
+                partial.map(|inst| Self {
+                    inner: Inner::Interp(inst),
+                }),
+                error,
+            )),
+        }
+    }
+
     /// Instantiate an already-parsed module in `engine`.
     pub fn from_module(
         engine: &Engine,

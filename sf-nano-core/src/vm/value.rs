@@ -41,6 +41,12 @@ impl RefHandle {
         Self(value)
     }
 
+    /// The handle's raw bits, for an embedder storing it in its own slot.
+    #[inline]
+    pub const fn raw(self) -> usize {
+        self.0
+    }
+
     pub const fn null() -> Self {
         Self(usize::MAX)
     }
