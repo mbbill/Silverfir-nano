@@ -6,9 +6,12 @@ use sf_nano_core::module::type_context::TypeContext;
 use sf_nano_core::module::Module;
 use sf_nano_core::value_type::{AbstractHeapType, HeapType, RefType};
 use sf_nano_core::{
-    Caller, Engine, HostFn, Import, Instance, Limitable, LinkRegistry, RefHandle, Tier, Value,
-    WasmError,
+    Caller, Engine, HostFn, Import, Instance, Limitable, LinkRegistry, RefHandle, Value, WasmError,
 };
+// The tier is only ever compared against `Interp`, which a build without the
+// interpreter has no variant for.
+#[cfg(feature = "interp")]
+use sf_nano_core::Tier;
 use std::{cell::RefCell, collections::HashMap, fmt, fs, path::Path};
 use wast::{
     core::{NanPattern, V128Pattern, WastArgCore, WastRetCore},
@@ -392,6 +395,10 @@ fn clear_forwarding() {
 ///
 /// The engine keeps every value in an 8-byte slot and a reference verbatim as
 /// its `RefHandle` -- the same convention its host boundary uses.
+///
+/// Raw slots cross the boundary only through the interpreter's
+/// `FuncRefHost`; the JIT forwards typed `Value`s.
+#[cfg(feature = "interp")]
 fn raw_slot_to_value(
     ty: sf_nano_core::value_type::ValueType,
     raw: u64,
@@ -411,6 +418,7 @@ fn raw_slot_to_value(
     })
 }
 
+#[cfg(feature = "interp")]
 fn value_to_raw_slot(v: &Value) -> Result<u64, WasmError> {
     Ok(match v {
         Value::I32(x) => *x as u32 as u64,
@@ -427,6 +435,7 @@ fn value_to_raw_slot(v: &Value) -> Result<u64, WasmError> {
 /// The engine hands raw slots because that is what its frames hold; the
 /// callee's signature says how to read them, and the harness is the side that
 /// can look that up.
+#[cfg(feature = "interp")]
 fn forward_raw_call(handle: RefHandle, args: &[u64], results: &mut [u64]) -> Result<(), WasmError> {
     let slot = handle
         .host_index()
@@ -1300,7 +1309,12 @@ impl WastTestRunner {
         self.module_counter += 1;
 
         register_forwarding_instances(&mut self.instances, &self.registered_as);
-        let instance = self.instantiate_named(&compiled.wasm_bytes, false, &internal_name)?;
+        let instance = self.instantiate_named(
+            &compiled.wasm_bytes,
+            false,
+            #[cfg(feature = "interp")]
+            &internal_name,
+        )?;
         let previous_current = self.current_module.replace(internal_name.clone());
 
         self.instances.insert(internal_name.clone(), instance);
@@ -1359,19 +1373,35 @@ impl WastTestRunner {
         // Every instance gets a name, even a throwaway one: it may publish a
         // funcref into a table another module holds, and that reference has to
         // stay callable afterwards -- including when this instantiation traps.
-        let owner = format!("anon_{}", self.module_counter);
-        self.module_counter += 1;
-        self.instantiate_named(wasm_bytes, retain_partial, &owner)
+        // Only the interpreter forwards by name; the JIT reaches a partial
+        // instance's exports through the registry, so it mints no name here.
+        #[cfg(feature = "interp")]
+        let owner = {
+            let owner = format!("anon_{}", self.module_counter);
+            self.module_counter += 1;
+            owner
+        };
+        self.instantiate_named(
+            wasm_bytes,
+            retain_partial,
+            #[cfg(feature = "interp")]
+            &owner,
+        )
     }
 
     fn instantiate_named(
         &mut self,
         wasm_bytes: &[u8],
         retain_partial: bool,
-        owner: &str,
+        #[cfg(feature = "interp")] owner: &str,
     ) -> Result<Instance, WasmError> {
         let imports = self.build_imports(wasm_bytes)?;
         let module = Module::new("main", wasm_bytes)?;
+        // Only the interpreter needs a `FuncRefHost`: the JIT resolves a
+        // cross-instance funcref through the registry alone. In a build
+        // without `interp` the whole path -- the tier, the host, and the
+        // constructor that takes one -- does not exist to name.
+        #[cfg(feature = "interp")]
         if self.engine.tier() == Tier::Interp {
             let owner_name = owner.to_string();
             let host = sf_nano_core::FuncRefHost {
