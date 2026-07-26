@@ -1715,25 +1715,13 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     flags |= self.acc_operand(d0, FLAG_A_ACC, false);
                     // v1 restriction: every target must need no value moves
                     // (LLVM switch tables are arity-0). Reject otherwise.
-                    for &d in labels.iter().chain(core::iter::once(&default)) {
-                        let n = self.frames.len();
-                        if (d as usize) >= n {
-                            if self.n_results != 0 {
-                                return Err(WasmError::invalid(
-                                    "interp: branch to a function-level label with results",
-                                ));
-                            }
-                            continue;
-                        }
-                        let f = &self.frames[n - 1 - d as usize];
-                        let arity = if f.is_loop { f.params } else { f.results };
-                        if arity != 0 && self.height() != f.base + arity {
-                            return Err(WasmError::invalid(
-                                "interp: branch with operands above the target's arity",
-                            ));
-                        }
-                    }
                     let tbl = self.br_tables.len() as u32;
+                    // A target whose arity leaves operands above it needs the
+                    // values moved down, and a table has nowhere to put those
+                    // moves -- so such a target gets its own landing pad after
+                    // the dispatch: moves, then an ordinary branch. Targets
+                    // that need none still point straight at the block.
+                    let mut pads: Vec<Option<u32>> = Vec::new();
                     let mut entries = Vec::new();
                     for &d in labels.iter().chain(core::iter::once(&default)) {
                         let n = self.frames.len();
@@ -1741,9 +1729,18 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                             // function label: lower as a jump to a shared
                             // return we emit right after the table dispatch
                             entries.push(u32::MAX);
+                            pads.push(None);
                             continue;
                         }
                         let i = n - 1 - d as usize;
+                        let f = &self.frames[i];
+                        let arity = if f.is_loop { f.params } else { f.results };
+                        if arity != 0 && self.height() != f.base + arity {
+                            entries.push(u32::MAX);
+                            pads.push(Some(d));
+                            continue;
+                        }
+                        pads.push(None);
                         if self.frames[i].is_loop {
                             entries.push(self.frames[i].header);
                         } else {
@@ -1753,6 +1750,14 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         }
                     }
                     self.emit(Op::BrTable, flags, a, 0, tbl as u64);
+                    // Per-target move pads.
+                    for i in 0..pads.len() {
+                        let Some(d) = pads[i] else { continue };
+                        let pad = self.code.len() as u32;
+                        self.branch_value_moves(d)?;
+                        self.emit_branch(Op::Br, 0, 0, d)?;
+                        entries[i] = pad;
+                    }
                     // Shared return landing pad for function-label entries.
                     if entries.iter().any(|&e| e == u32::MAX) {
                         let here = self.code.len() as u32;
