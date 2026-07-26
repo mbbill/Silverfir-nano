@@ -307,6 +307,8 @@ pub enum Op {
     // u32::MAX, in the low bits of a slot)
     /// `a` = ref operand, `c` = dst.
     RefIsNull,
+    /// `ref.as_non_null`: passes the reference through, trapping on null.
+    RefAsNonNull,
     /// `a` = index operand, `b` = table index, `c` = dst.
     TableGet,
     /// `a` = index operand, `b` = value operand, `c` = table index.
@@ -377,6 +379,11 @@ pub enum Op {
     /// pushing one, so recursion through them runs in constant frame depth.
     ReturnCall,
     ReturnCallIndirect,
+    /// `call_ref` / `return_call_ref`: the callee is a reference operand
+    /// rather than a table slot, so there is no table bound or type check to
+    /// do -- the reference already names the function.
+    CallRef,
+    ReturnCallRef,
     /// Two fused materialization movs: `frame[c>>32] = frame[a]` then
     /// `frame[c & 0xffffffff] = frame[b]`, in that order (src2 may be
     /// dst1). Emitted by the predecoder for adjacent staging movs.

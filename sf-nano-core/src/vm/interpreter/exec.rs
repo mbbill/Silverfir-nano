@@ -2039,6 +2039,29 @@ impl InterpInstance {
                 let v = opa!(ins);
                 frame[ins.c as usize] = slot_to_ref(v).is_null() as u64;
             }
+            Op::RefAsNonNull => {
+                let v = opa!(ins);
+                if slot_to_ref(v).is_null() {
+                    return Err(WasmError::trap("null function reference"));
+                }
+                frame[ins.c as usize] = v;
+            }
+            Op::CallRef | Op::ReturnCallRef => {
+                let r = slot_to_ref(opa!(ins));
+                if r.is_null() {
+                    return Err(WasmError::trap("null function reference"));
+                }
+                if r.is_special() {
+                    return Err(WasmError::trap("indirect call type mismatch"));
+                }
+                let callee = r.0;
+                let arg_base = ins.b as usize;
+                return Ok(if ins.op == Op::ReturnCallRef {
+                    Effect::TailCall { callee, arg_base }
+                } else {
+                    Effect::Call { callee, arg_base }
+                });
+            }
             Op::TableGet => {
                 let i = opa!(ins);
                 let t = &self

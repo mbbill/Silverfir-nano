@@ -719,6 +719,45 @@ impl<'m> Predecoder<'m> {
         self.emit(Op::Return, 0, self.temp_slot(base), r as u64, 0);
     }
 
+    /// A `call_ref`: same staging as any call, but the callee comes from a
+    /// reference operand, so there is no table index and no runtime type
+    /// check -- the reference already names the function.
+    fn call_boundary_ref(
+        &mut self,
+        params: u32,
+        results: u32,
+        target: u64,
+        target_const: bool,
+        tail: bool,
+    ) -> Result<(), WasmError> {
+        let h = self.height() as usize;
+        if h < params as usize {
+            return Err(desync());
+        }
+        for i in h - params as usize..h {
+            self.materialize_at(i);
+        }
+        let arg_base = self.temp_slot(self.height() - params);
+        let flags = if target_const { FLAG_A_CONST } else { 0 };
+        let op = if tail { Op::ReturnCallRef } else { Op::CallRef };
+        self.emit(op, flags, target, arg_base, 0);
+        for _ in 0..params {
+            let _ = self.pop()?;
+        }
+        if tail {
+            self.bump_region();
+            self.dead = true;
+            return Ok(());
+        }
+        self.push_unknown_temps(results);
+        if results == 1 {
+            self.last_call_idx = self.code.len() as u32 - 1;
+            self.last_call_height = self.height() - 1;
+            self.last_call_region = self.region;
+        }
+        Ok(())
+    }
+
     fn call_boundary_tail(
         &mut self,
         func_idx_field: Option<u64>,
@@ -1498,6 +1537,31 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 }
                 Opcode::REF_IS_NULL => {
                     self.value_op(Op::RefIsNull, 1)?;
+                }
+                Opcode::REF_AS_NON_NULL => {
+                    self.value_op(Op::RefAsNonNull, 1)?;
+                }
+                Opcode::CALL_REF | Opcode::RETURN_CALL_REF => {
+                    let tail = o == Opcode::RETURN_CALL_REF;
+                    let tidx = match imm {
+                        Immediate::TypeIndex(t) => t,
+                        _ => return Err(desync()),
+                    };
+                    let ft = self
+                        .types
+                        .get_function_type(tidx)
+                        .ok_or(WasmError::invalid("interp: bad call_ref type"))?
+                        .clone();
+                    let at = self.code.len() as u32;
+                    let target = self.pop()?;
+                    let (t, t_const) = self.operand(target, at);
+                    self.call_boundary_ref(
+                        ft.params().len() as u32,
+                        ft.results().len() as u32,
+                        t,
+                        t_const,
+                        tail,
+                    )?;
                 }
                 Opcode::TABLE_GET => {
                     let t = match imm {
