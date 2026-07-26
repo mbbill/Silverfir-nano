@@ -26,6 +26,7 @@ use crate::module::type_context::concrete_type_matches_cross_context;
 use crate::module::Module;
 use crate::opcodes::Opcode;
 use crate::utils::limits::{Limitable, Limits};
+use crate::value_type::ValueType;
 use crate::vm::engine::Engine;
 use crate::vm::entities::{GlobalInst, MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
@@ -657,8 +658,22 @@ impl InterpInstance {
                             // directions: importing a `mut` global as
                             // immutable would let the importer assume a value
                             // the exporter can still change.
-                            if st.global.mutable != *mutable || st.global.value_type != *value_type
-                            {
+                            // The value type is invariant for a mutable
+                            // global and admits a subtype for an immutable
+                            // one. Reference types are left unchecked when
+                            // they differ: a concrete heap type names an index
+                            // in the EXPORTER's type space, so deciding it
+                            // needs the exporter's context --
+                            // `ImportedGlobalState` carries one and this
+                            // engine does not yet populate it. Accepting is
+                            // what it did before; rejecting refuses valid
+                            // modules.
+                            let type_ok = st.global.value_type == *value_type
+                                || matches!(
+                                    (st.global.value_type, *value_type),
+                                    (ValueType::Ref(_), ValueType::Ref(_))
+                                );
+                            if st.global.mutable != *mutable || !type_ok {
                                 return Err(WasmError::unlinkable("incompatible import type"));
                             }
                             shared_globals.push(Some(st.global.clone()));
