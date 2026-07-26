@@ -24,11 +24,50 @@
   that slow path also carries host calls, `call_indirect`, and rich trap
   messages.
 
-- Coverage is wasm 2.0 plus multiple memories (a memory index packs into
-  the static offset's high bits); SIMD, exception handling, GC, tail calls,
-  and memory64 are rejected with clean errors.
+- Coverage is wasm 3.0 less SIMD and GC, which are excluded by design: a
+  v128 lane and a GC object are representation changes rather than more
+  handlers, and both are rejected by name. Exception handling is carried
+  only where a throw's handler is in the same function; crossing a call
+  needs the native chain's return stack unwound and is rejected by name.
+
+- A memory or table index packs into the static offset's high bits, except
+  where a 64-bit offset needs all of them -- those carry a side-table index
+  instead, and never reach a native handler.
+
+- A memory, table or global that is imported or exported IS the substrate's
+  shared entity; a purely private one is a private array the dispatch chain
+  indexes directly. Accesses to a shared entity are denied a native handler
+  (`TableEntries`).
+
+- A function reference leaving this instance is named by the EMBEDDER, not
+  by the engine: a local index means nothing to whoever reads it, and
+  resolving a name means calling into another instance, which the embedder
+  owns and an engine-side registry could only reach through a raw pointer
+  into storage the embedder may move (`FuncRefHost`).
+
+- Instantiation hands the instance back when a segment traps, and runs the
+  dispatch chain, element segments, data segments, then the start function
+  in that order (`new_partial`).
 
 ## Facts
+
+- 2026-07-26 (be0da7c2) rationale: an entity another instance can reach must
+  BE the shared one rather than a copy, because both sides write it and a
+  copy stops agreeing at the first store; the tiering mirrors the JIT's
+  `FixedLocalOnly` / `Generic` split, which exists because its native code
+  reads a projection whose layout it controls rather than the entity itself
+  (sourced).
+
+- 2026-07-26 (979c5001) rationale: naming a cross-instance function
+  reference belongs to the embedder because resolving one means calling into
+  another instance, which needs `&mut` to it while the caller is borrowed --
+  the embedder owns both, where an engine-side registry could only reach it
+  through a raw pointer into storage the embedder is free to move (sourced).
+
+- 2026-07-26 (979c5001) rationale: a trapping instantiation still hands back
+  its instance because element segments run before data ones, so their
+  writes -- possibly into a table another instance holds -- stand, and
+  anything they reference has to stay callable (sourced).
 
 - 2026-07-23 measurement: folding rates on the wasi benchmark corpus
   (foldsim v4, three hostile reviews): `local.get` folded 95.8%,
