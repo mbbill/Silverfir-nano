@@ -191,6 +191,7 @@ pub fn should_skip_test(test_name: &str, simd_enabled: bool) -> bool {
 /// Consulted for the interpreter ONLY. The JIT implements both features
 /// and passes every file here; excluding them globally would drop it
 /// below the 100% it holds today.
+#[cfg(feature = "interp")]
 pub const INTERPRETER_EXCLUDED: &[(&str, &str)] = &[
     // SIMD and relaxed SIMD: the folded stack machine works in 8-byte
     // slots, so a v128 lane is a representation change rather than more
@@ -280,6 +281,7 @@ pub const INTERPRETER_EXCLUDED: &[(&str, &str)] = &[
 ];
 
 /// The reason this file is out of scope for the interpreter, if it is.
+#[cfg(feature = "interp")]
 pub fn interpreter_excluded(test_name: &str) -> Option<&'static str> {
     let stem = test_name
         .rsplit('/')

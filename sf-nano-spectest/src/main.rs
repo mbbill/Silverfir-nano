@@ -8,7 +8,9 @@ mod types;
 #[cfg(feature = "jit")]
 mod wast_test_runner;
 
-use discovery::{find_wast_files, interpreter_excluded, should_skip_test};
+#[cfg(feature = "interp")]
+use discovery::interpreter_excluded;
+use discovery::{find_wast_files, should_skip_test};
 use log::{error, info, warn};
 use sf_nano_core::{reset_native_runtime_state, target_has_simd, Config, Engine, Tier};
 use std::{
