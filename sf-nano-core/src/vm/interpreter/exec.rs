@@ -998,6 +998,12 @@ impl InterpInstance {
         }
     }
 
+    /// The current size of table `idx`, which `table.grow` may have changed
+    /// since instantiation.
+    pub fn table_len(&self, idx: usize) -> Option<usize> {
+        self.tables.get(idx).map(|t| t.entries.len())
+    }
+
     /// The module this instance was built from.
     #[inline]
     pub fn module(&self) -> &Module {

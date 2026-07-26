@@ -366,8 +366,15 @@ impl Instance {
             Inner::Jit(inst) => inst.table_size(name),
             #[cfg(sf_interp)]
             Inner::Interp(inst) => {
-                let _ = (inst, name);
-                None
+                // By export name and from the LIVE table, as memory_pages
+                // does: a table grown after instantiation must report its
+                // current size, or an import sized from it gets stale limits.
+                let idx = inst
+                    .module()
+                    .tables()
+                    .iter()
+                    .position(|t| t.export_names().iter().any(|e| e == name))?;
+                inst.table_len(idx)
             }
         }
     }
