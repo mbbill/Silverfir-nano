@@ -196,6 +196,8 @@ pub const INTERPRETER_EXCLUDED: &[(&str, &str)] = &[
     // SIMD and relaxed SIMD: the folded stack machine works in 8-byte
     // slots, so a v128 lane is a representation change rather than more
     // handlers.
+    ("simd_select", "SIMD"),
+    ("simd_linking", "SIMD"),
     ("i16x8_relaxed_q15mulr_s", "SIMD"),
     ("i32x4_relaxed_trunc", "SIMD"),
     ("i8x16_relaxed_swizzle", "SIMD"),
