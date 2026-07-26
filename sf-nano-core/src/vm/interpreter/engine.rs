@@ -17,8 +17,8 @@ use tracked_alloc::boxed::Box;
 use crate::collections::{vec, Vec};
 
 use super::instr::{
-    operand_is_float, result_is_float, Instr, Op, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC,
-    FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
+    operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
+    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
 };
 use super::layout::{
     build_op_base, c_is_branch_target, family, native_guard, op_slot, operand_is_f32,
@@ -322,6 +322,11 @@ impl NativeEngine {
 
     /// Handler address for one cell under a given pinned-local choice.
     fn handler_for(&self, ins: &Instr, flags: u16, pin: &Pinned) -> Option<usize> {
+        // The generated handlers zero-extend a 32-bit address, so a 64-bit
+        // memory access has no native form and takes the shared executor.
+        if flags & FLAG_ADDR64 != 0 {
+            return None;
+        }
         let slot = op_slot(ins, flags, pin, &self.op_base)?;
         self.handler_at(slot)
     }

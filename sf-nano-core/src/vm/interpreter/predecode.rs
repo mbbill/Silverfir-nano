@@ -22,10 +22,11 @@ use crate::module::type_context::TypeContext;
 use crate::module::Module;
 use crate::op_decoder::{BlockType, Decoder, Immediate, OpStream, OpcodeHandler};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
+use crate::utils::limits::Limitable;
 
 use super::instr::{
-    operand_is_float, result_is_float, Instr, Op, FLAG_A_ACC, FLAG_A_CONST, FLAG_B_ACC,
-    FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
+    operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
+    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED,
 };
 
 /// Producer index meaning "no patchable producer" (call results, block
@@ -274,6 +275,17 @@ fn unsupported() -> WasmError {
 }
 
 impl<'m> Predecoder<'m> {
+    /// Whether the memory at `idx` is 64-bit addressed.
+    ///
+    /// Only the memory's own declaration decides this, so an access is marked
+    /// once at predecode and never re-checked on the hot path.
+    fn memory_is_64(&self, idx: u64) -> bool {
+        self.module
+            .memories()
+            .get(idx as usize)
+            .is_some_and(|m| m.limits().is64)
+    }
+
     fn height(&self) -> u32 {
         self.stack.len() as u32
     }
@@ -1640,6 +1652,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                             }
                             _ => return Err(desync()),
                         };
+                        let addr64 = self.memory_is_64(offset >> 48);
                         let at = self.code.len() as u32;
                         let d = self.pop()?;
                         let (a, a_const) = self.operand(d, at);
@@ -1651,6 +1664,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                             let add = self.code[def as usize];
                             let dst = self.temp_slot_used(self.height());
                             if add.op == Op::I32_Add
+                                && !addr64
                                 && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
                                 && offset >> 48 == 0
                                 && add.a < 1 << 16
@@ -1678,6 +1692,9 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                             if a_const {
                                 flags |= FLAG_A_CONST;
                             }
+                            if addr64 {
+                                flags |= FLAG_ADDR64;
+                            }
                             let dst = self.temp_slot_used(self.height());
                             let idx = self.emit(lop, flags, a, offset, dst);
                             self.push_result_temp(idx);
@@ -1694,6 +1711,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                             }
                             _ => return Err(desync()),
                         };
+                        let addr64 = self.memory_is_64(offset >> 48);
                         let at = self.code.len() as u32;
                         let v = self.pop()?;
                         let (b, b_const) = self.operand(v, at);
@@ -1712,6 +1730,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         if let Some(def) = self.rewritable_producer(ad) {
                             let add = self.code[def as usize];
                             if add.op == Op::I32_Add
+                                && !addr64
                                 && add.flags & (FLAG_A_CONST | FLAG_B_CONST) == 0
                                 && offset >> 32 == 0
                                 && add.a < 1 << 16
@@ -1736,6 +1755,9 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                             flags |= self.acc_operand(ad, FLAG_A_ACC, false);
                             if a_const {
                                 flags |= FLAG_A_CONST;
+                            }
+                            if addr64 {
+                                flags |= FLAG_ADDR64;
                             }
                             self.emit(sop, flags, a, b, offset);
                         }

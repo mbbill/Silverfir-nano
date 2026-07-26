@@ -35,6 +35,12 @@ pub(crate) const FLAG_DST_ACC: u16 = 1 << 4;
 /// base+index pattern). Loads pack `addr2 << 32 | dst` in c; stores
 /// pack `addr2 << 32 | static_offset` (offset < 2^32, memory 0 only).
 pub(crate) const FLAG_FUSED: u16 = 1 << 5;
+/// This memory access addresses a 64-bit memory.
+///
+/// The generated handlers zero-extend a 32-bit address (`uxtw` and its
+/// equivalents), so a 64-bit access cannot use them; the flag denies the cell
+/// a native handler and the shared executor does the full-width arithmetic.
+pub(crate) const FLAG_ADDR64: u16 = 1 << 6;
 
 /// Recover an `Op` from its dense `#[repr(u16)]` discriminant — the same
 /// invariant the packed handler-slot key relies on.

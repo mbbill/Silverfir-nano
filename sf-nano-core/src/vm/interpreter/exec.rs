@@ -36,7 +36,7 @@ use super::engine::{
 };
 use super::fmath;
 use super::instr::{op_from_index, Op};
-use super::instr::{Instr, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
+use super::instr::{Instr, FLAG_ADDR64, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
 use super::predecode::{predecode_function, PredecodedFunction};
 
 const PAGE: usize = 65536;
@@ -442,9 +442,6 @@ impl InterpInstance {
         let mut memories = Vec::new();
         for (i, m) in module.memories().iter().enumerate() {
             let limits = m.limits();
-            if limits.is64 {
-                return Err(WasmError::invalid("interp: memory64 unsupported"));
-            }
             // An import with a shared backing takes it, so writes are
             // visible on both sides. An import with none declared is the
             // embedder saying "allocate one to these limits" -- the same
@@ -1151,8 +1148,14 @@ impl InterpInstance {
             .memories
             .get((packed >> 48) as usize)
             .ok_or(WasmError::trap("out of bounds memory access"))?;
-        let ea = addr + (packed & 0xffff_ffff_ffff); // both < 2^49, no overflow
-        let end = ea + size as u64;
+        // A 64-bit address can carry, so the effective address is computed
+        // with checked arithmetic rather than relying on a 2^49 bound.
+        let ea = addr
+            .checked_add(packed & 0xffff_ffff_ffff)
+            .ok_or(WasmError::trap("out of bounds memory access"))?;
+        let end = ea
+            .checked_add(size as u64)
+            .ok_or(WasmError::trap("out of bounds memory access"))?;
         if end > mem.len() as u64 {
             return Err(WasmError::trap("out of bounds memory access"));
         }
@@ -1516,6 +1519,11 @@ impl InterpInstance {
                         (opa!($ins) as u32).wrapping_add(a2) as u64,
                         ($ins.c & 0xffff_ffff) as usize,
                     )
+                } else if $ins.flags & FLAG_ADDR64 != 0 {
+                    // A 64-bit memory's address is the whole slot; a 32-bit
+                    // one's is zero-extended already, but truncating keeps
+                    // the two cases independent of that invariant.
+                    (opa!($ins), $ins.c as usize)
                 } else {
                     (opa!($ins) as u32 as u64, $ins.c as usize)
                 };
@@ -1533,6 +1541,8 @@ impl InterpInstance {
                         (opa!($ins) as u32).wrapping_add(a2) as u64,
                         $ins.c & 0xffff_ffff,
                     )
+                } else if $ins.flags & FLAG_ADDR64 != 0 {
+                    (opa!($ins), $ins.c)
                 } else {
                     (opa!($ins) as u32 as u64, $ins.c)
                 };
