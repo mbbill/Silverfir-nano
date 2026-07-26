@@ -347,9 +347,32 @@ fn alloc_forwarding_function_slot(instance_name: &str, function_index: usize) ->
     )
 }
 
+/// Allocate -- or reuse -- the slot forwarding to `(instance, target)`.
+///
+/// Reuse matters: `build_imports` runs per instantiation and walks every
+/// exported function of every registered module, so allocating afresh each
+/// time exhausts the 128 fn-pointer table in a file with several registered
+/// modules. Past that point `FORWARDER_TABLE.get` returns None and the import
+/// is silently dropped, which surfaces as "missing function import" a long way
+/// from the cause. Slots are keyed by what they forward to, so the table is
+/// bounded by distinct targets rather than by instantiation count.
 fn alloc_forwarding_slot_target(instance_name: &str, target: ForwardingTarget) -> usize {
     FORWARDING_SLOTS.with(|cell| {
         let mut slots = cell.borrow_mut();
+        let existing = slots.iter().position(|s| {
+            s.as_ref().is_some_and(|s| {
+                s.instance_name == instance_name
+                    && match (&s.target, &target) {
+                        (
+                            ForwardingTarget::FunctionIndex(a),
+                            ForwardingTarget::FunctionIndex(b),
+                        ) => a == b,
+                    }
+            })
+        });
+        if let Some(idx) = existing {
+            return idx;
+        }
         let idx = slots.len();
         slots.push(Some(ForwardingSlot {
             instance_name: instance_name.to_string(),
@@ -1362,6 +1385,17 @@ impl WastTestRunner {
                                         // stub.
                                         let slot =
                                             alloc_forwarding_function_slot(internal_name, func_idx);
+                                        // A dropped import here becomes
+                                        // "missing function import" at
+                                        // instantiation, so say which limit
+                                        // was hit rather than letting it look
+                                        // like a linking bug.
+                                        assert!(
+                                            slot < FORWARDER_TABLE.len(),
+                                            "forwarding slot table exhausted ({} entries): \
+                                             raise FORWARDER_TABLE or reuse more aggressively",
+                                            FORWARDER_TABLE.len()
+                                        );
                                         if let Some(&fwd) = FORWARDER_TABLE.get(slot) {
                                             // With the exporter's type context,
                                             // so rec-group identity is checked
