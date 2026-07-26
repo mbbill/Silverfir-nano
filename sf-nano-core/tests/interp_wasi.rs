@@ -46,7 +46,7 @@ fn run_wasi(path: &str) -> (Result<(), WasmError>, HostState) {
     });
     let result = {
         let state = std::rc::Rc::clone(&state);
-        let mut inst = InterpInstance::new(&engine(), module, None).expect("instantiate");
+        let mut inst = InterpInstance::new(&engine(), module, None, &[]).expect("instantiate");
         inst.set_host(
             move |_mod: &str, name: &str, mem: &mut [u8], args: &[u64], results: &mut [u64]| {
                 match name {

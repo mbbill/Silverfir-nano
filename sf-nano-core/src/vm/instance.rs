@@ -142,6 +142,7 @@ impl Instance {
                     engine,
                     module,
                     Some(InterpInstance::boxed_host(dispatch)),
+                    imports,
                 )?)
             }
         };
@@ -385,10 +386,7 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.shared_memory_at(idx),
             #[cfg(sf_interp)]
-            Inner::Interp(_) => {
-                let _ = idx;
-                None
-            }
+            Inner::Interp(inst) => inst.shared_memory_at(idx),
         }
     }
 

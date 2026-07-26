@@ -21,12 +21,14 @@ use tracked_alloc::rc::Rc;
 use crate::collections::{vec, Vec};
 use crate::config::Config;
 use crate::error::WasmError;
-use crate::module::entities::{Data, Element, ElementInit, GlobalDef};
+use crate::module::entities::{Data, Element, ElementInit, GlobalDef, MemoryDef};
 use crate::module::Module;
 use crate::opcodes::Opcode;
 use crate::utils::limits::Limitable;
 use crate::value_type::ValueType;
 use crate::vm::engine::Engine;
+use crate::vm::entities::MemInst;
+use crate::vm::imports::{Import, ImportValue};
 
 #[cfg(sf_interp_engine)]
 use super::engine::{
@@ -92,9 +94,37 @@ struct TableState {
 
 /// `max_pages` mirrors `TableState::max`: only `memory.grow` reads it.
 struct MemoryState {
-    bytes: Vec<u8>,
+    /// The substrate's memory entity, so a memory can be shared with
+    /// whoever exported it. It used to be an owned `Vec<u8>`, which is
+    /// why an imported memory could not be represented at all.
+    inst: MemInst,
     #[cfg(sf_interp_engine)]
     max_pages: u64,
+}
+
+impl MemoryState {
+    /// The linear memory as a slice.
+    ///
+    /// SAFETY: `MemInst` hands out a base pointer and a length for a
+    /// region it keeps alive; the same construction backs the JIT's own
+    /// host-call path. The borrow of the backing ends inside the
+    /// accessors, so no `RefCell` guard is held across the slice.
+    #[inline]
+    fn bytes(&self) -> &[u8] {
+        let (ptr, len) = (self.inst.memory_ptr(), self.inst.memory_len());
+        unsafe { core::slice::from_raw_parts(ptr, len) }
+    }
+
+    #[inline]
+    fn bytes_mut(&mut self) -> &mut [u8] {
+        let (ptr, len) = (self.inst.memory_ptr(), self.inst.memory_len());
+        unsafe { core::slice::from_raw_parts_mut(ptr, len) }
+    }
+
+    #[inline]
+    fn len(&self) -> usize {
+        self.inst.memory_len()
+    }
 }
 
 /// One live call frame. Calls and returns are driven by an explicit
@@ -351,8 +381,30 @@ impl InterpInstance {
         engine: &Engine,
         module: Module,
         host: Option<HostDispatch>,
+        imports: &[Import],
     ) -> Result<Self, WasmError> {
         let config = *engine.config();
+
+        // Resolve imported memories up front, indexed the way the module
+        // declares them, so the loop below can take a shared backing
+        // instead of allocating one.
+        let mut imported_memories: Vec<Option<MemInst>> = Vec::new();
+        for m in module.memories() {
+            imported_memories.push(match m.def() {
+                MemoryDef::Import {
+                    module: md, name, ..
+                } => imports.iter().find_map(|imp| {
+                    if imp.module != *md || imp.name != *name {
+                        return None;
+                    }
+                    match &imp.value {
+                        ImportValue::Memory(_, shared) => shared.clone(),
+                        _ => None,
+                    }
+                }),
+                MemoryDef::Local(_) => None,
+            });
+        }
         #[cfg(sf_interp_engine)]
         let stack_slots = configured_stack_slots(&config);
 
@@ -369,16 +421,24 @@ impl InterpInstance {
 
         // Memories.
         let mut memories = Vec::new();
-        for m in module.memories() {
-            if m.is_import() {
-                return Err(WasmError::invalid("interp: imported memory unsupported"));
-            }
-            let limits = m.spec().limits();
+        for (i, m) in module.memories().iter().enumerate() {
+            let limits = m.limits();
             if limits.is64 {
                 return Err(WasmError::invalid("interp: memory64 unsupported"));
             }
+            let inst = if m.is_import() {
+                // Supplied by whoever exported it: the instance shares the
+                // backing rather than owning a copy.
+                imported_memories
+                    .get(i)
+                    .cloned()
+                    .flatten()
+                    .ok_or(WasmError::invalid("interp: unlinked memory import"))?
+            } else {
+                MemInst::new(&config, limits.clone())?
+            };
             memories.push(MemoryState {
-                bytes: vec![0u8; limits.min() as usize * PAGE],
+                inst,
                 #[cfg(sf_interp_engine)]
                 max_pages: limits.max().unwrap_or(65536) as u64,
             });
@@ -470,11 +530,11 @@ impl InterpInstance {
                 let mem = memories
                     .get_mut(*memory_index)
                     .ok_or(WasmError::trap("out of bounds memory access"))?;
-                if off + init.len() as u64 > mem.bytes.len() as u64 {
+                if off + init.len() as u64 > mem.len() as u64 {
                     return Err(WasmError::trap("out of bounds memory access"));
                 }
                 let off = off as usize;
-                mem.bytes[off..off + init.len()].copy_from_slice(init);
+                mem.bytes_mut()[off..off + init.len()].copy_from_slice(init);
                 dropped_data[i] = true; // active segments drop after use
             }
         }
@@ -809,7 +869,7 @@ impl InterpInstance {
     pub fn memory(&self) -> Option<&[u8]> {
         #[cfg(sf_interp_engine)]
         {
-            self.memories.first().map(|m| m.bytes.as_slice())
+            self.memories.first().map(|m| m.bytes())
         }
         #[cfg(not(sf_interp_engine))]
         {
@@ -821,7 +881,7 @@ impl InterpInstance {
     pub fn memory_mut(&mut self) -> Option<&mut [u8]> {
         #[cfg(sf_interp_engine)]
         {
-            self.memories.first_mut().map(|m| m.bytes.as_mut_slice())
+            self.memories.first_mut().map(|m| m.bytes_mut())
         }
         #[cfg(not(sf_interp_engine))]
         {
@@ -843,6 +903,23 @@ impl InterpInstance {
             let ft = f.func_type();
             (ft.params().len(), ft.results().len())
         })
+    }
+
+    /// The memory entity at `idx`, for another instance to import.
+    ///
+    /// Sharing the substrate's `MemInst` is what makes an interpreter
+    /// instance linkable: the importer takes this backing rather than a
+    /// copy, so writes on either side are visible to both.
+    pub fn shared_memory_at(&self, idx: usize) -> Option<MemInst> {
+        #[cfg(sf_interp_engine)]
+        {
+            self.memories.get(idx).map(|m| m.inst.clone())
+        }
+        #[cfg(not(sf_interp_engine))]
+        {
+            let _ = idx;
+            None
+        }
     }
 
     /// A global's raw 64-bit value by index.
@@ -1054,10 +1131,10 @@ impl InterpInstance {
             .ok_or(WasmError::trap("out of bounds memory access"))?;
         let ea = addr + (packed & 0xffff_ffff_ffff); // both < 2^49, no overflow
         let end = ea + size as u64;
-        if end > mem.bytes.len() as u64 {
+        if end > mem.len() as u64 {
             return Err(WasmError::trap("out of bounds memory access"));
         }
-        Ok(&mem.bytes[ea as usize..end as usize])
+        Ok(&mem.bytes()[ea as usize..end as usize])
     }
 
     #[cfg(sf_interp_engine)]
@@ -1068,10 +1145,10 @@ impl InterpInstance {
             .ok_or(WasmError::trap("out of bounds memory access"))?;
         let ea = addr + (packed & 0xffff_ffff_ffff);
         let end = ea + size as u64;
-        if end > mem.bytes.len() as u64 {
+        if end > mem.len() as u64 {
             return Err(WasmError::trap("out of bounds memory access"));
         }
-        Ok(&mut mem.bytes[ea as usize..end as usize])
+        Ok(&mut mem.bytes_mut()[ea as usize..end as usize])
     }
 
     /// Dispatch an imported function to the host. `frame` is the CALLER's
@@ -1116,7 +1193,7 @@ impl InterpInstance {
         let args: Vec<u64> = frame[arg_base..arg_base + p].iter().copied().collect();
         let mem0 = memories
             .first_mut()
-            .map(|m| m.bytes.as_mut_slice())
+            .map(|m| m.bytes_mut())
             .unwrap_or(&mut []);
         host(mod_name, field, mem0, &args, &mut results[..r])?;
         frame[arg_base..arg_base + r].copy_from_slice(&results[..r]);
@@ -1210,8 +1287,8 @@ impl InterpInstance {
         let mut cur_l1_slot = (l1_off / 8) as usize;
         loop {
             if let Some(m) = self.memories.first_mut() {
-                state.mem_base = m.bytes.as_mut_ptr() as u64;
-                state.mem_len = m.bytes.len() as u64;
+                state.mem_base = m.inst.memory_ptr() as u64;
+                state.mem_len = m.inst.memory_len() as u64;
             }
             // Table 0 can move or grow only on the slow path, so a
             // per-entry refresh keeps the native indirect-call handler
@@ -1773,11 +1850,7 @@ impl InterpInstance {
             Op::I64_Store32 => store!(ins, 4),
             Op::MemorySize => {
                 let m = ins.b as usize;
-                let pages = self
-                    .memories
-                    .get(m)
-                    .map(|x| x.bytes.len() / PAGE)
-                    .unwrap_or(0);
+                let pages = self.memories.get(m).map(|x| x.len() / PAGE).unwrap_or(0);
                 frame[ins.c as usize] = pages as u64;
             }
             Op::MemoryGrow => {
@@ -1786,12 +1859,12 @@ impl InterpInstance {
                     .memories
                     .get_mut(ins.b as usize)
                     .ok_or(WasmError::trap("out of bounds memory access"))?;
-                let cur = (mem.bytes.len() / PAGE) as u64;
+                let cur = (mem.len() / PAGE) as u64;
                 let want = cur + delta;
                 if want > mem.max_pages || want > 65536 {
                     frame[ins.c as usize] = u32::MAX as u64;
                 } else {
-                    mem.bytes.resize(want as usize * PAGE, 0);
+                    mem.inst.backing_mut().data.resize(want as usize * PAGE, 0);
                     frame[ins.c as usize] = cur;
                 }
             }
@@ -1803,10 +1876,10 @@ impl InterpInstance {
                     .memories
                     .get_mut(ins.b as usize)
                     .ok_or(WasmError::trap("out of bounds memory access"))?;
-                if d + n > mem.bytes.len() as u64 {
+                if d + n > mem.len() as u64 {
                     return Err(WasmError::trap("out of bounds memory access"));
                 }
-                mem.bytes[d as usize..(d + n) as usize].fill(val as u8);
+                mem.bytes_mut()[d as usize..(d + n) as usize].fill(val as u8);
             }
             Op::MemoryCopy => {
                 let base = ins.a as usize;
@@ -1814,19 +1887,19 @@ impl InterpInstance {
                 let (d, s0, n) = (d as u32 as u64, s0 as u32 as u64, n as u32 as u64);
                 let dm = (ins.b >> 32) as usize;
                 let sm = (ins.b & 0xffff_ffff) as usize;
-                let dlen = self.memories.get(dm).map(|x| x.bytes.len()).unwrap_or(0) as u64;
-                let slen = self.memories.get(sm).map(|x| x.bytes.len()).unwrap_or(0) as u64;
+                let dlen = self.memories.get(dm).map(|x| x.len()).unwrap_or(0) as u64;
+                let slen = self.memories.get(sm).map(|x| x.len()).unwrap_or(0) as u64;
                 if d + n > dlen || s0 + n > slen {
                     return Err(WasmError::trap("out of bounds memory access"));
                 }
                 if dm == sm {
                     self.memories[dm]
-                        .bytes
+                        .bytes_mut()
                         .copy_within(s0 as usize..(s0 + n) as usize, d as usize);
                 } else {
                     for k in 0..n as usize {
-                        let v = self.memories[sm].bytes[s0 as usize + k];
-                        self.memories[dm].bytes[d as usize + k] = v;
+                        let v = self.memories[sm].bytes()[s0 as usize + k];
+                        self.memories[dm].bytes_mut()[d as usize + k] = v;
                     }
                 }
             }
@@ -1844,7 +1917,7 @@ impl InterpInstance {
                     .unwrap_or(&[]);
                 let dropped = self.dropped_data.get(seg).copied().unwrap_or(true);
                 let src_len = if dropped { 0 } else { data.len() as u64 };
-                let mlen = self.memories.get(m).map(|x| x.bytes.len()).unwrap_or(0) as u64;
+                let mlen = self.memories.get(m).map(|x| x.len()).unwrap_or(0) as u64;
                 if d + n > mlen || s0 + n > src_len {
                     // A zero-size init on a dropped segment must succeed
                     // when both offsets are in bounds.
@@ -1854,7 +1927,7 @@ impl InterpInstance {
                 }
                 if n > 0 {
                     let (d, s0, n) = (d as usize, s0 as usize, n as usize);
-                    self.memories[m].bytes[d..d + n].copy_from_slice(&data[s0..s0 + n]);
+                    self.memories[m].bytes_mut()[d..d + n].copy_from_slice(&data[s0..s0 + n]);
                 }
             }
             Op::DataDrop => {
@@ -2191,8 +2264,12 @@ mod tests {
     fn run1(src: &str, export: &str, args: &[u64]) -> Result<u64, WasmError> {
         let (bin, _) = instantiate(src);
         let module = Module::new("t", &bin).expect("module");
-        let mut inst =
-            InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module, None)?;
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )?;
         let idx = inst.find_export(export).expect("export");
         let mut results = [0u64; 1];
         inst.invoke(idx, args, &mut results)?;
@@ -2246,7 +2323,13 @@ mod tests {
         .expect("wat");
         let module = Module::new("t", &bin).expect("module");
         assert!(
-            InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module, None).is_ok(),
+            InterpInstance::new(
+                &crate::vm::engine::Engine::with_defaults(),
+                module,
+                None,
+                &[]
+            )
+            .is_ok(),
             "reading an EARLIER global is legal"
         );
     }
@@ -2277,9 +2360,13 @@ mod tests {
                 (func (export "get") (result i32) global.get $g))"#,
         );
         let module = Module::new("t", &bin).expect("module");
-        let mut inst =
-            InterpInstance::new(&crate::vm::engine::Engine::with_defaults(), module, None)
-                .expect("instantiate");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
         let f = inst.find_export("f").expect("f");
         let g = inst.find_export("get").expect("get");
         inst.invoke(f, &[0], &mut []).expect("invoke cond=0");
