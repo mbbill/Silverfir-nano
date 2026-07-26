@@ -105,6 +105,8 @@ pub(crate) fn operand_is_float(op: Op, is_b: bool) -> bool {
 /// `Call`: `a` = function index, `b` = first-argument slot.
 /// `CallIndirect`: `a` = table-target operand, `b` = first-argument slot,
 /// `c` = type index.
+/// `CallRef`: `a` = reference operand, `b` = first-argument slot,
+/// `c` = function type index (used by cross-instance forwarding).
 /// `Return`: `a` = first-result slot, `b` = result count.
 /// `Select`: `a`/`b` = the two values, `c` = `cond_slot << 32 | dst_slot`
 /// (the condition is always materialized).

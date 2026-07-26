@@ -9,7 +9,7 @@ use crate::{
         gc_type_check::check_ref_type_match,
         jit::arch::backend_config,
         jit::runtime::{
-            common::{internal_error, trap_error, value_matches_value_type},
+            common::{internal_error, trap_error},
             context::{NativeContext, PendingEscape},
         },
         store::{RefRegistryEntry, Store},
@@ -111,21 +111,6 @@ fn read_exn_payload_fields(
         .collect::<Result<_, _>>()
 }
 
-fn exn_payload_matches_tag(store: &Store, tag: TagHandle, fields: &[Value]) -> bool {
-    let Some(tag_inst) = store.module().tags.iter().find(|t| t.handle == tag) else {
-        return false;
-    };
-    let Some(tag_ty) = store.module().types.get_function_type(tag_inst.type_index) else {
-        return false;
-    };
-    let params = tag_ty.params();
-    fields.len() == params.len()
-        && fields
-            .iter()
-            .zip(params.iter())
-            .all(|(value, expected)| value_matches_value_type(value, *expected))
-}
-
 pub(super) fn do_eh_alloc_exn_ref(
     ctx: &mut NativeContext,
     frame: *mut u64,
@@ -217,23 +202,12 @@ pub(super) fn do_eh_throw_ref(
         let registry = ref_registry.borrow();
         let entry = registry
             .get(exn_idx)
-            .copied()
+            .cloned()
             .ok_or_else(|| trap_error("invalid exception reference"))?;
         match entry {
-            RefRegistryEntry::Exn { store, exn_ref } => {
-                let exn_store = unsafe { store.as_ref() }
-                    .ok_or_else(|| internal_error("throw_ref exn owner store is dead"))?;
-                let heap = exn_store.exn_heap().borrow();
-                let exn = heap
-                    .get(exn_ref)
-                    .ok_or_else(|| internal_error("throw_ref dangling ExnRef"))?;
-                if !exn_payload_matches_tag(exn_store, exn.tag, &exn.fields) {
-                    return Err(internal_error(
-                        "throw_ref ExnRef payload does not match tag",
-                    ));
-                }
-                exn.tag
-            }
+            // Exception objects are immutable and can enter the registry only
+            // through the typed Wasm throw path or validated HostThrow path.
+            RefRegistryEntry::Exn(exn) => exn.tag,
             _ => return Err(trap_error("throw_ref operand is not an exception")),
         }
     };

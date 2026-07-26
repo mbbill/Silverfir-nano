@@ -25,6 +25,7 @@ use crate::op_decoder::{BlockType, Decoder, Immediate, OpStream, OpcodeHandler};
 use crate::op_decoder::{CatchClause, CatchClauseKind};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
+use crate::vm::tag::TagHandle;
 
 /// Marks a packed memarg field as a `wide_memargs` index rather than an
 /// inline `memidx << 48 | offset`. Bit 63 is free in the inline form, whose
@@ -41,8 +42,36 @@ use super::instr::{
 const NO_DEF: u32 = u32::MAX;
 /// Branch-target placeholder while the target's `end` is still ahead.
 const FIXUP: u64 = u64::MAX;
+/// Internal placeholder for a handler targeting the implicit function label.
+/// Finalization replaces it with a dedicated `Return` landing cell.
+const EH_FUNCTION_TARGET_FIXUP: u32 = u32::MAX;
+/// Internal placeholder for a handler whose enclosing block has not ended.
+const EH_TARGET_FIXUP: u32 = u32::MAX - 1;
 /// Null funcref representation (function indices are table/ref values).
 pub(super) const NULL_FUNCREF: u64 = u64::MAX;
+
+/// One resolved `try_table` clause at a potentially-throwing instruction.
+///
+/// `tag = None` is a `catch_all[_ref]`. Typed catches carry the runtime tag
+/// identity rather than their module-local tag index, so imported aliases
+/// compare correctly. A `_ref` clause receives the exception reference after
+/// any typed payload fields.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ExceptionHandler {
+    pub(crate) tag: Option<TagHandle>,
+    pub(crate) payload_arity: u32,
+    pub(crate) forwards_exn: bool,
+    pub(crate) target: u32,
+    pub(crate) target_base: u32,
+}
+
+/// A range in `PredecodedFunction::exception_handlers` for one exact cell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct ExceptionSite {
+    pub(crate) pc: u32,
+    handlers_start: u32,
+    handlers_len: u32,
+}
 
 pub(crate) struct PredecodedFunction {
     pub code: Vec<Instr>,
@@ -61,13 +90,54 @@ pub(crate) struct PredecodedFunction {
     pub n_locals: u32,
     pub n_params: u32,
     pub n_results: u32,
+    /// A synthetic `Return` cell used when a slow-path tail callee (for
+    /// example an imported host function) has produced this function's
+    /// results. Re-entering the native chain here lets the ordinary return
+    /// records route through native-only callers instead of making Rust
+    /// guess at their layout.
+    pub(crate) slow_tail_return: Option<u32>,
+    /// Sorted by exact instruction index. Only instructions executing under
+    /// one or more active `try_table` clauses have an entry.
+    exception_sites: Vec<ExceptionSite>,
+    /// Flattened handler chains referenced by `exception_sites`.
+    exception_handlers: Vec<ExceptionHandler>,
+}
+
+impl PredecodedFunction {
+    /// The active handler chain at `pc`, innermost try first and in source
+    /// clause order within each try.
+    pub(crate) fn exception_handlers_at(&self, pc: u32) -> &[ExceptionHandler] {
+        let Ok(i) = self
+            .exception_sites
+            .binary_search_by_key(&pc, |site| site.pc)
+        else {
+            return &[];
+        };
+        let site = self.exception_sites[i];
+        let start = site.handlers_start as usize;
+        &self.exception_handlers[start..start + site.handlers_len as usize]
+    }
+
+    /// Whether `pc` must remain a slow-path boundary so an escaping exception
+    /// can be matched in this activation.
+    pub(crate) fn has_exception_handlers_at(&self, pc: u32) -> bool {
+        self.exception_sites
+            .binary_search_by_key(&pc, |site| site.pc)
+            .is_ok()
+    }
 }
 
 /// Predecode one local (non-import) function of a parsed module.
 pub(crate) fn predecode_function(
     module: &Module,
+    tag_handles: &[TagHandle],
     func_index: usize,
 ) -> Result<PredecodedFunction, WasmError> {
+    if tag_handles.len() != module.tags().len() {
+        return Err(WasmError::invalid(
+            "interp: runtime tag table does not match module",
+        ));
+    }
     let func = module
         .functions()
         .get(func_index)
@@ -82,6 +152,7 @@ pub(crate) fn predecode_function(
     let mut p = Predecoder {
         types: module.types(),
         module,
+        tag_handles,
         code: Vec::new(),
         stack: Vec::new(),
         frames: Vec::new(),
@@ -94,6 +165,10 @@ pub(crate) fn predecode_function(
         last_write_region: vec![0u32; n_locals as usize],
         br_tables: Vec::new(),
         wide_memargs: Vec::new(),
+        exception_sites: Vec::new(),
+        exception_handlers: Vec::new(),
+        needs_slow_tail_return: false,
+        slow_tail_return: None,
         max_height: 0,
         n_locals,
         n_results,
@@ -114,6 +189,9 @@ pub(crate) fn predecode_function(
         n_locals,
         n_params,
         n_results,
+        slow_tail_return: p.slow_tail_return,
+        exception_sites: p.exception_sites,
+        exception_handlers: p.exception_handlers,
     })
 }
 
@@ -134,6 +212,28 @@ enum Fixup {
     InstrC(u32),
     /// Patch `br_tables[tbl][entry]`.
     Table { tbl: u32, entry: u32 },
+    /// Patch `exception_handlers[handler].target`.
+    ExceptionTarget(u32),
+}
+
+#[derive(Clone, Copy)]
+enum PendingExceptionTarget {
+    Function,
+    Instruction(u32),
+    /// Index of an outer non-loop control frame whose end is still ahead.
+    FrameEnd(u32),
+}
+
+/// A `try_table` clause resolved while its labels still refer directly to the
+/// outer control stack. Copies are materialized into exact-PC handler chains
+/// only at instructions that can throw.
+#[derive(Clone, Copy)]
+struct ActiveExceptionHandler {
+    tag: Option<TagHandle>,
+    payload_arity: u32,
+    forwards_exn: bool,
+    target: PendingExceptionTarget,
+    target_base: u32,
 }
 
 struct CtlFrame {
@@ -157,12 +257,16 @@ struct CtlFrame {
     fixups: Vec<Fixup>,
     /// `try_table` catch clauses, innermost frame first when searching.
     /// Empty for every other block kind.
-    catches: Vec<CatchClause>,
+    catches: Vec<ActiveExceptionHandler>,
 }
 
 struct Predecoder<'m> {
     types: &'m TypeContext,
     module: &'m Module,
+    /// Runtime identities resolved by the linker. Module tag indices are
+    /// aliases for these handles, not identities themselves: two imports may
+    /// name one tag, while two same-signature tags remain distinct.
+    tag_handles: &'m [TagHandle],
     code: Vec<Instr>,
     stack: Vec<Desc>,
     frames: Vec<CtlFrame>,
@@ -183,6 +287,10 @@ struct Predecoder<'m> {
     last_write_region: Vec<u32>,
     br_tables: Vec<Vec<u32>>,
     wide_memargs: Vec<(u32, u64)>,
+    exception_sites: Vec<ExceptionSite>,
+    exception_handlers: Vec<ExceptionHandler>,
+    needs_slow_tail_return: bool,
+    slow_tail_return: Option<u32>,
     max_height: u32,
     n_locals: u32,
     n_results: u32,
@@ -316,31 +424,151 @@ impl<'m> Predecoder<'m> {
         })
     }
 
-    /// Depth of the innermost enclosing `try_table` whose catch clauses
-    /// accept `tag`, if any.
-    ///
-    /// `catch_all` matches every tag, so it ends the search at its frame.
-    /// Returns `(branch depth, discards_values)`.
-    ///
-    /// The `_ref` clause kinds additionally pass an `exnref`, which this
-    /// engine has no representation for, so they are not matched here and the
-    /// throw leaves the frame instead.
-    fn matching_catch(&self, tag: u32) -> Option<(u32, bool)> {
-        for (back, f) in self.frames.iter().rev().enumerate() {
-            for c in &f.catches {
-                let hit = match c.kind {
-                    CatchClauseKind::Catch => (c.tag_idx == Some(tag), false),
-                    CatchClauseKind::CatchAll => (true, true),
-                    CatchClauseKind::CatchRef | CatchClauseKind::CatchAllRef => (false, false),
-                };
-                if hit.0 {
-                    // `label_idx` counts outward from the try_table frame, so
-                    // add the depth of that frame from here.
-                    return Some((back as u32 + c.label_idx, hit.1));
+    /// Resolve catch labels before pushing the `try_table` frame. At this
+    /// point each label index names an outer control frame directly; retaining
+    /// that resolved target avoids depth arithmetic after nested blocks have
+    /// been entered.
+    fn resolve_try_catches(
+        &self,
+        catches: &[CatchClause],
+    ) -> Result<Vec<ActiveExceptionHandler>, WasmError> {
+        let mut resolved = Vec::with_capacity(catches.len());
+        for clause in catches {
+            let (tag, payload_arity) = match clause.kind {
+                CatchClauseKind::Catch | CatchClauseKind::CatchRef => {
+                    let tag_idx = clause
+                        .tag_idx
+                        .ok_or(WasmError::invalid("interp: typed catch has no tag"))?;
+                    let tag = self
+                        .tag_handles
+                        .get(tag_idx as usize)
+                        .copied()
+                        .ok_or(WasmError::invalid("interp: bad catch tag"))?;
+                    let payload_arity = self
+                        .module
+                        .tags()
+                        .get(tag_idx as usize)
+                        .map(|t| t.func_type().params().len() as u32)
+                        .ok_or(WasmError::invalid("interp: bad catch tag"))?;
+                    (Some(tag), payload_arity)
                 }
+                CatchClauseKind::CatchAll | CatchClauseKind::CatchAllRef => (None, 0),
+            };
+            let forwards_exn = matches!(
+                clause.kind,
+                CatchClauseKind::CatchRef | CatchClauseKind::CatchAllRef
+            );
+
+            let depth = clause.label_idx as usize;
+            let (target, target_base) = if depth < self.frames.len() {
+                let frame_idx = self.frames.len() - 1 - depth;
+                let frame = &self.frames[frame_idx];
+                let target_base = self
+                    .n_locals
+                    .checked_add(frame.base)
+                    .ok_or(WasmError::invalid("interp: exception target slot overflow"))?;
+                let target = if frame.is_loop {
+                    PendingExceptionTarget::Instruction(frame.header)
+                } else {
+                    PendingExceptionTarget::FrameEnd(frame_idx as u32)
+                };
+                (target, target_base)
+            } else if depth == self.frames.len() {
+                // The implicit function label has logical result base zero.
+                // Finalization gives it a dedicated Return landing cell.
+                (PendingExceptionTarget::Function, 0)
+            } else {
+                return Err(WasmError::invalid(
+                    "interp: exception target label out of range",
+                ));
+            };
+
+            resolved.push(ActiveExceptionHandler {
+                tag,
+                payload_arity,
+                forwards_exn,
+                target,
+                target_base,
+            });
+        }
+        Ok(resolved)
+    }
+
+    /// Snapshot all active catch clauses at one exact instruction cell.
+    /// Frames are walked in reverse so runtime matching naturally implements
+    /// innermost-try precedence, while each frame's source order is retained.
+    fn record_exception_site(&mut self, pc: u32) {
+        let active: Vec<ActiveExceptionHandler> = self
+            .frames
+            .iter()
+            .rev()
+            .flat_map(|frame| frame.catches.iter().copied())
+            .collect();
+        if active.is_empty() {
+            return;
+        }
+
+        debug_assert!(self.exception_sites.last().is_none_or(|site| site.pc < pc));
+        let handlers_start = self.exception_handlers.len() as u32;
+        for handler in active {
+            let target = match handler.target {
+                PendingExceptionTarget::Function => EH_FUNCTION_TARGET_FIXUP,
+                PendingExceptionTarget::Instruction(pc) => pc,
+                PendingExceptionTarget::FrameEnd(frame_idx) => {
+                    let handler_idx = self.exception_handlers.len() as u32;
+                    self.frames[frame_idx as usize]
+                        .fixups
+                        .push(Fixup::ExceptionTarget(handler_idx));
+                    EH_TARGET_FIXUP
+                }
+            };
+            self.exception_handlers.push(ExceptionHandler {
+                tag: handler.tag,
+                payload_arity: handler.payload_arity,
+                forwards_exn: handler.forwards_exn,
+                target,
+                target_base: handler.target_base,
+            });
+        }
+        self.exception_sites.push(ExceptionSite {
+            pc,
+            handlers_start,
+            handlers_len: self.exception_handlers.len() as u32 - handlers_start,
+        });
+    }
+
+    fn has_active_exception_handlers(&self) -> bool {
+        self.frames.iter().any(|frame| !frame.catches.is_empty())
+    }
+
+    /// Give function-label catches and slow-path tail callees one ordinary
+    /// native `Return` target. In both cases results already occupy the
+    /// function label's canonical base (zero); executing the cell is what
+    /// consumes the real native return record and preserves native callers.
+    fn finish_return_landing(&mut self) {
+        let has_function_catch = self
+            .exception_handlers
+            .iter()
+            .any(|handler| handler.target == EH_FUNCTION_TARGET_FIXUP);
+        if !has_function_catch && !self.needs_slow_tail_return {
+            return;
+        }
+        // Function-label results are installed from slot zero, deliberately
+        // overlapping params/locals. A `_ref` catch can produce more values
+        // than the throwing instruction itself materialized, so reserve any
+        // portion that extends beyond the local area explicitly.
+        self.max_height = self
+            .max_height
+            .max(self.n_results.saturating_sub(self.n_locals));
+        let landing = self.emit(Op::Return, 0, 0, self.n_results as u64, 0);
+        if self.needs_slow_tail_return {
+            self.slow_tail_return = Some(landing);
+        }
+        for handler in &mut self.exception_handlers {
+            if handler.target == EH_FUNCTION_TARGET_FIXUP {
+                handler.target = landing;
             }
         }
-        None
     }
 
     fn table_is_shared(&self, idx: u64) -> bool {
@@ -363,6 +591,23 @@ impl<'m> Predecoder<'m> {
 
     fn temp_slot(&self, height: u32) -> u64 {
         (self.n_locals + height) as u64
+    }
+
+    /// Reserve the overlap area where a slow tail-call boundary stages its
+    /// results before moving them to the current function's result slots.
+    ///
+    /// Ordinary calls account for this space when their result descriptors
+    /// are pushed. A tail call has no continuation and therefore pushes
+    /// nothing, but imported and cross-instance callees still write results
+    /// at `arg_base` first. Keep that runtime write inside the predecoded
+    /// frame even when locals occupy every otherwise-reserved slot.
+    fn reserve_tail_results(&mut self, params: u32, results: u32) -> Result<(), WasmError> {
+        let base = self.height().checked_sub(params).ok_or_else(desync)?;
+        let end = base
+            .checked_add(results)
+            .ok_or(WasmError::invalid("interp: tail-call result area overflow"))?;
+        self.max_height = self.max_height.max(end);
+        Ok(())
     }
 
     /// Like `temp_slot`, but records the slot as actually used (read or
@@ -789,6 +1034,7 @@ impl<'m> Predecoder<'m> {
         &mut self,
         params: u32,
         results: u32,
+        type_idx: u32,
         target: u64,
         target_const: bool,
         tail: bool,
@@ -797,17 +1043,31 @@ impl<'m> Predecoder<'m> {
         if h < params as usize {
             return Err(desync());
         }
-        for i in h - params as usize..h {
-            self.materialize_at(i);
+        if tail {
+            self.reserve_tail_results(params, results)?;
+        }
+        if !tail && self.has_active_exception_handlers() {
+            // An exceptional edge is a control-flow merge just like a
+            // branch: values below the call arguments that survive at the
+            // catch target must already occupy their canonical slots.
+            self.materialize_all();
+        } else {
+            for i in h - params as usize..h {
+                self.materialize_at(i);
+            }
         }
         let arg_base = self.temp_slot(self.height() - params);
         let flags = if target_const { FLAG_A_CONST } else { 0 };
         let op = if tail { Op::ReturnCallRef } else { Op::CallRef };
-        self.emit(op, flags, target, arg_base, 0);
+        let call_pc = self.emit(op, flags, target, arg_base, type_idx as u64);
+        if !tail {
+            self.record_exception_site(call_pc);
+        }
         for _ in 0..params {
             let _ = self.pop()?;
         }
         if tail {
+            self.needs_slow_tail_return = true;
             self.bump_region();
             self.dead = true;
             return Ok(());
@@ -836,15 +1096,22 @@ impl<'m> Predecoder<'m> {
         if h < params as usize {
             return Err(desync());
         }
-        for i in h - params as usize..h {
-            self.materialize_at(i);
+        if tail {
+            self.reserve_tail_results(params, results)?;
+        }
+        if !tail && self.has_active_exception_handlers() {
+            self.materialize_all();
+        } else {
+            for i in h - params as usize..h {
+                self.materialize_at(i);
+            }
         }
         let arg_base = self.temp_slot(self.height() - params);
-        match indirect {
+        let call_pc = match indirect {
             None => {
                 let fidx = func_idx_field.unwrap_or(0);
                 let op = if tail { Op::ReturnCall } else { Op::Call };
-                self.emit(op, 0, fidx, arg_base, 0);
+                self.emit(op, 0, fidx, arg_base, 0)
             }
             Some((target, target_const, type_idx)) => {
                 let mut flags = if target_const { FLAG_A_CONST } else { 0 };
@@ -862,8 +1129,11 @@ impl<'m> Predecoder<'m> {
                 } else {
                     Op::CallIndirect
                 };
-                self.emit(op, flags, target, arg_base, type_idx);
+                self.emit(op, flags, target, arg_base, type_idx)
             }
+        };
+        if !tail {
+            self.record_exception_site(call_pc);
         }
         for _ in 0..params {
             let _ = self.pop()?;
@@ -872,6 +1142,7 @@ impl<'m> Predecoder<'m> {
         // function's results, so nothing lands on the operand stack and the
         // rest of the block is unreachable.
         if tail {
+            self.needs_slow_tail_return = true;
             self.bump_region();
             self.dead = true;
             return Ok(());
@@ -1021,6 +1292,9 @@ impl<'m> Predecoder<'m> {
                 Fixup::InstrC(i) => self.code[i as usize].c = here as u64,
                 Fixup::Table { tbl, entry } => {
                     self.br_tables[tbl as usize][entry as usize] = here;
+                }
+                Fixup::ExceptionTarget(handler) => {
+                    self.exception_handlers[handler as usize].target = here;
                 }
             }
         }
@@ -1264,6 +1538,33 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                             else_fixup: None,
                             fixups: Vec::new(),
                             catches: Vec::new(),
+                        });
+                    }
+                    Opcode::TRY_TABLE => {
+                        let (bt, catches) = match &imm {
+                            Immediate::TryTable {
+                                block_type,
+                                catches,
+                            } => (block_type, catches),
+                            _ => return Err(desync()),
+                        };
+                        let (p, r) = block_arity(self.types, bt)?;
+                        let catches = self.resolve_try_catches(catches)?;
+                        let base = self.height().saturating_sub(p);
+                        self.frames.push(CtlFrame {
+                            base,
+                            params: p,
+                            results: r,
+                            is_loop: false,
+                            is_if: false,
+                            dead_entry: true,
+                            end_targeted: false,
+                            saw_else: false,
+                            then_fell_live: false,
+                            header: 0,
+                            else_fixup: None,
+                            fixups: Vec::new(),
+                            catches,
                         });
                     }
                     Opcode::ELSE => {
@@ -1628,7 +1929,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         Immediate::TryTable {
                             block_type,
                             catches,
-                        } => (block_type, catches.clone()),
+                        } => (block_type, catches),
                         _ => return Err(desync()),
                     };
                     let (p, r) = block_arity(self.types, bt)?;
@@ -1638,6 +1939,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     for &d in catches.iter().map(|c| &c.label_idx) {
                         self.mark_branch_target(d);
                     }
+                    let catches = self.resolve_try_catches(catches)?;
                     let base = self.height().saturating_sub(p);
                     self.frames.push(CtlFrame {
                         base,
@@ -1645,7 +1947,10 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         results: r,
                         is_loop: false,
                         is_if: false,
-                        dead_entry: true,
+                        // The body is entered from live code. If it branches
+                        // to this try_table's label, its end revives control
+                        // just like an ordinary block end.
+                        dead_entry: false,
                         end_targeted: false,
                         saw_else: false,
                         then_fell_live: false,
@@ -1656,14 +1961,14 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     });
                 }
                 Opcode::THROW => {
-                    let tag = match imm {
+                    let tag_idx = match imm {
                         Immediate::TagIndex(t) => t,
                         _ => return Err(desync()),
                     };
                     let params = self
                         .module
                         .tags()
-                        .get(tag as usize)
+                        .get(tag_idx as usize)
                         .map(|t| t.func_type().params().len() as u32)
                         .ok_or(WasmError::invalid("interp: bad throw tag"))?;
                     self.materialize_all();
@@ -1672,47 +1977,24 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         return Err(desync());
                     }
                     let base = self.temp_slot(h - params);
-                    // A handler in THIS function is resolvable now: find the
-                    // innermost enclosing try_table whose catch matches, and
-                    // branch to it. Anything else leaves the frame.
-                    match self.matching_catch(tag) {
-                        // `catch $tag $l` hands the tag's PARAMETERS to $l, so
-                        // they stay on the stack and become the branch values.
-                        Some((depth, false)) => {
-                            self.branch_value_moves(depth)?;
-                            self.emit_branch(Op::Br, 0, 0, depth)?;
-                        }
-                        // `catch_all $l` takes no values, so the parameters
-                        // are discarded before the branch.
-                        Some((depth, true)) => {
-                            for _ in 0..params {
-                                let _ = self.pop()?;
-                            }
-                            self.branch_value_moves(depth)?;
-                            self.emit_branch(Op::Br, 0, 0, depth)?;
-                        }
-                        // No handler in this function. The exception would
-                        // have to unwind to a caller's, which needs the native
-                        // chain's return stack unwound with it -- not built.
-                        // Refusing with the feature named beats emitting a
-                        // throw that cannot be caught.
-                        None => {
-                            let _ = base;
-                            return Err(WasmError::invalid(
-                                "interp: exception handling across calls is not supported yet",
-                            ));
-                        }
+                    let throw_pc = self.emit(Op::Throw, 0, tag_idx as u64, base, 0);
+                    self.record_exception_site(throw_pc);
+                    for _ in 0..params {
+                        let _ = self.pop()?;
                     }
                     self.bump_region();
                     self.dead = true;
                 }
                 Opcode::THROW_REF => {
-                    // Re-raising needs an `exnref`, which this engine has no
-                    // representation for -- a caught exception is not a value
-                    // here, only a branch.
-                    return Err(WasmError::invalid(
-                        "interp: exception references are not supported yet",
-                    ));
+                    self.materialize_all();
+                    let at = self.code.len() as u32;
+                    let exn = self.pop()?;
+                    let (a, a_const) = self.operand(exn, at);
+                    let flags = if a_const { FLAG_A_CONST } else { 0 };
+                    let throw_pc = self.emit(Op::ThrowRef, flags, a, 0, 0);
+                    self.record_exception_site(throw_pc);
+                    self.bump_region();
+                    self.dead = true;
                 }
                 Opcode::BR_ON_NULL | Opcode::BR_ON_NON_NULL => {
                     let d = match imm {
@@ -1782,6 +2064,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.call_boundary_ref(
                         ft.params().len() as u32,
                         ft.results().len() as u32,
+                        tidx,
                         t,
                         t_const,
                         tail,
@@ -2128,6 +2411,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
         if !self.frames.is_empty() {
             return Err(desync());
         }
+        self.finish_return_landing();
         Ok(())
     }
 }
@@ -2141,7 +2425,12 @@ mod tests {
     fn predecode_wat(src: &str, func: usize) -> PredecodedFunction {
         let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
         let module = Module::new("t", &bin).expect("module");
-        predecode_function(&module, func).expect("predecode")
+        let tag_handles: StdVec<TagHandle> = module
+            .tags()
+            .iter()
+            .map(|_| TagHandle::mint_fresh())
+            .collect();
+        predecode_function(&module, &tag_handles, func).expect("predecode")
     }
 
     fn ops(f: &PredecodedFunction) -> StdVec<Op> {
@@ -2253,6 +2542,198 @@ mod tests {
     }
 
     #[test]
+    fn catchless_try_table_branch_to_own_label_revives_its_end() {
+        let f = predecode_wat(
+            r#"(module
+                (func (result i32)
+                    (try_table (result i32)
+                        (br 0 (i32.const 7)))))"#,
+            0,
+        );
+
+        assert_eq!(ops(&f), [Op::MovConst, Op::Br, Op::Return]);
+        assert_eq!(f.code[1].c, 2, "br 0 must land after the try_table");
+        assert_eq!((f.code[2].a, f.code[2].b), (0, 1));
+    }
+
+    #[test]
+    fn throw_keeps_runtime_handler_metadata_and_payload_layout() {
+        let f = predecode_wat(
+            r#"(module
+                (tag $e (param i32))
+                (func (result i32)
+                    (block $h (result i32)
+                        (try_table (result i32) (catch $e $h)
+                            (throw $e (i32.const 7))
+                            (i32.const 2))
+                        (return))
+                    (return)))"#,
+            0,
+        );
+
+        let throw_pc = f
+            .code
+            .iter()
+            .position(|ins| ins.op == Op::Throw)
+            .expect("throw cell") as u32;
+        let throw = f.code[throw_pc as usize];
+        assert_eq!(throw.a, 0, "throw keeps its module tag index");
+        assert_eq!(throw.b, 0, "payload starts in the canonical temp slot");
+
+        let handlers = f.exception_handlers_at(throw_pc);
+        assert_eq!(handlers.len(), 1);
+        assert!(handlers[0].tag.is_some());
+        assert_eq!(handlers[0].payload_arity, 1);
+        assert!(!handlers[0].forwards_exn);
+        assert_eq!(handlers[0].target_base, 0);
+        assert_eq!(f.code[handlers[0].target as usize].op, Op::Return);
+    }
+
+    #[test]
+    fn handler_chain_is_inner_first_and_tail_calls_have_no_site() {
+        let f = predecode_wat(
+            r#"(module
+                (tag $a)
+                (tag $b)
+                (func $callee)
+                (func
+                    (block $outer
+                        (try_table (catch_all $outer)
+                            (block $inner
+                                (try_table
+                                    (catch $a $inner)
+                                    (catch $b $inner)
+                                    (call $callee)
+                                    (return_call $callee)))))))"#,
+            1,
+        );
+
+        let call_pc = f
+            .code
+            .iter()
+            .position(|ins| ins.op == Op::Call)
+            .expect("call cell") as u32;
+        let tail_pc = f
+            .code
+            .iter()
+            .position(|ins| ins.op == Op::ReturnCall)
+            .expect("tail-call cell") as u32;
+        let handlers = f.exception_handlers_at(call_pc);
+        assert_eq!(handlers.len(), 3);
+        assert!(handlers[0].tag.is_some());
+        assert!(handlers[1].tag.is_some());
+        assert_ne!(handlers[0].tag, handlers[1].tag);
+        assert_eq!(handlers[2].tag, None);
+        assert!(f.exception_handlers_at(tail_pc).is_empty());
+    }
+
+    #[test]
+    fn slow_tail_boundaries_reserve_their_result_staging_area() {
+        let wat = r#"(module
+            (type $pair (func (result i32 i64)))
+            (import "host" "pair" (func $imported (type $pair)))
+            (func $local (type $pair)
+                i32.const 7
+                i64.const 9)
+            (table 1 funcref)
+            (elem (i32.const 0) func $local)
+            (func (type $pair) (local i64)
+                (return_call $imported))
+            (func (type $pair) (local i64)
+                (return_call_ref $pair (ref.func $local)))
+            (func (type $pair) (local i64)
+                (return_call_indirect 0 (type $pair) (i32.const 0))))"#;
+
+        // The import occupies function index 0 and `$local` index 1.
+        for (func_index, expected_op) in [
+            (2, Op::ReturnCall),
+            (3, Op::ReturnCallRef),
+            (4, Op::ReturnCallIndirect),
+        ] {
+            let f = predecode_wat(wat, func_index);
+            let tail = f
+                .code
+                .iter()
+                .find(|ins| ins.op == expected_op)
+                .expect("tail-call cell");
+            let result_end = tail.b as u32 + 2;
+            assert!(
+                f.frame_slots >= result_end,
+                "{expected_op:?} must reserve both result slots at arg_base"
+            );
+        }
+    }
+
+    #[test]
+    fn catch_ref_metadata_forwards_the_exception_reference() {
+        let f = predecode_wat(
+            r#"(module
+                (tag $e)
+                (func
+                    (block $h (result exnref)
+                        (try_table (catch_ref $e $h) (throw $e))
+                        (unreachable))
+                    (drop)))"#,
+            0,
+        );
+        let throw_pc = f
+            .code
+            .iter()
+            .position(|ins| ins.op == Op::Throw)
+            .expect("throw cell") as u32;
+        let handlers = f.exception_handlers_at(throw_pc);
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0].payload_arity, 0);
+        assert!(handlers[0].forwards_exn);
+    }
+
+    #[test]
+    fn function_catch_ref_reserves_space_for_the_forwarded_reference() {
+        let f = predecode_wat(
+            r#"(module
+                (tag $e)
+                (func (result exnref)
+                    (try_table (result exnref) (catch_ref $e 0)
+                        (throw $e))))"#,
+            0,
+        );
+        let throw_pc = f
+            .code
+            .iter()
+            .position(|ins| ins.op == Op::Throw)
+            .expect("throw cell") as u32;
+        let handler = f.exception_handlers_at(throw_pc)[0];
+        assert!(handler.forwards_exn);
+        assert!(f.frame_slots >= 1);
+        assert_eq!(f.code[handler.target as usize].op, Op::Return);
+    }
+
+    #[test]
+    fn throw_ref_is_materialized_and_function_catches_use_a_return_landing() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param exnref)
+                    (try_table (catch_all 0)
+                        (throw_ref (local.get 0)))))"#,
+            0,
+        );
+        let throw_ref_pc = f
+            .code
+            .iter()
+            .position(|ins| ins.op == Op::ThrowRef)
+            .expect("throw_ref cell") as u32;
+        let throw_ref = f.code[throw_ref_pc as usize];
+        assert_eq!(throw_ref.flags & FLAG_A_CONST, 0);
+
+        let handlers = f.exception_handlers_at(throw_ref_pc);
+        assert_eq!(handlers.len(), 1);
+        assert_eq!(handlers[0].target_base, 0);
+        let landing = f.code[handlers[0].target as usize];
+        assert_eq!(landing.op, Op::Return);
+        assert_eq!((landing.a, landing.b), (0, 0));
+    }
+
+    #[test]
     fn rejects_unsupported_opcodes_cleanly() {
         // SIMD is excluded by design: a v128 lane is a representation change,
         // not more handlers. The point is that it fails predecode with a
@@ -2261,7 +2742,7 @@ mod tests {
             wat::parse_str(r#"(module (func (result v128) v128.const i32x4 0 0 0 0))"#)
                 .expect("wat");
         let module = Module::new("t", &bin).expect("module");
-        match predecode_function(&module, 0) {
+        match predecode_function(&module, &[], 0) {
             Ok(_) => panic!("SIMD must be refused"),
             Err(err) => assert!(
                 std::format!("{err:?}").contains("SIMD"),

@@ -36,10 +36,19 @@ pub(crate) fn check_ref_type_match(
                     .ok_or_else(|| WasmError::internal("GC ref points to missing store".into()))?;
                 check_gc_ref_type(origin_store, gc_ref, heap_type, current_store)
             }
-            Some(RefRegistryEntry::Exn { .. }) => Ok(matches!(
+            Some(RefRegistryEntry::Exn(_)) => Ok(matches!(
                 heap_type,
                 HeapType::Abstract(AbstractHeapType::Exn)
             )),
+            // Deliberately matches NOTHING, `func` included. Such a handle
+            // exists only where an embedder shares a registry without
+            // installing a `FuncRefHost`, so nothing can call it or say which
+            // function it names -- the spec answer for `ref.test (ref func)`
+            // would be `true`, and reporting that would promise a callability
+            // this build cannot deliver. Install a resolver and the reference
+            // is a published funcref instead, which answers normally.
+            #[cfg(sf_interp)]
+            Some(RefRegistryEntry::OpaqueInterpFunc) => Ok(false),
             None => Err(WasmError::invalid("invalid pooled reference")),
         };
     }

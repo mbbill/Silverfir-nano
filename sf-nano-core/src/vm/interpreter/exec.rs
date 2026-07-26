@@ -23,13 +23,15 @@ use crate::config::Config;
 use crate::error::WasmError;
 use crate::module::entities::{Data, Element, ElementInit, GlobalDef, MemoryDef, TableDef, TagDef};
 use crate::module::type_context::{concrete_type_matches_cross_context, TypeContext};
+use crate::module::type_defs::CompositeType;
 use crate::module::Module;
 use crate::opcodes::Opcode;
 use crate::utils::limits::{Limitable, Limits};
-use crate::value_type::{AbstractHeapType, HeapType, ValueType};
+use crate::value_type::{AbstractHeapType, HeapType, RefType, ValueType};
 use crate::vm::engine::Engine;
 use crate::vm::entities::{GlobalInst, MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
+use crate::vm::store::{LinkRegistry, RefRegistryEntry};
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 
@@ -263,6 +265,23 @@ struct Activation {
     route_established: bool,
 }
 
+/// A caller suspended at a Rust-owned call boundary.
+///
+/// Calls covered by an exception handler deliberately stay on the slow path,
+/// so every frame that can catch an exception from a callee has one of these
+/// checkpoints. Restoring the cursor discards the callee's sentinel together
+/// with any native-only descendant records below it.
+struct SavedActivation {
+    activation: Activation,
+    ret_cursor: usize,
+}
+
+#[derive(Clone, Copy)]
+pub(super) struct PendingException {
+    exn: RefHandle,
+    tag: TagHandle,
+}
+
 /// Per-invoke execution resources: the shared value stack and the native
 /// return stack (records of `(ret_pc, frame, code_base)`, with
 /// Rust-planted sentinel records routing a `Return` back to Rust).
@@ -277,14 +296,27 @@ struct DriveCtx<'s> {
 }
 
 enum StepExit {
-    TailCall { callee: usize, arg_base: usize },
-    Call { callee: usize, arg_base: usize },
+    TailCall {
+        callee: usize,
+        arg_base: usize,
+    },
+    Call {
+        callee: usize,
+        arg_base: usize,
+    },
+    Throw {
+        pending: PendingException,
+        search_current: bool,
+    },
     Return,
 }
 
 /// Result of executing exactly one instruction.
 pub(super) enum Effect {
     Next,
+    /// Continue after a slow call whose first result must participate in the
+    /// native accumulator relay used by an adjacent folded consumer.
+    NextWithAcc(u64),
     Jump(usize),
     Call {
         callee: usize,
@@ -296,6 +328,7 @@ pub(super) enum Effect {
         callee: usize,
         arg_base: usize,
     },
+    Throw(PendingException),
     Ret,
 }
 
@@ -341,8 +374,12 @@ pub struct InterpInstance {
     shared_globals: Vec<Option<GlobalInst>>,
     tables: Vec<TableState>,
     /// Runtime tag identities, one per declared tag. Linking needs them;
-    /// nothing here throws yet.
+    /// catches compare these handles rather than module-local indices.
     tags: Vec<TagHandle>,
+    /// Shared reference arena used by exception objects. Linked instances
+    /// clone one registry so an exception retains both its payload and its
+    /// identity while crossing an imported-function boundary.
+    link_registry: LinkRegistry,
     /// The operand stack and native return stack, allocated once at
     /// instantiation and reused by every call. They used to be allocated
     /// and zeroed inside each invocation, which put a 2 MiB allocation in
@@ -387,7 +424,20 @@ fn value_to_raw_for_interp(v: &Value) -> Result<u64, WasmError> {
         Value::F32(x) => x.to_bits() as u64,
         Value::F64(x) => x.to_bits(),
         Value::Ref(handle, _) => ref_to_slot(*handle),
-        _ => return Err(WasmError::invalid("interp: unsupported global import type")),
+        _ => return Err(WasmError::invalid("interp: unsupported value type")),
+    })
+}
+
+fn raw_to_value_for_interp(raw: u64, ty: ValueType) -> Result<Value, WasmError> {
+    Ok(match ty {
+        ValueType::I32 => Value::I32(raw as u32 as i32),
+        ValueType::I64 => Value::I64(raw as i64),
+        ValueType::F32 => Value::F32(f32::from_bits(raw as u32)),
+        ValueType::F64 => Value::F64(f64::from_bits(raw)),
+        ValueType::Ref(ref_ty) => Value::Ref(slot_to_ref(raw), ref_ty),
+        ValueType::V128 | ValueType::Unknown => {
+            return Err(WasmError::invalid("interp: unsupported value type"))
+        }
     })
 }
 
@@ -605,8 +655,29 @@ impl InterpInstance {
         imports: &[Import],
         funcref_host: Option<FuncRefHost>,
     ) -> Result<Self, (Option<Self>, WasmError)> {
-        let mut inst =
-            Self::build(engine, module, host, imports, funcref_host).map_err(|e| (None, e))?;
+        let registry = LinkRegistry::new();
+        Self::new_partial_with_registry(engine, module, host, imports, funcref_host, &registry)
+    }
+
+    /// Registry-aware partial instantiation used by linkers that keep several
+    /// interpreter instances in one runtime graph.
+    pub(crate) fn new_partial_with_registry(
+        engine: &Engine,
+        module: Module,
+        host: Option<HostDispatch>,
+        imports: &[Import],
+        funcref_host: Option<FuncRefHost>,
+        registry: &LinkRegistry,
+    ) -> Result<Self, (Option<Self>, WasmError)> {
+        let mut inst = Self::build(
+            engine,
+            module,
+            host,
+            imports,
+            funcref_host,
+            registry.clone(),
+        )
+        .map_err(|e| (None, e))?;
         // Link the dispatch chain BEFORE the data segments: a partial
         // instance handed back after a trap still has to be callable, and
         // linking is not observable, so its position is free.
@@ -631,6 +702,7 @@ impl InterpInstance {
         host: Option<HostDispatch>,
         imports: &[Import],
         funcref_host: Option<FuncRefHost>,
+        link_registry: LinkRegistry,
     ) -> Result<Self, WasmError> {
         let config = *engine.config();
         // Names handed out for this instance's own functions, filled as
@@ -686,6 +758,52 @@ impl InterpInstance {
         }
         let stack_slots = configured_stack_slots(&config);
 
+        // Resolve tag identities before predecode. Catch folding must compare
+        // the entities selected by linking, not their module-local indices:
+        // two imports can alias one tag, and equal signatures do not make two
+        // independently provided tags identical.
+        let mut tags: Vec<TagHandle> = Vec::with_capacity(module.tags().len());
+        for tag in module.tags() {
+            match tag.def() {
+                TagDef::Local(_) => tags.push(TagHandle::mint_fresh()),
+                TagDef::Import {
+                    module: md,
+                    name,
+                    func_type,
+                    type_index,
+                    ..
+                } => {
+                    let provided = imports
+                        .iter()
+                        .find(|imp| imp.module == *md && imp.name == *name)
+                        .ok_or(WasmError::unlinkable("missing tag import"))?;
+                    let ImportValue::Tag(state) = &provided.value else {
+                        return Err(WasmError::unlinkable("incompatible import type"));
+                    };
+                    // Through the type context where both sides have one: two
+                    // `func` types in a rec group are structurally identical
+                    // yet distinct identities, and only the context separates
+                    // them.
+                    let compatible = match (&state.type_ctx, state.type_index) {
+                        (Some(ctx), idx) if idx != u32::MAX => concrete_type_matches_cross_context(
+                            ctx,
+                            idx,
+                            module.types(),
+                            *type_index,
+                        ),
+                        _ => {
+                            state.func_type.params() == func_type.params()
+                                && state.func_type.results() == func_type.results()
+                        }
+                    };
+                    if !compatible {
+                        return Err(WasmError::unlinkable("incompatible import type"));
+                    }
+                    tags.push(state.handle);
+                }
+            }
+        }
+
         // Functions: predecode every local function eagerly; imports are
         // rejected on call, not here, so import-free modules always work.
         let mut funcs = Vec::new();
@@ -693,7 +811,7 @@ impl InterpInstance {
             if f.is_import() {
                 funcs.push(None);
             } else {
-                funcs.push(Some(Rc::new(predecode_function(&module, i)?)));
+                funcs.push(Some(Rc::new(predecode_function(&module, &tags, i)?)));
             }
         }
 
@@ -910,59 +1028,6 @@ impl InterpInstance {
                 max: limits.max().unwrap_or(u32::MAX as usize) as u64,
             });
         }
-        // A tag's IDENTITY is a linking concern, not an execution one: two
-        // tags with the same signature in different modules must not alias,
-        // and an importer has to be able to name ours. So mint one per local
-        // tag even though nothing here can throw yet.
-        let tags: Vec<TagHandle> = module
-            .tags()
-            .iter()
-            .map(|t| match t.def() {
-                TagDef::Local(_) => TagHandle::mint_fresh(),
-                TagDef::Import { .. } => TagHandle::mint_fresh(),
-            })
-            .collect();
-
-        // Tag imports are checked but not otherwise modelled: this engine has
-        // no exception handling yet, so a tag is never thrown or caught here.
-        // Linking still has to be right -- a module whose tag import is
-        // missing or has the wrong type is unlinkable, and accepting it would
-        // let a module instantiate that the JIT refuses.
-        for tag in module.tags() {
-            let TagDef::Import {
-                module: md,
-                name,
-                func_type,
-                type_index,
-                ..
-            } = tag.def()
-            else {
-                continue;
-            };
-            let provided = imports
-                .iter()
-                .find(|imp| imp.module == *md && imp.name == *name)
-                .ok_or(WasmError::unlinkable("missing tag import"))?;
-            let ImportValue::Tag(state) = &provided.value else {
-                return Err(WasmError::unlinkable("incompatible import type"));
-            };
-            // Through the type context where both sides have one: two `func`
-            // types in a rec group are structurally identical yet distinct
-            // identities, and only the context separates them.
-            let compatible = match (&state.type_ctx, state.type_index) {
-                (Some(ctx), idx) if idx != u32::MAX => {
-                    concrete_type_matches_cross_context(ctx, idx, module.types(), *type_index)
-                }
-                _ => {
-                    state.func_type.params() == func_type.params()
-                        && state.func_type.results() == func_type.results()
-                }
-            };
-            if !compatible {
-                return Err(WasmError::unlinkable("incompatible import type"));
-            }
-        }
-
         // Every element segment's function indices must name a function the
         // module has, whether or not the segment is ever used. An unbound
         // index is a validation error, not a trap at `table.init`.
@@ -998,6 +1063,7 @@ impl InterpInstance {
             shared_globals,
             tables,
             tags,
+            link_registry,
             // Zeroed in full: native dispatch roams the whole region
             // through raw pointers, so every slot must be initialized.
             config,
@@ -1215,6 +1281,12 @@ impl InterpInstance {
             // bit is structurally free) into every return record.
             let caller_fp = lf.fp_pinned as u64;
             for (k, ins) in f.code.iter().enumerate() {
+                // A protected call is an explicit Rust activation boundary.
+                // Its return-stack cursor is the precise checkpoint used to
+                // discard native descendants when the callee throws.
+                if f.has_exception_handlers_at(k as u32) {
+                    continue;
+                }
                 if ins.op == Op::Call {
                     if let Some(Some((cells, packed, callee_l0, callee_l1, callee_fp))) =
                         callee_info.get(ins.a as usize)
@@ -1400,6 +1472,291 @@ impl InterpInstance {
         self.tags.get(idx).copied()
     }
 
+    fn tag_params_for_handle(&self, handle: TagHandle) -> Option<&[ValueType]> {
+        let idx = self
+            .tags
+            .iter()
+            .position(|candidate| *candidate == handle)?;
+        self.module
+            .tags()
+            .get(idx)
+            .map(|tag| tag.func_type().params())
+    }
+
+    fn ref_handle_matches_type(&self, handle: RefHandle, expected: RefType) -> bool {
+        if handle.is_null() {
+            return expected.nullable;
+        }
+
+        if handle.is_extern() {
+            return matches!(
+                expected.heap_type,
+                HeapType::Abstract(AbstractHeapType::Extern)
+            );
+        }
+
+        if handle.is_pooled() {
+            let Some(entry) = self.link_registry.ref_entry_for_handle(handle) else {
+                return false;
+            };
+            return match entry {
+                RefRegistryEntry::I31(_) => matches!(
+                    expected.heap_type,
+                    HeapType::Abstract(
+                        AbstractHeapType::I31 | AbstractHeapType::Eq | AbstractHeapType::Any
+                    )
+                ),
+                RefRegistryEntry::Exn(_) => matches!(
+                    expected.heap_type,
+                    HeapType::Abstract(AbstractHeapType::Exn)
+                ),
+                RefRegistryEntry::OpaqueInterpFunc => false,
+                RefRegistryEntry::Gc { store, gc_ref } => {
+                    let Some(origin) = (unsafe { store.as_ref() }) else {
+                        return false;
+                    };
+                    match expected.heap_type {
+                        HeapType::Concrete(target_idx) => {
+                            let Ok(source_idx) = origin.gc_heap().borrow().type_idx(gc_ref) else {
+                                return false;
+                            };
+                            concrete_type_matches_cross_context(
+                                &origin.module().types,
+                                source_idx,
+                                self.module.types(),
+                                target_idx,
+                            )
+                        }
+                        HeapType::Abstract(AbstractHeapType::Struct) => {
+                            origin.gc_heap().borrow().is_struct(gc_ref)
+                        }
+                        HeapType::Abstract(AbstractHeapType::Array) => {
+                            origin.gc_heap().borrow().is_array(gc_ref)
+                        }
+                        HeapType::Abstract(AbstractHeapType::Eq | AbstractHeapType::Any) => true,
+                        _ => false,
+                    }
+                }
+            };
+        }
+
+        // `hostref` is used both for generic host references and for
+        // interpreter funcrefs published by another instance. Without an
+        // attached provenance resolver those meanings are ambiguous, so a
+        // host-originated exception payload must not smuggle one into a
+        // statically typed slot. Wasm-originated funcrefs are canonicalized
+        // separately below, where their source instance is known.
+        if handle.is_host() {
+            return false;
+        }
+
+        let Some(func) = self.module.functions().get(handle.payload()) else {
+            return false;
+        };
+        match expected.heap_type {
+            HeapType::Abstract(AbstractHeapType::Func) => true,
+            HeapType::Concrete(target_idx) => {
+                let source_idx = func.type_index();
+                source_idx != u32::MAX
+                    && HeapType::Concrete(source_idx)
+                        .is_subtype_of(&HeapType::Concrete(target_idx), self.module.types())
+            }
+            _ => false,
+        }
+    }
+
+    fn host_value_matches_type(&self, value: &Value, expected: ValueType) -> bool {
+        match (value, expected) {
+            (Value::I32(_), ValueType::I32)
+            | (Value::I64(_), ValueType::I64)
+            | (Value::F32(_), ValueType::F32)
+            | (Value::F64(_), ValueType::F64) => true,
+            #[cfg(sf_has_simd)]
+            (Value::V128(_), ValueType::V128) => true,
+            (Value::Ref(handle, actual), ValueType::Ref(expected)) => {
+                if handle.is_null() {
+                    // A null has no dynamic object to inspect; its annotated
+                    // bottom/concrete family is therefore part of the value.
+                    actual.nullable
+                        && expected.nullable
+                        && actual
+                            .heap_type
+                            .is_subtype_of(&expected.heap_type, self.module.types())
+                } else {
+                    self.ref_handle_matches_type(*handle, expected)
+                }
+            }
+            _ => false,
+        }
+    }
+
+    fn ref_type_is_function(&self, ref_type: RefType) -> bool {
+        match ref_type.heap_type {
+            HeapType::Abstract(AbstractHeapType::Func | AbstractHeapType::NoFunc) => true,
+            HeapType::Concrete(idx) => self
+                .module
+                .types()
+                .get(idx)
+                .is_some_and(|ty| matches!(ty.composite, CompositeType::Func(_))),
+            _ => false,
+        }
+    }
+
+    /// Convert module-local function indices in an exception payload into
+    /// names meaningful to every linked interpreter instance. Other
+    /// references are already backend/global handles and remain untouched.
+    fn canonicalize_exception_fields(
+        &mut self,
+        mut fields: Vec<Value>,
+        params: &[ValueType],
+    ) -> Result<Vec<Value>, WasmError> {
+        for (field, &param) in fields.iter_mut().zip(params) {
+            let (Value::Ref(handle, _), ValueType::Ref(ref_type)) = (*field, param) else {
+                continue;
+            };
+            if handle.is_null() || handle.is_special() || !self.ref_type_is_function(ref_type) {
+                *field = Value::Ref(handle, ref_type);
+                continue;
+            }
+            if self.module.functions().get(handle.payload()).is_none() {
+                return Err(WasmError::trap("host threw mistyped exception"));
+            }
+            let local = handle.payload();
+            let named = match self
+                .published
+                .iter()
+                .find_map(|&(named, idx)| (idx == local).then_some(named))
+            {
+                Some(named) => named,
+                None => match self.funcref_host.as_ref() {
+                    Some(host) => {
+                        let named = (host.publish)(local);
+                        self.published.push((named, local));
+                        named
+                    }
+                    None => {
+                        let named = self.link_registry.alloc_opaque_interp_funcref();
+                        self.published.push((named, local));
+                        named
+                    }
+                },
+            };
+            *field = Value::Ref(named, ref_type);
+        }
+        Ok(fields)
+    }
+
+    /// Translate one of this instance's own published function names back to
+    /// its canonical local slot representation. The exception object remains
+    /// globally named; only the value installed in the catching frame is
+    /// localized, preserving `ref.eq` with a fresh `ref.func` in the source
+    /// instance while a different instance keeps the global name.
+    fn localize_exception_field(&self, value: Value) -> Value {
+        let Value::Ref(handle, ref_type) = value else {
+            return value;
+        };
+        let Some(local) = self
+            .published
+            .iter()
+            .find_map(|&(named, local)| (named == handle).then_some(local))
+        else {
+            return value;
+        };
+        Value::Ref(RefHandle::new(local), ref_type)
+    }
+
+    fn alloc_exception_from_frame(
+        &mut self,
+        tag_idx: usize,
+        frame: &[u64],
+        payload_base: usize,
+    ) -> Result<PendingException, WasmError> {
+        let tag = self
+            .tags
+            .get(tag_idx)
+            .copied()
+            .ok_or(WasmError::invalid("interp: bad throw tag"))?;
+        let params: Vec<ValueType> = self
+            .module
+            .tags()
+            .get(tag_idx)
+            .map(|tag| tag.func_type().params().iter().copied().collect())
+            .ok_or(WasmError::invalid("interp: bad throw tag"))?;
+        let end = payload_base
+            .checked_add(params.len())
+            .ok_or(WasmError::invalid("interp: throw payload overflows frame"))?;
+        let raw = frame
+            .get(payload_base..end)
+            .ok_or(WasmError::invalid("interp: throw payload outside frame"))?;
+        let mut fields = Vec::with_capacity(params.len());
+        for (&value, &ty) in raw.iter().zip(&params) {
+            fields.push(raw_to_value_for_interp(value, ty)?);
+        }
+        let fields = self.canonicalize_exception_fields(fields, &params)?;
+        let exn = self.link_registry.alloc_exn(tag, fields);
+        Ok(PendingException { exn, tag })
+    }
+
+    fn exception_from_ref(&self, exn: RefHandle) -> Result<PendingException, WasmError> {
+        if exn.is_null() {
+            return Err(WasmError::trap("null reference"));
+        }
+        let instance = self.link_registry.resolve_exn(exn).ok_or(WasmError::trap(
+            "throw_ref operand is not an exception reference",
+        ))?;
+        Ok(PendingException {
+            exn,
+            tag: instance.tag,
+        })
+    }
+
+    /// Turn the two catchable error channels at an imported-call boundary
+    /// into the interpreter's explicit unwind value. Ordinary traps and
+    /// runtime errors remain errors and are never considered by catch_all.
+    fn pending_from_error(&mut self, error: WasmError) -> Result<PendingException, WasmError> {
+        match error {
+            WasmError::Exception { exn, tag, .. } => {
+                let resolved = self
+                    .link_registry
+                    .resolve_exn(exn)
+                    .ok_or(WasmError::trap("invalid exception reference"))?;
+                if resolved.tag != tag {
+                    return Err(WasmError::trap("invalid exception reference"));
+                }
+                Ok(PendingException { exn, tag })
+            }
+            WasmError::HostThrow { tag, args } => {
+                let Some(params) = self
+                    .tag_params_for_handle(tag)
+                    .map(|params| params.iter().copied().collect::<Vec<_>>())
+                else {
+                    return Err(WasmError::trap("host threw mistyped exception"));
+                };
+                if args.len() != params.len()
+                    || !args
+                        .iter()
+                        .zip(&params)
+                        .all(|(value, ty)| self.host_value_matches_type(value, *ty))
+                {
+                    return Err(WasmError::trap("host threw mistyped exception"));
+                }
+                let args = self.canonicalize_exception_fields(args, &params)?;
+                let exn = self.link_registry.alloc_exn(tag, args);
+                Ok(PendingException { exn, tag })
+            }
+            other => Err(other),
+        }
+    }
+
+    #[inline]
+    fn uncaught_exception(pending: PendingException) -> WasmError {
+        WasmError::Exception {
+            exn: pending.exn,
+            tag: pending.tag,
+            module_tag_name: None,
+        }
+    }
+
     /// This table's shared entity, when it has one.
     ///
     /// Only a table that is imported or exported is held as a `TableInst`;
@@ -1526,7 +1883,10 @@ impl InterpInstance {
             // It has no predecoded body to enter; the host is the callee.
             let mut frame = vec![0u64; args.len().max(results.len())];
             frame[..args.len()].copy_from_slice(args);
-            self.call_host(func_index, &mut frame, 0)?;
+            if let Err(error) = self.call_host(func_index, &mut frame, 0) {
+                let pending = self.pending_from_error(error)?;
+                return Err(Self::uncaught_exception(pending));
+            }
             results.copy_from_slice(&frame[..results.len()]);
             return Ok(());
         };
@@ -1607,7 +1967,7 @@ impl InterpInstance {
         ctx.stack[args.len()..root.func.n_locals as usize].fill(0);
 
         let mut act = root;
-        let mut saved: Vec<Activation> = Vec::new();
+        let mut saved: Vec<SavedActivation> = Vec::new();
         loop {
             match self.native_step(&mut act, &mut ctx)? {
                 StepExit::Call { callee, arg_base } => {
@@ -1621,7 +1981,16 @@ impl InterpInstance {
                             // first result rides the accumulator relay like
                             // any other call result.
                             let base = act.base;
-                            self.call_host(callee, &mut ctx.stack[base..], arg_base)?;
+                            if let Err(error) =
+                                self.call_host(callee, &mut ctx.stack[base..], arg_base)
+                            {
+                                let pending = self.pending_from_error(error)?;
+                                let site = act.pc.checked_sub(1);
+                                self.unwind_exception(
+                                    pending, &mut act, &mut saved, &mut ctx, site,
+                                )?;
+                                continue;
+                            }
                             ctx.acc = ctx.stack[base + arg_base];
                             continue;
                         }
@@ -1643,7 +2012,10 @@ impl InterpInstance {
                         pc: 0,
                         route_established: false,
                     };
-                    saved.push(act);
+                    saved.push(SavedActivation {
+                        activation: act,
+                        ret_cursor: ctx.ret_cursor,
+                    });
                     act = callee_act;
                 }
                 StepExit::TailCall { callee, arg_base } => {
@@ -1660,20 +2032,41 @@ impl InterpInstance {
                             // its results at this frame's base, and return
                             // to the caller as this activation would have.
                             let base = act.base;
-                            self.call_host(callee, &mut ctx.stack[base..], arg_base)?;
-                            let np = ctx.stack[base + arg_base];
-                            ctx.stack[base] = np;
-                            ctx.acc = np;
-                            match saved.pop() {
-                                None => {
-                                    results.copy_from_slice(&ctx.stack[..results.len()]);
-                                    return Ok(());
-                                }
-                                Some(parent) => {
-                                    act = parent;
-                                    continue;
-                                }
+                            if let Err(error) =
+                                self.call_host(callee, &mut ctx.stack[base..], arg_base)
+                            {
+                                let pending = self.pending_from_error(error)?;
+                                // A tail call retires this activation before
+                                // entering the callee, so its try scopes are
+                                // not candidates for the exception.
+                                self.unwind_exception(
+                                    pending, &mut act, &mut saved, &mut ctx, None,
+                                )?;
+                                continue;
                             }
+                            let result_count = self
+                                .module
+                                .functions()
+                                .get(callee)
+                                .map(|func| func.func_type().results().len())
+                                .ok_or(WasmError::trap("undefined element"))?;
+                            ctx.stack
+                                .copy_within(base + arg_base..base + arg_base + result_count, base);
+                            ctx.acc = if result_count == 0 {
+                                0
+                            } else {
+                                ctx.stack[base]
+                            };
+                            // Do not synthesize a Rust return here. This
+                            // activation may itself have native-only callers
+                            // represented solely by raw return records. The
+                            // landing executes an ordinary native Return,
+                            // consuming the current record and routing through
+                            // every such caller before the sentinel exits.
+                            act.pc = act.func.slow_tail_return.ok_or(WasmError::invalid(
+                                "interp: tail call has no return landing",
+                            ))? as usize;
+                            continue;
                         }
                         None => return Err(WasmError::trap("undefined element")),
                     };
@@ -1696,6 +2089,13 @@ impl InterpInstance {
                     act.func_index = callee;
                     act.pc = 0;
                 }
+                StepExit::Throw {
+                    pending,
+                    search_current,
+                } => {
+                    let site = search_current.then_some(act.pc);
+                    self.unwind_exception(pending, &mut act, &mut saved, &mut ctx, site)?;
+                }
                 StepExit::Return => {
                     // Results are already in place: the callee's frame base
                     // IS the caller's staged-argument slot.
@@ -1704,10 +2104,114 @@ impl InterpInstance {
                             results.copy_from_slice(&ctx.stack[..results.len()]);
                             return Ok(());
                         }
-                        Some(parent) => act = parent,
+                        Some(parent) => {
+                            // Native Return already popped the callee's
+                            // sentinel. Reasserting the saved checkpoint makes
+                            // the synchronization invariant explicit and also
+                            // covers targets whose backend reports Return
+                            // without exposing its cursor mechanics.
+                            ctx.ret_cursor = parent.ret_cursor;
+                            act = parent.activation;
+                        }
                     }
                 }
             }
+        }
+    }
+
+    /// Match and install one handler in `act`.
+    ///
+    /// The predecoder has already canonicalized the handler target's stack
+    /// base. Runtime work is therefore limited to identity matching and
+    /// copying the exception payload (plus the reference for `_ref` clauses)
+    /// into those authoritative slots.
+    fn try_handle_exception(
+        &self,
+        pending: PendingException,
+        act: &mut Activation,
+        ctx: &mut DriveCtx<'_>,
+        site: usize,
+    ) -> Result<bool, WasmError> {
+        let Some(handler) = act
+            .func
+            .exception_handlers_at(site as u32)
+            .iter()
+            .copied()
+            .find(|handler| handler.tag.is_none_or(|tag| tag == pending.tag))
+        else {
+            return Ok(false);
+        };
+
+        let base = act
+            .base
+            .checked_add(handler.target_base as usize)
+            .ok_or(WasmError::invalid("interp: exception target slot overflow"))?;
+        let payload_arity = handler.payload_arity as usize;
+        let total = payload_arity + usize::from(handler.forwards_exn);
+        let end = base
+            .checked_add(total)
+            .ok_or(WasmError::invalid("interp: exception target slot overflow"))?;
+        let target = ctx
+            .stack
+            .get_mut(base..end)
+            .ok_or(WasmError::invalid("interp: exception target outside frame"))?;
+
+        let resolved = (handler.tag.is_some() || handler.forwards_exn)
+            .then(|| self.link_registry.resolve_exn(pending.exn))
+            .flatten();
+        if (handler.tag.is_some() || handler.forwards_exn) && resolved.is_none() {
+            return Err(WasmError::trap("invalid exception reference during catch"));
+        }
+        if let Some(exn) = resolved {
+            if exn.tag != pending.tag
+                || (handler.tag.is_some() && exn.fields.len() != payload_arity)
+            {
+                return Err(WasmError::trap("mistyped exception payload"));
+            }
+            if handler.tag.is_some() {
+                for (dst, value) in target[..payload_arity].iter_mut().zip(&exn.fields) {
+                    *dst = value_to_raw_for_interp(&self.localize_exception_field(*value))?;
+                }
+            }
+        }
+        if handler.forwards_exn {
+            target[payload_arity] = ref_to_slot(pending.exn);
+        }
+
+        act.pc = handler.target as usize;
+        // A catch target is a merge. Slots are authoritative and the first
+        // re-entered cell must not inherit an accumulator edge from the throw.
+        ctx.acc = 0;
+        Ok(true)
+    }
+
+    /// Walk Rust activation checkpoints until `pending` is caught.
+    ///
+    /// Calls that execute under a `try_table` stay slow, so no native-only
+    /// caller can own a handler. Restoring a checkpoint atomically discards
+    /// the leaving activation's sentinel and all native descendants while
+    /// retaining the selected caller's established return route.
+    fn unwind_exception(
+        &self,
+        pending: PendingException,
+        act: &mut Activation,
+        saved: &mut Vec<SavedActivation>,
+        ctx: &mut DriveCtx<'_>,
+        mut current_site: Option<usize>,
+    ) -> Result<(), WasmError> {
+        loop {
+            if let Some(site) = current_site {
+                if self.try_handle_exception(pending, act, ctx, site)? {
+                    return Ok(());
+                }
+            }
+
+            let Some(parent) = saved.pop() else {
+                return Err(Self::uncaught_exception(pending));
+            };
+            ctx.ret_cursor = parent.ret_cursor;
+            *act = parent.activation;
+            current_site = act.pc.checked_sub(1);
         }
     }
 
@@ -1970,8 +2474,30 @@ impl InterpInstance {
                         native.slow_exits[ins.op as usize] += 1;
                     }
                     let frame = &mut ctx.stack[base..base + f.frame_slots as usize];
-                    match self.exec_ins(frame, &f, ins)? {
+                    let effect = match self.exec_ins(frame, &f, ins) {
+                        Ok(effect) => effect,
+                        Err(error) => match self.pending_from_error(error) {
+                            Ok(pending) => {
+                                act.pc = idx;
+                                let search_current = !matches!(
+                                    ins.op,
+                                    Op::ReturnCall | Op::ReturnCallIndirect | Op::ReturnCallRef
+                                );
+                                return Ok(StepExit::Throw {
+                                    pending,
+                                    search_current,
+                                });
+                            }
+                            Err(error) => return Err(error),
+                        },
+                    };
+                    match effect {
                         Effect::Next => state.pc = cstart + (idx as u64 + 1) * 32,
+                        Effect::NextWithAcc(value) => {
+                            ctx.acc = value;
+                            state.acc_value = value;
+                            state.pc = cstart + (idx as u64 + 1) * 32;
+                        }
                         Effect::Jump(t) => state.pc = cstart + (t as u64) * 32,
                         // `Return` always has a native handler; a slow one
                         // would desync the native return stack.
@@ -1985,6 +2511,15 @@ impl InterpInstance {
                         Effect::TailCall { callee, arg_base } => {
                             act.pc = idx + 1;
                             return Ok(StepExit::TailCall { callee, arg_base });
+                        }
+                        Effect::Throw(pending) => {
+                            // Unlike a normal call exit, a throw is handled at
+                            // the throwing instruction itself.
+                            act.pc = idx;
+                            return Ok(StepExit::Throw {
+                                pending,
+                                search_current: true,
+                            });
                         }
                     }
                     state.code_base = cstart;
@@ -2624,19 +3159,13 @@ impl InterpInstance {
                 frame[ins.c as usize] = slot_to_ref(v).is_null() as u64;
             }
             Op::Throw => {
-                // No enclosing `try_table` in this function matched the tag --
-                // predecode would have turned that into a branch -- so the
-                // exception leaves the frame. Cross-function handlers are not
-                // modelled yet, so it surfaces as a trap naming the tag rather
-                // than unwinding to one.
-                let _ = ins.b;
-                return Err(WasmError::trap("uncaught exception"));
+                let pending =
+                    self.alloc_exception_from_frame(ins.a as usize, frame, ins.b as usize)?;
+                return Ok(Effect::Throw(pending));
             }
             Op::ThrowRef => {
-                if slot_to_ref(opa!(ins)).is_null() {
-                    return Err(WasmError::trap("null exception reference"));
-                }
-                return Err(WasmError::trap("uncaught exception"));
+                let pending = self.exception_from_ref(slot_to_ref(opa!(ins)))?;
+                return Ok(Effect::Throw(pending));
             }
             Op::RefEq => {
                 frame[ins.c as usize] = (opa!(ins) == opb!(ins)) as u64;
@@ -2654,7 +3183,49 @@ impl InterpInstance {
                     return Err(WasmError::trap("null function reference"));
                 }
                 if r.is_special() {
-                    return Err(WasmError::trap("indirect call type mismatch"));
+                    if !r.is_host() || r.is_extern() {
+                        return Err(WasmError::trap("indirect call type mismatch"));
+                    }
+                    // A reference published by another interpreter instance
+                    // keeps its global identity in the shared exception
+                    // object. Invoke it through the same forwarding hook used
+                    // by shared tables; local publications stay local.
+                    if let Some(&(_, local)) = self.published.iter().find(|(h, _)| *h == r) {
+                        return Ok(if ins.op == Op::ReturnCallRef {
+                            Effect::TailCall {
+                                callee: local,
+                                arg_base: ins.b as usize,
+                            }
+                        } else {
+                            Effect::Call {
+                                callee: local,
+                                arg_base: ins.b as usize,
+                            }
+                        });
+                    }
+                    let (np, nr) = self
+                        .module
+                        .types()
+                        .get_function_type(ins.c as u32)
+                        .map(|ft| (ft.params().len(), ft.results().len()))
+                        .ok_or(WasmError::trap("indirect call type mismatch"))?;
+                    let base = ins.b as usize;
+                    let mut args: Vec<u64> = Vec::with_capacity(np);
+                    args.extend_from_slice(&frame[base..base + np]);
+                    let mut results = vec![0u64; nr];
+                    match self.funcref_host.as_mut() {
+                        Some(host) => (host.invoke)(r, &args, &mut results)?,
+                        None => return Err(WasmError::trap("indirect call type mismatch")),
+                    }
+                    frame[base..base + nr].copy_from_slice(&results);
+                    if ins.op == Op::ReturnCallRef {
+                        frame.copy_within(base..base + nr, 0);
+                        let target = func.slow_tail_return.ok_or(WasmError::invalid(
+                            "interp: tail call has no return landing",
+                        ))?;
+                        return Ok(Effect::Jump(target as usize));
+                    }
+                    return Ok(Effect::NextWithAcc(results.first().copied().unwrap_or(0)));
                 }
                 let callee = r.0;
                 let arg_base = ins.b as usize;
@@ -2883,13 +3454,23 @@ impl InterpInstance {
                     return Err(WasmError::trap("uninitialized element"));
                 }
                 if callee.is_special() {
+                    if !callee.is_host() || callee.is_extern() {
+                        return Err(WasmError::trap("indirect call type mismatch"));
+                    }
                     // A published reference. If WE published it the callee is
                     // ours: an exported table used from inside its own module
                     // must not pay a round trip through the embedder.
                     if let Some(&(_, local)) = self.published.iter().find(|(h, _)| *h == callee) {
-                        return Ok(Effect::Call {
-                            callee: local,
-                            arg_base: ins.b as usize,
+                        return Ok(if ins.op == Op::ReturnCallIndirect {
+                            Effect::TailCall {
+                                callee: local,
+                                arg_base: ins.b as usize,
+                            }
+                        } else {
+                            Effect::Call {
+                                callee: local,
+                                arg_base: ins.b as usize,
+                            }
                         });
                     }
                     // Otherwise it names a function in another instance, and
@@ -2909,7 +3490,14 @@ impl InterpInstance {
                         None => return Err(WasmError::trap("indirect call type mismatch")),
                     }
                     frame[base..base + nr].copy_from_slice(&results);
-                    return Ok(Effect::Next);
+                    if ins.op == Op::ReturnCallIndirect {
+                        frame.copy_within(base..base + nr, 0);
+                        let target = func.slow_tail_return.ok_or(WasmError::invalid(
+                            "interp: tail call has no return landing",
+                        ))?;
+                        return Ok(Effect::Jump(target as usize));
+                    }
+                    return Ok(Effect::NextWithAcc(results.first().copied().unwrap_or(0)));
                 }
                 let fi = callee.0 as u32;
                 let expected = ins.c as u32;
@@ -3216,9 +3804,9 @@ mod tests {
 
     #[test]
     fn try_table_catches_in_the_same_function() {
-        // The throw is resolved at predecode into a branch to the catch's
-        // label, so no unwinding is involved when handler and throw share a
-        // function.
+        // A same-function throw follows the same runtime exception path as a
+        // cross-call throw; only the unwind search stops in the current
+        // activation.
         let src = r#"(module
             (tag $t)
             (func (export "go") (result i32)
@@ -3230,6 +3818,387 @@ mod tests {
         // The throw reaches catch_all, which carries no values, so control
         // lands after the block and returns 2 rather than 1.
         assert_eq!(run1(src, "go", &[]).unwrap(), 2);
+    }
+
+    #[test]
+    fn exception_unwind_crosses_native_descendants_and_reuses_the_instance() {
+        // `$middle -> $leaf` remains a native-linked call. Only `$catch`'s
+        // protected call to `$middle` is a Rust checkpoint, so this exercises
+        // discarding native descendant return records while retaining the
+        // catching activation's route.
+        let bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (tag $e (param i32))
+                (func $leaf (export "uncaught") (param i32)
+                    (throw $e (local.get 0)))
+                (func $middle (param i32)
+                    (call $leaf (local.get 0)))
+                (func (export "catch") (param i32) (result i32)
+                    (block $h (result i32)
+                        (try_table (result i32) (catch $e $h)
+                            (call $middle (local.get 0))
+                            (i32.const -1))
+                        unreachable))
+                (func (export "plain") (param i32) (result i32)
+                    (i32.add (local.get 0) (i32.const 1))))"#,
+        )
+        .expect("wat");
+        let module = Module::new("unwind", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instance");
+        let catch = inst.find_export("catch").expect("catch");
+        let uncaught = inst.find_export("uncaught").expect("uncaught");
+        let plain = inst.find_export("plain").expect("plain");
+        let mut result = [0u64; 1];
+
+        inst.invoke(catch, &[41], &mut result).expect("caught");
+        assert_eq!(result[0], 41, "typed payload must retain its order/value");
+        inst.invoke(plain, &[7], &mut result)
+            .expect("normal call after catch");
+        assert_eq!(result[0], 8);
+
+        let err = inst
+            .invoke(uncaught, &[9], &mut [])
+            .expect_err("uncaught throw must surface");
+        assert!(matches!(err, WasmError::Exception { .. }));
+        inst.invoke(plain, &[10], &mut result)
+            .expect("normal call after uncaught exception");
+        assert_eq!(result[0], 11);
+    }
+
+    #[test]
+    fn throw_ref_reuses_the_caught_exception_object() {
+        let bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (tag $e)
+                (func (export "go")
+                    (block $h (result exnref)
+                        (try_table (catch_ref $e $h)
+                            (throw $e))
+                        unreachable)
+                    throw_ref))"#,
+        )
+        .expect("wat");
+        let module = Module::new("throw-ref", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instance");
+        let tag = inst.tag_handle_at(0).expect("tag");
+        let go = inst.find_export("go").expect("go");
+        let err = inst
+            .invoke(go, &[], &mut [])
+            .expect_err("throw_ref must rethrow");
+        let WasmError::Exception {
+            exn,
+            tag: actual_tag,
+            ..
+        } = err
+        else {
+            panic!("expected exception, got {err:?}");
+        };
+        assert_eq!(actual_tag, tag);
+        let exn_instance = inst
+            .link_registry
+            .resolve_exn(exn)
+            .expect("same exception handle remains resolvable");
+        assert_eq!(exn_instance.tag, tag);
+        assert!(exn_instance.fields.is_empty());
+    }
+
+    #[test]
+    fn exception_funcref_without_a_resolver_is_opaque_and_localizes_at_origin() {
+        let bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (type $ft (func))
+                (tag $e (param (ref $ft)))
+                (func $pad)
+                (func $dummy (type $ft))
+                (elem declare func $dummy)
+                (func (export "same") (result i32)
+                    (block $h (result (ref $ft))
+                        (try_table (catch $e $h)
+                            (throw $e (ref.func $dummy)))
+                        unreachable)
+                    (ref.eq (ref.func $dummy)))
+                (func (export "escape")
+                    (throw $e (ref.func $dummy))))"#,
+        )
+        .expect("wat");
+        let module = Module::new("opaque-funcref", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instance");
+        let same = inst.find_export("same").expect("same");
+        let escape = inst.find_export("escape").expect("escape");
+        let mut result = [0u64; 1];
+
+        inst.invoke(same, &[], &mut result).expect("local catch");
+        assert_eq!(
+            result[0], 1,
+            "localizing the shared identity must preserve ref.eq"
+        );
+
+        let WasmError::Exception { exn, .. } = inst
+            .invoke(escape, &[], &mut [])
+            .expect_err("escape exception")
+        else {
+            panic!("expected exception");
+        };
+        let field = inst
+            .link_registry
+            .resolve_exn(exn)
+            .and_then(|exn| exn.fields.first().copied())
+            .expect("exception funcref field");
+        let Value::Ref(handle, _) = field else {
+            panic!("expected funcref field");
+        };
+        assert!(
+            handle.is_pooled(),
+            "shared object must not retain a module-local function index"
+        );
+        assert_ne!(handle, RefHandle::new(1));
+    }
+
+    #[test]
+    fn host_throw_is_validated_and_enters_the_same_unwind_path() {
+        let bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (type $exception (func (param i32)))
+                (import "host" "exception" (tag $e (type $exception)))
+                (import "host" "throw" (func $throw (param i32)))
+                (func (export "go") (param i32) (result i32)
+                    (block $h (result i32)
+                        (try_table (result i32) (catch $e $h)
+                            (call $throw (local.get 0))
+                            (i32.const -1))
+                        unreachable)))"#,
+        )
+        .expect("wat");
+        let module = Module::new("host-throw", &bin).expect("module");
+        let tag_type = module.tags()[0].func_type().clone();
+        let func_type = module.functions()[0].func_type().clone();
+        let (tag_import, tag) = Import::tag_typed_with_handle("host", "exception", tag_type);
+        let func_import = Import::func_typed(
+            "host",
+            "throw",
+            |_caller, _args, _results| Ok(()),
+            func_type,
+        );
+        let host = InterpInstance::boxed_host(move |_module, _name, _memory, args, _results| {
+            Err(WasmError::HostThrow {
+                tag,
+                args: vec![Value::I32(args[0] as u32 as i32)],
+            })
+        });
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            Some(host),
+            &[tag_import, func_import],
+        )
+        .expect("instance");
+        let go = inst.find_export("go").expect("go");
+        let mut result = [0u64; 1];
+
+        inst.invoke(go, &[37], &mut result)
+            .expect("well-typed host throw is catchable");
+        assert_eq!(result[0], 37);
+
+        inst.set_host(move |_module, _name, _memory, _args, _results| {
+            Err(WasmError::HostThrow { tag, args: vec![] })
+        });
+        let err = inst
+            .invoke(go, &[1], &mut result)
+            .expect_err("mistyped host throw must trap");
+        assert!(matches!(
+            err,
+            WasmError::Trap("host threw mistyped exception")
+        ));
+    }
+
+    #[test]
+    fn host_throw_rejects_null_for_a_non_null_reference_payload() {
+        let bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (type $ft (func))
+                (type $exception (func (param (ref $ft))))
+                (import "host" "exception" (tag $e (type $exception)))
+                (import "host" "throw" (func $throw))
+                (func (export "go") (result i32)
+                    (block $h (result (ref $ft))
+                        (try_table (catch $e $h)
+                            (call $throw)
+                            unreachable)
+                        unreachable)
+                    ref.is_null))"#,
+        )
+        .expect("wat");
+        let module = Module::new("host-ref-throw", &bin).expect("module");
+        let tag_type = module.tags()[0].func_type().clone();
+        let func_type = module.functions()[0].func_type().clone();
+        let (tag_import, tag) = Import::tag_typed_with_handle("host", "exception", tag_type);
+        let func_import = Import::func_typed(
+            "host",
+            "throw",
+            |_caller, _args, _results| Ok(()),
+            func_type,
+        );
+        let host = InterpInstance::boxed_host(move |_module, _name, _memory, _args, _results| {
+            Err(WasmError::HostThrow {
+                tag,
+                args: vec![Value::Ref(RefHandle::null(), RefType::funcref())],
+            })
+        });
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            Some(host),
+            &[tag_import, func_import],
+        )
+        .expect("instance");
+        let go = inst.find_export("go").expect("go");
+
+        assert!(matches!(
+            inst.invoke(go, &[], &mut [0]),
+            Err(WasmError::Trap("host threw mistyped exception"))
+        ));
+    }
+
+    #[test]
+    fn catch_all_rejects_a_forged_exception_handle() {
+        let bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (type $exception (func))
+                (import "host" "exception" (tag $e (type $exception)))
+                (import "host" "throw" (func $throw))
+                (func (export "go") (result i32)
+                    (block $h
+                        (try_table (catch_all $h)
+                            (call $throw))
+                        unreachable)
+                    i32.const 1))"#,
+        )
+        .expect("wat");
+        let module = Module::new("forged-exception", &bin).expect("module");
+        let tag_type = module.tags()[0].func_type().clone();
+        let func_type = module.functions()[0].func_type().clone();
+        let (tag_import, tag) = Import::tag_typed_with_handle("host", "exception", tag_type);
+        let func_import = Import::func_typed(
+            "host",
+            "throw",
+            |_caller, _args, _results| Ok(()),
+            func_type,
+        );
+        let host = InterpInstance::boxed_host(move |_module, _name, _memory, _args, _results| {
+            Err(WasmError::Exception {
+                exn: RefHandle::new(1_234_567),
+                tag,
+                module_tag_name: None,
+            })
+        });
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            Some(host),
+            &[tag_import, func_import],
+        )
+        .expect("instance");
+        let go = inst.find_export("go").expect("go");
+
+        assert!(matches!(
+            inst.invoke(go, &[], &mut [0]),
+            Err(WasmError::Trap("invalid exception reference"))
+        ));
+    }
+
+    #[test]
+    fn imported_tags_match_by_runtime_identity_not_signature() {
+        // `$a` and `$b` are different module indices with the same
+        // signature. The catch matches only when the linker binds both
+        // imports to the same runtime tag. A distinct `$b` is not caught and
+        // surfaces as an uncaught wasm exception.
+        let bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (type $e (func))
+                (import "m" "a" (tag $a (type $e)))
+                (import "m" "b" (tag $b (type $e)))
+                (func (export "go") (result i32)
+                    (block $caught
+                        (try_table
+                            (catch $a $caught)
+                            (throw $b))
+                        unreachable)
+                    i32.const 1))"#,
+        )
+        .expect("wat");
+        let engine = crate::vm::engine::Engine::with_defaults();
+
+        let module = Module::new("aliased", &bin).expect("module");
+        let tag_type = module.tags()[0].func_type().clone();
+        let (import_a, shared_handle) = Import::tag_typed_with_handle("m", "a", tag_type.clone());
+        let import_b = Import::linked_tag_typed("m", "b", shared_handle, tag_type);
+        let mut aliased =
+            InterpInstance::new(&engine, module, None, &[import_a, import_b]).expect("aliased");
+        let go = aliased.find_export("go").expect("go");
+        let mut result = [0u64; 1];
+        aliased
+            .invoke(go, &[], &mut result)
+            .expect("invoke aliased tags");
+        assert_eq!(result[0], 1, "aliased imports must match the typed catch");
+
+        let module = Module::new("distinct", &bin).expect("module");
+        let tag_type = module.tags()[0].func_type().clone();
+        let import_a = Import::tag_typed("m", "a", tag_type.clone());
+        let import_b = Import::tag_typed("m", "b", tag_type);
+        let mut distinct =
+            InterpInstance::new(&engine, module, None, &[import_a, import_b]).expect("distinct");
+        let go = distinct.find_export("go").expect("go");
+        let err = distinct
+            .invoke(go, &[], &mut result)
+            .expect_err("same-signature distinct imports must not match");
+        assert!(
+            matches!(err, WasmError::Exception { .. }),
+            "the distinct throw must remain uncaught, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn exported_imported_tag_preserves_the_provided_handle() {
+        let bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (type $e (func))
+                (import "m" "t" (tag $t (type $e)))
+                (export "t" (tag $t)))"#,
+        )
+        .expect("wat");
+        let module = Module::new("reexport", &bin).expect("module");
+        let tag_type = module.tags()[0].func_type().clone();
+        let (import, handle) = Import::tag_typed_with_handle("m", "t", tag_type);
+        let engine = crate::vm::engine::Engine::new(
+            crate::config::Config::new().tier(crate::vm::engine::Tier::Interp),
+        )
+        .expect("engine");
+        let instance = crate::vm::instance::Instance::from_module(&engine, module, &[import])
+            .expect("instance");
+
+        assert_eq!(
+            instance.tag_handle("t"),
+            Some(handle),
+            "re-exporting an imported tag must not mint a new identity"
+        );
     }
 
     #[test]
@@ -3254,6 +4223,50 @@ mod tests {
         assert_eq!(run1(src, "go", &[1]).unwrap(), 0, "exactly one tail call");
         assert_eq!(run1(src, "go", &[2]).unwrap(), 0, "two tail calls");
         assert_eq!(run1(src, "go", &[1_000_000]).unwrap(), 0, "a million");
+    }
+
+    #[test]
+    fn imported_return_call_preserves_native_caller_routes() {
+        let bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (import "host" "ret" (func $ret (result i32)))
+                (func $tail (result i32)
+                    (return_call $ret))
+                (func $parent (result i32)
+                    (i32.add (call $tail) (i32.const 5)))
+                (func (export "go") (result i32)
+                    (i32.add (call $parent) (i32.const 2))))"#,
+        )
+        .expect("wat");
+        let module = Module::new("host-tail", &bin).expect("module");
+        let func_type = module.functions()[0].func_type().clone();
+        let import = Import::func_typed(
+            "host",
+            "ret",
+            |_caller, _args, results| {
+                results[0] = Value::I32(40);
+                Ok(())
+            },
+            func_type,
+        );
+        let host = InterpInstance::boxed_host(|_module, _name, _memory, _args, results| {
+            results[0] = 40;
+            Ok(())
+        });
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            Some(host),
+            &[import],
+        )
+        .expect("instance");
+        let go = inst.find_export("go").expect("go");
+        let mut result = [0u64; 1];
+
+        inst.invoke(go, &[], &mut result).expect("first invoke");
+        assert_eq!(result[0], 47);
+        inst.invoke(go, &[], &mut result).expect("second invoke");
+        assert_eq!(result[0], 47);
     }
 
     #[test]

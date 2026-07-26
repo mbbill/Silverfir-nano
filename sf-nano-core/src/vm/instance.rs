@@ -102,8 +102,9 @@ impl Instance {
     /// Instantiate against a shared link registry, so instances can
     /// resolve each other's exports.
     ///
-    /// The registry is the JIT's linking machinery; an interpreter
-    /// instance ignores it and links only what its import list carries.
+    /// The JIT uses the registry for linked functions and references. The
+    /// interpreter still links functions through its import host, but shares
+    /// the registry's reference identities and payloads with other instances.
     #[cfg(sf_jit)]
     pub fn from_module_with_registry(
         engine: &Engine,
@@ -118,8 +119,22 @@ impl Instance {
                     inner: Inner::Jit(inst),
                 }),
             #[cfg(sf_interp)]
-            Tier::Interp => Self::from_module(engine, module, imports)
-                .map_err(InstanceInstantiationError::Complete),
+            Tier::Interp => {
+                let dispatch = interp_imports::bind(&module, imports)
+                    .map_err(InstanceInstantiationError::Complete)?;
+                InterpInstance::new_partial_with_registry(
+                    engine,
+                    module,
+                    Some(InterpInstance::boxed_host(dispatch)),
+                    imports,
+                    None,
+                    registry,
+                )
+                .map(|inst| Self {
+                    inner: Inner::Interp(inst),
+                })
+                .map_err(|(_, error)| InstanceInstantiationError::Complete(error))
+            }
         }
     }
 
@@ -132,14 +147,39 @@ impl Instance {
         imports: &[Import],
         funcref_host: crate::vm::interpreter::FuncRefHost,
     ) -> Result<Self, (Option<Self>, WasmError)> {
+        let registry = crate::vm::store::LinkRegistry::new();
+        Self::from_module_with_registry_and_funcref_host(
+            engine,
+            module,
+            imports,
+            &registry,
+            funcref_host,
+        )
+    }
+
+    /// Instantiate with a shared link registry and a hook for cross-instance
+    /// function references, retaining a partial instance when a data segment
+    /// traps.
+    ///
+    /// The interpreter's function forwarding remains host-driven, while the
+    /// registry preserves reference identity and payloads across instances.
+    #[cfg(sf_interp)]
+    pub fn from_module_with_registry_and_funcref_host(
+        engine: &Engine,
+        module: Module,
+        imports: &[Import],
+        registry: &crate::vm::store::LinkRegistry,
+        funcref_host: crate::vm::interpreter::FuncRefHost,
+    ) -> Result<Self, (Option<Self>, WasmError)> {
         validate(&module).map_err(|e| (None, e))?;
         let dispatch = interp_imports::bind(&module, imports).map_err(|e| (None, e))?;
-        match InterpInstance::new_partial(
+        match InterpInstance::new_partial_with_registry(
             engine,
             module,
             Some(InterpInstance::boxed_host(dispatch)),
             imports,
             Some(funcref_host),
+            registry,
         ) {
             Ok(inst) => Ok(Self {
                 inner: Inner::Interp(inst),

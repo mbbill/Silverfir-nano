@@ -1380,10 +1380,11 @@ impl WastTestRunner {
                 }),
                 invoke: Box::new(forward_raw_call),
             };
-            return match Instance::from_module_with_funcref_host(
+            return match Instance::from_module_with_registry_and_funcref_host(
                 &self.engine,
                 module,
                 &imports,
+                &self.function_registry,
                 host,
             ) {
                 Ok(instance) => Ok(instance),
@@ -2838,5 +2839,109 @@ mod tests {
             .invoke("params-id-break", &[Value::I32(1)])
             .expect("invoke export");
         assert_eq!(ret_true.as_slice(), &[Value::I32(3)]);
+    }
+
+    #[cfg(feature = "interp")]
+    #[test]
+    fn interp_exception_funcref_payload_keeps_cross_instance_identity() {
+        let mut runner = WastTestRunner::new(engine_for(Tier::Interp));
+        runner
+            .execute_wast_content(
+                r#"
+                (module
+                  (type $ft (func (result i32)))
+                  (type $pair (func (result i32 i64)))
+                  (tag $e (export "e") (param (ref $ft)))
+                  (tag $epair (export "epair") (param (ref $pair)))
+                  (func $dummy (type $ft) (result i32) i32.const 99)
+                  (func $pair (type $pair) (result i32 i64)
+                    i32.const 41
+                    i64.const 42)
+                  (elem declare func $dummy)
+                  (elem declare func $pair)
+                  (func (export "throw")
+                    (throw $e (ref.func $dummy)))
+                  (func (export "throw_pair")
+                    (throw $epair (ref.func $pair)))
+                  (func (export "same") (result i32)
+                    (block $h (result (ref $ft))
+                      (try_table (catch $e $h)
+                        (throw $e (ref.func $dummy)))
+                      unreachable)
+                    (ref.eq (ref.func $dummy))))
+                (register "src")
+                (assert_return (invoke "same") (i32.const 1))
+                (module
+                  (type $ft (func (result i32)))
+                  (type $pair (func (result i32 i64)))
+                  (tag $e (import "src" "e") (param (ref $ft)))
+                  (tag $epair (import "src" "epair") (param (ref $pair)))
+                  (func $throw (import "src" "throw"))
+                  (func $throw_pair (import "src" "throw_pair"))
+                  (table 1 (ref null $ft))
+                  (func (export "via_table") (result i32)
+                    (table.set 0 (i32.const 0)
+                      (block $h (result (ref $ft))
+                        (try_table (catch $e $h)
+                          (call $throw))
+                        unreachable))
+                    (call_indirect 0 (type $ft) (i32.const 0)))
+                  (func (export "via_ref") (result i32)
+                    (block $h (result (ref $ft))
+                      (try_table (catch $e $h)
+                        (call $throw))
+                      unreachable)
+                    (call_ref $ft))
+                  (func (export "via_table_acc") (result i32)
+                    (table.set 0 (i32.const 0)
+                      (block $h (result (ref $ft))
+                        (try_table (catch $e $h)
+                          (call $throw))
+                        unreachable))
+                    (i32.add
+                      (call_indirect 0 (type $ft) (i32.const 0))
+                      (i32.const 1)))
+                  (func (export "via_ref_acc") (result i32)
+                    (i32.add
+                      (call_ref $ft
+                        (block $h (result (ref $ft))
+                          (try_table (catch $e $h)
+                            (call $throw))
+                          unreachable))
+                      (i32.const 1)))
+                  (func (export "tail_via_table") (param i32) (result i32)
+                    (table.set 0 (i32.const 0)
+                      (block $h (result (ref $ft))
+                        (try_table (catch $e $h)
+                          (call $throw))
+                        unreachable))
+                    (return_call_indirect 0 (type $ft) (i32.const 0)))
+                  (func (export "tail_via_ref") (param i32) (result i32)
+                    (local i32)
+                    (block $h (result (ref $ft))
+                      (try_table (catch $e $h)
+                        (call $throw))
+                      unreachable)
+                    (return_call_ref $ft))
+                  (func (export "tail_pair_via_ref") (param i32) (result i32 i64)
+                    (local i64)
+                    (block $h (result (ref $pair))
+                      (try_table (catch $epair $h)
+                        (call $throw_pair))
+                      unreachable)
+                    (return_call_ref $pair)))
+                (assert_return (invoke "via_table") (i32.const 99))
+                (assert_return (invoke "via_ref") (i32.const 99))
+                (assert_return (invoke "via_table_acc") (i32.const 100))
+                (assert_return (invoke "via_ref_acc") (i32.const 100))
+                (assert_return (invoke "tail_via_table" (i32.const 7)) (i32.const 99))
+                (assert_return (invoke "tail_via_ref" (i32.const 7)) (i32.const 99))
+                (assert_return
+                  (invoke "tail_pair_via_ref" (i32.const 7))
+                  (i32.const 41)
+                  (i64.const 42))
+                "#,
+            )
+            .expect("cross-instance exception payload");
     }
 }
