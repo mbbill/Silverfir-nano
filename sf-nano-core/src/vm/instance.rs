@@ -344,9 +344,17 @@ impl Instance {
             Inner::Jit(inst) => inst.memory_pages(name),
             #[cfg(sf_interp)]
             Inner::Interp(inst) => {
-                let _ = name;
-                inst.memory()
-                    .map(|m| m.len() / crate::constants::WASM_PAGE_SIZE)
+                // By EXPORT NAME, not memory 0: a module with several
+                // exported memories would otherwise report the first one's
+                // size for all of them, and a caller sizing an import from
+                // that gets the wrong limits.
+                let idx = inst
+                    .module()
+                    .memories()
+                    .iter()
+                    .position(|m| m.export_names().iter().any(|export| export == name))?;
+                inst.shared_memory_at(idx)
+                    .map(|m| m.memory_len() / crate::constants::WASM_PAGE_SIZE)
             }
         }
     }

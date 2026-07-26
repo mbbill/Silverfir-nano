@@ -404,6 +404,26 @@ fn eval_const(expr: &[u8], globals: &[u64]) -> Result<u64, WasmError> {
     }
 }
 
+/// Whether a provided entity's limits satisfy what an import declares.
+///
+/// The provider must be at least as large as the declared minimum, and if the
+/// declaration caps the size then the provider must be capped no higher. An
+/// unbounded provider therefore cannot satisfy a bounded declaration. The
+/// index type has to agree as well: a 64-bit table does not satisfy a 32-bit
+/// declaration or the reverse.
+fn limits_satisfy(declared: &Limits, provided: &Limits) -> bool {
+    if declared.is64 != provided.is64 {
+        return false;
+    }
+    if provided.min() < declared.min() {
+        return false;
+    }
+    match declared.max() {
+        None => true,
+        Some(cap) => provided.max().is_some_and(|p| p <= cap),
+    }
+}
+
 impl InterpInstance {
     /// Instantiate, link the host, then run the start function -- in that
     /// order, which is why the host arrives here rather than through a
@@ -438,6 +458,9 @@ impl InterpInstance {
                 let ImportValue::Memory(provided_limits, _) = &provided.value else {
                     return Err(WasmError::unlinkable("incompatible import type"));
                 };
+                if !limits_satisfy(m.limits(), provided_limits) {
+                    return Err(WasmError::unlinkable("incompatible import type"));
+                }
                 // The provider's limits win, as they do for tables: the
                 // importing module may declare a laxer maximum than the
                 // memory it actually receives, and `memory.grow` must refuse
@@ -571,7 +594,12 @@ impl InterpInstance {
                     // Declared limits with no instance: the embedder is
                     // saying "allocate one", the same reading the JIT gives
                     // it and what the spectest host registers.
-                    Some((limits, None)) => limits,
+                    Some((limits, None)) => {
+                        if !limits_satisfy(t.spec().limits(), &limits) {
+                            return Err(WasmError::unlinkable("incompatible import type"));
+                        }
+                        limits
+                    }
                     // A live table from another instance would have to be
                     // shared, not copied, or the two sides would stop
                     // agreeing after the first `table.set`.
