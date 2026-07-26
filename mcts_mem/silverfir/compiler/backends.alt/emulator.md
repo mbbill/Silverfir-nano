@@ -68,3 +68,11 @@
   every instruction, proved too complex and surfaced too many issues to be worth
   it, so it was abandoned early on feasibility grounds rather than on the
   differential idea being unsound (sourced)
+
+- 2026-07-25 (5649a730) removed: the emulator was the only way to execute
+  32-bit-legalized MachineIR when ARMv7-A was still coming up, but real
+  cross-arch CI (armv7-a, riscv32, riscv64, and thumb2 under qemu) now runs the
+  full spec and WASI suites on that path directly; what remained was its value
+  as a bisector between legalization and register allocation, judged not worth
+  5.2k lines welded to MachineIR, the fastest-moving contract in the JIT
+  (sourced).
