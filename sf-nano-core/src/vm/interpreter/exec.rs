@@ -875,14 +875,35 @@ impl InterpInstance {
             // the other way round. Only a table that is neither imported nor
             // exported can keep a private array.
             let shared_out = !t.export_names().is_empty();
+            // A table may declare an initializer, and every slot starts at
+            // its value rather than null. Ignoring it left `(table 10 funcref
+            // (ref.func $d))` full of nulls.
+            let init_slot = match t.spec().init_expr() {
+                Some(expr) => {
+                    let raw = eval_const(expr, &globals)?;
+                    let handle = slot_to_ref(raw);
+                    match (&funcref_host, handle.is_null() || handle.is_special()) {
+                        // Shared tables carry globally-named references; see
+                        // `FuncRefHost`.
+                        (Some(h), false) if !t.export_names().is_empty() || t.is_import() => {
+                            let named = (h.publish)(handle.0);
+                            published.push((named, handle.0));
+                            ref_to_slot(named)
+                        }
+                        _ => raw,
+                    }
+                }
+                None => NULL_REF_SLOT,
+            };
             let entries = match (&shared_from_import, shared_out) {
                 (Some(inst), _) => TableEntries::Shared(inst.clone()),
                 (None, true) => {
                     let inst = TableInst::new(limits.clone(), t.value_type());
-                    inst.elements_mut().resize(limits.min(), RefHandle::null());
+                    inst.elements_mut()
+                        .resize(limits.min(), slot_to_ref(init_slot));
                     TableEntries::Shared(inst)
                 }
-                (None, false) => TableEntries::Private(vec![NULL_REF_SLOT; limits.min() as usize]),
+                (None, false) => TableEntries::Private(vec![init_slot; limits.min() as usize]),
             };
             tables.push(TableState {
                 entries,
