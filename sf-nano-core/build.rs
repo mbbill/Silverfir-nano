@@ -162,36 +162,35 @@ fn emit_interp_engine() {
     };
     // `require_supported_isa` already refused an ISA with no backend, so the
     // match below is total: every ISA the JIT emits for has a handler set, and
-    // adding a `SelectedBackend` variant without one is a build-script
+    // adding a `TargetBackend` variant without one is a build-script
     // compile error rather than a silently engine-less interpreter.
-    let backend = selected_backend().expect("require_supported_isa ran first");
-    let thumb = backend == SelectedBackend::ThumbM
-        || (backend == SelectedBackend::Armv7a
-            && env::var_os("CARGO_FEATURE_THUMB2_TEST").is_some());
+    let backend = target_backend().expect("require_supported_isa ran first");
+    let thumb = backend == TargetBackend::ThumbM
+        || (backend == TargetBackend::Armv7a && env::var_os("CARGO_FEATURE_THUMB2_TEST").is_some());
     let mut isa: Box<dyn Isa> = match backend {
-        SelectedBackend::Arm64 => Box::new(interp_gen::arm64::Arm64),
-        SelectedBackend::X64 => Box::new(interp_gen::x86_64::X86_64 {
+        TargetBackend::Arm64 => Box::new(interp_gen::arm64::Arm64),
+        TargetBackend::X64 => Box::new(interp_gen::x86_64::X86_64 {
             windows: os == "windows",
         }),
-        SelectedBackend::Riscv64 => Box::new(interp_gen::riscv::RiscV {
+        TargetBackend::Riscv64 => Box::new(interp_gen::riscv::RiscV {
             xlen: 64,
             // RV64GC's triple contract guarantees F and D.
             fp: true,
         }),
-        SelectedBackend::Riscv32 => Box::new(interp_gen::riscv::RiscV {
+        TargetBackend::Riscv32 => Box::new(interp_gen::riscv::RiscV {
             xlen: 32,
             // The RV32 handler set is the integer one; f32/f64 route to the
             // shared executor even on `gc` triples.
             fp: false,
         }),
-        SelectedBackend::Armv7a | SelectedBackend::ThumbM => {
+        TargetBackend::Armv7a | TargetBackend::ThumbM => {
             Box::new(interp_gen::arm32::Arm32 {
                 thumb,
                 // Both profiles have sdiv/udiv — this project's ARMv7-A
                 // targets are the IDIV ones (build.rs already assumes
                 // VFPv3-D16, which implies it), and every M-profile core
                 // has them. Only the A-profile assembler needs telling.
-                idiv_directive: backend == SelectedBackend::Armv7a,
+                idiv_directive: backend == TargetBackend::Armv7a,
             })
         }
     };
@@ -222,7 +221,7 @@ fn emit_interp_engine() {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum SelectedBackend {
+enum TargetBackend {
     Arm64,
     Armv7a,
     ThumbM,
@@ -231,25 +230,27 @@ enum SelectedBackend {
     X64,
 }
 
-/// The backend for the ISA this build runs on.
+/// Which backend this target's ISA calls for.
 ///
-/// Both engines ask this one question, so neither can end up covering an ISA
-/// the other does not.
-fn selected_backend() -> Option<SelectedBackend> {
+/// Not a choice among alternatives -- the target determines it, and both
+/// engines ask this one question, so neither can end up covering an ISA the
+/// other does not. This is the only place a raw `target_arch` / triple is
+/// read; everything downstream speaks `sf_backend_*`.
+fn target_backend() -> Option<TargetBackend> {
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target = env::var("TARGET").unwrap_or_default();
     match arch.as_str() {
-        "aarch64" => Some(SelectedBackend::Arm64),
+        "aarch64" => Some(TargetBackend::Arm64),
         "arm" => {
             if target.starts_with("thumbv") {
-                Some(SelectedBackend::ThumbM)
+                Some(TargetBackend::ThumbM)
             } else {
-                Some(SelectedBackend::Armv7a)
+                Some(TargetBackend::Armv7a)
             }
         }
-        "riscv32" if target_implies_rv32_supported(&target) => Some(SelectedBackend::Riscv32),
-        "riscv64" if target_implies_rv64gc(&target) => Some(SelectedBackend::Riscv64),
-        "x86_64" => Some(SelectedBackend::X64),
+        "riscv32" if target_implies_rv32_supported(&target) => Some(TargetBackend::Riscv32),
+        "riscv64" if target_implies_rv64gc(&target) => Some(TargetBackend::Riscv64),
+        "x86_64" => Some(TargetBackend::X64),
         _ => None,
     }
 }
@@ -262,7 +263,7 @@ fn selected_backend() -> Option<SelectedBackend> {
 /// fails at instantiation -- so the honest answer is to refuse here, where the
 /// message can name the target.
 fn require_supported_isa() {
-    if selected_backend().is_some() {
+    if target_backend().is_some() {
         return;
     }
     let engines: Vec<&str> = [
@@ -290,9 +291,9 @@ fn emit_backend_cfgs() {
     // Source code uses `sf_backend_*` cfgs instead of raw `target_arch = ...`.
     // Exactly one backend cfg is set when the build selects a supported
     // backend.
-    match selected_backend() {
-        Some(SelectedBackend::Arm64) => println!("cargo:rustc-cfg=sf_backend_arm64"),
-        Some(SelectedBackend::Armv7a) => {
+    match target_backend() {
+        Some(TargetBackend::Arm64) => println!("cargo:rustc-cfg=sf_backend_arm64"),
+        Some(TargetBackend::Armv7a) => {
             println!("cargo:rustc-cfg=sf_backend_armv7a");
             // ARMv7-A targets with IDIV always have VFPv3-D16+.
             println!("cargo:rustc-cfg=sf_fp_dp");
@@ -303,7 +304,7 @@ fn emit_backend_cfgs() {
                 println!("cargo:rustc-cfg=sf_arm32_isa_thumb");
             }
         }
-        Some(SelectedBackend::ThumbM) => {
+        Some(TargetBackend::ThumbM) => {
             println!("cargo:rustc-cfg=sf_backend_thumbm");
             println!("cargo:rustc-cfg=sf_arm32_isa_thumb");
             // sf_fp_dp stays off on thumbm: no M-profile FPU offers
@@ -312,7 +313,7 @@ fn emit_backend_cfgs() {
             // requires a separate legalization story and is out of
             // scope for the initial bring-up.
         }
-        Some(SelectedBackend::Riscv32) => {
+        Some(TargetBackend::Riscv32) => {
             println!("cargo:rustc-cfg=sf_backend_riscv32");
             // sf_fp_dp is on for `riscv32gc-*` (F/D guaranteed by triple
             // contract; rustc may not report F/D via target-feature here).
@@ -325,7 +326,7 @@ fn emit_backend_cfgs() {
             }
             require_target_feature("m", "rv32 backend requires the RISC-V M extension");
         }
-        Some(SelectedBackend::Riscv64) => {
+        Some(TargetBackend::Riscv64) => {
             println!("cargo:rustc-cfg=sf_backend_riscv64");
             // Rust currently reports only a/c/m through CARGO_CFG_TARGET_FEATURE
             // for riscv64gc targets, even though the target codegen/ABI is
@@ -334,7 +335,7 @@ fn emit_backend_cfgs() {
             println!("cargo:rustc-cfg=sf_fp_dp");
             require_target_feature("m", "rv64 backend requires the RISC-V M extension");
         }
-        Some(SelectedBackend::X64) => println!("cargo:rustc-cfg=sf_backend_x64"),
+        Some(TargetBackend::X64) => println!("cargo:rustc-cfg=sf_backend_x64"),
         None => {}
     }
 }
@@ -385,12 +386,12 @@ fn emit_subsystem_cfgs() {
 }
 
 fn emit_simd_cfg() {
-    match selected_backend() {
-        Some(SelectedBackend::Arm64) => {
+    match target_backend() {
+        Some(TargetBackend::Arm64) => {
             require_target_feature("neon", "arm64 SIMD support requires NEON");
             println!("cargo:rustc-cfg=sf_has_simd");
         }
-        Some(SelectedBackend::X64) => {
+        Some(TargetBackend::X64) => {
             // The x64 SIMD lowering emits SSSE3 (`pshufb`) and SSE4.1
             // (`ptest`, `pmovsx*`, `pmovzx*`, `pmulld`, `roundps`/`roundpd`).
             // Those are requirements of the *emitted* code, not of this
@@ -495,10 +496,10 @@ fn emit_guard_pages_cfg() {
         return;
     }
     let os = env::var("CARGO_CFG_TARGET_OS").unwrap_or_default();
-    let backend = selected_backend();
+    let backend = target_backend();
     let os_ok = matches!(os.as_str(), "macos" | "linux")
-        || (os == "windows" && matches!(backend, Some(SelectedBackend::X64)));
-    if os_ok && matches!(backend, Some(SelectedBackend::X64 | SelectedBackend::Arm64)) {
+        || (os == "windows" && matches!(backend, Some(TargetBackend::X64)));
+    if os_ok && matches!(backend, Some(TargetBackend::X64 | TargetBackend::Arm64)) {
         println!("cargo:rustc-cfg=sf_has_guard_pages");
     }
 }
