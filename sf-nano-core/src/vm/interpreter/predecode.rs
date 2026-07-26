@@ -1618,6 +1618,12 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 Opcode::REF_AS_NON_NULL => {
                     self.value_op(Op::RefAsNonNull, 1)?;
                 }
+                // Nominally a GC opcode, but it is reference identity and
+                // nothing more: non-GC tests use it, and a slot comparison
+                // answers it exactly.
+                Opcode::REF_EQ => {
+                    self.value_op(Op::RefEq, 2)?;
+                }
                 Opcode::CALL_REF | Opcode::RETURN_CALL_REF => {
                     let tail = o == Opcode::RETURN_CALL_REF;
                     let tidx = match imm {

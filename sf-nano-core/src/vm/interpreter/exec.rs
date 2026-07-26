@@ -2175,6 +2175,9 @@ impl InterpInstance {
                 let v = opa!(ins);
                 frame[ins.c as usize] = slot_to_ref(v).is_null() as u64;
             }
+            Op::RefEq => {
+                frame[ins.c as usize] = (opa!(ins) == opb!(ins)) as u64;
+            }
             Op::RefAsNonNull => {
                 let v = opa!(ins);
                 if slot_to_ref(v).is_null() {

@@ -309,6 +309,9 @@ pub enum Op {
     RefIsNull,
     /// `ref.as_non_null`: passes the reference through, trapping on null.
     RefAsNonNull,
+    /// `ref.eq`: reference identity. A slot holds the handle verbatim, so
+    /// two references are equal exactly when their slots are.
+    RefEq,
     /// `a` = index operand, `b` = table index, `c` = dst.
     TableGet,
     /// `a` = index operand, `b` = value operand, `c` = table index.
