@@ -264,6 +264,10 @@ pub const INTERPRETER_EXCLUDED: &[(&str, &str)] = &[
     ("simd_store8_lane", "SIMD"),
     // Garbage collection: needs the heap and type-check substrate the
     // interpreter deliberately does not carry.
+    // Only its final directive needs GC -- an element segment holding
+    // `array.new_default`. Everything before it passes, but the file cannot
+    // as a whole, and GC is out of scope by design.
+    ("table_init", "GC"),
     ("array", "GC"),
     ("array_copy", "GC"),
     ("array_fill", "GC"),
