@@ -1056,12 +1056,13 @@ pub(crate) fn fd_close(
             ctx.closed_stdio.insert(fd);
             return ERRNO_SUCCESS;
         }
-        // preopened dir
-        let preopen_end = 3 + ctx.preopens.len() as i32;
-        if fd >= 3 && fd < preopen_end {
-            if ctx.closed_preopens.contains(&fd) {
-                return ERRNO_BADF;
-            }
+        // Preopened dir. A number in the preopen range is not necessarily
+        // still a preopen: `fd_renumber` can move a descriptor onto it, which
+        // retires the original and installs a live entry under that number.
+        // Resolving through `preopen_index_for_fd` -- as every other fd
+        // operation does -- lets that case fall through to the dynamic map
+        // instead of reporting the retired preopen as a bad descriptor.
+        if preopen_index_for_fd(ctx, fd).is_some() {
             ctx.closed_preopens.insert(fd);
             return ERRNO_SUCCESS;
         }

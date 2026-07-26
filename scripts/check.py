@@ -1700,29 +1700,48 @@ def run_riscv32_binary(
     return runner.run(name, argv, env=env, log_name=log_name, ignore_warnings=True)
 
 
-def run_wasitest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_args: Sequence[str]) -> None:
+def run_wasitest_suite(
+    runner: CheckRunner,
+    *,
+    profiles: Sequence[str],
+    extra_args: Sequence[str],
+    engine: Engine = JIT_ENGINE,
+) -> None:
+    """Run wasi-testsuite against one engine.
+
+    The WASI surface is where the two engines differ most outside of code
+    execution itself -- host calls, preopens, and the value boundary -- and
+    none of it is reachable from the spec suite. So the interpreter runs
+    every row the JIT does, exactly as it does for spectest.
+    """
     for profile_name in profiles:
-        run_wasitest_host_profile(runner, profile_name, extra_args)
+        run_wasitest_host_profile(runner, profile_name, extra_args, engine)
 
     if "release" in profiles:
         if os.environ.get("SF_CHECK_SKIP_CROSS_RUNTIME"):
             runner.skip(
-                "run: wasitest cross-arch (release)",
+                f"run: wasitest{engine.tag} cross-arch (release)",
                 "SF_CHECK_SKIP_CROSS_RUNTIME=1: x64/armv7/riscv64/riscv32 WASI runs deferred to the dedicated cross-arch CI job.",
             )
         else:
-            run_wasitest_release_cross_targets(runner, extra_args)
+            run_wasitest_release_cross_targets(runner, extra_args, engine)
 
 
-def run_wasitest_host_profile(runner: CheckRunner, profile_name: str, extra_args: Sequence[str]) -> None:
+def run_wasitest_host_profile(
+    runner: CheckRunner,
+    profile_name: str,
+    extra_args: Sequence[str],
+    engine: Engine = JIT_ENGINE,
+) -> None:
+    tag = engine.tag
     cli_build = cargo_build(
         runner,
-        f"cargo build: wasitest cli native ({profile_name})",
+        f"cargo build: wasitest{tag} cli native ({profile_name})",
         "sf-nano-cli",
         profile_name=profile_name,
         target=None,
-        features="jit",
-        log_name=f"wasitest-build-cli-native-{profile_name}",
+        features=engine.features,
+        log_name=f"wasitest-build{tag}-cli-native-{profile_name}",
     )
     harness_build = cargo_build_package(
         runner,
@@ -1735,30 +1754,35 @@ def run_wasitest_host_profile(runner: CheckRunner, profile_name: str, extra_args
     cli_bin = binary_path("sf-nano-cli", profile_name, runner.host)
     wasitest_bin = binary_path("sf-nano-wasitest", profile_name, runner.host)
     if cli_build.status == "FAIL":
-        skip_after_failed_dependency(runner, f"run: wasitest native ({profile_name})", cli_build)
+        skip_after_failed_dependency(runner, f"run: wasitest{tag} native ({profile_name})", cli_build)
     elif harness_build.status == "FAIL":
-        skip_after_failed_dependency(runner, f"run: wasitest native ({profile_name})", harness_build)
+        skip_after_failed_dependency(runner, f"run: wasitest{tag} native ({profile_name})", harness_build)
     else:
         run_binary_if_present(
             runner,
-            f"run: wasitest native ({profile_name})",
-            [wasitest_bin, "--cli-path", cli_bin, "--backend", "native", *extra_args],
-            log_name=f"wasitest-native-{profile_name}",
+            f"run: wasitest{tag} native ({profile_name})",
+            [wasitest_bin, "--cli-path", cli_bin, *engine.args, *extra_args],
+            log_name=f"wasitest{tag}-native-{profile_name}",
         )
 
 
 
-def run_wasitest_release_cross_targets(runner: CheckRunner, extra_args: Sequence[str]) -> None:
+def run_wasitest_release_cross_targets(
+    runner: CheckRunner,
+    extra_args: Sequence[str],
+    engine: Engine = JIT_ENGINE,
+) -> None:
+    tag = engine.tag
     target = x64_target_for_host(runner.host)
     if target and is_runnable_x64_host(runner.host) and ensure_rust_target(runner, target):
         cli_build = cargo_build(
             runner,
-            "cargo build: wasitest cli x64 (release)",
+            f"cargo build: wasitest{tag} cli x64 (release)",
             "sf-nano-cli",
             profile_name="release",
             target=target,
-            features="jit",
-            log_name="wasitest-build-cli-x64-release",
+            features=engine.features,
+            log_name=f"wasitest-build{tag}-cli-x64-release",
         )
         harness_build = cargo_build_package(
             runner,
@@ -1771,17 +1795,17 @@ def run_wasitest_release_cross_targets(runner: CheckRunner, extra_args: Sequence
         cli_bin = binary_path("sf-nano-cli", "release", runner.host, target)
         wasitest_bin = binary_path("sf-nano-wasitest", "release", runner.host, target)
         if cli_build.status == "FAIL":
-            skip_after_failed_dependency(runner, "run: wasitest x64 (release)", cli_build)
+            skip_after_failed_dependency(runner, f"run: wasitest{tag} x64 (release)", cli_build)
         elif harness_build.status == "FAIL":
-            skip_after_failed_dependency(runner, "run: wasitest x64 (release)", harness_build)
+            skip_after_failed_dependency(runner, f"run: wasitest{tag} x64 (release)", harness_build)
         else:
             if runner.host.kind == "macos":
-                argv: List[object] = ["arch", "-x86_64", wasitest_bin, "--cli-path", cli_bin, "--backend", "native", *extra_args]
+                argv: List[object] = ["arch", "-x86_64", wasitest_bin, "--cli-path", cli_bin, *engine.args, *extra_args]
             else:
-                argv = [wasitest_bin, "--cli-path", cli_bin, "--backend", "native", *extra_args]
-            run_binary_if_present(runner, "run: wasitest x64 (release)", argv, log_name="wasitest-x64-release")
+                argv = [wasitest_bin, "--cli-path", cli_bin, *engine.args, *extra_args]
+            run_binary_if_present(runner, f"run: wasitest{tag} x64 (release)", argv, log_name=f"wasitest{tag}-x64-release")
     else:
-        runner.skip("run: wasitest x64 (release)", "x64 runtime checks require runnable x64 host support.")
+        runner.skip(f"run: wasitest{tag} x64 (release)", "x64 runtime checks require runnable x64 host support.")
 
     qemu_harness_build = cargo_build_package(
         runner,
@@ -1793,44 +1817,44 @@ def run_wasitest_release_cross_targets(runner: CheckRunner, extra_args: Sequence
     )
     native_wasitest = binary_path("sf-nano-wasitest", "release", runner.host)
 
-    run_riscv64_wasitest_release(runner, extra_args, qemu_harness_build, native_wasitest)
-    run_riscv32_wasitest_release(runner, extra_args, qemu_harness_build, native_wasitest)
+    run_riscv64_wasitest_release(runner, extra_args, qemu_harness_build, native_wasitest, engine)
+    run_riscv32_wasitest_release(runner, extra_args, qemu_harness_build, native_wasitest, engine)
 
     if not ensure_rust_target(runner, ARMV7_TARGET):
         return
     if not ensure_armv7_runner(runner):
         return
 
-    for label, features in (("armv7a", "jit"), ("armv7m", "jit,thumb2-test")):
+    for label, extra_features in (("armv7a", ""), ("armv7m", ",thumb2-test")):
         cli_build = cargo_build(
             runner,
-            f"cargo build: wasitest cli {label} (release)",
+            f"cargo build: wasitest{tag} cli {label} (release)",
             "sf-nano-cli",
             profile_name="release",
             target=ARMV7_TARGET,
-            features=features,
-            log_name=f"wasitest-build-cli-{label}-release",
+            features=f"{engine.features}{extra_features}",
+            log_name=f"wasitest-build{tag}-cli-{label}-release",
         )
         cli_bin = binary_path("sf-nano-cli", "release", runner.host, ARMV7_TARGET)
         saved = cli_bin.with_name(f"{cli_bin.name}.{label}")
         if qemu_harness_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"run: wasitest {label} (release)", qemu_harness_build)
+            skip_after_failed_dependency(runner, f"run: wasitest{tag} {label} (release)", qemu_harness_build)
             continue
         if cli_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"run: wasitest {label} (release)", cli_build)
+            skip_after_failed_dependency(runner, f"run: wasitest{tag} {label} (release)", cli_build)
             continue
         if cli_bin.exists():
             shutil.copy2(cli_bin, saved)
         elif not runner.dry_run:
-            runner.fail(f"run: wasitest {label} (release)", f"expected binary not found: {cli_bin}")
+            runner.fail(f"run: wasitest{tag} {label} (release)", f"expected binary not found: {cli_bin}")
             continue
         wrapper = make_armv7_wasi_wrapper(runner, label, saved)
         run_binary_if_present(
             runner,
-            f"run: wasitest {label} (release)",
-            [native_wasitest, "--cli-path", wrapper, "--backend", "native", *extra_args],
+            f"run: wasitest{tag} {label} (release)",
+            [native_wasitest, "--cli-path", wrapper, *engine.args, *extra_args],
             env={"TMPDIR": str(runner.tmp_dir)},
-            log_name=f"wasitest-{label}-release",
+            log_name=f"wasitest{tag}-{label}-release",
             ignore_warnings=True,
         )
 
@@ -1840,7 +1864,9 @@ def run_riscv64_wasitest_release(
     extra_args: Sequence[str],
     harness_build: StepResult,
     native_wasitest: Path,
+    engine: Engine = JIT_ENGINE,
 ) -> None:
+    tag = engine.tag
     if not ensure_rust_target(runner, RISCV64_TARGET):
         return
     if not ensure_riscv64_runner(runner):
@@ -1848,28 +1874,28 @@ def run_riscv64_wasitest_release(
 
     cli_build = cargo_build(
         runner,
-        "cargo build: wasitest cli riscv64 (release)",
+        f"cargo build: wasitest{tag} cli riscv64 (release)",
         "sf-nano-cli",
         profile_name="release",
         target=RISCV64_TARGET,
-        features="jit",
-        log_name="wasitest-build-cli-riscv64-release",
+        features=engine.features,
+        log_name=f"wasitest-build{tag}-cli-riscv64-release",
     )
     cli_bin = binary_path("sf-nano-cli", "release", runner.host, RISCV64_TARGET)
     if harness_build.status == "FAIL":
-        skip_after_failed_dependency(runner, "run: wasitest riscv64 (release)", harness_build)
+        skip_after_failed_dependency(runner, f"run: wasitest{tag} riscv64 (release)", harness_build)
         return
     if cli_build.status == "FAIL":
-        skip_after_failed_dependency(runner, "run: wasitest riscv64 (release)", cli_build)
+        skip_after_failed_dependency(runner, f"run: wasitest{tag} riscv64 (release)", cli_build)
         return
 
     wrapper = make_riscv64_wasi_wrapper(runner, cli_bin)
     run_binary_if_present(
         runner,
-        "run: wasitest riscv64 (release)",
-        [native_wasitest, "--cli-path", wrapper, "--backend", "native", *extra_args],
+        f"run: wasitest{tag} riscv64 (release)",
+        [native_wasitest, "--cli-path", wrapper, *engine.args, *extra_args],
         env={"TMPDIR": str(runner.tmp_dir)},
-        log_name="wasitest-riscv64-release",
+        log_name=f"wasitest{tag}-riscv64-release",
         ignore_warnings=True,
     )
 
@@ -1879,7 +1905,9 @@ def run_riscv32_wasitest_release(
     extra_args: Sequence[str],
     harness_build: StepResult,
     native_wasitest: Path,
+    engine: Engine = JIT_ENGINE,
 ) -> None:
+    tag = engine.tag
     if not ensure_rust_target(runner, RISCV32_TARGET):
         return
     if not ensure_riscv32_runner(runner):
@@ -1887,36 +1915,35 @@ def run_riscv32_wasitest_release(
 
     cli_build = cargo_build(
         runner,
-        "cargo build: wasitest cli riscv32 (release)",
+        f"cargo build: wasitest{tag} cli riscv32 (release)",
         "sf-nano-cli",
         profile_name="release",
         target=RISCV32_TARGET,
-        features="jit",
-        log_name="wasitest-build-cli-riscv32-release",
+        features=engine.features,
+        log_name=f"wasitest-build{tag}-cli-riscv32-release",
     )
     cli_bin = binary_path("sf-nano-cli", "release", runner.host, RISCV32_TARGET)
     if harness_build.status == "FAIL":
-        skip_after_failed_dependency(runner, "run: wasitest riscv32 (release)", harness_build)
+        skip_after_failed_dependency(runner, f"run: wasitest{tag} riscv32 (release)", harness_build)
         return
     if cli_build.status == "FAIL":
-        skip_after_failed_dependency(runner, "run: wasitest riscv32 (release)", cli_build)
+        skip_after_failed_dependency(runner, f"run: wasitest{tag} riscv32 (release)", cli_build)
         return
 
     wrapper = make_riscv32_wasi_wrapper(runner, cli_bin)
     run_binary_if_present(
         runner,
-        "run: wasitest riscv32 (release)",
+        f"run: wasitest{tag} riscv32 (release)",
         [
             native_wasitest,
             "--cli-path",
             wrapper,
-            "--backend",
-            "native",
+            *engine.args,
             "--skip-rv32-qemu-timestamp-tests",
             *extra_args,
         ],
         env={"TMPDIR": str(runner.tmp_dir)},
-        log_name="wasitest-riscv32-release",
+        log_name=f"wasitest{tag}-riscv32-release",
         ignore_warnings=True,
     )
 
@@ -2229,6 +2256,7 @@ def run_full(
     run_wasitest_suite(runner, profiles=profiles, extra_args=[])
     # The interpreter goes last, after every JIT phase is green.
     run_interp_suite(runner, profiles=profiles, extra_args=extra_args)
+    run_wasitest_suite(runner, profiles=profiles, extra_args=[], engine=INTERP_ENGINE)
 
 
 def selected_profiles(debug_only: bool, release_only: bool) -> List[str]:

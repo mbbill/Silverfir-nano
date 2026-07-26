@@ -70,6 +70,11 @@ struct Cli {
     #[structopt(long = "backend")]
     backend: Option<String>,
 
+    /// Run every test through the interpreter instead of the JIT. Forwarded
+    /// to sf-nano-cli, which needs to have been built with `interp`.
+    #[structopt(long = "interp")]
+    interp: bool,
+
     /// Override per-function compiler RAM budget passed to sf-nano-cli, e.g. 0, 400K, 2M.
     #[structopt(long = "compiler-ram-budget")]
     compiler_ram_budget: Option<String>,
@@ -100,8 +105,15 @@ fn main() {
     let test_suite_dirs = find_test_suite_directories(testsuite_path);
     info!("Found {} test suite directories", test_suite_dirs.len());
     if test_suite_dirs.is_empty() {
-        warn!("No test suite directories found");
-        return;
+        // A suite that discovers nothing has not passed, it has not run. This
+        // exited 0 once, and a testsuite pin carrying no `.wasm` files sat in
+        // CI reporting green 0.0s runs on every architecture because of it.
+        error!(
+            "No test suite directories found under {}. The testsuite checkout \
+             has no .wasm files -- check the pin in build.rs.",
+            testsuite_path.display()
+        );
+        std::process::exit(1);
     }
 
     if cli.list_only {
@@ -411,6 +423,30 @@ fn read_test_config(wasm_file: &Path) -> TestConfig {
     }
 }
 
+/// Remove `*.cleanup` entries anywhere under `dir`, the suite's marker for
+/// files a test creates and does not guarantee to remove.
+fn remove_cleanup_entries(dir: &Path) {
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        let is_cleanup = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.ends_with(".cleanup"));
+        if is_cleanup {
+            let _ = if path.is_dir() {
+                fs::remove_dir_all(&path)
+            } else {
+                fs::remove_file(&path)
+            };
+        } else if path.is_dir() {
+            remove_cleanup_entries(&path);
+        }
+    }
+}
+
 fn run_wasm_test_with_subprocess(
     test_name: &str,
     wasm_data: &[u8],
@@ -431,6 +467,9 @@ fn run_wasm_test_with_subprocess(
         .map_err(|err| format!("Failed to write temp WASM file: {}", err))?;
 
     let mut cmd = Command::new(cli_path);
+    if cli.interp {
+        cmd.arg("--interp");
+    }
     if let Some(ref backend) = cli.backend {
         cmd.arg("--backend").arg(backend);
     }
@@ -438,52 +477,36 @@ fn run_wasm_test_with_subprocess(
         cmd.arg("--compiler-ram-budget").arg(budget);
     }
 
-    let fixture_root = fixture_dir
-        .map(|path| path.join("fs-tests.dir"))
-        .or_else(|| {
-            std::env::current_dir()
-                .ok()
-                .map(|path| path.join("fs-tests.dir"))
-        });
-
-    if let Some(ref dirs) = config.dirs {
-        for dir in dirs {
-            let guest = dir.clone();
-            let dst = temp_root.join("preopens").join(dir);
-            fs::create_dir_all(&dst).map_err(|err| {
+    // `root` preopens a directory as the guest's `/`, per the suite's
+    // specification.md. Every filesystem test in the current suite declares
+    // its scratch area this way, so a runner that honours only `dirs` passes
+    // no preopen at all and each one dies looking for its working directory.
+    if let Some(ref root) = config.root {
+        let src = fixture_dir
+            .map(|dir| dir.join(root))
+            .filter(|path| path.is_dir())
+            .ok_or_else(|| {
                 format!(
-                    "Failed to create preopen directory {}: {}",
-                    dst.display(),
-                    err
+                    "test declares root `{}` but no such directory sits beside it",
+                    root
                 )
             })?;
-
-            if let Some(ref root) = fixture_root {
-                let dir_clean = dir.replace(".cleanup", "");
-                let src = if dir_clean == "fs-tests.dir" {
-                    root.clone()
-                } else {
-                    root.join(&dir_clean)
-                };
-                if src.exists() {
-                    if src.is_dir() {
-                        copy_dir_recursive(&src, &dst).map_err(|err| {
-                            format!(
-                                "Failed to copy fixture {} -> {}: {}",
-                                src.display(),
-                                dst.display(),
-                                err
-                            )
-                        })?;
-                    } else {
-                        let _ = fs::copy(&src, &dst);
-                    }
-                }
-            }
-
-            cmd.arg("--dir")
-                .arg(format!("{}::{}", guest, dst.display()));
-        }
+        let dst = temp_root.join("root");
+        fs::create_dir_all(&dst)
+            .map_err(|err| format!("Failed to create root preopen {}: {}", dst.display(), err))?;
+        copy_dir_recursive(&src, &dst).map_err(|err| {
+            format!(
+                "Failed to copy root fixture into {}: {}",
+                dst.display(),
+                err
+            )
+        })?;
+        // The suite's convention: `*.cleanup` entries are scratch a previous
+        // run may have left behind, and a test is entitled to a root without
+        // them. The fixture is copied, never written through, so clearing the
+        // copy is enough.
+        remove_cleanup_entries(&dst);
+        cmd.arg("--dir").arg(format!("/::{}", dst.display()));
     }
 
     cmd.arg(&temp_wasm_path);

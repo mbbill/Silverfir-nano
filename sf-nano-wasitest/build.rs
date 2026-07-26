@@ -1,9 +1,15 @@
 use std::{env, fs, path::Path, process::Command};
 
+// `prod/testsuite-base`, NOT `main`. The suite's default branch ships only
+// sources and a `build.py` that needs a wasi-sdk clang to produce the test
+// binaries; this branch ships them prebuilt. Pinning `main` here leaves the
+// runner with zero `.wasm` files to discover, which is not a loud failure --
+// it is an empty run that reports success. See `find_test_suite_directories`,
+// which refuses an empty discovery for the same reason.
 const WASI_TESTSUITE_URL: &str =
-    "https://github.com/WebAssembly/wasi-testsuite/archive/96bcf61cf88023ca547d60f8b04c49f3d43d2838.tar.gz";
+    "https://github.com/WebAssembly/wasi-testsuite/archive/caf3b66fa3457cc17156864d971387a7e9f5933b.tar.gz";
 const TESTSUITE_VERSION_FILE: &str = "wasi_testsuite_version.txt";
-const TESTSUITE_VERSION: &str = "96bcf61cf88023ca547d60f8b04c49f3d43d2838";
+const TESTSUITE_VERSION: &str = "caf3b66fa3457cc17156864d971387a7e9f5933b";
 
 fn main() {
     let out_dir = env::var("OUT_DIR").unwrap();

@@ -9,7 +9,10 @@ pub struct TestConfig {
     pub args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
     pub exit_code: Option<i32>,
-    pub dirs: Option<Vec<String>>,
+    /// Directory, relative to the test's own directory, to preopen as the
+    /// guest's root filesystem (`/`). This is how the suite declares a test's
+    /// scratch area; there is no other preopen key in its schema.
+    pub root: Option<String>,
     pub stdout: Option<String>,
     pub stderr: Option<String>,
     pub wasi_functions: Option<Vec<String>>,
