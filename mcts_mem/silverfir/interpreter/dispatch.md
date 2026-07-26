@@ -567,6 +567,36 @@
   BASELINE against the record is the cheap check for whether a session's numbers
   can be compared to anything at all (code)
 
+- 2026-07-26 measurement: canonicalizing operand order at predecode -- a constant
+  never in the first position, the accumulator never in the second, ordered
+  compares swapping to the mirrored opcode -- lets the generator omit the class
+  combinations that become unreachable, shrinking the emitted engine from
+  334,820 to 288,740 bytes, -13.8%, at 174/174 spec and an unchanged slow-exit
+  population. Measured on a branch, not landed (code)
+- 2026-07-26 measurement: that shrink costs 1.30% of CoreMark cycles per
+  iteration, 1,167,438 to 1,182,838 over eight interleaved samples each, with
+  every other corpus benchmark flat (code)
+- 2026-07-26 measurement: the cost is the emitted SET and not the normalization
+  -- a control that normalizes but still emits the declined handlers measures
+  1,165,305 against the baseline's 1,165,122 (code)
+- 2026-07-26 measurement: it is not the blob's address -- five pad sizes shifting
+  the whole engine span 0.7% and all sit 1.2-1.9% above the baseline (code)
+- 2026-07-26 measurement: nor is it proportional to how much is removed --
+  excluding half the combinations saves 27 KB instead of 46 KB and costs the
+  same or more (code)
+- 2026-07-26 measurement: coarse family-order permutation is worth ~0.24% at six
+  samples per candidate, and two random orders beat the tuned order on the
+  changed handler set (code)
+- 2026-07-26 pitfall: an n=2 sample put that spread at 1.8% and ranked the
+  candidates confidently; the ranking dissolved at n=6 (code)
+- 2026-07-26 rationale: the emitted engine carries ~8,800 handlers and three
+  alignment directives, so every handler's address is the running sum of what
+  precedes it, and any change to the handler set re-rolls hot-handler placement
+  (code)
+- 2026-07-26 statement: the emission order on record was tuned against CoreMark
+  and lua for one handler set, so a baseline it produced is a fitted draw rather
+  than a neutral one (code)
+
 ## Moves
 
 - 2026-07-26 replaced [[stencil-stitching]]: removing the dispatch between cells is

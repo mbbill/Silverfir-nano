@@ -34,6 +34,39 @@
 
 ## Facts
 
+- 2026-07-26 measurement: a third pinned local fits under the hard 512 KB
+  assert at 495,204 bytes, 483.6 KB, once canonical operand order has freed
+  the room; the naive six-class space models at 556 KB and would panic at
+  instantiation (code)
+- 2026-07-26 measurement: the third-ranked local is touched by 7.7-39.1% of
+  dispatches across the corpus, mean ~21%, against the 15.9% measured for l1
+  (code)
+- 2026-07-26 measurement: loops that have NO carried local pinned and would
+  gain one from a third pin carry 34.2% of bzip2's dispatches, 26.7% of
+  sha256's, ~9% of c-ray's and sqlite's, and under 1% everywhere else (code)
+- 2026-07-26 measurement: the l2 experiment measured CoreMark-neutral --
+  1,161,795 cycles per iteration against 1,172,447 over six interleaved
+  samples each -- with the score a wash at ~8,000 despite a 44% larger engine
+  (code)
+- 2026-07-26 measurement: sha256 read about +2.8% and bzip2 flat, though bzip2
+  carried the corpus's strongest predictor at 34.2% (code)
+- 2026-07-26 rationale: carried-pin coverage does not predict pinning value
+  either (code)
+- 2026-07-26 statement: the experiment avoided any call-protocol change by
+  restricting the third pin to LEAF bodies, so a caller never holds one, and by
+  riding the callee's l2 slot in call-cell `b` bits 19..30, free because an
+  argument base needs only 19 (code)
+- 2026-07-26 measurement: without that, forcing every call that touches an l2
+  function onto the slow path cost CoreMark 36% at 5.6M slow exits, and the
+  leaf restriction alone did not help because the exits come from callers
+  calling INTO l2 bodies (code)
+- 2026-07-26 pitfall: the arm64 MovPair handler selected its operands with a
+  catch-all that assumed the class set closed at L1, so a third class fell into
+  the load-from-slot arm whose base register is only loaded for slot operands
+  and read a stale value -- wrong results, no crash. Catch-all arms over the
+  operand classes are a third recurring failure shape beside bit-packing
+  collisions and hand-counted branch deltas (code)
+
 - 2026-07-23 measurement: adding the single accumulator moved CoreMark
   4227.7±39.4 → 5454.6±48.9 (+29%) with the dispatch count unchanged —
   per-dispatch cost fell ~2.1 → ~1.65 cycles. Only an estimated 15-20% of
