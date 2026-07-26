@@ -719,12 +719,13 @@ impl<'m> Predecoder<'m> {
         self.emit(Op::Return, 0, self.temp_slot(base), r as u64, 0);
     }
 
-    fn call_boundary(
+    fn call_boundary_tail(
         &mut self,
         func_idx_field: Option<u64>,
         params: u32,
         results: u32,
         indirect: Option<(u64, bool, u64)>,
+        tail: bool,
     ) -> Result<(), WasmError> {
         // A call is not a merge point: only the arguments need staging
         // (v1: one mov per still-pending argument; the stage_args batch
@@ -740,7 +741,8 @@ impl<'m> Predecoder<'m> {
         match indirect {
             None => {
                 let fidx = func_idx_field.unwrap_or(0);
-                self.emit(Op::Call, 0, fidx, arg_base, 0);
+                let op = if tail { Op::ReturnCall } else { Op::Call };
+                self.emit(op, 0, fidx, arg_base, 0);
             }
             Some((target, target_const, type_idx)) => {
                 let mut flags = if target_const { FLAG_A_CONST } else { 0 };
@@ -750,11 +752,24 @@ impl<'m> Predecoder<'m> {
                 if self.table_is_64(type_idx >> 32) {
                     flags |= FLAG_ADDR64;
                 }
-                self.emit(Op::CallIndirect, flags, target, arg_base, type_idx);
+                let op = if tail {
+                    Op::ReturnCallIndirect
+                } else {
+                    Op::CallIndirect
+                };
+                self.emit(op, flags, target, arg_base, type_idx);
             }
         }
         for _ in 0..params {
             let _ = self.pop()?;
+        }
+        // A tail call does not return here: the callee's results are this
+        // function's results, so nothing lands on the operand stack and the
+        // rest of the block is unreachable.
+        if tail {
+            self.bump_region();
+            self.dead = true;
+            return Ok(());
         }
         // Results are written by the callee into the argument overlap area:
         // they are already materialized at their canonical heights.
@@ -1372,7 +1387,8 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     self.bump_region();
                     self.dead = true;
                 }
-                Opcode::CALL => {
+                Opcode::CALL | Opcode::RETURN_CALL => {
+                    let tail = o == Opcode::RETURN_CALL;
                     let fidx = match imm {
                         Immediate::FunctionIndex(i) => i,
                         _ => return Err(desync()),
@@ -1383,14 +1399,16 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         .get(fidx as usize)
                         .map(|f| f.func_type_rc())
                         .ok_or(WasmError::invalid("interp: bad call target"))?;
-                    self.call_boundary(
+                    self.call_boundary_tail(
                         Some(fidx as u64),
                         ft.params().len() as u32,
                         ft.results().len() as u32,
                         None,
+                        tail,
                     )?;
                 }
-                Opcode::CALL_INDIRECT => {
+                Opcode::CALL_INDIRECT | Opcode::RETURN_CALL_INDIRECT => {
+                    let tail = o == Opcode::RETURN_CALL_INDIRECT;
                     let (tidx, table) = match imm {
                         Immediate::CallIndirectArgs { typeidx, tableidx } => (typeidx, tableidx),
                         _ => return Err(desync()),
@@ -1403,11 +1421,12 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     let at = self.code.len() as u32;
                     let target = self.pop()?;
                     let (t, t_const) = self.operand(target, at);
-                    self.call_boundary(
+                    self.call_boundary_tail(
                         None,
                         ft.params().len() as u32,
                         ft.results().len() as u32,
                         Some((t, t_const, ((table as u64) << 32) | tidx as u64)),
+                        tail,
                     )?;
                 }
                 Opcode::DROP => {
@@ -1914,10 +1933,19 @@ mod tests {
 
     #[test]
     fn rejects_unsupported_opcodes_cleanly() {
-        // Tail calls are outside the current op set.
+        // SIMD is excluded by design: a v128 lane is a representation change,
+        // not more handlers. The point is that it fails predecode with a
+        // message naming the family rather than desyncing or trapping later.
         let bin: StdVec<u8> =
-            wat::parse_str(r#"(module (func $f) (func return_call $f))"#).expect("wat");
+            wat::parse_str(r#"(module (func (result v128) v128.const i32x4 0 0 0 0))"#)
+                .expect("wat");
         let module = Module::new("t", &bin).expect("module");
-        assert!(predecode_function(&module, 1).is_err());
+        match predecode_function(&module, 0) {
+            Ok(_) => panic!("SIMD must be refused"),
+            Err(err) => assert!(
+                std::format!("{err:?}").contains("SIMD"),
+                "the error should name the family, got {err:?}"
+            ),
+        }
     }
 }

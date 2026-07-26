@@ -180,6 +180,7 @@ struct DriveCtx<'s> {
 }
 
 enum StepExit {
+    TailCall { callee: usize, arg_base: usize },
     Call { callee: usize, arg_base: usize },
     Return,
 }
@@ -188,7 +189,16 @@ enum StepExit {
 pub(super) enum Effect {
     Next,
     Jump(usize),
-    Call { callee: usize, arg_base: usize },
+    Call {
+        callee: usize,
+        arg_base: usize,
+    },
+    /// A call that replaces the current activation rather than nesting
+    /// under it, so `return_call` recursion runs in constant frame depth.
+    TailCall {
+        callee: usize,
+        arg_base: usize,
+    },
     Ret,
 }
 
@@ -1124,6 +1134,56 @@ impl InterpInstance {
                     saved.push(act);
                     act = callee_act;
                 }
+                StepExit::TailCall { callee, arg_base } => {
+                    // The callee returns to THIS activation's caller, so it
+                    // reuses this frame: arguments slide down to `act.base`
+                    // (which is where the caller staged ours, and so where
+                    // our results are expected), and the activation is
+                    // replaced rather than pushed. Recursion through a tail
+                    // call therefore runs at constant depth.
+                    let f = match self.funcs.get(callee) {
+                        Some(Some(f)) => f.clone(),
+                        Some(None) => {
+                            // An imported tail callee: run the host, leave
+                            // its results at this frame's base, and return
+                            // to the caller as this activation would have.
+                            let base = act.base;
+                            self.call_host(callee, &mut ctx.stack[base..], arg_base)?;
+                            let np = ctx.stack[base + arg_base];
+                            ctx.stack[base] = np;
+                            ctx.acc = np;
+                            match saved.pop() {
+                                None => {
+                                    results.copy_from_slice(&ctx.stack[..results.len()]);
+                                    return Ok(());
+                                }
+                                Some(parent) => {
+                                    act = parent;
+                                    continue;
+                                }
+                            }
+                        }
+                        None => return Err(WasmError::trap("undefined element")),
+                    };
+                    let base = act.base;
+                    if base + f.frame_slots as usize > ctx.stack.len() {
+                        return Err(WasmError::trap("call stack exhausted"));
+                    }
+                    let (np, nl) = (f.n_params as usize, f.n_locals as usize);
+                    ctx.stack
+                        .copy_within(base + arg_base..base + arg_base + np, base);
+                    ctx.stack[base + np..base + nl].fill(0);
+                    // Keep the frame AND the return record. `act` is a window
+                    // onto the chain's current frame, not something Rust
+                    // pushed: the record that routes this frame's return was
+                    // planted by whoever called us, and the callee returns to
+                    // exactly that place. So the tail call switches which
+                    // function executes and nothing else -- which is also why
+                    // depth stays constant.
+                    act.func = f;
+                    act.func_index = callee;
+                    act.pc = 0;
+                }
                 StepExit::Return => {
                     // Results are already in place: the callee's frame base
                     // IS the caller's staged-argument slot.
@@ -1363,6 +1423,10 @@ impl InterpInstance {
                         Effect::Call { callee, arg_base } => {
                             act.pc = idx + 1;
                             return Ok(StepExit::Call { callee, arg_base });
+                        }
+                        Effect::TailCall { callee, arg_base } => {
+                            act.pc = idx + 1;
+                            return Ok(StepExit::TailCall { callee, arg_base });
                         }
                     }
                     state.code_base = cstart;
@@ -2160,13 +2224,16 @@ impl InterpInstance {
                 }
                 return Ok(Effect::Ret);
             }
-            Op::Call => {
-                return Ok(Effect::Call {
-                    callee: ins.a as usize,
-                    arg_base: ins.b as usize,
+            Op::Call | Op::ReturnCall => {
+                let callee = ins.a as usize;
+                let arg_base = ins.b as usize;
+                return Ok(if ins.op == Op::ReturnCall {
+                    Effect::TailCall { callee, arg_base }
+                } else {
+                    Effect::Call { callee, arg_base }
                 });
             }
-            Op::CallIndirect => {
+            Op::CallIndirect | Op::ReturnCallIndirect => {
                 let t = opa!(ins);
                 let table = self
                     .tables
@@ -2194,9 +2261,16 @@ impl InterpInstance {
                 if !self.module.types().types_equivalent(expected, actual) {
                     return Err(WasmError::trap("indirect call type mismatch"));
                 }
-                return Ok(Effect::Call {
-                    callee: fi as usize,
-                    arg_base: ins.b as usize,
+                return Ok(if ins.op == Op::ReturnCallIndirect {
+                    Effect::TailCall {
+                        callee: fi as usize,
+                        arg_base: ins.b as usize,
+                    }
+                } else {
+                    Effect::Call {
+                        callee: fi as usize,
+                        arg_base: ins.b as usize,
+                    }
                 });
             }
             Op::Unreachable => {
@@ -2477,6 +2551,30 @@ mod tests {
         assert_eq!(run1(src, "sw", &[1]).unwrap(), 20);
         assert_eq!(run1(src, "sw", &[2]).unwrap(), 30);
         assert_eq!(run1(src, "sw", &[9]).unwrap(), 30); // default
+    }
+
+    #[test]
+    fn return_call_runs_at_constant_depth() {
+        // A million tail calls must not grow the activation stack; if the
+        // frame is not reused this exhausts it instead of returning.
+        let src = r#"(module
+            (func $count (param i64) (result i64)
+                local.get 0
+                i64.eqz
+                if (result i64)
+                    i64.const 0
+                else
+                    local.get 0
+                    i64.const 1
+                    i64.sub
+                    return_call $count
+                end)
+            (func (export "go") (param i64) (result i64)
+                local.get 0 call $count))"#;
+        assert_eq!(run1(src, "go", &[0]).unwrap(), 0, "no tail call at all");
+        assert_eq!(run1(src, "go", &[1]).unwrap(), 0, "exactly one tail call");
+        assert_eq!(run1(src, "go", &[2]).unwrap(), 0, "two tail calls");
+        assert_eq!(run1(src, "go", &[1_000_000]).unwrap(), 0, "a million");
     }
 
     #[test]

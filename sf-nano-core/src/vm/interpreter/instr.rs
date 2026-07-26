@@ -372,6 +372,11 @@ pub enum Op {
     Return,
     Call,
     CallIndirect,
+    /// Tail calls. Same operands as `Call`/`CallIndirect`; the difference is
+    /// in the driver, which replaces the current activation instead of
+    /// pushing one, so recursion through them runs in constant frame depth.
+    ReturnCall,
+    ReturnCallIndirect,
     /// Two fused materialization movs: `frame[c>>32] = frame[a]` then
     /// `frame[c & 0xffffffff] = frame[b]`, in that order (src2 may be
     /// dst1). Emitted by the predecoder for adjacent staging movs.
