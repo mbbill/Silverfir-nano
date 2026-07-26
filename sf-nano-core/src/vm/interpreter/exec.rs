@@ -590,6 +590,17 @@ impl InterpInstance {
                 max: limits.max().unwrap_or(u32::MAX as usize) as u64,
             });
         }
+        // Every element segment's function indices must name a function the
+        // module has, whether or not the segment is ever used. An unbound
+        // index is a validation error, not a trap at `table.init`.
+        let n_funcs = module.functions().len() as u64;
+        for e in module.elements() {
+            if let ElementInit::FunctionIndexes(idxs) = e.get_init() {
+                if idxs.iter().any(|&fi| fi as u64 >= n_funcs) {
+                    return Err(WasmError::invalid("unknown function"));
+                }
+            }
+        }
         let mut dropped_elems = vec![false; module.elements().len()];
         for (ei, e) in module.elements().iter().enumerate() {
             if let Element::Active {
