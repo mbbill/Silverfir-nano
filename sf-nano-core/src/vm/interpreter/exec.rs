@@ -633,6 +633,9 @@ impl InterpInstance {
         funcref_host: Option<FuncRefHost>,
     ) -> Result<Self, WasmError> {
         let config = *engine.config();
+        // Names handed out for this instance's own functions, filled as
+        // exported globals and shared tables are initialized.
+        let mut published: Vec<(RefHandle, usize)> = Vec::new();
 
         // Resolve imported memories up front, indexed the way the module
         // declares them, so the loop below can take a shared backing
@@ -729,7 +732,22 @@ impl InterpInstance {
         for g in module.globals() {
             match g.def() {
                 GlobalDef::Local(spec) => {
-                    let v = eval_const(spec.init_expr(), &globals)?;
+                    let mut v = eval_const(spec.init_expr(), &globals)?;
+                    // A funcref in an EXPORTED global is as invisible to its
+                    // importer as one in a shared table, and for the same
+                    // reason: the index means nothing outside this instance.
+                    if !g.export_names().is_empty() {
+                        if let (ValueType::Ref(_), Some(h)) =
+                            (spec.value_type(), funcref_host.as_ref())
+                        {
+                            let handle = slot_to_ref(v);
+                            if !handle.is_null() && !handle.is_special() {
+                                let named = (h.publish)(handle.0);
+                                published.push((named, handle.0));
+                                v = ref_to_slot(named);
+                            }
+                        }
+                    }
                     // A global another instance can reach must BE the shared
                     // cell, so an importer's writes are visible here and ours
                     // there. A private one stays in the array the chain reads.
@@ -931,7 +949,6 @@ impl InterpInstance {
         // A DECLARATIVE segment exists only to forward-declare references;
         // it carries no initializer a `table.init` may read, so it starts
         // dropped and any use of it traps.
-        let published: Vec<(RefHandle, usize)> = Vec::new();
         let dropped_elems: Vec<bool> = module
             .elements()
             .iter()
