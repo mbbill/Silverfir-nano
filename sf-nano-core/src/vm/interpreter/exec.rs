@@ -28,7 +28,8 @@ use crate::utils::limits::Limitable;
 use crate::value_type::ValueType;
 use crate::vm::engine::Engine;
 use crate::vm::entities::MemInst;
-use crate::vm::imports::{Import, ImportValue};
+use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
+use crate::vm::value::Value;
 
 #[cfg(sf_interp_engine)]
 use super::engine::{
@@ -252,6 +253,21 @@ fn op_counts(table: &[u64]) -> Vec<(Op, u64)> {
 /// of an already-initialized immutable global, and `i32`/`i64` add, sub and
 /// mul. `globals` is what has been initialized so far, which is exactly
 /// what `global.get` is allowed to reach in a constant expression.
+/// A numeric `Value` as the raw 64-bit slot this engine stores.
+fn value_to_raw_for_interp(v: &Value) -> Result<u64, WasmError> {
+    Ok(match v {
+        Value::I32(x) => *x as u32 as u64,
+        Value::I64(x) => *x as u64,
+        Value::F32(x) => x.to_bits() as u64,
+        Value::F64(x) => x.to_bits(),
+        _ => {
+            return Err(WasmError::invalid(
+                "interp: non-numeric global import unsupported",
+            ))
+        }
+    })
+}
+
 fn eval_const(expr: &[u8], globals: &[u64]) -> Result<u64, WasmError> {
     use crate::op_decoder::{Decoder, Immediate, OpStream, OpcodeHandler};
     use crate::opcodes::WasmOpcode;
@@ -426,16 +442,13 @@ impl InterpInstance {
             if limits.is64 {
                 return Err(WasmError::invalid("interp: memory64 unsupported"));
             }
-            let inst = if m.is_import() {
-                // Supplied by whoever exported it: the instance shares the
-                // backing rather than owning a copy.
-                imported_memories
-                    .get(i)
-                    .cloned()
-                    .flatten()
-                    .ok_or(WasmError::invalid("interp: unlinked memory import"))?
-            } else {
-                MemInst::new(&config, limits.clone())?
+            // An import with a shared backing takes it, so writes are
+            // visible on both sides. An import with none declared is the
+            // embedder saying "allocate one to these limits" -- the same
+            // reading the JIT gives it.
+            let inst = match imported_memories.get(i).cloned().flatten() {
+                Some(shared) => shared,
+                None => MemInst::new(&config, limits.clone())?,
             };
             memories.push(MemoryState {
                 inst,
@@ -452,8 +465,38 @@ impl InterpInstance {
                     let v = eval_const(spec.init_expr(), &globals)?;
                     globals.push(v);
                 }
-                GlobalDef::Import { .. } => {
-                    return Err(WasmError::invalid("interp: imported global unsupported"))
+                GlobalDef::Import {
+                    module: md, name, ..
+                } => {
+                    let found = imports.iter().find_map(|imp| {
+                        if imp.module != *md || imp.name != *name {
+                            return None;
+                        }
+                        match &imp.value {
+                            ImportValue::Global(g, mutable) => Some((g, *mutable)),
+                            _ => None,
+                        }
+                    });
+                    match found {
+                        // A value import, or a shared immutable one: the
+                        // current value is the whole story, so copying it
+                        // in is exact.
+                        Some((ImportedGlobal::Value(v), _)) => {
+                            globals.push(value_to_raw_for_interp(&v.value)?)
+                        }
+                        Some((ImportedGlobal::State(st), false)) => globals.push(st.global.raw()),
+                        // A shared MUTABLE global would need the two
+                        // instances to see each other's writes, and this
+                        // engine keeps globals in one contiguous array
+                        // that the dispatch chain indexes. Erroring beats
+                        // copying, which would silently drop the writes.
+                        Some((ImportedGlobal::State(_), true)) => {
+                            return Err(WasmError::invalid(
+                                "interp: shared mutable global import unsupported",
+                            ))
+                        }
+                        None => return Err(WasmError::invalid("interp: unlinked global import")),
+                    }
                 }
             }
         }
