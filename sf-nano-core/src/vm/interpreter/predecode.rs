@@ -1565,6 +1565,14 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 Opcode::REF_IS_NULL => {
                     self.value_op(Op::RefIsNull, 1)?;
                 }
+                // Named rather than left to the generic fallthrough: this is
+                // a whole feature the engine lacks, not one stray opcode, and
+                // saying so is what tells a reader where the boundary is.
+                Opcode::THROW | Opcode::THROW_REF | Opcode::TRY_TABLE => {
+                    return Err(WasmError::invalid(
+                        "interp: exception handling is not supported yet",
+                    ));
+                }
                 Opcode::BR_ON_NULL | Opcode::BR_ON_NON_NULL => {
                     let d = match imm {
                         Immediate::LabelIndex(d) => d,
