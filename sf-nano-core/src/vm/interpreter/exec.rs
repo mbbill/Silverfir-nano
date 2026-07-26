@@ -21,7 +21,7 @@ use tracked_alloc::rc::Rc;
 use crate::collections::{vec, Vec};
 use crate::config::Config;
 use crate::error::WasmError;
-use crate::module::entities::{Data, Element, ElementInit, GlobalDef, MemoryDef};
+use crate::module::entities::{Data, Element, ElementInit, GlobalDef, MemoryDef, TableDef};
 use crate::module::Module;
 use crate::opcodes::Opcode;
 use crate::utils::limits::Limitable;
@@ -506,10 +506,41 @@ impl InterpInstance {
         // Tables (any reference type) + active element segments.
         let mut tables = Vec::new();
         for t in module.tables() {
-            if t.is_import() {
-                return Err(WasmError::invalid("interp: imported table unsupported"));
-            }
-            let limits = t.spec().limits();
+            // An imported table's size is the PROVIDER's, not the importing
+            // module's declared minimum: `(table (import ..) 0 funcref)` sees
+            // however many entries the exporter actually has, so the import's
+            // limits win wherever both exist.
+            let limits = if let TableDef::Import {
+                module: md, name, ..
+            } = t.def()
+            {
+                let found = imports.iter().find_map(|imp| {
+                    if imp.module != *md || imp.name != *name {
+                        return None;
+                    }
+                    match &imp.value {
+                        ImportValue::Table(limits, shared) => Some((limits.clone(), shared)),
+                        _ => None,
+                    }
+                });
+                match found {
+                    // Declared limits with no instance: the embedder is
+                    // saying "allocate one", the same reading the JIT gives
+                    // it and what the spectest host registers.
+                    Some((limits, None)) => limits,
+                    // A live table from another instance would have to be
+                    // shared, not copied, or the two sides would stop
+                    // agreeing after the first `table.set`.
+                    Some((_, Some(_))) => {
+                        return Err(WasmError::invalid(
+                            "interp: shared table import unsupported",
+                        ))
+                    }
+                    None => return Err(WasmError::invalid("interp: unlinked table import")),
+                }
+            } else {
+                t.spec().limits().clone()
+            };
             if limits.is64 {
                 return Err(WasmError::invalid("interp: table64 unsupported"));
             }
