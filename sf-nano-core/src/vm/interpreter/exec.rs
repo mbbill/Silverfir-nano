@@ -418,8 +418,24 @@ impl InterpInstance {
         // Resolve imported memories up front, indexed the way the module
         // declares them, so the loop below can take a shared backing
         // instead of allocating one.
+        // A memory import that nobody provides is a LINK error. Falling
+        // through to "allocate one" would instantiate a module the JIT
+        // refuses, so present-with-no-backing (the embedder saying
+        // "allocate") and absent-entirely have to stay distinguishable.
         let mut imported_memories: Vec<Option<MemInst>> = Vec::new();
         for m in module.memories() {
+            if let MemoryDef::Import {
+                module: md, name, ..
+            } = m.def()
+            {
+                let provided = imports
+                    .iter()
+                    .find(|imp| imp.module == *md && imp.name == *name)
+                    .ok_or(WasmError::unlinkable("missing memory import"))?;
+                if !matches!(provided.value, ImportValue::Memory(..)) {
+                    return Err(WasmError::unlinkable("incompatible import type"));
+                }
+            }
             imported_memories.push(match m.def() {
                 MemoryDef::Import {
                     module: md, name, ..
@@ -504,7 +520,7 @@ impl InterpInstance {
                                 "interp: shared mutable global import unsupported",
                             ))
                         }
-                        None => return Err(WasmError::invalid("interp: unlinked global import")),
+                        None => return Err(WasmError::unlinkable("missing global import")),
                     }
                 }
             }
@@ -543,7 +559,7 @@ impl InterpInstance {
                             "interp: shared table import unsupported",
                         ))
                     }
-                    None => return Err(WasmError::invalid("interp: unlinked table import")),
+                    None => return Err(WasmError::unlinkable("missing table import")),
                 }
             } else {
                 t.spec().limits().clone()

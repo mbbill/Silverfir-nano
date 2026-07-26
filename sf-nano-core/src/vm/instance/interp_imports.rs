@@ -61,21 +61,37 @@ pub(super) fn bind(
             }
         }
 
-        let Some(callback) = imports.iter().find_map(|imp| {
-            if imp.module != *m || imp.name != *n {
-                return None;
-            }
-            match &imp.value {
-                ImportValue::Func(ImportedFunction::Host { callback, .. }) => {
-                    Some(callback.clone())
+        // Linking is checked here, at instantiation, exactly as the JIT
+        // does it: a declared import with no provider is unlinkable, and so
+        // is one whose provider has the wrong shape. Deferring either to the
+        // first call would let a module instantiate that the JIT refuses,
+        // which is a difference in more than how code is run.
+        let Some(provided) = imports
+            .iter()
+            .find(|imp| imp.module == *m && imp.name == *n)
+        else {
+            return Err(WasmError::unlinkable("missing function import"));
+        };
+        let callback = match &provided.value {
+            ImportValue::Func(ImportedFunction::Host {
+                callback,
+                func_type: provided_type,
+                ..
+            }) => {
+                if let Some(provided_type) = provided_type {
+                    if provided_type.params() != func_type.params()
+                        || provided_type.results() != func_type.results()
+                    {
+                        return Err(WasmError::unlinkable("incompatible import type"));
+                    }
                 }
-                _ => None,
+                callback.clone()
             }
-        }) else {
-            // Left unbound on purpose: a module may declare an import it
-            // never calls, and rejecting that here would refuse modules
-            // the JIT path accepts.
-            continue;
+            // A cross-instance link resolves through the function registry,
+            // which this engine does not participate in yet. The import IS
+            // provided, so it is not a link error; calling it is what fails.
+            ImportValue::Func(ImportedFunction::Linked { .. }) => continue,
+            _ => return Err(WasmError::unlinkable("incompatible import type")),
         };
 
         bound.push(Bound {
