@@ -870,7 +870,20 @@ impl<'m> Predecoder<'m> {
                     }
                     _ => (Op::MemoryInit, 0),
                 };
-                self.emit(op, 0, base, b, 0);
+                // The native fill/copy handlers bound-check in 32 bits, so a
+                // 64-bit memory takes the shared executor -- the same reason
+                // loads and stores do.
+                let touched = match op {
+                    Op::MemoryCopy => (b >> 32) | (b & 0xffff_ffff),
+                    Op::MemoryFill => b,
+                    _ => b >> 32,
+                };
+                let flags = if self.memory_is_64(touched) {
+                    FLAG_ADDR64
+                } else {
+                    0
+                };
+                self.emit(op, flags, base, b, 0);
                 Ok(())
             }
             DATA_DROP => {

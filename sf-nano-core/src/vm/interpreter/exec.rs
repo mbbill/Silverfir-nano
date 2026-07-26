@@ -629,7 +629,14 @@ impl InterpInstance {
                 }
             }
         }
-        let mut dropped_elems = vec![false; module.elements().len()];
+        // A DECLARATIVE segment exists only to forward-declare references;
+        // it carries no initializer a `table.init` may read, so it starts
+        // dropped and any use of it traps.
+        let mut dropped_elems: Vec<bool> = module
+            .elements()
+            .iter()
+            .map(|e| matches!(e, Element::Declarative { .. }))
+            .collect();
         for (ei, e) in module.elements().iter().enumerate() {
             if let Element::Active {
                 table_index,
@@ -2093,12 +2100,21 @@ impl InterpInstance {
             Op::MemoryCopy => {
                 let base = ins.a as usize;
                 let (d, s0, n) = (frame[base], frame[base + 1], frame[base + 2]);
-                let (d, s0, n) = (d as u32 as u64, s0 as u32 as u64, n as u32 as u64);
+                // A 64-bit memory's operands are the whole slots; truncating
+                // a size of -1 to 32 bits turns an out-of-bounds copy into a
+                // merely large one.
+                let (d, s0, n) = if ins.flags & FLAG_ADDR64 != 0 {
+                    (d, s0, n)
+                } else {
+                    (d as u32 as u64, s0 as u32 as u64, n as u32 as u64)
+                };
                 let dm = (ins.b >> 32) as usize;
                 let sm = (ins.b & 0xffff_ffff) as usize;
                 let dlen = self.memories.get(dm).map(|x| x.len()).unwrap_or(0) as u64;
                 let slen = self.memories.get(sm).map(|x| x.len()).unwrap_or(0) as u64;
-                if d + n > dlen || s0 + n > slen {
+                if d.checked_add(n).is_none_or(|e| e > dlen)
+                    || s0.checked_add(n).is_none_or(|e| e > slen)
+                {
                     return Err(WasmError::trap("out of bounds memory access"));
                 }
                 if dm == sm {
