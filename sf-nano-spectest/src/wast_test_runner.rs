@@ -1300,6 +1300,31 @@ impl WastTestRunner {
                                         export_name,
                                         state,
                                     ));
+                                } else if !match global.def() {
+                                    sf_nano_core::module::entities::GlobalDef::Local(spec) => {
+                                        spec.mutable()
+                                    }
+                                    sf_nano_core::module::entities::GlobalDef::Import {
+                                        mutable,
+                                        ..
+                                    } => *mutable,
+                                } {
+                                    // No shared state (the interpreter keeps
+                                    // globals in one array and cannot hand out
+                                    // a cell). For an IMMUTABLE global a value
+                                    // snapshot is exact -- it can never change,
+                                    // so there is nothing for sharing to
+                                    // preserve. A mutable one is deliberately
+                                    // left unprovided rather than copied, since
+                                    // the exporter's later writes would be lost.
+                                    if let Ok(Some(value)) = instance.get_global(export_name) {
+                                        imports.push(Import::global(
+                                            registered_name,
+                                            export_name,
+                                            value,
+                                            false,
+                                        ));
+                                    }
                                 }
                             }
                         }
