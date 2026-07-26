@@ -384,11 +384,16 @@ impl Instance {
         match &self.inner {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.tag_handle(name),
-            // The interpreter has no exception handling, so it mints no tags.
+            // Tag IDENTITY is a linking concern, so the interpreter mints
+            // handles even though it cannot yet throw or catch.
             #[cfg(sf_interp)]
-            Inner::Interp(_) => {
-                let _ = name;
-                None
+            Inner::Interp(inst) => {
+                let idx = inst
+                    .module()
+                    .tags()
+                    .iter()
+                    .position(|t| t.export_names().iter().any(|e| e == name))?;
+                inst.tag_handle_at(idx)
             }
         }
     }

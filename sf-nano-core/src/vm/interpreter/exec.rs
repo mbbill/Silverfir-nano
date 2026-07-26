@@ -21,13 +21,15 @@ use tracked_alloc::rc::Rc;
 use crate::collections::{vec, Vec};
 use crate::config::Config;
 use crate::error::WasmError;
-use crate::module::entities::{Data, Element, ElementInit, GlobalDef, MemoryDef, TableDef};
+use crate::module::entities::{Data, Element, ElementInit, GlobalDef, MemoryDef, TableDef, TagDef};
+use crate::module::type_context::concrete_type_matches_cross_context;
 use crate::module::Module;
 use crate::opcodes::Opcode;
 use crate::utils::limits::{Limitable, Limits};
 use crate::vm::engine::Engine;
 use crate::vm::entities::{MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
+use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 
 use super::engine::{
@@ -311,6 +313,9 @@ pub struct InterpInstance {
     dropped_elems: Vec<bool>,
     globals: Vec<u64>,
     tables: Vec<TableState>,
+    /// Runtime tag identities, one per declared tag. Linking needs them;
+    /// nothing here throws yet.
+    tags: Vec<TagHandle>,
     /// The operand stack and native return stack, allocated once at
     /// instantiation and reused by every call. They used to be allocated
     /// and zeroed inside each invocation, which put a 2 MiB allocation in
@@ -704,6 +709,59 @@ impl InterpInstance {
                 max: limits.max().unwrap_or(u32::MAX as usize) as u64,
             });
         }
+        // A tag's IDENTITY is a linking concern, not an execution one: two
+        // tags with the same signature in different modules must not alias,
+        // and an importer has to be able to name ours. So mint one per local
+        // tag even though nothing here can throw yet.
+        let tags: Vec<TagHandle> = module
+            .tags()
+            .iter()
+            .map(|t| match t.def() {
+                TagDef::Local(_) => TagHandle::mint_fresh(),
+                TagDef::Import { .. } => TagHandle::mint_fresh(),
+            })
+            .collect();
+
+        // Tag imports are checked but not otherwise modelled: this engine has
+        // no exception handling yet, so a tag is never thrown or caught here.
+        // Linking still has to be right -- a module whose tag import is
+        // missing or has the wrong type is unlinkable, and accepting it would
+        // let a module instantiate that the JIT refuses.
+        for tag in module.tags() {
+            let TagDef::Import {
+                module: md,
+                name,
+                func_type,
+                type_index,
+                ..
+            } = tag.def()
+            else {
+                continue;
+            };
+            let provided = imports
+                .iter()
+                .find(|imp| imp.module == *md && imp.name == *name)
+                .ok_or(WasmError::unlinkable("missing tag import"))?;
+            let ImportValue::Tag(state) = &provided.value else {
+                return Err(WasmError::unlinkable("incompatible import type"));
+            };
+            // Through the type context where both sides have one: two `func`
+            // types in a rec group are structurally identical yet distinct
+            // identities, and only the context separates them.
+            let compatible = match (&state.type_ctx, state.type_index) {
+                (Some(ctx), idx) if idx != u32::MAX => {
+                    concrete_type_matches_cross_context(ctx, idx, module.types(), *type_index)
+                }
+                _ => {
+                    state.func_type.params() == func_type.params()
+                        && state.func_type.results() == func_type.results()
+                }
+            };
+            if !compatible {
+                return Err(WasmError::unlinkable("incompatible import type"));
+            }
+        }
+
         // Every element segment's function indices must name a function the
         // module has, whether or not the segment is ever used. An unbound
         // index is a validation error, not a trap at `table.init`.
@@ -796,6 +854,7 @@ impl InterpInstance {
             dropped_elems,
             globals,
             tables,
+            tags,
             // Zeroed in full: native dispatch roams the whole region
             // through raw pointers, so every slot must be initialized.
             config,
@@ -1085,6 +1144,11 @@ impl InterpInstance {
                 .and_then(|e| eval_const(e, &self.globals)),
             None => Err(WasmError::trap("out of bounds table access")),
         }
+    }
+
+    /// The runtime identity of tag `idx`, for an importer to link against.
+    pub fn tag_handle_at(&self, idx: usize) -> Option<TagHandle> {
+        self.tags.get(idx).copied()
     }
 
     /// This table's shared entity, when it has one.
