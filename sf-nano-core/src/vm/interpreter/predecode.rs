@@ -1538,6 +1538,48 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 Opcode::REF_IS_NULL => {
                     self.value_op(Op::RefIsNull, 1)?;
                 }
+                Opcode::BR_ON_NULL | Opcode::BR_ON_NON_NULL => {
+                    let d = match imm {
+                        Immediate::LabelIndex(d) => d,
+                        _ => return Err(desync()),
+                    };
+                    let on_null = o == Opcode::BR_ON_NULL;
+                    self.mark_branch_target(d);
+                    self.materialize_all();
+                    // `br_on_null` branches WITHOUT the reference and keeps it
+                    // on fall-through; `br_on_non_null` branches WITH it and
+                    // drops it on fall-through. So the reference is off the
+                    // stack across the branch in one case and on it in the
+                    // other, which is the only difference between them.
+                    let r = self.pop()?;
+                    let at = self.code.len() as u32;
+                    let (a, a_const) = self.operand(r, at);
+                    // The scratch for the null test must sit ABOVE the
+                    // reference's own slot: with the reference popped, the
+                    // next temp height IS its slot, and the test would
+                    // clobber the value the fall-through path still needs.
+                    self.stack.push(r);
+                    let cond = self.temp_slot_used(self.height());
+                    let flags = if a_const { FLAG_A_CONST } else { 0 };
+                    self.emit(Op::RefIsNull, flags, a, 0, cond);
+                    if on_null {
+                        let _ = self.pop()?;
+                    }
+                    // Guard, moves, jump. The guard skips the branch on the
+                    // sense that does NOT take it.
+                    let guard = if on_null { Op::BrIfNot } else { Op::BrIf };
+                    let skip = self.emit(guard, 0, cond, 0, FIXUP);
+                    self.branch_value_moves(d)?;
+                    self.emit_branch(Op::Br, 0, 0, d)?;
+                    let here = self.code.len() as u64;
+                    self.code[skip as usize].c = here;
+                    if on_null {
+                        self.stack.push(r);
+                    } else {
+                        let _ = self.pop()?;
+                    }
+                    self.bump_region();
+                }
                 Opcode::REF_AS_NON_NULL => {
                     self.value_op(Op::RefAsNonNull, 1)?;
                 }
