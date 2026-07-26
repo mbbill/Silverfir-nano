@@ -1366,13 +1366,18 @@ impl WastTestRunner {
                                             // With the exporter's type context,
                                             // so rec-group identity is checked
                                             // rather than mere structure.
-                                            imports.push(Import::func_typed_with_context(
-                                                registered_name,
-                                                export_name,
-                                                fwd,
-                                                ft,
-                                                type_ctx.clone(),
-                                            ));
+                                            imports.push(
+                                                Import::func_typed_with_context_and_index(
+                                                    registered_name,
+                                                    export_name,
+                                                    fwd,
+                                                    ft,
+                                                    instance
+                                                        .function_type_index_at(func_idx)
+                                                        .unwrap_or(u32::MAX),
+                                                    type_ctx.clone(),
+                                                ),
+                                            );
                                         }
                                     }
                                 }

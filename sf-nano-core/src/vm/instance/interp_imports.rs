@@ -15,7 +15,9 @@
 use crate::collections::Vec;
 use crate::error::WasmError;
 use crate::module::entities::FunctionDef;
-use crate::module::type_context::check_function_types_equivalent;
+use crate::module::type_context::{
+    check_function_types_equivalent, concrete_type_matches_cross_context,
+};
 use crate::module::type_defs::FunctionType;
 use crate::module::Module;
 use crate::value_type::ValueType;
@@ -77,8 +79,8 @@ pub(super) fn bind(
             ImportValue::Func(ImportedFunction::Host {
                 callback,
                 func_type: provided_type,
+                type_index: provided_type_index,
                 type_ctx,
-                ..
             }) => {
                 if let Some(provided_type) = provided_type {
                     // With a type context, compare through it rather than
@@ -86,11 +88,21 @@ pub(super) fn bind(
                     // structurally identical yet distinct identities, and only
                     // the context can tell them apart. This is the same
                     // comparison the JIT makes.
-                    let compatible = match type_ctx {
-                        Some(ctx) => {
+                    let compatible = match (type_ctx, *provided_type_index) {
+                        // Both halves present: decide by IDENTITY. Two `(func)`
+                        // types differing only in their position within a rec
+                        // group are distinct, and nothing structural separates
+                        // them -- only the index within each context does.
+                        (Some(ctx), idx) if idx != u32::MAX => concrete_type_matches_cross_context(
+                            ctx,
+                            idx,
+                            module.types(),
+                            func.type_index(),
+                        ),
+                        (Some(ctx), _) => {
                             check_function_types_equivalent(provided_type, &func_type, ctx)
                         }
-                        None => {
+                        (None, _) => {
                             provided_type.params() == func_type.params()
                                 && provided_type.results() == func_type.results()
                         }

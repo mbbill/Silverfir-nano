@@ -48,6 +48,12 @@ pub enum ImportedFunction {
     Host {
         callback: HostCallback,
         func_type: Option<FunctionType>,
+        /// Source-context type index for `func_type`, or `u32::MAX` for a
+        /// host function with no wasm type index. Paired with `type_ctx` it
+        /// makes cross-module rec-group identity decidable -- two `(func)`
+        /// types differing only in their position within a rec group are
+        /// distinct identities, and nothing structural can separate them.
+        type_index: u32,
         type_ctx: Option<TypeContext>,
     },
     Linked {
@@ -93,6 +99,7 @@ impl Import {
             value: ImportValue::Func(ImportedFunction::Host {
                 callback: HostCallback::new(f),
                 func_type: None,
+                type_index: u32::MAX,
                 type_ctx: None,
             }),
         }
@@ -113,6 +120,7 @@ impl Import {
             value: ImportValue::Func(ImportedFunction::Host {
                 callback: HostCallback::new(f),
                 func_type: Some(func_type),
+                type_index: u32::MAX,
                 type_ctx: None,
             }),
         }
@@ -133,12 +141,34 @@ impl Import {
             ) -> Result<(), WasmError>
             + 'static,
     {
+        Self::func_typed_with_context_and_index(module, name, f, func_type, u32::MAX, type_ctx)
+    }
+
+    /// As above, with the source-context type index, so a cross-module
+    /// rec-group identity check has both halves it needs.
+    pub fn func_typed_with_context_and_index<F>(
+        module: &str,
+        name: &str,
+        f: F,
+        func_type: FunctionType,
+        type_index: u32,
+        type_ctx: TypeContext,
+    ) -> Self
+    where
+        F: for<'a, 'b, 'c, 'd> Fn(
+                &'a mut Caller<'b>,
+                &'c [Value],
+                &'d mut [Value],
+            ) -> Result<(), WasmError>
+            + 'static,
+    {
         Import {
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Func(ImportedFunction::Host {
                 callback: HostCallback::new(f),
                 func_type: Some(func_type),
+                type_index,
                 type_ctx: Some(type_ctx),
             }),
         }
