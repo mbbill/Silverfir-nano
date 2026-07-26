@@ -113,6 +113,13 @@
   removal of that direct path must be revalidated under qemu-riscv32-static
   (code).
 
+- 2026-07-26 (fe130e61) pitfall: a descriptor number inside the preopen range
+  3..3+N is not necessarily still a preopen. `fd_renumber` retires the original
+  and installs a live entry under that number, so an fd operation that decides
+  by range arithmetic rather than by the preopen lookup -- which reports a
+  retired preopen as absent -- answers BADF for a good descriptor. Every fd
+  operation must resolve through the lookup (code).
+
 ## Moves
 
 - 2025-08-07 (7d16c093) replaced [[wasmtime-wasi-backed]]: wasmtime-wasi/wiggle
