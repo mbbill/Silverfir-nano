@@ -559,7 +559,22 @@
   the families sized statically -- is recorded in
   [[dispatch.fact/dynamic-op-census-2026-07-26]] (code)
 
+- 2026-07-26 pitfall: a first round of [[stencil-stitching]] numbers taken on a
+  loaded machine (load average 5.2) read 1.3-1.8x where the quiet re-run reads
+  1.30x, with per-binary spread of 12-31%. What caught it was that the quiet
+  run's interpreter reproduced this corpus's recorded CoreMark figure to within
+  1% (8095 against 8188) while the loaded one did not (5682) — re-measuring the
+  BASELINE against the record is the cheap check for whether a session's numbers
+  can be compared to anything at all (code)
+
 ## Moves
+
+- 2026-07-26 replaced [[stencil-stitching]]: removing the dispatch between cells is
+  worth 1.30x and baking the operand immediates another 1.13x, but the result
+  still lands at 0.58x of a real single-pass compiler and 0.27x of this
+  project's own JIT, because what remains is the slot-per-value model rather
+  than the dispatch — and it pays for that with the runtime executable memory
+  build-time handler generation exists to avoid (code)
 
 - 2026-07-23 replaced [[stage-a-loop]]: one high-performance interpreter,
   not two execution paths — the oracle role moved to the JIT differential

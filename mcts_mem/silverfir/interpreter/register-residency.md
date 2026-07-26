@@ -341,3 +341,24 @@
   traffic on mandelbrot with two pins and -14.7% with three, so the experiment
   was run on the one benchmark that cannot show the effect (code)
 
+- 2026-07-26 measurement: the share of dynamic local-slot accesses a function's
+  top-k most-referenced locals carry, over the corpus, counted by denying every
+  op a native handler so the Rust executor sees the whole stream and the counts
+  are exact — at k=2, which is what ships: CoreMark 46.7%, sha256 42.5%, bzip2
+  32.9%, stream 65.4%, mandelbrot 42.1%, lz4 39.2%. At k=4:
+  78.8/63.5/53.6/80.2/78.9/65.6. At k=8: 93.6/85.5/72.5/95.1/100/88.3. At k=16:
+  99.0/99.6/88.9/100/100/100 (code)
+
+- 2026-07-26 rationale: that census is engagement headroom only. It raises the
+  same reference-coverage metric per-loop repinning was already priced out for
+  raising without converting, and pinned write-through means a wider set removes
+  loads and not stores — so a wider pinned class is not justified by it, and the
+  open question stays the payoff asymmetry rather than the engagement gap (code)
+
+- 2026-07-26 measurement: the register file is not what bounds the pinned set on
+  arm64. x1 through x6 are never mentioned anywhere in the generated engine (x18
+  is the reserved platform register, and x0 appears only in the entry
+  trampoline), so eight pinned locals fit the contract as it stands; four need no
+  structural growth either, since the return record's fourth word carries only a
+  16-bit offset and a call cell's third field is unused. What bounds the set is
+  the governing law's handler multiplication (code)

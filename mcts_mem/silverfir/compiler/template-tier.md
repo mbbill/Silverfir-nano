@@ -24,3 +24,10 @@
   MachineIR, branch resolution uses an intrusive forward-patch chain over emitted
   jump placeholders instead of the optimizing path's CFG parallel-move machinery
   (code).
+
+- 2026-07-26 measurement: the tier cannot serve as a single-pass baseline to
+  measure another tier against — forced onto the whole wasi corpus by setting the
+  RAM budget to one byte, it fails to compile all ten modules, each with the
+  exhaustion error rather than any fallback. Comparing against a single-pass
+  compiler has to use an external one, and the Winch column in the benchmark
+  results is the same-machine reference (code).
