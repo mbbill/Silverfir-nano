@@ -1326,6 +1326,25 @@ impl WastTestRunner {
                                                 type_ctx.clone(),
                                             ),
                                         );
+                                    } else {
+                                        // No link handle: the interpreter does
+                                        // not participate in the JIT's
+                                        // function registry. Forward through
+                                        // the host boundary instead -- the
+                                        // callee still runs in the other
+                                        // instance, by index, so this is a
+                                        // real cross-instance call and not a
+                                        // stub.
+                                        let slot =
+                                            alloc_forwarding_function_slot(internal_name, func_idx);
+                                        if let Some(&fwd) = FORWARDER_TABLE.get(slot) {
+                                            imports.push(Import::func_typed(
+                                                registered_name,
+                                                export_name,
+                                                fwd,
+                                                ft,
+                                            ));
+                                        }
                                     }
                                 }
                             }
