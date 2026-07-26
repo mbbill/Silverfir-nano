@@ -510,6 +510,55 @@
 - 2026-07-25 statement: f32 slots are consequently excluded from float
   pinning on RISC-V, and f64 slots are unaffected (code)
 
+- 2026-07-26 measurement: extending address-add fusion to a CONSTANT second
+  term -- clang's static-array form `local + link-time base`, which the
+  two-slot bank declines because both its terms must be slots -- engages
+  exactly where the two-slot form does not. STREAM's fixed-work dispatches
+  fell 768.0M to 598.0M, -22.1%, its Add kernel going 16 cells per iteration
+  to 12; wall clock moved sha256 +3.8%, bzip2 +3.7%, lua-json +3.4%, sqlite
+  +1.6%, CoreMark -0.4%, STREAM Triad +5%, and STREAM Add -30%. Rejected
+  (code)
+- 2026-07-26 measurement: a control build emitting that same bank but never
+  folding into it -- identical 343.3 KB engine, identical emission order --
+  matched baseline on every kernel, so the loss is the fold itself and not
+  engine growth, handler relocation, or the insertion tax (code)
+- 2026-07-26 measurement: the loss is the dispatch-count model's boundary.
+  STREAM Add's cost per dispatch rose 1.94 to 3.75 cycles while its dispatch
+  count fell 25%, so the survivors absorbed more than the removed dispatches
+  cost; on a kernel whose loads miss to DRAM, removing dispatches is not
+  self-justifying (code)
+- 2026-07-26 measurement: the two kernels that disagree differ in accumulator
+  residency, not in the fold. Triad's two fused loads are both
+  accumulator-resident because an f64.mul sits between them and takes the acc
+  edge, and it gained 5%; Add's two loads become adjacent once folded, so the
+  first has no adjacent consumer and its result round-trips through a frame
+  slot, and it lost 30% (code)
+- 2026-07-26 uncertain: the reading that this round trip IS the mechanism --
+  a load-then-store pair whose source is a DRAM miss, moved closer to the
+  reload that consumes it once the intervening address dispatches are gone --
+  was never checked against counters (uncertain)
+- 2026-07-26 pitfall: the fused packing overloads `c`, so any link guard
+  reading `c`'s high bits must be bank-aware. The store memory-index guard
+  reads bit 48, which the two-slot form passes only because a slot index is
+  under 2^16; a 32-bit constant in that half denied every folded store a
+  handler and sent 20M hot cells per run to the shared executor, at a 30%
+  cost and with results still correct (code)
+- 2026-07-26 measurement: adjacent slot-to-slot copy pairs counted BEFORE the
+  pinned-destination exclusion are 3.3% of CoreMark dispatches and 5.7% of
+  sha256's, against the 0.053% link-time pairing actually removes -- the
+  exclusion, not the pairing rule, is what leaves mov fusion nothing to fuse
+  (code)
+- 2026-07-26 rationale: an A/B gets a free noise floor from the benchmarks its
+  change provably cannot affect. In the pinned-selection run, stream and lz4 had
+  no pick change at all yet read -2.1% to +3.1% in the same interleaved rounds,
+  which places CoreMark's -2.5% and sha256's +4.1% inside the unresolvable band
+  (code)
+- 2026-07-26 measurement: a dynamic op and adjacent-pair census over the
+  eleven-workload corpus -- i32.add is 18.6% of dispatches on average, and the
+  heaviest dynamic pair shapes are ALU-to-ALU and load-to-consumer rather than
+  the families sized statically -- is recorded in
+  [[dispatch.fact/dynamic-op-census-2026-07-26]] (code)
+
 ## Moves
 
 - 2026-07-23 replaced [[stage-a-loop]]: one high-performance interpreter,

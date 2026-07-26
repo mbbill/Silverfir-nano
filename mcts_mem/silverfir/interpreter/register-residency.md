@@ -302,6 +302,39 @@
 - 2026-07-25 measurement: bzip2's chosen l0 has write share 0.00 -- a pure base
   pointer holding the most valuable register -- while its rank-3 local carries
   5.1% weighted writes, all loop-carried (code)
+- 2026-07-26 measurement: the function-wide pin pick is frequently wrong for the
+  loop that actually runs -- the share of loop-executing dispatches whose
+  loop-hottest local is neither pinned slot is 99.9% on mandelbrot, 59.6% bzip2,
+  41.5% lz4, 35.7% stream, 26.4% CoreMark, and under 15% on sha256, sqlite,
+  lua-sunfish, lua-json and c-ray (code)
+- 2026-07-26 measurement: restricting the reference census to LOOP BODIES raises
+  that coverage on mandelbrot from 0.1% to 99.9% and changes the pick for
+  functions carrying 100% of mandelbrot's and sha256's dispatches, 37.6% of
+  sqlite's and 35.3% of CoreMark's -- and measured -0.1% on mandelbrot and a
+  -0.2% median over the corpus. Reference-count coverage is not a proxy for
+  pinning value, now the third independent confirmation that value follows chain
+  criticality (code)
+- 2026-07-26 measurement: the picks that rule swaps are read-mostly on BOTH
+  sides -- write share 0.03 to 0.03 on CoreMark, 0.21 to 0.17 on sqlite, 0.26 to
+  0.29 on mandelbrot (code)
+- 2026-07-26 rationale: a reference-ranked selector cannot reach the
+  loop-carried WRITTEN local the mechanism needs (code)
+- 2026-07-26 measurement: the existing unweighted reference count already pins a
+  LOOP-CARRIED local in most hot loops -- 100% of loop dispatches on mandelbrot
+  and lz4, 98.2% lua-sunfish, 96.9% lua-json, 87.5% sqlite, 85.6% lua-fib, 80.3%
+  c-ray, 70.1% stream, 63.2% CoreMark, 58.3% sha256, 41.1% bzip2 (code)
+- 2026-07-26 rationale: what selector headroom remains sits in bzip2, sha256 and
+  CoreMark (code)
+- 2026-07-26 measurement: hot loops carry 2.3 to 3.1 loop-carried locals each,
+  mean 2.7, against two pinned registers (code)
+- 2026-07-26 rationale: the binding limit on pinning is capacity, not selection
+  (code)
+- 2026-07-26 rationale: that result also prices the expensive form out. Per-loop
+  REPINNING is representable and cheap to make sound -- write-through leaves the
+  slot authoritative, so a switch is one reload and needs no liveness proof --
+  but it would raise the same coverage metric this experiment just showed does
+  not convert, so it must not be built until a criterion exists that predicts
+  value rather than references (code)
 - 2026-07-25 pitfall: the write-biased pin score (reads + 2*writes) was
   recorded inconclusive, but that verdict was reached on CoreMark alone, where
   the traffic model also predicts ~0. The model puts it at -8.0% of memory
