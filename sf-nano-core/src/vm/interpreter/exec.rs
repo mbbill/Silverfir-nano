@@ -31,25 +31,20 @@ use crate::vm::entities::MemInst;
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
 use crate::vm::value::Value;
 
-#[cfg(sf_interp_engine)]
 use super::engine::{
     DCell, EnterState, LinkedFunction, NativeEngine, EXIT_RETURN, EXIT_SLOW, EXIT_TRAP_BASE,
     NATIVE_CALLS, RET_RECORD, TRAP_KINDS,
 };
-#[cfg(sf_interp_engine)]
 use super::fmath;
 use super::instr::{op_from_index, Op};
-#[cfg(sf_interp_engine)]
 use super::instr::{Instr, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
 use super::predecode::{predecode_function, PredecodedFunction};
 
 const PAGE: usize = 65536;
 const NULL_FUNC: u32 = u32::MAX;
-#[cfg(sf_interp_engine)]
 const MAX_CALL_DEPTH: u32 = 4096;
 /// Ceiling on native call depth, and so on the return-stack records the
 /// dispatch chain can plant.
-#[cfg(sf_interp_engine)]
 const MAX_RET_RECORDS: u32 = MAX_CALL_DEPTH + 8;
 
 /// Slots in the operand stack, from the embedder's configured budget.
@@ -61,7 +56,6 @@ const MAX_RET_RECORDS: u32 = MAX_CALL_DEPTH + 8;
 /// A bare-metal embedder that has not configured the runtime yet is told
 /// so here. Silently substituting a token stack would turn that mistake
 /// into a "call stack exhausted" trap somewhere further in.
-#[cfg(sf_interp_engine)]
 fn configured_stack_slots(config: &Config) -> usize {
     config.get_wasm_stack_bytes() / core::mem::size_of::<u64>()
 }
@@ -71,7 +65,6 @@ fn configured_stack_slots(config: &Config) -> usize {
 /// Depth cannot usefully exceed what the operand stack can hold frames
 /// for, so a small budget buys a proportionally small return stack rather
 /// than the full 4096-deep one (131 KB, a third of a Pico 2's heap).
-#[cfg(sf_interp_engine)]
 fn configured_ret_records(stack_slots: usize) -> usize {
     (stack_slots / 4).clamp(16, MAX_RET_RECORDS as usize)
 }
@@ -89,7 +82,6 @@ pub(crate) type HostDispatch =
 /// active element segments on every target.
 struct TableState {
     entries: Vec<u32>,
-    #[cfg(sf_interp_engine)]
     max: u64,
 }
 
@@ -99,7 +91,6 @@ struct MemoryState {
     /// whoever exported it. It used to be an owned `Vec<u8>`, which is
     /// why an imported memory could not be represented at all.
     inst: MemInst,
-    #[cfg(sf_interp_engine)]
     max_pages: u64,
 }
 
@@ -131,7 +122,6 @@ impl MemoryState {
 /// One live call frame. Calls and returns are driven by an explicit
 /// activation stack in the driver loop, never by host recursion, so call
 /// depth is interpreter data (the classic-interpreter lesson).
-#[cfg(sf_interp_engine)]
 struct Activation {
     func: Rc<PredecodedFunction>,
     /// Index of `func` in the module's function space (native dispatch
@@ -150,7 +140,6 @@ struct Activation {
 /// Per-invoke execution resources: the shared value stack and the native
 /// return stack (records of `(ret_pc, frame, code_base)`, with
 /// Rust-planted sentinel records routing a `Return` back to Rust).
-#[cfg(sf_interp_engine)]
 struct DriveCtx<'s> {
     stack: &'s mut [u64],
     ret_stack: &'s mut [u64],
@@ -161,14 +150,12 @@ struct DriveCtx<'s> {
     acc: u64,
 }
 
-#[cfg(sf_interp_engine)]
 enum StepExit {
     Call { callee: usize, arg_base: usize },
     Return,
 }
 
 /// Result of executing exactly one instruction.
-#[cfg(sf_interp_engine)]
 pub(super) enum Effect {
     Next,
     Jump(usize),
@@ -178,7 +165,6 @@ pub(super) enum Effect {
 
 /// Stage-B state: the emitted handler engine plus per-function dispatch
 /// cells (parallel to `InterpInstance::funcs`).
-#[cfg(sf_interp_engine)]
 struct NativeState {
     engine: NativeEngine,
     linked: Vec<Option<LinkedFunction>>,
@@ -209,31 +195,23 @@ pub struct InterpInstance {
     /// memories and tables and traps out-of-range active segments -- but a
     /// target without an executor validates and drops it rather than
     /// carrying it.
-    #[cfg(sf_interp_engine)]
     memories: Vec<MemoryState>,
-    #[cfg(sf_interp_engine)]
     dropped_data: Vec<bool>,
-    #[cfg(sf_interp_engine)]
     dropped_elems: Vec<bool>,
     globals: Vec<u64>,
-    #[cfg(sf_interp_engine)]
     tables: Vec<TableState>,
     /// The operand stack and native return stack, allocated once at
     /// instantiation and reused by every call. They used to be allocated
     /// and zeroed inside each invocation, which put a 2 MiB allocation in
     /// front of every call to a Wasm function.
     config: Config,
-    #[cfg(sf_interp_engine)]
     stack: Vec<u64>,
-    #[cfg(sf_interp_engine)]
     ret_stack: Vec<u64>,
     host: Option<HostDispatch>,
-    #[cfg(sf_interp_engine)]
     native: Option<NativeState>,
 }
 
 /// Nonzero per-op counts, descending.
-#[cfg(sf_interp_engine)]
 fn op_counts(table: &[u64]) -> Vec<(Op, u64)> {
     let mut out: Vec<(Op, u64)> = Vec::new();
     for (i, &n) in table.iter().enumerate() {
@@ -421,7 +399,6 @@ impl InterpInstance {
                 MemoryDef::Local(_) => None,
             });
         }
-        #[cfg(sf_interp_engine)]
         let stack_slots = configured_stack_slots(&config);
 
         // Functions: predecode every local function eagerly; imports are
@@ -452,7 +429,6 @@ impl InterpInstance {
             };
             memories.push(MemoryState {
                 inst,
-                #[cfg(sf_interp_engine)]
                 max_pages: limits.max().unwrap_or(65536) as u64,
             });
         }
@@ -516,7 +492,6 @@ impl InterpInstance {
             }
             tables.push(TableState {
                 entries: vec![NULL_FUNC; limits.min() as usize],
-                #[cfg(sf_interp_engine)]
                 max: limits.max().unwrap_or(u32::MAX as usize) as u64,
             });
         }
@@ -585,24 +560,17 @@ impl InterpInstance {
         let mut inst = InterpInstance {
             module,
             funcs,
-            #[cfg(sf_interp_engine)]
             memories,
-            #[cfg(sf_interp_engine)]
             dropped_data,
-            #[cfg(sf_interp_engine)]
             dropped_elems,
             globals,
-            #[cfg(sf_interp_engine)]
             tables,
             // Zeroed in full: native dispatch roams the whole region
             // through raw pointers, so every slot must be initialized.
             config,
-            #[cfg(sf_interp_engine)]
             stack: vec![0u64; stack_slots],
-            #[cfg(sf_interp_engine)]
             ret_stack: vec![0u64; configured_ret_records(stack_slots) * (RET_RECORD / 8)],
             host,
-            #[cfg(sf_interp_engine)]
             native: None,
         };
         inst.enable_native_dispatch()?;
@@ -617,17 +585,10 @@ impl InterpInstance {
     /// stage-A Rust loop was removed after B validation; `exec_ins`
     /// remains as the native chain's slow path). A target whose ISA has
     /// no generated handler set fails instantiation cleanly here.
-    #[cfg(not(sf_interp_engine))]
-    fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
-        Err(WasmError::invalid(
-            "interp: no native dispatch backend for this target",
-        ))
-    }
 
     /// Link every predecoded function against the handler set that was
     /// generated into this binary at build time. Nothing is emitted or
     /// mapped here — the engine is already in `.text`.
-    #[cfg(sf_interp_engine)]
     fn enable_native_dispatch(&mut self) -> Result<(), WasmError> {
         let engine = NativeEngine::new();
         let mut linked: Vec<Option<LinkedFunction>> = self
@@ -781,18 +742,12 @@ impl InterpInstance {
     /// Total native handler dispatches since instantiation (0 when native
     /// dispatch is not active).
     pub fn dispatch_count(&self) -> u64 {
-        #[cfg(sf_interp_engine)]
         {
             return self.native.as_ref().map_or(0, |n| n.dispatches);
-        }
-        #[cfg(not(sf_interp_engine))]
-        {
-            0
         }
     }
 
     /// Map a native pc to `(func_index, cells_start)`.
-    #[cfg(sf_interp_engine)]
     fn native_pc_lookup(&self, pc: u64) -> Result<(usize, u64), WasmError> {
         let ranges = &self.native.as_ref().expect("native state").ranges;
         let i = ranges.partition_point(|r| r.1 <= pc);
@@ -838,7 +793,6 @@ impl InterpInstance {
     /// against a hard buffer assert, and once emission moves to build time
     /// this becomes binary size.
     pub fn engine_code_len(&self) -> usize {
-        #[cfg(sf_interp_engine)]
         if let Some(native) = &self.native {
             return native.engine.code_len();
         }
@@ -846,7 +800,6 @@ impl InterpInstance {
     }
 
     pub fn slow_exit_stats(&self) -> Vec<(Op, u64)> {
-        #[cfg(sf_interp_engine)]
         if let Some(native) = &self.native {
             return op_counts(&native.slow_exits);
         }
@@ -886,7 +839,6 @@ impl InterpInstance {
     }
 
     /// Resolve the element-segment function value at `seg[k]`.
-    #[cfg(sf_interp_engine)]
     fn elem_value(&self, seg: usize, k: usize) -> Result<u32, WasmError> {
         match self.module.elements().get(seg).map(|e| e.get_init()) {
             Some(ElementInit::FunctionIndexes(idxs)) => idxs
@@ -910,25 +862,15 @@ impl InterpInstance {
     /// The first linear memory's contents, if the module defines one.
     #[inline]
     pub fn memory(&self) -> Option<&[u8]> {
-        #[cfg(sf_interp_engine)]
         {
             self.memories.first().map(|m| m.bytes())
-        }
-        #[cfg(not(sf_interp_engine))]
-        {
-            None
         }
     }
 
     #[inline]
     pub fn memory_mut(&mut self) -> Option<&mut [u8]> {
-        #[cfg(sf_interp_engine)]
         {
             self.memories.first_mut().map(|m| m.bytes_mut())
-        }
-        #[cfg(not(sf_interp_engine))]
-        {
-            None
         }
     }
 
@@ -954,14 +896,8 @@ impl InterpInstance {
     /// instance linkable: the importer takes this backing rather than a
     /// copy, so writes on either side are visible to both.
     pub fn shared_memory_at(&self, idx: usize) -> Option<MemInst> {
-        #[cfg(sf_interp_engine)]
         {
             self.memories.get(idx).map(|m| m.inst.clone())
-        }
-        #[cfg(not(sf_interp_engine))]
-        {
-            let _ = idx;
-            None
         }
     }
 
@@ -1000,7 +936,6 @@ impl InterpInstance {
 
     /// Invoke a function by index. `args` and `results` are raw 64-bit
     /// value slots (i32/f32 in the low bits).
-    #[cfg(sf_interp_engine)]
     pub fn invoke(
         &mut self,
         func_index: usize,
@@ -1037,21 +972,9 @@ impl InterpInstance {
     /// Stub for targets without a native backend: [`Self::new`] fails
     /// there, so no instance exists to invoke — this only keeps
     /// cross-target callers compiling.
-    #[cfg(not(sf_interp_engine))]
-    pub fn invoke(
-        &mut self,
-        _func_index: usize,
-        _args: &[u64],
-        _results: &mut [u64],
-    ) -> Result<(), WasmError> {
-        Err(WasmError::invalid(
-            "interp: no native dispatch backend for this target",
-        ))
-    }
 
     /// The call/return trampoline: runs activations to their next call or
     /// return boundary, keeping call depth as data on `saved`.
-    #[cfg(sf_interp_engine)]
     fn drive(
         &mut self,
         root: Activation,
@@ -1083,7 +1006,6 @@ impl InterpInstance {
 
     /// Results are copied out here, while the stack that produced them is
     /// still in hand -- a nested call runs on a different one.
-    #[cfg(sf_interp_engine)]
     fn drive_on(
         &mut self,
         root: Activation,
@@ -1166,7 +1088,6 @@ impl InterpInstance {
     }
 
     // `packed` is `memidx << 48 | offset` as emitted by the predecoder.
-    #[cfg(sf_interp_engine)]
     fn mem_load(&self, addr: u64, packed: u64, size: usize) -> Result<&[u8], WasmError> {
         let mem = self
             .memories
@@ -1180,7 +1101,6 @@ impl InterpInstance {
         Ok(&mem.bytes()[ea as usize..end as usize])
     }
 
-    #[cfg(sf_interp_engine)]
     fn mem_store(&mut self, addr: u64, packed: u64, size: usize) -> Result<&mut [u8], WasmError> {
         let mem = self
             .memories
@@ -1196,7 +1116,6 @@ impl InterpInstance {
 
     /// Dispatch an imported function to the host. `frame` is the CALLER's
     /// frame slice; arguments and results live at `arg_base` within it.
-    #[cfg(sf_interp_engine)]
     fn call_host(
         &mut self,
         callee: usize,
@@ -1251,7 +1170,6 @@ impl InterpInstance {
     /// current function is recovered from the pc via the range map and the
     /// ORIGINAL instruction is executed by `exec_ins`, then the chain is
     /// re-entered.
-    #[cfg(sf_interp_engine)]
     fn native_step(
         &mut self,
         act: &mut Activation,
@@ -1410,7 +1328,6 @@ impl InterpInstance {
     /// returns, and rich trap messages). Acc residency flags are ignored
     /// here by design: slow cells are always linked with their acc hints
     /// stripped, so operands and destinations live in their frame slots.
-    #[cfg(sf_interp_engine)]
     pub(super) fn exec_ins(
         &mut self,
         frame: &mut [u64],
@@ -2221,7 +2138,6 @@ impl InterpInstance {
 /// lower bound of the truncated value (0.0 for the unsigned cases — a
 /// truncated -0.0 compares equal to 0.0 and is valid), `hi_excl` the
 /// exclusive upper bound. Both bounds are exactly representable in f64.
-#[cfg(sf_interp_engine)]
 fn trunc_checked(x: f64, lo: f64, hi_excl: f64) -> Result<f64, WasmError> {
     if x.is_nan() {
         return Err(WasmError::trap("invalid conversion to integer"));
@@ -2233,7 +2149,6 @@ fn trunc_checked(x: f64, lo: f64, hi_excl: f64) -> Result<f64, WasmError> {
     Ok(t)
 }
 
-#[cfg(sf_interp_engine)]
 fn wasm_min_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
         f32::NAN
@@ -2248,7 +2163,6 @@ fn wasm_min_f32(a: f32, b: f32) -> f32 {
     }
 }
 
-#[cfg(sf_interp_engine)]
 fn wasm_max_f32(a: f32, b: f32) -> f32 {
     if a.is_nan() || b.is_nan() {
         f32::NAN
@@ -2263,7 +2177,6 @@ fn wasm_max_f32(a: f32, b: f32) -> f32 {
     }
 }
 
-#[cfg(sf_interp_engine)]
 fn wasm_min_f64(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         f64::NAN
@@ -2278,7 +2191,6 @@ fn wasm_min_f64(a: f64, b: f64) -> f64 {
     }
 }
 
-#[cfg(sf_interp_engine)]
 fn wasm_max_f64(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         f64::NAN
@@ -2293,7 +2205,7 @@ fn wasm_max_f64(a: f64, b: f64) -> f64 {
     }
 }
 
-#[cfg(all(test, sf_interp_engine))]
+#[cfg(test)]
 mod tests {
     use super::*;
     use crate::module::Module;

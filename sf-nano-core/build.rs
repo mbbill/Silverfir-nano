@@ -53,8 +53,6 @@
 //   (derived)      → sf_has_simd         (arm64 with NEON, x64 with SSE4.1+SSSE3)
 //   jit            → sf_jit
 //   interp         → sf_interp
-//   (derived)      → sf_interp_engine  (interp, on an ISA this build script
-//                                        generates a dispatch engine for)
 //   wasi           → sf_wasi_host
 //   validator      → sf_module_validator
 //   call-trace     → sf_call_trace
@@ -106,7 +104,6 @@ const DECLARED_CFGS: &[&str] = &[
     "sf_has_debug_regions",
     "sf_jit",
     "sf_interp",
-    "sf_interp_engine",
     "sf_wasi_host",
     "sf_module_validator",
     "sf_has_simd",
@@ -121,6 +118,7 @@ fn main() {
         println!("cargo::rustc-check-cfg=cfg({name})");
     }
 
+    require_supported_isa();
     emit_backend_cfgs();
     emit_simd_cfg();
     emit_os_cfgs();
@@ -143,18 +141,12 @@ fn main() {
     emit_interp_engine();
 }
 
-/// Generate the interpreter's dispatch engine for this target and write it
-/// to `OUT_DIR` as assembler source plus a small facts file. Sets
-/// `sf_interp_engine` when the host ISA has one; without it the interpreter
-/// reports cleanly that this target has no engine.
+/// Generate the interpreter's dispatch engine for this target and write it to
+/// `OUT_DIR` as assembler source plus a small facts file.
 ///
-/// Deliberately independent of `sf_jit`: build-time generation is what
-/// removes the executable-memory requirement, so `--features interp`
-/// alone is now a complete engine.
-///
-/// Both engines select from the same ISA list, so they cover exactly the same
-/// targets; `lib.rs` asserts it, so the interpreter can never go missing on an
-/// ISA the JIT still supports.
+/// Deliberately independent of `sf_jit`: build-time generation is what removes
+/// the executable-memory requirement, so `--features interp` alone is a
+/// complete engine.
 fn emit_interp_engine() {
     println!("cargo:rerun-if-changed=interp_gen");
     println!("cargo:rerun-if-changed=src/vm/interpreter/instr.rs");
@@ -168,40 +160,40 @@ fn emit_interp_engine() {
         "windows" => ObjFmt::Coff,
         _ => ObjFmt::Elf,
     };
-    let backend = selected_backend();
-    let thumb = matches!(backend, Some(SelectedBackend::ThumbM))
-        || (matches!(backend, Some(SelectedBackend::Armv7a))
+    // `require_supported_isa` already refused an ISA with no backend, so the
+    // match below is total: every ISA the JIT emits for has a handler set, and
+    // adding a `SelectedBackend` variant without one is a build-script
+    // compile error rather than a silently engine-less interpreter.
+    let backend = selected_backend().expect("require_supported_isa ran first");
+    let thumb = backend == SelectedBackend::ThumbM
+        || (backend == SelectedBackend::Armv7a
             && env::var_os("CARGO_FEATURE_THUMB2_TEST").is_some());
     let mut isa: Box<dyn Isa> = match backend {
-        Some(SelectedBackend::Arm64) => Box::new(interp_gen::arm64::Arm64),
-        Some(SelectedBackend::X64) => Box::new(interp_gen::x86_64::X86_64 {
+        SelectedBackend::Arm64 => Box::new(interp_gen::arm64::Arm64),
+        SelectedBackend::X64 => Box::new(interp_gen::x86_64::X86_64 {
             windows: os == "windows",
         }),
-        Some(SelectedBackend::Riscv64) => Box::new(interp_gen::riscv::RiscV {
+        SelectedBackend::Riscv64 => Box::new(interp_gen::riscv::RiscV {
             xlen: 64,
             // RV64GC's triple contract guarantees F and D.
             fp: true,
         }),
-        Some(SelectedBackend::Riscv32) => Box::new(interp_gen::riscv::RiscV {
+        SelectedBackend::Riscv32 => Box::new(interp_gen::riscv::RiscV {
             xlen: 32,
             // The RV32 handler set is the integer one; f32/f64 route to the
             // shared executor even on `gc` triples.
             fp: false,
         }),
-        Some(SelectedBackend::Armv7a) | Some(SelectedBackend::ThumbM) => {
+        SelectedBackend::Armv7a | SelectedBackend::ThumbM => {
             Box::new(interp_gen::arm32::Arm32 {
                 thumb,
                 // Both profiles have sdiv/udiv — this project's ARMv7-A
                 // targets are the IDIV ones (build.rs already assumes
                 // VFPv3-D16, which implies it), and every M-profile core
                 // has them. Only the A-profile assembler needs telling.
-                idiv_directive: matches!(backend, Some(SelectedBackend::Armv7a)),
+                idiv_directive: backend == SelectedBackend::Armv7a,
             })
         }
-        // `None` — an ISA no backend covers. The crate still builds, and
-        // instantiating an interpreter instance fails with a clean error
-        // naming the target.
-        None => return,
     };
     let counting = env::var_os("CARGO_FEATURE_INTERP_COUNT").is_some();
     let text = interp_gen::generate(&mut *isa, fmt, thumb, counting);
@@ -227,7 +219,6 @@ fn emit_interp_engine() {
         layout::total_slots(),
     );
     std::fs::write(dir.join("interp_engine_cfg.rs"), cfg).expect("write interp_engine_cfg.rs");
-    println!("cargo:rustc-cfg=sf_interp_engine");
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -261,6 +252,38 @@ fn selected_backend() -> Option<SelectedBackend> {
         "x86_64" => Some(SelectedBackend::X64),
         _ => None,
     }
+}
+
+/// Refuse a build that asks for an engine this target's ISA has no code for.
+///
+/// Both engines are ISA-specific: the JIT emits machine code, and the
+/// interpreter's dispatch handlers are generated per ISA at build time. On an
+/// ISA neither covers, a build that "succeeds" only produces an engine that
+/// fails at instantiation -- so the honest answer is to refuse here, where the
+/// message can name the target.
+fn require_supported_isa() {
+    if selected_backend().is_some() {
+        return;
+    }
+    let engines: Vec<&str> = [
+        ("CARGO_FEATURE_JIT", "jit"),
+        ("CARGO_FEATURE_INTERP", "interp"),
+    ]
+    .iter()
+    .filter(|(var, _)| env::var_os(var).is_some())
+    .map(|(_, name)| *name)
+    .collect();
+    if engines.is_empty() {
+        return;
+    }
+    panic!(
+        "sf-nano-core: target `{}` has no backend, so the `{}` feature{} cannot \
+         be built for it. Supported ISAs are aarch64, x86_64, riscv64gc, \
+         riscv32 (gc/imac/imc/im/i), and arm (A32 or Thumb).",
+        env::var("TARGET").unwrap_or_default(),
+        engines.join("`/`"),
+        if engines.len() > 1 { "s" } else { "" },
+    );
 }
 
 fn emit_backend_cfgs() {

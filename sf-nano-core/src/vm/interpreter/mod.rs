@@ -27,18 +27,13 @@
 //!   handler, plus host calls, traps with messages, and the activation
 //!   boundary.
 
-#[cfg(sf_interp_engine)]
 mod engine;
 mod exec;
-// Only the slow path calls these, and the slow path exists only where a
-// dispatch engine does.
-#[cfg(sf_interp_engine)]
 mod fmath;
 mod instr;
-// The variant layout describes the generated handler set, so it exists
-// only where one was generated. The build script compiles the same file
-// independently, via `#[path]`.
-#[cfg(sf_interp_engine)]
+// The variant layout describes the generated handler set. The build script
+// compiles this same file independently, via `#[path]`, so the generator and
+// the linker agree on the space by construction.
 mod layout;
 mod predecode;
 

@@ -99,8 +99,9 @@ Today that means:
 - on x86_64, normal `--backend native` execution uses the x86_64 backend
 - on RV64GC Linux, normal `--backend native` execution uses the RV64 backend
 - on ARMv7-A Linux, normal `--backend native` execution uses the ARMv7-A backend
-- on unsupported targets, `native` is unavailable and reports so at
-  instantiation
+- on an ISA no backend covers, the build is refused outright: `build.rs`
+  names the target and lists the supported ISAs, rather than producing an
+  engine that would fail at instantiation
 
 ## Runtime Line
 

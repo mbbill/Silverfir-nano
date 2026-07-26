@@ -9,7 +9,7 @@
 //! target without one fails `InterpInstance::new` cleanly, and `interp` is
 //! a default feature of the CLI and spectest crates, so an ungated test
 //! would fail `cargo test --workspace` there.
-#![cfg(sf_interp_engine)]
+#![cfg(sf_interp)]
 
 use std::cell::{Cell, RefCell};
 
