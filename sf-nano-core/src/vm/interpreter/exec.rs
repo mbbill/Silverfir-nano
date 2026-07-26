@@ -611,6 +611,9 @@ impl InterpInstance {
         // instance handed back after a trap still has to be callable, and
         // linking is not observable, so its position is free.
         inst.enable_native_dispatch().map_err(|e| (None, e))?;
+        if let Err(e) = inst.apply_element_segments() {
+            return Err((Some(inst), e));
+        }
         if let Err(e) = inst.apply_data_segments() {
             return Err((Some(inst), e));
         }
@@ -928,61 +931,12 @@ impl InterpInstance {
         // A DECLARATIVE segment exists only to forward-declare references;
         // it carries no initializer a `table.init` may read, so it starts
         // dropped and any use of it traps.
-        let mut published: Vec<(RefHandle, usize)> = Vec::new();
-        let mut dropped_elems: Vec<bool> = module
+        let published: Vec<(RefHandle, usize)> = Vec::new();
+        let dropped_elems: Vec<bool> = module
             .elements()
             .iter()
             .map(|e| matches!(e, Element::Declarative { .. }))
             .collect();
-        for (ei, e) in module.elements().iter().enumerate() {
-            if let Element::Active {
-                table_index,
-                offset_expr,
-                init,
-            } = e
-            {
-                // The offset is guest-controlled and can be any u32, so
-                // the bound has to be computed without wrapping: on a
-                // 32-bit host `off + len` overflows `usize` and turns an
-                // out-of-range segment into an in-range one.
-                let off = eval_const(offset_expr, &globals)? as u64;
-                let table = tables
-                    .get_mut(*table_index)
-                    .ok_or(WasmError::invalid("interp: element table out of range"))?;
-                // A funcref entering a SHARED table needs a global name.
-                let shared_now = matches!(table.entries, TableEntries::Shared(_));
-                let fits = |n: usize| off + n as u64 <= table.entries.len() as u64;
-                match init {
-                    ElementInit::FunctionIndexes(idxs) => {
-                        if !fits(idxs.len()) {
-                            return Err(WasmError::trap("out of bounds table access"));
-                        }
-                        for (k, &fi) in idxs.iter().enumerate() {
-                            let slot = match (shared_now, funcref_host.as_ref()) {
-                                (true, Some(h)) => {
-                                    let handle = (h.publish)(fi);
-                                    published.push((handle, fi));
-                                    ref_to_slot(handle)
-                                }
-                                _ => ref_to_slot(RefHandle::new(fi)),
-                            };
-                            table.entries.set(off as usize + k, slot)?;
-                        }
-                    }
-                    ElementInit::InitExprs { exprs, .. } => {
-                        if !fits(exprs.len()) {
-                            return Err(WasmError::trap("out of bounds table access"));
-                        }
-                        for (k, expr) in exprs.iter().enumerate() {
-                            table
-                                .entries
-                                .set(off as usize + k, eval_const(expr, &globals)?)?;
-                        }
-                    }
-                }
-                dropped_elems[ei] = true; // active segments drop after use
-            }
-        }
 
         // Data segments are applied by `apply_data_segments`, after the
         // instance exists: one of them trapping must not lose the element
@@ -1014,6 +968,69 @@ impl InterpInstance {
         // see initialized memory, and a trap in either has to hand the
         // instance back rather than lose it.
         Ok(inst)
+    }
+
+    /// Copy every active element segment into its table.
+    ///
+    /// After construction for the same reason as the data segments: a trap
+    /// here leaves writes that already landed -- possibly in another
+    /// instance's table -- and the instance holding them must survive.
+    fn apply_element_segments(&mut self) -> Result<(), WasmError> {
+        for ei in 0..self.module.elements().len() {
+            let Some(Element::Active {
+                table_index,
+                offset_expr,
+                init,
+            }) = self.module.elements().get(ei).cloned()
+            else {
+                continue;
+            };
+            let off = eval_const(&offset_expr, &self.globals)? as u64;
+            let shared_now = matches!(
+                self.tables.get(table_index).map(|t| &t.entries),
+                Some(TableEntries::Shared(_))
+            );
+            let len = self
+                .tables
+                .get(table_index)
+                .ok_or(WasmError::invalid("interp: element table out of range"))?
+                .entries
+                .len() as u64;
+            // The offset is guest-controlled, so the bound is computed
+            // without wrapping: on a 32-bit host `off + len` overflows
+            // `usize` and turns an out-of-range segment into an in-range one.
+            let n = init.len() as u64;
+            if off + n > len {
+                return Err(WasmError::trap("out of bounds table access"));
+            }
+            match &init {
+                ElementInit::FunctionIndexes(idxs) => {
+                    for (k, &fi) in idxs.iter().enumerate() {
+                        // A funcref entering a SHARED table needs a global
+                        // name; see `FuncRefHost`.
+                        let slot = match (shared_now, self.funcref_host.as_ref()) {
+                            (true, Some(h)) => {
+                                let handle = (h.publish)(fi);
+                                self.published.push((handle, fi));
+                                ref_to_slot(handle)
+                            }
+                            _ => ref_to_slot(RefHandle::new(fi)),
+                        };
+                        self.tables[table_index]
+                            .entries
+                            .set(off as usize + k, slot)?;
+                    }
+                }
+                ElementInit::InitExprs { exprs, .. } => {
+                    for (k, expr) in exprs.iter().enumerate() {
+                        let v = eval_const(expr, &self.globals)?;
+                        self.tables[table_index].entries.set(off as usize + k, v)?;
+                    }
+                }
+            }
+            self.dropped_elems[ei] = true; // active segments drop after use
+        }
+        Ok(())
     }
 
     /// Copy every active data segment into its memory.
