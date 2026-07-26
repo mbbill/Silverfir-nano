@@ -25,6 +25,11 @@
   file operation; a guest cannot escape its granted directory
   (`resolve_under_base`).
 
+- File identity (`ino`) is taken from whatever identity the host itself keeps
+  for a file, and is synthesized from the path and its metadata only where the
+  host offers none; the synthesized form is a fallback, never the primary
+  answer on a host that can do better.
+
 ## Facts
 
 - 2025-06-24 (0c6357bb) pitfall: import resolution must special-case the WASI
@@ -112,6 +117,13 @@
   directly for path classification and filestat (`rv32_linux_stat`), and any
   removal of that direct path must be revalidated under qemu-riscv32-static
   (code).
+
+- 2026-07-26 (003b6a21) rationale: identity has to come from the host because
+  a hard link is two names for one file, and the WASI suite asserts the two
+  report equal `ino`. Anything derived from the path answers that they are
+  different files. Unix has the inode; Windows has a volume-relative file
+  index, reachable only by asking the OS directly since
+  `MetadataExt::file_index` is unstable (rust-lang/rust#63010) (code).
 
 - 2026-07-26 (fe130e61) pitfall: a descriptor number inside the preopen range
   3..3+N is not necessarily still a preopen. `fd_renumber` retires the original
