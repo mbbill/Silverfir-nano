@@ -27,7 +27,7 @@ use crate::module::Module;
 use crate::opcodes::Opcode;
 use crate::utils::limits::{Limitable, Limits};
 use crate::vm::engine::Engine;
-use crate::vm::entities::{MemInst, TableInst};
+use crate::vm::entities::{GlobalInst, MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
@@ -312,6 +312,10 @@ pub struct InterpInstance {
     dropped_data: Vec<bool>,
     dropped_elems: Vec<bool>,
     globals: Vec<u64>,
+    /// Globals another instance can reach, by index. These live in an
+    /// `Rc`-owned cell rather than the array above, because both sides must
+    /// observe each other's writes; the array slot beside them is unused.
+    shared_globals: Vec<Option<GlobalInst>>,
     tables: Vec<TableState>,
     /// Runtime tag identities, one per declared tag. Linking needs them;
     /// nothing here throws yet.
@@ -603,10 +607,23 @@ impl InterpInstance {
 
         // Globals.
         let mut globals = Vec::new();
+        let mut shared_globals: Vec<Option<GlobalInst>> = Vec::new();
         for g in module.globals() {
             match g.def() {
                 GlobalDef::Local(spec) => {
                     let v = eval_const(spec.init_expr(), &globals)?;
+                    // A global another instance can reach must BE the shared
+                    // cell, so an importer's writes are visible here and ours
+                    // there. A private one stays in the array the chain reads.
+                    if g.export_names().is_empty() {
+                        shared_globals.push(None);
+                    } else {
+                        shared_globals.push(Some(GlobalInst::new_raw(
+                            v,
+                            spec.mutable(),
+                            spec.value_type(),
+                        )));
+                    }
                     globals.push(v);
                 }
                 GlobalDef::Import {
@@ -626,18 +643,16 @@ impl InterpInstance {
                         // current value is the whole story, so copying it
                         // in is exact.
                         Some((ImportedGlobal::Value(v), _)) => {
+                            shared_globals.push(None);
                             globals.push(value_to_raw_for_interp(&v.value)?)
                         }
-                        Some((ImportedGlobal::State(st), false)) => globals.push(st.global.raw()),
-                        // A shared MUTABLE global would need the two
-                        // instances to see each other's writes, and this
-                        // engine keeps globals in one contiguous array
-                        // that the dispatch chain indexes. Erroring beats
-                        // copying, which would silently drop the writes.
-                        Some((ImportedGlobal::State(_), true)) => {
-                            return Err(WasmError::invalid(
-                                "interp: shared mutable global import unsupported",
-                            ))
+                        // Aliased, not copied: both sides must observe each
+                        // other's writes. Accesses to it are denied a native
+                        // handler, since the chain indexes the array below.
+                        Some((ImportedGlobal::State(st), _)) => {
+                            shared_globals.push(Some(st.global.clone()));
+                            globals.push(st.global.raw());
+                            continue;
                         }
                         None => return Err(WasmError::unlinkable("missing global import")),
                     }
@@ -853,6 +868,7 @@ impl InterpInstance {
             dropped_data,
             dropped_elems,
             globals,
+            shared_globals,
             tables,
             tags,
             // Zeroed in full: native dispatch roams the whole region
@@ -1144,6 +1160,14 @@ impl InterpInstance {
                 .and_then(|e| eval_const(e, &self.globals)),
             None => Err(WasmError::trap("out of bounds table access")),
         }
+    }
+
+    /// This global's shared cell, when it has one.
+    ///
+    /// Only a global that is imported or exported is held as a `GlobalInst`;
+    /// a purely private one lives in the array and has nothing to share.
+    pub fn global_state_at(&self, idx: usize) -> Option<GlobalInst> {
+        self.shared_globals.get(idx)?.clone()
     }
 
     /// The runtime identity of tag `idx`, for an importer to link against.
@@ -2344,11 +2368,19 @@ impl InterpInstance {
 
             // ---- globals ----
             Op::GlobalGet => {
-                frame[ins.c as usize] = self.globals[ins.a as usize];
+                let i = ins.a as usize;
+                frame[ins.c as usize] = match self.shared_globals.get(i).and_then(|g| g.as_ref()) {
+                    Some(shared) => shared.raw(),
+                    None => self.globals[i],
+                };
             }
             Op::GlobalSet => {
                 let v = opa!(ins);
-                self.globals[ins.c as usize] = v;
+                let i = ins.c as usize;
+                match self.shared_globals.get_mut(i).and_then(|g| g.as_mut()) {
+                    Some(shared) => shared.set_raw(v),
+                    None => self.globals[i] = v,
+                }
             }
 
             // ---- ref/table ----

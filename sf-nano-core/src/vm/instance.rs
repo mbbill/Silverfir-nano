@@ -424,6 +424,11 @@ impl Instance {
 
     pub fn shared_global_state_at(&self, idx: usize) -> Option<ImportedGlobalState> {
         match &self.inner {
+            #[cfg(sf_interp)]
+            Inner::Interp(inst) => inst.global_state_at(idx).map(|global| ImportedGlobalState {
+                global,
+                type_ctx: None,
+            }),
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.shared_global_state_at(idx),
             #[cfg(sf_interp)]

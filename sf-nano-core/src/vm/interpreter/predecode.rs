@@ -18,6 +18,7 @@
 
 use crate::collections::{vec, Vec};
 use crate::error::WasmError;
+use crate::module::entities::GlobalDef;
 use crate::module::type_context::TypeContext;
 use crate::module::Module;
 use crate::op_decoder::{BlockType, Decoder, Immediate, OpStream, OpcodeHandler};
@@ -31,7 +32,7 @@ pub(super) const WIDE_MEMARG: u64 = 1 << 63;
 
 use super::instr::{
     operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
-    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_SHARED_TABLE,
+    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
 };
 
 /// Producer index meaning "no patchable producer" (call results, block
@@ -303,6 +304,14 @@ impl<'m> Predecoder<'m> {
 
     /// Whether the table at `idx` is reachable from another instance, and so
     /// is held as the shared entity rather than a private array.
+    /// Whether the global at `idx` is reachable from another instance, and so
+    /// lives in a shared cell rather than this instance's array.
+    fn global_is_shared(&self, idx: u64) -> bool {
+        self.module.globals().get(idx as usize).is_some_and(|g| {
+            matches!(g.def(), GlobalDef::Import { .. }) || !g.export_names().is_empty()
+        })
+    }
+
     fn table_is_shared(&self, idx: u64) -> bool {
         self.module
             .tables()
@@ -1706,7 +1715,12 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         _ => return Err(desync()),
                     };
                     let dst = self.temp_slot_used(self.height());
-                    let idx = self.emit(Op::GlobalGet, 0, g as u64, 0, dst);
+                    let flags = if self.global_is_shared(g as u64) {
+                        FLAG_SHARED_GLOBAL
+                    } else {
+                        0
+                    };
+                    let idx = self.emit(Op::GlobalGet, flags, g as u64, 0, dst);
                     self.push_result_temp(idx);
                 }
                 Opcode::GLOBAL_SET => {
@@ -1720,6 +1734,9 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     let mut flags = self.acc_operand(d, FLAG_A_ACC, false);
                     if a_const {
                         flags |= FLAG_A_CONST;
+                    }
+                    if self.global_is_shared(g as u64) {
+                        flags |= FLAG_SHARED_GLOBAL;
                     }
                     self.emit(Op::GlobalSet, flags, a, 0, g as u64);
                 }

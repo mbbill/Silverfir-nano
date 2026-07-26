@@ -18,7 +18,7 @@ use crate::collections::{vec, Vec};
 
 use super::instr::{
     operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
-    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_SHARED_TABLE,
+    FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
 };
 use super::layout::{
     build_op_base, c_is_branch_target, family, native_guard, op_slot, operand_is_f32,
@@ -324,7 +324,7 @@ impl NativeEngine {
     fn handler_for(&self, ins: &Instr, flags: u16, pin: &Pinned) -> Option<usize> {
         // The generated handlers zero-extend a 32-bit address, so a 64-bit
         // memory access has no native form and takes the shared executor.
-        if flags & (FLAG_ADDR64 | FLAG_SHARED_TABLE) != 0 {
+        if flags & (FLAG_ADDR64 | FLAG_SHARED_TABLE | FLAG_SHARED_GLOBAL) != 0 {
             return None;
         }
         let slot = op_slot(ins, flags, pin, &self.op_base)?;

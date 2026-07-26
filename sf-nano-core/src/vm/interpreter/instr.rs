@@ -46,6 +46,12 @@ pub(crate) const FLAG_ADDR64: u16 = 1 << 6;
 /// Such a table IS the shared entity, whose elements are `RefHandle` rather
 /// than 8-byte slots, so no generated handler may index it.
 pub(crate) const FLAG_SHARED_TABLE: u16 = 1 << 7;
+/// This global access targets a global another instance can reach.
+///
+/// A shared global lives in an `Rc`-owned cell, not in this instance's
+/// contiguous array, so the generated handlers -- which index that array by
+/// byte offset -- cannot reach it.
+pub(crate) const FLAG_SHARED_GLOBAL: u16 = 1 << 8;
 
 /// Recover an `Op` from its dense `#[repr(u16)]` discriminant — the same
 /// invariant the packed handler-slot key relies on.
