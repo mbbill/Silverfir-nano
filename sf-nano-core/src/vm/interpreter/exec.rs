@@ -26,7 +26,7 @@ use crate::module::Module;
 use crate::opcodes::Opcode;
 use crate::utils::limits::{Limitable, Limits};
 use crate::vm::engine::Engine;
-use crate::vm::entities::MemInst;
+use crate::vm::entities::{MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
 use crate::vm::value::{RefHandle, Value};
 
@@ -109,8 +109,78 @@ pub(crate) type HostDispatch =
 /// that implements it is arm64-only, so the field follows that gate.
 /// `entries` is not gated: instantiation reads its length to bounds-check
 /// active element segments on every target.
+/// A table's entries, in one of two tiers.
+///
+/// This mirrors what the JIT does with `TableDispatchMode`: a table nobody
+/// else can see keeps a private array the dispatch chain may index directly,
+/// while one that is imported or exported must be the SHARED entity, because
+/// another instance can write to it and both sides have to observe that.
+///
+/// The tiers differ in element type, which is the whole reason for the split:
+/// the chain reads 8-byte slots, and `TableInst` holds `RefHandle`, which is
+/// narrower on the 32-bit targets. A shared table therefore never reaches a
+/// native handler.
+enum TableEntries {
+    Private(Vec<u64>),
+    Shared(TableInst),
+}
+
+impl TableEntries {
+    #[inline]
+    fn len(&self) -> usize {
+        match self {
+            Self::Private(v) => v.len(),
+            Self::Shared(t) => t.elements().len(),
+        }
+    }
+
+    #[inline]
+    fn get(&self, i: usize) -> Option<u64> {
+        match self {
+            Self::Private(v) => v.get(i).copied(),
+            Self::Shared(t) => t.elements().get(i).map(|h| ref_to_slot(*h)),
+        }
+    }
+
+    #[inline]
+    fn set(&mut self, i: usize, v: u64) -> Result<(), WasmError> {
+        let oob = || WasmError::trap("out of bounds table access");
+        match self {
+            Self::Private(vec) => *vec.get_mut(i).ok_or_else(oob)? = v,
+            Self::Shared(t) => *t.elements_mut().get_mut(i).ok_or_else(oob)? = slot_to_ref(v),
+        }
+        Ok(())
+    }
+
+    fn resize(&mut self, n: usize, v: u64) {
+        match self {
+            Self::Private(vec) => vec.resize(n, v),
+            Self::Shared(t) => t.elements_mut().resize(n, slot_to_ref(v)),
+        }
+    }
+
+    fn fill(&mut self, at: usize, n: usize, v: u64) {
+        match self {
+            Self::Private(vec) => vec[at..at + n].fill(v),
+            Self::Shared(t) => t.elements_mut()[at..at + n].fill(slot_to_ref(v)),
+        }
+    }
+
+    /// The base pointer the dispatch chain indexes, when there is one.
+    ///
+    /// `None` for a shared table: its elements are `RefHandle`, not 8-byte
+    /// slots, so no native handler may read them.
+    #[inline]
+    fn fast_base(&self) -> Option<*const u64> {
+        match self {
+            Self::Private(v) => Some(v.as_ptr()),
+            Self::Shared(_) => None,
+        }
+    }
+}
+
 struct TableState {
-    entries: Vec<u64>,
+    entries: TableEntries,
     max: u64,
 }
 
@@ -573,6 +643,7 @@ impl InterpInstance {
         // Tables (any reference type) + active element segments.
         let mut tables = Vec::new();
         for t in module.tables() {
+            let mut shared_from_import: Option<TableInst> = None;
             // An imported table's size is the PROVIDER's, not the importing
             // module's declared minimum: `(table (import ..) 0 funcref)` sees
             // however many entries the exporter actually has, so the import's
@@ -600,21 +671,36 @@ impl InterpInstance {
                         }
                         limits
                     }
-                    // A live table from another instance would have to be
-                    // shared, not copied, or the two sides would stop
-                    // agreeing after the first `table.set`.
-                    Some((_, Some(_))) => {
-                        return Err(WasmError::invalid(
-                            "interp: shared table import unsupported",
-                        ))
+                    // A live table from another instance is ALIASED, not
+                    // copied: both sides must see each other's `table.set`.
+                    Some((limits, Some(state))) => {
+                        if !limits_satisfy(t.spec().limits(), &limits) {
+                            return Err(WasmError::unlinkable("incompatible import type"));
+                        }
+                        shared_from_import = Some(state.table.clone());
+                        limits
                     }
                     None => return Err(WasmError::unlinkable("missing table import")),
                 }
             } else {
                 t.spec().limits().clone()
             };
+            // A table another instance can reach must BE the shared entity:
+            // an importer's `table.set` has to be visible to the exporter and
+            // the other way round. Only a table that is neither imported nor
+            // exported can keep a private array.
+            let shared_out = !t.export_names().is_empty();
+            let entries = match (&shared_from_import, shared_out) {
+                (Some(inst), _) => TableEntries::Shared(inst.clone()),
+                (None, true) => {
+                    let inst = TableInst::new(limits.clone(), t.value_type());
+                    inst.elements_mut().resize(limits.min(), RefHandle::null());
+                    TableEntries::Shared(inst)
+                }
+                (None, false) => TableEntries::Private(vec![NULL_REF_SLOT; limits.min() as usize]),
+            };
             tables.push(TableState {
-                entries: vec![NULL_REF_SLOT; limits.min() as usize],
+                entries,
                 max: limits.max().unwrap_or(u32::MAX as usize) as u64,
             });
         }
@@ -659,8 +745,9 @@ impl InterpInstance {
                             return Err(WasmError::trap("out of bounds table access"));
                         }
                         for (k, &fi) in idxs.iter().enumerate() {
-                            table.entries[off as usize + k] =
-                                ref_to_slot(RefHandle::new(fi as usize));
+                            table
+                                .entries
+                                .set(off as usize + k, ref_to_slot(RefHandle::new(fi as usize)))?;
                         }
                     }
                     ElementInit::InitExprs { exprs, .. } => {
@@ -668,7 +755,9 @@ impl InterpInstance {
                             return Err(WasmError::trap("out of bounds table access"));
                         }
                         for (k, expr) in exprs.iter().enumerate() {
-                            table.entries[off as usize + k] = eval_const(expr, &globals)?;
+                            table
+                                .entries
+                                .set(off as usize + k, eval_const(expr, &globals)?)?;
                         }
                     }
                 }
@@ -995,6 +1084,17 @@ impl InterpInstance {
                 .ok_or(WasmError::trap("out of bounds table access"))
                 .and_then(|e| eval_const(e, &self.globals)),
             None => Err(WasmError::trap("out of bounds table access")),
+        }
+    }
+
+    /// This table's shared entity, when it has one.
+    ///
+    /// Only a table that is imported or exported is held as a `TableInst`;
+    /// a purely private one keeps an array and has nothing to share.
+    pub fn table_state_at(&self, idx: usize) -> Option<TableInst> {
+        match &self.tables.get(idx)?.entries {
+            TableEntries::Shared(t) => Some(t.clone()),
+            TableEntries::Private(_) => None,
         }
     }
 
@@ -1497,8 +1597,19 @@ impl InterpInstance {
             // per-entry refresh keeps the native indirect-call handler
             // valid with no invalidation protocol.
             if let Some(t) = self.tables.first() {
-                state.table0_base = t.entries.as_ptr() as u64;
-                state.table0_len = t.entries.len() as u64;
+                // Only a private table has a base the chain may index; a
+                // shared one holds `RefHandle`, so it is left at zero and its
+                // accesses run on the slow path.
+                match t.entries.fast_base() {
+                    Some(base) => {
+                        state.table0_base = base as u64;
+                        state.table0_len = t.entries.len() as u64;
+                    }
+                    None => {
+                        state.table0_base = 0;
+                        state.table0_len = 0;
+                    }
+                }
             }
             // The pinned-local registers reload from their (write-through,
             // hence authoritative) slots at every chain entry.
@@ -2214,7 +2325,7 @@ impl InterpInstance {
                     .get(ins.b as usize)
                     .ok_or(WasmError::trap("out of bounds table access"))?
                     .entries;
-                let v = *usize::try_from(i)
+                let v = usize::try_from(i)
                     .ok()
                     .and_then(|i| t.get(i))
                     .ok_or(WasmError::trap("out of bounds table access"))?;
@@ -2228,10 +2339,9 @@ impl InterpInstance {
                     .get_mut(ins.c as usize)
                     .ok_or(WasmError::trap("out of bounds table access"))?
                     .entries;
-                *usize::try_from(i)
-                    .ok()
-                    .and_then(|i| t.get_mut(i))
-                    .ok_or(WasmError::trap("out of bounds table access"))? = v;
+                let i = usize::try_from(i)
+                    .map_err(|_| WasmError::trap("out of bounds table access"))?;
+                t.set(i, v)?;
             }
             Op::TableSize => {
                 let n = self
@@ -2273,7 +2383,7 @@ impl InterpInstance {
                 if i + n > t.len() as u64 {
                     return Err(WasmError::trap("out of bounds table access"));
                 }
-                t[i as usize..(i + n) as usize].fill(val);
+                t.fill(i as usize, n as usize, val);
             }
             Op::TableCopy => {
                 let base = ins.a as usize;
@@ -2289,14 +2399,25 @@ impl InterpInstance {
                 if d + n > dlen || s0 + n > slen {
                     return Err(WasmError::trap("out of bounds table access"));
                 }
-                if dt == st {
-                    self.tables[dt]
-                        .entries
-                        .copy_within(s0 as usize..(s0 + n) as usize, d as usize);
+                // Copied through the accessors, and back-to-front when the
+                // ranges overlap forwards, so an in-place move does not read
+                // a slot it has already written.
+                let oob = || WasmError::trap("out of bounds table access");
+                if dt == st && d > s0 {
+                    for k in (0..n as usize).rev() {
+                        let v = self.tables[st]
+                            .entries
+                            .get(s0 as usize + k)
+                            .ok_or_else(oob)?;
+                        self.tables[dt].entries.set(d as usize + k, v)?;
+                    }
                 } else {
                     for k in 0..n as usize {
-                        let v = self.tables[st].entries[s0 as usize + k];
-                        self.tables[dt].entries[d as usize + k] = v;
+                        let v = self.tables[st]
+                            .entries
+                            .get(s0 as usize + k)
+                            .ok_or_else(oob)?;
+                        self.tables[dt].entries.set(d as usize + k, v)?;
                     }
                 }
             }
@@ -2327,7 +2448,7 @@ impl InterpInstance {
                 }
                 for k in 0..n as usize {
                     let v = self.elem_value(seg, s0 as usize + k)?;
-                    self.tables[tidx].entries[d as usize + k] = v;
+                    self.tables[tidx].entries.set(d as usize + k, v)?;
                 }
             }
             Op::ElemDrop => {
@@ -2407,7 +2528,7 @@ impl InterpInstance {
                     .tables
                     .get((ins.c >> 32) as usize)
                     .ok_or(WasmError::trap("undefined element"))?;
-                let fi = *usize::try_from(t)
+                let fi = usize::try_from(t)
                     .ok()
                     .and_then(|t| table.entries.get(t))
                     .ok_or(WasmError::trap("undefined element"))?;

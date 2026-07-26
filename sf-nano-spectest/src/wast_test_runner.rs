@@ -1363,11 +1363,15 @@ impl WastTestRunner {
                                         let slot =
                                             alloc_forwarding_function_slot(internal_name, func_idx);
                                         if let Some(&fwd) = FORWARDER_TABLE.get(slot) {
-                                            imports.push(Import::func_typed(
+                                            // With the exporter's type context,
+                                            // so rec-group identity is checked
+                                            // rather than mere structure.
+                                            imports.push(Import::func_typed_with_context(
                                                 registered_name,
                                                 export_name,
                                                 fwd,
                                                 ft,
+                                                type_ctx.clone(),
                                             ));
                                         }
                                     }

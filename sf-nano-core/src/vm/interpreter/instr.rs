@@ -41,6 +41,11 @@ pub(crate) const FLAG_FUSED: u16 = 1 << 5;
 /// equivalents), so a 64-bit access cannot use them; the flag denies the cell
 /// a native handler and the shared executor does the full-width arithmetic.
 pub(crate) const FLAG_ADDR64: u16 = 1 << 6;
+/// This `call_indirect` targets a table another instance can reach.
+///
+/// Such a table IS the shared entity, whose elements are `RefHandle` rather
+/// than 8-byte slots, so no generated handler may index it.
+pub(crate) const FLAG_SHARED_TABLE: u16 = 1 << 7;
 
 /// Recover an `Op` from its dense `#[repr(u16)]` discriminant — the same
 /// invariant the packed handler-slot key relies on.

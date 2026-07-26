@@ -15,6 +15,7 @@
 use crate::collections::Vec;
 use crate::error::WasmError;
 use crate::module::entities::FunctionDef;
+use crate::module::type_context::check_function_types_equivalent;
 use crate::module::type_defs::FunctionType;
 use crate::module::Module;
 use crate::value_type::ValueType;
@@ -76,12 +77,25 @@ pub(super) fn bind(
             ImportValue::Func(ImportedFunction::Host {
                 callback,
                 func_type: provided_type,
+                type_ctx,
                 ..
             }) => {
                 if let Some(provided_type) = provided_type {
-                    if provided_type.params() != func_type.params()
-                        || provided_type.results() != func_type.results()
-                    {
+                    // With a type context, compare through it rather than
+                    // structurally: two `func` types in the same rec group are
+                    // structurally identical yet distinct identities, and only
+                    // the context can tell them apart. This is the same
+                    // comparison the JIT makes.
+                    let compatible = match type_ctx {
+                        Some(ctx) => {
+                            check_function_types_equivalent(provided_type, &func_type, ctx)
+                        }
+                        None => {
+                            provided_type.params() == func_type.params()
+                                && provided_type.results() == func_type.results()
+                        }
+                    };
+                    if !compatible {
                         return Err(WasmError::unlinkable("incompatible import type"));
                     }
                 }

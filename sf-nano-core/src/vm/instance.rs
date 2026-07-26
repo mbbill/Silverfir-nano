@@ -410,10 +410,10 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.shared_table_state_at(idx),
             #[cfg(sf_interp)]
-            Inner::Interp(_) => {
-                let _ = idx;
-                None
-            }
+            Inner::Interp(inst) => inst.table_state_at(idx).map(|table| ImportedTableState {
+                table,
+                type_ctx: None,
+            }),
         }
     }
 
