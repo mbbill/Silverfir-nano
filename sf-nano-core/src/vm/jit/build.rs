@@ -188,13 +188,7 @@ struct FunctionEmitSummary {
 enum PendingPatchEncoding {
     #[cfg(sf_backend_riscv32)]
     U32,
-    #[cfg(any(
-        sf_backend_arm64,
-        sf_backend_riscv64,
-        sf_backend_x64,
-        sf_backend_emu64,
-        sf_backend_emu32
-    ))]
+    #[cfg(any(sf_backend_arm64, sf_backend_riscv64, sf_backend_x64))]
     U64,
     #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
     MovwMovt,
@@ -354,13 +348,7 @@ fn patch_code_buffer_word(
     match patch_encoding(active_backend) {
         #[cfg(sf_backend_riscv32)]
         PendingPatchEncoding::U32 => executable.patch_u32(code_offset, value as u32),
-        #[cfg(any(
-            sf_backend_arm64,
-            sf_backend_riscv64,
-            sf_backend_x64,
-            sf_backend_emu64,
-            sf_backend_emu32
-        ))]
+        #[cfg(any(sf_backend_arm64, sf_backend_riscv64, sf_backend_x64))]
         PendingPatchEncoding::U64 => executable.patch_u64(code_offset, value as u64),
         #[cfg(any(sf_backend_armv7a, sf_backend_thumbm))]
         PendingPatchEncoding::MovwMovt => {
@@ -499,16 +487,7 @@ fn patch_encoding(active_backend: arch::NativeBackend) -> PendingPatchEncoding {
         arch::NativeBackend::Riscv64 => PendingPatchEncoding::U64,
         #[cfg(sf_backend_x64)]
         arch::NativeBackend::X86_64 => PendingPatchEncoding::U64,
-        #[cfg(sf_backend_emu64)]
-        arch::NativeBackend::Emu64 => PendingPatchEncoding::U64,
-        #[cfg(sf_backend_emu32)]
-        arch::NativeBackend::Emu32 => PendingPatchEncoding::U64,
     }
-}
-
-#[inline]
-const fn is_emulator_backend(_active_backend: arch::NativeBackend) -> bool {
-    cfg!(any(sf_backend_emu64, sf_backend_emu32))
 }
 
 fn build_static_summaries(
@@ -1449,11 +1428,10 @@ fn finish_native_compile(
         );
     }
 
-    let keep_machine_ir = is_emulator_backend(active_backend);
-    if !keep_machine_ir {
-        if let Some(compiled_mut) = Rc::get_mut(&mut compiled) {
-            compiled_mut.strip_machine_ir_for_runtime();
-        }
+    // Nothing consumes MachineIR after codegen, so it never survives into
+    // the runtime module.
+    if let Some(compiled_mut) = Rc::get_mut(&mut compiled) {
+        compiled_mut.strip_machine_ir_for_runtime();
     }
 
     for (func_idx, func) in module.functions.iter().enumerate() {
@@ -1495,8 +1473,9 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
     let ir_dump_enabled = ir_dump::dump_enabled();
     #[cfg(not(sf_ir_dump))]
     let ir_dump_enabled = false;
-    let use_batch_pipeline = is_emulator_backend(active_backend) || ir_dump_enabled;
-    if !use_batch_pipeline {
+    // The batch pipeline exists to hold whole-module IR for the dump; without
+    // a dump requested, compilation streams.
+    if !ir_dump_enabled {
         return finish_native_compile_streaming(active_backend, backend, module, store);
     }
 
@@ -1628,67 +1607,6 @@ mod tests {
         },
     };
 
-    #[cfg(any(sf_backend_emu64, sf_backend_emu32))]
-    use crate::vm::jit::arch::backend_mode_test_lock;
-
-    #[cfg(any(sf_backend_emu64, sf_backend_emu32))]
-    struct CompiledBackendGuard {
-        _lock: std::sync::MutexGuard<'static, ()>,
-    }
-
-    #[cfg(any(sf_backend_emu64, sf_backend_emu32))]
-    fn enable_compiled_backend() -> CompiledBackendGuard {
-        let lock = backend_mode_test_lock()
-            .lock()
-            .expect("backend mode test lock");
-        CompiledBackendGuard { _lock: lock }
-    }
-
-    #[cfg(sf_backend_emu32)]
-    fn encode_u32_leb(mut value: u32, out: &mut collections::Vec<u8>) {
-        loop {
-            let mut byte = (value & 0x7f) as u8;
-            value >>= 7;
-            if value != 0 {
-                byte |= 0x80;
-            }
-            out.push(byte);
-            if value == 0 {
-                break;
-            }
-        }
-    }
-
-    #[cfg(sf_backend_emu32)]
-    fn local_get_code(index: u32) -> collections::Vec<u8> {
-        let mut code = collections::vec![0x20];
-        encode_u32_leb(index, &mut code);
-        code.push(0x0b);
-        code
-    }
-
-    #[cfg(sf_backend_emu32)]
-    fn long_argument_caller_code(helper_params: &[ValueType]) -> collections::Vec<u8> {
-        let mut code = collections::Vec::new();
-        for (index, ty) in helper_params.iter().copied().enumerate() {
-            if index + 1 == helper_params.len() {
-                code.extend_from_slice(&[0x20, 0x00]);
-                continue;
-            }
-            match ty {
-                ValueType::I32 => code.extend_from_slice(&[0x41, 0x00]),
-                ValueType::I64 => code.extend_from_slice(&[0x42, 0x00]),
-                ValueType::F32 => code.extend_from_slice(&[0x43, 0x00, 0x00, 0x00, 0x00]),
-                ValueType::F64 => {
-                    code.extend_from_slice(&[0x44, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])
-                }
-                other => panic!("unexpected helper param type in regression: {:?}", other),
-            }
-        }
-        code.extend_from_slice(&[0x10, 0x00, 0x0b]);
-        code
-    }
-
     fn func_def(
         params: collections::Vec<ValueType>,
         results: collections::Vec<ValueType>,
@@ -1745,59 +1663,6 @@ mod tests {
         assert!(Rc::ptr_eq(first.compiled_rc(), second.compiled_rc()));
         assert_eq!(first.func_id().0, 0);
         assert_eq!(second.func_id().0, 1);
-    }
-
-    #[cfg(sf_backend_emu64)]
-    #[test]
-    fn emu64_compiled_module_publishes_local_call_info_table() {
-        let _guard = enable_compiled_backend();
-
-        let types = TypeContext::new(collections::vec![
-            func_def(collections::vec![], collections::vec![]),
-            func_def(
-                collections::vec![ValueType::I32],
-                collections::vec![ValueType::I32],
-            ),
-        ]);
-        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
-
-        let mut spec0 = FunctionSpec::new(
-            Rc::new(FunctionType::new(collections::vec![], collections::vec![])),
-            0,
-        );
-        spec0.set_code((&[0x0b][..]).into());
-        module.functions.push(FunctionInst::Local {
-            spec: spec0,
-            type_index: 0,
-        });
-
-        let mut spec1 = FunctionSpec::new(
-            Rc::new(FunctionType::new(
-                collections::vec![ValueType::I32],
-                collections::vec![ValueType::I32],
-            )),
-            1,
-        );
-        spec1.set_code((&[0x20, 0x00, 0x0b][..]).into());
-        module.functions.push(FunctionInst::Local {
-            spec: spec1,
-            type_index: 1,
-        });
-
-        let store = Box::new(Store::new(module));
-        ensure_module_compiled(&store).expect("emu64 native compile should succeed");
-
-        let compiled = store.module().functions[0]
-            .spec()
-            .and_then(|spec| spec.get_native_code())
-            .expect("first native code")
-            .compiled();
-        let local_call_infos = compiled.dispatch_metadata().local_call_infos();
-        assert_eq!(local_call_infos.len(), 2);
-        assert!(
-            !local_call_infos.base().is_null(),
-            "reference-backend compiled module must publish local call infos for indirect local calls"
-        );
     }
 
     #[test]
@@ -1977,151 +1842,5 @@ mod tests {
         let store = Box::new(Store::new(module));
 
         ensure_module_compiled(&store).expect("f32 kahan-style loop should compile");
-    }
-
-    #[cfg(sf_backend_emu32)]
-    #[test]
-    fn emu32_compiles_long_argument_list_internal_call() {
-        let _guard = enable_compiled_backend();
-
-        let helper_params = collections::vec![
-            ValueType::F32,
-            ValueType::I32,
-            ValueType::I32,
-            ValueType::F64,
-            ValueType::F32,
-            ValueType::F32,
-            ValueType::F32,
-            ValueType::F64,
-            ValueType::F32,
-            ValueType::I32,
-            ValueType::I32,
-            ValueType::F32,
-            ValueType::F64,
-            ValueType::I64,
-            ValueType::I64,
-            ValueType::I32,
-            ValueType::I64,
-            ValueType::I64,
-            ValueType::F32,
-            ValueType::I64,
-            ValueType::I64,
-            ValueType::I64,
-            ValueType::I32,
-            ValueType::F32,
-            ValueType::F32,
-            ValueType::F32,
-            ValueType::F64,
-            ValueType::F32,
-            ValueType::I32,
-            ValueType::I64,
-            ValueType::F32,
-            ValueType::F64,
-            ValueType::F64,
-            ValueType::F32,
-            ValueType::I32,
-            ValueType::F32,
-            ValueType::F32,
-            ValueType::F64,
-            ValueType::I64,
-            ValueType::F64,
-            ValueType::I32,
-            ValueType::I64,
-            ValueType::F32,
-            ValueType::F64,
-            ValueType::I32,
-            ValueType::I32,
-            ValueType::I32,
-            ValueType::I64,
-            ValueType::F64,
-            ValueType::I32,
-            ValueType::I64,
-            ValueType::I64,
-            ValueType::F64,
-            ValueType::F64,
-            ValueType::F64,
-            ValueType::F64,
-            ValueType::F64,
-            ValueType::F64,
-            ValueType::I32,
-            ValueType::F32,
-            ValueType::F64,
-            ValueType::F64,
-            ValueType::I32,
-            ValueType::I64,
-            ValueType::F32,
-            ValueType::F32,
-            ValueType::F32,
-            ValueType::I32,
-            ValueType::F64,
-            ValueType::F64,
-            ValueType::F64,
-            ValueType::F64,
-            ValueType::F64,
-            ValueType::F32,
-            ValueType::I64,
-            ValueType::I64,
-            ValueType::I32,
-            ValueType::I32,
-            ValueType::I32,
-            ValueType::F32,
-            ValueType::F64,
-            ValueType::I32,
-            ValueType::I64,
-            ValueType::F32,
-            ValueType::F32,
-            ValueType::F32,
-            ValueType::I32,
-            ValueType::I32,
-            ValueType::F32,
-            ValueType::F64,
-            ValueType::I64,
-            ValueType::F32,
-            ValueType::F64,
-            ValueType::F32,
-            ValueType::F32,
-            ValueType::F32,
-            ValueType::I32,
-            ValueType::F32,
-            ValueType::I64,
-            ValueType::I32,
-        ];
-        let helper_type = Rc::new(FunctionType::new(
-            helper_params.clone(),
-            collections::vec![ValueType::I32],
-        ));
-        let caller_type = Rc::new(FunctionType::new(
-            collections::vec![ValueType::I32],
-            collections::vec![ValueType::I32],
-        ));
-        let types = TypeContext::new(collections::vec![
-            func_def(helper_params.clone(), collections::vec![ValueType::I32]),
-            func_def(
-                collections::vec![ValueType::I32],
-                collections::vec![ValueType::I32],
-            ),
-        ]);
-        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
-
-        let helper_code = local_get_code((helper_params.len() - 1) as u32);
-        let mut helper_spec = FunctionSpec::new(Rc::clone(&helper_type), 0);
-        helper_spec.set_code(helper_code.as_slice().into());
-        module.functions.push(FunctionInst::Local {
-            spec: helper_spec,
-            type_index: 0,
-        });
-
-        let caller_code = long_argument_caller_code(&helper_params);
-        let mut caller_spec = FunctionSpec::new(Rc::clone(&caller_type), 1);
-        caller_spec.set_code(caller_code.as_slice().into());
-        module.functions.push(FunctionInst::Local {
-            spec: caller_spec,
-            type_index: 1,
-        });
-
-        let store = Box::new(Store::new(module));
-        ensure_module_compiled(&store).expect(
-            "long-argument internal call should compile through the direct 32-bit lowering path",
-        );
     }
 }

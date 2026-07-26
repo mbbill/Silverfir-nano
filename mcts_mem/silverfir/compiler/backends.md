@@ -6,9 +6,6 @@
   x86_64, ARM64, RISC-V 64, RISC-V 32, ARMv7-A (A32), and ARMv7-M/Thumb-2; the
   ARM32 backend shares one codebase that emits either A32 or Thumb-2 encodings.
 
-- A non-native emulator backend executes MachineIR directly and is used for
-  testing and the `emu64` / `emu32` configurations.
-
 - Each backend declares its register policy as a `BackendConfig` preset (budget
   unit size, GP/FP volatile and preserved lane counts, argument lanes, call
   scratch); the physical register mapping and ABI constraints stay in the

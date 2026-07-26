@@ -507,12 +507,10 @@ When bringing up a new native target:
 
 ## 32-Bit Note
 
-For 32-bit targets, `emu32` and real 32-bit native backends are expected to
-consume the same finalized legal 32-bit MachineIR contract.
-
-That means shared 32-bit lowering, legalization, and finalization bugs should
-be exposed by `emu32`. Backend-specific instruction-selection or encoding bugs
-may still be target-only.
+Every 32-bit target consumes the same finalized legal 32-bit MachineIR
+contract, so a shared lowering, legalization, or finalization bug shows up on
+all of them at once. A fault that appears on one 32-bit backend but not the
+others is instruction selection or encoding, not the shared contract.
 
 ## Local Call ABI
 
@@ -556,7 +554,6 @@ per-function metadata proves the body does not need it.
 | arm64    | `stp x29, x30, [sp, #-16]!` plus preserved dynamic saves, only when needed |
 | armv7a   | link save                                   |
 | x86_64   | `sub rsp, 8` — alignment shim               |
-| emulator | none                                        |
 
 On arm64, `has_body_host_frame()` is true when the function clobbers preserved
 dynamic registers or contains a body-returning native call. A leaf MIR body
@@ -749,7 +746,7 @@ publishes:
 
 The local-call ABI consumes host stack proportional to native call
 depth: each active native body pays its backend-specific body prelude cost
-(currently 16 bytes on arm64/armv7a, 8 bytes on x86_64, 0 in the emulator).
+(currently 16 bytes on arm64/armv7a, 8 bytes on x86_64).
 The caller-restored local-call ABI does not add a separate per-call link record.
 
 `vm/runtime/context.rs` does **not** maintain a `native_call_depth`

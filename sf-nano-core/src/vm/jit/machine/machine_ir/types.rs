@@ -317,6 +317,4 @@ pub(crate) enum MachineTrapKind {
     IntegerOverflow,
     InvalidConversion,
     StackOverflow,
-    #[allow(dead_code)] // constructed by emulator backend (debug-only)
-    HelperFailure,
 }

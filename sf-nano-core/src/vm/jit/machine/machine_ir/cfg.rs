@@ -104,7 +104,7 @@ pub(crate) enum MachineCallTarget {
     /// The resolved target may live in the current module or another linked
     /// compiled module once MachineIR can represent that path directly.
     /// `callee_target` preserves the logical callee identity for consumers
-    /// that care about it (the emulator, debug dumps), while `callee_entry`
+    /// that care about it (debug dumps), while `callee_entry`
     /// is the resolved native entry address used by native backends.
     Indirect {
         callee_target: MachineReg,

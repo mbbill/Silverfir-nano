@@ -6,11 +6,6 @@
   backend returns a runtime error rather than failing the build
   (`active_native_backend`).
 
-- The emulator/reference backend is an opt-in, default-off Cargo feature; a
-  production build that has a real native backend drops the emulator entirely,
-  while spectest and the WASI CLI enable it for `--emu64` / `--emu32`
-  (`sf_backend_emu64`).
-
 ## Moves
 
 - 2026-04-18 (f98d3458) replaced [[runtime-reference-backend-overlay]]: backend

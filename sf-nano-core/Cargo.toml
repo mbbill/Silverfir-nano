@@ -45,11 +45,6 @@ interp = []
 # Applies only where the OS and backend support it; build.rs decides.
 guard-pages = ["jit"]
 
-# Reference MachineIR emulators, used as a codegen oracle rather than as
-# production backends. They replace the host-native backend selection.
-backend-emu64 = ["jit"]
-backend-emu32 = ["jit"]
-
 # Force the arm32 backend to emit Thumb-2 (via enc_t2.rs) instead of A32 (via
 # enc_a32.rs). Intended for running the armv7-linux-musleabihf harness against
 # cortex-a15 to validate Thumb-2 encodings end to end; the resulting binary

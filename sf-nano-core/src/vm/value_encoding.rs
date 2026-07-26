@@ -120,18 +120,6 @@ pub(crate) fn machine_raw_to_ref(raw: RawValue, gp_unit_bytes: u8) -> RefHandle 
     }
 }
 
-#[cfg(any(sf_backend_emu64, sf_backend_emu32))]
-#[inline(always)]
-pub(crate) const fn as_u32(val: RawValue) -> u32 {
-    val as u32
-}
-
-#[cfg(any(sf_backend_emu64, sf_backend_emu32))]
-#[inline(always)]
-pub(crate) const fn as_u64(val: RawValue) -> u64 {
-    val
-}
-
 #[inline]
 pub(crate) fn value_to_raw_in_store(val: Value, _store: &mut Store) -> RawValue {
     match val {

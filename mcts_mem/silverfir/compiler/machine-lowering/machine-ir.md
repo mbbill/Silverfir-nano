@@ -12,8 +12,7 @@
 - The runtime-side contract the code executes against — pinned input registers
   (runtime base, frame base, mem0_base, mem0_size), the per-function param/return
   frame regions, typed helper signatures, and runtime layout offsets for address
-  derivation — is separate non-code metadata shared by every ISA backend and the
-  debug emulator.
+  derivation — is separate non-code metadata shared by every ISA backend.
 
 - MachineIR registers, moves, selects, and block parameters carry a storage class
   (GpWord, GpI64, Fp32, Fp64, and V128) that distinguishes a pointer-width value
@@ -37,8 +36,8 @@
   hot path (`NativeContext`).
 
 - MachineIR is released once native code is emitted: the compiled module holds it
-  only optionally, dropping it after emission, since only native emission and the
-  emulator backend consume it.
+  only optionally, dropping it after emission, since only native emission
+  consumes it.
 
 ## Facts
 

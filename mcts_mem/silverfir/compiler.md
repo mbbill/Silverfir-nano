@@ -1,8 +1,8 @@
 - The compiler is streamable end-to-end and per-function: each stage consumes
   its input and produces its output incrementally for one function, and on the
   native backends the streaming pipeline never holds a fully materialized
-  whole-module IR (the emulator and IR-dump configurations retain the batch
-  pipeline that does). Hosted eager builds may run a bounded number of these
+  whole-module IR (the IR-dump configuration retains the batch pipeline that
+  does). Hosted eager builds may run a bounded number of these
   independent per-function pipelines concurrently; low-memory/no_std builds
   keep the single-stream path.
 

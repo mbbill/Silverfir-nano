@@ -9,7 +9,7 @@
 - The template tier supports only a restricted subset (homogeneous scalar result
   types, control depth <= 16, GP unit 4 or 8 bytes, GP budget >= 2) and rejects a
   function it cannot handle with a distinct exhaustion error rather than
-  mis-compiling it; the emulator backends do not implement it.
+  mis-compiling it.
 
 ## Facts
 

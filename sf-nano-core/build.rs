@@ -20,8 +20,6 @@
 //   riscv32imac* (etc.)    → sf_backend_riscv32  (no F/D — Hazard3 / Pico 2 RV mode)
 //   riscv64gc*             → sf_backend_riscv64  (RV64GC scalar codegen)
 //   x86_64                 → sf_backend_x64
-//   feature backend-emu64  → sf_backend_emu64
-//   feature backend-emu32  → sf_backend_emu32
 //
 // Encoder-variant cfg (independent of sf_backend_*):
 //   sf_arm32_isa_thumb — arm32 module emits Thumb-2 via enc_t2.rs. Set for
@@ -41,12 +39,10 @@
 //   riscv64 × { linux, none }
 //   x86_64 × { linux, macos, windows, none }
 //   arm    × { linux, none }
-//   emu64  × { linux, macos, windows, none, ...host OS passthrough... }
-//   emu32  × { linux, macos, windows, none, ...host OS passthrough... }
 //
-// Unsupported combos are not validated here. If no host-native backend matches
-// and no explicit emulator backend feature is selected, the crate builds with
-// no `sf_backend_*` cfg and later code reports the backend as unavailable.
+// Unsupported combos are not validated here. If no host-native backend matches,
+// the crate builds with no `sf_backend_*` cfg and later code reports the
+// backend as unavailable.
 //
 // Feature → cfg mapping:
 //   (derived)      → sf_has_std          (set whenever any feature that needs libstd is on:
@@ -57,10 +53,8 @@
 //   (derived)      → sf_has_simd         (arm64 with NEON, x64 with SSE4.1+SSSE3)
 //   jit            → sf_jit
 //   interp         → sf_interp
-//   (derived)      → sf_interp_engine  (interp, on a target this build script
+//   (derived)      → sf_interp_engine  (interp, on an ISA this build script
 //                                        generates a dispatch engine for)
-//   backend-emu64  → sf_backend_emu64
-//   backend-emu32  → sf_backend_emu32
 //   wasi           → sf_wasi_host
 //   validator      → sf_module_validator
 //   call-trace     → sf_call_trace
@@ -101,8 +95,6 @@ const DECLARED_CFGS: &[&str] = &[
     "sf_backend_riscv32",
     "sf_backend_riscv64",
     "sf_backend_x64",
-    "sf_backend_emu64",
-    "sf_backend_emu32",
     "sf_arm32_isa_thumb",
     "sf_os_linux",
     "sf_os_macos",
@@ -153,12 +145,16 @@ fn main() {
 
 /// Generate the interpreter's dispatch engine for this target and write it
 /// to `OUT_DIR` as assembler source plus a small facts file. Sets
-/// `sf_interp_engine` when a backend exists; without it the interpreter
+/// `sf_interp_engine` when the host ISA has one; without it the interpreter
 /// reports cleanly that this target has no engine.
 ///
 /// Deliberately independent of `sf_jit`: build-time generation is what
 /// removes the executable-memory requirement, so `--features interp`
 /// alone is now a complete engine.
+///
+/// Both engines select from the same ISA list, so they cover exactly the same
+/// targets; `lib.rs` asserts it, so the interpreter can never go missing on an
+/// ISA the JIT still supports.
 fn emit_interp_engine() {
     println!("cargo:rerun-if-changed=interp_gen");
     println!("cargo:rerun-if-changed=src/vm/interpreter/instr.rs");
@@ -172,10 +168,11 @@ fn emit_interp_engine() {
         "windows" => ObjFmt::Coff,
         _ => ObjFmt::Elf,
     };
-    let thumb = matches!(selected_backend(), Some(SelectedBackend::ThumbM))
-        || (matches!(selected_backend(), Some(SelectedBackend::Armv7a))
+    let backend = selected_backend();
+    let thumb = matches!(backend, Some(SelectedBackend::ThumbM))
+        || (matches!(backend, Some(SelectedBackend::Armv7a))
             && env::var_os("CARGO_FEATURE_THUMB2_TEST").is_some());
-    let mut isa: Box<dyn Isa> = match selected_backend() {
+    let mut isa: Box<dyn Isa> = match backend {
         Some(SelectedBackend::Arm64) => Box::new(interp_gen::arm64::Arm64),
         Some(SelectedBackend::X64) => Box::new(interp_gen::x86_64::X86_64 {
             windows: os == "windows",
@@ -198,13 +195,13 @@ fn emit_interp_engine() {
                 // targets are the IDIV ones (build.rs already assumes
                 // VFPv3-D16, which implies it), and every M-profile core
                 // has them. Only the A-profile assembler needs telling.
-                idiv_directive: matches!(selected_backend(), Some(SelectedBackend::Armv7a)),
+                idiv_directive: matches!(backend, Some(SelectedBackend::Armv7a)),
             })
         }
-        // Targets with no interpreter backend yet: the crate still builds,
-        // and instantiating an interpreter instance fails with a clean
-        // error naming the target.
-        _ => return,
+        // `None` — an ISA no backend covers. The crate still builds, and
+        // instantiating an interpreter instance fails with a clean error
+        // naming the target.
+        None => return,
     };
     let counting = env::var_os("CARGO_FEATURE_INTERP_COUNT").is_some();
     let text = interp_gen::generate(&mut *isa, fmt, thumb, counting);
@@ -241,23 +238,13 @@ enum SelectedBackend {
     Riscv32,
     Riscv64,
     X64,
-    Emu64,
-    Emu32,
 }
 
+/// The backend for the ISA this build runs on.
+///
+/// Both engines ask this one question, so neither can end up covering an ISA
+/// the other does not.
 fn selected_backend() -> Option<SelectedBackend> {
-    let emu64 = env::var_os("CARGO_FEATURE_BACKEND_EMU64").is_some();
-    let emu32 = env::var_os("CARGO_FEATURE_BACKEND_EMU32").is_some();
-    match (emu64, emu32) {
-        // `--all-features` turns on both emulator selectors. Treat that as
-        // "no explicit emulator override" so the host-native backend still
-        // typechecks under the broadest feature sweep.
-        (true, true) => {}
-        (true, false) => return Some(SelectedBackend::Emu64),
-        (false, true) => return Some(SelectedBackend::Emu32),
-        (false, false) => {}
-    }
-
     let arch = env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();
     let target = env::var("TARGET").unwrap_or_default();
     match arch.as_str() {
@@ -325,8 +312,6 @@ fn emit_backend_cfgs() {
             require_target_feature("m", "rv64 backend requires the RISC-V M extension");
         }
         Some(SelectedBackend::X64) => println!("cargo:rustc-cfg=sf_backend_x64"),
-        Some(SelectedBackend::Emu64) => println!("cargo:rustc-cfg=sf_backend_emu64"),
-        Some(SelectedBackend::Emu32) => println!("cargo:rustc-cfg=sf_backend_emu32"),
         None => {}
     }
 }

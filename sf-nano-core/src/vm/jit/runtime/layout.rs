@@ -1,4 +1,4 @@
-//! Target runtime ABI layout helpers shared by lowering and the emulator.
+//! Target runtime ABI layout helpers for MachineIR lowering.
 //!
 //! The Rust host structs in [`context`] use the host pointer width. MachineIR
 //! lowering, however, must target the selected backend ABI rather than the
@@ -193,10 +193,7 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
     // (equivalent to `offset_of!(NativeContext, globals_ptrs_tail)` since the
     // marker is the last field of the `#[repr(C)]` struct). This keeps
     // JIT-emitted `[runtime_base + globals_ptrs_inline_offset + idx*ptr]`
-    // reads landing on the real raw_ptr slots for native builds (where
-    // target = host). For emu builds the emulator translates synthetic
-    // addresses and only requires JIT and emulator to agree on this value —
-    // which they do by sharing this layout.
+    // reads landing on the real raw_ptr slots (target = host).
     let globals_ptrs_inline_offset = size_of::<NativeContext>() as u32;
     let size = globals_ptrs_inline_offset;
 

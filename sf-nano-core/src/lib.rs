@@ -18,6 +18,28 @@ compile_error!(
      the `interp` feature, or both (the default)."
 );
 
+// An ISA the JIT can emit for is one the interpreter must be able to run on.
+// The interpreter is the simpler engine and needs no executable memory, so
+// coverage can only legitimately err the other way -- an interpreter on a
+// target with no JIT backend is fine, the reverse is a hole.
+#[cfg(all(
+    sf_interp,
+    not(sf_interp_engine),
+    any(
+        sf_backend_arm64,
+        sf_backend_x64,
+        sf_backend_riscv32,
+        sf_backend_riscv64,
+        sf_backend_armv7a,
+        sf_backend_thumbm
+    )
+))]
+compile_error!(
+    "this target has a JIT backend but no interpreter dispatch engine. The \
+     interpreter must cover every ISA the JIT does; add the ISA to `interp_gen/` \
+     rather than relaxing this check."
+);
+
 pub mod config;
 pub mod constants;
 pub mod error;

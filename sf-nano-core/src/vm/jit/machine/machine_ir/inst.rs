@@ -290,8 +290,8 @@ pub(crate) enum MachineInstKind {
     /// Float-to-i64 conversion into a legalized GP-word pair.
     ///
     /// The `op` is one of the i64 trunc/trunc_sat families. Keeping the exact
-    /// conversion opcode here preserves its trapping vs saturating semantics in
-    /// the shared 32-bit emulator.
+    /// conversion opcode here preserves its trapping vs saturating semantics
+    /// across the shared 32-bit lowering.
     ConvertFloatToI64Pair {
         op: MachineConvertOp,
         dst_lo: MachineReg,

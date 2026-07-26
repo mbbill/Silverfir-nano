@@ -40,7 +40,6 @@ X64_DARWIN_TARGET = "x86_64-apple-darwin"
 X64_LINUX_TARGET = "x86_64-unknown-linux-gnu"
 TESTSUITE_DIR = Path(os.environ.get("TESTSUITE_DIR", TARGET_DIR / "webassembly-testsuite"))
 FULL_RUNTIME_FEATURES = "jit,wasi,validator,guard-pages"
-EMULATOR_BACKEND_FEATURES = {"backend-emu64", "backend-emu32"}
 RISCV32_LINKER = ROOT / "scripts" / "zig-riscv32-linux-musl-cc.sh"
 RISCV64_SELECT_REGRESSION_ARGS = ["select", "call", "call_indirect", "if"]
 RISCV32_SELECT_REGRESSION_ARGS = RISCV64_SELECT_REGRESSION_ARGS
@@ -49,8 +48,6 @@ RISCV32_SELECT_REGRESSION_ARGS = RISCV64_SELECT_REGRESSION_ARGS
 CORE_OPTIONAL_FEATURES = [
     "interp",
     "interp-count",
-    "backend-emu64",
-    "backend-emu32",
     "wasi",
     "validator",
     "call-trace",
@@ -267,16 +264,6 @@ def feature_args(spec: str) -> List[str]:
     if spec == "EMPTY":
         return ["--no-default-features"]
     return ["--no-default-features", "--features", spec]
-
-
-def feature_spec_enables_emulator_backend(spec: Optional[str]) -> bool:
-    # Emulator backends are smoke coverage in check.py. Keep compiling and
-    # running them, but do not let warnings from those rows fail strict checks.
-    if spec is None or spec in {"DEFAULT", "EMPTY"}:
-        return False
-    if spec == "ALL":
-        return True
-    return any(feature in EMULATOR_BACKEND_FEATURES for feature in spec.split(","))
 
 
 def split_args(text: str) -> List[str]:
@@ -934,11 +921,7 @@ def cargo_check(
     cwd: Path = ROOT,
     ignore_warnings: bool = False,
 ) -> StepResult:
-    ignore_warnings = (
-        ignore_warnings
-        or feature_spec_enables_emulator_backend(feature_spec)
-        or interpreter_only(feature_spec)
-    )
+    ignore_warnings = ignore_warnings or interpreter_only(feature_spec)
     argv = cargo_argv("check", target)
     if profile_name == "release":
         argv.append("--release")
@@ -982,7 +965,7 @@ def cargo_build(
         argv,
         env=cargo_env(target),
         log_name=log_name,
-        ignore_warnings=feature_spec_enables_emulator_backend(features) or interpreter_only(features),
+        ignore_warnings=interpreter_only(features),
     )
 
 
@@ -1057,14 +1040,8 @@ def full_core_combos() -> List[Tuple[str, str]]:
             ("cli+ir-dump", "jit,wasi,guard-pages,ir-dump"),
             ("cli+jitdump", "jit,wasi,guard-pages,jitdump"),
             ("cli+memprof", "jit,wasi,guard-pages,memprof"),
-            ("cli+emu64", "jit,wasi,guard-pages,backend-emu64"),
-            ("cli+emu32", "jit,wasi,guard-pages,backend-emu32"),
             ("spectest", "jit,validator,guard-pages"),
-            ("spectest+emu64", "jit,validator,guard-pages,backend-emu64"),
-            ("spectest+emu32", "jit,validator,guard-pages,backend-emu32"),
             ("full-runtime", FULL_RUNTIME_FEATURES),
-            ("full-runtime+emu64", f"{FULL_RUNTIME_FEATURES},backend-emu64"),
-            ("full-runtime+emu32", f"{FULL_RUNTIME_FEATURES},backend-emu32"),
             ("full-dev", "jit,wasi,validator,call-trace,guard-pages,ir-dump,jitdump,memprof"),
             ("cli+thumb2", "jit,wasi,guard-pages,thumb2-test"),
             ("spectest+thumb2", "jit,validator,guard-pages,thumb2-test"),
@@ -1293,47 +1270,6 @@ def run_spectest_suite(runner: CheckRunner, *, profiles: Sequence[str], extra_ar
                 log_name=f"spectest-native-{profile_name}",
             )
 
-        emu64_build = cargo_build(
-            runner,
-            f"cargo build: spectest emu64 ({profile_name})",
-            "sf-nano-spectest",
-            profile_name=profile_name,
-            target=None,
-            features="jit,backend-emu64",
-            log_name=f"spectest-build-emu64-{profile_name}",
-        )
-        if emu64_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"run: spectest emu64 ({profile_name})", emu64_build)
-        else:
-            run_binary_if_present(
-                runner,
-                f"run: spectest emu64 ({profile_name})",
-                [host_bin, *extra_args],
-                env=env,
-                log_name=f"spectest-emu64-{profile_name}",
-                ignore_warnings=True,
-            )
-
-        emu32_build = cargo_build(
-            runner,
-            f"cargo build: spectest emu32 ({profile_name})",
-            "sf-nano-spectest",
-            profile_name=profile_name,
-            target=None,
-            features="jit,backend-emu32",
-            log_name=f"spectest-build-emu32-{profile_name}",
-        )
-        if emu32_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"run: spectest emu32 ({profile_name})", emu32_build)
-        else:
-            run_binary_if_present(
-                runner,
-                f"run: spectest emu32 ({profile_name})",
-                [host_bin, *extra_args],
-                env=env,
-                log_name=f"spectest-emu32-{profile_name}",
-                ignore_warnings=True,
-            )
 
         # Cross-arch runtime checks. They require QEMU user-mode (or Colima
         # on macOS) and, for riscv32, a working Zig + nightly Rust. CI jobs
@@ -1810,28 +1746,6 @@ def run_wasitest_host_profile(runner: CheckRunner, profile_name: str, extra_args
             log_name=f"wasitest-native-{profile_name}",
         )
 
-    for backend in ("emu64", "emu32"):
-        emu_build = cargo_build(
-            runner,
-            f"cargo build: wasitest cli {backend} ({profile_name})",
-            "sf-nano-cli",
-            profile_name=profile_name,
-            target=None,
-            features=f"jit,backend-{backend}",
-            log_name=f"wasitest-build-cli-{backend}-{profile_name}",
-        )
-        if emu_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"run: wasitest {backend} ({profile_name})", emu_build)
-        elif harness_build.status == "FAIL":
-            skip_after_failed_dependency(runner, f"run: wasitest {backend} ({profile_name})", harness_build)
-        else:
-            run_binary_if_present(
-                runner,
-                f"run: wasitest {backend} ({profile_name})",
-                [wasitest_bin, "--cli-path", cli_bin, *extra_args],
-                log_name=f"wasitest-{backend}-{profile_name}",
-                ignore_warnings=True,
-            )
 
 
 def run_wasitest_release_cross_targets(runner: CheckRunner, extra_args: Sequence[str]) -> None:

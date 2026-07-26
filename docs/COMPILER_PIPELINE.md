@@ -984,8 +984,6 @@ Main code:
 - `sf-nano-core/src/vm/jit/arch/riscv64/*`
 - `sf-nano-core/src/vm/jit/arch/riscv32/*`
 - `sf-nano-core/src/vm/jit/arch/x86_64/*`
-- `sf-nano-core/src/vm/jit/arch/emulator/*` (debug MachineIR execution backend,
-  used for testing and the `emu64` / `emu32` configs)
 - `sf-nano-core/src/vm/jit/runtime/runtime_call/*`
 - `sf-nano-core/src/vm/jit/runtime/preserved/*`
 

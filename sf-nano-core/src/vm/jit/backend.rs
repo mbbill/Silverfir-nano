@@ -52,7 +52,7 @@ pub(crate) struct BackendConfig {
 }
 
 impl BackendConfig {
-    /// Compatibility constructor for tests and emulator-style configurations
+    /// Compatibility constructor for tests and synthetic configurations
     /// that do not yet split their dynamic bank by volatility. All allocatable
     /// lanes are volatile; the historical internal GP scratch tail remains
     /// reserved.

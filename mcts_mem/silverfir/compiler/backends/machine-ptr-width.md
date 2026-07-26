@@ -4,9 +4,9 @@
   32-bit ABI (e.g. armv7a, 4-byte GP) from a 64-bit host
   (`machine_ptr_width`, `gp_reg_width`).
 
-- NativeContext and ABI-struct field offsets and strides used by lowering and
-  the emulator are computed from the selected backend's GP unit size rather than
-  the host Rust struct layout (`native_runtime_abi_layout`).
+- NativeContext and ABI-struct field offsets and strides used by lowering are
+  computed from the selected backend's GP unit size rather than the host Rust
+  struct layout (`native_runtime_abi_layout`).
 
 ## Facts
 

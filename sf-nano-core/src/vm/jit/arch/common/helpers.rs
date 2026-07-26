@@ -28,11 +28,10 @@ pub(crate) fn trap_code(kind: MachineTrapKind) -> u64 {
         MachineTrapKind::IntegerOverflow => 6,
         MachineTrapKind::InvalidConversion => 7,
         MachineTrapKind::StackOverflow => 8,
-        MachineTrapKind::HelperFailure => 9,
     }
 }
 
-pub(crate) const MACHINE_TRAP_KIND_COUNT: usize = 10;
+pub(crate) const MACHINE_TRAP_KIND_COUNT: usize = 9;
 
 pub(crate) fn trap_kind_index(kind: MachineTrapKind) -> usize {
     trap_code(kind) as usize
@@ -49,7 +48,6 @@ pub(crate) fn trap_error(kind: MachineTrapKind) -> WasmError {
         MachineTrapKind::IntegerOverflow => WasmError::trap("integer overflow"),
         MachineTrapKind::InvalidConversion => WasmError::trap("invalid conversion to integer"),
         MachineTrapKind::StackOverflow => WasmError::exhaustion("stack overflow"),
-        MachineTrapKind::HelperFailure => WasmError::trap("native call failed"),
     }
 }
 

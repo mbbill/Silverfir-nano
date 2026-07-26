@@ -23,12 +23,6 @@ Run the native path:
 ./target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
 ```
 
-Run the debug-only native reference path:
-
-```bash
-cargo run --bin sf-nano-cli -- --backend native --emu64 benchmarks/wasi/coremark/coremark.wasm
-```
-
 Run native spectest:
 
 ```bash
@@ -70,8 +64,6 @@ The CLI accepts:
 - `--engine jit` (aliases: `--engine native`, `--backend native`)
 - `--engine interp` (shorthand: `--interp`)
 - `--engine auto`
-- `--emu64` / `--emu32` for the debug-only native emulator *backend* — an
-  ISA choice under the JIT engine, not an engine of its own
 
 | Engine | What it does |
 |---|---|
@@ -88,9 +80,7 @@ Details that matter:
 2. `jit` and `interp` are both default features of `sf-nano-core`, so both
    are usually available without extra feature flags. `--no-default-features
    --features interp` builds an interpreter-only binary with no JIT in it.
-3. `--emu64` / `--emu32` are only accepted in debug builds. Release builds
-   reject them.
-4. The previous `base` (interpreter) and `fusion` backends have been removed;
+3. The previous `base` (interpreter) and `fusion` backends have been removed;
    the interpreter was rewritten as the folded stack machine.
 
 ## Native vs Reference
@@ -109,33 +99,8 @@ Today that means:
 - on x86_64, normal `--backend native` execution uses the x86_64 backend
 - on RV64GC Linux, normal `--backend native` execution uses the RV64 backend
 - on ARMv7-A Linux, normal `--backend native` execution uses the ARMv7-A backend
-- on unsupported targets, `native` is unavailable unless a debug emulator
-  backend is explicitly selected
-
-### Reference backend
-
-Goal:
-
-- validate `MachineIR` semantics
-- provide a non-ISA fallback implementation
-- serve as a correctness oracle while real backends come up
-
-What it is not:
-
-- it is not a public CLI backend mode
-- there is no `--backend reference`
-- it is not enabled in release builds
-
-How to enable it:
-
-```bash
-cargo run --bin sf-nano-cli -- --backend native --emu64 path/to/module.wasm
-cargo run --bin sf-nano-spectest -- --backend native --emu64
-```
-
-Use `--emu32` instead to exercise the 32-bit GP target profile.
-
-If you need to reason about reference behavior, treat it as a debug-only native-validation backend.
+- on unsupported targets, `native` is unavailable and reports so at
+  instantiation
 
 ## Runtime Line
 
@@ -145,7 +110,6 @@ Both CLI and spectest print one runtime line before execution:
 [runtime] jit backend=arm64
 [runtime] jit backend=x86_64
 [runtime] jit backend=riscv64
-[runtime] jit backend=emulator
 ```
 
 This line tells you which concrete backend the JIT resolved to for this run.
@@ -162,7 +126,6 @@ Useful variants:
 
 ```bash
 cargo run --bin sf-nano-spectest -- --backend native if
-cargo run --bin sf-nano-spectest -- --backend native --emu64 if
 cargo run --bin sf-nano-spectest -- --backend native path/to/test.wast
 ```
 
@@ -534,14 +497,14 @@ Record:
 SF_FUNCTION_TRACE=/tmp/arm64.trace \
 ./target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
 
-SF_FUNCTION_TRACE=/tmp/emu64.trace \
-./target/release/sf-nano-cli --backend native --emu64 benchmarks/wasi/coremark/coremark.wasm
+SF_FUNCTION_TRACE=/tmp/interp.trace \
+./target/release/sf-nano-cli --engine interp benchmarks/wasi/coremark/coremark.wasm
 ```
 
 Compare:
 
 ```bash
-diff -u /tmp/arm64.trace /tmp/emu64.trace
+diff -u /tmp/arm64.trace /tmp/interp.trace
 ```
 
 Extra knob:
@@ -561,11 +524,11 @@ cargo test -p sf-nano-core --lib
 cargo run --bin sf-nano-spectest -- --backend native
 ```
 
-### Compare native vs reference emulator on one workload
+### Compare the two engines on one workload
 
 ```bash
 ./target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
-cargo run --bin sf-nano-cli -- --backend native --emu64 benchmarks/wasi/coremark/coremark.wasm
+./target/release/sf-nano-cli --engine interp benchmarks/wasi/coremark/coremark.wasm
 ```
 
 ### Profile a native regression
@@ -715,33 +678,34 @@ colima ssh -- sudo apt-get update -qq && colima ssh -- sudo apt-get install -y -
 rustup target add armv7-unknown-linux-musleabihf
 ```
 
-### ARMv7 Step 1: Verify the environment with --emu
+### ARMv7 Step 1: Verify the environment with the interpreter
 
-The `--emu` flag uses the platform-independent emulator backend. It works on
-any architecture and confirms the build, the cross toolchain, and the QEMU
-setup are all functional — before introducing target-specific JIT issues.
+`--engine interp` runs the dispatch chain generated for ARMv7 at build time.
+It exercises the build, the cross toolchain, and the QEMU setup without
+involving the JIT's code emission — so a failure here is an environment
+problem, not a codegen one.
 
 ```bash
 # Cross-compile (static musl, no default features to skip guard-pages)
-cargo build --target armv7-unknown-linux-musleabihf -p sf-nano-cli --no-default-features
+cargo build --target armv7-unknown-linux-musleabihf -p sf-nano-cli --no-default-features --features interp
 
-# Linux/WSL: run with emulator backend via QEMU
+# Linux/WSL: run under QEMU
 qemu-arm-static -cpu cortex-a15 \
   target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
-  --emu benchmarks/wasi/coremark/coremark.wasm
+  --engine interp benchmarks/wasi/coremark/coremark.wasm
 
 # macOS: run inside the Colima VM
 colima ssh -- qemu-arm-static \
   /Users/$USER/Dev/Silverfir-nano/target/armv7-unknown-linux-musleabihf/debug/sf-nano-cli \
-  --emu /Users/$USER/Dev/Silverfir-nano/benchmarks/wasi/coremark/coremark.wasm
+  --engine interp /Users/$USER/Dev/Silverfir-nano/benchmarks/wasi/coremark/coremark.wasm
 ```
 
 If this passes, the toolchain and runtime environment are working.
 
 ### ARMv7 Step 2: Test the real ARMv7 JIT
 
-The goal is to validate the ARMv7-A native codegen, not the emulator.
-Drop `--emu` so the CLI uses the real JIT backend:
+The goal is to validate the ARMv7-A native codegen. Drop `--engine interp` so
+the CLI uses the JIT backend:
 
 ```bash
 # Linux/WSL
@@ -786,6 +750,6 @@ colima ssh -- qemu-arm-static \
 ## Practical Rules
 
 - Use `native` for normal runs; it's the only real execution backend today.
-- Use `--emu64` / `--emu32` when you suspect native codegen vs generic MachineIR semantics divergence — the reference emulator runs the same MIR through a non-ISA interpreter.
+- Use `--engine interp` as a second opinion when you suspect a JIT codegen bug: the interpreter runs the same module through an entirely separate execution path.
 - Use `native_index.txt` (via `SF_NATIVE_DUMP_DIR` + `ir-dump` feature) for static meaning and `samply-for-ai` with jitdump for runtime hotness.
 - If `base`, `fusion`, `micro-jit`, `function-trace`, or `SF_JIT_MAP` come up in old notes, scripts, or external docs: those are obsolete. The current names are `native`, `jit`, `call-trace`, and jitdump respectively.

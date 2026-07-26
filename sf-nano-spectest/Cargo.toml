@@ -17,8 +17,6 @@ path = "src/main.rs"
 default = ["jit", "interp"]
 jit = ["sf-nano-core/jit", "sf-nano-core/guard-pages"]
 interp = ["sf-nano-core/interp"]
-backend-emu64 = ["sf-nano-core/backend-emu64"]
-backend-emu32 = ["sf-nano-core/backend-emu32"]
 thumb2-test = ["sf-nano-core/thumb2-test"]
 
 [dependencies]

@@ -1,5 +1,5 @@
 //! Runtime-published dispatch metadata shared by native lowering, backends,
-//! and the emulator.
+//! and lowering.
 
 use crate::collections;
 

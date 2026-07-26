@@ -33,7 +33,7 @@ impl AlignedConstData {
     pub(crate) fn new(record: &MachineConstData) -> Result<Self, WasmError> {
         if record.align as usize > core::mem::align_of::<u64>() {
             return Err(WasmError::internal(
-                "machine const requires unsupported alignment in the emulator",
+                "machine const requires unsupported alignment",
             ));
         }
 
@@ -164,15 +164,6 @@ impl CompiledNativeModule {
     #[inline]
     pub(crate) fn strip_machine_ir_for_runtime(&mut self) {
         self.module = None;
-    }
-
-    #[cfg(any(sf_backend_emu64, sf_backend_emu32))]
-    #[inline]
-    pub(crate) fn function(
-        &self,
-        id: MachineFuncId,
-    ) -> Option<&crate::vm::jit::machine::machine_ir::MachineFunction> {
-        self.module().functions.get(id.0 as usize)
     }
 
     #[inline]

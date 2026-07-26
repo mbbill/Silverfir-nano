@@ -3,9 +3,9 @@
 //! This is the runtime object that native lowering targets. It stays local to
 //! the native runtime boundary rather than becoming part of the generic VM API.
 //!
-//! NOTE: This Rust struct follows the host compiler ABI. Shared lowering and
-//! the emulator must use the explicit target-side layout helpers in
-//! [`super::layout`] rather than assuming these host offsets/strides directly.
+//! NOTE: This Rust struct follows the host compiler ABI. Shared lowering must
+//! use the explicit target-side layout helpers in [`super::layout`] rather
+//! than assuming these host offsets/strides directly.
 //!
 //! ### Globals raw-ptr tail
 //!
@@ -109,8 +109,8 @@ pub(crate) struct NativeContext {
     pub(crate) type_canon_len: usize,
     /// Number of globals the trailing `[*mut u64]` tail holds. Fixed for the
     /// life of the context (modules cannot change their global count at
-    /// runtime). Kept in the ABI-visible area only for the emulator's
-    /// bounds-checking; JIT code never reloads it.
+    /// runtime). Kept in the ABI-visible area for host-side bounds-checking;
+    /// JIT code never reloads it.
     pub(crate) globals_len: usize,
     pub(crate) store: *mut Store,
     pub(crate) current_module: *const ModuleInst,
@@ -432,8 +432,8 @@ impl NativeContext {
     }
 
     /// Pointer to the first inline global raw-ptr slot, or null when there
-    /// are no globals. Intended for the emulator — JIT code does not need
-    /// this (it accesses the tail via constant offset from `runtime_base`).
+    /// are no globals. For host-side access — JIT code does not need this
+    /// (it reaches the tail via constant offset from `runtime_base`).
     #[inline]
     pub(crate) fn globals_ptrs_base(&self) -> *mut *mut u64 {
         if self.globals_len == 0 {
