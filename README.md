@@ -19,7 +19,6 @@
   </p>
 
   <p>
-    <a href="#two-engines-one-runtime">Two engines</a> |
     <a href="#performance-apple-m4">Benchmarks</a> |
     <a href="#binary-size">Binary size</a> |
     <a href="#webassembly-compatibility">Wasm compatibility</a> |
@@ -35,15 +34,14 @@
 ## Highlights
 
 Silverfir-nano is a `no_std` WebAssembly runtime built to be strong on
-every axis a Wasm runtime is judged on, not just one. It carries two
-engines over one substrate — an optimizing JIT that compiles on the device,
-and an interpreter that needs no executable memory — and they share
-everything but the way code runs: the same parser, validator, entity model,
-and embedder API ([compatibility](#webassembly-compatibility)).
+every axis a Wasm runtime is judged on, not just one. It ships an
+optimizing JIT and an interpreter behind one API
+([compatibility](#webassembly-compatibility)).
 
-1. **Fast** — register-allocated, region-optimized native code. On Apple M4
-   it runs at parity with Wasmtime's fully-optimizing Cranelift and V8
-   TurboFan, leading on some workloads and trailing on others
+1. **Fast, JIT and interpreter** — register-allocated, region-optimized native
+   code puts the JIT at parity with Wasmtime's fully-optimizing Cranelift and
+   V8 TurboFan on Apple M4. The interpreter beats the best-in-class Wasm
+   interpreters by 1.16–1.73×
    ([full results](benchmarks/wasi/README.md)).
 2. **Small** — pick an engine and pay for what you use. Measured on real
    RP2350 firmware, flash is 337 KiB with the interpreter and 1,042 KiB with
@@ -62,24 +60,6 @@ and embedder API ([compatibility](#webassembly-compatibility)).
    blob; the runtime verifies and JITs it on the chip, even on a Cortex-M.
    Where W^X or a tighter flash budget rules that out, the interpreter runs
    the same modules with no executable memory at all.
-
-## Two engines, one runtime
-
-Everything above the execution engine is shared: parsing, validation, the
-type and entity model, memories, tables, globals, tags, and the embedder
-API. The engines differ only in what they do with a validated function body.
-
-- **The JIT** compiles it to native machine code, on the device, at
-  instantiation. It is the default and the full Wasm 3.0 engine.
-- **The interpreter** predecodes it into a folded stack machine and runs it
-  through a threaded dispatcher generated at build time for the target ISA.
-  No executable memory is ever requested.
-
-Neither is a fallback for the other, and both are built for all six ISAs —
-an ISA with no backend fails the build rather than silently degrading.
-Which engines exist in a build is a Cargo feature (`jit`, `interp`, or both,
-the default); when both are compiled in, the choice is a `Tier` on the
-`Engine` at runtime. Embedder code is identical either way.
 
 ## Performance (Apple M4)
 
