@@ -852,6 +852,13 @@ impl InterpInstance {
                     // A live table from another instance is ALIASED, not
                     // copied: both sides must see each other's `table.set`.
                     Some((limits, Some(state))) => {
+                        // A table is a mutable container, so its element type
+                        // is invariant: both sides read AND write it, and a
+                        // subtype on either side would let one of them see a
+                        // value the other's type forbids.
+                        if state.table.value_type != t.value_type() {
+                            return Err(WasmError::unlinkable("incompatible import type"));
+                        }
                         if !limits_satisfy(t.spec().limits(), &limits) {
                             return Err(WasmError::unlinkable("incompatible import type"));
                         }
