@@ -425,9 +425,12 @@ impl Instance {
     pub fn shared_global_state_at(&self, idx: usize) -> Option<ImportedGlobalState> {
         match &self.inner {
             #[cfg(sf_interp)]
+            // With the exporter's type context: a reference type's concrete
+            // heap type names an index in THIS module's type space, and the
+            // importer cannot resolve it otherwise.
             Inner::Interp(inst) => inst.global_state_at(idx).map(|global| ImportedGlobalState {
                 global,
-                type_ctx: None,
+                type_ctx: Some(inst.module().types().clone()),
             }),
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.shared_global_state_at(idx),

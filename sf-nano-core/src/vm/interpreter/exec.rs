@@ -22,11 +22,11 @@ use crate::collections::{vec, Vec};
 use crate::config::Config;
 use crate::error::WasmError;
 use crate::module::entities::{Data, Element, ElementInit, GlobalDef, MemoryDef, TableDef, TagDef};
-use crate::module::type_context::concrete_type_matches_cross_context;
+use crate::module::type_context::{concrete_type_matches_cross_context, TypeContext};
 use crate::module::Module;
 use crate::opcodes::Opcode;
 use crate::utils::limits::{Limitable, Limits};
-use crate::value_type::ValueType;
+use crate::value_type::{AbstractHeapType, HeapType, ValueType};
 use crate::vm::engine::Engine;
 use crate::vm::entities::{GlobalInst, MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
@@ -484,6 +484,53 @@ fn eval_const(expr: &[u8], globals: &[u64]) -> Result<u64, WasmError> {
     }
 }
 
+/// Whether a provided global's reference type satisfies a declared one.
+///
+/// Invariant for a mutable global -- writes flow both ways -- and covariant
+/// for an immutable one, which is only read. A concrete heap type names an
+/// index in the EXPORTER's type space, so deciding it needs that context;
+/// without one the only honest answer is to accept, since refusing would
+/// reject valid modules.
+fn global_ref_types_match(
+    provided: ValueType,
+    declared: ValueType,
+    provided_ctx: Option<&TypeContext>,
+    declared_ctx: &TypeContext,
+    mutable: bool,
+) -> bool {
+    let (ValueType::Ref(p), ValueType::Ref(d)) = (provided, declared) else {
+        return false;
+    };
+    if mutable && p.nullable != d.nullable {
+        return false;
+    }
+    if !mutable && p.nullable && !d.nullable {
+        // A nullable value cannot satisfy a non-nullable declaration.
+        return false;
+    }
+    match (p.heap_type, d.heap_type) {
+        (HeapType::Concrete(pi), HeapType::Concrete(di)) => match provided_ctx {
+            Some(ctx) => concrete_type_matches_cross_context(ctx, pi, declared_ctx, di),
+            // Undecidable without the exporter's context; accepting beats
+            // refusing a valid module.
+            None => true,
+        },
+        (HeapType::Abstract(pa), HeapType::Abstract(da)) => {
+            if mutable {
+                pa == da
+            } else {
+                pa.is_subtype_of(&da)
+            }
+        }
+        // A concrete function type is a subtype of the abstract `func`, so it
+        // satisfies an immutable declaration of it.
+        (HeapType::Concrete(_), HeapType::Abstract(AbstractHeapType::Func)) => !mutable,
+        // The other direction never holds: an abstract type is the SUPERtype,
+        // so `func` cannot satisfy a declaration of a specific `$t`.
+        _ => false,
+    }
+}
+
 /// Whether a provided entity's limits satisfy what an import declares.
 ///
 /// The provider must be at least as large as the declared minimum, and if the
@@ -658,20 +705,17 @@ impl InterpInstance {
                             // directions: importing a `mut` global as
                             // immutable would let the importer assume a value
                             // the exporter can still change.
-                            // The value type is invariant for a mutable
-                            // global and admits a subtype for an immutable
-                            // one. Reference types are left unchecked when
-                            // they differ: a concrete heap type names an index
-                            // in the EXPORTER's type space, so deciding it
-                            // needs the exporter's context --
-                            // `ImportedGlobalState` carries one and this
-                            // engine does not yet populate it. Accepting is
-                            // what it did before; rejecting refuses valid
-                            // modules.
+                            //
+                            // The value type is invariant for a mutable global
+                            // and covariant for an immutable one; see
+                            // `global_ref_types_match`.
                             let type_ok = st.global.value_type == *value_type
-                                || matches!(
-                                    (st.global.value_type, *value_type),
-                                    (ValueType::Ref(_), ValueType::Ref(_))
+                                || global_ref_types_match(
+                                    st.global.value_type,
+                                    *value_type,
+                                    st.type_ctx.as_ref(),
+                                    module.types(),
+                                    *mutable,
                                 );
                             if st.global.mutable != *mutable || !type_ok {
                                 return Err(WasmError::unlinkable("incompatible import type"));
