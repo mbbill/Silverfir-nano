@@ -56,7 +56,7 @@ pub(super) fn bind(
         for ty in func_type.params().iter().chain(func_type.results().iter()) {
             if raw_kind(*ty).is_none() {
                 return Err(WasmError::invalid(
-                    "interp: host import signature is not numeric",
+                    "interp: host import signature has no raw slot form",
                 ));
             }
         }
@@ -250,10 +250,15 @@ pub(super) fn replace_global_at(
 /// The numeric value types this boundary carries, or `None` for a type
 /// that has no raw-word representation here.
 #[inline]
+/// Whether a host-boundary value type has a raw slot form.
+///
+/// References do: a slot carries the `RefHandle` verbatim, the same thing the
+/// JIT hands across this boundary. Only v128 has no 8-byte form, which is why
+/// SIMD is excluded from this engine rather than merely unimplemented.
 fn raw_kind(ty: ValueType) -> Option<ValueType> {
     matches!(
         ty,
-        ValueType::I32 | ValueType::I64 | ValueType::F32 | ValueType::F64
+        ValueType::I32 | ValueType::I64 | ValueType::F32 | ValueType::F64 | ValueType::Ref(_)
     )
     .then_some(ty)
 }
