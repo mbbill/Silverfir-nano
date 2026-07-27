@@ -236,7 +236,7 @@ pub(crate) fn family(op: Op) -> Fam {
         Select => Fam::SrcABDst,
         GlobalGet => Fam::Dst,
         GlobalSet | BrIf | BrIfNot | BrTable => Fam::SrcA,
-        Br | Return | MemoryFill | MemoryCopy => Fam::Fixed,
+        Br | Return | MemoryFill | MemoryCopy | MemoryFillCopy => Fam::Fixed,
         // Permanently slow (design doc SS12: host calls, memory/table
         // grow and size, segment and reference ops), plus the two call
         // flavours, which the cross-function fixup wires directly.
@@ -320,6 +320,7 @@ pub(crate) fn native_guard(ins: &Instr) -> bool {
         // b packs the memory index (copy: dst << 32 | src)
         _ => match ins.op {
             Op::MemoryFill | Op::MemoryCopy => ins.b == 0,
+            Op::MemoryFillCopy => ins.c == 0,
             _ => true,
         },
     }
@@ -379,6 +380,9 @@ pub(crate) fn transform_bc(ins: &Instr, flags: u16) -> (u64, u64) {
                 ins.b * 8,
                 ((ins.c >> 32) * 8) << 32 | (ins.c & 0xffff_ffff) * 8,
             ),
+            // MemoryFillCopy: a and b are two operand-pack base slots.
+            // The linker scales a uniformly; scale the second pack here.
+            MemoryFillCopy => (ins.b * 8, ins.c),
             // Return: b = result count, c unused — both stay raw
             Return => (ins.b, ins.c),
             // Select: c = cond_slot << 32 | dst_slot, both scaled

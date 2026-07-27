@@ -305,6 +305,14 @@ pub enum Op {
     /// Three materialized operands at consecutive slots starting at `a`
     /// (dst-addr, src-addr, count).
     MemoryCopy,
+    /// Adjacent `memory.fill` + `memory.copy` on the same memory.
+    ///
+    /// `a` and `b` name two consecutive three-slot operand packs:
+    /// `(fill-dst, value, fill-len)` and `(copy-dst, copy-src, copy-len)`;
+    /// `c` is the memory index. Keeping the pair in one semantic op lets a
+    /// native handler exploit a copy source made uniform by the fill while
+    /// the shared executor still preserves fill-then-copy trap ordering.
+    MemoryFillCopy,
     /// Like MemoryFill layout (dst-addr, src-offset, count); `b` = data
     /// segment index.
     MemoryInit,

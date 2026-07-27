@@ -176,6 +176,7 @@ pub(crate) fn predecode_function(
         last_call_idx: NO_DEF,
         last_call_height: 0,
         last_call_region: 0,
+        pending_fill: None,
     };
     {
         let mut decoder = Decoder::new(spec.code());
@@ -205,6 +206,13 @@ enum Desc {
     /// A materialized value in the temp slot for `height`, produced by
     /// emitted instruction `def` in control region `region`.
     Temp { height: u32, def: u32, region: u32 },
+}
+
+#[derive(Clone, Copy)]
+struct PendingMemoryFill {
+    operands: [Desc; 3],
+    base_height: u32,
+    memory: u32,
 }
 
 #[derive(Clone, Copy)]
@@ -306,6 +314,11 @@ struct Predecoder<'m> {
     last_call_idx: u32,
     last_call_height: u32,
     last_call_region: u32,
+    /// A fill whose only following Wasm operations have so far been
+    /// side-effect-free operand pushes. Delaying it across local.get/const
+    /// exposes the common adjacent fill+copy pair without moving it across
+    /// any instruction that can trap or mutate state.
+    pending_fill: Option<PendingMemoryFill>,
 }
 
 fn block_arity(types: &TypeContext, bt: &BlockType) -> Result<(u32, u32), WasmError> {
@@ -718,6 +731,134 @@ impl<'m> Predecoder<'m> {
             def: idx,
             region: self.region,
         };
+    }
+
+    /// Stage a descriptor into an explicitly chosen temporary slot.
+    ///
+    /// Pending bulk fusion needs six values live at once even though the
+    /// Wasm operand stack reuses the same three logical heights for the
+    /// second operation. Unlike `materialize_at`, this helper does not
+    /// change the virtual stack descriptor.
+    fn stage_desc_at(&mut self, d: Desc, height: u32) {
+        let dst = self.temp_slot_used(height);
+        match d {
+            Desc::Local(l) => {
+                let at = self.code.len() as u32;
+                self.last_read[l as usize] = at + 1;
+                if self.last_mat_mov != NO_DEF
+                    && self.last_mat_mov + 1 == at
+                    && self.last_mat_region == self.region
+                    && self.code[self.last_mat_mov as usize].op == Op::MovSlot
+                    && self.code[self.last_mat_mov as usize].flags == 0
+                {
+                    let prev = self.last_mat_mov;
+                    let pm = self.code[prev as usize];
+                    self.code[prev as usize] = Instr {
+                        op: Op::MovPair,
+                        flags: 0,
+                        a: pm.a,
+                        b: l as u64,
+                        c: pm.c << 32 | dst,
+                    };
+                    self.last_mat_mov = NO_DEF;
+                } else {
+                    let idx = self.emit(Op::MovSlot, 0, l as u64, 0, dst);
+                    self.last_mat_mov = idx;
+                    self.last_mat_region = self.region;
+                }
+            }
+            Desc::ConstV(k) => {
+                self.emit(Op::MovConst, FLAG_A_CONST, k, 0, dst);
+            }
+            Desc::Temp {
+                height: src_height, ..
+            } => {
+                let src = self.temp_slot_used(src_height);
+                if src != dst {
+                    let idx = self.emit(Op::MovSlot, 0, src, 0, dst);
+                    self.last_mat_mov = idx;
+                    self.last_mat_region = self.region;
+                }
+            }
+        }
+    }
+
+    fn stage_three(&mut self, operands: [Desc; 3], base_height: u32) {
+        for (i, operand) in operands.into_iter().enumerate() {
+            self.stage_desc_at(operand, base_height + i as u32);
+        }
+    }
+
+    fn defer_memory_fill(&mut self, memory: u32) -> Result<(), WasmError> {
+        let h = self.stack.len();
+        if h < 3 {
+            return Err(desync());
+        }
+        let base_height = (h - 3) as u32;
+        let operands = [self.stack[h - 3], self.stack[h - 2], self.stack[h - 1]];
+        self.stack.truncate(h - 3);
+        self.pending_fill = Some(PendingMemoryFill {
+            operands,
+            base_height,
+            memory,
+        });
+        Ok(())
+    }
+
+    fn flush_pending_fill(&mut self) {
+        let Some(fill) = self.pending_fill.take() else {
+            return;
+        };
+        self.stage_three(fill.operands, fill.base_height);
+        let base = self.temp_slot_used(fill.base_height);
+        let flags = if self.memory_is_64(fill.memory as u64) {
+            FLAG_ADDR64
+        } else {
+            0
+        };
+        self.emit(Op::MemoryFill, flags, base, fill.memory as u64, 0);
+    }
+
+    /// Fuse only the exact straight-line shape exposed by delaying a fill
+    /// across local.get/const pushes. No arithmetic, state mutation, or
+    /// potentially trapping instruction may move across the pair.
+    fn try_fuse_pending_fill_copy(
+        &mut self,
+        dst_memory: u32,
+        src_memory: u32,
+    ) -> Result<bool, WasmError> {
+        let Some(fill) = self.pending_fill else {
+            return Ok(false);
+        };
+        if fill.memory != dst_memory
+            || fill.memory != src_memory
+            || self.memory_is_64(fill.memory as u64)
+        {
+            return Ok(false);
+        }
+        let base = fill.base_height as usize;
+        if self.stack.len() != base + 3
+            || self.stack[base..]
+                .iter()
+                .any(|d| matches!(d, Desc::Temp { .. }))
+        {
+            return Ok(false);
+        }
+        let copy = [self.stack[base], self.stack[base + 1], self.stack[base + 2]];
+        self.stack.truncate(base);
+        self.pending_fill = None;
+        self.stage_three(fill.operands, fill.base_height);
+        self.stage_three(copy, fill.base_height + 3);
+        let fill_base = self.temp_slot_used(fill.base_height);
+        let copy_base = self.temp_slot_used(fill.base_height + 3);
+        self.emit(
+            Op::MemoryFillCopy,
+            0,
+            fill_base,
+            copy_base,
+            fill.memory as u64,
+        );
+        Ok(true)
     }
 
     fn materialize_all(&mut self) {
@@ -1196,6 +1337,28 @@ impl<'m> Predecoder<'m> {
         Ok(())
     }
 
+    fn emit_materialized_bulk(
+        &mut self,
+        op: Op,
+        packed_indices: u64,
+        address_is_64: bool,
+    ) -> Result<(), WasmError> {
+        let h = self.stack.len();
+        if h < 3 {
+            return Err(desync());
+        }
+        for i in h - 3..h {
+            self.materialize_at(i);
+        }
+        let base = self.temp_slot_used(self.height() - 3);
+        for _ in 0..3 {
+            let _ = self.pop()?;
+        }
+        let flags = if address_is_64 { FLAG_ADDR64 } else { 0 };
+        self.emit(op, flags, base, packed_indices, 0);
+        Ok(())
+    }
+
     fn fc_op(&mut self, fc: OpcodeFC, imm: &Immediate) -> Result<(), WasmError> {
         use OpcodeFC::*;
         match fc {
@@ -1207,45 +1370,47 @@ impl<'m> Predecoder<'m> {
             I64_TRUNC_SAT_F32_U => self.value_op(Op::I64_TruncSatF32U, 1),
             I64_TRUNC_SAT_F64_S => self.value_op(Op::I64_TruncSatF64S, 1),
             I64_TRUNC_SAT_F64_U => self.value_op(Op::I64_TruncSatF64U, 1),
-            MEMORY_FILL | MEMORY_COPY | MEMORY_INIT => {
-                let h = self.stack.len();
-                if h < 3 {
-                    return Err(desync());
-                }
-                for i in h - 3..h {
-                    self.materialize_at(i);
-                }
-                let base = self.temp_slot_used(self.height() - 3);
-                for _ in 0..3 {
-                    let _ = self.pop()?;
-                }
-                let (op, b) = match (fc, imm) {
-                    (MEMORY_FILL, Immediate::MemoryIndex(m)) => (Op::MemoryFill, *m as u64),
-                    (MEMORY_FILL, _) => (Op::MemoryFill, 0),
-                    (MEMORY_COPY, Immediate::MemoryCopyArgs { dstidx, srcidx }) => {
-                        (Op::MemoryCopy, ((*dstidx as u64) << 32) | *srcidx as u64)
-                    }
-                    (MEMORY_COPY, _) => (Op::MemoryCopy, 0),
-                    (MEMORY_INIT, Immediate::MemoryInitArgs { dataidx, memidx }) => {
-                        (Op::MemoryInit, ((*memidx as u64) << 32) | *dataidx as u64)
-                    }
-                    _ => (Op::MemoryInit, 0),
+            MEMORY_FILL => {
+                let memory = match imm {
+                    Immediate::MemoryIndex(m) => *m,
+                    _ => 0,
                 };
-                // The native fill/copy handlers bound-check in 32 bits, so a
-                // 64-bit memory takes the shared executor -- the same reason
-                // loads and stores do.
-                let touched = match op {
-                    Op::MemoryCopy => (b >> 32) | (b & 0xffff_ffff),
-                    Op::MemoryFill => b,
-                    _ => b >> 32,
-                };
-                let flags = if self.memory_is_64(touched) {
-                    FLAG_ADDR64
+                // A memory32 fill may wait across the local.get/const pushes
+                // that prepare an immediately following copy. Memory64 stays
+                // on the ordinary shared-executor path.
+                if !self.memory_is_64(memory as u64) {
+                    self.defer_memory_fill(memory)
                 } else {
-                    0
+                    self.emit_materialized_bulk(Op::MemoryFill, memory as u64, true)
+                }
+            }
+            MEMORY_COPY => {
+                let (dst_memory, src_memory) = match imm {
+                    Immediate::MemoryCopyArgs { dstidx, srcidx } => (*dstidx, *srcidx),
+                    _ => (0, 0),
                 };
-                self.emit(op, flags, base, b, 0);
-                Ok(())
+                if self.try_fuse_pending_fill_copy(dst_memory, src_memory)? {
+                    return Ok(());
+                }
+                self.flush_pending_fill();
+                let packed = ((dst_memory as u64) << 32) | src_memory as u64;
+                self.emit_materialized_bulk(
+                    Op::MemoryCopy,
+                    packed,
+                    self.memory_is_64(dst_memory as u64) || self.memory_is_64(src_memory as u64),
+                )
+            }
+            MEMORY_INIT => {
+                let (data, memory) = match imm {
+                    Immediate::MemoryInitArgs { dataidx, memidx } => (*dataidx, *memidx),
+                    _ => (0, 0),
+                };
+                let packed = ((memory as u64) << 32) | data as u64;
+                self.emit_materialized_bulk(
+                    Op::MemoryInit,
+                    packed,
+                    self.memory_is_64(memory as u64),
+                )
             }
             DATA_DROP => {
                 let seg = match imm {
@@ -1539,6 +1704,14 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
         stream: &mut OpStream<'x, 'y, 'z>,
     ) -> Result<(), WasmError> {
         while let Some(op) = stream.next()? {
+            let may_prepare_copy = matches!(
+                op.wasm_op,
+                WasmOpcode::OP(Opcode::LOCAL_GET | Opcode::I32_CONST | Opcode::I64_CONST)
+                    | WasmOpcode::FC(OpcodeFC::MEMORY_COPY)
+            );
+            if self.pending_fill.is_some() && !may_prepare_copy {
+                self.flush_pending_fill();
+            }
             let o = match op.wasm_op {
                 WasmOpcode::OP(o) => o,
                 WasmOpcode::FC(fc) => {
@@ -2453,6 +2626,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
         if !self.frames.is_empty() {
             return Err(desync());
         }
+        self.flush_pending_fill();
         self.finish_return_landing();
         Ok(())
     }
@@ -2477,6 +2651,29 @@ mod tests {
 
     fn ops(f: &PredecodedFunction) -> StdVec<Op> {
         f.code.iter().map(|i| i.op).collect()
+    }
+
+    #[test]
+    fn fuses_adjacent_fill_and_copy_on_the_same_memory() {
+        let f = predecode_wat(
+            r#"(module
+                (memory 1)
+                (func (param i32 i32 i32 i32 i32 i32)
+                    (memory.fill
+                        (local.get 0) (local.get 1) (local.get 2))
+                    (memory.copy
+                        (local.get 3) (local.get 4) (local.get 5))))"#,
+            0,
+        );
+        let pair = f
+            .code
+            .iter()
+            .find(|ins| ins.op == Op::MemoryFillCopy)
+            .expect("adjacent pair must fuse");
+        assert_eq!(pair.b, pair.a + 3);
+        assert_eq!(pair.c, 0);
+        assert!(!ops(&f).contains(&Op::MemoryFill));
+        assert!(!ops(&f).contains(&Op::MemoryCopy));
     }
 
     #[test]

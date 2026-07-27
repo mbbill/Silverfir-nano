@@ -138,7 +138,7 @@ fn emit_order() -> Vec<Group> {
         g(&[
             I32_DivS, I32_DivU, I32_RemS, I32_RemU, I64_DivS, I64_DivU, I64_RemS, I64_RemU,
         ]),
-        g(&[MemoryFill, MemoryCopy]),
+        g(&[MemoryFill, MemoryCopy, MemoryFillCopy]),
         g(&[
             F32_Add, F32_Sub, F32_Mul, F32_Div, F32_Min, F32_Max, F64_Add, F64_Sub, F64_Mul,
             F64_Div, F64_Min, F64_Max,

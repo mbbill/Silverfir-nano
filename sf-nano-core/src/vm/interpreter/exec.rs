@@ -3103,6 +3103,56 @@ impl InterpInstance {
                     }
                 }
             }
+            Op::MemoryFillCopy => {
+                let fill_base = ins.a as usize;
+                let copy_base = ins.b as usize;
+                let (fill_dst, value, fill_len) = (
+                    frame[fill_base] as u32 as u64,
+                    frame[fill_base + 1],
+                    frame[fill_base + 2] as u32 as u64,
+                );
+                let (copy_dst, copy_src, copy_len) = (
+                    frame[copy_base] as u32 as u64,
+                    frame[copy_base + 1] as u32 as u64,
+                    frame[copy_base + 2] as u32 as u64,
+                );
+                let mem = self
+                    .memories
+                    .get_mut(ins.c as usize)
+                    .ok_or(WasmError::trap("out of bounds memory access"))?;
+                let memory_len = mem.len() as u64;
+
+                // Preserve the proposal's sequential trap effects: a valid
+                // fill is committed before copy bounds are checked.
+                let fill_end = fill_dst + fill_len;
+                if fill_end > memory_len {
+                    return Err(WasmError::trap("out of bounds memory access"));
+                }
+                mem.bytes_mut()[fill_dst as usize..fill_end as usize].fill(value as u8);
+
+                let copy_end = copy_dst + copy_len;
+                let source_end = copy_src + copy_len;
+                if copy_end > memory_len || source_end > memory_len {
+                    return Err(WasmError::trap("out of bounds memory access"));
+                }
+
+                // When the copy source was made uniform by the fill, only
+                // destination bytes outside the already-filled range need
+                // stores. Otherwise execute the ordinary memmove semantics.
+                if copy_src >= fill_dst && source_end <= fill_end {
+                    if copy_dst < fill_dst {
+                        let left_end = copy_end.min(fill_dst);
+                        mem.bytes_mut()[copy_dst as usize..left_end as usize].fill(value as u8);
+                    }
+                    if copy_end > fill_end {
+                        let right_start = copy_dst.max(fill_end);
+                        mem.bytes_mut()[right_start as usize..copy_end as usize].fill(value as u8);
+                    }
+                } else {
+                    mem.bytes_mut()
+                        .copy_within(copy_src as usize..source_end as usize, copy_dst as usize);
+                }
+            }
             Op::MemoryInit => {
                 let base = ins.a as usize;
                 let m = (ins.b >> 32) as usize;

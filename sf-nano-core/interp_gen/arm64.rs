@@ -773,6 +773,7 @@ impl Isa for Arm64 {
                 return;
             }
             MemoryFill | MemoryCopy => return self.emit_bulk(a, st, v),
+            MemoryFillCopy => return self.emit_fill_copy(a, st, v),
             _ => {}
         }
         if let Some((cond, w32)) = int_cmp(v.op) {
@@ -1385,27 +1386,167 @@ impl Arm64 {
             self.tail(a, v.counted);
             // Overlapping-downward block, out of line past the tail:
             // x10 = d, x11 = s, x12 = n, all raw offsets.
+            let b32 = a.fresh("b32");
+            let bfinish = a.fresh("bfinish");
             let b8 = a.fresh("b8");
             let bb = a.fresh("bb");
             let bdone = a.fresh("bdone");
             a.label(&back);
-            a.ins("add x10, x22, x10");
-            a.ins("add x11, x22, x11");
+            a.ins("add x9, x22, x10"); // original dst
+            a.ins("add x10, x22, x11"); // original src
+            a.ins("mov x11, x12"); // remaining length
+            a.ins("add x12, x9, x11"); // dst end
+            a.ins("add x10, x10, x11"); // src end
+            a.ins("cmp x11, #64");
+            a.ins(&format!("b.lo {b8}"));
+
+            // Darwin's memmove strategy for medium backward copies: align
+            // the destination end to 32 bytes and pipeline one 32-byte GPR
+            // block ahead of the stores. On Apple silicon this schedules
+            // better than descending NEON pairs, while preserving x7/x8,
+            // pinned locals, the dispatch counter, and every vector register.
+            a.ins("ldp x0, x1, [x10, #-16]");
+            a.ins("ldp x2, x3, [x10, #-32]");
+            a.ins("sub x13, x12, #1");
+            a.ins("and x13, x13, #0xffffffffffffffe0"); // aligned dst cursor
+            a.ins("sub x16, x12, x13"); // 1..32-byte end cap
+            a.ins("sub x10, x10, x16");
+            a.ins("sub x11, x11, x16");
+            a.ins("ldp x4, x5, [x10, #-16]");
+            a.ins("ldp x6, x16, [x10, #-32]");
+            a.ins("stp x0, x1, [x12, #-16]");
+            a.ins("stp x2, x3, [x12, #-32]");
+            a.ins("sub x10, x10, #32");
+            a.ins("subs x11, x11, #64");
+            a.ins(&format!("b.ls {bfinish}"));
+            a.label(&b32);
+            a.ins("stp x4, x5, [x13, #-16]");
+            a.ins("stp x6, x16, [x13, #-32]");
+            a.ins("sub x13, x13, #32");
+            a.ins("ldp x4, x5, [x10, #-16]");
+            a.ins("ldp x6, x16, [x10, #-32]");
+            a.ins("sub x10, x10, #32");
+            a.ins("subs x11, x11, #32");
+            a.ins(&format!("b.hi {b32}"));
+            a.label(&bfinish);
+            a.ins("sub x10, x10, x11");
+            a.ins("ldp x0, x1, [x10, #-16]");
+            a.ins("ldp x2, x3, [x10, #-32]");
+            a.ins("stp x4, x5, [x13, #-16]");
+            a.ins("stp x6, x16, [x13, #-32]");
+            a.ins("stp x0, x1, [x9, #16]");
+            a.ins("stp x2, x3, [x9]");
+            a.ins(&format!("b {bdone}"));
+
+            // Tiny backward copies do not enter the overlapping wide-store
+            // scheme above.
             a.label(&b8);
-            a.ins("cmp x12, #8");
+            a.ins("cmp x11, #8");
             a.ins(&format!("b.lo {bb}"));
-            a.ins("sub x12, x12, #8");
-            a.ins("ldr x9, [x11, x12]");
-            a.ins("str x9, [x10, x12]");
+            a.ins("sub x11, x11, #8");
+            a.ins("ldr x0, [x10, #-8]!");
+            a.ins("str x0, [x12, #-8]!");
             a.ins(&format!("b {b8}"));
             a.label(&bb);
-            a.ins(&format!("cbz x12, {bdone}"));
-            a.ins("sub x12, x12, #1");
-            a.ins("ldrb w9, [x11, x12]");
-            a.ins("strb w9, [x10, x12]");
+            a.ins(&format!("cbz x11, {bdone}"));
+            a.ins("sub x11, x11, #1");
+            a.ins("ldrb w0, [x10, #-1]!");
+            a.ins("strb w0, [x12, #-1]!");
             a.ins(&format!("b {bb}"));
             a.label(&bdone);
             self.tail(a, v.counted);
         }
+    }
+
+    /// Adjacent fill+copy on memory 0.
+    ///
+    /// The predecoder proves only adjacency and same-memory identity. This
+    /// handler dynamically proves the useful semantic fact: the copy source
+    /// lies wholly inside the range made uniform by the fill. When the
+    /// destination overlaps that range, the pair is one fill over their
+    /// union. Any failed guard replays the exact pair in the shared executor,
+    /// which also preserves the required "fill commits before copy traps"
+    /// ordering.
+    fn emit_fill_copy(&mut self, a: &mut Asm, st: &Stubs, v: &Variant) {
+        self.pre(a);
+        a.ins("ldp x9, x10, [x19, #8]"); // fill and copy operand-pack offsets
+        a.ins("add x9, x20, x9");
+        a.ins("add x10, x20, x10");
+        a.ins("ldr x11, [x9]"); // fill dst
+        a.ins("ldr x12, [x9, #16]"); // fill len
+        a.ins("ldr x9, [x9, #8]"); // fill value
+        a.ins("ubfx x9, x9, #0, #8");
+        a.ins("orr x9, x9, x9, lsl #8");
+        a.ins("orr x9, x9, x9, lsl #16");
+        a.ins("orr x9, x9, x9, lsl #32");
+        a.ins("dup v0.2d, x9");
+        a.ins("add x13, x11, x12"); // fill end
+        a.ins("cmp x13, x23");
+        a.ins(&format!("b.hi {}", st.slow));
+
+        a.ins("ldr x16, [x10]"); // copy dst
+        a.ins("ldr x9, [x10, #16]"); // copy len
+        a.ins("add x12, x16, x9"); // copy dst end
+        a.ins("cmp x12, x23");
+        a.ins(&format!("b.hi {}", st.slow));
+        a.ins("ldr x10, [x10, #8]"); // copy src
+        a.ins("cmp x10, x11");
+        a.ins(&format!("b.lo {}", st.slow));
+        a.ins("add x9, x10, x9"); // copy src end
+        a.ins("cmp x9, x23");
+        a.ins(&format!("b.hi {}", st.slow));
+        a.ins("cmp x9, x13");
+        a.ins(&format!("b.hi {}", st.slow));
+
+        // Only a single contiguous union belongs in this fast path.
+        a.ins("cmp x16, x13");
+        a.ins(&format!("b.hi {}", st.slow));
+        a.ins("cmp x12, x11");
+        a.ins(&format!("b.lo {}", st.slow));
+        a.ins("cmp x11, x16");
+        a.ins("csel x10, x11, x16, lo"); // union start
+        a.ins("cmp x13, x12");
+        a.ins("csel x13, x13, x12, hs"); // union end
+
+        // Recover a scalar copy of the already-splatted byte for the tails.
+        a.ins("fmov x11, d0");
+        a.ins("add x10, x22, x10");
+        a.ins("add x13, x22, x13");
+
+        let l128 = a.fresh("fc128");
+        let l64 = a.fresh("fc64");
+        let l8 = a.fresh("fc8");
+        let bytes = a.fresh("fcbytes");
+        let done = a.fresh("fcdone");
+        a.label(&l128);
+        a.ins("add x9, x10, #128");
+        a.ins("cmp x9, x13");
+        a.ins(&format!("b.hi {l64}"));
+        a.ins("stp q0, q0, [x10], #32");
+        a.ins("stp q0, q0, [x10], #32");
+        a.ins("stp q0, q0, [x10], #32");
+        a.ins("stp q0, q0, [x10], #32");
+        a.ins(&format!("b {l128}"));
+        a.label(&l64);
+        a.ins("add x9, x10, #64");
+        a.ins("cmp x9, x13");
+        a.ins(&format!("b.hi {l8}"));
+        a.ins("stp q0, q0, [x10], #32");
+        a.ins("stp q0, q0, [x10], #32");
+        a.ins(&format!("b {l64}"));
+        a.label(&l8);
+        a.ins("add x9, x10, #8");
+        a.ins("cmp x9, x13");
+        a.ins(&format!("b.hi {bytes}"));
+        a.ins("str x11, [x10], #8");
+        a.ins(&format!("b {l8}"));
+        a.label(&bytes);
+        a.ins("cmp x10, x13");
+        a.ins(&format!("b.hs {done}"));
+        a.ins("strb w11, [x10]");
+        a.ins("add x10, x10, #1");
+        a.ins(&format!("b {bytes}"));
+        a.label(&done);
+        self.tail(a, v.counted);
     }
 }

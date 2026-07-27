@@ -821,6 +821,7 @@ impl Isa for RiscV {
             return false;
         }
         match v.op {
+            MemoryFillCopy => false,
             MovSlot => v.a != Cls::Const,
             MovPair => {
                 !matches!(v.a, Cls::Const | Cls::Acc) && !matches!(v.b, Cls::Const | Cls::Acc)
