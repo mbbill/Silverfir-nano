@@ -169,6 +169,14 @@ fn select_pinned(func: &PredecodedFunction) -> Pinned {
                 wdom[ins.c as usize] |= 1;
             }
         }
+        if ins.op == Op::I32_SubBrIf && ins.a < n {
+            // This control-shaped cell is also an in-place integer write to
+            // `a`. Count both halves of the read/modify/write so pin
+            // selection and register-domain authority match the unfused
+            // subtraction it replaces.
+            counts[ins.a as usize] += 1;
+            wdom[ins.a as usize] |= 1;
+        }
         if ins.op == Op::Select {
             let dslot = ins.c & 0xffff_ffff;
             if dslot < n {

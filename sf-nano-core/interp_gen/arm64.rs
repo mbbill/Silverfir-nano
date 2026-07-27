@@ -694,6 +694,7 @@ impl Isa for Arm64 {
                 !matches!(v.a, Cls::Const | Cls::Acc) && !matches!(v.b, Cls::Const | Cls::Acc)
             }
             BrTable => v.a != Cls::Const,
+            I32_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
             _ => {
                 if v.fused {
                     // The fused bank folds a second slot operand into the
@@ -752,6 +753,44 @@ impl Isa for Arm64 {
                 a.ins("mov x19, x12");
                 a.ins("br x9");
                 a.label(&nt);
+                self.tail(a, v.counted);
+                return;
+            }
+            I32_SubBrIf => {
+                // Keep both dependent target loads off the taken critical
+                // path while the arithmetic sources are being prepared.
+                a.ins("ldr x12, [x19, #24]");
+                a.ins("ldr x9, [x12]");
+                a.ins("ldr x13, [x19, #8]"); // a slot byte offset
+                let ra = match v.a {
+                    Cls::Slot => {
+                        a.ins("ldr x10, [x20, x13]");
+                        10
+                    }
+                    Cls::L0 => L0R,
+                    Cls::L1 => L1R,
+                    Cls::Const | Cls::Acc => unreachable!(),
+                };
+                let rb = self.src_b(a, v.b, 11);
+                let rd = match v.a {
+                    Cls::L0 => L0R,
+                    Cls::L1 => L1R,
+                    _ => 10,
+                };
+                a.ins(&format!("sub {}, {}, {}", w(rd), w(ra), w(rb)));
+                // i32 arithmetic through a W register zero-extends the
+                // authoritative 64-bit frame slot.
+                a.ins(&format!("str {}, [x20, x13]", x(rd)));
+                let nt = a.fresh("nt");
+                a.ins(&format!("cbz {}, {nt}", w(rd)));
+                self.bump(a, v.counted);
+                a.ins("mov x19, x12");
+                a.ins("br x9");
+                a.label(&nt);
+                // Falling through happens once in the canonical countdown
+                // loop. Fetch its next handler here instead of spending
+                // that load on every taken back edge.
+                self.pre(a);
                 self.tail(a, v.counted);
                 return;
             }

@@ -745,6 +745,7 @@ impl Isa for X86_64 {
                 !matches!(v.a, Cls::Const | Cls::Acc) && !matches!(v.b, Cls::Const | Cls::Acc)
             }
             BrTable => v.a != Cls::Const,
+            I32_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
             _ => {
                 if v.fused {
                     if v.a == Cls::Const {
@@ -795,6 +796,40 @@ impl Isa for X86_64 {
                 a.ins("mov rbx, rdx");
                 a.ins("jmp rsi");
                 a.label(&nt);
+                self.tail(a, v.counted);
+                return;
+            }
+            I32_SubBrIf => {
+                a.ins("mov rdx, [rbx + 24]");
+                a.ins("mov rsi, [rdx]");
+                a.ins("mov r8, [rbx + 8]"); // a slot byte offset
+                let ra = match v.a {
+                    Cls::Slot => {
+                        a.ins("mov rax, [rbp + r8]");
+                        RAX
+                    }
+                    Cls::L0 => L0R,
+                    Cls::L1 => L1R,
+                    Cls::Const | Cls::Acc => unreachable!(),
+                };
+                let rb = self.src(a, v.b, 16, RCX);
+                debug_assert_eq!(
+                    ra,
+                    match v.a {
+                        Cls::L0 => L0R,
+                        Cls::L1 => L1R,
+                        _ => RAX,
+                    }
+                );
+                a.ins(&format!("sub {}, {}", d(ra), d(rb)));
+                a.ins(&format!("mov [rbp + r8], {}", q(ra)));
+                let nt = a.fresh("nt");
+                a.ins(&format!("jz {nt}"));
+                self.bump(a, v.counted);
+                a.ins("mov rbx, rdx");
+                a.ins("jmp rsi");
+                a.label(&nt);
+                self.pre(a);
                 self.tail(a, v.counted);
                 return;
             }

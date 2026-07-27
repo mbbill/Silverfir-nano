@@ -3440,6 +3440,13 @@ impl InterpInstance {
                     return Ok(Effect::Jump(ins.c as usize));
                 }
             }
+            Op::I32_SubBrIf => {
+                let value = (opa!(ins) as u32).wrapping_sub(opb!(ins) as u32);
+                frame[ins.a as usize] = value as u64;
+                if value != 0 {
+                    return Ok(Effect::Jump(ins.c as usize));
+                }
+            }
             Op::I32_BrEq => cmp_br32!(ins, |x: u32, y: u32| x == y),
             Op::I32_BrNe => cmp_br32!(ins, |x: u32, y: u32| x != y),
             Op::I32_BrLtS => cmp_br32!(ins, |x: u32, y: u32| (x as i32) < (y as i32)),
@@ -3677,6 +3684,21 @@ mod tests {
         Ok(results[0])
     }
 
+    fn run2(src: &str, export: &str, args: &[u64]) -> Result<[u64; 2], WasmError> {
+        let (bin, _) = instantiate(src);
+        let module = Module::new("t", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )?;
+        let idx = inst.find_export(export).expect("export");
+        let mut results = [0u64; 2];
+        inst.invoke(idx, args, &mut results)?;
+        Ok(results)
+    }
+
     /// Extended constant expressions: arithmetic, and `global.get` of a
     /// global declared earlier. Neither is expressible with a single
     /// `t.const`, which is all this used to accept.
@@ -3804,6 +3826,413 @@ mod tests {
                 local.get 0 i32.const 100 i32.lt_u br_if $l)
             local.get 1))"#;
         assert_eq!(run1(src, "sum", &[]).unwrap(), 5050);
+    }
+
+    #[test]
+    fn typed_loop_parameter_counter_has_one_hot_dispatch_per_iteration() {
+        // This is wasmi-benchmarks' `counter-param` input. Unlike
+        // `counter-local`, the induction value is both a typed loop
+        // parameter and a local, so a back edge has to preserve both views
+        // without materializing extra hot-loop dispatches.
+        let (bin, _) = instantiate(
+            r#"(module
+                (func (export "run") (param $n i32) (result i32)
+                    (local.get $n)
+                    (loop $continue (param i32) (result i32)
+                        (i32.const 1)
+                        (i32.sub)
+                        (local.tee $n)
+                        (local.get $n)
+                        (br_if $continue))))"#,
+        );
+        let module = Module::new("counter-param", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
+        let run = inst.find_export("run").expect("run");
+        let mut result = [u64::MAX; 1];
+
+        inst.invoke(run, &[100], &mut result).expect("invoke");
+        assert_eq!(result[0], 0);
+
+        if inst.dispatch_counting_enabled() {
+            let dispatches = inst.dispatch_count();
+            assert_eq!(
+                dispatches, 102,
+                "100 loop cells plus exit materialization and return"
+            );
+        }
+    }
+
+    #[test]
+    fn typed_loop_parameter_add_counter_has_one_hot_dispatch_per_iteration() {
+        let (bin, _) = instantiate(
+            r#"(module
+                (func (export "run") (param $n i32) (result i32)
+                    (local.get $n)
+                    (loop $continue (param i32) (result i32)
+                        (i32.const 1)
+                        (i32.add)
+                        (local.tee $n)
+                        (local.get $n)
+                        (br_if $continue))))"#,
+        );
+        let module = Module::new("add-counter-param", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
+        let run = inst.find_export("run").expect("run");
+        let mut result = [u64::MAX; 1];
+
+        // Start 100 increments below the i32 wrapping point.
+        inst.invoke(run, &[(u32::MAX - 99) as u64], &mut result)
+            .expect("invoke");
+        assert_eq!(result[0], 0);
+
+        if inst.dispatch_counting_enabled() {
+            let dispatches = inst.dispatch_count();
+            assert_eq!(
+                dispatches, 102,
+                "100 fused add-and-branch cells plus exit materialization and return"
+            );
+        }
+    }
+
+    #[test]
+    fn loop_parameter_alias_does_not_mutate_its_source_local() {
+        let src = r#"(module
+            (func (export "run") (param $x i32) (param $n i32) (result i32)
+                local.get $x
+                (loop $continue (param i32) (result i32)
+                    drop
+                    i32.const 42
+                    local.get $n
+                    i32.const 1
+                    i32.sub
+                    local.tee $n
+                    br_if $continue)
+                drop
+                local.get $x))"#;
+
+        assert_eq!(
+            run1(src, "run", &[7, 2]).unwrap(),
+            7,
+            "a loop parameter is a stack value, not an assignment to the local that sourced it"
+        );
+    }
+
+    #[test]
+    fn br_table_loop_parameter_alias_does_not_mutate_its_source_local() {
+        let src = r#"(module
+            (func (export "run") (param $x i32) (param $selector i32) (result i32)
+                (block $exit (result i32)
+                    local.get $x
+                    (loop $continue (param i32) (result i32)
+                        drop
+                        i32.const 42
+                        local.get $selector
+                        i32.const 1
+                        i32.sub
+                        local.tee $selector
+                        br_table $exit $continue $exit))
+                drop
+                local.get $x))"#;
+
+        assert_eq!(
+            run1(src, "run", &[7, 2]).unwrap(),
+            7,
+            "a br_table landing pad must not synthesize a write to the loop parameter's source local"
+        );
+    }
+
+    #[test]
+    fn fused_constant_add_branch_preserves_i32_wrapping() {
+        let src = r#"(module
+            (func (export "add_one") (param $n i32) (result i32)
+                local.get $n
+                (loop $continue (param i32) (result i32)
+                    i32.const 1
+                    i32.add
+                    local.tee $n
+                    local.get $n
+                    br_if $continue))
+            (func (export "add_neg_one") (param $n i32) (result i32)
+                local.get $n
+                (loop $continue (param i32) (result i32)
+                    i32.const -1
+                    i32.add
+                    local.tee $n
+                    local.get $n
+                    br_if $continue))
+            (func (export "add_min") (param $n i32) (result i32)
+                local.get $n
+                (loop $continue (param i32) (result i32)
+                    i32.const -2147483648
+                    i32.add
+                    local.tee $n
+                    local.get $n
+                    br_if $continue)))"#;
+
+        assert_eq!(
+            run1(src, "add_one", &[u32::MAX as u64]).unwrap(),
+            0,
+            "adding one must wrap -1 to zero"
+        );
+        assert_eq!(
+            run1(src, "add_neg_one", &[1]).unwrap(),
+            0,
+            "adding -1 must reuse subtraction by +1"
+        );
+        assert_eq!(
+            run1(src, "add_min", &[0x8000_0000]).unwrap(),
+            0,
+            "the self-negating i32 minimum constant must remain exact"
+        );
+    }
+
+    #[test]
+    fn variable_rhs_add_branch_remains_correct_when_unfused() {
+        let src = r#"(module
+            (func (export "run") (param $n i32) (param $step i32) (result i32)
+                local.get $n
+                (loop $continue (param i32) (result i32)
+                    local.get $step
+                    i32.add
+                    local.tee $n
+                    local.get $n
+                    br_if $continue)))"#;
+        assert_eq!(run1(src, "run", &[u32::MAX as u64, 1]).unwrap(), 0);
+    }
+
+    #[test]
+    fn fused_i64_eqz_branch_tests_all_64_bits() {
+        let src = r#"(module
+            (func (export "is_zero") (param $x i64) (result i32)
+                (block $zero
+                    local.get $x
+                    i64.eqz
+                    br_if $zero
+                    i32.const 0
+                    return)
+                i32.const 1))"#;
+
+        assert_eq!(run1(src, "is_zero", &[0]).unwrap(), 1);
+        assert_eq!(run1(src, "is_zero", &[7]).unwrap(), 0);
+        assert_eq!(
+            run1(src, "is_zero", &[0x1_0000_0000]).unwrap(),
+            0,
+            "a zero low word must not hide nonzero high i64 bits"
+        );
+    }
+
+    #[test]
+    fn fused_i64_eqz_move_guard_preserves_taken_and_fallthrough_values() {
+        let src = r#"(module
+            (func (export "choose") (param $x i64) (result i32)
+                (block $exit (result i32)
+                    i32.const 10
+                    i32.const 1
+                    i32.add
+                    i32.const 40
+                    i32.const 2
+                    i32.add
+                    local.get $x
+                    i64.eqz
+                    br_if $exit
+                    drop)))"#;
+
+        assert_eq!(run1(src, "choose", &[0]).unwrap(), 42);
+        assert_eq!(run1(src, "choose", &[9]).unwrap(), 11);
+        assert_eq!(
+            run1(src, "choose", &[0x1_0000_0000]).unwrap(),
+            11,
+            "the inverted guard must compare the complete i64 value"
+        );
+    }
+
+    #[test]
+    fn fused_dynamic_decrement_handles_an_accumulator_rhs_with_slot_destination() {
+        // Make two unrelated locals hotter than `$n` in the static pin
+        // ranking, forcing the fused branch's destination through an
+        // ordinary frame slot. Its dynamic rhs stays in the accumulator;
+        // native backends must keep that register distinct from their
+        // slot-load scratch while performing the in-place subtraction.
+        let src = r#"(module
+            (global $iterations (mut i32) (i32.const 0))
+            (func (export "run")
+                (param $n i32) (param $step i32)
+                (param $hot0 i32) (param $hot1 i32)
+                (result i32)
+                local.get $hot0 local.get $hot0 i32.add drop
+                local.get $hot0 local.get $hot0 i32.add drop
+                local.get $hot0 local.get $hot0 i32.add drop
+                local.get $hot1 local.get $hot1 i32.add drop
+                local.get $hot1 local.get $hot1 i32.add drop
+                local.get $hot1 local.get $hot1 i32.add drop
+                local.get $n
+                (loop $continue (param i32) (result i32)
+                    global.get $iterations
+                    i32.const 1
+                    i32.add
+                    global.set $iterations
+                    local.get $step
+                    i32.const 0
+                    i32.add
+                    i32.sub
+                    local.tee $n
+                    local.get $n
+                    br_if $continue)
+                drop
+                global.get $iterations))"#;
+        assert_eq!(run1(src, "run", &[6, 2, 11, 13]).unwrap(), 3);
+    }
+
+    #[test]
+    fn duplicate_loop_parameter_locals_remain_independent() {
+        let src = r#"(module
+            (func (export "duplicate") (param $x i32) (param $n i32)
+                (result i32 i32) (local $a i32) (local $b i32)
+                local.get $x
+                local.get $x
+                (loop $l (param i32 i32) (result i32 i32)
+                    local.set $b
+                    local.set $a
+                    local.get $a
+                    i32.const 1
+                    i32.sub
+                    local.set $a
+                    local.get $b
+                    i32.const 1
+                    i32.add
+                    local.set $b
+                    local.get $a
+                    local.get $b
+                    local.get $n
+                    i32.const 1
+                    i32.sub
+                    local.tee $n
+                    br_if $l)))"#;
+        assert_eq!(run2(src, "duplicate", &[10, 2]).unwrap(), [8, 12]);
+    }
+
+    #[test]
+    fn loop_parameter_back_edges_do_not_swap_their_source_locals() {
+        let src = r#"(module
+            (func (export "swap") (param $a i32) (param $b i32)
+                (param $n i32) (result i32 i32)
+                local.get $a
+                local.get $b
+                (loop $l (param i32 i32) (result i32 i32)
+                    drop
+                    drop
+                    local.get $b
+                    local.get $a
+                    local.get $n
+                    i32.const 1
+                    i32.sub
+                    local.tee $n
+                    br_if $l)))"#;
+        assert_eq!(
+            run2(src, "swap", &[10, 20, 2]).unwrap(),
+            [20, 10],
+            "each iteration supplies the unchanged locals `$b, $a`; loop parameters do not assign them"
+        );
+    }
+
+    #[test]
+    fn untaken_loop_branch_does_not_write_aliased_local() {
+        let src = r#"(module
+            (func (export "not_taken") (param $x i32) (result i32)
+                local.get $x
+                (loop $l (param i32) (result i32)
+                    drop
+                    i32.const 42
+                    i32.const 0
+                    br_if $l)
+                drop
+                local.get $x))"#;
+        assert_eq!(run1(src, "not_taken", &[7]).unwrap(), 7);
+    }
+
+    #[test]
+    fn br_table_loop_backedge_and_exit_preserve_values() {
+        let src = r#"(module
+            (func (export "table") (param $x i32) (param $n i32) (result i32)
+                (block $exit (result i32)
+                    local.get $x
+                    (loop $l (param i32) (result i32)
+                        i32.const 1
+                        i32.add
+                        local.get $n
+                        i32.const 1
+                        i32.sub
+                        local.tee $n
+                        br_table $l $exit))))"#;
+        assert_eq!(run1(src, "table", &[10, 1]).unwrap(), 12);
+    }
+
+    #[test]
+    fn nested_branch_depth_reaches_loop_parameter() {
+        let src = r#"(module
+            (func (export "nested") (param $x i32) (param $n i32) (result i32)
+                local.get $x
+                (loop $l (param i32) (result i32)
+                    (block (param i32) (result i32)
+                        i32.const 1
+                        i32.add
+                        local.get $n
+                        i32.const 1
+                        i32.sub
+                        local.tee $n
+                        br_if $l))))"#;
+        assert_eq!(run1(src, "nested", &[10, 2]).unwrap(), 12);
+    }
+
+    #[test]
+    fn local_overwrite_materializes_pending_loop_parameter() {
+        let src = r#"(module
+            (func (export "hazard") (param $x i32) (param $n i32) (result i32)
+                local.get $x
+                (loop $l (param i32) (result i32)
+                    i32.const 999
+                    local.set $x
+                    local.get $n
+                    i32.const 1
+                    i32.sub
+                    local.tee $n
+                    br_if $l)))"#;
+        assert_eq!(run1(src, "hazard", &[7, 3]).unwrap(), 7);
+    }
+
+    #[test]
+    fn exception_edges_keep_canonical_loop_parameter_layout() {
+        let src = r#"(module
+            (tag $e (param i32))
+            (func (export "catch_loop") (param $x i32) (result i32)
+                (local $again i32)
+                local.get $x
+                (loop $l (param i32) (result i32)
+                    local.set $x
+                    local.get $again
+                    (if (result i32)
+                        (then local.get $x)
+                        (else
+                            i32.const 1
+                            local.set $again
+                            (try_table (result i32) (catch $e $l)
+                                local.get $x
+                                i32.const 1
+                                i32.add
+                                throw $e))))))"#;
+        assert_eq!(run1(src, "catch_loop", &[10]).unwrap(), 11);
     }
 
     #[test]

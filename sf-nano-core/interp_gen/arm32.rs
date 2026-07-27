@@ -152,7 +152,7 @@ fn native_op(op: Op) -> bool {
     let d = op as u16;
     if (d >= I32_Add as u16 && d <= I32_GeU as u16)
         || (d >= I32_BrEq as u16 && d <= I32_BrGeU as u16)
-        || matches!(op, I32_BrAnd | I32_BrAndNot)
+        || matches!(op, I32_BrAnd | I32_BrAndNot | I32_SubBrIf)
     {
         return true;
     }
@@ -421,6 +421,7 @@ impl Isa for Arm32 {
                 !matches!(v.a, Cls::Const | Cls::Acc) && !matches!(v.b, Cls::Const | Cls::Acc)
             }
             BrTable => v.a != Cls::Const,
+            I32_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
             _ => {
                 if v.fused && v.a == Cls::Const {
                     return false;
@@ -456,6 +457,33 @@ impl Isa for Arm32 {
                 a.ins(&format!("mov {PC}, {T2}"));
                 a.ins(&format!("bx {T3}"));
                 a.label(&nt);
+                self.tail(a, v.counted);
+                return;
+            }
+            I32_SubBrIf => {
+                a.ins(&format!("ldr {T2}, [{PC}, #24]"));
+                a.ins(&format!("ldr {T3}, [{T2}]"));
+                let x = self.src(a, v.a, 8, T0);
+                let y = self.src(a, v.b, 16, T1);
+                let (rd, rdh) = match v.a {
+                    Cls::L0 => (L0R, L0_HI),
+                    Cls::Slot => (ACC, ACC_HI),
+                    Cls::Const | Cls::Acc | Cls::L1 => unreachable!(),
+                };
+                a.ins(&format!("subs {rd}, {x}, {y}"));
+                // Neither MOV nor the address/load/store sequence below
+                // changes Z, so it remains the subtraction's branch test.
+                a.ins(&format!("mov {rdh}, #0"));
+                self.slot_addr(a, 8, T0);
+                a.ins(&format!("str {rd}, [{T0}]"));
+                a.ins(&format!("str {rdh}, [{T0}, #4]"));
+                let nt = a.fresh("nt");
+                a.ins(&format!("beq {nt}"));
+                self.bump(a, v.counted);
+                a.ins(&format!("mov {PC}, {T2}"));
+                a.ins(&format!("bx {T3}"));
+                a.label(&nt);
+                self.pre(a);
                 self.tail(a, v.counted);
                 return;
             }

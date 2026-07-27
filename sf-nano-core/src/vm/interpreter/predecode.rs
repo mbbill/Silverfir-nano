@@ -149,40 +149,68 @@ pub(crate) fn predecode_function(
     let n_results = func.func_type().results().len() as u32;
     let n_locals = n_params + spec.locals().len() as u32;
 
-    let mut p = Predecoder {
-        types: module.types(),
-        module,
-        tag_handles,
-        code: Vec::new(),
-        stack: Vec::new(),
-        frames: Vec::new(),
-        dead: false,
-        region: 0,
-        last_read: vec![0u32; n_locals as usize],
-        last_write: vec![0u32; n_locals as usize],
-        last_mat_mov: NO_DEF,
-        last_mat_region: 0,
-        last_write_region: vec![0u32; n_locals as usize],
-        br_tables: Vec::new(),
-        wide_memargs: Vec::new(),
-        exception_sites: Vec::new(),
-        exception_handlers: Vec::new(),
-        needs_slow_tail_return: false,
-        slow_tail_return: None,
-        max_height: 0,
-        func_index: func_index as u32,
-        n_locals,
-        n_results,
-        last_call_idx: NO_DEF,
-        last_call_height: 0,
-        last_call_region: 0,
-        pending_fill: None,
-    };
-    {
+    // Optimistically coalesce unique loop parameters with their source
+    // locals. If a decoded backedge would have to synthesize a write into
+    // such a local, repeat the pass with that loop's parameters canonical.
+    // Loop ordinals are structural and therefore stable across passes.
+    let mut canonical_loop_homes = Vec::new();
+    let p = loop {
+        let mut p = Predecoder {
+            types: module.types(),
+            module,
+            tag_handles,
+            code: Vec::new(),
+            stack: Vec::new(),
+            frames: Vec::new(),
+            dead: false,
+            region: 0,
+            last_read: vec![0u32; n_locals as usize],
+            last_write: vec![0u32; n_locals as usize],
+            last_mat_mov: NO_DEF,
+            last_mat_region: 0,
+            last_write_region: vec![0u32; n_locals as usize],
+            br_tables: Vec::new(),
+            wide_memargs: Vec::new(),
+            exception_sites: Vec::new(),
+            exception_handlers: Vec::new(),
+            needs_slow_tail_return: false,
+            slow_tail_return: None,
+            max_height: 0,
+            func_index: func_index as u32,
+            n_locals,
+            n_results,
+            last_call_idx: NO_DEF,
+            last_call_height: 0,
+            last_call_region: 0,
+            pending_fill: None,
+            canonical_loop_homes: canonical_loop_homes.clone(),
+            unsafe_loop_homes: Vec::new(),
+            next_loop_id: 0,
+            force_canonical_loop_homes: false,
+        };
         let mut decoder = Decoder::new(spec.code());
         decoder.add_handler(&mut p);
         decoder.decode_function()?;
-    }
+        drop(decoder);
+        let mut next = p.canonical_loop_homes.clone();
+        next.resize(p.next_loop_id as usize, false);
+        if p.force_canonical_loop_homes {
+            next.fill(true);
+        } else {
+            for (loop_id, &unsafe_home) in p.unsafe_loop_homes.iter().enumerate() {
+                if unsafe_home {
+                    next[loop_id] = true;
+                }
+            }
+        }
+        let learned_unsafe_home = next.iter().enumerate().any(|(loop_id, &canonical)| {
+            canonical && !canonical_loop_homes.get(loop_id).copied().unwrap_or(false)
+        });
+        if !learned_unsafe_home {
+            break p;
+        }
+        canonical_loop_homes = next;
+    };
     Ok(PredecodedFunction {
         frame_slots: n_locals + p.max_height,
         code: p.code,
@@ -206,6 +234,32 @@ enum Desc {
     /// A materialized value in the temp slot for `height`, produced by
     /// emitted instruction `def` in control region `region`.
     Temp { height: u32, def: u32, region: u32 },
+}
+
+/// One stable source-to-home copy performed on a taken branch.
+///
+/// Sources are always canonical temp slots by the time a plan is built.
+/// Destinations use local indices directly and stack heights for temp homes,
+/// so frame-slot accounting stays centralized in `temp_slot_used`.
+#[derive(Clone, Copy)]
+struct BranchCopy {
+    source_height: u32,
+    destination: BranchHome,
+}
+
+#[derive(Clone, Copy)]
+enum BranchHome {
+    Local(u32),
+    Temp(u32),
+}
+
+/// Everything target-specific about one structured branch transfer.
+///
+/// `br_table` builds one plan per target depth, so repeated entries share one
+/// landing pad while copy-free loop/block targets remain directly addressable.
+struct BranchPlan {
+    depth: u32,
+    copies: Vec<BranchCopy>,
 }
 
 #[derive(Clone, Copy)]
@@ -251,6 +305,13 @@ struct CtlFrame {
     params: u32,
     results: u32,
     is_loop: bool,
+    /// Per loop parameter, the unique local whose slot is also the
+    /// parameter's runtime home. `NO_DEF` means the canonical temp slot.
+    /// Empty for non-loop frames.
+    param_locals: Vec<u32>,
+    /// Structural ordinal of this loop, stable across safety-redecode
+    /// passes. `NO_DEF` for non-loop frames.
+    loop_id: u32,
     is_if: bool,
     dead_entry: bool,
     /// A br targets this block's end (never set for loops: a br to a loop
@@ -319,6 +380,17 @@ struct Predecoder<'m> {
     /// exposes the common adjacent fill+copy pair without moving it across
     /// any instruction that can trap or mutate state.
     pending_fill: Option<PendingMemoryFill>,
+    /// Loops proven unsafe for local-backed parameter homes by an earlier
+    /// optimistic pass.
+    canonical_loop_homes: Vec<bool>,
+    /// Local-backed homes that would require a synthetic Wasm-local write
+    /// on some backedge in this pass.
+    unsafe_loop_homes: Vec<bool>,
+    /// Next structural loop ordinal.
+    next_loop_id: u32,
+    /// Exception landing metadata currently names canonical temp spans, so
+    /// an actual decoded `try_table` requires all loop homes to stay there.
+    force_canonical_loop_homes: bool,
 }
 
 fn block_arity(types: &TypeContext, bt: &BlockType) -> Result<(u32, u32), WasmError> {
@@ -372,6 +444,29 @@ fn fuse_cmp_br(op: Op, invert: bool) -> Option<Op> {
     Some(if invert { inverted } else { taken })
 }
 
+#[derive(Clone, Copy)]
+struct BrIfFusion {
+    op: Op,
+    b_const: Option<u64>,
+}
+
+/// Extend ordinary compare/branch fusion with a full-width lowering for
+/// `i64.eqz`. Plain `BrIf` cannot represent this because it tests only the
+/// low 32 bits; comparing the original i64 operand with constant zero can.
+fn fuse_br_if(op: Op, invert: bool) -> Option<BrIfFusion> {
+    let op = match op {
+        Op::I64_Eqz if invert => Op::I64_BrNe,
+        Op::I64_Eqz => Op::I64_BrEq,
+        op => {
+            return fuse_cmp_br(op, invert).map(|op| BrIfFusion { op, b_const: None });
+        }
+    };
+    Some(BrIfFusion {
+        op,
+        b_const: Some(0),
+    })
+}
+
 /// The inverted compare, for folding `i32.eqz` over a compare result.
 fn invert_cmp(op: Op) -> Option<Op> {
     use Op::*;
@@ -420,6 +515,23 @@ fn unsupported() -> WasmError {
 }
 
 impl<'m> Predecoder<'m> {
+    fn allocate_loop_id(&mut self) -> u32 {
+        let loop_id = self.next_loop_id;
+        self.next_loop_id = self
+            .next_loop_id
+            .checked_add(1)
+            .expect("loop ordinal overflow");
+        self.unsafe_loop_homes.push(false);
+        loop_id
+    }
+
+    fn loop_uses_canonical_homes(&self, loop_id: u32) -> bool {
+        self.canonical_loop_homes
+            .get(loop_id as usize)
+            .copied()
+            .unwrap_or(false)
+    }
+
     /// Whether the memory at `idx` is 64-bit addressed.
     ///
     /// Only the memory's own declaration decides this, so an access is marked
@@ -1087,32 +1199,210 @@ impl<'m> Predecoder<'m> {
         }
     }
 
-    /// Emit the value moves a taken branch needs: the top `arity` values
-    /// move from the current heights down to the target's base heights.
-    /// Caller must have materialized the stack first. Returns whether any
-    /// move was needed.
-    fn branch_value_moves(&mut self, depth: u32) -> Result<bool, WasmError> {
+    fn branch_arity(&self, depth: u32) -> u32 {
         let n = self.frames.len();
         if (depth as usize) >= n {
-            // br to the function label == return; handled by the caller.
-            return Ok(false);
+            return self.n_results;
         }
         let f = &self.frames[n - 1 - depth as usize];
-        let arity = if f.is_loop { f.params } else { f.results };
-        let target_base = f.base;
-        let h = self.height();
-        if arity == 0 || h == target_base + arity {
-            return Ok(false);
+        if f.is_loop {
+            f.params
+        } else {
+            f.results
         }
-        if h < target_base + arity {
+    }
+
+    fn branch_param_local(&self, depth: u32, param: u32) -> Option<u32> {
+        let n = self.frames.len();
+        if (depth as usize) >= n {
+            return None;
+        }
+        let f = &self.frames[n - 1 - depth as usize];
+        if !f.is_loop {
+            return None;
+        }
+        let local = *f.param_locals.get(param as usize)?;
+        (local != NO_DEF).then_some(local)
+    }
+
+    /// Prepare a direct or conditional branch for transfer planning.
+    ///
+    /// `br_if` may fall through, so every pending stack descriptor must stay
+    /// valid if the taken path writes an aliased local. Exact loop
+    /// parameter/local pairs are the only values that can safely remain
+    /// pending; every mismatch is staged before any destination write.
+    fn prepare_branch(&mut self, depth: u32) -> Result<(), WasmError> {
+        let n = self.frames.len();
+        if (depth as usize) >= n {
+            self.materialize_all();
+            return Ok(());
+        }
+        let frame_index = n - 1 - depth as usize;
+        let f = &self.frames[frame_index];
+        let (is_loop, target_base, arity) = (
+            f.is_loop,
+            f.base,
+            if f.is_loop { f.params } else { f.results },
+        );
+        let h = self.height();
+        let target_end = target_base.checked_add(arity).ok_or_else(desync)?;
+        if h < target_end {
             return Err(desync());
         }
-        for i in 0..arity {
-            let src = self.temp_slot_used(h - arity + i);
-            let dst = self.temp_slot_used(target_base + i);
-            self.emit(Op::MovSlot, 0, src, 0, dst);
+        let source_base = h - arity;
+        for i in 0..self.stack.len() {
+            let source_param = (i as u32).checked_sub(source_base);
+            let preserve = is_loop
+                && source_param.is_some_and(|p| {
+                    p < arity && {
+                        let local = self.frames[frame_index].param_locals[p as usize];
+                        local != NO_DEF && self.stack[i] == Desc::Local(local)
+                    }
+                });
+            if !preserve {
+                self.materialize_at(i);
+            }
         }
-        Ok(true)
+        Ok(())
+    }
+
+    /// Prepare the values shared by every `br_table` target.
+    ///
+    /// A table never falls through, so values between the deepest surviving
+    /// target prefix and the common branch tuple are dead on every outcome
+    /// and need no materialization. A pending tuple local can remain in place
+    /// only when every target aliases that exact local at the same parameter.
+    fn prepare_br_table(&mut self, depths: &[u32]) -> Result<(), WasmError> {
+        let Some(&first) = depths.first() else {
+            return Err(desync());
+        };
+        let arity = self.branch_arity(first);
+        let h = self.height();
+        if h < arity {
+            return Err(desync());
+        }
+
+        let mut live_prefix = 0;
+        for &depth in depths {
+            if self.branch_arity(depth) != arity {
+                return Err(desync());
+            }
+            let n = self.frames.len();
+            if (depth as usize) >= n {
+                continue;
+            }
+            let f = &self.frames[n - 1 - depth as usize];
+            let target_end = f.base.checked_add(arity).ok_or_else(desync)?;
+            if h < target_end {
+                return Err(desync());
+            }
+            live_prefix = live_prefix.max(f.base);
+        }
+
+        let source_base = h - arity;
+        if live_prefix > source_base {
+            return Err(desync());
+        }
+        for i in 0..live_prefix as usize {
+            self.materialize_at(i);
+        }
+        for param in 0..arity {
+            let at = (source_base + param) as usize;
+            let preserve = match self.stack[at] {
+                Desc::Local(local) => depths
+                    .iter()
+                    .all(|&depth| self.branch_param_local(depth, param) == Some(local)),
+                _ => false,
+            };
+            if !preserve {
+                self.materialize_at(at);
+            }
+        }
+        Ok(())
+    }
+
+    /// Build the target-specific transfer after branch sources have been
+    /// prepared. The returned copies all read stable temp slots, so emitting
+    /// them in parameter order preserves parallel-copy semantics.
+    fn plan_branch(&mut self, depth: u32) -> Result<BranchPlan, WasmError> {
+        let n = self.frames.len();
+        let arity = self.branch_arity(depth);
+        let h = self.height();
+        if h < arity {
+            return Err(desync());
+        }
+        let source_base = h - arity;
+
+        if (depth as usize) >= n {
+            for i in 0..arity {
+                if !matches!(
+                    self.stack[(source_base + i) as usize],
+                    Desc::Temp { height, .. } if height == source_base + i
+                ) {
+                    return Err(desync());
+                }
+            }
+            return Ok(BranchPlan {
+                depth,
+                copies: Vec::new(),
+            });
+        }
+
+        let frame_index = n - 1 - depth as usize;
+        let (target_base, is_loop, loop_id) = {
+            let f = &self.frames[frame_index];
+            (f.base, f.is_loop, f.loop_id)
+        };
+        let target_end = target_base.checked_add(arity).ok_or_else(desync)?;
+        if h < target_end {
+            return Err(desync());
+        }
+        let mut copies = Vec::new();
+        for i in 0..arity {
+            let source = self.stack[(source_base + i) as usize];
+            let param_local = if is_loop {
+                self.frames[frame_index].param_locals[i as usize]
+            } else {
+                NO_DEF
+            };
+            let destination = if param_local != NO_DEF {
+                BranchHome::Local(param_local)
+            } else {
+                BranchHome::Temp(target_base.checked_add(i).ok_or_else(desync)?)
+            };
+
+            match (source, destination) {
+                (Desc::Local(source), BranchHome::Local(destination)) if source == destination => {}
+                (Desc::Temp { height, .. }, BranchHome::Temp(destination))
+                    if height == destination => {}
+                (Desc::Temp { height, .. }, destination) => {
+                    if matches!(destination, BranchHome::Local(_)) {
+                        self.unsafe_loop_homes[loop_id as usize] = true;
+                    }
+                    copies.push(BranchCopy {
+                        source_height: height,
+                        destination,
+                    });
+                }
+                _ => return Err(desync()),
+            }
+        }
+        Ok(BranchPlan { depth, copies })
+    }
+
+    fn emit_branch_copies(&mut self, plan: &BranchPlan) {
+        for copy in plan.copies.iter().copied() {
+            let src = self.temp_slot_used(copy.source_height);
+            let (dst, dst_local) = match copy.destination {
+                BranchHome::Local(local) => (local as u64, Some(local)),
+                BranchHome::Temp(height) => (self.temp_slot_used(height), None),
+            };
+            let at = self.emit(Op::MovSlot, 0, src, 0, dst);
+            if let Some(local) = dst_local {
+                self.last_write[local as usize] = at + 1;
+                self.last_write_region[local as usize] = self.region;
+            }
+        }
     }
 
     /// Emit the branch instruction for label `depth`: direct to a loop
@@ -1724,6 +2014,9 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 other => return Err(unsupported_opcode(other)),
             };
             let imm = op.imm.clone();
+            if o == Opcode::TRY_TABLE {
+                self.force_canonical_loop_homes = true;
+            }
 
             // Dead-code handling: skip, but keep frame nesting and merge
             // reachability bookkeeping.
@@ -1735,11 +2028,19 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                             _ => (0, 0),
                         };
                         let base = self.height().saturating_sub(p);
+                        let is_loop = o == Opcode::LOOP;
+                        let loop_id = if is_loop {
+                            self.allocate_loop_id()
+                        } else {
+                            NO_DEF
+                        };
                         self.frames.push(CtlFrame {
                             base,
                             params: p,
                             results: r,
-                            is_loop: o == Opcode::LOOP,
+                            is_loop,
+                            param_locals: Vec::new(),
+                            loop_id,
                             is_if: o == Opcode::IF,
                             dead_entry: true,
                             end_targeted: false,
@@ -1767,6 +2068,8 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                             params: p,
                             results: r,
                             is_loop: false,
+                            param_locals: Vec::new(),
+                            loop_id: NO_DEF,
                             is_if: false,
                             dead_entry: true,
                             end_targeted: false,
@@ -1825,18 +2128,66 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         Immediate::Block(bt) => block_arity(self.types, bt)?,
                         _ => (0, 0),
                     };
-                    if o == Opcode::LOOP {
+                    let base = self.height().checked_sub(p).ok_or_else(desync)?;
+                    let is_loop = o == Opcode::LOOP;
+                    let loop_id = if is_loop {
+                        self.allocate_loop_id()
+                    } else {
+                        NO_DEF
+                    };
+                    let mut param_locals = Vec::new();
+                    if is_loop {
                         // Loop header is a merge point (back edges arrive).
-                        self.materialize_all();
+                        // Values below the parameters must be canonical
+                        // before the first iteration: a local write in the
+                        // loop cannot be allowed to overwrite an outer
+                        // pending `local.get` on later iterations.
+                        for i in 0..base as usize {
+                            self.materialize_at(i);
+                        }
+                        param_locals = vec![NO_DEF; p as usize];
+                        if !self.loop_uses_canonical_homes(loop_id) {
+                            // A unique pending local can be the loop
+                            // parameter's home directly. Duplicates stay in
+                            // separate temp slots because their back-edge
+                            // values are allowed to diverge.
+                            let mut candidates = Vec::new();
+                            for i in 0..p as usize {
+                                if let Desc::Local(local) = self.stack[base as usize + i] {
+                                    candidates.push((local, i));
+                                }
+                            }
+                            candidates.sort_unstable_by_key(|&(local, _)| local);
+                            let mut first = 0;
+                            while first < candidates.len() {
+                                let mut end = first + 1;
+                                while end < candidates.len()
+                                    && candidates[end].0 == candidates[first].0
+                                {
+                                    end += 1;
+                                }
+                                if end == first + 1 {
+                                    let (local, param) = candidates[first];
+                                    param_locals[param] = local;
+                                }
+                                first = end;
+                            }
+                        }
+                        for i in 0..p as usize {
+                            if param_locals[i] == NO_DEF {
+                                self.materialize_at(base as usize + i);
+                            }
+                        }
                         self.bump_region();
                     }
-                    let base = self.height().checked_sub(p).ok_or_else(desync)?;
                     let header = self.code.len() as u32;
                     self.frames.push(CtlFrame {
                         base,
                         params: p,
                         results: r,
-                        is_loop: o == Opcode::LOOP,
+                        is_loop,
+                        param_locals,
+                        loop_id,
                         is_if: false,
                         dead_entry: false,
                         end_targeted: false,
@@ -1881,6 +2232,8 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         params: p,
                         results: r,
                         is_loop: false,
+                        param_locals: Vec::new(),
+                        loop_id: NO_DEF,
                         is_if: true,
                         dead_entry: false,
                         end_targeted: false,
@@ -1942,8 +2295,9 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         _ => return Err(desync()),
                     };
                     self.mark_branch_target(d);
-                    self.materialize_all();
-                    self.branch_value_moves(d)?;
+                    self.prepare_branch(d)?;
+                    let plan = self.plan_branch(d)?;
+                    self.emit_branch_copies(&plan);
                     self.emit_branch(Op::Br, 0, 0, d)?;
                     self.bump_region();
                     self.dead = true;
@@ -1955,18 +2309,52 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     };
                     self.mark_branch_target(d);
                     let cond = self.pop()?;
-                    self.materialize_all();
+                    self.prepare_branch(d)?;
 
-                    // Simple form: the taken path needs no value moves.
-                    let needs_moves = {
-                        let n = self.frames.len();
-                        if (d as usize) < n {
-                            let f = &self.frames[n - 1 - d as usize];
-                            let arity = if f.is_loop { f.params } else { f.results };
-                            arity != 0 && self.height() != f.base + arity
-                        } else {
-                            self.n_results != 0
+                    let plan = self.plan_branch(d)?;
+                    let needs_moves = !plan.copies.is_empty();
+
+                    // A typed loop commonly carries an induction local as
+                    // both its payload and condition:
+                    //
+                    //     local.get $n; i32.const 1; i32.sub
+                    //     local.tee $n; local.get $n; br_if $loop
+                    //
+                    // Destination folding has already made the update read
+                    // and write `$n`. When it is still the immediately
+                    // preceding writer, make that one cell perform the
+                    // write-through and branch as well. A constant add uses
+                    // the same handler after `x + k` is normalized to
+                    // `x - (-k)` with wrapping i32 arithmetic.
+                    let sub_branch = if !needs_moves && (d as usize) < self.frames.len() {
+                        match cond {
+                            Desc::Local(local)
+                                if self.last_write[local as usize] != 0
+                                    && self.last_write[local as usize]
+                                        == self.code.len() as u32
+                                    && self.last_write_region[local as usize] == self.region =>
+                            {
+                                let def = self.last_write[local as usize] - 1;
+                                let ins = self.code[def as usize];
+                                if ins.a != local as u64
+                                    || ins.c != local as u64
+                                    || ins.flags & FLAG_A_CONST != 0
+                                {
+                                    None
+                                } else {
+                                    match ins.op {
+                                        Op::I32_Sub => Some((def, ins.b)),
+                                        Op::I32_Add if ins.flags & FLAG_B_CONST != 0 => {
+                                            Some((def, (0u32.wrapping_sub(ins.b as u32)) as u64))
+                                        }
+                                        _ => None,
+                                    }
+                                }
+                            }
+                            _ => None,
                         }
+                    } else {
+                        None
                     };
 
                     // Fixed combo: a fusible condition producer becomes the
@@ -1977,19 +2365,33 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         None
                     } else {
                         self.rewritable_producer(cond).and_then(|def| {
-                            fuse_cmp_br(self.code[def as usize].op, needs_moves).map(|op| (def, op))
+                            fuse_br_if(self.code[def as usize].op, needs_moves)
+                                .map(|fusion| (def, fusion))
                         })
                     };
 
-                    if let Some((def, op)) = fused {
-                        self.code[def as usize].op = op;
+                    if let Some((def, b)) = sub_branch {
+                        self.code[def as usize].op = Op::I32_SubBrIf;
+                        self.code[def as usize].b = b;
+                        // `a` remains the authoritative destination slot;
+                        // do not make the fused control handler depend on
+                        // transient accumulator residency for that operand.
+                        self.code[def as usize].flags &= !(FLAG_A_ACC | FLAG_DST_ACC);
+                        self.retarget_branch(def, d);
+                    } else if let Some((def, fusion)) = fused {
+                        self.code[def as usize].op = fusion.op;
+                        if let Some(b) = fusion.b_const {
+                            self.code[def as usize].b = b;
+                            self.code[def as usize].flags =
+                                (self.code[def as usize].flags & !FLAG_B_ACC) | FLAG_B_CONST;
+                        }
                         if !needs_moves {
                             self.retarget_branch(def, d);
                         } else {
                             // Guard form: the fused inverted branch skips
                             // the taken path's moves + jump.
                             self.code[def as usize].c = FIXUP;
-                            self.branch_value_moves(d)?;
+                            self.emit_branch_copies(&plan);
                             self.emit_branch(Op::Br, 0, 0, d)?;
                             let here = self.code.len() as u64;
                             self.code[def as usize].c = here;
@@ -2006,7 +2408,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         } else {
                             // General form: guard, moves, jump.
                             let skip = self.emit(Op::BrIfNot, flags, a, 0, FIXUP);
-                            self.branch_value_moves(d)?;
+                            self.emit_branch_copies(&plan);
                             self.emit_branch(Op::Br, 0, 0, d)?;
                             let here = self.code.len() as u64;
                             self.code[skip as usize].c = here;
@@ -2161,6 +2563,8 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         params: p,
                         results: r,
                         is_loop: false,
+                        param_locals: Vec::new(),
+                        loop_id: NO_DEF,
                         is_if: false,
                         // The body is entered from live code. If it branches
                         // to this try_table's label, its end revives control
@@ -2238,11 +2642,12 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     if on_null {
                         let _ = self.pop()?;
                     }
+                    let plan = self.plan_branch(d)?;
                     // Guard, moves, jump. The guard skips the branch on the
                     // sense that does NOT take it.
                     let guard = if on_null { Op::BrIfNot } else { Op::BrIf };
                     let skip = self.emit(guard, 0, cond, 0, FIXUP);
-                    self.branch_value_moves(d)?;
+                    self.emit_branch_copies(&plan);
                     self.emit_branch(Op::Br, 0, 0, d)?;
                     let here = self.code.len() as u64;
                     self.code[skip as usize].c = here;
@@ -2393,7 +2798,9 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     let d0 = self.pop()?;
                     let (a, a_const) = self.operand(d0, at);
                     let mut flags = if a_const { FLAG_A_CONST } else { 0 };
-                    self.materialize_all();
+                    let mut depths = labels.clone();
+                    depths.push(default);
+                    self.prepare_br_table(&depths)?;
                     // Acc marking AFTER materialization: the adjacency
                     // guard re-evaluates against the post-materialization
                     // length, so the mark only lands when no mov sits
@@ -2401,34 +2808,52 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     // clobber the accumulator — every value handler
                     // computes into it).
                     flags |= self.acc_operand(d0, FLAG_A_ACC, false);
-                    // v1 restriction: every target must need no value moves
-                    // (LLVM switch tables are arity-0). Reject otherwise.
                     let tbl = self.br_tables.len() as u32;
-                    // A target whose arity leaves operands above it needs the
-                    // values moved down, and a table has nowhere to put those
-                    // moves -- so such a target gets its own landing pad after
-                    // the dispatch: moves, then an ordinary branch. Targets
-                    // that need none still point straight at the block.
-                    let mut pads: Vec<Option<u32>> = Vec::new();
+
+                    // Build one transfer per target depth from the shared
+                    // source tuple. Copy-free frame targets stay direct.
+                    // Function returns and targets with copies use one
+                    // landing pad per target, so repeated table entries share
+                    // both planning work and the emitted move sequence.
+                    let n = self.frames.len();
+                    let mut plans = Vec::new();
+                    let mut plan_for_target = vec![None; n + 1];
+                    let mut entry_plans = Vec::with_capacity(depths.len());
+                    for &depth in depths.iter() {
+                        let target = (depth as usize).min(n);
+                        let plan = if let Some(plan) = plan_for_target[target] {
+                            plan
+                        } else {
+                            let plan = plans.len() as u32;
+                            plans.push(self.plan_branch(depth)?);
+                            plan_for_target[target] = Some(plan);
+                            plan
+                        };
+                        entry_plans.push(plan);
+                    }
+
+                    let mut pad_plans = Vec::new();
+                    let mut pad_for_plan = vec![None; plans.len()];
+                    let mut entry_pads: Vec<Option<u32>> = Vec::new();
                     let mut entries = Vec::new();
-                    for &d in labels.iter().chain(core::iter::once(&default)) {
-                        let n = self.frames.len();
-                        if (d as usize) >= n {
-                            // function label: lower as a jump to a shared
-                            // return we emit right after the table dispatch
+                    for &plan_index in &entry_plans {
+                        let plan = &plans[plan_index as usize];
+                        let needs_pad = (plan.depth as usize) >= n || !plan.copies.is_empty();
+                        if needs_pad {
+                            let pad = if let Some(pad) = pad_for_plan[plan_index as usize] {
+                                pad
+                            } else {
+                                let pad = pad_plans.len() as u32;
+                                pad_plans.push(plan_index);
+                                pad_for_plan[plan_index as usize] = Some(pad);
+                                pad
+                            };
                             entries.push(u32::MAX);
-                            pads.push(None);
+                            entry_pads.push(Some(pad));
                             continue;
                         }
-                        let i = n - 1 - d as usize;
-                        let f = &self.frames[i];
-                        let arity = if f.is_loop { f.params } else { f.results };
-                        if arity != 0 && self.height() != f.base + arity {
-                            entries.push(u32::MAX);
-                            pads.push(Some(d));
-                            continue;
-                        }
-                        pads.push(None);
+                        entry_pads.push(None);
+                        let i = n - 1 - plan.depth as usize;
                         if self.frames[i].is_loop {
                             entries.push(self.frames[i].header);
                         } else {
@@ -2438,31 +2863,21 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         }
                     }
                     self.emit(Op::BrTable, flags, a, 0, tbl as u64);
-                    // Per-target move pads.
-                    for i in 0..pads.len() {
-                        let Some(d) = pads[i] else { continue };
+
+                    let mut pad_addresses = Vec::with_capacity(pad_plans.len());
+                    for &plan_index in &pad_plans {
                         let pad = self.code.len() as u32;
-                        self.branch_value_moves(d)?;
-                        self.emit_branch(Op::Br, 0, 0, d)?;
-                        entries[i] = pad;
+                        pad_addresses.push(pad);
+                        let plan = &plans[plan_index as usize];
+                        self.emit_branch_copies(plan);
+                        self.emit_branch(Op::Br, 0, 0, plan.depth)?;
                     }
-                    // Shared return landing pad for function-label entries.
-                    if entries.iter().any(|&e| e == u32::MAX) {
-                        let here = self.code.len() as u32;
-                        let mut needs_ret = false;
-                        for (i, e) in entries.iter_mut().enumerate() {
-                            // Only unresolved FUNCTION-label entries point at
-                            // the pad; block fixups will overwrite theirs.
-                            let d = labels.get(i).copied().unwrap_or(default);
-                            if *e == u32::MAX && (d as usize) >= self.frames.len() {
-                                *e = here;
-                                needs_ret = true;
-                            }
-                        }
-                        if needs_ret {
-                            self.emit_return();
+                    for (entry, entry_pad) in entries.iter_mut().zip(entry_pads.iter().copied()) {
+                        if let Some(pad) = entry_pad {
+                            *entry = pad_addresses[pad as usize];
                         }
                     }
+
                     self.br_tables.push(entries);
                     self.bump_region();
                     self.dead = true;
@@ -2636,6 +3051,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
 mod tests {
     use super::*;
     use crate::module::Module;
+    use std::format;
     use std::vec::Vec as StdVec;
 
     fn predecode_wat(src: &str, func: usize) -> PredecodedFunction {
@@ -2760,6 +3176,335 @@ mod tests {
         assert_eq!(ops(&f), [Op::I32_Add, Op::I32_BrLtU, Op::Return]);
         assert_eq!(f.code[0].c, 0); // induction update folded into the add
         assert_eq!(f.code[1].c, 0); // fused back edge targets the loop header
+    }
+
+    #[test]
+    fn typed_loop_counter_reuses_local_and_fuses_decrement_branch() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $n i32) (result i32)
+                    (local.get $n)
+                    (loop $continue (param i32) (result i32)
+                        (i32.const 1)
+                        (i32.sub)
+                        (local.tee $n)
+                        (local.get $n)
+                        (br_if $continue))))"#,
+            0,
+        );
+
+        assert_eq!(
+            ops(&f),
+            [Op::I32_SubBrIf, Op::MovSlot, Op::Return],
+            "the loop body must contain one dispatch cell"
+        );
+        let hot = f.code[0];
+        assert_eq!(hot.flags, FLAG_B_CONST);
+        assert_eq!((hot.a, hot.b, hot.c), (0, 1, 0));
+        assert_eq!((f.code[1].a, f.code[1].c), (0, 1));
+        assert_eq!((f.code[2].a, f.code[2].b), (1, 1));
+    }
+
+    #[test]
+    fn unrelated_try_table_opcode_byte_does_not_disable_loop_aliases() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $n i32) (result i32)
+                    i32.const 31
+                    drop
+                    local.get $n
+                    (loop $continue (param i32) (result i32)
+                        i32.const 1
+                        i32.sub
+                        local.tee $n
+                        local.get $n
+                        br_if $continue)))"#,
+            0,
+        );
+
+        assert_eq!(
+            ops(&f),
+            [Op::I32_SubBrIf, Op::MovSlot, Op::Return],
+            "an immediate byte equal to the try_table opcode is not a try_table"
+        );
+    }
+
+    #[test]
+    fn unsafe_loop_home_does_not_deopt_an_independent_safe_loop() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $x i32) (param $n i32) (result i32)
+                    local.get $x
+                    (loop $unsafe (param i32) (result i32)
+                        drop
+                        i32.const 42
+                        local.get $n
+                        i32.const 1
+                        i32.sub
+                        local.tee $n
+                        br_if $unsafe)
+                    drop
+                    i32.const 3
+                    local.set $n
+                    local.get $n
+                    (loop $safe (param i32) (result i32)
+                        i32.const 1
+                        i32.sub
+                        local.tee $n
+                        local.get $n
+                        br_if $safe)
+                    drop
+                    local.get $x))"#,
+            0,
+        );
+
+        assert!(
+            f.code.iter().any(|ins| ins.op == Op::I32_SubBrIf),
+            "canonicalizing one unsafe loop must retain an independent safe loop's hot fusion"
+        );
+    }
+
+    #[test]
+    fn typed_loop_constant_add_one_reuses_sub_branch_handler() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $n i32) (result i32)
+                    local.get $n
+                    (loop $continue (param i32) (result i32)
+                        i32.const 1
+                        i32.add
+                        local.tee $n
+                        local.get $n
+                        br_if $continue)))"#,
+            0,
+        );
+
+        assert_eq!(
+            ops(&f),
+            [Op::I32_SubBrIf, Op::MovSlot, Op::Return],
+            "constant add and branch must reuse the subtraction handler"
+        );
+        let hot = f.code[0];
+        assert_eq!(hot.flags, FLAG_B_CONST);
+        assert_eq!(hot.b, u32::MAX as u64);
+    }
+
+    #[test]
+    fn typed_loop_constant_add_negates_rhs_with_i32_wrapping() {
+        for (constant, expected_rhs) in [("-1", 1u32), ("-2147483648", 0x8000_0000u32), ("0", 0u32)]
+        {
+            let wat = format!(
+                r#"(module
+                    (func (param $n i32) (result i32)
+                        local.get $n
+                        (loop $continue (param i32) (result i32)
+                            i32.const {constant}
+                            i32.add
+                            local.tee $n
+                            local.get $n
+                            br_if $continue)))"#
+            );
+            let f = predecode_wat(&wat, 0);
+            assert_eq!(f.code[0].op, Op::I32_SubBrIf);
+            assert_ne!(f.code[0].flags & FLAG_B_CONST, 0);
+            assert_eq!(f.code[0].b, expected_rhs as u64, "constant {constant}");
+        }
+    }
+
+    #[test]
+    fn typed_loop_variable_rhs_add_stays_unfused() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $n i32) (param $step i32) (result i32)
+                    local.get $n
+                    (loop $continue (param i32) (result i32)
+                        local.get $step
+                        i32.add
+                        local.tee $n
+                        local.get $n
+                        br_if $continue)))"#,
+            0,
+        );
+
+        assert_eq!(ops(&f), [Op::I32_Add, Op::BrIf, Op::MovSlot, Op::Return]);
+        assert!(f.code.iter().all(|ins| ins.op != Op::I32_SubBrIf));
+    }
+
+    #[test]
+    fn i64_eqz_br_if_uses_full_width_compare_with_constant_zero() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $x i64) (result i32)
+                    (block $zero
+                        local.get $x
+                        i64.eqz
+                        br_if $zero
+                        i32.const 0
+                        return)
+                    i32.const 1))"#,
+            0,
+        );
+
+        let branch = f
+            .code
+            .iter()
+            .find(|ins| ins.op == Op::I64_BrEq)
+            .expect("full-width zero comparison branch");
+        assert_eq!(branch.b, 0);
+        assert_ne!(branch.flags & FLAG_B_CONST, 0);
+        assert!(f.code.iter().all(|ins| ins.op != Op::I64_Eqz));
+    }
+
+    #[test]
+    fn i64_eqz_br_if_move_guard_uses_inverted_full_width_compare() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $x i64) (result i32)
+                    (block $exit (result i32)
+                        i32.const 10
+                        i32.const 1
+                        i32.add
+                        i32.const 40
+                        i32.const 2
+                        i32.add
+                        local.get $x
+                        i64.eqz
+                        br_if $exit
+                        drop)))"#,
+            0,
+        );
+
+        let guard = f
+            .code
+            .iter()
+            .position(|ins| ins.op == Op::I64_BrNe)
+            .expect("inverted full-width zero comparison guard");
+        assert_eq!(f.code[guard].b, 0);
+        assert_ne!(f.code[guard].flags & FLAG_B_CONST, 0);
+        assert!(
+            f.code[guard + 1..].iter().any(|ins| ins.op == Op::MovSlot),
+            "the inverted guard must skip a taken-path branch-value move"
+        );
+        assert!(f.code.iter().all(|ins| ins.op != Op::I64_Eqz));
+    }
+
+    #[test]
+    fn br_table_repeated_transfer_plan_shares_one_landing_pad() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $discarded i32) (param $value i32)
+                      (param $selector i32) (result i32)
+                    (block $exit (result i32)
+                        local.get $discarded
+                        local.get $value
+                        local.get $selector
+                        br_table $exit $exit $exit)))"#,
+            0,
+        );
+
+        assert_eq!(f.br_tables.len(), 1);
+        let entries = &f.br_tables[0];
+        assert_eq!(entries.len(), 3);
+        assert!(
+            entries.iter().all(|&entry| entry == entries[0]),
+            "repeated labels with one transfer plan must share a landing pad"
+        );
+        let table = f
+            .code
+            .iter()
+            .position(|ins| ins.op == Op::BrTable)
+            .expect("br_table instruction");
+        assert!(
+            entries[0] as usize > table,
+            "the shared entry must name a landing pad after br_table"
+        );
+        assert_eq!(f.code[entries[0] as usize].op, Op::MovSlot);
+        assert_eq!(
+            f.code[table + 1..]
+                .iter()
+                .filter(|ins| ins.op == Op::MovSlot)
+                .count(),
+            1,
+            "the repeated entries must share one post-table copy"
+        );
+    }
+
+    #[test]
+    fn br_table_keeps_a_common_exact_loop_alias_direct() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $x i32) (param $selector i32) (result i32)
+                    local.get $x
+                    (loop $l (param i32) (result i32)
+                        local.get $selector
+                        br_table $l $l)))"#,
+            0,
+        );
+
+        assert_eq!(ops(&f), [Op::BrTable]);
+        assert_eq!(f.br_tables, [[0, 0]]);
+    }
+
+    #[test]
+    fn br_table_does_not_materialize_values_discarded_by_every_target() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $discarded i32) (param $value i32)
+                      (param $selector i32) (result i32)
+                    (block $exit (result i32)
+                        local.get $discarded
+                        local.get $value
+                        local.get $selector
+                        br_table $exit $exit)))"#,
+            0,
+        );
+
+        assert_eq!(
+            ops(&f),
+            [Op::MovSlot, Op::BrTable, Op::MovSlot, Op::Br, Op::Return]
+        );
+        assert_eq!(
+            f.code[0].a, 1,
+            "only the carried `$value` tuple member should be staged"
+        );
+        assert!(
+            f.code.iter().all(|ins| ins.op != Op::MovPair),
+            "the discarded local must not be included in table staging"
+        );
+    }
+
+    #[test]
+    fn fused_sub_branch_keeps_safe_accumulator_rhs() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $n i32) (param $step i32) (result i32)
+                    local.get $n
+                    (loop $continue (param i32) (result i32)
+                        local.get $step
+                        i32.const 0
+                        i32.add
+                        i32.sub
+                        local.tee $n
+                        local.get $n
+                        br_if $continue)))"#,
+            0,
+        );
+
+        let branch = f
+            .code
+            .iter()
+            .find(|ins| ins.op == Op::I32_SubBrIf)
+            .expect("fused subtraction branch");
+        assert_eq!(
+            branch.flags & (FLAG_A_ACC | FLAG_DST_ACC),
+            0,
+            "the in-place destination must not depend on accumulator residency"
+        );
+        assert_ne!(
+            branch.flags & FLAG_B_ACC,
+            0,
+            "the distinct rhs accumulator register remains a valid fast path"
+        );
     }
 
     #[test]

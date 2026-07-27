@@ -276,7 +276,7 @@ fn rv32_native(op: Op) -> bool {
         )
         || matches!(op, I32_Store | I32_Store8 | I32_Store16)
         || (d >= I32_BrEq as u16 && d <= I32_BrGeU as u16)
-        || matches!(op, I32_BrAnd | I32_BrAndNot)
+        || matches!(op, I32_BrAnd | I32_BrAndNot | I32_SubBrIf)
     {
         // The 32-bit shifts, rotates, multiply and divide are native here;
         // RV32 has them as base instructions.
@@ -827,6 +827,7 @@ impl Isa for RiscV {
                 !matches!(v.a, Cls::Const | Cls::Acc) && !matches!(v.b, Cls::Const | Cls::Acc)
             }
             BrTable => v.a != Cls::Const,
+            I32_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
             _ => {
                 if v.fused {
                     if v.a == Cls::Const {
@@ -883,6 +884,42 @@ impl Isa for RiscV {
                 a.ins(&format!("mv {PC}, {T5}"));
                 a.ins(&format!("jr {T6}"));
                 a.label(&nt);
+                self.tail(a, v.counted);
+                return;
+            }
+            I32_SubBrIf => {
+                a.ins(&format!("{lp} {T5}, 24({PC})"));
+                a.ins(&format!("{lp} {T6}, 0({T5})"));
+                let x = self.src(a, v.a, 8, T1);
+                let y = self.src(a, v.b, 16, T2);
+                let rd = match v.a {
+                    Cls::Slot => ACC,
+                    Cls::L0 => L0R,
+                    Cls::L1 => L1R,
+                    Cls::Const | Cls::Acc => unreachable!(),
+                };
+                a.ins(&format!("sub {rd}, {x}, {y}"));
+                if self.rv64() {
+                    // RV64 arithmetic sign-extends through bit 31; frame
+                    // slots use the engine-wide zero-extended i32 form.
+                    a.ins(&format!("slli {rd}, {rd}, 32"));
+                    a.ins(&format!("srli {rd}, {rd}, 32"));
+                } else {
+                    let hi = if v.a == Cls::L0 { L0_HI } else { ACC_HI };
+                    a.ins(&format!("li {hi}, 0"));
+                }
+                self.slot_addr(a, 8, T3);
+                a.ins(&format!("{} {rd}, 0({T3})", self.sp()));
+                if !self.rv64() {
+                    a.ins(&format!("sw zero, 4({T3})"));
+                }
+                let nt = a.fresh("nt");
+                a.ins(&format!("beq {rd}, zero, {nt}"));
+                self.bump(a, v.counted);
+                a.ins(&format!("mv {PC}, {T5}"));
+                a.ins(&format!("jr {T6}"));
+                a.label(&nt);
+                self.pre(a);
                 self.tail(a, v.counted);
                 return;
             }

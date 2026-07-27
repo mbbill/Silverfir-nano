@@ -226,7 +226,7 @@ pub(crate) fn family(op: Op) -> Fam {
     if between(op, I32_Store, I64_Store32) {
         return Fam::Store;
     }
-    if between(op, I32_BrEq, I32_BrAndNot) {
+    if between(op, I32_BrEq, I32_SubBrIf) {
         return Fam::SrcAB;
     }
     match op {
@@ -332,7 +332,7 @@ pub(crate) fn native_guard(ins: &Instr) -> bool {
 /// a relative offset and the handler would branch into hyperspace.
 pub(crate) fn c_is_branch_target(op: Op) -> bool {
     use Op::*;
-    matches!(op, Br | BrIf | BrIfNot) || between(op, I32_BrEq, I32_BrAndNot)
+    matches!(op, Br | BrIf | BrIfNot) || between(op, I32_BrEq, I32_SubBrIf)
 }
 
 /// Per-op `b`/`c` pre-scaling for native handlers (`a` is handled

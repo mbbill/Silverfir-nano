@@ -397,6 +397,10 @@ pub enum Op {
     I32_BrAnd,
     /// Fused `i32.and` + `br_if_not`: taken when (a & b) == 0.
     I32_BrAndNot,
+    /// Fused in-place `i32.sub` + `br_if`: write
+    /// `frame[a] = i32(frame[a]) - i32(b)`, then branch to `c` when the
+    /// result is nonzero. `a` is both the first operand and destination.
+    I32_SubBrIf,
     /// `a` = index operand, `c` = side-table id in
     /// `PredecodedFunction::br_tables` (last entry is the default).
     BrTable,

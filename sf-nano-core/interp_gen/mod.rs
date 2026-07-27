@@ -126,6 +126,7 @@ fn emit_order() -> Vec<Group> {
             I64_BrGeU,
             I32_BrAnd,
             I32_BrAndNot,
+            I32_SubBrIf,
         ]),
         g(&[Select]),
         g(&[BrTable]),
