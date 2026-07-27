@@ -3442,7 +3442,9 @@ mod tests {
         );
 
         assert_eq!(ops(&f), [Op::BrTable]);
-        assert_eq!(f.br_tables, [[0, 0]]);
+        assert_eq!(f.br_tables.len(), 1);
+        assert_eq!(f.br_tables[0].len(), 2);
+        assert!(f.br_tables[0].iter().all(|&target| target == 0));
     }
 
     #[test]
