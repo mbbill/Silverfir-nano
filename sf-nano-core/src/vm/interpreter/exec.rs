@@ -4226,6 +4226,37 @@ mod tests {
     }
 
     #[test]
+    fn self_return_call_resets_non_parameter_locals() {
+        let src = r#"(module
+            (func $count (param $n i64) (param $sum i64) (result i64)
+                (local $scratch i64)
+                local.get $n
+                i64.eqz
+                if
+                    local.get $sum
+                    return
+                end
+                local.get $n
+                i64.const 1
+                i64.sub
+                local.get $sum
+                local.get $scratch
+                i64.add
+                i64.const 7
+                local.set $scratch
+                return_call $count)
+            (func (export "go") (param i64) (result i64)
+                local.get 0
+                i64.const 0
+                call $count))"#;
+        assert_eq!(
+            run1(src, "go", &[1000]).unwrap(),
+            0,
+            "every tail invocation must observe a fresh zeroed scratch local"
+        );
+    }
+
+    #[test]
     fn imported_return_call_preserves_native_caller_routes() {
         let bin: StdVec<u8> = wat::parse_str(
             r#"(module

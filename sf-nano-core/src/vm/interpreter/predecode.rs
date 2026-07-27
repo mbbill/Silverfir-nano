@@ -170,6 +170,7 @@ pub(crate) fn predecode_function(
         needs_slow_tail_return: false,
         slow_tail_return: None,
         max_height: 0,
+        func_index: func_index as u32,
         n_locals,
         n_results,
         last_call_idx: NO_DEF,
@@ -292,6 +293,10 @@ struct Predecoder<'m> {
     needs_slow_tail_return: bool,
     slow_tail_return: Option<u32>,
     max_height: u32,
+    /// Function being decoded. A direct tail call back to this function can
+    /// be lowered to parameter moves plus a branch, keeping the whole loop
+    /// inside the native dispatch chain.
+    func_index: u32,
     n_locals: u32,
     n_results: u32,
     /// Cell index / result height / region of the last emitted
@@ -1158,6 +1163,39 @@ impl<'m> Predecoder<'m> {
         Ok(())
     }
 
+    /// Lower a direct self tail call to a loop backedge.
+    ///
+    /// The regular call boundary already stages every argument in fresh
+    /// temporary slots above the locals. That makes the parameter update a
+    /// simple non-overlapping copy, after which resetting the remaining
+    /// locals and branching to cell zero is exactly a fresh invocation of
+    /// this same function. Unlike `ReturnCall`, this form never exits native
+    /// dispatch merely so the Rust driver can replace an activation with an
+    /// identical one.
+    fn self_tail_call(&mut self, params: u32) -> Result<(), WasmError> {
+        let h = self.height() as usize;
+        if h < params as usize {
+            return Err(desync());
+        }
+        for i in h - params as usize..h {
+            self.materialize_at(i);
+        }
+        let arg_base = self.temp_slot_used(self.height() - params);
+        for _ in 0..params {
+            let _ = self.pop()?;
+        }
+        for i in 0..params {
+            self.emit(Op::MovSlot, 0, arg_base + i as u64, 0, i as u64);
+        }
+        for i in params..self.n_locals {
+            self.emit(Op::MovConst, FLAG_A_CONST, 0, 0, i as u64);
+        }
+        self.emit(Op::Br, 0, 0, 0, 0);
+        self.bump_region();
+        self.dead = true;
+        Ok(())
+    }
+
     fn fc_op(&mut self, fc: OpcodeFC, imm: &Immediate) -> Result<(), WasmError> {
         use OpcodeFC::*;
         match fc {
@@ -1821,13 +1859,17 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         .get(fidx as usize)
                         .map(|f| f.func_type_rc())
                         .ok_or(WasmError::invalid("interp: bad call target"))?;
-                    self.call_boundary_tail(
-                        Some(fidx as u64),
-                        ft.params().len() as u32,
-                        ft.results().len() as u32,
-                        None,
-                        tail,
-                    )?;
+                    if tail && fidx == self.func_index {
+                        self.self_tail_call(ft.params().len() as u32)?;
+                    } else {
+                        self.call_boundary_tail(
+                            Some(fidx as u64),
+                            ft.params().len() as u32,
+                            ft.results().len() as u32,
+                            None,
+                            tail,
+                        )?;
+                    }
                 }
                 Opcode::CALL_INDIRECT | Opcode::RETURN_CALL_INDIRECT => {
                     let tail = o == Opcode::RETURN_CALL_INDIRECT;
@@ -2625,6 +2667,44 @@ mod tests {
         assert_ne!(handlers[0].tag, handlers[1].tag);
         assert_eq!(handlers[2].tag, None);
         assert!(f.exception_handlers_at(tail_pc).is_empty());
+    }
+
+    #[test]
+    fn direct_self_tail_call_becomes_a_native_loop() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param i64 i64 i64) (result i64)
+                    local.get 0
+                    i64.eqz
+                    if
+                        local.get 1
+                        return
+                    end
+                    local.get 0
+                    i64.const 1
+                    i64.sub
+                    local.get 2
+                    local.get 1
+                    local.get 2
+                    i64.add
+                    return_call 0))"#,
+            0,
+        );
+
+        assert!(
+            f.code.iter().all(|ins| ins.op != Op::ReturnCall),
+            "a self tail call must not cross into the Rust activation driver"
+        );
+        assert_eq!(f.code.iter().filter(|ins| ins.op == Op::Br).count(), 1);
+        let backedge = f.code.iter().find(|ins| ins.op == Op::Br).unwrap();
+        assert_eq!(backedge.c, 0);
+        assert_eq!(
+            f.code
+                .iter()
+                .filter(|ins| ins.op == Op::MovSlot && ins.c < 3)
+                .count(),
+            3
+        );
     }
 
     #[test]
