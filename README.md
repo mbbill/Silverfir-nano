@@ -27,7 +27,7 @@
   </p>
 
   <p>
-    <img src="assets/highlights.svg" alt="Silverfir-nano: Fast, Small, Portable, Full Wasm 3.0, On-device JIT" width="620">
+    <img src="assets/highlights.svg" alt="Silverfir-nano: Fast, Small, Portable, Full Wasm 3.0, On-device JIT" width="700">
   </p>
 </div>
 
