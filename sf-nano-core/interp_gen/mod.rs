@@ -27,7 +27,7 @@ pub mod x86_64;
 use asm::{Asm, ObjFmt};
 use instr::{op_from_index, Op};
 use isa::{Isa, Stubs, Variant};
-use layout::{build_op_base, family, total_slots, Cls, DstCls, Fam, N_OPS};
+use layout::{build_op_base, family, total_slots, Cls, DstCls, Fam, PairDstCls, N_OPS};
 
 /// One emission group: a run of ops sharing a shape, in the order the
 /// engine wants them laid out.
@@ -127,6 +127,7 @@ fn emit_order() -> Vec<Group> {
             I32_BrAnd,
             I32_BrAndNot,
             I32_SubBrIf,
+            I64_SubBrIf,
         ]),
         g(&[Select]),
         g(&[BrTable]),
@@ -215,49 +216,89 @@ fn emit_order() -> Vec<Group> {
 /// measurement of dynamic pinned-class engagement.
 const COUNT_MODE: u8 = 0;
 
-fn counted(counting: bool, a: Cls, b: Cls, d: DstCls) -> bool {
+fn counted(counting: bool, a: Cls, b: Cls, d: DstCls, pair_d: PairDstCls) -> bool {
     if !counting {
         return false;
     }
     match COUNT_MODE {
-        1 => a == Cls::L0 || b == Cls::L0 || d == DstCls::L0,
-        2 => a == Cls::L1 || b == Cls::L1 || d == DstCls::L1,
+        1 => {
+            a == Cls::L0
+                || b == Cls::L0
+                || d == DstCls::L0
+                || pair_d.first() == Some(DstCls::L0)
+                || pair_d.second() == Some(DstCls::L0)
+        }
+        2 => {
+            a == Cls::L1
+                || b == Cls::L1
+                || d == DstCls::L1
+                || pair_d.first() == Some(DstCls::L1)
+                || pair_d.second() == Some(DstCls::L1)
+        }
         _ => true,
     }
 }
 
 /// The class combinations a family owns, in emission order.
-fn combos(fam: Fam, classes: &[Cls], dsts: &[DstCls]) -> Vec<(Cls, Cls, DstCls)> {
+fn combos(
+    fam: Fam,
+    classes: &[Cls],
+    dsts: &[DstCls],
+    has_l1: bool,
+) -> Vec<(Cls, Cls, DstCls, PairDstCls)> {
     let mut out = Vec::new();
+    let plain = PairDstCls::None;
     match fam {
         Fam::None => {}
-        Fam::Fixed => out.push((Cls::Slot, Cls::Slot, DstCls::Mem)),
+        Fam::Fixed => out.push((Cls::Slot, Cls::Slot, DstCls::Mem, plain)),
         Fam::Dst => {
             for &d in dsts {
-                out.push((Cls::Slot, Cls::Slot, d));
+                out.push((Cls::Slot, Cls::Slot, d, plain));
             }
         }
         Fam::ConstDst => {
             for &d in dsts {
-                out.push((Cls::Const, Cls::Slot, d));
+                out.push((Cls::Const, Cls::Slot, d, plain));
             }
         }
         Fam::SrcA => {
             for &a in classes {
-                out.push((a, Cls::Slot, DstCls::Mem));
+                out.push((a, Cls::Slot, DstCls::Mem, plain));
             }
         }
         Fam::SrcADst | Fam::Load => {
             for &a in classes {
                 for &d in dsts {
-                    out.push((a, Cls::Slot, d));
+                    out.push((a, Cls::Slot, d, plain));
                 }
             }
         }
         Fam::SrcAB | Fam::Store => {
             for &a in classes {
                 for &b in classes {
-                    out.push((a, b, DstCls::Mem));
+                    out.push((a, b, DstCls::Mem, plain));
+                }
+            }
+        }
+        Fam::SrcABPairDst => {
+            let pair_dsts = if has_l1 {
+                &[
+                    PairDstCls::None,
+                    PairDstCls::FirstL0,
+                    PairDstCls::FirstL1,
+                    PairDstCls::SecondL0,
+                    PairDstCls::SecondL1,
+                    PairDstCls::L0L1,
+                    PairDstCls::L1L0,
+                ][..]
+            } else {
+                &[PairDstCls::None, PairDstCls::FirstL0, PairDstCls::SecondL0][..]
+            };
+            for &a in classes {
+                for &b in classes {
+                    for &pair_d in pair_dsts {
+                        out.push((a, b, DstCls::Mem, pair_d));
+                    }
                 }
             }
         }
@@ -265,7 +306,7 @@ fn combos(fam: Fam, classes: &[Cls], dsts: &[DstCls]) -> Vec<(Cls, Cls, DstCls)>
             for &a in classes {
                 for &b in classes {
                     for &d in dsts {
-                        out.push((a, b, d));
+                        out.push((a, b, d, plain));
                     }
                 }
             }
@@ -315,25 +356,26 @@ pub fn generate(isa: &mut dyn Isa, fmt: ObjFmt, thumb: bool, counting: bool) -> 
             if group.fused && !fam.has_fused_bank() {
                 continue;
             }
-            for (ac, bc, dc) in combos(fam, caps.classes, caps.dsts) {
+            for (ac, bc, dc, pair_dc) in combos(fam, caps.classes, caps.dsts, caps.has_l1) {
                 let v = Variant {
                     op,
                     a: ac,
                     b: bc,
                     d: dc,
+                    pair_d: pair_dc,
                     fused: group.fused,
-                    counted: counted(counting, ac, bc, dc),
+                    counted: counted(counting, ac, bc, dc, pair_dc),
                 };
                 if !isa.wants(&v) {
                     continue;
                 }
-                let Some(idx) = fam.index_of(ac, bc, dc, group.fused) else {
+                let Some(idx) = fam.index_of(ac, bc, dc, pair_dc, group.fused) else {
                     continue;
                 };
                 let slot = op_base[op as usize] as usize + idx;
                 assert!(
                     slot_label[slot].is_none(),
-                    "duplicate handler slot for {op:?} ({ac:?},{bc:?},{dc:?},fused={})",
+                    "duplicate handler slot for {op:?} ({ac:?},{bc:?},{dc:?},{pair_dc:?},fused={})",
                     group.fused
                 );
                 let label = a.fresh("h");

@@ -152,7 +152,7 @@ fn native_op(op: Op) -> bool {
     let d = op as u16;
     if (d >= I32_Add as u16 && d <= I32_GeU as u16)
         || (d >= I32_BrEq as u16 && d <= I32_BrGeU as u16)
-        || matches!(op, I32_BrAnd | I32_BrAndNot | I32_SubBrIf)
+        || matches!(op, I32_BrAnd | I32_BrAndNot | I32_SubBrIf | I64_SubBrIf)
     {
         return true;
     }
@@ -421,7 +421,7 @@ impl Isa for Arm32 {
                 !matches!(v.a, Cls::Const | Cls::Acc) && !matches!(v.b, Cls::Const | Cls::Acc)
             }
             BrTable => v.a != Cls::Const,
-            I32_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
+            I32_SubBrIf | I64_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
             _ => {
                 if v.fused && v.a == Cls::Const {
                     return false;
@@ -480,6 +480,67 @@ impl Isa for Arm32 {
                 let nt = a.fresh("nt");
                 a.ins(&format!("beq {nt}"));
                 self.bump(a, v.counted);
+                a.ins(&format!("mov {PC}, {T2}"));
+                a.ins(&format!("bx {T3}"));
+                a.label(&nt);
+                self.pre(a);
+                self.tail(a, v.counted);
+                return;
+            }
+            I64_SubBrIf => {
+                // A full-width subtraction occupies all four scratch
+                // registers, so unlike the i32 form the target loads wait
+                // until the taken path is known.
+                // Preserve an accumulator RHS before loading a slot/L0 lhs
+                // into that same register pair.
+                if v.b == Cls::Acc {
+                    a.ins(&format!("mov {T2}, {ACC}"));
+                    a.ins(&format!("mov {T3}, {ACC_HI}"));
+                }
+                match v.a {
+                    Cls::L0 => {
+                        a.ins(&format!("mov {ACC}, {L0R}"));
+                        a.ins(&format!("mov {ACC_HI}, {L0_HI}"));
+                    }
+                    Cls::Slot => {
+                        self.slot_addr(a, 8, T0);
+                        a.ins(&format!("ldr {ACC}, [{T0}]"));
+                        a.ins(&format!("ldr {ACC_HI}, [{T0}, #4]"));
+                    }
+                    Cls::Const | Cls::Acc | Cls::L1 => unreachable!(),
+                }
+                match v.b {
+                    Cls::Acc => {}
+                    Cls::L0 => {
+                        a.ins(&format!("mov {T2}, {L0R}"));
+                        a.ins(&format!("mov {T3}, {L0_HI}"));
+                    }
+                    Cls::Const => {
+                        a.ins(&format!("ldr {T2}, [{PC}, #16]"));
+                        a.ins(&format!("ldr {T3}, [{PC}, #20]"));
+                    }
+                    Cls::Slot => {
+                        self.slot_addr(a, 16, T1);
+                        a.ins(&format!("ldr {T2}, [{T1}]"));
+                        a.ins(&format!("ldr {T3}, [{T1}, #4]"));
+                    }
+                    Cls::L1 => unreachable!(),
+                }
+                a.ins(&format!("subs {ACC}, {ACC}, {T2}"));
+                a.ins(&format!("sbc {ACC_HI}, {ACC_HI}, {T3}"));
+                self.slot_addr(a, 8, T0);
+                a.ins(&format!("str {ACC}, [{T0}]"));
+                a.ins(&format!("str {ACC_HI}, [{T0}, #4]"));
+                if v.a == Cls::L0 {
+                    a.ins(&format!("mov {L0R}, {ACC}"));
+                    a.ins(&format!("mov {L0_HI}, {ACC_HI}"));
+                }
+                a.ins(&format!("orrs {T1}, {ACC}, {ACC_HI}"));
+                let nt = a.fresh("nt");
+                a.ins(&format!("beq {nt}"));
+                self.bump(a, v.counted);
+                a.ins(&format!("ldr {T2}, [{PC}, #24]"));
+                a.ins(&format!("ldr {T3}, [{T2}]"));
                 a.ins(&format!("mov {PC}, {T2}"));
                 a.ins(&format!("bx {T3}"));
                 a.label(&nt);
@@ -565,17 +626,36 @@ impl Isa for Arm32 {
                 self.finish(a, v.d, rd, true, T0);
             }
             MovPair => {
-                // Strictly ordered: src2 may be dst1.
+                // Strictly ordered: commit dst1 (including L0, when
+                // pinned) before reading src2.
                 let (v1, v1h) = self.pair(a, v.a, 8, T0, T1);
                 a.ins(&format!("ldr {T2}, [{PC}, #28]")); // dst1*8
                 a.ins(&format!("add {T2}, {FRAME}, {T2}"));
                 a.ins(&format!("str {v1}, [{T2}]"));
                 a.ins(&format!("str {v1h}, [{T2}, #4]"));
-                let (v2, v2h) = self.pair(a, v.b, 16, T0, T1);
+                if let Some(d1) = v.pair_d.first() {
+                    debug_assert_eq!(d1, DstCls::L0);
+                    if v1 != L0R {
+                        a.ins(&format!("mov {L0R}, {v1}"));
+                        a.ins(&format!("mov {L0_HI}, {v1h}"));
+                    }
+                }
+                let (v2, v2h) = self.pair(a, v.b, 16, ACC, ACC_HI);
+                if v2 != ACC {
+                    a.ins(&format!("mov {ACC}, {v2}"));
+                    a.ins(&format!("mov {ACC_HI}, {v2h}"));
+                }
                 a.ins(&format!("ldr {T2}, [{PC}, #24]")); // dst2*8
                 a.ins(&format!("add {T2}, {FRAME}, {T2}"));
-                a.ins(&format!("str {v2}, [{T2}]"));
-                a.ins(&format!("str {v2h}, [{T2}, #4]"));
+                a.ins(&format!("str {ACC}, [{T2}]"));
+                a.ins(&format!("str {ACC_HI}, [{T2}, #4]"));
+                if let Some(d2) = v.pair_d.second() {
+                    debug_assert_eq!(d2, DstCls::L0);
+                    if ACC != L0R {
+                        a.ins(&format!("mov {L0R}, {ACC}"));
+                        a.ins(&format!("mov {L0_HI}, {ACC_HI}"));
+                    }
+                }
             }
             Select => {
                 // The condition is always a materialized i32 slot.

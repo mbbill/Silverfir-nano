@@ -3447,6 +3447,13 @@ impl InterpInstance {
                     return Ok(Effect::Jump(ins.c as usize));
                 }
             }
+            Op::I64_SubBrIf => {
+                let value = opa!(ins).wrapping_sub(opb!(ins));
+                frame[ins.a as usize] = value;
+                if value != 0 {
+                    return Ok(Effect::Jump(ins.c as usize));
+                }
+            }
             Op::I32_BrEq => cmp_br32!(ins, |x: u32, y: u32| x == y),
             Op::I32_BrNe => cmp_br32!(ins, |x: u32, y: u32| x != y),
             Op::I32_BrLtS => cmp_br32!(ins, |x: u32, y: u32| (x as i32) < (y as i32)),
@@ -3697,6 +3704,352 @@ mod tests {
         let mut results = [0u64; 2];
         inst.invoke(idx, args, &mut results)?;
         Ok(results)
+    }
+
+    const ITERATIVE_FIB_WAT: &str = r#"(module
+        (func (export "run") (param $n i64) (result i64)
+            (local $a i64)
+            (local $b i64)
+            (local $i i64)
+            (local.set $a (i64.const 0))
+            (local.set $b (i64.const 1))
+            (local.set $i (local.get $n))
+            (block $break
+                (br_if $break (i64.eqz (local.get $i)))
+                (loop $continue
+                    (i64.add (local.get $a) (local.get $b))
+                    (local.set $a (local.get $b))
+                    (local.set $b)
+                    (local.set $i (i64.sub (local.get $i) (i64.const 1)))
+                    (br_if $continue
+                        (i64.ne (local.get $i) (i64.const 0)))))
+            (local.get $a)))"#;
+
+    #[test]
+    fn iterative_fibonacci_uses_the_generic_i64_sub_branch() {
+        let (bin, _) = instantiate(ITERATIVE_FIB_WAT);
+        let module = Module::new("fibonacci-iter", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
+        let run = inst.find_export("run").expect("run");
+
+        for (n, expected) in [
+            (0, 0),
+            (1, 1),
+            (2, 1),
+            (10, 55),
+            (93, 12_200_160_415_121_876_738),
+        ] {
+            let mut result = [u64::MAX];
+            inst.invoke(run, &[n], &mut result).expect("invoke");
+            assert_eq!(result[0], expected, "fib({n})");
+        }
+        assert!(inst
+            .slow_exit_stats()
+            .iter()
+            .all(|&(op, exits)| { !matches!(op, Op::MovPair | Op::I64_SubBrIf) || exits == 0 }));
+    }
+
+    #[test]
+    fn iterative_fibonacci_dispatch_count_tracks_three_hot_cells() {
+        let (bin, _) = instantiate(ITERATIVE_FIB_WAT);
+        let module = Module::new("fibonacci-iter-count", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
+        let run = inst.find_export("run").expect("run");
+        let mut result = [u64::MAX];
+        inst.invoke(run, &[100], &mut result).expect("invoke");
+
+        assert_eq!(result[0], 3_736_710_778_780_434_371);
+        if inst.dispatch_counting_enabled() {
+            assert_eq!(
+                inst.dispatch_count(),
+                306,
+                "three loop cells per iteration plus six setup/exit cells"
+            );
+        }
+    }
+
+    #[test]
+    fn ordered_local_copy_pair_preserves_old_value_and_pinned_write_through() {
+        let src = r#"(module
+            (func (export "run") (param $x i32) (result i32 i32)
+                local.get $x
+                local.get $x
+                i32.const 1
+                i32.add
+                local.set $x
+                local.get $x))"#;
+        let (bin, _) = instantiate(src);
+        let module = Module::new("ordered-copy-pair", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
+        let run = inst.find_export("run").expect("run");
+        let mut result = [u64::MAX; 2];
+        inst.invoke(run, &[41], &mut result).expect("invoke");
+
+        assert_eq!(result, [41, 42]);
+        assert!(inst
+            .slow_exit_stats()
+            .iter()
+            .all(|&(op, exits)| op != Op::MovPair || exits == 0));
+    }
+
+    #[test]
+    fn ordered_copy_pair_forwards_only_its_second_destination() {
+        let src = r#"(module
+            (func (export "first") (param $a i64) (param $b i64) (result i64)
+                  (local $x i64) (local $y i64)
+                local.get $a
+                local.set $x
+                local.get $b
+                local.set $y
+                local.get $x
+                i64.const 1
+                i64.add)
+            (func (export "second") (param $a i64) (param $b i64) (result i64)
+                  (local $x i64) (local $y i64)
+                local.get $a
+                local.set $x
+                local.get $b
+                local.set $y
+                local.get $y
+                i64.const 1
+                i64.add))"#;
+        let (bin, _) = instantiate(src);
+        let module = Module::new("ordered-copy-pair-acc", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
+        let first = inst.find_export("first").expect("first");
+        let second = inst.find_export("second").expect("second");
+        let mut result = [u64::MAX];
+
+        inst.invoke(first, &[7, 99], &mut result).expect("first");
+        assert_eq!(result[0], 8, "destination 1 must reload from its slot");
+        inst.invoke(second, &[7, 99], &mut result).expect("second");
+        assert_eq!(
+            result[0], 100,
+            "destination 2 must read the MovPair accumulator result"
+        );
+        assert!(inst
+            .slow_exit_stats()
+            .iter()
+            .all(|&(op, exits)| op != Op::MovPair || exits == 0));
+    }
+
+    #[test]
+    fn ordered_copy_pair_forwards_an_unpinned_full_width_second_value() {
+        let src = r#"(module
+            (func (export "run")
+                  (param $a i64) (param $b i64)
+                  (param $hot0 i64) (param $hot1 i64)
+                  (result i64) (local $x i64) (local $y i64)
+                ;; Make $hot0/$hot1 the two unambiguous pinned locals so
+                ;; neither MovPair destination can outrank its ACC hint.
+                local.get $hot0
+                i64.const 1
+                i64.add
+                local.set $hot0
+                local.get $hot0
+                i64.const 1
+                i64.add
+                local.set $hot0
+                local.get $hot1
+                i64.const 1
+                i64.add
+                local.set $hot1
+                local.get $hot1
+                i64.const 1
+                i64.add
+                local.set $hot1
+                local.get $a
+                local.set $x
+                local.get $b
+                local.set $y
+                local.get $y
+                i64.const 1
+                i64.add))"#;
+        let (bin, _) = instantiate(src);
+        let module = Module::new("ordered-copy-pair-unpinned-acc", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
+        let run = inst.find_export("run").expect("run");
+        let pair = inst.funcs[run]
+            .as_ref()
+            .expect("predecoded body")
+            .code
+            .iter()
+            .find(|ins| ins.op == Op::MovPair)
+            .expect("local copy pair");
+        assert_eq!((pair.a, pair.b, pair.c), (0, 1, 4u64 << 32 | 5));
+
+        let linked = inst.native.as_ref().expect("native state").linked[run]
+            .as_ref()
+            .expect("linked body");
+        let mut pinned = [linked.l0_off, linked.l1_off];
+        pinned.sort_unstable();
+        assert_eq!(pinned, [16, 24], "only $hot0/$hot1 should be pinned");
+
+        let full_width = 0x1234_5678_0000_0063;
+        let mut result = [u64::MAX];
+        inst.invoke(run, &[7, full_width, 10, 20], &mut result)
+            .expect("invoke");
+        assert_eq!(result[0], full_width + 1);
+        assert!(inst
+            .slow_exit_stats()
+            .iter()
+            .all(|&(op, exits)| op != Op::MovPair || exits == 0));
+    }
+
+    #[test]
+    fn ordered_copy_pair_writes_l1_then_l0_without_slow_exit() {
+        let src = r#"(module
+            (func (export "run")
+                  (param $l0 i64) (param $l1 i64)
+                  (param $src0 i64) (param $src1 i64)
+                  (result i64 i64)
+                local.get $src0
+                local.set $l1
+                local.get $src1
+                local.set $l0
+                local.get $l0
+                local.get $l1))"#;
+        let (bin, _) = instantiate(src);
+        let module = Module::new("ordered-copy-pair-l1-l0", &bin).expect("module");
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            None,
+            &[],
+        )
+        .expect("instantiate");
+        let run = inst.find_export("run").expect("run");
+        let code = &inst.funcs[run].as_ref().expect("predecoded body").code;
+        let pair = code
+            .iter()
+            .find(|ins| ins.op == Op::MovPair && ins.c == 1u64 << 32)
+            .expect("ordered local1-then-local0 copy pair");
+        assert_eq!((pair.a, pair.b), (2, 3));
+        let mut result = [u64::MAX; 2];
+        inst.invoke(run, &[41, 99, 7, 8], &mut result)
+            .expect("invoke");
+
+        assert_eq!(result, [8, 7]);
+        assert!(inst
+            .slow_exit_stats()
+            .iter()
+            .all(|&(op, exits)| op != Op::MovPair || exits == 0));
+    }
+
+    #[test]
+    fn i64_sub_branch_tests_the_full_result_and_wraps() {
+        let src = r#"(module
+            (func (export "run") (param $n i64) (result i32)
+                (block $taken
+                    local.get $n
+                    i64.const 1
+                    i64.sub
+                    local.set $n
+                    local.get $n
+                    i64.const 0
+                    i64.ne
+                    br_if $taken
+                    i32.const 0
+                    return)
+                i32.const 1))"#;
+
+        assert_eq!(run1(src, "run", &[1]).unwrap(), 0);
+        assert_eq!(run1(src, "run", &[0x1_0000_0001]).unwrap(), 1);
+        assert_eq!(run1(src, "run", &[0]).unwrap(), 1);
+    }
+
+    #[test]
+    fn i64_sub_branch_accepts_an_accumulator_rhs_and_aliasing() {
+        let accumulator_rhs = r#"(module
+            (func (export "run") (param $n i64) (param $step i64) (result i64)
+                (block $done
+                    local.get $n
+                    local.get $step
+                    i64.const 0
+                    i64.add
+                    i64.sub
+                    local.set $n
+                    local.get $n
+                    i64.const 0
+                    i64.ne
+                    br_if $done)
+                local.get $n))"#;
+        assert_eq!(run1(accumulator_rhs, "run", &[10, 3]).unwrap(), 7);
+        assert_eq!(run1(accumulator_rhs, "run", &[3, 3]).unwrap(), 0);
+
+        let alias = r#"(module
+            (func (export "run") (param $n i64) (result i64)
+                (block $done
+                    local.get $n
+                    local.get $n
+                    i64.sub
+                    local.set $n
+                    local.get $n
+                    i64.const 0
+                    i64.ne
+                    br_if $done)
+                local.get $n))"#;
+        assert_eq!(run1(alias, "run", &[u64::MAX]).unwrap(), 0);
+    }
+
+    #[test]
+    fn fused_i64_constant_add_branch_preserves_wrapping() {
+        for (constant, input, expected) in [
+            ("1", u64::MAX, 0),
+            ("-1", 0, u64::MAX),
+            ("-9223372036854775808", 0, 0x8000_0000_0000_0000),
+            ("0", 0, 0),
+        ] {
+            let src = std::format!(
+                r#"(module
+                    (func (export "run") (param $n i64) (result i64)
+                        (block $done
+                            local.get $n
+                            i64.const {constant}
+                            i64.add
+                            local.set $n
+                            local.get $n
+                            i64.const 0
+                            i64.ne
+                            br_if $done)
+                        local.get $n))"#
+            );
+            assert_eq!(
+                run1(&src, "run", &[input]).unwrap(),
+                expected,
+                "constant {constant}"
+            );
+        }
     }
 
     /// Extended constant expressions: arithmetic, and `global.get` of a

@@ -169,7 +169,7 @@ fn select_pinned(func: &PredecodedFunction) -> Pinned {
                 wdom[ins.c as usize] |= 1;
             }
         }
-        if ins.op == Op::I32_SubBrIf && ins.a < n {
+        if matches!(ins.op, Op::I32_SubBrIf | Op::I64_SubBrIf) && ins.a < n {
             // This control-shaped cell is also an in-place integer write to
             // `a`. Count both halves of the read/modify/write so pin
             // selection and register-domain authority match the unfused
@@ -181,6 +181,18 @@ fn select_pinned(func: &PredecodedFunction) -> Pinned {
             let dslot = ins.c & 0xffff_ffff;
             if dslot < n {
                 wdom[dslot as usize] |= 1;
+            }
+        }
+        if ins.op == Op::MovPair {
+            // `slot_fields` cannot describe two packed destinations, so
+            // account for both here. The linker uses the resulting pin
+            // choice to select an ordered pair handler that writes through
+            // both frame slots and both authoritative registers.
+            for dslot in [ins.c >> 32, ins.c & 0xffff_ffff] {
+                if dslot < n {
+                    counts[dslot as usize] += 1;
+                    wdom[dslot as usize] |= 1;
+                }
             }
         }
     }
@@ -412,17 +424,6 @@ impl NativeEngine {
         for (i, ins) in func.code.iter().enumerate() {
             let fl = flags[i];
             let mut h = self.handler_for(ins, fl, &pin);
-            // MovPair's packed dsts are never classed: one that writes a
-            // pinned slot must run slow so the re-entry reload keeps the
-            // pinned register current.
-            if ins.op == Op::MovPair
-                && (ins.c >> 32 == pin.l0
-                    || ins.c >> 32 == pin.l1
-                    || ins.c & 0xffff_ffff == pin.l0
-                    || ins.c & 0xffff_ffff == pin.l1)
-            {
-                h = None;
-            }
             if !native_guard(ins) {
                 h = None;
             }

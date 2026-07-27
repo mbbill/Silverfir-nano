@@ -688,13 +688,13 @@ impl Isa for Arm64 {
             // MovSlot's source is never an inline constant: the predecoder
             // emits MovConst for those.
             MovSlot => v.a != Cls::Const,
-            // MovPair merges two staging copies; neither side is ever a
-            // constant or the accumulator.
+            // MovPair merges two plain ordered copies; neither source is
+            // ever a constant or the accumulator.
             MovPair => {
                 !matches!(v.a, Cls::Const | Cls::Acc) && !matches!(v.b, Cls::Const | Cls::Acc)
             }
             BrTable => v.a != Cls::Const,
-            I32_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
+            I32_SubBrIf | I64_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
             _ => {
                 if v.fused {
                     // The fused bank folds a second slot operand into the
@@ -756,7 +756,7 @@ impl Isa for Arm64 {
                 self.tail(a, v.counted);
                 return;
             }
-            I32_SubBrIf => {
+            I32_SubBrIf | I64_SubBrIf => {
                 // Keep both dependent target loads off the taken critical
                 // path while the arithmetic sources are being prepared.
                 a.ins("ldr x12, [x19, #24]");
@@ -777,12 +777,19 @@ impl Isa for Arm64 {
                     Cls::L1 => L1R,
                     _ => 10,
                 };
-                a.ins(&format!("sub {}, {}, {}", w(rd), w(ra), w(rb)));
-                // i32 arithmetic through a W register zero-extends the
-                // authoritative 64-bit frame slot.
+                if v.op == I32_SubBrIf {
+                    // i32 arithmetic through a W register zero-extends the
+                    // authoritative 64-bit frame slot.
+                    a.ins(&format!("sub {}, {}, {}", w(rd), w(ra), w(rb)));
+                } else {
+                    a.ins(&format!("sub {}, {}, {}", x(rd), x(ra), x(rb)));
+                }
                 a.ins(&format!("str {}, [x20, x13]", x(rd)));
                 let nt = a.fresh("nt");
-                a.ins(&format!("cbz {}, {nt}", w(rd)));
+                a.ins(&format!(
+                    "cbz {}, {nt}",
+                    if v.op == I32_SubBrIf { w(rd) } else { x(rd) }
+                ));
                 self.bump(a, v.counted);
                 a.ins("mov x19, x12");
                 a.ins("br x9");
@@ -866,7 +873,8 @@ impl Isa for Arm64 {
                 self.finish(a, d, rd);
             }
             MovPair => {
-                // Strictly ordered: src2 may be dst1.
+                // Strictly ordered: commit dst1 (including its pinned
+                // register, when present) before reading src2.
                 if v.a == Cls::Slot && v.b == Cls::Slot {
                     a.ins("ldp x10, x11, [x19, #8]");
                 } else if v.a == Cls::Slot {
@@ -885,16 +893,41 @@ impl Isa for Arm64 {
                 };
                 a.ins("lsr x9, x12, #32");
                 a.ins(&format!("str {}, [x20, x9]", x(v1)));
+                let d1 = match v.pair_d.first() {
+                    None => None,
+                    Some(DstCls::L0) => Some(L0R),
+                    Some(DstCls::L1) => Some(L1R),
+                    Some(DstCls::Mem | DstCls::Acc) => unreachable!(),
+                };
+                if let Some(rd) = d1 {
+                    if rd != v1 {
+                        a.ins(&format!("mov {}, {}", x(rd), x(v1)));
+                    }
+                }
                 let v2 = match v.b {
                     Cls::L0 => L0R,
                     Cls::L1 => L1R,
                     _ => {
-                        a.ins("ldr x13, [x20, x11]");
-                        13
+                        a.ins(&format!("ldr {}, [x20, x11]", x(ACC)));
+                        ACC
                     }
                 };
+                if v2 != ACC {
+                    a.ins(&format!("mov {}, {}", x(ACC), x(v2)));
+                }
                 a.ins("ubfx x12, x12, #0, #32");
-                a.ins(&format!("str {}, [x20, x12]", x(v2)));
+                a.ins(&format!("str {}, [x20, x12]", x(ACC)));
+                let d2 = match v.pair_d.second() {
+                    None => None,
+                    Some(DstCls::L0) => Some(L0R),
+                    Some(DstCls::L1) => Some(L1R),
+                    Some(DstCls::Mem | DstCls::Acc) => unreachable!(),
+                };
+                if let Some(rd) = d2 {
+                    if rd != ACC {
+                        a.ins(&format!("mov {}, {}", x(rd), x(ACC)));
+                    }
+                }
             }
             Select => {
                 let (ra, rb) = self.src_ab(a, v.a, v.b);

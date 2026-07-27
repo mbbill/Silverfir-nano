@@ -346,8 +346,12 @@ struct Predecoder<'m> {
     /// writing it (0 = never). Used by the dst-folding soundness rules.
     last_read: Vec<u32>,
     last_write: Vec<u32>,
-    /// Index of an immediately preceding materialization MovSlot that a
-    /// next one may merge with (NO_DEF = none), and its region.
+    /// Index of an immediately preceding plain `MovSlot` that another
+    /// ordered copy may merge with (NO_DEF = none), and its region.
+    ///
+    /// This covers both stack materialization and ordinary local
+    /// assignments. Keeping the pairing rule here avoids teaching any
+    /// particular Wasm source pattern about `MovPair`.
     last_mat_mov: u32,
     last_mat_region: u32,
     /// Control region of the last write per local (acc write-through:
@@ -448,6 +452,16 @@ fn fuse_cmp_br(op: Op, invert: bool) -> Option<Op> {
 struct BrIfFusion {
     op: Op,
     b_const: Option<u64>,
+}
+
+#[derive(Clone, Copy)]
+struct SubBrIfFusion {
+    def: u32,
+    op: Op,
+    b: u64,
+    /// The i64 form consumes an intervening `i64.ne local, 0` cell.
+    remove_condition: bool,
+    local: u32,
 }
 
 /// Extend ordinary compare/branch fusion with a full-width lowering for
@@ -754,6 +768,44 @@ impl<'m> Predecoder<'m> {
         idx
     }
 
+    /// Emit one ordered slot copy, merging two adjacent plain copies into
+    /// `MovPair`. The pair deliberately preserves program order: copy 1 is
+    /// committed before copy 2 reads, so `src2 == dst1` remains exact.
+    ///
+    /// Returns the cell that owns the copy. When a pair is formed, both
+    /// copies share the preceding cell and no new cell is appended.
+    fn emit_ordered_mov_slot(&mut self, flags: u16, src: u64, dst: u64) -> u32 {
+        let at = self.code.len() as u32;
+        if flags == 0
+            && self.last_mat_mov != NO_DEF
+            && self.last_mat_mov + 1 == at
+            && self.last_mat_region == self.region
+            && self.code[self.last_mat_mov as usize].op == Op::MovSlot
+            && self.code[self.last_mat_mov as usize].flags == 0
+            && self.code[self.last_mat_mov as usize].c != dst
+        {
+            let prev = self.last_mat_mov;
+            let pm = self.code[prev as usize];
+            debug_assert!(pm.c <= u32::MAX as u64 && dst <= u32::MAX as u64);
+            self.code[prev as usize] = Instr {
+                op: Op::MovPair,
+                flags: 0,
+                a: pm.a,
+                b: src,
+                c: pm.c << 32 | dst,
+            };
+            self.last_mat_mov = NO_DEF; // pairs never re-pair
+            prev
+        } else {
+            let idx = self.emit(Op::MovSlot, flags, src, 0, dst);
+            if flags == 0 {
+                self.last_mat_mov = idx;
+                self.last_mat_region = self.region;
+            }
+            idx
+        }
+    }
+
     fn bump_region(&mut self) {
         self.region += 1;
     }
@@ -804,33 +856,9 @@ impl<'m> Predecoder<'m> {
         let idx = match d {
             Desc::Local(l) => {
                 let slot = self.temp_slot_used(height);
-                let at = self.code.len() as u32;
-                self.last_read[l as usize] = at + 1;
-                // Adjacent staging movs merge into one MovPair dispatch
-                // (strict in-order copies, so src2 == dst1 stays exact).
-                if self.last_mat_mov != NO_DEF
-                    && self.last_mat_mov + 1 == at
-                    && self.last_mat_region == self.region
-                    && self.code[self.last_mat_mov as usize].op == Op::MovSlot
-                    && self.code[self.last_mat_mov as usize].flags == 0
-                {
-                    let prev = self.last_mat_mov;
-                    let pm = self.code[prev as usize];
-                    self.code[prev as usize] = Instr {
-                        op: Op::MovPair,
-                        flags: 0,
-                        a: pm.a,
-                        b: l as u64,
-                        c: pm.c << 32 | slot,
-                    };
-                    self.last_mat_mov = NO_DEF; // pairs never re-pair
-                    prev
-                } else {
-                    let idx = self.emit(Op::MovSlot, 0, l as u64, 0, slot);
-                    self.last_mat_mov = idx;
-                    self.last_mat_region = self.region;
-                    idx
-                }
+                let idx = self.emit_ordered_mov_slot(0, l as u64, slot);
+                self.last_read[l as usize] = idx + 1;
+                idx
             }
             Desc::ConstV(k) => {
                 let slot = self.temp_slot_used(height);
@@ -855,29 +883,8 @@ impl<'m> Predecoder<'m> {
         let dst = self.temp_slot_used(height);
         match d {
             Desc::Local(l) => {
-                let at = self.code.len() as u32;
-                self.last_read[l as usize] = at + 1;
-                if self.last_mat_mov != NO_DEF
-                    && self.last_mat_mov + 1 == at
-                    && self.last_mat_region == self.region
-                    && self.code[self.last_mat_mov as usize].op == Op::MovSlot
-                    && self.code[self.last_mat_mov as usize].flags == 0
-                {
-                    let prev = self.last_mat_mov;
-                    let pm = self.code[prev as usize];
-                    self.code[prev as usize] = Instr {
-                        op: Op::MovPair,
-                        flags: 0,
-                        a: pm.a,
-                        b: l as u64,
-                        c: pm.c << 32 | dst,
-                    };
-                    self.last_mat_mov = NO_DEF;
-                } else {
-                    let idx = self.emit(Op::MovSlot, 0, l as u64, 0, dst);
-                    self.last_mat_mov = idx;
-                    self.last_mat_region = self.region;
-                }
+                let idx = self.emit_ordered_mov_slot(0, l as u64, dst);
+                self.last_read[l as usize] = idx + 1;
             }
             Desc::ConstV(k) => {
                 self.emit(Op::MovConst, FLAG_A_CONST, k, 0, dst);
@@ -887,9 +894,7 @@ impl<'m> Predecoder<'m> {
             } => {
                 let src = self.temp_slot_used(src_height);
                 if src != dst {
-                    let idx = self.emit(Op::MovSlot, 0, src, 0, dst);
-                    self.last_mat_mov = idx;
-                    self.last_mat_region = self.region;
+                    self.emit_ordered_mov_slot(0, src, dst);
                 }
             }
         }
@@ -1028,7 +1033,16 @@ impl<'m> Predecoder<'m> {
                     if result_is_float(self.code[def as usize].op) != want_float {
                         return 0;
                     }
-                    self.code[def as usize].flags |= FLAG_DST_ACC;
+                    // MovPair always writes both destinations through and
+                    // leaves only its SECOND ordered copy in the integer
+                    // accumulator. Its low packed destination is exactly
+                    // the temp accepted by `rewritable_producer` above.
+                    // Keep this paired with the local-destination gate
+                    // below and the native-handler invariant documented on
+                    // `Op::MovPair`.
+                    if self.code[def as usize].op != Op::MovPair {
+                        self.code[def as usize].flags |= FLAG_DST_ACC;
+                    }
                     which_flag
                 } else if def == NO_DEF
                     && !want_float
@@ -1059,11 +1073,17 @@ impl<'m> Predecoder<'m> {
                 // immediately preceding instruction" — and the nonzero
                 // gate keeps never-written locals at function start from
                 // colliding with an empty stream.
-                if self.last_write[x as usize] > 0
-                    && self.last_write[x as usize] == self.code.len() as u32
+                let write = self.last_write[x as usize];
+                if write > 0
+                    && write == self.code.len() as u32
                     && self.last_write_region[x as usize] == self.region
-                    && result_is_float(self.code[self.last_write[x as usize] as usize - 1].op)
-                        == want_float
+                    && result_is_float(self.code[write as usize - 1].op) == want_float
+                    // Both packed destinations are written by one MovPair
+                    // cell, but only destination 2 is its accumulator
+                    // result. Let destination 1 fall back to its frame slot.
+                    // Keep this paired with the temp case above.
+                    && (self.code[write as usize - 1].op != Op::MovPair
+                        || self.code[write as usize - 1].c & 0xffff_ffff == x as u64)
                 {
                     which_flag
                 } else {
@@ -1164,20 +1184,25 @@ impl<'m> Predecoder<'m> {
             self.last_write[idx as usize] = def + 1;
             self.last_write_region[idx as usize] = self.region;
         } else {
-            let at = self.code.len() as u32;
-            let (op, flags, a) = match top {
+            let (op, flags, a, read_local) = match top {
                 Desc::Local(src) => {
-                    self.last_read[src as usize] = at + 1;
                     let acc = self.acc_operand(top, FLAG_A_ACC, false);
-                    (Op::MovSlot, acc, src as u64)
+                    (Op::MovSlot, acc, src as u64, Some(src))
                 }
-                Desc::ConstV(k) => (Op::MovConst, FLAG_A_CONST, k),
+                Desc::ConstV(k) => (Op::MovConst, FLAG_A_CONST, k, None),
                 Desc::Temp { height, .. } => {
                     let acc = self.acc_operand(top, FLAG_A_ACC, false);
-                    (Op::MovSlot, acc, self.temp_slot_used(height))
+                    (Op::MovSlot, acc, self.temp_slot_used(height), None)
                 }
             };
-            self.emit(op, flags, a, 0, idx as u64);
+            let at = if op == Op::MovSlot {
+                self.emit_ordered_mov_slot(flags, a, idx as u64)
+            } else {
+                self.emit(op, flags, a, 0, idx as u64)
+            };
+            if let Some(src) = read_local {
+                self.last_read[src as usize] = at + 1;
+            }
             self.last_write[idx as usize] = at + 1;
             self.last_write_region[idx as usize] = self.region;
         }
@@ -1452,6 +1477,92 @@ impl<'m> Predecoder<'m> {
             self.code[def as usize].c = FIXUP;
             self.frames[i].fixups.push(Fixup::InstrC(def));
         }
+    }
+
+    /// Recognize an in-place arithmetic update that can own a following
+    /// nonzero branch. `local` is both the first operand and destination.
+    fn sub_br_if_update(&self, def: u32, local: u32, i64_width: bool) -> Option<SubBrIfFusion> {
+        let ins = self.code[def as usize];
+        if ins.a != local as u64 || ins.c != local as u64 || ins.flags & FLAG_A_CONST != 0 {
+            return None;
+        }
+
+        let (op, b) = match (i64_width, ins.op) {
+            (false, Op::I32_Sub) => (Op::I32_SubBrIf, ins.b),
+            (false, Op::I32_Add) if ins.flags & FLAG_B_CONST != 0 => {
+                // Keep paired with the I64_Add arm below: both encode
+                // `x + k` as `x - wrapping_neg(k)`. The explicit i32 width
+                // is intentional, especially for i32::MIN; this is why
+                // there is no separate I32_AddBrIf opcode.
+                (Op::I32_SubBrIf, 0u32.wrapping_sub(ins.b as u32) as u64)
+            }
+            (true, Op::I64_Sub) => (Op::I64_SubBrIf, ins.b),
+            (true, Op::I64_Add) if ins.flags & FLAG_B_CONST != 0 => {
+                // Keep paired with the I32_Add arm above: use the same
+                // add-via-sub identity at i64 width. `wrapping_sub` keeps
+                // i64::MIN and every other bit pattern exact, without a
+                // separate I64_AddBrIf opcode.
+                (Op::I64_SubBrIf, 0u64.wrapping_sub(ins.b))
+            }
+            _ => return None,
+        };
+        Some(SubBrIfFusion {
+            def,
+            op,
+            b,
+            remove_condition: false,
+            local,
+        })
+    }
+
+    /// Match the ordinary i32 condition form, where the updated local is
+    /// itself a valid `br_if` condition.
+    fn direct_sub_br_if(&self, cond: Desc) -> Option<SubBrIfFusion> {
+        let Desc::Local(local) = cond else {
+            return None;
+        };
+        let write = self.last_write[local as usize];
+        if write == 0
+            || write != self.code.len() as u32
+            || self.last_write_region[local as usize] != self.region
+        {
+            return None;
+        }
+        self.sub_br_if_update(write - 1, local, false)
+    }
+
+    /// Match the full-width nonzero test required after an i64 update.
+    /// Wasm's `br_if` condition is i32, so an i64 local reaches it through
+    /// an immediately preceding `i64.ne local, 0` comparison.
+    fn i64_sub_br_if(&self, cond: Desc) -> Option<SubBrIfFusion> {
+        let cmp_def = self.rewritable_producer(cond)?;
+        let cmp = self.code[cmp_def as usize];
+        if cmp.op != Op::I64_Ne {
+            return None;
+        }
+        let local = if cmp.flags & FLAG_B_CONST != 0
+            && cmp.b == 0
+            && cmp.flags & FLAG_A_CONST == 0
+            && cmp.a < self.n_locals as u64
+        {
+            cmp.a as u32
+        } else if cmp.flags & FLAG_A_CONST != 0
+            && cmp.a == 0
+            && cmp.flags & FLAG_B_CONST == 0
+            && cmp.b < self.n_locals as u64
+        {
+            cmp.b as u32
+        } else {
+            return None;
+        };
+
+        let write = self.last_write[local as usize];
+        if write == 0 || write != cmp_def || self.last_write_region[local as usize] != self.region {
+            return None;
+        }
+        let mut fusion = self.sub_br_if_update(write - 1, local, true)?;
+        fusion.remove_condition = true;
+        Some(fusion)
     }
 
     fn emit_return(&mut self) {
@@ -2314,8 +2425,8 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     let plan = self.plan_branch(d)?;
                     let needs_moves = !plan.copies.is_empty();
 
-                    // A typed loop commonly carries an induction local as
-                    // both its payload and condition:
+                    // A loop commonly updates an induction local and uses
+                    // the new value as its condition:
                     //
                     //     local.get $n; i32.const 1; i32.sub
                     //     local.tee $n; local.get $n; br_if $loop
@@ -2323,36 +2434,11 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     // Destination folding has already made the update read
                     // and write `$n`. When it is still the immediately
                     // preceding writer, make that one cell perform the
-                    // write-through and branch as well. A constant add uses
-                    // the same handler after `x + k` is normalized to
-                    // `x - (-k)` with wrapping i32 arithmetic.
+                    // write-through and branch as well. The i64 form looks
+                    // through the required `i64.ne $n, 0` condition cell.
                     let sub_branch = if !needs_moves && (d as usize) < self.frames.len() {
-                        match cond {
-                            Desc::Local(local)
-                                if self.last_write[local as usize] != 0
-                                    && self.last_write[local as usize]
-                                        == self.code.len() as u32
-                                    && self.last_write_region[local as usize] == self.region =>
-                            {
-                                let def = self.last_write[local as usize] - 1;
-                                let ins = self.code[def as usize];
-                                if ins.a != local as u64
-                                    || ins.c != local as u64
-                                    || ins.flags & FLAG_A_CONST != 0
-                                {
-                                    None
-                                } else {
-                                    match ins.op {
-                                        Op::I32_Sub => Some((def, ins.b)),
-                                        Op::I32_Add if ins.flags & FLAG_B_CONST != 0 => {
-                                            Some((def, (0u32.wrapping_sub(ins.b as u32)) as u64))
-                                        }
-                                        _ => None,
-                                    }
-                                }
-                            }
-                            _ => None,
-                        }
+                        self.direct_sub_br_if(cond)
+                            .or_else(|| self.i64_sub_br_if(cond))
                     } else {
                         None
                     };
@@ -2370,14 +2456,23 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         })
                     };
 
-                    if let Some((def, b)) = sub_branch {
-                        self.code[def as usize].op = Op::I32_SubBrIf;
-                        self.code[def as usize].b = b;
+                    if let Some(fusion) = sub_branch {
+                        if fusion.remove_condition {
+                            debug_assert_eq!(
+                                self.code.len() as u32,
+                                fusion.def + 2,
+                                "the i64 zero comparison must immediately follow its update"
+                            );
+                            self.code.pop();
+                            self.last_read[fusion.local as usize] = fusion.def + 1;
+                        }
+                        self.code[fusion.def as usize].op = fusion.op;
+                        self.code[fusion.def as usize].b = fusion.b;
                         // `a` remains the authoritative destination slot;
                         // do not make the fused control handler depend on
                         // transient accumulator residency for that operand.
-                        self.code[def as usize].flags &= !(FLAG_A_ACC | FLAG_DST_ACC);
-                        self.retarget_branch(def, d);
+                        self.code[fusion.def as usize].flags &= !(FLAG_A_ACC | FLAG_DST_ACC);
+                        self.retarget_branch(fusion.def, d);
                     } else if let Some((def, fusion)) = fused {
                         self.code[def as usize].op = fusion.op;
                         if let Some(b) = fusion.b_const {
@@ -3143,18 +3238,53 @@ mod tests {
                 ))"#,
             0,
         );
-        // The flush mov is emitted at set-processing time, i.e. AFTER the
-        // add — which is still correct: the fold is blocked, so the add
-        // writes a temp and local 0 keeps its old value until the set mov.
-        assert_eq!(ops(&f), [Op::I32_Add, Op::MovSlot, Op::MovSlot, Op::Return]);
+        // The flush copy is emitted at set-processing time, i.e. AFTER the
+        // add. It remains ordered first inside MovPair, so the old value is
+        // captured before the unfolded set overwrites local 0.
+        assert_eq!(ops(&f), [Op::I32_Add, Op::MovPair, Op::Return]);
         // add writes a temp, NOT local 0
         assert_ne!(f.code[0].c, 0);
-        // flush: old local 0 -> its canonical temp slot 1 (n_locals = 1)
-        assert_eq!((f.code[1].a, f.code[1].c), (0, 1));
-        // unfolded set copies the add result into local 0
-        assert_eq!(f.code[2].c, 0);
+        let pair = f.code[1];
+        // copy 1: old local 0 -> canonical temp slot 1; copy 2: the add's
+        // result slot 2 -> local 0.
+        assert_eq!((pair.a, pair.b, pair.c), (0, 2, 1u64 << 32));
         // the returned value is the flushed OLD param value
-        assert_eq!((f.code[3].a, f.code[3].b), (1, 1));
+        assert_eq!((f.code[2].a, f.code[2].b), (1, 1));
+    }
+
+    #[test]
+    fn mov_pair_accumulator_belongs_only_to_second_destination() {
+        for (result_local, expect_acc) in [("$x", false), ("$y", true)] {
+            let f = predecode_wat(
+                &format!(
+                    r#"(module
+                        (func (param $a i64) (param $b i64)
+                              (result i64) (local $x i64) (local $y i64)
+                            local.get $a
+                            local.set $x
+                            local.get $b
+                            local.set $y
+                            local.get {result_local}
+                            i64.const 1
+                            i64.add))"#
+                ),
+                0,
+            );
+
+            assert_eq!(ops(&f), [Op::MovPair, Op::I64_Add, Op::Return]);
+            let pair = f.code[0];
+            assert_eq!((pair.a, pair.b, pair.c), (0, 1, 2u64 << 32 | 3));
+            assert_eq!(
+                pair.flags & FLAG_DST_ACC,
+                0,
+                "MovPair must remain write-through even when destination 2 is forwarded"
+            );
+            let add_reads_acc = f.code[1].flags & FLAG_A_ACC != 0;
+            assert_eq!(
+                add_reads_acc, expect_acc,
+                "MovPair leaves only destination 2 (`$y`) in the accumulator"
+            );
+        }
     }
 
     #[test]
@@ -3328,6 +3458,203 @@ mod tests {
 
         assert_eq!(ops(&f), [Op::I32_Add, Op::BrIf, Op::MovSlot, Op::Return]);
         assert!(f.code.iter().all(|ins| ins.op != Op::I32_SubBrIf));
+    }
+
+    #[test]
+    fn i64_sub_nonzero_branch_removes_the_zero_comparison() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $n i64) (result i64)
+                    (loop $continue
+                        local.get $n
+                        i64.const 1
+                        i64.sub
+                        local.set $n
+                        local.get $n
+                        i64.const 0
+                        i64.ne
+                        br_if $continue)
+                    local.get $n))"#,
+            0,
+        );
+
+        assert_eq!(ops(&f), [Op::I64_SubBrIf, Op::MovSlot, Op::Return]);
+        let hot = f.code[0];
+        assert_eq!(hot.flags, FLAG_B_CONST);
+        assert_eq!((hot.a, hot.b, hot.c), (0, 1, 0));
+        assert!(f.code.iter().all(|ins| ins.op != Op::I64_Ne));
+    }
+
+    #[test]
+    fn fibonacci_i64_countdown_uses_the_generic_sub_branch() {
+        let f = predecode_wat(
+            r#"(module
+                (func (export "run") (param $n i64) (result i64)
+                    (local $a i64)
+                    (local $b i64)
+                    (local $i i64)
+                    (local.set $a (i64.const 0))
+                    (local.set $b (i64.const 1))
+                    (local.set $i (local.get $n))
+                    (block $break
+                        (br_if $break (i64.eqz (local.get $i)))
+                        (loop $continue
+                            (i64.add (local.get $a) (local.get $b))
+                            (local.set $a (local.get $b))
+                            (local.set $b)
+                            (local.set $i (i64.sub (local.get $i) (i64.const 1)))
+                            (br_if $continue
+                                (i64.ne (local.get $i) (i64.const 0)))))
+                    (local.get $a)))"#,
+            0,
+        );
+
+        assert_eq!(
+            ops(&f),
+            [
+                Op::MovConst,
+                Op::MovConst,
+                Op::MovSlot,
+                Op::I64_BrEq,
+                Op::I64_Add,
+                Op::MovPair,
+                Op::I64_SubBrIf,
+                Op::MovSlot,
+                Op::Return,
+            ]
+        );
+        let pair = f.code[5];
+        assert_eq!((pair.a, pair.b, pair.c), (2, 4, 1u64 << 32 | 2));
+        let hot = f.code[6];
+        assert_eq!(hot.flags, FLAG_B_CONST);
+        assert_eq!((hot.a, hot.b, hot.c), (3, 1, 4));
+        assert!(f.code.iter().all(|ins| ins.op != Op::I64_Ne));
+    }
+
+    #[test]
+    fn i64_constant_add_negates_rhs_with_i64_wrapping() {
+        for (constant, expected_rhs) in [
+            ("1", u64::MAX),
+            ("-1", 1),
+            ("-9223372036854775808", 0x8000_0000_0000_0000),
+            ("0", 0),
+        ] {
+            let wat = format!(
+                r#"(module
+                    (func (param $n i64) (result i64)
+                        (loop $continue
+                            local.get $n
+                            i64.const {constant}
+                            i64.add
+                            local.set $n
+                            local.get $n
+                            i64.const 0
+                            i64.ne
+                            br_if $continue)
+                        local.get $n))"#
+            );
+            let f = predecode_wat(&wat, 0);
+            assert_eq!(f.code[0].op, Op::I64_SubBrIf);
+            assert_ne!(f.code[0].flags & FLAG_B_CONST, 0);
+            assert_eq!(f.code[0].b, expected_rhs, "constant {constant}");
+        }
+    }
+
+    #[test]
+    fn i64_variable_rhs_add_stays_unfused() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $n i64) (param $step i64) (result i64)
+                    (loop $continue
+                        local.get $n
+                        local.get $step
+                        i64.add
+                        local.set $n
+                        local.get $n
+                        i64.const 0
+                        i64.ne
+                        br_if $continue)
+                    local.get $n))"#,
+            0,
+        );
+
+        assert!(f.code.iter().any(|ins| ins.op == Op::I64_Add));
+        assert!(f.code.iter().all(|ins| ins.op != Op::I64_SubBrIf));
+    }
+
+    #[test]
+    fn i64_sub_branch_keeps_a_safe_accumulator_rhs() {
+        let f = predecode_wat(
+            r#"(module
+                (func (param $n i64) (param $step i64) (result i64)
+                    (loop $continue
+                        local.get $n
+                        local.get $step
+                        i64.const 0
+                        i64.add
+                        i64.sub
+                        local.set $n
+                        local.get $n
+                        i64.const 0
+                        i64.ne
+                        br_if $continue)
+                    local.get $n))"#,
+            0,
+        );
+
+        let branch = f
+            .code
+            .iter()
+            .find(|ins| ins.op == Op::I64_SubBrIf)
+            .expect("fused i64 subtraction branch");
+        assert_eq!(branch.flags & (FLAG_A_ACC | FLAG_DST_ACC), 0);
+        assert_ne!(branch.flags & FLAG_B_ACC, 0);
+    }
+
+    #[test]
+    fn i64_sub_branch_rejects_other_comparisons_and_branch_moves() {
+        for compare in ["i64.const 0 i64.eq", "i64.const 1 i64.ne"] {
+            let wat = format!(
+                r#"(module
+                    (func (param $n i64) (result i64)
+                        (loop $continue
+                            local.get $n
+                            i64.const 1
+                            i64.sub
+                            local.set $n
+                            local.get $n
+                            {compare}
+                            br_if $continue)
+                        local.get $n))"#
+            );
+            let f = predecode_wat(&wat, 0);
+            assert!(
+                f.code.iter().all(|ins| ins.op != Op::I64_SubBrIf),
+                "comparison {compare}"
+            );
+        }
+
+        let with_moves = predecode_wat(
+            r#"(module
+                (func (param $value i64) (param $n i64) (result i64)
+                    (block $exit (result i64)
+                        local.get $value
+                        local.get $n
+                        i64.const 1
+                        i64.sub
+                        local.set $n
+                        local.get $n
+                        i64.const 0
+                        i64.ne
+                        br_if $exit
+                        drop
+                        i64.const 7)))"#,
+            0,
+        );
+        assert!(
+            with_moves.code.iter().all(|ins| ins.op != Op::I64_SubBrIf),
+            "a taken-path value move must keep the update and branch separate"
+        );
     }
 
     #[test]

@@ -400,7 +400,20 @@ pub enum Op {
     /// Fused in-place `i32.sub` + `br_if`: write
     /// `frame[a] = i32(frame[a]) - i32(b)`, then branch to `c` when the
     /// result is nonzero. `a` is both the first operand and destination.
+    ///
+    /// The predecoder also represents constant `i32.add` updates with this
+    /// opcode by wrapping-negating the immediate. Keep that encoding and the
+    /// execution semantics in sync with [`Op::I64_SubBrIf`].
     I32_SubBrIf,
+    /// Fused in-place `i64.sub` + nonzero `br_if`: write
+    /// `frame[a] = frame[a] - b` with wrapping i64 arithmetic, then branch
+    /// to `c` when the result is nonzero. `a` is both the first operand and
+    /// destination.
+    ///
+    /// Constant `i64.add` updates use the same wrapping-negated-immediate
+    /// encoding as [`Op::I32_SubBrIf`]. Keep their control-flow,
+    /// write-through, operand-class, and add-via-sub semantics in sync.
+    I64_SubBrIf,
     /// `a` = index operand, `c` = side-table id in
     /// `PredecodedFunction::br_tables` (last entry is the default).
     BrTable,
@@ -417,9 +430,12 @@ pub enum Op {
     /// do -- the reference already names the function.
     CallRef,
     ReturnCallRef,
-    /// Two fused materialization movs: `frame[c>>32] = frame[a]` then
+    /// Two fused ordered slot copies: `frame[c>>32] = frame[a]` then
     /// `frame[c & 0xffffffff] = frame[b]`, in that order (src2 may be
-    /// dst1). Emitted by the predecoder for adjacent staging movs.
+    /// dst1). Native handlers also leave the second copied value in the
+    /// integer accumulator, preserving the write-through behavior of the
+    /// second `MovSlot`. Emitted for adjacent stack staging or local
+    /// assignments.
     MovPair,
     Unreachable,
 }

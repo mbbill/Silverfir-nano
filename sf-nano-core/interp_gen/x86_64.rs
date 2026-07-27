@@ -745,7 +745,7 @@ impl Isa for X86_64 {
                 !matches!(v.a, Cls::Const | Cls::Acc) && !matches!(v.b, Cls::Const | Cls::Acc)
             }
             BrTable => v.a != Cls::Const,
-            I32_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
+            I32_SubBrIf | I64_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
             _ => {
                 if v.fused {
                     if v.a == Cls::Const {
@@ -799,7 +799,7 @@ impl Isa for X86_64 {
                 self.tail(a, v.counted);
                 return;
             }
-            I32_SubBrIf => {
+            I32_SubBrIf | I64_SubBrIf => {
                 a.ins("mov rdx, [rbx + 24]");
                 a.ins("mov rsi, [rdx]");
                 a.ins("mov r8, [rbx + 8]"); // a slot byte offset
@@ -821,7 +821,11 @@ impl Isa for X86_64 {
                         _ => RAX,
                     }
                 );
-                a.ins(&format!("sub {}, {}", d(ra), d(rb)));
+                if v.op == I32_SubBrIf {
+                    a.ins(&format!("sub {}, {}", d(ra), d(rb)));
+                } else {
+                    a.ins(&format!("sub {}, {}", q(ra), q(rb)));
+                }
                 a.ins(&format!("mov [rbp + r8], {}", q(ra)));
                 let nt = a.fresh("nt");
                 a.ins(&format!("jz {nt}"));
@@ -896,7 +900,8 @@ impl Isa for X86_64 {
                 self.finish(a, dc, rd);
             }
             MovPair => {
-                // Strictly ordered: src2 may be dst1.
+                // Strictly ordered: commit dst1 (including its pinned
+                // register, when present) before reading src2.
                 a.ins("mov rdx, [rbx + 24]"); // dst1*8 << 32 | dst2*8
                 let v1 = match v.a {
                     Cls::L0 => L0R,
@@ -910,17 +915,42 @@ impl Isa for X86_64 {
                 a.ins("mov rsi, rdx");
                 a.ins("shr rsi, 32");
                 a.ins(&format!("mov [rbp + rsi], {}", q(v1)));
+                let d1 = match v.pair_d.first() {
+                    None => None,
+                    Some(DstCls::L0) => Some(L0R),
+                    Some(DstCls::L1) => Some(L1R),
+                    Some(DstCls::Mem | DstCls::Acc) => unreachable!(),
+                };
+                if let Some(rd) = d1 {
+                    if rd != v1 {
+                        a.ins(&format!("mov {}, {}", q(rd), q(v1)));
+                    }
+                }
                 let v2 = match v.b {
                     Cls::L0 => L0R,
                     Cls::L1 => L1R,
                     _ => {
                         a.ins("mov rcx, [rbx + 16]");
-                        a.ins("mov rcx, [rbp + rcx]");
-                        RCX
+                        a.ins(&format!("mov {}, [rbp + rcx]", q(ACC)));
+                        ACC
                     }
                 };
+                if v2 != ACC {
+                    a.ins(&format!("mov {}, {}", q(ACC), q(v2)));
+                }
                 a.ins("mov edx, edx");
-                a.ins(&format!("mov [rbp + rdx], {}", q(v2)));
+                a.ins(&format!("mov [rbp + rdx], {}", q(ACC)));
+                let d2 = match v.pair_d.second() {
+                    None => None,
+                    Some(DstCls::L0) => Some(L0R),
+                    Some(DstCls::L1) => Some(L1R),
+                    Some(DstCls::Mem | DstCls::Acc) => unreachable!(),
+                };
+                if let Some(rd) = d2 {
+                    if rd != ACC {
+                        a.ins(&format!("mov {}, {}", q(rd), q(ACC)));
+                    }
+                }
             }
             Select => {
                 let (ra, rb) = self.src_ab(a, v.a, v.b);

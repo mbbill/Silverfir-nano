@@ -276,7 +276,7 @@ fn rv32_native(op: Op) -> bool {
         )
         || matches!(op, I32_Store | I32_Store8 | I32_Store16)
         || (d >= I32_BrEq as u16 && d <= I32_BrGeU as u16)
-        || matches!(op, I32_BrAnd | I32_BrAndNot | I32_SubBrIf)
+        || matches!(op, I32_BrAnd | I32_BrAndNot | I32_SubBrIf | I64_SubBrIf)
     {
         // The 32-bit shifts, rotates, multiply and divide are native here;
         // RV32 has them as base instructions.
@@ -827,7 +827,7 @@ impl Isa for RiscV {
                 !matches!(v.a, Cls::Const | Cls::Acc) && !matches!(v.b, Cls::Const | Cls::Acc)
             }
             BrTable => v.a != Cls::Const,
-            I32_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
+            I32_SubBrIf | I64_SubBrIf => !matches!(v.a, Cls::Const | Cls::Acc),
             _ => {
                 if v.fused {
                     if v.a == Cls::Const {
@@ -923,6 +923,53 @@ impl Isa for RiscV {
                 self.tail(a, v.counted);
                 return;
             }
+            I64_SubBrIf => {
+                a.ins(&format!("{lp} {T5}, 24({PC})"));
+                a.ins(&format!("{lp} {T6}, 0({T5})"));
+                let nz = if self.rv64() {
+                    let x = self.src(a, v.a, 8, T1);
+                    let y = self.src(a, v.b, 16, T2);
+                    a.ins(&format!("sub {A2}, {x}, {y}"));
+                    self.slot_addr(a, 8, T3);
+                    a.ins(&format!("sd {A2}, 0({T3})"));
+                    match v.a {
+                        Cls::L0 => a.ins(&format!("mv {L0R}, {A2}")),
+                        Cls::L1 => a.ins(&format!("mv {L1R}, {A2}")),
+                        Cls::Slot => {}
+                        Cls::Const | Cls::Acc => unreachable!(),
+                    }
+                    A2
+                } else {
+                    let (xl, xh) = self.pair(a, v.a, 8, T1, T2);
+                    let (yl, yh) = self.pair(a, v.b, 16, T3, T4);
+                    a.ins(&format!("sub {A2}, {xl}, {yl}"));
+                    a.ins(&format!("sltu {A4}, {xl}, {yl}")); // borrow
+                    a.ins(&format!("sub {A3}, {xh}, {yh}"));
+                    a.ins(&format!("sub {A3}, {A3}, {A4}"));
+                    self.slot_addr(a, 8, T3);
+                    a.ins(&format!("sw {A2}, 0({T3})"));
+                    a.ins(&format!("sw {A3}, 4({T3})"));
+                    match v.a {
+                        Cls::L0 => {
+                            a.ins(&format!("mv {L0R}, {A2}"));
+                            a.ins(&format!("mv {L0_HI}, {A3}"));
+                        }
+                        Cls::Slot => {}
+                        Cls::Const | Cls::Acc | Cls::L1 => unreachable!(),
+                    }
+                    a.ins(&format!("or {A4}, {A2}, {A3}"));
+                    A4
+                };
+                let nt = a.fresh("nt");
+                a.ins(&format!("beq {nz}, zero, {nt}"));
+                self.bump(a, v.counted);
+                a.ins(&format!("mv {PC}, {T5}"));
+                a.ins(&format!("jr {T6}"));
+                a.label(&nt);
+                self.pre(a);
+                self.tail(a, v.counted);
+                return;
+            }
             BrTable => {
                 self.bump(a, v.counted);
                 let ra = self.src(a, v.a, 8, T1);
@@ -1002,7 +1049,8 @@ impl Isa for RiscV {
                 self.finish(a, v.d, rd, true);
             }
             MovPair => {
-                // Strictly ordered: src2 may be dst1.
+                // Strictly ordered: commit dst1 (including its pinned
+                // register, when present) before reading src2.
                 let (v1, v1h) = self.pair(a, v.a, 8, T1, T2);
                 if self.rv64() {
                     a.ins(&format!("{lp} {T3}, 24({PC})"));
@@ -1015,16 +1063,40 @@ impl Isa for RiscV {
                 if !self.rv64() {
                     a.ins(&format!("sw {v1h}, 4({T3})"));
                 }
-                let (v2, v2h) = self.pair(a, v.b, 16, T1, T2);
+                if let Some(d1) = v.pair_d.first() {
+                    let rd = self.dst_target(d1);
+                    if rd != v1 {
+                        a.ins(&format!("mv {rd}, {v1}"));
+                        if !self.rv64() {
+                            a.ins(&format!("mv {}, {v1h}", self.dst_hi(d1)));
+                        }
+                    }
+                }
+                let (v2, v2h) = self.pair(a, v.b, 16, ACC, ACC_HI);
+                if v2 != ACC {
+                    a.ins(&format!("mv {ACC}, {v2}"));
+                    if !self.rv64() {
+                        a.ins(&format!("mv {ACC_HI}, {v2h}"));
+                    }
+                }
                 a.ins(&format!("{lp} {T5}, 24({PC})"));
                 if self.rv64() {
                     a.ins(&format!("slli {T5}, {T5}, 32"));
                     a.ins(&format!("srli {T5}, {T5}, 32"));
                 }
                 a.ins(&format!("add {T5}, {FRAME}, {T5}"));
-                a.ins(&format!("{} {v2}, 0({T5})", self.sp()));
+                a.ins(&format!("{} {ACC}, 0({T5})", self.sp()));
                 if !self.rv64() {
-                    a.ins(&format!("sw {v2h}, 4({T5})"));
+                    a.ins(&format!("sw {ACC_HI}, 4({T5})"));
+                }
+                if let Some(d2) = v.pair_d.second() {
+                    let rd = self.dst_target(d2);
+                    if rd != ACC {
+                        a.ins(&format!("mv {rd}, {ACC}"));
+                        if !self.rv64() {
+                            a.ins(&format!("mv {}, {ACC_HI}", self.dst_hi(d2)));
+                        }
+                    }
                 }
             }
             Select => {

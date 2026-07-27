@@ -88,6 +88,19 @@ pub(crate) enum DstCls {
     L1,
 }
 
+/// Residency of `MovPair`'s two ordered destinations. Equal destinations
+/// are never paired, so seven states cover every unpinned/L0/L1 mapping.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum PairDstCls {
+    None,
+    FirstL0,
+    FirstL1,
+    SecondL0,
+    SecondL1,
+    L0L1,
+    L1L0,
+}
+
 impl Cls {
     pub(crate) fn index(self) -> usize {
         match self {
@@ -107,6 +120,37 @@ impl DstCls {
             DstCls::Acc => 1,
             DstCls::L0 => 2,
             DstCls::L1 => 3,
+        }
+    }
+}
+
+#[allow(dead_code)] // first/second are consumed by the build-time backends.
+impl PairDstCls {
+    pub(crate) fn index(self) -> usize {
+        match self {
+            PairDstCls::None => 0,
+            PairDstCls::FirstL0 => 1,
+            PairDstCls::FirstL1 => 2,
+            PairDstCls::SecondL0 => 3,
+            PairDstCls::SecondL1 => 4,
+            PairDstCls::L0L1 => 5,
+            PairDstCls::L1L0 => 6,
+        }
+    }
+
+    pub(crate) fn first(self) -> Option<DstCls> {
+        match self {
+            PairDstCls::FirstL0 | PairDstCls::L0L1 => Some(DstCls::L0),
+            PairDstCls::FirstL1 | PairDstCls::L1L0 => Some(DstCls::L1),
+            PairDstCls::None | PairDstCls::SecondL0 | PairDstCls::SecondL1 => None,
+        }
+    }
+
+    pub(crate) fn second(self) -> Option<DstCls> {
+        match self {
+            PairDstCls::SecondL0 | PairDstCls::L1L0 => Some(DstCls::L0),
+            PairDstCls::SecondL1 | PairDstCls::L0L1 => Some(DstCls::L1),
+            PairDstCls::None | PairDstCls::FirstL0 | PairDstCls::FirstL1 => None,
         }
     }
 }
@@ -132,6 +176,8 @@ pub(crate) enum Fam {
     SrcADst,
     /// Sources a x b, no value destination.
     SrcAB,
+    /// Sources a x b and the seven ordered `MovPair` destination states.
+    SrcABPairDst,
     /// Sources a x b x destination.
     SrcABDst,
     /// Like `SrcADst`, plus a second bank for address-fused variants
@@ -151,6 +197,7 @@ impl Fam {
             Fam::SrcA => 5,
             Fam::SrcADst => 20,
             Fam::SrcAB => 25,
+            Fam::SrcABPairDst => 175,
             Fam::SrcABDst => 100,
             Fam::Load => 40,
             Fam::Store => 50,
@@ -164,7 +211,14 @@ impl Fam {
 
     /// Index of one class combination inside the family, or `None` when
     /// the combination does not exist in it.
-    pub(crate) fn index_of(self, a: Cls, b: Cls, d: DstCls, fused: bool) -> Option<usize> {
+    pub(crate) fn index_of(
+        self,
+        a: Cls,
+        b: Cls,
+        d: DstCls,
+        pair_d: PairDstCls,
+        fused: bool,
+    ) -> Option<usize> {
         if fused && !self.has_fused_bank() {
             return None;
         }
@@ -182,6 +236,7 @@ impl Fam {
             Fam::SrcA => ai,
             Fam::SrcADst => ai + 5 * di,
             Fam::SrcAB => ai + 5 * bi,
+            Fam::SrcABPairDst => ai + 5 * bi + 25 * pair_d.index(),
             Fam::SrcABDst => ai + 5 * bi + 25 * di,
             Fam::Load => ai + 5 * di + if fused { 20 } else { 0 },
             Fam::Store => ai + 5 * bi + if fused { 25 } else { 0 },
@@ -226,13 +281,13 @@ pub(crate) fn family(op: Op) -> Fam {
     if between(op, I32_Store, I64_Store32) {
         return Fam::Store;
     }
-    if between(op, I32_BrEq, I32_SubBrIf) {
+    if between(op, I32_BrEq, I64_SubBrIf) {
         return Fam::SrcAB;
     }
     match op {
         MovSlot => Fam::SrcADst,
         MovConst => Fam::ConstDst,
-        MovPair => Fam::SrcAB,
+        MovPair => Fam::SrcABPairDst,
         Select => Fam::SrcABDst,
         GlobalGet => Fam::Dst,
         GlobalSet | BrIf | BrIfNot | BrTable => Fam::SrcA,
@@ -270,15 +325,15 @@ pub(crate) fn total_slots() -> usize {
 /// matters — a wrong `true` mis-classes an operand into a variant nobody
 /// emitted and silently demotes the cell to the slow path.
 ///
-/// This is deliberately independent of [`family`] in the two places they
-/// disagree: `Select` and the fused memory ops pack their destination into
-/// `c` alongside another field, so `c` is not a plain destination slot.
+/// This is deliberately independent of [`family`] where packed fields
+/// disagree with a family's generic shape: `Select`, `MovPair`, and fused
+/// memory ops do not carry one plain destination in `c`.
 pub(crate) fn slot_fields(op: Op) -> (bool, bool, bool) {
     use Op::*;
     match family(op) {
         Fam::SrcABDst => {
             if op == Select {
-                // dst and cond are packed in c; the link guard reads them.
+                // Select packs the destination and condition in c.
                 (true, true, false)
             } else {
                 (true, true, true)
@@ -292,9 +347,10 @@ pub(crate) fn slot_fields(op: Op) -> (bool, bool, bool) {
         Fam::Load => (true, false, true),
         // Stores: a = address, b = value, c = static offset.
         Fam::Store => (true, true, false),
-        // Fused compare-branches and MovPair: a, b operands, c = target
-        // / packed destinations.
+        // Fused compare-branches: a, b operands, c = target.
         Fam::SrcAB => (true, true, false),
+        // MovPair: a, b operands, c = two packed destinations.
+        Fam::SrcABPairDst => (true, true, false),
         Fam::Fixed | Fam::None => (false, false, false),
     }
 }
@@ -308,7 +364,10 @@ pub(crate) fn writes_acc(op: Op) -> bool {
     let d = op as u16;
     (d >= MovSlot as u16 && d <= F64_ReinterpretI64 as u16)
         || (d >= I32_Load as u16 && d <= I64_Load32U as u16)
-        || matches!(op, GlobalGet | Select)
+        // MovPair's accumulator result is its second ordered copy. This
+        // preserves the residency that its second constituent MovSlot
+        // would have provided without adding another handler-table axis.
+        || matches!(op, GlobalGet | Select | MovPair)
 }
 
 /// Ops whose static offset packs a memory index in the high bits can only
@@ -332,7 +391,7 @@ pub(crate) fn native_guard(ins: &Instr) -> bool {
 /// a relative offset and the handler would branch into hyperspace.
 pub(crate) fn c_is_branch_target(op: Op) -> bool {
     use Op::*;
-    matches!(op, Br | BrIf | BrIfNot) || between(op, I32_BrEq, I32_SubBrIf)
+    matches!(op, Br | BrIf | BrIfNot) || between(op, I32_BrEq, I64_SubBrIf)
 }
 
 /// Per-op `b`/`c` pre-scaling for native handlers (`a` is handled
@@ -460,6 +519,33 @@ pub(crate) fn op_slot(
     } else {
         Cls::Slot
     };
+    // MovPair has two ordered destinations. Classify both so the handler
+    // updates every authoritative pinned register before a later source
+    // in the same pair can observe it.
+    let pair_d = if ins.op == Op::MovPair {
+        let dst1 = ins.c >> 32;
+        let dst2 = ins.c & 0xffff_ffff;
+        match (
+            dst1 == pin.l0,
+            dst1 == pin.l1,
+            dst2 == pin.l0,
+            dst2 == pin.l1,
+        ) {
+            (false, false, false, false) => PairDstCls::None,
+            (true, false, false, false) => PairDstCls::FirstL0,
+            (false, true, false, false) => PairDstCls::FirstL1,
+            (false, false, true, false) => PairDstCls::SecondL0,
+            (false, false, false, true) => PairDstCls::SecondL1,
+            (true, false, false, true) => PairDstCls::L0L1,
+            (false, true, true, false) => PairDstCls::L1L0,
+            // The predecoder does not pair equal destinations. Keep this
+            // defensive fallback slow if a forged function violates it.
+            _ => return None,
+        }
+    } else {
+        PairDstCls::None
+    };
+
     // Select and the fused loads pack their destination in c's low half.
     let packed_dst = ins.op == Op::Select || (flags & FLAG_FUSED != 0 && c_d);
     let dslot = if packed_dst {
@@ -480,6 +566,47 @@ pub(crate) fn op_slot(
     } else {
         DstCls::Mem
     };
-    let idx = fam.index_of(a, b, d, flags & FLAG_FUSED != 0)?;
+    let idx = fam.index_of(a, b, d, pair_d, flags & FLAG_FUSED != 0)?;
     Some(op_base[ins.op as usize] as usize + idx)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn mov_pair_classifies_every_ordered_pinned_destination_state() {
+        let op_base = build_op_base();
+        let pin = Pinned {
+            l0: 1,
+            l1: 2,
+            l0_float: false,
+            l1_float: false,
+        };
+        let cases = [
+            ((3, 4), PairDstCls::None),
+            ((1, 3), PairDstCls::FirstL0),
+            ((2, 3), PairDstCls::FirstL1),
+            ((3, 1), PairDstCls::SecondL0),
+            ((3, 2), PairDstCls::SecondL1),
+            ((1, 2), PairDstCls::L0L1),
+            ((2, 1), PairDstCls::L1L0),
+        ];
+
+        for ((dst1, dst2), pair_d) in cases {
+            let ins = Instr::new(Op::MovPair, 0, 3, 4, (dst1 << 32) | dst2);
+            let expected = op_base[Op::MovPair as usize] as usize
+                + family(Op::MovPair)
+                    .index_of(Cls::Slot, Cls::Slot, DstCls::Mem, pair_d, false)
+                    .unwrap();
+            assert_eq!(
+                op_slot(&ins, 0, &pin, &op_base),
+                Some(expected),
+                "dst1={dst1}, dst2={dst2}"
+            );
+        }
+
+        let equal_destinations = Instr::new(Op::MovPair, 0, 3, 4, (1u64 << 32) | 1);
+        assert_eq!(op_slot(&equal_destinations, 0, &pin, &op_base), None);
+    }
 }

@@ -13,7 +13,7 @@
 
 use super::asm::Asm;
 use super::instr::Op;
-use super::layout::{Cls, DstCls};
+use super::layout::{Cls, DstCls, PairDstCls};
 
 /// The full operand-class set. A backend narrows it in [`Caps`] when
 /// emitted-code size matters more than the last few percent of residency.
@@ -93,6 +93,8 @@ pub struct Variant {
     pub a: Cls,
     pub b: Cls,
     pub d: DstCls,
+    /// Ordered destination residency for `MovPair`; `None` for other ops.
+    pub pair_d: PairDstCls,
     /// Address-fused bank (memory ops only).
     pub fused: bool,
     /// Whether this handler bumps the in-chain dispatch counter.
