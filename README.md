@@ -41,7 +41,7 @@ optimizing JIT and an interpreter behind one API
 1. **Fast, JIT and interpreter** — register-allocated, region-optimized native
    code puts the JIT at parity with Wasmtime's fully-optimizing Cranelift and
    V8 TurboFan on Apple M4. The interpreter beats the best-in-class Wasm
-   interpreters by 1.16–1.73× ([full results](benchmarks/wasi/README.md)).
+   interpreters by 1.07–1.73× ([full results](benchmarks/wasi/README.md)).
 2. **Small** — pick an engine and pay for what you use. Measured on real
    RP2350 firmware, flash is 337 KiB with the interpreter and 1,042 KiB with
    the JIT ([details](#binary-size)); both run inside the board's 512 KB of

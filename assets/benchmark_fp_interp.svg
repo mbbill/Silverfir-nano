@@ -46,7 +46,7 @@
   <rect class="s-w3" x="364.0" y="53" width="10" height="10" rx="2"/>
   <text class="legend" x="379.0" y="62">wasm3</text>
   <rect class="s-wi" x="552.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="567.0" y="62">wasmi 1.1.0</text>
+  <text class="legend" x="567.0" y="62">wasmi 2.0.0-beta.7</text>
   <line class="axis" x1="176" y1="76" x2="176" y2="268"/>
 
   <text class="metric" x="168" y="94" text-anchor="end">mandelbrot</text>
@@ -57,9 +57,9 @@
   <text class="name" x="168" y="137" text-anchor="end">wasm3</text>
   <rect class="s-w3" x="176" y="124" width="364.2" height="18" rx="4"/>
   <text class="val" x="546.2" y="137">134</text>
-  <text class="name" x="168" y="157" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="144" width="156.5" height="18" rx="4"/>
-  <text class="val" x="338.5" y="157">57.59</text>
+  <text class="name" x="168" y="157" text-anchor="end">wasmi 2.0.0-beta.7</text>
+  <rect class="s-wi" x="176" y="144" width="259.3" height="18" rx="4"/>
+  <text class="val" x="441.3" y="157">95.42</text>
   <text class="metric" x="168" y="190" text-anchor="end">c-ray</text>
   <text class="unit" x="176" y="190">Kpixel/s</text>
   <text class="name" x="168" y="213" text-anchor="end">Silverfir (interp)</text>
@@ -68,7 +68,7 @@
   <text class="name" x="168" y="233" text-anchor="end">wasm3</text>
   <rect class="s-w3" x="176" y="220" width="301.5" height="18" rx="4"/>
   <text class="val" x="483.5" y="233">942.4</text>
-  <text class="name" x="168" y="253" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="240" width="157.0" height="18" rx="4"/>
-  <text class="val" x="339.0" y="253">490.8</text>
+  <text class="name" x="168" y="253" text-anchor="end">wasmi 2.0.0-beta.7</text>
+  <rect class="s-wi" x="176" y="240" width="253.0" height="18" rx="4"/>
+  <text class="val" x="435.0" y="253">791</text>
 </svg>

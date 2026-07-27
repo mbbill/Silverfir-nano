@@ -66,7 +66,7 @@
   <text class="name" x="168" y="309.5" text-anchor="end">wasm3</text>
   <rect class="s-w3" x="176" y="294" width="46.8" height="22" rx="5"/>
   <text class="val" x="230.8" y="309.5">4,746</text>
-  <text class="name" x="168" y="337.5" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="322" width="37.6" height="22" rx="5"/>
-  <text class="val" x="221.6" y="337.5">3,813</text>
+  <text class="name" x="168" y="337.5" text-anchor="end">wasmi 2.0.0-beta.7</text>
+  <rect class="s-wi" x="176" y="322" width="34.1" height="22" rx="5"/>
+  <text class="val" x="218.1" y="337.5">3,456</text>
 </svg>

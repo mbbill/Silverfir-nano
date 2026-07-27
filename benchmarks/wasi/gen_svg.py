@@ -104,7 +104,7 @@ SERIES = [
     ('wn', 'Winch 47.0.2',       'Winch',       '#b02a8f', '#c13a9d'),
     ('si', 'Silverfir (interp)', 'SF (interp)', '#a855f7', '#9085e9'),
     ('w3', 'wasm3',              'wasm3',       '#eda100', '#c98500'),
-    ('wi', 'wasmi 1.1.0',        'wasmi',       '#4a9ede', '#3987e5'),
+    ('wi', 'wasmi 2.0.0-beta.7', 'wasmi',       '#4a9ede', '#3987e5'),
 ]
 # Each entry produces its OWN chart file: comparing a JIT to an interpreter on
 # one scale is ~7x, which crushes the interpreter bars into slivers. Split by

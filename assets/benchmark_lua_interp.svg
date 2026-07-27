@@ -46,7 +46,7 @@
   <rect class="s-w3" x="364.0" y="53" width="10" height="10" rx="2"/>
   <text class="legend" x="379.0" y="62">wasm3</text>
   <rect class="s-wi" x="552.0" y="53" width="10" height="10" rx="2"/>
-  <text class="legend" x="567.0" y="62">wasmi 1.1.0</text>
+  <text class="legend" x="567.0" y="62">wasmi 2.0.0-beta.7</text>
   <line class="axis" x1="176" y1="76" x2="176" y2="364"/>
 
   <text class="metric" x="168" y="94" text-anchor="end">lua / fib</text>
@@ -57,9 +57,9 @@
   <text class="name" x="168" y="137" text-anchor="end">wasm3</text>
   <rect class="s-w3" x="176" y="124" width="265.6" height="18" rx="4"/>
   <text class="val" x="447.6" y="137">221.6</text>
-  <text class="name" x="168" y="157" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="144" width="217.5" height="18" rx="4"/>
-  <text class="val" x="399.5" y="157">181.5</text>
+  <text class="name" x="168" y="157" text-anchor="end">wasmi 2.0.0-beta.7</text>
+  <rect class="s-wi" x="176" y="144" width="267.9" height="18" rx="4"/>
+  <text class="val" x="449.9" y="157">223.5</text>
   <text class="metric" x="168" y="190" text-anchor="end">lua / sunfish</text>
   <text class="unit" x="176" y="190">score</text>
   <text class="name" x="168" y="213" text-anchor="end">Silverfir (interp)</text>
@@ -68,9 +68,9 @@
   <text class="name" x="168" y="233" text-anchor="end">wasm3</text>
   <rect class="s-w3" x="176" y="220" width="289.5" height="18" rx="4"/>
   <text class="val" x="471.5" y="233">782</text>
-  <text class="name" x="168" y="253" text-anchor="end">wasmi 1.1.0</text>
-  <rect class="s-wi" x="176" y="240" width="271.7" height="18" rx="4"/>
-  <text class="val" x="453.7" y="253">734</text>
+  <text class="name" x="168" y="253" text-anchor="end">wasmi 2.0.0-beta.7</text>
+  <rect class="s-wi" x="176" y="240" width="352.0" height="18" rx="4"/>
+  <text class="val" x="534.0" y="253">951</text>
   <text class="metric" x="168" y="286" text-anchor="end">lua / json</text>
   <text class="unit" x="176" y="286">score</text>
   <text class="name" x="168" y="309" text-anchor="end">Silverfir (interp)</text>
@@ -79,7 +79,7 @@
   <text class="name" x="168" y="329" text-anchor="end">wasm3</text>
   <rect class="s-w3" x="176" y="316" width="285.4" height="18" rx="4"/>
   <text class="val" x="467.4" y="329">1,609</text>
-  <text class="name" x="168" y="349" text-anchor="end">wasmi 1.1.0</text>
+  <text class="name" x="168" y="349" text-anchor="end">wasmi 2.0.0-beta.7</text>
   <rect class="s-wi" x="176" y="336" width="344.0" height="18" rx="4"/>
   <text class="val" x="526.0" y="349">1,939</text>
 </svg>

@@ -2,8 +2,9 @@
 
 Seven WebAssembly runtimes on an Apple M4, measured 2026-07-24: Silverfir's JIT
 and interpreter, Wasmtime Cranelift 47.0.2, V8 TurboFan (Node.js 25.9), Wasmtime
-Winch 47.0.2, wasm3, and wasmi 1.1.0. Winch was added and the Silverfir
-interpreter re-measured on 2026-07-25.
+Winch 47.0.2, wasm3, and wasmi 2.0.0-beta.7. Winch was added and the Silverfir
+interpreter re-measured on 2026-07-25; wasmi moved from 1.1.0 to 2.0.0-beta.7
+on 2026-07-26.
 
 Every metric is a **rate — higher is better**. Each benchmark self-times to a
 wall-clock target (2 s by default) and reports work per second, so a run costs
@@ -62,7 +63,10 @@ still a median 2.93× of Silverfir's interpreter — except on mandelbrot, where
 that lead narrows to 1.11×.
 
 Its **interpreter** wins every dispatch-sensitive benchmark — 14 of 15 metrics —
-by 1.16–1.73× over wasm3 and 1.31–2.89× over wasmi.
+by 1.16–1.73× over wasm3 and 1.07–2.41× over wasmi 2.0.0-beta.7. The two rivals
+trade places by benchmark, so the margin over whichever is faster on each row is
+**1.07–1.73×**, median ~1.39×: wasmi 2.0 is the closer one on the STREAM
+arithmetic kernels and Lua, wasm3 on CoreMark, bzip2, LZ4 and the float pair.
 
 ## Running them
 
@@ -73,7 +77,7 @@ python3 run_tests.py --time 10       # longer target, for formal runs
 python3 run_tests.py --exec "<path>/wasmtime run" --cli-args "--dir ."
 python3 run_tests.py --exec "<path>/wasmtime run" --cli-args "-C compiler=winch --dir ."
 python3 run_tests.py --exec "<path>/wasm3"
-python3 run_tests.py --exec "$HOME/.cargo/bin/wasmi_cli" --cli-args "--dir . --"
+python3 run_tests.py --exec "$HOME/.cargo/bin/wasmi" --cli-args "--dir . --"   # 2.0: binary is `wasmi`
 node run_v8.mjs --time 2             # V8 via Node's WASI
 make                                 # rebuild every .wasm from source
 python3 gen_svg.py                   # redraw the charts from RESULTS.md
