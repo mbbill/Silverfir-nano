@@ -194,6 +194,59 @@ class ProbabilityGateTests(unittest.TestCase):
         self.assertEqual(result["late"]["status"], "PASS")
         self.assertEqual(result["late"]["pair_count"], 4)
 
+    def test_byte_identical_binaries_only_report_runner_drift(self) -> None:
+        initial = {
+            "regression": measured_metric([-2.0] * 4),
+            "improvement": measured_metric([3.0] * 4),
+        }
+        plans = metric_plans(
+            initial,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            minimum_pairs=6,
+            maximum_pairs=24,
+        )
+        result = classify_metrics(
+            initial=initial,
+            final={
+                "regression": measured_metric([-2.0] * 6),
+                "improvement": measured_metric([3.0] * 6),
+            },
+            plans=plans,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            identical_binaries=True,
+        )
+
+        self.assertEqual(result["regression"]["status"], "UNSTABLE")
+        self.assertEqual(result["improvement"]["status"], "PASS")
+
+    def test_build_metadata_requires_matching_platform_and_engine(self) -> None:
+        with tempfile.TemporaryDirectory() as temp_dir:
+            metadata_path = Path(temp_dir) / "build-metadata.json"
+            metadata_path.write_text(
+                json.dumps({
+                    "platform": "x64-linux",
+                    "engine": "jit",
+                    "identical_binaries": True,
+                }),
+                encoding="utf-8",
+            )
+
+            self.assertTrue(
+                bench_compare.load_build_metadata(
+                    metadata_path,
+                    platform="x64-linux",
+                    engine="jit",
+                )
+            )
+            with self.assertRaisesRegex(ValueError, "platform does not match"):
+                bench_compare.load_build_metadata(
+                    metadata_path,
+                    platform="arm64-linux",
+                    engine="jit",
+                )
+
     def test_unstable_signal_is_not_selected_within_budget(self) -> None:
         initial = {
             "unstable": measured_metric([-20.0, 20.0, -18.0, 18.0])
@@ -402,6 +455,15 @@ class ScriptIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             out_dir = Path(temp_dir)
+            metadata_path = out_dir / "build-metadata.json"
+            metadata_path.write_text(
+                json.dumps({
+                    "platform": "synthetic",
+                    "engine": "interp",
+                    "identical_binaries": False,
+                }),
+                encoding="utf-8",
+            )
             argv = [
                 "bench_compare.py",
                 "--baseline-exec",
@@ -412,6 +474,8 @@ class ScriptIntegrationTests(unittest.TestCase):
                 "interp",
                 "--platform",
                 "synthetic",
+                "--build-metadata",
+                str(metadata_path),
                 "--warmup-time",
                 "0",
                 "--time",
@@ -448,7 +512,8 @@ class ScriptIntegrationTests(unittest.TestCase):
             result = document["tests"]["synthetic"]
 
         self.assertEqual(exit_code, 1)
-        self.assertEqual(document["schema_version"], 7)
+        self.assertEqual(document["schema_version"], 8)
+        self.assertFalse(document["identical_binaries"])
         self.assertEqual(len(result["runs"]), 20)
         schedules = [
             [
