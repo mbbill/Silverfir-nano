@@ -1,0 +1,132 @@
+name: correctness
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: correctness-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  check:
+    name: ${{ matrix.platform }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: ${{ matrix.timeout_minutes }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64-linux
+            runner: ubuntu-latest
+            timeout_minutes: 180
+            python: python3
+            check_args: --install-targets --all-targets
+            targets: x86_64-unknown-linux-gnu,armv7-unknown-linux-musleabihf,riscv64gc-unknown-linux-musl,thumbv8m.main-none-eabihf,riscv32imac-unknown-none-elf
+            skip_cross_runtime: ""
+            no_wsl_reexec: ""
+            nightly: true
+            qemu: true
+            zig: true
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            timeout_minutes: 120
+            python: python3
+            check_args: --install-targets --default-targets
+            targets: aarch64-unknown-linux-gnu,x86_64-unknown-linux-gnu,aarch64-apple-darwin,x86_64-apple-darwin,x86_64-pc-windows-gnu,thumbv8m.main-none-eabihf,riscv32imac-unknown-none-elf
+            skip_cross_runtime: "1"
+            no_wsl_reexec: ""
+            nightly: false
+            qemu: false
+            zig: false
+          - platform: arm64-darwin
+            runner: macos-14
+            timeout_minutes: 120
+            python: python3
+            check_args: --install-targets --default-targets
+            targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-unknown-linux-gnu,x86_64-unknown-linux-gnu,x86_64-pc-windows-gnu,thumbv8m.main-none-eabihf,riscv32imac-unknown-none-elf
+            skip_cross_runtime: "1"
+            no_wsl_reexec: ""
+            nightly: false
+            qemu: false
+            zig: false
+          - platform: x64-windows
+            runner: windows-latest
+            timeout_minutes: 120
+            python: python
+            check_args: --install-targets
+            targets: x86_64-pc-windows-msvc,x86_64-pc-windows-gnu,aarch64-unknown-linux-gnu,thumbv8m.main-none-eabihf,riscv32imac-unknown-none-elf
+            skip_cross_runtime: ""
+            no_wsl_reexec: "1"
+            nightly: false
+            qemu: false
+            zig: false
+    env:
+      SF_CHECK_SKIP_CROSS_RUNTIME: ${{ matrix.skip_cross_runtime }}
+      SF_CHECK_NO_WSL_REEXEC: ${{ matrix.no_wsl_reexec }}
+    steps:
+      - name: Enable Git long paths
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Extract testsuite SHA
+        id: testsuite
+        shell: bash
+        run: |
+          sha=$(grep -E '^const TESTSUITE_VERSION:' sf-nano-spectest/build.rs | sed -E 's/.*"([0-9a-f]+)".*/\1/')
+          if [ -z "$sha" ]; then
+            echo "could not parse TESTSUITE_VERSION" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+
+      - name: Cache WebAssembly testsuite
+        uses: actions/cache@v4
+        with:
+          path: target/webassembly-testsuite
+          key: testsuite-${{ matrix.platform }}-${{ steps.testsuite.outputs.sha }}
+
+      - name: Install Rust (stable)
+        uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          targets: ${{ matrix.targets }}
+
+      - name: Install Rust (nightly + rust-src)
+        if: matrix.nightly
+        uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: rust-src
+
+      - name: Cargo cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: correctness-${{ matrix.platform }}
+
+      - name: Install QEMU user-static
+        if: matrix.qemu
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+
+      - name: Install Zig
+        if: matrix.zig
+        uses: mlugg/setup-zig@v1
+        with:
+          version: 0.14.0
+
+      - name: Run correctness suite
+        run: ${{ matrix.python }} scripts/check.py ${{ matrix.check_args }}
+
+      - name: Upload check logs on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: correctness-${{ matrix.platform }}-logs
+          path: target/check*-logs/
+          if-no-files-found: ignore
+          retention-days: 14
