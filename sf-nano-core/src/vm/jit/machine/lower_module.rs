@@ -2,14 +2,15 @@
 // Lowering: prepared SSA-IR → MachineIR
 // ---------------------------------------------------------------------------
 
-use crate::collections::{self, phase_span_with_function};
+use crate::collections;
+use tracked_alloc::phase_span_with_function;
 
 use crate::{
     error::WasmError,
     value_type::ValueType,
     vm::{
-        entities::TableDispatchMode,
         jit::backend::BackendConfig,
+        jit::entities::TableDispatchMode,
         jit::machine::machine_ir::{
             MachineAddr, MachineArgSrc, MachineArgSrcPair, MachineBlock, MachineBlockId,
             MachineBlockParam, MachineBranchCond, MachineCallArgs, MachineCallLaneArg,

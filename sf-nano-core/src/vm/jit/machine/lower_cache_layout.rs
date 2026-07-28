@@ -5,7 +5,7 @@ use core::cmp::Reverse;
 use crate::{
     error::WasmError,
     vm::{
-        entities::TableDispatchMode,
+        jit::entities::TableDispatchMode,
         jit::machine::machine_ir::MachineStorageType,
         jit::middle::{
             cell::CellId,

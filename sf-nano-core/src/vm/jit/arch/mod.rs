@@ -5,8 +5,8 @@ use crate::{
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
-        entities::ModuleInst,
         jit::backend::BackendConfig,
+        jit::entities::ModuleInst,
         jit::machine::machine_ir::{MachineFuncId, MachineFunction},
         jit::result_buffer::ResultBuffer,
         jit::runtime::{

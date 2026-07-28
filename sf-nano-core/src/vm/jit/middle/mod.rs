@@ -23,7 +23,8 @@ mod sink_plan;
 #[cfg(test)]
 mod tests;
 
-use crate::collections::{self, phase_span_with_function};
+use crate::collections;
+use tracked_alloc::phase_span_with_function;
 
 use crate::{
     error::WasmError,

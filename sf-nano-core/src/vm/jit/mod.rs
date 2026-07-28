@@ -37,6 +37,7 @@ pub(crate) mod arch;
 pub(crate) mod backend;
 pub(crate) mod build;
 pub(crate) mod debug;
+pub(crate) mod entities;
 pub(crate) mod expr_eval;
 pub(crate) mod gc_heap;
 pub(crate) mod gc_type_check;

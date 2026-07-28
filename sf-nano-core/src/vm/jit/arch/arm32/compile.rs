@@ -9,11 +9,11 @@ use crate::collections;
 use crate::{
     error::WasmError,
     vm::{
-        entities::ModuleInst,
         jit::arch::common::{
             helpers::page_align_function, pipeline, text_emitter::TextEmitter,
             types::FunctionArtifact,
         },
+        jit::entities::ModuleInst,
         jit::runtime::{
             code::{CompiledNativeModule, NativeRootEntry},
             code_buf::CodeBuffer,
