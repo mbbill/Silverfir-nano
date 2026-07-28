@@ -54,6 +54,29 @@ Do not add or modify `ci/lint_suppressions.toml` merely to make CI green.
 That file records human-reviewed exceptional compilation boundaries; it is
 not an agent-owned allowlist.
 
+### `reason = "..."` is not a fix — never annotate your way past the audit
+
+`ci/lint_policy.py` exists to EXPOSE every `allow`/`expect` hack so it gets
+fixed **properly**: delete the dead code, restructure so the code is not
+dead, or gate it precisely. Responding to an audit finding by writing an
+inline `reason = "..."` and a matching manifest entry fixes nothing — it
+launders the hack through the audit's escape hatch and neuters the tool.
+This applies no matter how accurate or well-written the reason is.
+
+Hard rules:
+
+- An agent NEVER writes `reason = "..."` attributes or
+  `ci/lint_suppressions.toml` entries on its own judgment — not even for
+  sites it believes are legitimate boundaries, and not even when the user
+  has approved a cleanup task in general terms. Each exception is blessed
+  by the user individually, site by site.
+- The manifest's only legitimate contents are irreducible compilation
+  boundaries the user has personally reviewed (e.g. the `build.rs`
+  dual-compile modules). Small and exact means a handful, not dozens.
+- A finding with no proper fix you can see is left RED and reported as a
+  question. A red audit is the ratchet working; making it green without
+  fixing the cause is the failure mode this file exists to prevent.
+
 If a feature-only build exposes a cluster of dead code that points to unclear
 engine ownership, shared runtime state, or another architecture question,
 leave the failure visible and report the cluster. Do not scatter `cfg`,
@@ -65,6 +88,24 @@ diagnostics, not as blanket authorization to edit every reported item. Leave
 architecture-sensitive failures red until the user makes the ownership
 decision. Immediate fixes are limited to clearly local problems that neither
 change a feature boundary nor introduce new `cfg` structure.
+
+## cfg follows meaning; engine cfgs mark the gate, not the code
+
+Every `sf_*` cfg has one meaning, and correct use follows that meaning:
+`sf_backend_*` is "this ISA's code surface", `sf_ir_dump` / `sf_jitdump` /
+`sf_call_trace` are "JIT debug tooling", `sf_has_*` are target
+capabilities. Those may appear wherever their meaning genuinely applies.
+
+`sf_jit` and `sf_interp` mean "this is one engine's own code". The JIT and
+the interpreter are two engines running the same code under the same
+runtime: they split at a few declared gates — the `vm/mod.rs` module
+declarations, the engine selector, instance dispatch, `lib.rs` exports —
+and past the gate each engine is on its own inside its subtree. Therefore
+these two cfgs must stay rare and gate-shaped. If an item in shared code
+turns out to be engine-only, that is a misplaced item: MOVE it into the
+engine's subtree. Do not gate it in place — `sf_jit`/`sf_interp` sprinkled
+through shared files means the separation failed, however locally
+convenient each individual cfg looked.
 
 ## Do not keep dead code behind `#[cfg(test)]`
 
