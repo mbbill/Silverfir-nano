@@ -180,7 +180,18 @@ async function runTest(test, extraArgs) {
     const stderr = fs.readFileSync(tmpErr, 'utf-8');
 
     if (exitCode !== 0) {
-      return { status: 'FAIL', metric: `exit code ${exitCode}`, elapsed };
+      const detail = `${stderr}\n${stdout}`
+        .split(/\r?\n/)
+        .map(line => line.trim())
+        .filter(Boolean)
+        .slice(-4)
+        .join(' | ')
+        .slice(0, 500);
+      return {
+        status: 'FAIL',
+        metric: `exit code ${exitCode}${detail ? `: ${detail}` : ''}`,
+        elapsed,
+      };
     }
 
     const expected = Array.isArray(test.contains)

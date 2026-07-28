@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from ci import performance_build
 
@@ -122,6 +124,56 @@ class PerformanceBuildTests(unittest.TestCase):
                 performance_build.sha256_file(binary),
                 hashlib.sha256(b"same runtime").hexdigest(),
             )
+
+    def test_main_writes_versioned_build_provenance(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            temp_path = Path(directory)
+            out_dir = temp_path / "out"
+            out_dir.mkdir()
+            with patch.object(
+                performance_build,
+                "build_one",
+                side_effect=[
+                    {
+                        "sha256": "a" * 64,
+                        "size": 123,
+                        "virtual_source_root": "/workspace",
+                    },
+                    {
+                        "sha256": "b" * 64,
+                        "size": 456,
+                        "virtual_source_root": "/workspace",
+                    },
+                ],
+            ):
+                exit_code = performance_build.main([
+                    "--baseline-source",
+                    str(temp_path / "baseline"),
+                    "--candidate-source",
+                    str(temp_path / "candidate"),
+                    "--out-dir",
+                    str(out_dir),
+                    "--engine",
+                    "jit",
+                    "--platform",
+                    "x64-linux",
+                    "--baseline-sha",
+                    "base",
+                    "--candidate-sha",
+                    "head",
+                ])
+
+            metadata = json.loads(
+                (out_dir / "build-metadata.json").read_text(
+                    encoding="utf-8"
+                )
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(metadata["schema_version"], 1)
+        self.assertEqual(metadata["builds"]["baseline"]["revision"], "base")
+        self.assertEqual(metadata["builds"]["candidate"]["revision"], "head")
+        self.assertFalse(metadata["identical_binaries"])
 
 
 if __name__ == "__main__":

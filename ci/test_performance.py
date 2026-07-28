@@ -1,5 +1,7 @@
+import hashlib
 import json
 import math
+import re
 import sys
 import tempfile
 import unittest
@@ -36,11 +38,24 @@ def measured_metric(deltas_percent: list[float]) -> dict:
 
 class ProbabilityGateTests(unittest.TestCase):
     def test_metric_extractors_cover_the_active_benchmark_suite(self) -> None:
-        test_names = {
+        test_names = [
             test["name"] for test in bench_compare.run_tests.TESTS
-        }
+        ]
 
-        self.assertEqual(set(bench_compare.METRIC_EXTRACTORS), test_names)
+        self.assertEqual(
+            set(bench_compare.METRIC_EXTRACTORS),
+            set(test_names),
+        )
+        v8_source = (
+            bench_compare.ROOT / "benchmarks" / "wasi" / "run_v8.mjs"
+        ).read_text(encoding="utf-8")
+        self.assertEqual(
+            re.findall(r"^\s+name:\s+'([^']+)'", v8_source, re.MULTILINE),
+            test_names,
+        )
+        for test in bench_compare.run_tests.TESTS:
+            wasm = Path(test["cwd"]) / test["args"][0]
+            self.assertTrue(wasm.is_file(), f"missing benchmark: {wasm}")
         self.assertEqual(
             bench_compare.extract_metrics(
                 "sqlite/sqlite_bench.wasm",
@@ -242,11 +257,30 @@ class ProbabilityGateTests(unittest.TestCase):
 
     def test_build_metadata_requires_matching_platform_and_engine(self) -> None:
         with tempfile.TemporaryDirectory() as temp_dir:
-            metadata_path = Path(temp_dir) / "build-metadata.json"
+            temp_path = Path(temp_dir)
+            metadata_path = temp_path / "build-metadata.json"
+            baseline_exec = temp_path / "baseline"
+            candidate_exec = temp_path / "candidate"
+            baseline_exec.write_bytes(b"same runtime")
+            candidate_exec.write_bytes(b"same runtime")
+            digest = hashlib.sha256(b"same runtime").hexdigest()
             metadata_path.write_text(
                 json.dumps({
+                    "schema_version": 1,
                     "platform": "x64-linux",
                     "engine": "jit",
+                    "builds": {
+                        "baseline": {
+                            "revision": "base",
+                            "sha256": digest,
+                            "size": len(b"same runtime"),
+                        },
+                        "candidate": {
+                            "revision": "head",
+                            "sha256": digest,
+                            "size": len(b"same runtime"),
+                        },
+                    },
                     "identical_binaries": True,
                 }),
                 encoding="utf-8",
@@ -257,6 +291,10 @@ class ProbabilityGateTests(unittest.TestCase):
                     metadata_path,
                     platform="x64-linux",
                     engine="jit",
+                    baseline_sha="base",
+                    candidate_sha="head",
+                    baseline_exec=baseline_exec,
+                    candidate_exec=candidate_exec,
                 )
             )
             with self.assertRaisesRegex(ValueError, "platform does not match"):
@@ -264,6 +302,25 @@ class ProbabilityGateTests(unittest.TestCase):
                     metadata_path,
                     platform="arm64-linux",
                     engine="jit",
+                    baseline_sha="base",
+                    candidate_sha="head",
+                    baseline_exec=baseline_exec,
+                    candidate_exec=candidate_exec,
+                )
+
+            candidate_exec.write_bytes(b"changed runtime")
+            with self.assertRaisesRegex(
+                ValueError,
+                "candidate executable size does not match",
+            ):
+                bench_compare.load_build_metadata(
+                    metadata_path,
+                    platform="x64-linux",
+                    engine="jit",
+                    baseline_sha="base",
+                    candidate_sha="head",
+                    baseline_exec=baseline_exec,
+                    candidate_exec=candidate_exec,
                 )
 
     def test_unstable_signal_is_not_selected_within_budget(self) -> None:
@@ -474,11 +531,32 @@ class ScriptIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             out_dir = Path(temp_dir)
+            baseline_exec = out_dir / "baseline"
+            candidate_exec = out_dir / "candidate"
+            baseline_exec.write_bytes(b"baseline runtime")
+            candidate_exec.write_bytes(b"candidate runtime")
             metadata_path = out_dir / "build-metadata.json"
             metadata_path.write_text(
                 json.dumps({
+                    "schema_version": 1,
                     "platform": "synthetic",
                     "engine": "interp",
+                    "builds": {
+                        "baseline": {
+                            "revision": "base",
+                            "sha256": hashlib.sha256(
+                                b"baseline runtime"
+                            ).hexdigest(),
+                            "size": len(b"baseline runtime"),
+                        },
+                        "candidate": {
+                            "revision": "head",
+                            "sha256": hashlib.sha256(
+                                b"candidate runtime"
+                            ).hexdigest(),
+                            "size": len(b"candidate runtime"),
+                        },
+                    },
                     "identical_binaries": False,
                 }),
                 encoding="utf-8",
@@ -486,13 +564,17 @@ class ScriptIntegrationTests(unittest.TestCase):
             argv = [
                 "bench_compare.py",
                 "--baseline-exec",
-                "baseline",
+                str(baseline_exec),
                 "--candidate-exec",
-                "candidate",
+                str(candidate_exec),
                 "--engine",
                 "interp",
                 "--platform",
                 "synthetic",
+                "--baseline-sha",
+                "base",
+                "--candidate-sha",
+                "head",
                 "--build-metadata",
                 str(metadata_path),
                 "--warmup-time",

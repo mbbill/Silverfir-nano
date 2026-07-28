@@ -33,6 +33,7 @@ or improvements merely because their benchmark was rerun for another metric.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -382,6 +383,10 @@ def classify_metrics(
             **measured,
             "initial": initial_metric,
             "candidate_direction": direction,
+            "pilot_direction_probability": plan[
+                "pilot_direction_probability"
+            ],
+            "selected": selected,
             "target_pairs": plan["target_pairs"],
             "status": status,
         }
@@ -393,8 +398,12 @@ def load_build_metadata(
     *,
     platform: str,
     engine: str,
+    baseline_sha: str,
+    candidate_sha: str,
+    baseline_exec: Path,
+    candidate_exec: Path,
 ) -> bool:
-    """Validate build metadata and return whether the binaries are identical."""
+    """Validate build provenance and return whether the binaries are identical."""
     if path is None:
         return False
 
@@ -402,13 +411,44 @@ def load_build_metadata(
         metadata = json.loads(path.read_text(encoding="utf-8"))
         if not isinstance(metadata, dict):
             raise ValueError("document is not an object")
+        if metadata.get("schema_version") != 1:
+            raise ValueError("unsupported schema_version")
         if metadata.get("platform") != platform:
             raise ValueError("platform does not match")
         if metadata.get("engine") != engine:
             raise ValueError("engine does not match")
+        builds = metadata.get("builds")
+        if not isinstance(builds, dict):
+            raise ValueError("builds is not an object")
+
+        observed_hashes = {}
+        for label, revision, executable in (
+            ("baseline", baseline_sha, baseline_exec),
+            ("candidate", candidate_sha, candidate_exec),
+        ):
+            build = builds.get(label)
+            if not isinstance(build, dict):
+                raise ValueError(f"{label} build is not an object")
+            if build.get("revision") != revision:
+                raise ValueError(f"{label} revision does not match")
+            executable = executable.resolve()
+            size = executable.stat().st_size
+            if build.get("size") != size:
+                raise ValueError(f"{label} executable size does not match")
+            with executable.open("rb") as stream:
+                digest = hashlib.file_digest(stream, "sha256").hexdigest()
+            if build.get("sha256") != digest:
+                raise ValueError(f"{label} executable sha256 does not match")
+            observed_hashes[label] = digest
+
         identical_binaries = metadata.get("identical_binaries")
         if not isinstance(identical_binaries, bool):
             raise ValueError("identical_binaries is not boolean")
+        observed_identical = (
+            observed_hashes["baseline"] == observed_hashes["candidate"]
+        )
+        if identical_binaries != observed_identical:
+            raise ValueError("identical_binaries does not match executables")
     except (OSError, ValueError, json.JSONDecodeError) as exc:
         raise ValueError(f"invalid build metadata: {exc}") from exc
 
@@ -750,9 +790,10 @@ def render_summary(
         "",
         (
             "| Metric | Baseline | Candidate | Delta (pair range) | "
-            "Pair volatility | P(reg) | P(imp) | Pairs | Pilot | Gate |"
+            "Pair volatility | P(reg) | P(imp) | Pairs | Pilot P | "
+            "Initial target | Gate |"
         ),
-        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ])
     for test in results.values():
         for name, metric in test["metrics"].items():
@@ -760,12 +801,16 @@ def render_summary(
             pair_range = (
                 f"{min(pair_deltas):+.2f}%..{max(pair_deltas):+.2f}%"
             )
-            pilot_plan = (
+            pilot_probability_text = format_probability(
+                metric["pilot_direction_probability"]
+            )
+            initial_target = (
                 str(metric["target_pairs"])
-                if metric["target_pairs"] is not None
+                if metric["selected"]
+                and metric["target_pairs"] is not None
                 else (
-                    f">{maximum_pairs}"
-                    if metric["candidate_direction"] is not None
+                    f"{minimum_pairs}+ adaptive"
+                    if metric["selected"]
                     else "-"
                 )
             )
@@ -774,7 +819,7 @@ def render_summary(
                 gate = f"**{gate}**"
             pairs = (
                 f"{initial_pairs}+{metric['pair_count']}"
-                if metric["target_pairs"] is not None
+                if metric["selected"]
                 else str(metric["pair_count"])
             )
             lines.append(
@@ -786,7 +831,8 @@ def render_summary(
                 f"{metric['volatility_percent']:.2f}% | "
                 f"{format_probability(metric['probability_regression'])} | "
                 f"{format_probability(metric['probability_improvement'])} | "
-                f"{pairs} | {pilot_plan} | {gate} |"
+                f"{pairs} | {pilot_probability_text} | "
+                f"{initial_target} | {gate} |"
             )
     lines.extend([
         "",
@@ -926,6 +972,10 @@ def main() -> int:
             args.build_metadata,
             platform=args.platform,
             engine=args.engine,
+            baseline_sha=args.baseline_sha,
+            candidate_sha=args.candidate_sha,
+            baseline_exec=args.baseline_exec,
+            candidate_exec=args.candidate_exec,
         )
     except ValueError as exc:
         print(f"ERROR: {exc}", file=sys.stderr)

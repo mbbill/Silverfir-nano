@@ -3,6 +3,8 @@ from __future__ import annotations
 import contextlib
 import io
 import re
+import subprocess
+import sys
 import tempfile
 import unittest
 from pathlib import Path
@@ -264,6 +266,33 @@ class CoveragePlanTests(unittest.TestCase):
         self.assertIn("continue-on-error: true", performance_workflow)
         self.assertIn(
             "if: steps.lint-policy.outcome == 'failure'",
+            performance_workflow,
+        )
+        benchmark_step = performance_workflow.split(
+            "- name: Run benchmark suite",
+            maxsplit=1,
+        )[1].split(
+            "- uses: actions/upload-artifact",
+            maxsplit=1,
+        )[0]
+        workflow_options = set(
+            re.findall(r"--[a-z][a-z0-9-]*", benchmark_step)
+        )
+        performance_help = subprocess.run(
+            [sys.executable, "-B", "-m", "ci.performance", "--help"],
+            cwd=ROOT,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+        unsupported_options = {
+            option
+            for option in workflow_options
+            if option not in performance_help
+        }
+        self.assertEqual(unsupported_options, set())
+        self.assertIn(
+            "CARGO_TARGET_DIR: ${{ github.workspace }}/perf-target",
             performance_workflow,
         )
 

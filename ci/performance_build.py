@@ -215,6 +215,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         }
 
     metadata = {
+        "schema_version": 1,
         "platform": args.platform,
         "engine": args.engine,
         "target": args.target,

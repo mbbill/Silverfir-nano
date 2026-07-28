@@ -311,6 +311,7 @@ jobs:
       run:
         shell: bash
     env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/perf-target
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/perf-zig-cache
     steps:
       - name: Enable Git long paths
