@@ -288,7 +288,10 @@ macro_rules! define_primitive_ops {
             $( $name $( { $($field : $ty),* } )?, )*
         }
 
-        #[allow(unused_variables)]
+        #[allow(
+            unused_variables,
+            reason = "macro-generated match arms destructure every variant's fields and return constants"
+        )]
         #[inline]
         pub(crate) fn stack_effect(kind: &PrimitiveOpKind) -> (usize, usize) {
             match kind {

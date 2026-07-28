@@ -8,10 +8,10 @@
 use crate::error::WasmError;
 use crate::value_type::ValueType;
 use crate::vm::entities::FunctionInst;
-use crate::vm::result_buffer::ResultBuffer;
-use crate::vm::store::Store;
+use crate::vm::jit::result_buffer::ResultBuffer;
+use crate::vm::jit::store::Store;
+use crate::vm::jit::value_encoding::normalize_machine_raw_in_store;
 use crate::vm::value::Value;
-use crate::vm::value_encoding::normalize_machine_raw_in_store;
 
 pub(crate) mod code;
 pub(crate) mod code_buf;

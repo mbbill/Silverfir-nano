@@ -18,7 +18,6 @@ pub(crate) struct MachineFrameRegion {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub(crate) enum MachineParamLoc {
     Frame {
         param_index: u16,
@@ -42,7 +41,6 @@ pub(crate) enum MachineParamLoc {
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub(crate) struct InternalCallArgBudget {
     pub gp_units: u8,
     pub fp_units: u8,
@@ -55,7 +53,6 @@ pub(crate) struct MachineCallArgs {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum MachineCallLaneArg {
     Gp {
         param_index: u16,
@@ -78,7 +75,6 @@ pub(crate) enum MachineCallLaneArg {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub(crate) enum MachineArgSrc {
     Reg(MachineReg),
     FrameSlot(FrameSlot),
@@ -86,14 +82,12 @@ pub(crate) enum MachineArgSrc {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub(crate) struct MachineArgSrcPair {
     pub lo: MachineArgSrc,
     pub hi: MachineArgSrc,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-#[allow(dead_code)]
 pub(crate) enum MachineCallResults {
     None,
     ScalarGp {
@@ -115,7 +109,6 @@ pub(crate) enum MachineCallResults {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-#[allow(dead_code)]
 pub(crate) enum MachineResultDst {
     FrameSlot(FrameSlot),
     Reg(MachineReg),

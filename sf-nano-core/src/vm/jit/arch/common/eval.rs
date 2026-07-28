@@ -10,13 +10,13 @@ use crate::{
     error::WasmError,
     module::entities::FunctionSpec,
     vm::{
+        jit::result_buffer::ResultBuffer,
         jit::runtime::{
             code::NativeCode, collect_native_results_from_stack, context::NativeContext,
         },
-        result_buffer::ResultBuffer,
-        store::Store,
+        jit::store::Store,
+        jit::value_encoding::value_to_machine_raw_in_store,
         value::Value,
-        value_encoding::value_to_machine_raw_in_store,
     },
 };
 

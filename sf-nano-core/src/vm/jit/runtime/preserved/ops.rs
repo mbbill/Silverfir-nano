@@ -6,20 +6,21 @@ use crate::{
     value_type::ValueType,
     vm::{
         entities::{MemInst, TableInst},
-        gc_type_check::check_ref_type_match,
         jit::arch::backend_config,
+        jit::gc_type_check::check_ref_type_match,
         jit::runtime::{
             common::{internal_error, trap_error},
             context::{NativeContext, PendingEscape},
         },
-        store::{RefRegistryEntry, Store},
-        tag::TagHandle,
-        value::RefHandle,
-        value::Value,
-        value_encoding::{
+        jit::store::Store,
+        jit::value_encoding::{
             machine_raw_to_ref, ref_to_machine_raw, try_machine_raw_to_value_in_store,
             value_to_machine_raw_in_store,
         },
+        link::RefRegistryEntry,
+        tag::TagHandle,
+        value::RefHandle,
+        value::Value,
     },
 };
 
@@ -140,8 +141,7 @@ pub(super) fn do_eh_alloc_exn_ref(
         "eh_alloc_exn_ref args span does not match tag arity",
     )?;
 
-    let exn_ref = store.alloc_exn(tag_inst.handle, fields);
-    let handle = store.register_exn_ref(exn_ref);
+    let handle = store.alloc_exn(tag_inst.handle, fields);
     Ok(ref_to_machine(handle))
 }
 
@@ -174,8 +174,7 @@ pub(super) fn do_eh_throw(
             store,
             "eh_throw args span does not match tag arity",
         )?;
-        let exn_ref = store.alloc_exn(tag_inst.handle, fields);
-        let exn_handle = store.register_exn_ref(exn_ref);
+        let exn_handle = store.alloc_exn(tag_inst.handle, fields);
         (tag_inst.handle, exn_handle)
     };
 
@@ -483,7 +482,7 @@ fn struct_field_storage(
 fn resolve_struct_ref(
     store: &Store,
     handle: RefHandle,
-) -> Result<(*mut Store, crate::vm::gc_heap::GcRef), WasmError> {
+) -> Result<(*mut Store, crate::vm::jit::gc_heap::GcRef), WasmError> {
     if handle.is_null() {
         return Err(trap_error("null structure reference"));
     }
@@ -583,7 +582,7 @@ fn value_from_data_bytes(storage: StorageType, bytes: &[u8]) -> Result<Value, Wa
 fn resolve_array_ref(
     store: &Store,
     handle: RefHandle,
-) -> Result<(*mut Store, crate::vm::gc_heap::GcRef), WasmError> {
+) -> Result<(*mut Store, crate::vm::jit::gc_heap::GcRef), WasmError> {
     if handle.is_null() {
         return Err(trap_error("null array reference"));
     }

@@ -14,7 +14,7 @@ use crate::{
     error::WasmError,
     vm::{
         jit::runtime::context::NativeContext,
-        value_encoding::{as_f32, as_f64, from_f32, from_f64, from_i64},
+        jit::value_encoding::{as_f32, as_f64, from_f32, from_f64, from_i64},
     },
 };
 

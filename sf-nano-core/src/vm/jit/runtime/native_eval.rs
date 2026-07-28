@@ -5,10 +5,10 @@ use crate::{
         entities::{Caller, FunctionInst},
         jit::arch,
         jit::build,
-        result_buffer::ResultBuffer,
-        store::Store,
+        jit::result_buffer::ResultBuffer,
+        jit::store::Store,
+        jit::value_encoding::value_to_raw_in_store,
         value::Value,
-        value_encoding::value_to_raw_in_store,
     },
 };
 

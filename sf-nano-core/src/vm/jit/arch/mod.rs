@@ -8,12 +8,12 @@ use crate::{
         entities::ModuleInst,
         jit::backend::BackendConfig,
         jit::machine::machine_ir::{MachineFuncId, MachineFunction},
+        jit::result_buffer::ResultBuffer,
         jit::runtime::{
             code::{CodegenModuleView, CompiledNativeModule, NativeCode, NativeRootEntry},
             code_buf::CodeBuffer,
         },
-        result_buffer::ResultBuffer,
-        store::Store,
+        jit::store::Store,
         value::Value,
     },
 };

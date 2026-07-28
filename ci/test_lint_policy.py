@@ -102,6 +102,43 @@ reason = "old exception"
             any("unapproved allow(unused_imports)" in error for error in errors)
         )
 
+    def test_generated_string_attribute_gets_content_anchor(self) -> None:
+        source = (
+            "fn emit() -> String {\n"
+            "    format!(\n"
+            '        "// Generated.\\n\\\n'
+            "         #[allow(dead_code)]\\n\\\n"
+            '         const PTR_BYTES: u32 = {};\\n",\n'
+            "        4,\n"
+            "    )\n"
+            "}\n"
+        )
+        errors = self.run_policy(source)
+        self.assertTrue(
+            any("before `const PTR_BYTES: u32 = {};`" in error for error in errors),
+            errors,
+        )
+
+    def test_claude_directory_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "Cargo.toml").write_text(
+                '[package]\nname = "fixture"\nversion = "0.0.0"\n'
+                'edition = "2021"\n',
+                encoding="utf-8",
+            )
+            (root / "src").mkdir()
+            (root / "src" / "lib.rs").write_text("pub fn live() {}\n")
+            worktree = root / ".claude" / "worktrees" / "agent" / "src"
+            worktree.mkdir(parents=True)
+            (worktree / "lib.rs").write_text(
+                "#[allow(dead_code)]\nfn hidden() {}\n", encoding="utf-8"
+            )
+            manifest = root / "lint_suppressions.toml"
+            manifest.write_text(EMPTY_MANIFEST)
+            errors = check(root, manifest)
+        self.assertEqual(errors, [])
+
     def test_package_without_lint_override_passes(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

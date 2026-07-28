@@ -343,7 +343,7 @@ fn is_exn_ref_type(ty: ValueType) -> bool {
 
 fn inline_throw_tag(
     compile: CompileContext<'_>,
-    owner_store: &crate::vm::store::Store,
+    owner_store: &crate::vm::jit::store::Store,
     tag_idx: u32,
 ) -> Option<(Option<u32>, TagHandle, usize)> {
     let tag_inst = owner_store.module().tags.get(tag_idx as usize).copied()?;
@@ -368,7 +368,7 @@ fn inline_local_spec_for_func_idx<'a>(
     func_idx: u32,
 ) -> Option<(
     &'a crate::module::entities::FunctionSpec,
-    &'a crate::vm::store::Store,
+    &'a crate::vm::jit::store::Store,
 )> {
     match compile.store.function(func_idx as usize) {
         FunctionInst::Local { spec, .. } => Some((spec, compile.store)),

@@ -6,7 +6,7 @@ use crate::value_type::ValueType;
 use crate::vm::{
     jit::backend::BackendConfig,
     jit::machine::{
-        lower_module,
+        lower_module_with_table_dispatch_modes,
         machine_ir::{
             is_fp_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineBlockId, MachineBlockParam,
             MachineBranchCond, MachineCallLaneArg, MachineCallResults, MachineCallTarget,
@@ -17,7 +17,7 @@ use crate::vm::{
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
             MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
         },
-        LowerFunctionInput, LowerModuleInput,
+        LowerFunctionInput, LowerModuleInput, LoweredMachineModule,
     },
     jit::middle::{
         cell::CellId,
@@ -36,6 +36,11 @@ use crate::vm::{
 
 const HOST_GP_UNIT_BYTES: u8 = core::mem::size_of::<usize>() as u8;
 const HOST_CALL_SCRATCH_SLOTS: u16 = if HOST_GP_UNIT_BYTES == 4 { 8 } else { 3 };
+
+/// Test-local shorthand: these tests never exercise table dispatch modes.
+fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModule, crate::error::WasmError> {
+    lower_module_with_table_dispatch_modes(input, &[])
+}
 
 fn total_gp_budget_for_allocatable(allocatable_gp_budget: u8, gp_unit_bytes: u8) -> u8 {
     if allocatable_gp_budget == 0 {

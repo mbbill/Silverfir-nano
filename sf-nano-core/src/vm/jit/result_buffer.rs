@@ -2,7 +2,7 @@
 
 use crate::collections;
 
-use crate::vm::value_encoding::RawValue;
+use crate::vm::jit::value_encoding::RawValue;
 
 #[derive(Debug)]
 pub(crate) struct ResultBuffer {

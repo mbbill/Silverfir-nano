@@ -31,7 +31,7 @@ use crate::value_type::{AbstractHeapType, HeapType, RefType, ValueType};
 use crate::vm::engine::Engine;
 use crate::vm::entities::{GlobalInst, MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
-use crate::vm::store::{LinkRegistry, RefRegistryEntry};
+use crate::vm::link::{LinkRegistry, RefRegistryEntry};
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 
@@ -1500,6 +1500,9 @@ impl InterpInstance {
                 return false;
             };
             return match entry {
+                // Pooled I31/Gc entries are minted only by the JIT runtime;
+                // in an interpreter-only build they cannot exist.
+                #[cfg(sf_jit)]
                 RefRegistryEntry::I31(_) => matches!(
                     expected.heap_type,
                     HeapType::Abstract(
@@ -1511,6 +1514,7 @@ impl InterpInstance {
                     HeapType::Abstract(AbstractHeapType::Exn)
                 ),
                 RefRegistryEntry::OpaqueInterpFunc => false,
+                #[cfg(sf_jit)]
                 RefRegistryEntry::Gc { store, gc_ref } => {
                     let Some(origin) = (unsafe { store.as_ref() }) else {
                         return false;

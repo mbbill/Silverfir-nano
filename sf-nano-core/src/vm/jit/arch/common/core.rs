@@ -199,7 +199,10 @@ impl<'a> CompilerCore<'a> {
     }
 
     #[inline]
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "consumed by the arm64 and arm32 backends; other targets compile this shared layer without a caller"
+    )]
     pub(crate) fn preserved_clobbers(&self) -> &[MachineReg] {
         self.body
             .mir_function()
@@ -278,7 +281,10 @@ impl<'a> CompilerCore<'a> {
 
     // ── Runtime metadata ─────────────────────────────────────────────────
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "consumed by every backend except arm64; each target compiles this shared layer with a different subset"
+    )]
     pub(crate) fn runtime_for(
         &self,
         func_id: MachineFuncId,

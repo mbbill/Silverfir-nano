@@ -374,13 +374,16 @@ impl SsaInst {
 ///
 /// Each variant carries the full decoded payload for a given op kind so
 /// callers can destructure directly. A release-build consumer that only
-/// needs `Value` / `Call` can fall through non-primitive variants with `_`;
-/// debug-mode validation and tests destructure everything. `dead_code` is
-/// allowed because validation (which reads most fields) is gated behind
-/// `#[cfg(any(debug_assertions, test))]`, leaving some fields produce-only
-/// in release.
+/// needs `Value` / `Call` can fall through non-primitive variants with `_`.
+/// The spill/fill slot and cell fields are read only by the `sf_ir_dump`
+/// exporters (`vm/jit/debug/ir_dump.rs`), which compile solely in builds
+/// with std (`guard-pages`, debug); without them those fields are
+/// produce-only.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "some payload fields are read only by the sf_ir_dump exporters, which need std"
+)]
 pub(crate) enum SsaInstView<'a> {
     Fill {
         slot: FrameSlot,

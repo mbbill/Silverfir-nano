@@ -25,7 +25,10 @@ use crate::config::CODE_ARENA_BYTES;
 struct CodeArena {
     // Accessed only via raw-pointer casts in `sf_os_alloc_executable`;
     // the field itself is never read through a Rust reference.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "reserves the arena's aligned storage; reached only by raw-pointer cast in sf_os_alloc_executable"
+    )]
     bytes: [u8; CODE_ARENA_BYTES],
 }
 

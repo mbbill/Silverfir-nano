@@ -5,7 +5,7 @@ use crate::{
             common::{internal_error, set_ctx_error, trap_error, NativeCallStatus},
             context::NativeContext,
         },
-        value_encoding::machine_raw_to_ref,
+        jit::value_encoding::machine_raw_to_ref,
     },
 };
 

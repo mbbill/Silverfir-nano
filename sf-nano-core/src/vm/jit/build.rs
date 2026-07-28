@@ -80,9 +80,9 @@ use crate::{
             code_buf::CodeBuffer,
             dispatch_view::{NativeLocalCallInfo32, NativeLocalCallInfo64},
         },
+        jit::store::Store,
         jit::template,
         jit::wasm::{context::CompileContext, decode, semantic_ir::SemanticProgram},
-        store::Store,
     },
 };
 
@@ -1526,7 +1526,7 @@ mod tests {
         value_type::ValueType,
         vm::{
             entities::{FunctionInst, MemInst, ModuleInst},
-            store::Store,
+            jit::store::Store,
         },
     };
 

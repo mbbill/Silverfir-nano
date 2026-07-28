@@ -5,10 +5,14 @@ use crate::config::Config;
 
 use alloc::rc::Rc as AllocRc;
 use core::cell::{Cell, Ref, RefCell, RefMut, UnsafeCell};
-use tracked_alloc::{rc::Rc, string::String};
+use tracked_alloc::rc::Rc;
+#[cfg(sf_jit)]
+use tracked_alloc::string::String;
 
 use crate::error::WasmError;
-use crate::module::{entities::FunctionSpec, type_context::TypeContext, type_defs::FunctionType};
+#[cfg(sf_jit)]
+use crate::module::type_context::TypeContext;
+use crate::module::{entities::FunctionSpec, type_defs::FunctionType};
 use crate::utils::limits::Limits;
 use crate::value_type::ValueType;
 
@@ -16,10 +20,12 @@ use crate::value_type::ValueType;
 use crate::vm::jit::runtime::code_buf::CodeBuffer;
 #[cfg(sf_has_guard_pages)]
 use crate::vm::jit::runtime::guard_pages::GuardPageMemory;
-use crate::vm::store::Store;
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 
+// Instantiation-time entity of the JIT's `Store` world. The interpreter
+// tracks tag identity with bare `TagHandle`s in its own state.
+#[cfg(sf_jit)]
 #[derive(Debug, Clone, Copy)]
 pub struct TagInst {
     pub handle: TagHandle,
@@ -31,7 +37,6 @@ pub struct TagInst {
     /// runtime identities.
     pub is_import: bool,
 }
-use crate::vm::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store};
 
 /// A non-capturing host function pointer.
 ///
@@ -237,6 +242,10 @@ impl TableInst {
         self.elements.borrow_mut()
     }
 
+    // The revision counter's only readers are the JIT's cached native views;
+    // the bump in `elements_mut` stays unconditional so a table shared with a
+    // JIT instance invalidates those views no matter which engine mutated it.
+    #[cfg(sf_jit)]
     #[inline]
     pub(crate) fn revision(&self) -> u64 {
         self.revision.get()
@@ -247,6 +256,7 @@ impl TableInst {
         Rc::clone(&self.elements)
     }
 
+    #[cfg(sf_jit)]
     #[inline]
     pub(crate) fn clone_shared_revision(&self) -> Rc<Cell<u64>> {
         Rc::clone(&self.revision)
@@ -261,6 +271,9 @@ impl TableInst {
 #[derive(Debug)]
 pub(crate) struct MemBacking {
     pub(crate) data: collections::Vec<u8>,
+    // Supports the JIT's lazily-allocated memories (`new_unallocated` /
+    // `ensure_allocated`); the interpreter always allocates eagerly.
+    #[cfg(sf_jit)]
     pub(crate) allocated: bool,
     #[cfg(sf_has_guard_pages)]
     pub(crate) guard: Option<GuardPageMemory>,
@@ -291,6 +304,7 @@ impl MemInst {
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
                 data: collections::vec![0u8; initial_bytes],
+                #[cfg(sf_jit)]
                 allocated: true,
                 #[cfg(sf_has_guard_pages)]
                 guard: None,
@@ -321,6 +335,7 @@ impl MemInst {
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
                 data: collections::Vec::new(),
+                #[cfg(sf_jit)]
                 allocated: true,
                 guard: Some(guard),
             })),
@@ -328,6 +343,7 @@ impl MemInst {
         })
     }
 
+    #[cfg(sf_jit)]
     #[inline]
     pub(crate) fn from_shared(limits: Limits, backing: Rc<RefCell<MemBacking>>) -> Self {
         Self { backing, limits }
@@ -338,6 +354,7 @@ impl MemInst {
         self.backing.borrow_mut()
     }
 
+    #[cfg(sf_jit)]
     #[inline]
     pub(crate) fn clone_shared_backing(&self) -> Rc<RefCell<MemBacking>> {
         Rc::clone(&self.backing)
@@ -452,16 +469,6 @@ impl GlobalInst {
     }
 
     #[inline]
-    pub fn value(&self, store: &Store) -> Result<Value, WasmError> {
-        try_raw_to_value_in_store(self.raw(), self.value_type, store)
-    }
-
-    #[inline]
-    pub fn set_value(&mut self, store: &mut Store, value: Value) {
-        self.set_raw(value_to_raw_in_store(value, store));
-    }
-
-    #[inline]
     pub fn raw(&self) -> u64 {
         // Safety: sf-nano stores are single-threaded; generated code and host
         // API access use the same raw cell identity for imported globals.
@@ -487,6 +494,11 @@ impl GlobalInst {
     }
 }
 
+// `ElementInst`, `DataInst`, and `ModuleInst` are instantiation-time
+// entities of the JIT's `Store` world. The interpreter instantiates from
+// the parsed `Module` directly and applies segments into its own state, so
+// none of them exist in an interpreter-only build.
+#[cfg(sf_jit)]
 #[derive(Debug, Clone)]
 pub struct ElementInst {
     pub refs: collections::Vec<RefHandle>,
@@ -494,6 +506,7 @@ pub struct ElementInst {
     pub dropped: bool,
 }
 
+#[cfg(sf_jit)]
 impl ElementInst {
     pub fn new(refs: collections::Vec<RefHandle>, value_type: ValueType) -> Self {
         ElementInst {
@@ -515,12 +528,14 @@ impl ElementInst {
     }
 }
 
+#[cfg(sf_jit)]
 #[derive(Debug, Clone)]
 pub struct DataInst {
     pub bytes: collections::Vec<u8>,
     pub dropped: bool,
 }
 
+#[cfg(sf_jit)]
 impl DataInst {
     pub fn new(bytes: collections::Vec<u8>) -> Self {
         DataInst {
@@ -541,6 +556,7 @@ impl DataInst {
     }
 }
 
+#[cfg(sf_jit)]
 #[derive(Debug)]
 pub struct ModuleInst {
     /// The engine's configuration, carried here because every stage that
@@ -562,6 +578,7 @@ pub struct ModuleInst {
     native_buf: RefCell<Option<CodeBuffer>>,
 }
 
+#[cfg(sf_jit)]
 impl ModuleInst {
     pub fn new(config: Config, name: String, types: TypeContext) -> Self {
         ModuleInst {
@@ -588,11 +605,13 @@ impl ModuleInst {
         self.types.get_function_type(index)
     }
 
+    #[cfg(sf_jit)]
     #[inline]
     pub fn function_handle(&self, index: usize) -> Option<RefHandle> {
         self.function_handles.get(index).copied()
     }
 
+    #[cfg(sf_jit)]
     #[inline]
     pub(crate) fn ensure_function_handle_capacity(&mut self, len: usize) {
         if self.function_handles.len() < len {
@@ -600,6 +619,7 @@ impl ModuleInst {
         }
     }
 
+    #[cfg(sf_jit)]
     #[inline]
     pub(crate) fn set_function_handle(&mut self, index: usize, handle: RefHandle) {
         self.ensure_function_handle_capacity(index + 1);
@@ -661,6 +681,7 @@ impl ModuleInst {
     }
 }
 
+#[cfg(sf_jit)]
 impl Default for ModuleInst {
     fn default() -> Self {
         Self {
