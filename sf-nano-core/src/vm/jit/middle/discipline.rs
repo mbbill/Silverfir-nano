@@ -473,6 +473,35 @@ impl Window {
         self.spill(driver, frame, count);
     }
 
+    /// Publish every live snapshot of `slot` that would survive an overwrite
+    /// of its cache lane.
+    ///
+    /// A cached `local.get` normally aliases the cache register at zero
+    /// transient cost. That discount stops being valid when a later
+    /// `local.set`/`local.tee` replaces the lane while an older snapshot is
+    /// still live. Spill the live prefix through the last such snapshot so
+    /// machine lowering never has to find an unplanned register to preserve
+    /// it. The top value is the store source; when it aliases the same slot the
+    /// assignment is an identity and does not overwrite the lane.
+    fn spill_aliases_before_cache_overwrite(
+        &mut self,
+        driver: &mut impl DisciplineDriver,
+        frame: FrameLayoutPlan,
+        slot: CellId,
+    ) {
+        if self.live_aliases.last().copied().flatten() == Some(slot) {
+            return;
+        }
+        let Some(last_alias) = self
+            .live_aliases
+            .iter()
+            .rposition(|alias| *alias == Some(slot))
+        else {
+            return;
+        };
+        self.spill(driver, frame, (last_alias + 1) as u16);
+    }
+
     /// Reserve room for an op that consumes `operand_count` operands and pushes
     /// `result_types`: the extra GP/FP budget units the op needs beyond what the
     /// already-live operands cover, or that filling the operands demands.
@@ -622,6 +651,12 @@ pub(crate) fn apply_op_discipline<D: DisciplineDriver>(
     if matches!(op, SemanticOpKind::Primitive(PrimitiveOpKind::Unreachable)) {
         return Ok(());
     }
+    if let SemanticOpKind::LocalSet { idx } | SemanticOpKind::LocalTee { idx } = op {
+        let slot = CellId(*idx);
+        if resident.contains(&slot) {
+            window.spill_aliases_before_cache_overwrite(driver, frame, slot);
+        }
+    }
     match structural_action(op) {
         StructuralAction::None => {}
         StructuralAction::PrimitiveFill { pop, push } => {
@@ -694,10 +729,34 @@ fn emit_result_budget_units(
 
 #[cfg(test)]
 mod tests {
-    use super::{cached_cell_get_can_source_alias, Window};
+    use super::{
+        apply_op_discipline, cached_cell_get_can_source_alias, BankBudget, DisciplineDriver, Window,
+    };
     use crate::collections;
     use crate::value_type::ValueType;
     use crate::vm::jit::middle::cell::{CellId, CellSet};
+    use crate::vm::jit::middle::frame::{plan_frame_layout, FrameSlot};
+    use crate::vm::jit::middle::ssa_ir::ir::SsaValue;
+    use crate::vm::jit::wasm::semantic_ir::SemanticOpKind;
+
+    #[derive(Default)]
+    struct RecordingDriver {
+        spills: collections::Vec<(FrameSlot, usize)>,
+    }
+
+    impl DisciplineDriver for RecordingDriver {
+        fn on_spill(&mut self, base_slot: FrameSlot, count: usize) {
+            self.spills.push((base_slot, count));
+        }
+
+        fn on_fill(&mut self, _base_slot: FrameSlot, _types: &[ValueType]) {}
+
+        fn on_drop_cache(&mut self, _slot: CellId) {}
+
+        fn on_call_boundary(&mut self) {}
+
+        fn on_call_boundary_scalar(&mut self, _result: SsaValue) {}
+    }
 
     #[test]
     fn gp32_i64_cached_get_needs_real_linear_pair() {
@@ -728,5 +787,74 @@ mod tests {
             window.required_capacity(1, (1, 0), 8, &CellSet::default()),
             (0, 0)
         );
+    }
+
+    #[test]
+    fn cache_overwrite_spills_older_alias_snapshots_before_local_set() {
+        let slot0 = CellId(0);
+        let slot1 = CellId(1);
+        let mut resident = [slot0, slot1].into_iter().collect::<CellSet>();
+        let frame = plan_frame_layout(2, 3, 0);
+        let mut window = Window::new(
+            3,
+            0,
+            collections::vec![ValueType::I32; 3],
+            collections::vec![ValueType::I32; 3],
+            collections::vec![None, Some(slot0), Some(slot1)],
+        );
+        let mut driver = RecordingDriver::default();
+
+        apply_op_discipline(
+            &SemanticOpKind::LocalSet { idx: slot0.0 },
+            &mut window,
+            &mut driver,
+            frame,
+            &mut resident,
+            &[ValueType::I32, ValueType::I32],
+            BankBudget {
+                gp_unit_bytes: 8,
+                gp_live_budget: 3,
+                fp_live_budget: 0,
+            },
+        )
+        .expect("cache overwrite discipline");
+
+        assert_eq!(driver.spills, collections::vec![(frame.operand_slot(0), 2)]);
+        assert_eq!(window.spill_depth(), 2);
+        assert_eq!(window.live_aliases(), &[Some(slot1)]);
+    }
+
+    #[test]
+    fn identity_cache_set_keeps_same_slot_aliases_live() {
+        let slot = CellId(0);
+        let mut resident = [slot].into_iter().collect::<CellSet>();
+        let frame = plan_frame_layout(1, 2, 0);
+        let mut window = Window::new(
+            2,
+            0,
+            collections::vec![ValueType::I32; 2],
+            collections::vec![ValueType::I32; 2],
+            collections::vec![Some(slot), Some(slot)],
+        );
+        let mut driver = RecordingDriver::default();
+
+        apply_op_discipline(
+            &SemanticOpKind::LocalSet { idx: slot.0 },
+            &mut window,
+            &mut driver,
+            frame,
+            &mut resident,
+            &[ValueType::I32],
+            BankBudget {
+                gp_unit_bytes: 8,
+                gp_live_budget: 1,
+                fp_live_budget: 0,
+            },
+        )
+        .expect("identity cache set discipline");
+
+        assert!(driver.spills.is_empty());
+        assert_eq!(window.spill_depth(), 0);
+        assert_eq!(window.live_aliases(), &[Some(slot), Some(slot)]);
     }
 }
