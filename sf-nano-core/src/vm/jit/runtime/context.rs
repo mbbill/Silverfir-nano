@@ -40,7 +40,7 @@ use crate::{
             },
             layout::local_call_info_abi_layout,
         },
-        store::Store,
+        jit::store::Store,
         tag::TagHandle,
         value::RefHandle,
     },
@@ -940,7 +940,8 @@ mod tests {
         value_type::ValueType,
         vm::{
             entities::{Caller, ModuleInst},
-            store::{LinkRegistry, Store},
+            jit::store::Store,
+            link::LinkRegistry,
             value::Value,
         },
     };

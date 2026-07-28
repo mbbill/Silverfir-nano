@@ -5,7 +5,7 @@ use crate::vm::jit::arch::common::helpers::trap_error;
 use crate::vm::jit::machine::machine_ir::MachineTrapKind;
 #[cfg(not(sf_os_windows))]
 use crate::vm::jit::runtime::context::NativeContext;
-use crate::vm::value_encoding::{as_f32, as_f64, from_i32, from_i64};
+use crate::vm::jit::value_encoding::{as_f32, as_f64, from_i32, from_i64};
 
 // ── Trapping truncation ──────────────────────────────────────────────────────
 

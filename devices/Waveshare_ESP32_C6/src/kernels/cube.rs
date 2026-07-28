@@ -9,7 +9,10 @@
 //! - Projection: pinhole, integer divide by camera-space Z.
 //! - Raster: edge-function triangle scan with incremental updates.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "source shared with the wasm-demo guest crate via #[path]; the firmware build consumes only the geometry constants"
+)]
 
 pub const WIDTH: usize = 160;
 pub const HEIGHT: usize = 128;

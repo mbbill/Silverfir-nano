@@ -4,7 +4,7 @@ use crate::{
     error::WasmError,
     module::type_context::concrete_type_matches_cross_context,
     value_type::{AbstractHeapType, HeapType},
-    vm::{store::RefRegistryEntry, store::Store, value::RefHandle},
+    vm::{jit::store::Store, link::RefRegistryEntry, value::RefHandle},
 };
 
 pub(crate) fn check_ref_type_match(
@@ -65,7 +65,7 @@ pub(crate) fn check_ref_type_match(
 
 fn check_gc_ref_type(
     origin_store: &Store,
-    gc_ref: crate::vm::gc_heap::GcRef,
+    gc_ref: crate::vm::jit::gc_heap::GcRef,
     heap_type: &HeapType,
     current_store: &Store,
 ) -> Result<bool, WasmError> {

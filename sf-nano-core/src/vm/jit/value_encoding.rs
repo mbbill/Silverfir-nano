@@ -2,7 +2,7 @@
 
 use crate::error::WasmError;
 use crate::value_type::ValueType;
-use crate::vm::store::Store;
+use crate::vm::jit::store::Store;
 use crate::vm::value::{RefHandle, Value};
 
 pub(crate) type RawValue = u64;

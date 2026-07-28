@@ -40,7 +40,10 @@ pub(crate) fn decode_template_chain_next(encoded: u32) -> usize {
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "used by every backend except x86-64, whose template patches are rel32 by construction"
+)]
 pub(crate) fn template_i32_delta(from: usize, to: usize) -> Result<i32, WasmError> {
     let delta = to as i64 - from as i64;
     i32::try_from(delta).map_err(|_| WasmError::internal("template jit branch out of range"))

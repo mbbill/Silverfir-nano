@@ -20,7 +20,7 @@ mod imp {
     use crate::value_type::ValueType;
     use crate::vm::entities::{FunctionInst, ModuleInst};
     use crate::vm::jit::runtime::context::NativeContext;
-    use crate::vm::store::Store;
+    use crate::vm::jit::store::Store;
 
     const TRACE_ENV: &str = "SF_FUNCTION_TRACE";
     const TRACE_MEMORY_ENV: &str = "SF_FUNCTION_TRACE_MEMORY";
@@ -379,7 +379,10 @@ mod imp {
         );
     }
 
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "tail-call trace hook exercised by tests but not yet wired into codegen; tail calls currently trace as plain entries"
+    )]
     pub(crate) fn native_function_trace_tail_call_enter_func_idx(
         ctx: &mut NativeContext,
         func_idx: u32,

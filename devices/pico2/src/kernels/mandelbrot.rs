@@ -3,7 +3,10 @@
 //! The host firmware uses this module for geometry constants; the nested
 //! `wasm-demo` crate uses the full renderer.
 
-#![allow(dead_code)]
+#![allow(
+    dead_code,
+    reason = "source shared with the wasm-demo guest crate via #[path]; the firmware build consumes only the geometry constants"
+)]
 
 pub const WIDTH: usize = 160;
 pub const HEIGHT: usize = 128;

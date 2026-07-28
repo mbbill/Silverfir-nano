@@ -42,7 +42,10 @@ impl Default for TextEmitter {
     }
 }
 
-#[allow(dead_code)]
+#[allow(
+    dead_code,
+    reason = "shared emitter surface; each native backend uses a different subset of widths and patch helpers"
+)]
 impl TextEmitter {
     #[inline]
     pub(crate) fn new() -> Self {

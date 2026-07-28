@@ -1791,7 +1791,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
     /// the instruction-count savings. See the note above `emit_inst_at`
     /// (backend.rs) for the measured numbers and the rationale for keeping
     /// it as dead code instead of deleting it outright.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "measured failed experiment kept as reference; see the rationale note above"
+    )]
     pub(super) fn try_lower_indexed_burst(
         &mut self,
         block: &MachineBlock,
@@ -2034,7 +2037,10 @@ impl<'a> super::backend::Arm64Backend<'a> {
     /// is itself disabled (see comment there). Top-level FP pair fusion lives
     /// in `try_lower_fp_pair`, which handles the same shapes without needing
     /// the burst's shared base+index add.
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "only caller is the disabled `try_lower_indexed_burst`; kept with it as reference"
+    )]
     fn try_emit_burst_pair(
         &mut self,
         kind0: MachineInstKind,

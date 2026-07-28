@@ -16,14 +16,14 @@ use crate::{
             },
             context::{NativeContext, PendingEscape},
         },
-        store::Store,
-        tag::TagHandle,
-        value::RefHandle,
-        value::Value,
-        value_encoding::{
+        jit::store::Store,
+        jit::value_encoding::{
             machine_raw_to_ref, try_machine_raw_to_value_in_store, try_raw_to_value_in_store,
             value_to_machine_raw_in_store,
         },
+        tag::TagHandle,
+        value::RefHandle,
+        value::Value,
     },
 };
 
@@ -299,8 +299,7 @@ fn invoke_runtime_target(
                     if !validate_host_throw_payload(tag, &exn_args, ctx) {
                         return Err(trap_error("host threw mistyped exception"));
                     }
-                    let exn_ref = owner_store.alloc_exn(tag, exn_args);
-                    let handle = owner_store.register_exn_ref(exn_ref);
+                    let handle = owner_store.alloc_exn(tag, exn_args);
                     ctx.pending_escape = PendingEscape::Throw { exn: handle, tag };
                     return Ok(NativeCallStatus::Thrown);
                 }
@@ -386,7 +385,7 @@ mod tests {
         vm::{
             entities::{HostFn, MemInst, ModuleInst},
             jit::runtime::{common::NativeCallStatus, context::NativeContextBox},
-            store::Store,
+            jit::store::Store,
         },
     };
 

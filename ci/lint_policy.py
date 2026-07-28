@@ -9,7 +9,14 @@ import dataclasses
 import os
 import re
 import sys
-import tomllib
+
+try:
+    import tomllib
+except ModuleNotFoundError:  # pragma: no cover - depends on interpreter version
+    raise SystemExit(
+        "ci.lint_policy requires Python 3.11+ (the `tomllib` module); "
+        "run it with a newer python3"
+    )
 from pathlib import Path
 from typing import Iterable
 
@@ -21,7 +28,11 @@ SUPPRESSION_RE = re.compile(
     re.MULTILINE | re.DOTALL,
 )
 REASON_RE = re.compile(r"\breason\s*=")
-SKIP_DIRS = {".git", "target"}
+# `.claude` holds agent worktrees (full repo copies whose sources are not part
+# of this checkout) and session state; scanning it makes local runs report
+# other checkouts' findings. `.cargo`, `.github`, and other dot-directories
+# stay scanned -- the flag scan depends on them.
+SKIP_DIRS = {".git", "target", ".claude"}
 FORBIDDEN_FLAG_RE = re.compile(
     r"(?<![A-Za-z0-9_])(?:-A(?:\s*|=|[\"']\s*,\s*[\"'])|"
     r"--allow(?:\s+|=|[\"']\s*,\s*[\"']))"
@@ -60,8 +71,18 @@ def occurrence_is_in_line_comment(text: str, start: int) -> bool:
 
 def normalize_anchor(line: str) -> str:
     anchor = line.strip()
-    # Generated Rust source in build.rs appears inside escaped string lines.
-    anchor = anchor.removeprefix('"').removesuffix("\\")
+    # Generated Rust source in build scripts appears inside escaped string
+    # literal lines ("...\n\" continuations). Strip the quoting and escape
+    # artifacts so the anchor identifies the generated line's content rather
+    # than its string encoding.
+    anchor = anchor.removeprefix('"')
+    while True:
+        for suffix in ("\\n", "\\r", "\\t", "\\", '",', '";', '"'):
+            if anchor.endswith(suffix):
+                anchor = anchor.removesuffix(suffix)
+                break
+        else:
+            break
     return " ".join(anchor.split())[:240]
 
 

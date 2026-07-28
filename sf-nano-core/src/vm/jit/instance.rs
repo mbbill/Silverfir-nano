@@ -35,13 +35,14 @@ use crate::vm::entities::{
     Caller, DataInst, ElementInst, FunctionInst, GlobalInst, HostCallback, MemInst, ModuleInst,
     TableInst, TagInst,
 };
-use crate::vm::expr_eval::eval_const_expr;
 use crate::vm::imports::*;
+use crate::vm::jit::expr_eval::eval_const_expr;
 use crate::vm::jit::runtime;
-use crate::vm::store::{LinkRegistry, Store};
+use crate::vm::jit::store::Store;
+use crate::vm::jit::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store};
+use crate::vm::link::LinkRegistry;
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
-use crate::vm::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store};
 
 pub struct JitInstance {
     store: Box<Store>,
@@ -1091,7 +1092,10 @@ impl JitInstance {
             .exports
             .iter()
             .find(|(n, k, _)| matches!(k, ExportKind::Global) && n == name)
-            .map(|(_, _, idx)| self.store.global(*idx).value(&self.store))
+            .map(|(_, _, idx)| {
+                let global = self.store.global(*idx);
+                try_raw_to_value_in_store(global.raw(), global.value_type, &self.store)
+            })
             .transpose()?)
     }
 
@@ -1101,7 +1105,7 @@ impl JitInstance {
             .module()
             .globals
             .get(idx)
-            .map(|g| g.value(&self.store))
+            .map(|g| try_raw_to_value_in_store(g.raw(), g.value_type, &self.store))
             .transpose()?)
     }
 

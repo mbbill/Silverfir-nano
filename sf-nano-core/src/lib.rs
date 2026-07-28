@@ -58,7 +58,7 @@ pub use vm::jit::build::{jit_stats_snapshot, JitStatsSnapshot};
 pub use vm::jit::instance::{InstanceInstantiationError, JitInstance};
 #[cfg(sf_has_guard_pages)]
 use vm::jit::runtime::trap_signal;
-pub use vm::store::LinkRegistry;
+pub use vm::link::LinkRegistry;
 pub use vm::tag::TagHandle;
 pub use vm::value::{RefHandle, Value};
 

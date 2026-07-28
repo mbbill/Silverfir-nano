@@ -110,7 +110,7 @@ impl Instance {
         engine: &Engine,
         module: Module,
         imports: &[Import],
-        registry: &crate::vm::store::LinkRegistry,
+        registry: &crate::vm::link::LinkRegistry,
     ) -> Result<Self, InstanceInstantiationError> {
         validate(&module).map_err(InstanceInstantiationError::Complete)?;
         match engine.tier() {
@@ -147,7 +147,7 @@ impl Instance {
         imports: &[Import],
         funcref_host: crate::vm::interpreter::FuncRefHost,
     ) -> Result<Self, (Option<Self>, WasmError)> {
-        let registry = crate::vm::store::LinkRegistry::new();
+        let registry = crate::vm::link::LinkRegistry::new();
         Self::from_module_with_registry_and_funcref_host(
             engine,
             module,
@@ -168,7 +168,7 @@ impl Instance {
         engine: &Engine,
         module: Module,
         imports: &[Import],
-        registry: &crate::vm::store::LinkRegistry,
+        registry: &crate::vm::link::LinkRegistry,
         funcref_host: crate::vm::interpreter::FuncRefHost,
     ) -> Result<Self, (Option<Self>, WasmError)> {
         validate(&module).map_err(|e| (None, e))?;

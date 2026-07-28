@@ -8,7 +8,8 @@ use crate::opcodes::{Opcode, OpcodeFB, OpcodeFD};
 use crate::utils::payload::Payload;
 use crate::value_type::{AbstractHeapType, HeapType, RefType};
 use crate::vm::entities::FunctionInst;
-use crate::vm::store::Store;
+use crate::vm::jit::store::Store;
+use crate::vm::jit::value_encoding::try_raw_to_value_in_store;
 use crate::vm::value::{RefHandle, Value};
 
 pub(crate) fn eval_const_expr(expr: &ConstExpr, store: &mut Store) -> Result<Value, WasmError> {
@@ -48,10 +49,15 @@ pub(crate) fn eval_const_expr(expr: &ConstExpr, store: &mut Store) -> Result<Val
             Opcode::GLOBAL_GET => {
                 let global_idx = code.read_leb128_u32()? as usize;
                 let module = store.module();
-                if global_idx >= module.globals.len() {
-                    return Err(WasmError::invalid("global.get: index out of range"));
-                }
-                stack.push(module.globals[global_idx].value(store)?);
+                let global = module
+                    .globals
+                    .get(global_idx)
+                    .ok_or_else(|| WasmError::invalid("global.get: index out of range"))?;
+                stack.push(try_raw_to_value_in_store(
+                    global.raw(),
+                    global.value_type,
+                    store,
+                )?);
             }
             Opcode::I32_ADD => eval_i32_binary(&mut stack, i32::wrapping_add)?,
             Opcode::I32_SUB => eval_i32_binary(&mut stack, i32::wrapping_sub)?,

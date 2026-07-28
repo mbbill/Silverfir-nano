@@ -23,7 +23,6 @@ use wast::{
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum TestError {
     Runtime { context: String, error: WasmError },
     Infrastructure(String),
@@ -67,10 +66,13 @@ impl TestError {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
-#[allow(dead_code)]
 pub enum TestResult {
     Pass,
     Fail(TestError),
+    #[allow(
+        dead_code,
+        reason = "part of the harness result vocabulary; current WAST driver reports skips out of band"
+    )]
     Skip(String),
     Error(String),
 }

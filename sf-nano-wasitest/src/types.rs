@@ -4,7 +4,6 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 #[derive(Debug, Deserialize, Default)]
-#[allow(dead_code)]
 pub struct TestConfig {
     pub args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
@@ -15,11 +14,14 @@ pub struct TestConfig {
     pub root: Option<String>,
     pub stdout: Option<String>,
     pub stderr: Option<String>,
+    #[allow(
+        dead_code,
+        reason = "declared key of the suite's TOML schema; not consulted by the current runner"
+    )]
     pub wasi_functions: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct TestOutput {
     pub exit_code: i32,
     pub stdout: String,
@@ -33,15 +35,17 @@ pub struct TestFailure {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct TestResult {
     pub name: String,
+    #[allow(dead_code, reason = "failure diagnostics, reported through Debug")]
     pub config: TestConfig,
+    #[allow(dead_code, reason = "failure diagnostics, reported through Debug")]
     pub output: Option<TestOutput>,
     pub is_executed: bool,
     pub skip_reason: Option<String>,
     pub failures: Vec<TestFailure>,
     pub duration: std::time::Duration,
+    #[allow(dead_code, reason = "failure diagnostics, reported through Debug")]
     pub command_line: Option<String>,
 }
 
@@ -62,10 +66,13 @@ impl TestResult {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct TestSuite {
     pub name: String,
     pub test_results: Vec<TestResult>,
+    #[allow(
+        dead_code,
+        reason = "aggregate timing kept for future reporting; per-test durations are printed today"
+    )]
     pub duration: std::time::Duration,
 }
 
