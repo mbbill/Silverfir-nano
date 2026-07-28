@@ -14,7 +14,8 @@ use crate::collections;
 use crate::config::Config;
 use tracked_alloc::rc::Rc;
 
-use crate::vm::entities::{FunctionInst, GlobalInst, MemInst, ModuleInst, TableInst};
+use crate::vm::entities::{FunctionInst, GlobalInst, MemInst, TableInst};
+use crate::vm::jit::entities::ModuleInst;
 use crate::vm::jit::gc_heap::{GcHeap, GcRef};
 #[cfg(sf_has_simd)]
 use crate::vm::link::SharedSimdRegistry;

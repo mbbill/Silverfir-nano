@@ -1,5 +1,6 @@
-use crate::collections::{self, phase_span, phase_span_with_function};
+use crate::collections;
 use tracked_alloc::rc::Rc;
+use tracked_alloc::{phase_span, phase_span_with_function};
 
 use core::sync::atomic::{AtomicUsize, Ordering};
 
@@ -45,10 +46,10 @@ pub fn jit_stats_snapshot() -> JitStatsSnapshot {
     }
 }
 
-use crate::vm::entities::TableDispatchMode;
 #[cfg(sf_ir_dump)]
 use crate::vm::jit::debug::ir_dump;
-use crate::vm::{entities::ModuleInst, jit::backend::BackendConfig};
+use crate::vm::jit::entities::TableDispatchMode;
+use crate::vm::{jit::backend::BackendConfig, jit::entities::ModuleInst};
 use crate::{
     error::WasmError,
     vm::{

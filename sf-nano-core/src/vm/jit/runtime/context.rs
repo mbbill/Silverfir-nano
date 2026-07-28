@@ -32,7 +32,8 @@ use crate::{
     error::WasmError,
     module::type_defs::CompositeType,
     vm::{
-        entities::{FunctionInst, ModuleInst, TableDispatchMode, TableInst},
+        entities::FunctionInst,
+        jit::entities::{ModuleInst, TableDispatchMode, TableInstJit},
         jit::runtime::{
             code::CompiledNativeModule,
             dispatch_view::{
@@ -238,7 +239,7 @@ impl NativeContext {
             .module()
             .tables
             .iter()
-            .map(TableInst::revision)
+            .map(TableInstJit::revision)
             .collect();
         self.cached_module_revision = module_revision;
         self.cached_function_registry_revision = function_registry_revision;

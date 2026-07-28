@@ -1,11 +1,4 @@
 pub(crate) use tracked_alloc::{into_alloc_vec, vec, Vec};
-// `phase_span` and `phase_span_with_function` are only taken by the JIT
-// pipeline's stage timers.
-#[cfg(sf_jit)]
-pub(crate) use tracked_alloc::phase_span;
-#[cfg(sf_jit)]
-pub(crate) use tracked_alloc::phase_span_with_function;
-
 #[cfg(feature = "memprof")]
 #[allow(
     unused_imports,

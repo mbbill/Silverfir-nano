@@ -3,10 +3,10 @@ use crate::collections;
 use crate::{
     error::WasmError,
     vm::{
-        entities::ModuleInst,
         jit::arch::common::{
             backend::ArchBackend, helpers::page_align_function, pipeline::compile_function,
         },
+        jit::entities::ModuleInst,
         jit::runtime::{
             code::CompiledNativeModule, code_buf::CodeBuffer, dispatch_view::NativeLocalCallInfo64,
         },

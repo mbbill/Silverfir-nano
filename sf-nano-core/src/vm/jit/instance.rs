@@ -29,13 +29,13 @@ use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
 use crate::value_type::{HeapType, ValueType};
 use crate::vm::engine::Engine;
-#[cfg(sf_jit)]
-use crate::vm::entities::TableDispatchMode;
-use crate::vm::entities::{
-    Caller, DataInst, ElementInst, FunctionInst, GlobalInst, HostCallback, MemInst, ModuleInst,
-    TableInst, TagInst,
-};
+use crate::vm::entities::{Caller, FunctionInst, GlobalInst, HostCallback, MemInst, TableInst};
 use crate::vm::imports::*;
+#[cfg(sf_jit)]
+use crate::vm::jit::entities::TableDispatchMode;
+use crate::vm::jit::entities::{
+    DataInst, ElementInst, MemInstJit, ModuleInst, TableInstJit, TagInst,
+};
 use crate::vm::jit::expr_eval::eval_const_expr;
 use crate::vm::jit::runtime;
 use crate::vm::jit::store::Store;

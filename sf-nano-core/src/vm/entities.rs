@@ -6,37 +6,16 @@ use crate::config::Config;
 use alloc::rc::Rc as AllocRc;
 use core::cell::{Cell, Ref, RefCell, RefMut, UnsafeCell};
 use tracked_alloc::rc::Rc;
-#[cfg(sf_jit)]
-use tracked_alloc::string::String;
 
 use crate::error::WasmError;
-#[cfg(sf_jit)]
-use crate::module::type_context::TypeContext;
 use crate::module::{entities::FunctionSpec, type_defs::FunctionType};
 use crate::utils::limits::Limits;
 use crate::value_type::ValueType;
 
-#[cfg(sf_jit)]
-use crate::vm::jit::runtime::code_buf::CodeBuffer;
 #[cfg(sf_has_guard_pages)]
 use crate::vm::jit::runtime::guard_pages::GuardPageMemory;
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
-
-// Instantiation-time entity of the JIT's `Store` world. The interpreter
-// tracks tag identity with bare `TagHandle`s in its own state.
-#[cfg(sf_jit)]
-#[derive(Debug, Clone, Copy)]
-pub struct TagInst {
-    pub handle: TagHandle,
-    pub type_index: u32,
-    /// `true` when the tag is imported — its `handle` may alias a handle
-    /// imported into a different tag index. Enables the static-catch
-    /// matcher in the semantic decoder to fall back to the runtime
-    /// throw path when it can't prove two tag indices refer to distinct
-    /// runtime identities.
-    pub is_import: bool,
-}
 
 /// A non-capturing host function pointer.
 ///
@@ -89,13 +68,6 @@ impl core::fmt::Debug for HostCallback {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("HostCallback").finish_non_exhaustive()
     }
-}
-
-#[cfg(sf_jit)]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum TableDispatchMode {
-    Generic,
-    FixedLocalOnly { len: u32 },
 }
 
 pub struct Caller<'a> {
@@ -197,7 +169,10 @@ impl FunctionInst {
 #[derive(Debug, Clone)]
 pub struct TableInst {
     elements: Rc<RefCell<collections::Vec<RefHandle>>>,
-    revision: Rc<Cell<u64>>,
+    // pub(crate) so `vm::jit::entities::TableInstJit` can read it; the bump
+    // in `elements_mut` is unconditional because a shared table mutated by
+    // any engine must invalidate JIT cached views.
+    pub(crate) revision: Rc<Cell<u64>>,
     pub limits: Limits,
     pub value_type: ValueType,
 }
@@ -242,24 +217,9 @@ impl TableInst {
         self.elements.borrow_mut()
     }
 
-    // The revision counter's only readers are the JIT's cached native views;
-    // the bump in `elements_mut` stays unconditional so a table shared with a
-    // JIT instance invalidates those views no matter which engine mutated it.
-    #[cfg(sf_jit)]
-    #[inline]
-    pub(crate) fn revision(&self) -> u64 {
-        self.revision.get()
-    }
-
     #[inline]
     pub fn clone_shared_elements(&self) -> Rc<RefCell<collections::Vec<RefHandle>>> {
         Rc::clone(&self.elements)
-    }
-
-    #[cfg(sf_jit)]
-    #[inline]
-    pub(crate) fn clone_shared_revision(&self) -> Rc<Cell<u64>> {
-        Rc::clone(&self.revision)
     }
 
     #[inline]
@@ -271,24 +231,20 @@ impl TableInst {
 #[derive(Debug)]
 pub(crate) struct MemBacking {
     pub(crate) data: collections::Vec<u8>,
-    // Supports the JIT's lazily-allocated memories (`new_unallocated` /
-    // `ensure_allocated`); the interpreter always allocates eagerly.
-    #[cfg(sf_jit)]
-    pub(crate) allocated: bool,
     #[cfg(sf_has_guard_pages)]
     pub(crate) guard: Option<GuardPageMemory>,
 }
 
 #[derive(Debug, Clone)]
 pub struct MemInst {
-    backing: Rc<RefCell<MemBacking>>,
+    pub(crate) backing: Rc<RefCell<MemBacking>>,
     pub limits: Limits,
 }
 
 /// Enforce the engine's `wasm_memory_max_pages` against the memory's
 /// initial page count. Declared maximums are type-level growth ceilings;
 /// `memory.grow` applies the runtime cap when growth is requested.
-fn check_memory_quota(config: &Config, limits: &Limits) -> Result<(), WasmError> {
+pub(crate) fn check_memory_quota(config: &Config, limits: &Limits) -> Result<(), WasmError> {
     let initial_pages = limits.min();
     let configured = config.get_wasm_memory_max_pages() as usize;
     if initial_pages > configured {
@@ -304,22 +260,6 @@ impl MemInst {
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
                 data: collections::vec![0u8; initial_bytes],
-                #[cfg(sf_jit)]
-                allocated: true,
-                #[cfg(sf_has_guard_pages)]
-                guard: None,
-            })),
-            limits,
-        })
-    }
-
-    #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
-    pub(crate) fn new_unallocated(config: &Config, limits: Limits) -> Result<Self, WasmError> {
-        check_memory_quota(config, &limits)?;
-        Ok(MemInst {
-            backing: Rc::new(RefCell::new(MemBacking {
-                data: collections::Vec::new(),
-                allocated: false,
                 #[cfg(sf_has_guard_pages)]
                 guard: None,
             })),
@@ -335,46 +275,15 @@ impl MemInst {
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
                 data: collections::Vec::new(),
-                #[cfg(sf_jit)]
-                allocated: true,
                 guard: Some(guard),
             })),
             limits,
         })
     }
 
-    #[cfg(sf_jit)]
-    #[inline]
-    pub(crate) fn from_shared(limits: Limits, backing: Rc<RefCell<MemBacking>>) -> Self {
-        Self { backing, limits }
-    }
-
     #[inline]
     pub(crate) fn backing_mut(&self) -> RefMut<'_, MemBacking> {
         self.backing.borrow_mut()
-    }
-
-    #[cfg(sf_jit)]
-    #[inline]
-    pub(crate) fn clone_shared_backing(&self) -> Rc<RefCell<MemBacking>> {
-        Rc::clone(&self.backing)
-    }
-
-    #[cfg(sf_jit)]
-    pub(crate) fn ensure_allocated(&self) -> Result<(), WasmError> {
-        let mut backing = self.backing.borrow_mut();
-        #[cfg(sf_has_guard_pages)]
-        if backing.guard.is_some() {
-            return Ok(());
-        }
-        if backing.allocated {
-            return Ok(());
-        }
-
-        let initial_bytes = self.limits.min() * crate::constants::WASM_PAGE_SIZE;
-        backing.data = collections::vec![0u8; initial_bytes];
-        backing.allocated = true;
-        Ok(())
     }
 
     #[inline]
@@ -491,215 +400,5 @@ impl GlobalInst {
     #[inline]
     pub fn clone_shared_cell(&self) -> Rc<GlobalCell> {
         Rc::clone(&self.cell)
-    }
-}
-
-// `ElementInst`, `DataInst`, and `ModuleInst` are instantiation-time
-// entities of the JIT's `Store` world. The interpreter instantiates from
-// the parsed `Module` directly and applies segments into its own state, so
-// none of them exist in an interpreter-only build.
-#[cfg(sf_jit)]
-#[derive(Debug, Clone)]
-pub struct ElementInst {
-    pub refs: collections::Vec<RefHandle>,
-    pub value_type: ValueType,
-    pub dropped: bool,
-}
-
-#[cfg(sf_jit)]
-impl ElementInst {
-    pub fn new(refs: collections::Vec<RefHandle>, value_type: ValueType) -> Self {
-        ElementInst {
-            refs,
-            value_type,
-            dropped: false,
-        }
-    }
-
-    #[inline]
-    pub fn is_dropped(&self) -> bool {
-        self.dropped
-    }
-
-    pub fn drop_segment(&mut self) {
-        self.refs.clear();
-        self.refs.shrink_to_fit();
-        self.dropped = true;
-    }
-}
-
-#[cfg(sf_jit)]
-#[derive(Debug, Clone)]
-pub struct DataInst {
-    pub bytes: collections::Vec<u8>,
-    pub dropped: bool,
-}
-
-#[cfg(sf_jit)]
-impl DataInst {
-    pub fn new(bytes: collections::Vec<u8>) -> Self {
-        DataInst {
-            bytes,
-            dropped: false,
-        }
-    }
-
-    #[inline]
-    pub fn is_dropped(&self) -> bool {
-        self.dropped
-    }
-
-    pub fn drop_segment(&mut self) {
-        self.bytes.clear();
-        self.bytes.shrink_to_fit();
-        self.dropped = true;
-    }
-}
-
-#[cfg(sf_jit)]
-#[derive(Debug)]
-pub struct ModuleInst {
-    /// The engine's configuration, carried here because every stage that
-    /// needs a budget already has the module in hand.
-    pub(crate) config: Config,
-    pub name: String,
-    pub types: TypeContext,
-    pub functions: collections::Vec<FunctionInst>,
-    pub function_handles: collections::Vec<RefHandle>,
-    pub tables: collections::Vec<TableInst>,
-    pub memories: collections::Vec<MemInst>,
-    pub globals: collections::Vec<GlobalInst>,
-    pub tags: collections::Vec<TagInst>,
-    pub elements: collections::Vec<ElementInst>,
-    pub data: collections::Vec<DataInst>,
-    #[cfg(sf_jit)]
-    pub(crate) table_dispatch_modes: collections::Vec<TableDispatchMode>,
-    #[cfg(sf_jit)]
-    native_buf: RefCell<Option<CodeBuffer>>,
-}
-
-#[cfg(sf_jit)]
-impl ModuleInst {
-    pub fn new(config: Config, name: String, types: TypeContext) -> Self {
-        ModuleInst {
-            config,
-            name,
-            types,
-            functions: collections::Vec::new(),
-            function_handles: collections::Vec::new(),
-            tables: collections::Vec::new(),
-            memories: collections::Vec::new(),
-            globals: collections::Vec::new(),
-            tags: collections::Vec::new(),
-            elements: collections::Vec::new(),
-            data: collections::Vec::new(),
-            #[cfg(sf_jit)]
-            table_dispatch_modes: collections::Vec::new(),
-            #[cfg(sf_jit)]
-            native_buf: RefCell::new(None),
-        }
-    }
-
-    #[inline]
-    pub fn get_type(&self, index: u32) -> Option<&Rc<FunctionType>> {
-        self.types.get_function_type(index)
-    }
-
-    #[cfg(sf_jit)]
-    #[inline]
-    pub fn function_handle(&self, index: usize) -> Option<RefHandle> {
-        self.function_handles.get(index).copied()
-    }
-
-    #[cfg(sf_jit)]
-    #[inline]
-    pub(crate) fn ensure_function_handle_capacity(&mut self, len: usize) {
-        if self.function_handles.len() < len {
-            self.function_handles.resize(len, RefHandle::null());
-        }
-    }
-
-    #[cfg(sf_jit)]
-    #[inline]
-    pub(crate) fn set_function_handle(&mut self, index: usize, handle: RefHandle) {
-        self.ensure_function_handle_capacity(index + 1);
-        self.function_handles[index] = handle;
-    }
-
-    #[cfg(sf_jit)]
-    #[inline]
-    pub(crate) fn table_dispatch_modes(&self) -> &[TableDispatchMode] {
-        &self.table_dispatch_modes
-    }
-
-    #[cfg(sf_jit)]
-    pub(crate) fn clear_native_code(&self) {
-        for function in &self.functions {
-            if let Some(spec) = function.spec() {
-                spec.clear_native_code();
-            }
-        }
-    }
-
-    pub fn config(&self) -> &Config {
-        &self.config
-    }
-
-    #[cfg(sf_jit)]
-    pub fn native_code_buffer(&self) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
-        let mut native_buf = self
-            .native_buf
-            .try_borrow_mut()
-            .map_err(|_| "module native code buffer is already borrowed")?;
-        if native_buf.is_none() {
-            *native_buf = Some(CodeBuffer::new(&self.config)?);
-        }
-        Ok(core::cell::RefMut::map(
-            native_buf,
-            |native_buf: &mut Option<CodeBuffer>| {
-                native_buf.as_mut().expect("native code buffer initialized")
-            },
-        ))
-    }
-
-    /// Take ownership of an already-built `CodeBuffer` and publish it
-    /// as this module's persistent native buffer. Any previous buffer
-    /// is dropped (its executable region is released back to the OS
-    /// layer). Used by the streaming compile pipeline to install the
-    /// just-emitted code without a second allocation + swap.
-    ///
-    /// Returns `Err` only if a caller is currently holding a borrow of
-    /// the buffer via `native_code_buffer()` — a programmer error.
-    #[cfg(sf_jit)]
-    pub(crate) fn install_native_code_buffer(&self, buf: CodeBuffer) -> Result<(), &'static str> {
-        let mut native_buf = self
-            .native_buf
-            .try_borrow_mut()
-            .map_err(|_| "module native code buffer is already borrowed")?;
-        *native_buf = Some(buf);
-        Ok(())
-    }
-}
-
-#[cfg(sf_jit)]
-impl Default for ModuleInst {
-    fn default() -> Self {
-        Self {
-            config: Config::new(),
-            name: String::new(),
-            types: TypeContext::empty(),
-            functions: collections::Vec::new(),
-            function_handles: collections::Vec::new(),
-            tables: collections::Vec::new(),
-            memories: collections::Vec::new(),
-            globals: collections::Vec::new(),
-            tags: collections::Vec::new(),
-            elements: collections::Vec::new(),
-            data: collections::Vec::new(),
-            #[cfg(sf_jit)]
-            table_dispatch_modes: collections::Vec::new(),
-            #[cfg(sf_jit)]
-            native_buf: RefCell::new(None),
-        }
     }
 }
