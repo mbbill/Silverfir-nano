@@ -57,6 +57,7 @@ impl BackendConfig {
     /// lanes are volatile; the historical internal GP scratch tail remains
     /// reserved.
     #[inline]
+    #[allow(dead_code)]
     pub(crate) const fn new(
         gp_unit_bytes: u8,
         gp_dynamic_budget: u8,
@@ -176,6 +177,7 @@ const fn min_u8(lhs: u8, rhs: u8) -> u8 {
 }
 
 #[inline]
+#[allow(dead_code)]
 const fn default_gp_internal_scratch(gp_unit_bytes: u8, gp_dynamic_budget: u8) -> u8 {
     let preferred = if gp_unit_bytes == 4 { 2 } else { 1 };
     let max_reserve = gp_dynamic_budget.saturating_sub(1);
@@ -187,11 +189,13 @@ const fn default_gp_internal_scratch(gp_unit_bytes: u8, gp_dynamic_budget: u8) -
 }
 
 #[inline]
+#[allow(dead_code)]
 const fn default_gp_arg_lanes(gp_volatile_dynamic: u8) -> u8 {
     min_u8(gp_volatile_dynamic, 4)
 }
 
 #[inline]
+#[allow(dead_code)]
 const fn default_fp_arg_lanes(fp_volatile_dynamic: u8) -> u8 {
     min_u8(fp_volatile_dynamic, 4)
 }

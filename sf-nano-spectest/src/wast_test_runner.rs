@@ -23,6 +23,7 @@ use wast::{
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum TestError {
     Runtime { context: String, error: WasmError },
     Infrastructure(String),
@@ -66,9 +67,11 @@ impl TestError {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub enum TestResult {
     Pass,
     Fail(TestError),
+    Skip(String),
     Error(String),
 }
 
@@ -77,6 +80,7 @@ impl fmt::Display for TestResult {
         match self {
             TestResult::Pass => write!(f, "PASS"),
             TestResult::Fail(err) => write!(f, "FAIL: {}", err),
+            TestResult::Skip(msg) => write!(f, "SKIP: {}", msg),
             TestResult::Error(msg) => write!(f, "ERROR: {}", msg),
         }
     }

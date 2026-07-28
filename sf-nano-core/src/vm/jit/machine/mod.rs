@@ -40,8 +40,10 @@ mod validate_tests;
 
 pub(crate) use lower_const_pool::ConstPoolBuilder;
 pub(crate) use lower_module::LoweredMachineModule;
+#[allow(unused_imports)]
 pub(crate) use lower_module::{
-    derive_param_locs_from_types, derive_return_abi, lower_module_with_table_dispatch_modes,
+    derive_param_locs_from_types, derive_return_abi, lower_module,
+    lower_module_with_table_dispatch_modes, lower_single_function,
     lower_single_function_with_table_dispatch_modes, LowerFunctionInput, LowerModuleInput,
 };
 pub(crate) use optimize::{optimize_function, optimize_module};

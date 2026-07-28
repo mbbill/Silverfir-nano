@@ -245,10 +245,7 @@ macro_rules! for_each_primitive_op {
             ExternConvertAny => (1, 1),
             RefTest { ref_type: crate::value_type::RefType } => (1, 1),
             RefCast { ref_type: crate::value_type::RefType } => (1, 1),
-            StructNew {
-                type_idx: u32,
-                field_count: u32 => field_count,
-            } => (*field_count as usize, 1),
+            StructNew { type_idx: u32, field_count: u32 } => (*field_count as usize, 1),
             StructNewDefault { type_idx: u32 } => (0, 1),
             StructGet { type_idx: u32, field_idx: u32 } => (1, 1),
             StructGetS { type_idx: u32, field_idx: u32 } => (1, 1),
@@ -256,10 +253,7 @@ macro_rules! for_each_primitive_op {
             StructSet { type_idx: u32, field_idx: u32 } => (2, 0),
             ArrayNew { type_idx: u32 } => (2, 1),
             ArrayNewDefault { type_idx: u32 } => (1, 1),
-            ArrayNewFixed {
-                type_idx: u32,
-                count: u32 => count,
-            } => (*count as usize, 1),
+            ArrayNewFixed { type_idx: u32, count: u32 } => (*count as usize, 1),
             ArrayNewData { type_idx: u32, data_idx: u32 } => (2, 1),
             ArrayNewElem { type_idx: u32, elem_idx: u32 } => (2, 1),
             ArrayGet { type_idx: u32 } => (2, 1),
@@ -279,23 +273,9 @@ macro_rules! for_each_primitive_op {
     };
 }
 
-macro_rules! stack_effect_pattern {
-    () => {
-        _
-    };
-    ($binding:ident) => {
-        $binding
-    };
-}
-
 macro_rules! define_primitive_ops {
     ($(
-        $name:ident $(
-            {
-                $($field:ident : $ty:ty $(=> $stack_field:ident)?),*
-                $(,)?
-            }
-        )? => ($pops:expr, $pushes:expr),
+        $name:ident $( { $($field:ident : $ty:ty),* $(,)? } )? => ($pops:expr, $pushes:expr),
     )* ) => {
         /// Pure reusable Wasm leaf operations shared across compiler layers.
         ///
@@ -308,16 +288,11 @@ macro_rules! define_primitive_ops {
             $( $name $( { $($field : $ty),* } )?, )*
         }
 
+        #[allow(unused_variables)]
         #[inline]
         pub(crate) fn stack_effect(kind: &PrimitiveOpKind) -> (usize, usize) {
             match kind {
-                $(
-                    PrimitiveOpKind::$name $(
-                        {
-                            $($field: stack_effect_pattern!($($stack_field)?)),*
-                        }
-                    )? => ($pops, $pushes),
-                )*
+                $( PrimitiveOpKind::$name $( { $($field),* } )? => ($pops, $pushes), )*
             }
         }
     };

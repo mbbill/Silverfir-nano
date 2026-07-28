@@ -23,6 +23,9 @@ use crate::config::CODE_ARENA_BYTES;
 /// realignment fixups at the arena base.
 #[repr(align(16))]
 struct CodeArena {
+    // Accessed only via raw-pointer casts in `sf_os_alloc_executable`;
+    // the field itself is never read through a Rust reference.
+    #[allow(dead_code)]
     bytes: [u8; CODE_ARENA_BYTES],
 }
 
@@ -50,7 +53,7 @@ pub extern "C" fn sf_os_alloc_executable(capacity: usize) -> *mut u8 {
     // SAFETY: `addr_of_mut!` yields a raw pointer without creating a
     // reference to the static mut. CODE_ARENA is 'static so the
     // pointer is valid until process exit (firmware never exits).
-    let ptr = core::ptr::addr_of_mut!(CODE_ARENA.bytes).cast::<u8>();
+    let ptr = core::ptr::addr_of_mut!(CODE_ARENA) as *mut u8;
     debug_assert!(ptr as usize % 16 == 0);
     ptr
 }

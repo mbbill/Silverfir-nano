@@ -37,6 +37,7 @@ jobs:
   platform:
     name: ${{ matrix.platform }}
     needs: policy
+    if: ${{ always() && !cancelled() }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout }}
     strategy:

@@ -114,6 +114,7 @@ class CoveragePlanTests(unittest.TestCase):
         }
         self.assertEqual(actual, expected)
         self.assertNotIn("scripts/check.py", workflow)
+        self.assertIn("if: ${{ always() && !cancelled() }}", workflow)
 
     @mock.patch.object(correctness, "cargo")
     @mock.patch.object(correctness, "require_tools", return_value=True)

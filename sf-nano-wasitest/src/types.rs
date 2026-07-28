@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 #[derive(Debug, Deserialize, Default)]
+#[allow(dead_code)]
 pub struct TestConfig {
     pub args: Option<Vec<String>>,
     pub env: Option<HashMap<String, String>>,
@@ -14,9 +15,11 @@ pub struct TestConfig {
     pub root: Option<String>,
     pub stdout: Option<String>,
     pub stderr: Option<String>,
+    pub wasi_functions: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct TestOutput {
     pub exit_code: i32,
     pub stdout: String,
@@ -30,12 +33,16 @@ pub struct TestFailure {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct TestResult {
     pub name: String,
+    pub config: TestConfig,
+    pub output: Option<TestOutput>,
     pub is_executed: bool,
     pub skip_reason: Option<String>,
     pub failures: Vec<TestFailure>,
     pub duration: std::time::Duration,
+    pub command_line: Option<String>,
 }
 
 impl TestResult {
@@ -55,9 +62,11 @@ impl TestResult {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 pub struct TestSuite {
     pub name: String,
     pub test_results: Vec<TestResult>,
+    pub duration: std::time::Duration,
 }
 
 impl TestSuite {

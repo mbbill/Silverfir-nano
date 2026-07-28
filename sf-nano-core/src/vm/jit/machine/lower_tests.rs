@@ -6,7 +6,7 @@ use crate::value_type::ValueType;
 use crate::vm::{
     jit::backend::BackendConfig,
     jit::machine::{
-        lower_module_with_table_dispatch_modes,
+        lower_module,
         machine_ir::{
             is_fp_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineBlockId, MachineBlockParam,
             MachineBranchCond, MachineCallLaneArg, MachineCallResults, MachineCallTarget,
@@ -17,7 +17,7 @@ use crate::vm::{
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
             MACHINE_FIXED_REG_COUNT, MACHINE_FP_REG, MACHINE_MEM0_BASE_REG,
         },
-        LowerFunctionInput, LowerModuleInput, LoweredMachineModule,
+        LowerFunctionInput, LowerModuleInput,
     },
     jit::middle::{
         cell::CellId,
@@ -33,11 +33,6 @@ use crate::vm::{
     },
     jit::wasm::primitive_op::PrimitiveOpKind,
 };
-use crate::WasmError;
-
-fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModule, WasmError> {
-    lower_module_with_table_dispatch_modes(input, &[])
-}
 
 const HOST_GP_UNIT_BYTES: u8 = core::mem::size_of::<usize>() as u8;
 const HOST_CALL_SCRATCH_SLOTS: u16 = if HOST_GP_UNIT_BYTES == 4 { 8 } else { 3 };

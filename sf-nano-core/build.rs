@@ -74,21 +74,12 @@ use std::env;
 // the linker looks up, from one source. Each consumer uses a different
 // subset of `layout`, hence the allow.
 #[path = "src/vm/interpreter/instr.rs"]
-#[allow(
-    dead_code,
-    reason = "the build-time interpreter generator consumes only the instruction metadata subset"
-)]
+#[allow(dead_code)]
 mod instr;
-#[allow(
-    dead_code,
-    reason = "the target-specific build-time generator compiles implementations for every backend"
-)]
+#[allow(dead_code)]
 #[path = "interp_gen/mod.rs"]
 mod interp_gen;
-#[allow(
-    dead_code,
-    reason = "runtime and build-time interpreter layout consumers intentionally use disjoint helpers"
-)]
+#[allow(dead_code)]
 #[path = "src/vm/interpreter/layout.rs"]
 mod layout;
 
@@ -216,6 +207,7 @@ fn emit_interp_engine() {
          const INTERP_HAS_FLOAT_REGS: bool = {};\n\
          const INTERP_FLOAT_PIN_F32: bool = {};\n\
          const INTERP_NATIVE_CALLS: bool = {};\n\
+         #[allow(dead_code)]\n\
          const INTERP_PTR_BYTES: u32 = {};\n\
          const INTERP_HANDLER_SLOTS: usize = {};\n",
         caps.has_l1,

@@ -3,7 +3,7 @@ use core::fmt;
 
 macro_rules! define_opcodes {
     ($mod_name:ident, $enum_name:ident, $type:ty, $(($name:ident, $display_name:expr, $value:expr)),* $(,)?) => {
-        #[allow(non_snake_case)]
+        #[allow(non_snake_case, dead_code)]
         pub mod $mod_name {
             $(pub const $name: $type = $value;)*
         }

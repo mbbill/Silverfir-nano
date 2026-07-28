@@ -9,6 +9,8 @@
 //! - Projection: pinhole, integer divide by camera-space Z.
 //! - Raster: edge-function triangle scan with incremental updates.
 
+#![allow(dead_code)]
+
 pub const WIDTH: usize = 160;
 pub const HEIGHT: usize = 128;
 pub const FB_BYTES: usize = WIDTH * HEIGHT * 2;

@@ -235,6 +235,7 @@ fn find_cli_binary() -> Option<PathBuf> {
 }
 
 fn run_test_suite(suite_dir: &Path, cli_path: &Path, cli: &Cli) -> TestSuite {
+    let start_time = Instant::now();
     let suite_name = read_manifest(suite_dir).unwrap_or_else(|| {
         suite_dir
             .file_name()
@@ -258,10 +259,13 @@ fn run_test_suite(suite_dir: &Path, cli_path: &Path, cli: &Cli) -> TestSuite {
         let result = if should_skip_test(&test_name, cli) {
             TestResult {
                 name: test_name,
+                config: TestConfig::default(),
+                output: None,
                 is_executed: false,
                 skip_reason: Some(rv32_qemu_timestamp_skip_reason()),
                 failures: Vec::new(),
                 duration: Duration::default(),
+                command_line: None,
             }
         } else {
             execute_single_test(&wasm_file, &test_name, cli_path, cli)
@@ -279,6 +283,7 @@ fn run_test_suite(suite_dir: &Path, cli_path: &Path, cli: &Cli) -> TestSuite {
     TestSuite {
         name: suite_name,
         test_results,
+        duration: start_time.elapsed(),
     }
 }
 
@@ -341,6 +346,8 @@ fn execute_single_test(
         Err(err) => {
             return TestResult {
                 name: test_name.to_string(),
+                config,
+                output: None,
                 is_executed: true,
                 skip_reason: None,
                 failures: vec![TestFailure {
@@ -348,6 +355,7 @@ fn execute_single_test(
                     message: format!("Failed to read test file: {}", err),
                 }],
                 duration: start_time.elapsed(),
+                command_line: None,
             };
         }
     };
@@ -360,18 +368,23 @@ fn execute_single_test(
         cli_path,
         cli,
     ) {
-        Ok(output) => {
+        Ok((output, command_line)) => {
             let failures = validate_test_output(&config, &output);
             TestResult {
                 name: test_name.to_string(),
+                config,
+                output: Some(output),
                 is_executed: true,
                 skip_reason: None,
                 failures,
                 duration: start_time.elapsed(),
+                command_line: Some(command_line),
             }
         }
         Err(err) => TestResult {
             name: test_name.to_string(),
+            config,
+            output: None,
             is_executed: true,
             skip_reason: None,
             failures: vec![TestFailure {
@@ -379,6 +392,7 @@ fn execute_single_test(
                 message: err,
             }],
             duration: start_time.elapsed(),
+            command_line: None,
         },
     }
 }
@@ -440,7 +454,7 @@ fn run_wasm_test_with_subprocess(
     fixture_dir: Option<&Path>,
     cli_path: &Path,
     cli: &Cli,
-) -> Result<TestOutput, String> {
+) -> Result<(TestOutput, String), String> {
     let temp_root = std::env::temp_dir().join("sf-nano-wasitest").join(format!(
         "{}-{}",
         std::process::id(),
@@ -515,6 +529,7 @@ fn run_wasm_test_with_subprocess(
     cmd.stdout(Stdio::piped());
     cmd.stderr(Stdio::piped());
 
+    let command_line = format!("{:?}", cmd);
     let mut child = cmd
         .spawn()
         .map_err(|err| format!("Failed to spawn sf-nano-cli: {}", err))?;
@@ -566,7 +581,7 @@ fn run_wasm_test_with_subprocess(
     let _ = fs::remove_file(&temp_wasm_path);
     let _ = fs::remove_dir_all(&temp_root);
 
-    output
+    output.map(|out| (out, command_line))
 }
 
 fn compiler_ram_budget_setting(cli: &Cli) -> Option<String> {

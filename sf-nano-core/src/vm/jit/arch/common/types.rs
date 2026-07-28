@@ -59,6 +59,7 @@ pub(crate) struct DirectCallPatch {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[allow(dead_code)]
 pub(crate) enum DirectCallPatchSite {
     AddressLiteral {
         offset: usize,
@@ -78,6 +79,7 @@ pub(crate) enum DirectCallPatchSite {
 }
 
 impl DirectCallPatch {
+    #[allow(dead_code)]
     pub(crate) const fn address_literal(offset: usize, callee: MachineFuncId) -> Self {
         Self {
             callee,

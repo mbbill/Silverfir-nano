@@ -432,6 +432,10 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
                     }
                 }
             }
+            TestResult::Skip(msg) => {
+                stats.skipped += 1;
+                warn!("SKIP {}: {}", display_name, msg);
+            }
             TestResult::Error(msg) => {
                 stats.errored += 1;
                 error!("ERROR {} ({:?})", display_name, duration);

@@ -15,3 +15,4 @@ pub(crate) use sir::semantic_ir;
 
 pub(crate) mod context;
 pub(crate) mod decode;
+pub(crate) mod inline;

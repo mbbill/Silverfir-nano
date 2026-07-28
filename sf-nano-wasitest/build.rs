@@ -42,10 +42,10 @@ fn main() {
     };
 
     if need_download {
-        eprintln!("Downloading WASI testsuite for sf-nano...");
+        println!("cargo:warning=Downloading WASI testsuite for sf-nano...");
         download_and_extract_testsuite(&testsuite_dir).expect("Failed to download WASI testsuite");
         fs::write(&version_file, TESTSUITE_VERSION).expect("Failed to write version file");
-        eprintln!("WASI testsuite downloaded and extracted");
+        println!("cargo:warning=WASI testsuite downloaded and extracted");
     }
 
     println!("cargo:rerun-if-changed=build.rs");

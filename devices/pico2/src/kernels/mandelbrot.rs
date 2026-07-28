@@ -3,6 +3,8 @@
 //! The host firmware uses this module for geometry constants; the nested
 //! `wasm-demo` crate uses the full renderer.
 
+#![allow(dead_code)]
+
 pub const WIDTH: usize = 160;
 pub const HEIGHT: usize = 128;
 pub const FB_BYTES: usize = WIDTH * HEIGHT * 2;
