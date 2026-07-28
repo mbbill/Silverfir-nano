@@ -164,6 +164,45 @@ class ProbabilityGateTests(unittest.TestCase):
         )
         self.assertFalse(plans["unstable"]["selected"])
 
+    def test_calibrated_false_improvement_stays_below_symmetric_gate(
+        self,
+    ) -> None:
+        measured = measured_metric([
+            1.5037593984962518,
+            1.5037593984962518,
+            1.4925373134328404,
+            -0.7462686567164202,
+            1.4925373134328404,
+            0.746268656716409,
+            1.5037593984962518,
+            0.0,
+            0.746268656716409,
+            0.746268656716409,
+            0.7518796992481259,
+            0.746268656716409,
+            0.7518796992481259,
+            1.5037593984962518,
+        ])
+        initial = {"score": measured_metric([1.0] * 4)}
+        plans = metric_plans(
+            initial,
+            regression_probability=0.9999,
+            improvement_probability=0.9999,
+            minimum_pairs=6,
+            maximum_pairs=24,
+        )
+        result = classify_metrics(
+            initial=initial,
+            final={"score": measured},
+            plans=plans,
+            regression_probability=0.9999,
+            improvement_probability=0.9999,
+        )
+
+        self.assertGreater(measured["probability_improvement"], 0.999)
+        self.assertLess(measured["probability_improvement"], 0.9999)
+        self.assertEqual(result["score"]["status"], "PASS")
+
     def test_confirmation_reestimates_after_pilot_underestimates_pairs(
         self,
     ) -> None:
