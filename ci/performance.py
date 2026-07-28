@@ -751,7 +751,7 @@ def main() -> int:
     parser.add_argument(
         "--improvement-probability",
         type=float,
-        default=99.9,
+        default=99.99,
         metavar="PERCENT",
         help="Probability required to report an improvement",
     )
