@@ -163,6 +163,11 @@ jobs:
               if dev_only and not platform["dev"]:
                   continue
               row = {key: value for key, value in platform.items() if key != "dev"}
+              row["mode"] = (
+                  "correctness"
+                  if platform["runner_prefix"]
+                  else "performance"
+              )
               for engine in ("jit", "interp"):
                   include.append(dict(row, engine=engine))
           print(json.dumps({"include": include}, separators=(",", ":")))
@@ -373,13 +378,14 @@ jobs:
             --baseline-sha "${{ needs.prepare.outputs.baseline }}" \
             --candidate-sha "${{ needs.prepare.outputs.candidate }}"
 
-      - name: Compare performance (alternating A/B)
+      - name: Run benchmark suite
         env:
           BASELINE_SHA: ${{ needs.prepare.outputs.baseline }}
           CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate }}
           BLOCKS: ${{ needs.prepare.outputs.blocks }}
           ENGINE: ${{ matrix.engine }}
           PLATFORM: ${{ matrix.platform }}
+          MODE: ${{ matrix.mode }}
           RUNNER_PREFIX: ${{ matrix.runner_prefix }}
           TARGET: ${{ matrix.target }}
           EXE: ${{ matrix.exe }}
@@ -403,14 +409,8 @@ jobs:
           if [[ -n "$RUNNER_PREFIX" ]]; then
             args+=(--runner-prefix "$RUNNER_PREFIX")
           fi
-          if [[ "$TARGET" == "riscv32gc-unknown-linux-musl" ]] || \
-             [[ -n "$RUNNER_PREFIX" && "$ENGINE" == "interp" ]]; then
-            # STREAM is not a usable nested-emulation signal. RV32 QEMU can
-            # report zero-duration/infinite bandwidth, while QEMU plus the
-            # Wasm interpreter takes over two minutes per sample on Armv7 and
-            # measures emulator memory-loop overhead. Cross JIT keeps STREAM;
-            # the other ten benchmarks still cover cross-interpreter speed.
-            args+=(--exclude stream/stream.wasm)
+          if [[ "$MODE" == "correctness" ]]; then
+            args+=(--correctness-only)
           fi
           status=0
           python3 "${args[@]}" || status=$?

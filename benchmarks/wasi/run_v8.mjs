@@ -12,9 +12,9 @@ import { fileURLToPath } from 'node:url';
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
 // Mirrors run_tests.py: every benchmark takes the wall-clock target in
-// seconds as its LAST argument and sizes its own workload to hit it. The
-// patterns and validation strings are kept identical so the two harnesses
-// report the same metric for the same run.
+// seconds as its LAST argument and calibrates only a repeat count for its
+// fixed work unit. The patterns and validation strings are kept identical
+// so the two harnesses report the same normalized rate.
 const DEFAULT_TARGET = 2.0;
 const TARGET = (() => {
   const i = process.argv.indexOf('--time');
@@ -33,6 +33,12 @@ const TESTS = [
     args: ['coremark.wasm'],
     pattern: /Iterations\/Sec\s*:\s*(\S+)/,
     source: 'stdout',
+    contains: [
+      'seedcrc          : 0xe9f5',
+      '[0]crclist       : 0xe714',
+      '[0]crcmatrix     : 0x1fd7',
+      '[0]crcstate      : 0x8e3a',
+    ],
   },
   {
     name: 'sha256/sha256.wasm',
@@ -40,6 +46,7 @@ const TESTS = [
     args: ['sha256.wasm'],
     pattern: /sha256: throughput = (\S+ MB\/s)/,
     source: 'stdout',
+    contains: 'hash = 5eb4ca70d0ee472b',
   },
   {
     name: 'bzip2/bzip2.wasm',
@@ -47,6 +54,7 @@ const TESTS = [
     args: ['bzip2.wasm'],
     pattern: /bzip2: throughput = (\S+ MB\/s)/,
     source: 'stdout',
+    contains: '32 KB input -> 3 KB compressed',
   },
   {
     name: 'lz4/lz4.wasm',
@@ -55,6 +63,7 @@ const TESTS = [
     pattern: /(lz4 (?:compress|decompress): throughput = \S+ MB\/s)/g,
     source: 'stdout',
     multi: true,
+    contains: '64 KB input -> 27 KB compressed',
   },
   // --- Lua ---
   {
@@ -63,6 +72,7 @@ const TESTS = [
     args: ['lua.wasm', 'fib.lua'],
     pattern: /fib: rate = (\S+ fib20\/s)/,
     source: 'stdout',
+    contains: 'fib(20) = 6765',
   },
   {
     name: 'lua/sunfish',
@@ -70,6 +80,7 @@ const TESTS = [
     args: ['lua.wasm', 'sunfish.lua'],
     pattern: /Score:\s+(\S+)/,
     source: 'stdout',
+    contains: 'Result:        b1c3 / 0',
   },
   {
     name: 'lua/json_bench',
@@ -77,6 +88,7 @@ const TESTS = [
     args: ['lua.wasm', 'json_bench.lua'],
     pattern: /Score:\s+(\S+)/,
     source: 'stdout',
+    contains: 'JSON roundtrip validates',
   },
   // --- Floating point ---
   {
@@ -85,6 +97,7 @@ const TESTS = [
     args: ['mandel.wasm'],
     pattern: /mandel: rate = (\S+ Kpixel\/s)/,
     source: 'stdout',
+    contains: 'mandel: checksum = 6a0fc6b0',
   },
   {
     name: 'c-ray/c-ray.wasm',
@@ -93,6 +106,7 @@ const TESTS = [
     stdin: path.join(SCRIPT_DIR, 'c-ray', 'scene'),
     pattern: /c-ray: rate = (\S+ Kpixel\/s)/,
     source: 'stdout',
+    contains: 'c-ray: checksum = 75700000',
   },
   // --- Memory bound ---
   {
@@ -102,24 +116,18 @@ const TESTS = [
     pattern: /(Copy|Scale|Add|Triad):\s+(\S+)/g,
     source: 'stdout',
     multi: true,
+    contains: 'Solution Validates',
   },
   // --- Database ---
-  // speedtest1 cannot ramp a batch, so its size is chosen here, exactly as
-  // run_tests.py does it: probe at size 10, and if that already covers half
-  // the target report the probe itself. Metric is work/second, never the
-  // TOTAL line -- once the size is chosen to hit the target, elapsed time is
-  // ~the target on every runtime and carries no information.
   {
-    name: 'sqlite/speedtest1.wasm',
+    name: 'sqlite/sqlite_bench.wasm',
     cwd: path.join(SCRIPT_DIR, 'sqlite'),
-    args: ['speedtest1.wasm', '--memdb', '--nosync', '--journal', 'off',
-           '--testset', 'main'],
-    sizeArg: true,
+    args: ['sqlite_bench.wasm'],
+    pattern: /sqlite: rate = (\S+ iteration\/s)/,
     source: 'stdout',
+    contains: 'sqlite: checksum = 524800',
   },
 ];
-
-const TOTAL_RE = /^\s*TOTAL\.+\s+([\d.]+)s/m;
 
 async function runTest(test, extraArgs) {
   const tmpOut = path.join(os.tmpdir(), `wasi_out_${process.pid}.tmp`);
@@ -166,8 +174,22 @@ async function runTest(test, extraArgs) {
     const stdout = fs.readFileSync(tmpOut, 'utf-8');
     const stderr = fs.readFileSync(tmpErr, 'utf-8');
 
-    // Extract metric
-    if (test.sizeArg) return { status: 'RAW', stdout, elapsed };
+    if (exitCode !== 0) {
+      return { status: 'FAIL', metric: `exit code ${exitCode}`, elapsed };
+    }
+
+    const expected = Array.isArray(test.contains)
+      ? test.contains
+      : test.contains ? [test.contains] : [];
+    for (const needle of expected) {
+      if (!stdout.includes(needle)) {
+        return {
+          status: 'FAIL',
+          metric: `expected stdout to contain '${needle}'`,
+          elapsed,
+        };
+      }
+    }
 
     if (!test.pattern) {
       return { status: 'PASS', metric: `${elapsed.toFixed(3)}s (wall clock)`, elapsed };
@@ -192,8 +214,7 @@ async function runTest(test, extraArgs) {
       if (m) return { status: 'PASS', metric: m[1].trim(), elapsed };
     }
 
-    if (exitCode === 0) return { status: 'PASS', metric: `${elapsed.toFixed(3)}s (no metric found)`, elapsed };
-    return { status: 'FAIL', metric: `exit code ${exitCode}`, elapsed };
+    return { status: 'PASS', metric: `${elapsed.toFixed(3)}s (no metric found)`, elapsed };
 
   } catch (e) {
     return { status: 'FAIL', metric: e.message };
@@ -206,28 +227,6 @@ async function runTest(test, extraArgs) {
   }
 }
 
-async function runSqlite(test) {
-  const cal = 10;
-  const probe = await runTest(test, ['--size', String(cal)]);
-  if (probe.status !== 'RAW') return probe;
-  const pm = TOTAL_RE.exec(probe.stdout);
-  if (!pm || parseFloat(pm[1]) <= 0) return { status: 'FAIL', metric: 'no TOTAL line' };
-  const psecs = parseFloat(pm[1]);
-  if (psecs >= TARGET / 2) {
-    return { status: 'PASS', elapsed: psecs,
-             metric: `${(cal / psecs).toFixed(2)} size/s (size=${cal}, ${psecs.toFixed(3)}s)` };
-  }
-  let size = Math.round(cal * TARGET / psecs);
-  size = Math.max(1, Math.min(size, 1000));
-  const real = await runTest(test, ['--size', String(size)]);
-  if (real.status !== 'RAW') return real;
-  const rm = TOTAL_RE.exec(real.stdout);
-  if (!rm || parseFloat(rm[1]) <= 0) return { status: 'FAIL', metric: 'no TOTAL line' };
-  const secs = parseFloat(rm[1]);
-  return { status: 'PASS', elapsed: secs,
-           metric: `${(size / secs).toFixed(2)} size/s (size=${size}, ${secs.toFixed(3)}s)` };
-}
-
 async function main() {
   console.log('Runtime: Node.js %s (V8 %s), %ss/benchmark\n',
               process.version, process.versions.v8, TARGET);
@@ -236,7 +235,7 @@ async function main() {
   for (let i = 0; i < TESTS.length; i++) {
     const test = TESTS[i];
     process.stdout.write(`[${i + 1}/${TESTS.length}] ${test.name} ... `);
-    const result = test.sizeArg ? await runSqlite(test) : await runTest(test);
+    const result = await runTest(test);
     results.push({ name: test.name, ...result });
     console.log(`${result.status}  ${result.metric}`);
   }

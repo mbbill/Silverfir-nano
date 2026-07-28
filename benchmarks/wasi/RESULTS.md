@@ -213,9 +213,12 @@ CoreMark 2.37×. Mandelbrot and c-ray, which led this comparison at 2.89× and
   Winch's sunfish and json were identical across both its rounds — so repeated
   runs cannot estimate their noise. That is a property of the clock, not
   evidence of unusually stable engines.
-- **sqlite reports `size/s`, not its `TOTAL … s` line.** Its work is set by
-  `--size`, which the harness picks to hit the target, so elapsed time is ~the
-  target on every runtime and carries no information. Work per second does.
+- **The sqlite row above is historical speedtest1 data.** The active suite now
+  uses `sqlite_bench.wasm`: a fixed in-memory database and a repeatable
+  select/update/restore work unit, reported as `iteration/s`. Changing
+  `speedtest1 --size` changed the problem itself and was not linear enough for
+  cross-runtime self-calibration, so new results must not be compared with the
+  old `size/s` row.
 - **The interpreter column is a single run**, re-measured 2026-07-25 after the
   dispatch work. Single runs on this suite have been contaminated before: an
   earlier pass was discarded for CPU interference, reading CoreMark 7,187
@@ -227,8 +230,8 @@ CoreMark 2.37×. Mandelbrot and c-ray, which led this comparison at 2.89× and
   noise band — CoreMark 7,556 → 8,188 (+8.4%), STREAM Scale +11.1%, STREAM
   Triad +7.1%, SHA-256 +6.9%, mandelbrot +6.5%. If the two regressions matter,
   re-run those two rows specifically rather than reading them from this column.
-- `sunfish` scores rise with a longer target because its cold first game gets
-  amortised away. All runtimes are measured at the same target so the
-  comparison is fair, but never compare a 2 s sunfish score to a 10 s one.
+- The historical `sunfish` rows played variable-length games and rose with a
+  longer target. The active benchmark repeats one deterministic search of the
+  initial position, so calibration changes only the repeat count.
 - wasmi needs a `--` separator before guest arguments (`--cli-args "--dir . --"`)
   or its argument parser consumes flags like `--memdb` itself.

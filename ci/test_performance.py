@@ -438,6 +438,48 @@ class StagedGateTests(unittest.TestCase):
 
 
 class ScriptIntegrationTests(unittest.TestCase):
+    def test_correctness_mode_runs_a_and_b_without_metrics_gate(self) -> None:
+        calls = []
+
+        def fake_run_test(*args: object, **kwargs: object) -> tuple:
+            calls.append((args, kwargs))
+            return "synthetic", "PASS", "validated", 0.01
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_dir = Path(temp_dir)
+            with patch.object(
+                bench_compare.run_tests,
+                "run_test",
+                side_effect=fake_run_test,
+            ):
+                exit_code = bench_compare.run_correctness_suite(
+                    baseline_command=("baseline", []),
+                    candidate_command=("candidate", []),
+                    selected_tests=[{"name": "synthetic"}],
+                    time_target=2.0,
+                    platform="rv32",
+                    engine="interp",
+                    baseline_sha="a",
+                    candidate_sha="b",
+                    out_dir=out_dir,
+                )
+            document = json.loads(
+                (out_dir / "correctness.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(calls), 2)
+        self.assertTrue(all(call[1]["correctness_only"] for call in calls))
+        self.assertEqual(document["mode"], "correctness")
+        self.assertEqual(
+            document["tests"]["synthetic"]["baseline"]["status"],
+            "PASS",
+        )
+        self.assertEqual(
+            document["tests"]["synthetic"]["candidate"]["status"],
+            "PASS",
+        )
+
     def test_main_runs_four_rounds_and_ignores_late_regression(self) -> None:
         tests = [{"name": "synthetic"}]
         extractors = {

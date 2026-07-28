@@ -68,9 +68,10 @@ int main(int argc, char **argv) {
 
     struct bz_ctx_fwd bc = {
         (char *)input, output, out_size };
-    double rate = bench_ramp(bz_batch, &bc, bench_target(argc, argv), 0);
+    bench_result result = bench_run(bz_batch, &bc, argc, argv);
+    if (result.n == 0) return 2;
     printf("bzip2: throughput = %.2f MB/s\n",
-           rate * (double)DATA_SIZE / (1024.0 * 1024.0));
+           result.rate * (double)DATA_SIZE / (1024.0 * 1024.0));
 
     free(input);
     free(output);

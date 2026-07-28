@@ -306,11 +306,13 @@ fn monotonic_ns() -> u64 {
     let start = START.get_or_init(Instant::now);
     let elapsed = start.elapsed().as_nanos() as u64;
     let mut last = LAST.get_or_init(|| Mutex::new(0)).lock().unwrap();
-    let next = if elapsed > *last {
-        elapsed
-    } else {
-        (*last).saturating_add(1)
-    };
+    /*
+     * A monotonic clock may return the same value on consecutive reads.
+     * Do not invent elapsed time to make it strictly increasing: rv32 Linux
+     * under QEMU has a one-second host-clock granularity, and the old +1ns
+     * fallback made real multi-second benchmark work appear to take 1ns.
+     */
+    let next = elapsed.max(*last);
     *last = next;
     next
 }
@@ -1538,7 +1540,12 @@ pub(crate) fn clock_res_get(
     let time_ptr = as_i32(&args[1])? as u32;
 
     let mem = get_mem(caller)?;
-    write_u64_le(mem, time_ptr, 1_000_000)?; // 1ms resolution
+    let resolution = if cfg!(all(target_os = "linux", target_arch = "riscv32")) {
+        1_000_000_000
+    } else {
+        1_000_000
+    };
+    write_u64_le(mem, time_ptr, resolution)?;
     results[0] = Value::I32(ERRNO_SUCCESS);
     Ok(())
 }

@@ -84,14 +84,32 @@ int main(int argc, char **argv) {
 
     struct lz_ctx_fwd lc = { (char *)input, compressed, decompressed, comp_size,
                              max_compressed };
-    /* Two timed phases share one budget, so the whole run honours the target. */
-    double phase = bench_target(argc, argv) / 2.0;
-    double crate = bench_ramp(lz_compress_batch, &lc, phase, 0);
+    int correctness_only = bench_correctness_only(argc, argv);
+    double phase_target = bench_target(argc, argv) / 2.0;
+    long compress_workload = correctness_only
+        ? 1 : bench_calibrate(lz_compress_batch, &lc, phase_target);
+    long decompress_workload = correctness_only
+        ? 1 : bench_calibrate(lz_decompress_batch, &lc, phase_target);
+    printf("BENCH_WORKLOAD_COMPRESS=%ld\n", compress_workload);
+    printf("BENCH_WORKLOAD_DECOMPRESS=%ld\n", decompress_workload);
+
+    bench_result compress;
+    bench_result decompress;
+    if (correctness_only) {
+        lz_compress_batch(1, &lc);
+        lz_decompress_batch(1, &lc);
+        compress = (bench_result){1, 1.0, 1.0};
+        decompress = (bench_result){1, 1.0, 1.0};
+    } else {
+        compress = bench_measure(
+            lz_compress_batch, &lc, compress_workload);
+        decompress = bench_measure(
+            lz_decompress_batch, &lc, decompress_workload);
+    }
     printf("lz4 compress: throughput = %.2f MB/s\n",
-           crate * (double)DATA_SIZE / (1024.0 * 1024.0));
-    double drate = bench_ramp(lz_decompress_batch, &lc, phase, 0);
+           compress.rate * (double)DATA_SIZE / (1024.0 * 1024.0));
     printf("lz4 decompress: throughput = %.2f MB/s\n",
-           drate * (double)DATA_SIZE / (1024.0 * 1024.0));
+           decompress.rate * (double)DATA_SIZE / (1024.0 * 1024.0));
 
     free(input);
     free(compressed);

@@ -187,6 +187,7 @@ main(int argc, char *argv[])
     ee_u16       seedcrc = 0;
     CORE_TICKS   total_time;
     double       bench_seconds = BENCH_DEFAULT_SEC;
+    int          correctness_only = 0;
     core_results results[MULTITHREAD];
 #if (MEM_METHOD == MEM_STACK)
     ee_u8 stack_memblock[TOTAL_DATA_SIZE * MULTITHREAD];
@@ -196,7 +197,12 @@ main(int argc, char *argv[])
        seed arguments keep their defaults (which is what validates the
        standard CRCs). Stock usage -- seeds plus an explicit iteration
        count -- is unaffected. */
-    if (argc == 2)
+    if (argc == 2 && strcmp(argv[1], "--bench-correctness") == 0)
+    {
+        correctness_only = 1;
+        argc             = 1;
+    }
+    else if (argc == 2)
     {
         double v = atof(argv[1]);
         if (v > 0.0)
@@ -325,21 +331,24 @@ for (i = 0; i < MULTITHREAD; i++)
     {
         secs_ret secs_passed = 0;
         results[0].iterations = 1;
-        /* Grow the iteration count until one run is long enough to
-           extrapolate from, then aim straight at the time target. Same
-           idiom as the stock 10-second calibration, just retargeted, so
-           the benchmark costs about the same on any engine -- from a
-           native JIT to an interpreter under qemu. The timing must come
-           from CoreMark's own clock to keep the score official. */
-        while (secs_passed < (secs_ret)(bench_seconds / 8.0))
+        if (correctness_only)
+            goto calibration_complete;
+        /*
+         * Probe fixed CoreMark iterations from small to large. The probe
+         * selects only the repetition count; the timed run below is a fresh
+         * measurement and is the sole source of the reported score.
+         */
+        while (1)
         {
-            results[0].iterations *= 8;
             start_time();
             iterate(&results[0]);
             stop_time();
             secs_passed = time_in_secs(get_time());
+            if (secs_passed >= (secs_ret)(bench_seconds / 8.0))
+                break;
             if (results[0].iterations >= ((ee_u32)1 << 28))
                 break;
+            results[0].iterations *= 8;
         }
         if (secs_passed > 0)
         {
@@ -348,6 +357,9 @@ for (i = 0; i < MULTITHREAD; i++)
             results[0].iterations = (ee_u32)(scaled > 1.0 ? scaled : 1.0);
         }
     }
+calibration_complete:
+    ee_printf("BENCH_WORKLOAD=%lu\n",
+              (long unsigned)results[0].iterations);
     /* perform actual benchmark */
     start_time();
 #if (MULTITHREAD > 1)
@@ -543,8 +555,8 @@ for (i = 0; i < MULTITHREAD; i++)
     if (time_in_secs(total_time) < 10)
     {
         ee_printf(
-            "ERROR! Must execute for at least 10 secs for a valid result!\n");
-        total_errors++;
+            "NOTE: A published CoreMark score requires at least 10 seconds; "
+            "this shorter run is for relative regression testing only.\n");
     }
 
     ee_printf("Iterations       : %lu\n",
