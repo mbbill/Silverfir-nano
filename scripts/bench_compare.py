@@ -316,6 +316,16 @@ def main() -> int:
         metavar="TEST_OR_METRIC",
         help="Run only a named test or metric; may be repeated",
     )
+    parser.add_argument(
+        "--exclude",
+        action="append",
+        default=[],
+        metavar="TEST_OR_METRIC",
+        help=(
+            "Skip a named test, or the test containing a named metric; "
+            "may be repeated"
+        ),
+    )
     parser.add_argument("--thresholds", type=Path)
     parser.add_argument("--fail-on-regression", action="store_true")
     parser.add_argument("--fail-on-unstable", action="store_true")
@@ -333,18 +343,30 @@ def main() -> int:
 
     selected_tests = []
     selectors = set(args.only)
+    exclusions = set(args.exclude)
+    matched_exclusions: set[str] = set()
     for test in run_tests.TESTS:
         metric_names = {
             label
             for label, _regex, _unit, _direction
             in METRIC_EXTRACTORS.get(test["name"], [])
         }
-        if not selectors or test["name"] in selectors or selectors & metric_names:
+        test_selectors = {test["name"]} | metric_names
+        matched_exclusions.update(exclusions & test_selectors)
+        if exclusions & test_selectors:
+            continue
+        if not selectors or selectors & test_selectors:
             selected_tests.append(test)
     if selectors and not selected_tests:
         parser.error(
-            "--only did not match a test or metric: "
+            "--only did not select a test after exclusions: "
             + ", ".join(sorted(selectors))
+        )
+    unknown_exclusions = exclusions - matched_exclusions
+    if unknown_exclusions:
+        parser.error(
+            "--exclude did not match a test or metric: "
+            + ", ".join(sorted(unknown_exclusions))
         )
 
     try:
@@ -453,6 +475,7 @@ def main() -> int:
         "target_seconds": args.time,
         "initial_blocks": args.blocks,
         "max_blocks": args.max_blocks,
+        "excluded_selectors": sorted(exclusions),
         "tests": results,
     }
     with (args.out_dir / "comparison.json").open(
@@ -479,6 +502,12 @@ def main() -> int:
         candidate_sha=args.candidate_sha,
         results=results,
     )
+    if exclusions:
+        summary += (
+            "\n> Excluded on this platform: "
+            + ", ".join(f"`{name}`" for name in sorted(exclusions))
+            + "\n"
+        )
     (args.out_dir / "summary.md").write_text(
         summary, encoding="utf-8", newline="\n"
     )

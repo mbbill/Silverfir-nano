@@ -132,6 +132,10 @@ jobs:
         engine:
           - jit
           - interp
+        # QEMU targets are valuable coverage but dominate the feedback
+        # loop. dev/** keeps the complete suite on four native hosted
+        # platforms; PR, main, and manual runs retain the extended targets.
+        exclude: ${{ fromJSON(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/') && '[{"platform":"armv7-a"},{"platform":"riscv64"},{"platform":"riscv32"}]' || '[]') }}
         include:
           - platform: x64-linux
             runner: ubuntu-latest
@@ -288,6 +292,12 @@ jobs:
           )
           if [[ -n "$RUNNER_PREFIX" ]]; then
             args+=(--runner-prefix "$RUNNER_PREFIX")
+          fi
+          if [[ "$PLATFORM" == "riscv32" ]]; then
+            # STREAM's gettimeofday path reports zero-duration samples
+            # under qemu-riscv32 and therefore prints infinite bandwidth.
+            # The other ten benchmarks still provide usable measurements.
+            args+=(--exclude stream/stream.wasm)
           fi
           if [[ -f scripts/bench_thresholds.json ]]; then
             # Thresholds are intentionally absent until workflow_dispatch
