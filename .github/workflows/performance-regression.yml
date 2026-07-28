@@ -188,10 +188,28 @@ jobs:
             echo "- calibration: \`$calibration\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Validate CI policy scripts
+      - name: Test CI implementation
+        run: python3 -m unittest ci.test_performance ci.test_correctness ci.test_lint_policy
+
+      - name: Surface lint suppression debt
+        id: lint-policy
+        continue-on-error: true
+        run: python3 -m ci.lint_policy
+
+      - name: Mark lint suppression debt as action required
+        if: steps.lint-policy.outcome == 'failure'
+        shell: bash
         run: |
-          python3 -m unittest ci.test_performance ci.test_correctness ci.test_lint_policy
-          python3 -m ci.lint_policy
+          {
+            echo "## Lint suppression audit"
+            echo
+            echo "> [!CAUTION]"
+            echo "> **ACTION REQUIRED.** The repository contains unreviewed"
+            echo "> Rust lint suppressions. Performance measurement continues"
+            echo "> so correctness debt does not hide performance data; the"
+            echo "> independent correctness workflow remains a hard failure."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=Lint suppression audit::Unreviewed Rust lint suppressions are present; benchmark measurement will continue."
 
       - uses: dtolnay/rust-toolchain@1.97.0
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')

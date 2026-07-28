@@ -116,6 +116,16 @@ class CoveragePlanTests(unittest.TestCase):
         self.assertNotIn("scripts/check.py", workflow)
         self.assertIn("if: ${{ always() && !cancelled() }}", workflow)
 
+        performance_workflow = (
+            ROOT / ".github" / "workflows" / "performance-regression.yml"
+        ).read_text(encoding="utf-8")
+        self.assertIn("id: lint-policy", performance_workflow)
+        self.assertIn("continue-on-error: true", performance_workflow)
+        self.assertIn(
+            "if: steps.lint-policy.outcome == 'failure'",
+            performance_workflow,
+        )
+
     @mock.patch.object(correctness, "cargo")
     @mock.patch.object(correctness, "require_tools", return_value=True)
     @mock.patch.object(correctness.platform, "system", return_value="Linux")
