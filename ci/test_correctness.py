@@ -246,6 +246,12 @@ class CoveragePlanTests(unittest.TestCase):
             performance_workflow,
         )
         self.assertIn(
+            'if [[ "$MODE" == "correctness" ]]',
+            performance_workflow,
+        )
+        self.assertIn("args+=(--correctness-only)", performance_workflow)
+        self.assertNotIn("--exclude stream/stream.wasm", performance_workflow)
+        self.assertNotIn(
             '-n "$RUNNER_PREFIX" && "$ENGINE" == "interp"',
             performance_workflow,
         )
