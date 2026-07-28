@@ -290,7 +290,7 @@ jobs:
     name: ${{ matrix.platform }} / ${{ matrix.engine }}
     needs: prepare
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: 50
+    timeout-minutes: 30
     # See CLAUDE.md and AGENTS.md: this suppresses dev failure email only.
     # A failed dev job still requires correction.
     continue-on-error: ${{ startsWith(github.ref, 'refs/heads/dev/') }}
@@ -393,6 +393,7 @@ jobs:
             --platform "$PLATFORM"
             --baseline-sha "$BASELINE_SHA"
             --candidate-sha "$CANDIDATE_SHA"
+            --build-metadata "perf-bin/build-metadata.json"
             --blocks "$BLOCKS"
             --confirmation-blocks 1
             --regression-threshold 1
@@ -402,10 +403,13 @@ jobs:
           if [[ -n "$RUNNER_PREFIX" ]]; then
             args+=(--runner-prefix "$RUNNER_PREFIX")
           fi
-          if [[ "$TARGET" == "riscv32gc-unknown-linux-musl" ]]; then
-            # STREAM's gettimeofday path reports zero-duration samples
-            # under qemu-riscv32 and therefore prints infinite bandwidth.
-            # The other ten benchmarks still provide usable measurements.
+          if [[ "$TARGET" == "riscv32gc-unknown-linux-musl" ]] || \
+             [[ -n "$RUNNER_PREFIX" && "$ENGINE" == "interp" ]]; then
+            # STREAM is not a usable nested-emulation signal. RV32 QEMU can
+            # report zero-duration/infinite bandwidth, while QEMU plus the
+            # Wasm interpreter takes over two minutes per sample on Armv7 and
+            # measures emulator memory-loop overhead. Cross JIT keeps STREAM;
+            # the other ten benchmarks still cover cross-interpreter speed.
             args+=(--exclude stream/stream.wasm)
           fi
           status=0

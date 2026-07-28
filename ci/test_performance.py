@@ -11,13 +11,18 @@ from ci.performance import (
     confirmation_candidates,
     fourth_round_candidates,
     fourth_round_improvement_candidates,
+    paired_sign_evidence,
     regression_candidates,
     third_round_candidates,
     third_round_improvement_candidates,
 )
 
 
-def metric(delta_percent: float) -> dict:
+def metric(
+    delta_percent: float,
+    pair_deltas: list[float] | None = None,
+) -> dict:
+    pair_deltas = pair_deltas or [delta_percent, delta_percent]
     return {
         "unit": "units/s",
         "direction": "higher",
@@ -25,12 +30,130 @@ def metric(delta_percent: float) -> dict:
         "candidate_samples": [100.0, 100.0],
         "baseline_geomean": 100.0,
         "candidate_geomean": 100.0,
-        "pair_deltas_percent": [delta_percent, delta_percent],
+        "pair_deltas_percent": pair_deltas,
         "delta_percent": delta_percent,
     }
 
 
 class StagedGateTests(unittest.TestCase):
+    def test_exact_sign_gate_requires_seven_of_eight_pairs(self) -> None:
+        seven_of_eight = [
+            metric(-2.0),
+            metric(-2.0),
+            metric(-2.0),
+            metric(-2.0, [-2.0, -0.5]),
+        ]
+        six_of_eight = [
+            metric(-2.0),
+            metric(-2.0),
+            metric(-2.0, [-2.0, 4.0]),
+            metric(-2.0, [-2.0, 4.0]),
+        ]
+
+        confident = paired_sign_evidence(
+            seven_of_eight,
+            threshold_percent=1.0,
+            direction="regression",
+        )
+        unstable = paired_sign_evidence(
+            six_of_eight,
+            threshold_percent=1.0,
+            direction="regression",
+        )
+
+        self.assertEqual(confident["crossed_pair_count"], 7)
+        self.assertAlmostEqual(confident["p_value"], 9 / 256)
+        self.assertTrue(confident["confident"])
+        self.assertEqual(unstable["crossed_pair_count"], 6)
+        self.assertAlmostEqual(unstable["p_value"], 37 / 256)
+        self.assertFalse(unstable["confident"])
+
+    def test_persistent_but_contradictory_regression_is_unstable(self) -> None:
+        noisy = metric(-2.0, [-12.0, 8.0])
+        result = classify_metrics(
+            initial={"noisy": noisy},
+            confirmation={"noisy": noisy},
+            third_round={"noisy": noisy},
+            fourth_round={"noisy": noisy},
+            regression_threshold=1.0,
+            improvement_threshold=3.0,
+        )
+
+        self.assertEqual(result["noisy"]["status"], "UNSTABLE")
+        evidence = result["noisy"]["paired_sign_evidence"]
+        self.assertEqual(evidence["crossed_pair_count"], 4)
+        self.assertFalse(evidence["confident"])
+
+    def test_byte_identical_executables_cannot_fail_or_claim_improvement(
+        self,
+    ) -> None:
+        regression = metric(-2.0)
+        improvement = metric(4.0)
+        result = classify_metrics(
+            initial={
+                "regression": regression,
+                "improvement": improvement,
+            },
+            confirmation={
+                "regression": regression,
+                "improvement": improvement,
+            },
+            third_round={
+                "regression": regression,
+                "improvement": improvement,
+            },
+            fourth_round={
+                "regression": regression,
+                "improvement": improvement,
+            },
+            regression_threshold=1.0,
+            improvement_threshold=3.0,
+            identical_binaries=True,
+        )
+
+        self.assertEqual(result["regression"]["status"], "UNSTABLE")
+        self.assertEqual(result["improvement"]["status"], "PASS")
+
+    def test_observed_identical_binary_stream_drift_is_unstable(self) -> None:
+        # ARM64 macOS / interpreter in Actions run 30343088166. Baseline and
+        # candidate hashes were identical, yet all four aggregate deltas
+        # crossed -1% because the individual pairs swung in both directions.
+        rounds = [
+            metric(-1.48, [-12.61, 11.06]),
+            metric(-3.38, [-2.20, -4.55]),
+            metric(-10.32, [-12.45, -8.14]),
+            metric(-3.18, [4.47, -10.27]),
+        ]
+        result = classify_metrics(
+            initial={"stream-Copy": rounds[0]},
+            confirmation={"stream-Copy": rounds[1]},
+            third_round={"stream-Copy": rounds[2]},
+            fourth_round={"stream-Copy": rounds[3]},
+            regression_threshold=1.0,
+            improvement_threshold=3.0,
+        )
+
+        evidence = result["stream-Copy"]["paired_sign_evidence"]
+        self.assertEqual(result["stream-Copy"]["status"], "UNSTABLE")
+        self.assertEqual(evidence["crossed_pair_count"], 6)
+        self.assertAlmostEqual(evidence["p_value"], 37 / 256)
+
+    def test_inconsistent_four_round_improvement_remains_pass(self) -> None:
+        noisy = metric(4.0, [12.0, -4.0])
+        result = classify_metrics(
+            initial={"noisy": noisy},
+            confirmation={"noisy": noisy},
+            third_round={"noisy": noisy},
+            fourth_round={"noisy": noisy},
+            regression_threshold=1.0,
+            improvement_threshold=3.0,
+        )
+
+        self.assertEqual(result["noisy"]["status"], "PASS")
+        self.assertFalse(
+            result["noisy"]["paired_sign_evidence"]["confident"]
+        )
+
     def test_regression_and_improvement_rules(self) -> None:
         initial = {
             "second_recovers": metric(-1.5),
@@ -355,6 +478,17 @@ class ScriptIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             out_dir = Path(temp_dir)
+            metadata = out_dir / "build-metadata.json"
+            metadata.write_text(
+                json.dumps(
+                    {
+                        "platform": "synthetic",
+                        "engine": "interp",
+                        "identical_binaries": False,
+                    }
+                ),
+                encoding="utf-8",
+            )
             argv = [
                 "bench_compare.py",
                 "--baseline-exec",
@@ -365,6 +499,8 @@ class ScriptIntegrationTests(unittest.TestCase):
                 "interp",
                 "--platform",
                 "synthetic",
+                "--build-metadata",
+                str(metadata),
                 "--warmup-time",
                 "0",
                 "--time",
@@ -395,7 +531,9 @@ class ScriptIntegrationTests(unittest.TestCase):
             result = document["tests"]["synthetic"]
 
         self.assertEqual(exit_code, 1)
-        self.assertEqual(document["schema_version"], 4)
+        self.assertEqual(document["schema_version"], 5)
+        self.assertEqual(document["paired_sign_alpha"], 0.05)
+        self.assertFalse(document["identical_binaries"])
         self.assertEqual(len(result["runs"]), 16)
         schedules = [
             [

@@ -39,10 +39,22 @@ python -m ci.lint_policy
 
 - Initial ABAB/BABA block for every metric.
 - Regression candidates below -1% receive up to three target-only
-  confirmation rounds and fail only when all four rounds remain below -1%.
+  confirmation rounds and fail only when all four rounds remain below -1%
+  and the pooled adjacent pairs pass a one-sided exact sign test (`p <= 0.05`;
+  normally at least 7 of 8 pairs below -1%).
 - Improvement candidates above +3% are reported only when all four rounds
-  remain above +3%; improvements never fail CI.
+  remain above +3% and pass the same pair-consistency test; improvements never
+  fail CI.
 - Metrics that were not initial candidates cannot enter the gate later.
+
+A regression candidate whose four round geomeans all cross -1% but whose
+individual adjacent pairs are contradictory is reported as `UNSTABLE` and
+does not fail CI. This keeps noisy runners visible without treating drift as
+a source regression.
+
+If `ci.performance_build` records byte-identical baseline and candidate
+executables, the run is an implicit drift calibration: measurements still
+run and remain visible, but they cannot fail the gate or claim an improvement.
 
 `ci.performance_build` builds the two CLI executables with both checkout
 roots remapped to the same virtual source path. It records executable hashes,
@@ -53,7 +65,10 @@ This separates source changes from build-path/code-layout noise.
 `dev/**` uses the native performance subset and soft-fails only to suppress
 failure email. The warning annotation and job summary remain action-required.
 Pull requests and `main` use the full native and cross-target performance
-matrix.
+matrix. STREAM remains enabled for native and cross-JIT jobs, but is excluded
+from cross-interpreter jobs: nested QEMU/interpreter execution measures
+emulator memory-loop overhead (over two minutes per Armv7 sample) rather than
+a useful target signal.
 
 ## Policy
 

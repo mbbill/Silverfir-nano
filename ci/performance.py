@@ -9,8 +9,9 @@ twice consecutively, and follow-up rounds reverse which version runs first.
 The initial block produces two paired deltas for every metric. Initial
 regressions and improvements are selected for a second round. A regression
 that remains below the threshold receives up to two more rounds and fails only
-if all four rounds remain below the threshold. An improvement is reported only
-if all four rounds remain above its threshold.
+if all four rounds remain below the threshold and the pooled adjacent pairs
+pass a one-sided exact sign test. An improvement is reported only if all four
+rounds remain above its threshold and the same consistency check passes.
 
 Only metrics selected by the initial screen can affect later classification.
 New changes observed while rerunning a multi-metric benchmark are ignored.
@@ -35,6 +36,9 @@ sys.path.insert(0, str(ROOT / "benchmarks" / "wasi"))
 
 import run_tests  # noqa: E402
 from ci.bench_metrics import METRIC_EXTRACTORS, extract_metrics, write_json  # noqa: E402
+
+
+PAIRED_SIGN_ALPHA = 0.05
 
 
 def geometric_mean(values: list[float]) -> float:
@@ -217,6 +221,59 @@ def improvement_candidates(
     }
 
 
+def paired_sign_evidence(
+    phases: Iterable[dict[str, Any]],
+    *,
+    threshold_percent: float,
+    direction: str,
+) -> dict[str, Any]:
+    """Exact one-sided sign evidence across adjacent A/B pairs.
+
+    Round geomeans decide which candidates receive another measurement. The
+    final label additionally needs pair-level consistency: under the null
+    hypothesis that a pair is no more likely than not to cross the material
+    threshold, the exact binomial upper tail must be at most 5%.
+
+    With the normal CI schedule (two pairs in each of four rounds), this means
+    at least seven of eight pairs must independently cross the same boundary.
+    Large but contradictory swings therefore remain visible as UNSTABLE
+    instead of becoming a false regression.
+    """
+    pair_deltas = [
+        float(delta)
+        for phase in phases
+        for delta in phase["pair_deltas_percent"]
+    ]
+    if not pair_deltas:
+        raise ValueError("paired sign evidence requires at least one pair")
+    if direction == "regression":
+        boundary = -threshold_percent
+        crossed = sum(delta < boundary for delta in pair_deltas)
+    elif direction == "improvement":
+        boundary = threshold_percent
+        crossed = sum(delta > boundary for delta in pair_deltas)
+    else:
+        raise ValueError(f"unknown paired sign direction: {direction}")
+
+    pair_count = len(pair_deltas)
+    p_value = (
+        sum(
+            math.comb(pair_count, successes)
+            for successes in range(crossed, pair_count + 1)
+        )
+        / (2**pair_count)
+    )
+    return {
+        "direction": direction,
+        "threshold_percent": threshold_percent,
+        "pair_count": pair_count,
+        "crossed_pair_count": crossed,
+        "p_value": p_value,
+        "alpha": PAIRED_SIGN_ALPHA,
+        "confident": p_value <= PAIRED_SIGN_ALPHA,
+    }
+
+
 def confirmation_candidates(
     metrics: dict[str, dict[str, Any]],
     regression_threshold: float,
@@ -317,6 +374,7 @@ def classify_metrics(
     fourth_round: dict[str, dict[str, Any]],
     regression_threshold: float,
     improvement_threshold: float,
+    identical_binaries: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Apply the staged gate to candidates frozen by the initial screen.
 
@@ -334,6 +392,7 @@ def classify_metrics(
         confirmation_metric = confirmation.get(name) if name in selected else None
         third_metric = None
         fourth_metric = None
+        sign_evidence = None
 
         if name in selected:
             if confirmation_metric is None:
@@ -356,12 +415,24 @@ def classify_metrics(
                         raise ValueError(
                             f"{name}: persistent metric has no fourth round"
                         )
-                    status = (
-                        "REGRESSION"
-                        if fourth_metric["delta_percent"]
-                        < -regression_threshold
-                        else "RECOVERED"
-                    )
+                    if fourth_metric["delta_percent"] >= -regression_threshold:
+                        status = "RECOVERED"
+                    else:
+                        sign_evidence = paired_sign_evidence(
+                            (
+                                initial_metric,
+                                confirmation_metric,
+                                third_metric,
+                                fourth_metric,
+                            ),
+                            threshold_percent=regression_threshold,
+                            direction="regression",
+                        )
+                        status = (
+                            "REGRESSION"
+                            if sign_evidence["confident"]
+                            else "UNSTABLE"
+                        )
         elif name in improvements:
             if confirmation_metric["delta_percent"] <= improvement_threshold:
                 status = "PASS"
@@ -379,14 +450,35 @@ def classify_metrics(
                         raise ValueError(
                             f"{name}: persistent improvement has no fourth round"
                         )
-                    status = (
-                        "IMPROVEMENT"
-                        if fourth_metric["delta_percent"]
-                        > improvement_threshold
-                        else "PASS"
-                    )
+                    if fourth_metric["delta_percent"] <= improvement_threshold:
+                        status = "PASS"
+                    else:
+                        sign_evidence = paired_sign_evidence(
+                            (
+                                initial_metric,
+                                confirmation_metric,
+                                third_metric,
+                                fourth_metric,
+                            ),
+                            threshold_percent=improvement_threshold,
+                            direction="improvement",
+                        )
+                        status = (
+                            "IMPROVEMENT"
+                            if sign_evidence["confident"]
+                            else "PASS"
+                        )
         else:
             status = "PASS"
+
+        # Byte-identical executables cannot contain a source performance
+        # change. Keep any apparent persistent difference visible as drift,
+        # but never let scheduling noise fail the gate or claim improvement.
+        if identical_binaries:
+            if status == "REGRESSION":
+                status = "UNSTABLE"
+            elif status == "IMPROVEMENT":
+                status = "PASS"
 
         metrics[name] = {
             **initial_metric,
@@ -395,6 +487,7 @@ def classify_metrics(
             "fourth_round": fourth_metric,
             "regression_threshold_percent": regression_threshold,
             "improvement_threshold_percent": improvement_threshold,
+            "paired_sign_evidence": sign_evidence,
             "status": status,
         }
 
@@ -417,6 +510,7 @@ def render_summary(
     candidate_sha: str,
     regression_threshold: float,
     improvement_threshold: float,
+    identical_binaries: bool,
     results: dict[str, Any],
 ) -> str:
     lines = [
@@ -424,13 +518,28 @@ def render_summary(
         "",
         f"`{baseline_sha[:12]}` -> `{candidate_sha[:12]}`",
         "",
+    ]
+    if identical_binaries:
+        lines.extend(
+            [
+                (
+                    "> **Byte-identical executables:** measured differences "
+                    "are runner drift and cannot fail the performance gate."
+                ),
+                "",
+            ]
+        )
+    lines.extend(
+        [
         (
             f"> Gate: initial delta below `-{regression_threshold:.2f}%` "
             "gets a second alternating round. If it remains below the threshold, "
             "third and fourth rounds decide REGRESSION versus RECOVERED. "
             "The order alternates ABAB/BABA between rounds. Initial "
             f"improvements above `+{improvement_threshold:.2f}%` are reported "
-            "only when all four rounds exceed that threshold."
+            "only when all four rounds exceed that threshold. Final labels "
+            "also require one-sided exact paired-sign confidence "
+            f"`p <= {PAIRED_SIGN_ALPHA:.2f}`."
         ),
         "",
         (
@@ -439,7 +548,8 @@ def render_summary(
             "Third delta (pairs) | Fourth delta (pairs) | Gate |"
         ),
         "|---|---:|---:|---:|---:|---:|---:|---|",
-    ]
+        ]
+    )
     for test in results.values():
         for name, metric in test["metrics"].items():
             initial_pairs = ", ".join(
@@ -484,8 +594,22 @@ def render_summary(
                     f"({fourth_pairs})"
                 )
             gate = metric["status"]
-            if gate in {"REGRESSION", "IMPROVEMENT"}:
+            if gate in {"REGRESSION", "IMPROVEMENT", "UNSTABLE"}:
                 gate = f"**{gate}**"
+            sign_evidence = metric["paired_sign_evidence"]
+            if sign_evidence is not None:
+                relation = (
+                    f"< -{sign_evidence['threshold_percent']:.2f}%"
+                    if sign_evidence["direction"] == "regression"
+                    else f"> +{sign_evidence['threshold_percent']:.2f}%"
+                )
+                gate += (
+                    "<br><sub>"
+                    f"{sign_evidence['crossed_pair_count']}/"
+                    f"{sign_evidence['pair_count']} pairs {relation}; "
+                    f"p={sign_evidence['p_value']:.3f}"
+                    "</sub>"
+                )
             lines.append(
                 "| "
                 f"{name} | "
@@ -498,7 +622,9 @@ def render_summary(
     lines.append(
         "> Later-round measurements from metrics that passed the initial "
         "screen are ignored by design. Both regressions and improvements "
-        "must remain beyond their threshold in all four rounds."
+        "must remain beyond their threshold in all four rounds and pass the "
+        "paired-sign consistency gate. A persistent but inconsistent "
+        "regression candidate is reported as **UNSTABLE** and does not fail CI."
     )
     lines.append("")
     return "\n".join(lines)
@@ -517,6 +643,14 @@ def main() -> int:
     parser.add_argument("--platform", required=True)
     parser.add_argument("--baseline-sha", default="")
     parser.add_argument("--candidate-sha", default="")
+    parser.add_argument(
+        "--build-metadata",
+        type=Path,
+        help=(
+            "Metadata from ci.performance_build; byte-identical executables "
+            "are treated as a drift calibration and cannot fail"
+        ),
+    )
     parser.add_argument("--time", type=float, default=run_tests.DEFAULT_TARGET)
     parser.add_argument("--warmup-time", type=float, default=0.5)
     parser.add_argument(
@@ -577,6 +711,23 @@ def main() -> int:
         parser.error("--regression-threshold must be positive")
     if args.improvement_threshold <= 0:
         parser.error("--improvement-threshold must be positive")
+
+    identical_binaries = False
+    if args.build_metadata is not None:
+        try:
+            build_metadata = json.loads(
+                args.build_metadata.read_text(encoding="utf-8")
+            )
+            if build_metadata["platform"] != args.platform:
+                raise ValueError("build metadata platform does not match")
+            if build_metadata["engine"] != args.engine:
+                raise ValueError("build metadata engine does not match")
+            if not isinstance(build_metadata["identical_binaries"], bool):
+                raise ValueError("build metadata identical_binaries is not boolean")
+            identical_binaries = build_metadata["identical_binaries"]
+        except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
+            print(f"ERROR: invalid build metadata: {exc}", file=sys.stderr)
+            return 2
 
     selected_tests = []
     selectors = set(args.only)
@@ -890,6 +1041,7 @@ def main() -> int:
                 fourth_round=fourth_by_test.get(name, {}),
                 regression_threshold=args.regression_threshold,
                 improvement_threshold=args.improvement_threshold,
+                identical_binaries=identical_binaries,
             )
             results[name] = {
                 "runs": runs_by_test[name],
@@ -913,7 +1065,7 @@ def main() -> int:
         return 2
 
     document = {
-        "schema_version": 4,
+        "schema_version": 5,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "platform": args.platform,
         "engine": args.engine,
@@ -924,6 +1076,8 @@ def main() -> int:
         "confirmation_blocks": args.confirmation_blocks,
         "regression_threshold_percent": args.regression_threshold,
         "improvement_threshold_percent": args.improvement_threshold,
+        "paired_sign_alpha": PAIRED_SIGN_ALPHA,
+        "identical_binaries": identical_binaries,
         "excluded_selectors": sorted(exclusions),
         "tests": results,
     }
@@ -951,6 +1105,7 @@ def main() -> int:
         candidate_sha=args.candidate_sha,
         regression_threshold=args.regression_threshold,
         improvement_threshold=args.improvement_threshold,
+        identical_binaries=identical_binaries,
         results=results,
     )
     if exclusions:
@@ -970,6 +1125,19 @@ def main() -> int:
         for test in results.values()
         for metric in test["metrics"].values()
     ]
+    unstable = [
+        metric_name
+        for test in results.values()
+        for metric_name, metric in test["metrics"].items()
+        if metric["status"] == "UNSTABLE"
+    ]
+    if unstable and os.environ.get("GITHUB_ACTIONS") == "true":
+        print(
+            "::warning title=Unstable performance candidates::"
+            + ", ".join(sorted(unstable))
+            + " crossed the aggregate threshold in all four rounds but "
+            "failed pair-level consistency; inspect the job summary."
+        )
     return 1 if "REGRESSION" in statuses else 0
 
 

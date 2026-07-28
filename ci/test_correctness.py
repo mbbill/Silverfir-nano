@@ -222,6 +222,15 @@ class CoveragePlanTests(unittest.TestCase):
             ROOT / ".github" / "workflows" / "performance-regression.yml"
         ).read_text(encoding="utf-8")
         self.assertIn("python3 -m ci.performance_build", performance_workflow)
+        self.assertIn(
+            '--build-metadata "perf-bin/build-metadata.json"',
+            performance_workflow,
+        )
+        self.assertIn(
+            '-n "$RUNNER_PREFIX" && "$ENGINE" == "interp"',
+            performance_workflow,
+        )
+        self.assertIn("timeout-minutes: 30", performance_workflow)
         self.assertNotIn("build_one()", performance_workflow)
         self.assertIn("unittest discover -s ci -p 'test_*.py'", performance_workflow)
         for platform in ("armv7-a", "riscv64", "riscv32"):
