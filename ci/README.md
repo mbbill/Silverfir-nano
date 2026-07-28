@@ -35,40 +35,49 @@ python -m ci.lint_policy
 
 ## Performance jobs
 
-`ci.performance` performs the staged alternating comparison:
+`ci.performance` compares adjacent baseline/candidate samples as paired log
+ratios:
 
-- Initial ABAB/BABA block for every metric.
-- Regression candidates below -1% receive up to three target-only
-  confirmation rounds and fail only when all four rounds remain below -1%
-  and the pooled adjacent pairs pass a one-sided exact sign test (`p <= 0.05`;
-  normally at least 7 of 8 pairs below -1%).
-- Improvement candidates above +3% are reported only when all four rounds
-  remain above +3% and pass the same pair-consistency test; improvements never
-  fail CI.
-- Metrics that were not initial candidates cannot enter the gate later.
+- Initial blocks alternate ABAB/BABA and measure every metric. Each block
+  contains two adjacent A/B pairs.
+- A direction with at least 80% pilot probability enters a new, independent
+  confirmation sample. The pilot chooses only the direction and is never
+  reused by the final gate.
+- Confirmation starts with six pairs. If the observed effect and volatility
+  can still resolve within the budget, it adaptively adds pairs up to a
+  maximum of 24.
+- A one-sided Student-t probability classifies the confirmation sample.
+  Regressions fail and improvements are reported only at 99.99% requested
+  family-wide confidence. The per-look threshold applies a Bonferroni
+  correction across every metric, native performance job, and possible
+  adaptive confirmation look.
+- Only directions selected by the initial pilot can affect the gate. New
+  signals observed incidentally while rerunning a multi-metric benchmark are
+  ignored.
 
-A regression candidate whose four round geomeans all cross -1% but whose
-individual adjacent pairs are contradictory is reported as `UNSTABLE` and
-does not fail CI. This keeps noisy runners visible without treating drift as
-a source regression.
+CoreMark keeps the official EEMBC command line and 10-second-minimum measured
+interval. The requested duration applies to the other self-timing benchmarks.
 
 If `ci.performance_build` records byte-identical baseline and candidate
 executables, the run is an implicit drift calibration: measurements still
 run and remain visible, but they cannot fail the gate or claim an improvement.
+An apparent confirmed regression is labeled `UNSTABLE`.
 
 `ci.performance_build` builds the two CLI executables with both checkout
 roots remapped to the same virtual source path. It records executable hashes,
 sizes, revisions, and whether the binaries are byte-identical in
 `build-metadata.json`, which is uploaded with every performance artifact.
-This separates source changes from build-path/code-layout noise.
+Before measuring, `ci.performance` verifies that metadata against the requested
+revisions and the actual executable bytes. This separates source changes from
+build-path/code-layout noise without trusting a stale artifact.
 
 `dev/**` uses the native performance subset and soft-fails only to suppress
 failure email. The warning annotation and job summary remain action-required.
-Pull requests and `main` use the full native and cross-target performance
-matrix. STREAM remains enabled for native and cross-JIT jobs, but is excluded
-from cross-interpreter jobs: nested QEMU/interpreter execution measures
-emulator memory-loop overhead (over two minutes per Armv7 sample) rather than
-a useful target signal.
+Pull requests and `main` run the same eight native performance jobs plus JIT
+and interpreter correctness jobs for ARMv7-A, RV64, and RV32 under QEMU. QEMU
+executes every benchmark once on both revisions and validates its fixed oracle;
+it does not calculate or gate performance deltas, and no benchmark receives a
+platform-specific exclusion.
 
 ## Policy
 
