@@ -764,9 +764,10 @@ def render_summary(
         ])
     lines.extend([
         (
-            "> Timing: the requested duration applies to adjustable "
-            "benchmarks. CoreMark keeps the official EEMBC invocation and "
-            "10-second-minimum measured interval."
+            "> Timing: the requested duration applies to every benchmark. "
+            "CoreMark uses its explicit non-standard regression mode here; "
+            "a bare CoreMark invocation retains the official EEMBC "
+            "10-second-minimum run."
         ),
         "",
         (
@@ -1038,7 +1039,7 @@ def main() -> int:
         warm_test = next(
             test
             for test in run_tests.TESTS
-            if not test.get("standard_duration")
+            if not test.get("target_arg")
         )
         print(
             f"Warm-up: {warm_test['name']}, "
@@ -1276,7 +1277,7 @@ def main() -> int:
         return 2
 
     document = {
-        "schema_version": 8,
+        "schema_version": 9,
         "model": "paired-log-student-t-family-corrected-adaptive-confirmation",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "platform": args.platform,
@@ -1284,10 +1285,10 @@ def main() -> int:
         "baseline_sha": args.baseline_sha,
         "candidate_sha": args.candidate_sha,
         "target_seconds": args.time,
-        "standard_duration_tests": [
+        "custom_target_argument_tests": [
             test["name"]
             for test in selected_tests
-            if test.get("standard_duration")
+            if test.get("target_arg")
         ],
         "initial_pairs": initial_pairs,
         "minimum_pairs": args.min_pairs,

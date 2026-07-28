@@ -2,8 +2,8 @@
 """Run the WASI benchmark suite with sf-nano-cli and collect results.
 
 Usage:
-    python3 run_tests.py                # run the suite (2s, except CoreMark)
-    python3 run_tests.py --time 10      # 10s per adjustable benchmark
+    python3 run_tests.py                # run the suite (2s per benchmark)
+    python3 run_tests.py --time 10      # 10s per benchmark
     python3 run_tests.py --interp       # run with the interpreter engine
     python3 run_tests.py --exec PATH    # run with a different runtime
 
@@ -15,8 +15,10 @@ timed after calibration and reports work/second. This keeps run time bounded
 across native JITs, interpreters, and qemu without comparing different
 problem sizes. See common/bench.h for the shared contract.
 
-CoreMark is deliberately exempt: its source and normal invocation follow the
-upstream EEMBC benchmark, including its own 10-second-minimum calibration.
+CoreMark's bare invocation still follows the upstream EEMBC benchmark,
+including its 10-second-minimum calibration. This regression harness uses
+CoreMark's explicit --target-seconds extension so its wall time is bounded
+like the rest of the suite; such a run is not an official CoreMark result.
 
 Validation is always a fixed, target-independent check (a checksum, a hash,
 a CRC), never anything that scales with the workload.
@@ -47,7 +49,7 @@ TESTS = [
     # --- Integer / control flow ---
     bench("coremark/coremark.wasm", "coremark", ["coremark.wasm"],
           r"Iterations/Sec\s*:\s*(\S+)",
-          standard_duration=True,
+          target_arg="--target-seconds={seconds}",
           correctness_args=["0", "0", "102", "1"],
           contains=["seedcrc          : 0xe9f5",
                     "[0]crclist       : 0xe714",
@@ -97,11 +99,13 @@ def _invoke(cli, test, cli_extra, prog_args, stdin_data):
 
 
 def program_args(test, time_target, correctness_only=False):
-    """Return benchmark argv while preserving standard benchmark contracts."""
+    """Return argv for correctness or self-calibrated performance mode."""
     args = list(test["args"])
     if correctness_only:
         args.extend(test.get("correctness_args", ["--bench-correctness"]))
-    elif not test.get("standard_duration"):
+    elif test.get("target_arg"):
+        args.append(test["target_arg"].format(seconds=time_target))
+    else:
         args.append(str(time_target))
     return args
 
@@ -187,8 +191,8 @@ def main():
         type=float,
         default=DEFAULT_TARGET,
         help=(
-            "Seconds per adjustable benchmark "
-            f"(default {DEFAULT_TARGET}; CoreMark keeps its official duration)"
+            f"Seconds per benchmark (default {DEFAULT_TARGET}); CoreMark uses "
+            "its non-standard regression mode"
         ),
     )
     p.add_argument("--interp", action="store_true",
@@ -218,7 +222,7 @@ def main():
     mode = (
         "correctness only"
         if args.correctness_only
-        else f"{target}s/adjustable benchmark; CoreMark official duration"
+        else f"{target}s/self-calibrated benchmark"
     ) + (", interp" if args.interp else "")
     print(f"Runtime: {' '.join(cli_parts)} ({mode})")
     print()

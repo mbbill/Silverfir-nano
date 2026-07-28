@@ -69,13 +69,13 @@ class ProbabilityGateTests(unittest.TestCase):
             }],
         )
 
-    def test_coremark_preserves_official_invocation(self) -> None:
+    def test_coremark_uses_explicit_regression_duration(self) -> None:
         coremark = bench_compare.run_tests.TESTS[0]
         sha256 = bench_compare.run_tests.TESTS[1]
 
         self.assertEqual(
             bench_compare.run_tests.program_args(coremark, 2.0),
-            ["coremark.wasm"],
+            ["coremark.wasm", "--target-seconds=2.0"],
         )
         self.assertEqual(
             bench_compare.run_tests.program_args(
@@ -613,7 +613,7 @@ class ScriptIntegrationTests(unittest.TestCase):
             result = document["tests"]["synthetic"]
 
         self.assertEqual(exit_code, 1)
-        self.assertEqual(document["schema_version"], 8)
+        self.assertEqual(document["schema_version"], 9)
         self.assertFalse(document["identical_binaries"])
         self.assertEqual(len(result["runs"]), 20)
         schedules = [
