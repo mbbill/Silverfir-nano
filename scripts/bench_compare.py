@@ -1,27 +1,19 @@
 #!/usr/bin/env python3
-"""Compare two sf-nano-cli builds with per-benchmark ABBA measurements.
+"""Compare two sf-nano-cli builds with a two-stage ABBA performance gate.
 
-Both binaries run on the same machine, against this checkout's benchmark
-corpus. Each block is ordered baseline/candidate/candidate/baseline (the next
-block reverses that order), which cancels a roughly linear frequency or thermal
-drift. Raw samples are always retained; thresholds are optional because they
-must come from same-binary calibration runs rather than guesses.
+Both binaries run on the same machine against this checkout's benchmark
+corpus. One ABBA block contains two adjacent baseline/candidate pairs:
+baseline/candidate/candidate/baseline. The next block reverses that order.
 
-Threshold file schema:
+The initial block produces two paired deltas for every metric. A metric whose
+initial geometric-mean delta is below the regression threshold is selected for
+confirmation. Only benchmarks containing selected metrics receive one more
+ABBA block. A selected metric fails only when its confirmation-block delta is
+still below the threshold. Newly negative metrics in the confirmation block
+are intentionally ignored because they passed the initial screen.
 
-  {
-    "platforms": {
-      "arm64-linux": {
-        "jit": {
-          "coremark": 2.0,
-          "sha256": 2.5
-        }
-      }
-    }
-  }
-
-Values are allowed regression percentages. Metrics without a calibrated value
-are report-only.
+Initial positive deltas above the improvement threshold are highlighted but
+never fail the job. Raw samples from both stages are retained in the output.
 """
 
 from __future__ import annotations
@@ -35,7 +27,7 @@ import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "benchmarks" / "wasi"))
@@ -67,28 +59,6 @@ def command_for(binary: Path, runner_prefix: str, engine: str) -> tuple[str, lis
     if runner is None:
         raise ValueError(f"runner not found on PATH: {prefix[0]}")
     return runner, prefix[1:] + [str(binary)] + engine_args
-
-
-def threshold_for(
-    config: dict[str, Any],
-    platform: str,
-    engine: str,
-    metric: str,
-) -> float | None:
-    value = (
-        config.get("platforms", {})
-        .get(platform, {})
-        .get(engine, {})
-        .get(metric)
-    )
-    if value is None:
-        return None
-    threshold = float(value)
-    if threshold <= 0:
-        raise ValueError(
-            f"threshold for {platform}/{engine}/{metric} must be positive"
-        )
-    return threshold
 
 
 def run_once(
@@ -152,15 +122,16 @@ def pair_block(runs: list[dict[str, Any]]) -> list[tuple[dict, dict]]:
     raise ValueError(f"unexpected ABBA schedule: {versions}")
 
 
-def analyze_test(
+def analyze_phase(
     *,
     test_name: str,
     runs: list[dict[str, Any]],
-    blocks: int,
-    thresholds: dict[str, Any],
-    platform: str,
-    engine: str,
-) -> dict[str, Any]:
+    blocks: Iterable[int],
+) -> dict[str, dict[str, Any]]:
+    block_indices = list(blocks)
+    if not block_indices:
+        raise ValueError(f"{test_name}: phase has no ABBA blocks")
+
     expected_names = [
         label for label, _regex, _unit, _direction
         in METRIC_EXTRACTORS[test_name]
@@ -174,8 +145,16 @@ def analyze_test(
         unit = ""
         direction = ""
 
-        for block in range(blocks):
-            block_runs = [run for run in runs if run["block"] == block]
+        for block in block_indices:
+            block_runs = sorted(
+                (run for run in runs if run["block"] == block),
+                key=lambda run: run["slot"],
+            )
+            if len(block_runs) != 4:
+                raise ValueError(
+                    f"{test_name}: block {block + 1} has "
+                    f"{len(block_runs)}/4 runs"
+                )
             for baseline, candidate in pair_block(block_runs):
                 base_metric = baseline["metrics"][metric_name]
                 candidate_metric = candidate["metrics"][metric_name]
@@ -201,20 +180,6 @@ def analyze_test(
         relative = geometric_mean(pair_ratios)
         delta_percent = (relative - 1.0) * 100.0
         pair_deltas = [(ratio - 1.0) * 100.0 for ratio in pair_ratios]
-        threshold = threshold_for(thresholds, platform, engine, metric_name)
-
-        status = "REPORT"
-        if threshold is not None:
-            below = [
-                delta <= -threshold
-                for delta in pair_deltas
-            ]
-            if delta_percent <= -threshold and all(below):
-                status = "REGRESSION"
-            elif delta_percent <= -threshold or any(below):
-                status = "UNSTABLE"
-            else:
-                status = "PASS"
 
         metrics[metric_name] = {
             "unit": unit,
@@ -225,11 +190,64 @@ def analyze_test(
             "candidate_geomean": candidate_mean,
             "pair_deltas_percent": pair_deltas,
             "delta_percent": delta_percent,
-            "threshold_percent": threshold,
+        }
+
+    return metrics
+
+
+def regression_candidates(
+    metrics: dict[str, dict[str, Any]],
+    threshold_percent: float,
+) -> set[str]:
+    return {
+        name
+        for name, metric in metrics.items()
+        if metric["delta_percent"] < -threshold_percent
+    }
+
+
+def classify_metrics(
+    *,
+    initial: dict[str, dict[str, Any]],
+    confirmation: dict[str, dict[str, Any]],
+    regression_threshold: float,
+    improvement_threshold: float,
+) -> dict[str, dict[str, Any]]:
+    """Apply the two-stage gate.
+
+    `confirmation` contains only metrics selected by the initial screen.
+    Any other measurements produced while rerunning a multi-metric benchmark
+    are deliberately omitted from the gate.
+    """
+    selected = regression_candidates(initial, regression_threshold)
+    metrics: dict[str, dict[str, Any]] = {}
+
+    for name, initial_metric in initial.items():
+        confirmation_metric = confirmation.get(name) if name in selected else None
+        initial_delta = float(initial_metric["delta_percent"])
+
+        if name in selected:
+            if confirmation_metric is None:
+                raise ValueError(f"{name}: selected metric has no confirmation")
+            status = (
+                "REGRESSION"
+                if confirmation_metric["delta_percent"] < -regression_threshold
+                else "RECOVERED"
+            )
+        elif initial_delta > improvement_threshold:
+            status = "IMPROVEMENT"
+        else:
+            status = "PASS"
+
+        metrics[name] = {
+            **initial_metric,
+            "confirmation": confirmation_metric,
+            "regression_threshold_percent": regression_threshold,
+            "improvement_threshold_percent": improvement_threshold,
             "status": status,
         }
 
-    return {"runs": runs, "metrics": metrics}
+    return metrics
 
 
 def format_number(value: float) -> str:
@@ -246,6 +264,8 @@ def render_summary(
     engine: str,
     baseline_sha: str,
     candidate_sha: str,
+    regression_threshold: float,
+    improvement_threshold: float,
     results: dict[str, Any],
 ) -> str:
     lines = [
@@ -253,37 +273,57 @@ def render_summary(
         "",
         f"`{baseline_sha[:12]}` -> `{candidate_sha[:12]}`",
         "",
-        "| Metric | Baseline | Candidate | Delta | Paired deltas | Gate |",
+        (
+            f"> Gate: initial delta below `-{regression_threshold:.2f}%` "
+            "gets one confirmation ABBA block and fails only if the "
+            f"confirmation is still below `-{regression_threshold:.2f}%`. "
+            f"Initial improvements above `+{improvement_threshold:.2f}%` "
+            "are highlighted."
+        ),
+        "",
+        (
+            "| Metric | Baseline | Candidate | "
+            "Initial delta (pairs) | Confirmation delta (pairs) | Gate |"
+        ),
         "|---|---:|---:|---:|---:|---|",
     ]
     for test in results.values():
         for name, metric in test["metrics"].items():
-            pairs = ", ".join(
+            initial_pairs = ", ".join(
                 f"{delta:+.2f}%"
                 for delta in metric["pair_deltas_percent"]
             )
+            initial = (
+                f"{metric['delta_percent']:+.2f}% "
+                f"({initial_pairs})"
+            )
+            confirmation_metric = metric["confirmation"]
+            confirmation = "—"
+            if confirmation_metric is not None:
+                confirmation_pairs = ", ".join(
+                    f"{delta:+.2f}%"
+                    for delta in confirmation_metric["pair_deltas_percent"]
+                )
+                confirmation = (
+                    f"{confirmation_metric['delta_percent']:+.2f}% "
+                    f"({confirmation_pairs})"
+                )
             gate = metric["status"]
-            if metric["threshold_percent"] is not None:
-                gate += f" ({metric['threshold_percent']:.2f}%)"
+            if gate in {"REGRESSION", "IMPROVEMENT"}:
+                gate = f"**{gate}**"
             lines.append(
                 "| "
                 f"{name} | "
                 f"{format_number(metric['baseline_geomean'])} | "
                 f"{format_number(metric['candidate_geomean'])} | "
-                f"{metric['delta_percent']:+.2f}% | "
-                f"{pairs} | {gate} |"
+                f"{initial} | {confirmation} | {gate} |"
             )
     lines.append("")
-    if all(
-        metric["threshold_percent"] is None
-        for test in results.values()
-        for metric in test["metrics"].values()
-    ):
-        lines.append(
-            "> Report-only: no calibrated threshold exists for this "
-            "platform/engine yet."
-        )
-        lines.append("")
+    lines.append(
+        "> Confirmation measurements from metrics that passed the initial "
+        "screen are ignored by design."
+    )
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -302,12 +342,31 @@ def main() -> int:
     parser.add_argument("--candidate-sha", default="")
     parser.add_argument("--time", type=float, default=run_tests.DEFAULT_TARGET)
     parser.add_argument("--warmup-time", type=float, default=0.5)
-    parser.add_argument("--blocks", type=int, default=1)
     parser.add_argument(
-        "--max-blocks",
+        "--blocks",
         type=int,
-        default=3,
-        help="Add blocks up to this limit when calibrated pairs disagree",
+        default=1,
+        help="Initial ABBA blocks per benchmark (one block is two pairs)",
+    )
+    parser.add_argument(
+        "--confirmation-blocks",
+        type=int,
+        default=1,
+        help="Additional ABBA blocks for initially regressed metrics",
+    )
+    parser.add_argument(
+        "--regression-threshold",
+        type=float,
+        default=1.0,
+        metavar="PERCENT",
+        help="Initial and confirmation regression threshold (default: 1.0)",
+    )
+    parser.add_argument(
+        "--improvement-threshold",
+        type=float,
+        default=3.0,
+        metavar="PERCENT",
+        help="Initial improvement highlight threshold (default: 3.0)",
     )
     parser.add_argument(
         "--only",
@@ -326,9 +385,6 @@ def main() -> int:
             "may be repeated"
         ),
     )
-    parser.add_argument("--thresholds", type=Path)
-    parser.add_argument("--fail-on-regression", action="store_true")
-    parser.add_argument("--fail-on-unstable", action="store_true")
     parser.add_argument("--out-dir", required=True, type=Path)
     args = parser.parse_args()
 
@@ -338,8 +394,12 @@ def main() -> int:
         parser.error("--warmup-time cannot be negative")
     if args.blocks <= 0:
         parser.error("--blocks must be positive")
-    if args.max_blocks < args.blocks:
-        parser.error("--max-blocks cannot be less than --blocks")
+    if args.confirmation_blocks <= 0:
+        parser.error("--confirmation-blocks must be positive")
+    if args.regression_threshold <= 0:
+        parser.error("--regression-threshold must be positive")
+    if args.improvement_threshold <= 0:
+        parser.error("--improvement-threshold must be positive")
 
     selected_tests = []
     selectors = set(args.only)
@@ -376,10 +436,7 @@ def main() -> int:
         candidate_command = command_for(
             args.candidate_exec, args.runner_prefix, args.engine
         )
-        thresholds = {}
-        if args.thresholds:
-            thresholds = json.loads(args.thresholds.read_text(encoding="utf-8"))
-    except (OSError, ValueError, json.JSONDecodeError) as exc:
+    except (OSError, ValueError) as exc:
         parser.error(str(exc))
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
@@ -404,69 +461,124 @@ def main() -> int:
             )
 
     results: dict[str, Any] = {}
+    runs_by_test: dict[str, list[dict[str, Any]]] = {}
+    initial_by_test: dict[str, dict[str, dict[str, Any]]] = {}
+    confirmation_by_test: dict[str, dict[str, dict[str, Any]]] = {}
+
     try:
+        def add_block(
+            test: dict[str, Any],
+            runs: list[dict[str, Any]],
+            block: int,
+        ) -> None:
+            schedule = (
+                ["baseline", "candidate", "candidate", "baseline"]
+                if block % 2 == 0
+                else ["candidate", "baseline", "baseline", "candidate"]
+            )
+            for slot, version in enumerate(schedule):
+                command = (
+                    baseline_command
+                    if version == "baseline"
+                    else candidate_command
+                )
+                runs.append(
+                    run_once(
+                        version=version,
+                        command=command,
+                        test=test,
+                        time_target=args.time,
+                        block=block,
+                        slot=slot,
+                    )
+                )
+
+        # Stage 1: every selected benchmark gets the initial ABBA blocks.
         for index, test in enumerate(selected_tests, 1):
             name = test["name"]
-            print(f"[{index}/{len(selected_tests)}] {name}", flush=True)
+            print(
+                f"[initial {index}/{len(selected_tests)}] {name}",
+                flush=True,
+            )
             runs: list[dict[str, Any]] = []
-            block_count = 0
+            for block in range(args.blocks):
+                add_block(test, runs, block)
+            runs_by_test[name] = runs
+            initial_by_test[name] = analyze_phase(
+                test_name=name,
+                runs=runs,
+                blocks=range(args.blocks),
+            )
 
-            def add_block(block: int) -> None:
-                schedule = (
-                    ["baseline", "candidate", "candidate", "baseline"]
-                    if block % 2 == 0
-                    else ["candidate", "baseline", "baseline", "candidate"]
-                )
-                for slot, version in enumerate(schedule):
-                    command = (
-                        baseline_command
-                        if version == "baseline"
-                        else candidate_command
-                    )
-                    runs.append(
-                        run_once(
-                            version=version,
-                            command=command,
-                            test=test,
-                            time_target=args.time,
-                            block=block,
-                            slot=slot,
-                        )
-                    )
+        confirmation_targets = [
+            test
+            for test in selected_tests
+            if regression_candidates(
+                initial_by_test[test["name"]],
+                args.regression_threshold,
+            )
+        ]
 
-            while block_count < args.blocks:
-                add_block(block_count)
-                block_count += 1
+        # Stage 2: rerun only benchmark tests containing a metric that failed
+        # the initial screen. Metrics from the same test that initially passed
+        # are measured as a side effect but deliberately excluded here.
+        for index, test in enumerate(confirmation_targets, 1):
+            name = test["name"]
+            selected_metrics = regression_candidates(
+                initial_by_test[name],
+                args.regression_threshold,
+            )
+            print(
+                (
+                    f"[confirmation {index}/{len(confirmation_targets)}] "
+                    f"{name}: {', '.join(sorted(selected_metrics))}"
+                ),
+                flush=True,
+            )
+            runs = runs_by_test[name]
+            confirmation_range = range(
+                args.blocks,
+                args.blocks + args.confirmation_blocks,
+            )
+            for block in confirmation_range:
+                add_block(test, runs, block)
+            all_confirmation_metrics = analyze_phase(
+                test_name=name,
+                runs=runs,
+                blocks=confirmation_range,
+            )
+            confirmation_by_test[name] = {
+                metric_name: all_confirmation_metrics[metric_name]
+                for metric_name in selected_metrics
+            }
 
-            while True:
-                analysis = analyze_test(
-                    test_name=name,
-                    runs=runs,
-                    blocks=block_count,
-                    thresholds=thresholds,
-                    platform=args.platform,
-                    engine=args.engine,
-                )
-                unstable = any(
-                    metric["status"] == "UNSTABLE"
-                    for metric in analysis["metrics"].values()
-                )
-                if not unstable or block_count >= args.max_blocks:
-                    break
-                print(
-                    f"  ambiguous calibrated result; adding ABBA block "
-                    f"{block_count + 1}/{args.max_blocks}",
-                    flush=True,
-                )
-                add_block(block_count)
-                block_count += 1
-            results[name] = analysis
+        for test in selected_tests:
+            name = test["name"]
+            selected_metrics = regression_candidates(
+                initial_by_test[name],
+                args.regression_threshold,
+            )
+            metrics = classify_metrics(
+                initial=initial_by_test[name],
+                confirmation=confirmation_by_test.get(name, {}),
+                regression_threshold=args.regression_threshold,
+                improvement_threshold=args.improvement_threshold,
+            )
+            results[name] = {
+                "runs": runs_by_test[name],
+                "initial_blocks": args.blocks,
+                "confirmation_blocks": (
+                    args.confirmation_blocks if selected_metrics else 0
+                ),
+                "confirmed_metrics": sorted(selected_metrics),
+                "metrics": metrics,
+            }
     except (KeyError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
     document = {
-        "schema_version": 1,
+        "schema_version": 2,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "platform": args.platform,
         "engine": args.engine,
@@ -474,7 +586,9 @@ def main() -> int:
         "candidate_sha": args.candidate_sha,
         "target_seconds": args.time,
         "initial_blocks": args.blocks,
-        "max_blocks": args.max_blocks,
+        "confirmation_blocks": args.confirmation_blocks,
+        "regression_threshold_percent": args.regression_threshold,
+        "improvement_threshold_percent": args.improvement_threshold,
         "excluded_selectors": sorted(exclusions),
         "tests": results,
     }
@@ -500,6 +614,8 @@ def main() -> int:
         engine=args.engine,
         baseline_sha=args.baseline_sha,
         candidate_sha=args.candidate_sha,
+        regression_threshold=args.regression_threshold,
+        improvement_threshold=args.improvement_threshold,
         results=results,
     )
     if exclusions:
@@ -519,11 +635,7 @@ def main() -> int:
         for test in results.values()
         for metric in test["metrics"].values()
     ]
-    if args.fail_on_regression and "REGRESSION" in statuses:
-        return 1
-    if args.fail_on_unstable and "UNSTABLE" in statuses:
-        return 1
-    return 0
+    return 1 if "REGRESSION" in statuses else 0
 
 
 if __name__ == "__main__":

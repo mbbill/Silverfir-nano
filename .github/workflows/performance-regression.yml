@@ -18,7 +18,7 @@ on:
         default: false
         type: boolean
       blocks:
-        description: "ABBA blocks per benchmark (3 is useful for calibration)"
+        description: "Initial ABBA blocks; each block contains two paired runs"
         required: true
         default: "3"
         type: choice
@@ -175,9 +175,15 @@ jobs:
             echo
             echo "- baseline: \`$baseline\`"
             echo "- candidate: \`$candidate\`"
-            echo "- ABBA blocks: \`$blocks\`"
+            echo "- initial ABBA blocks: \`$blocks\`"
+            echo "- confirmation ABBA blocks: \`1\` (only initial regressions)"
+            echo "- regression threshold: \`1%\`"
+            echo "- improvement marker: \`3%\`"
             echo "- calibration: \`$calibration\`"
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Validate two-stage performance gate
+        run: python3 -m unittest scripts.test_bench_compare
 
       - uses: dtolnay/rust-toolchain@1.97.0
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')
@@ -317,7 +323,9 @@ jobs:
             --baseline-sha "$BASELINE_SHA"
             --candidate-sha "$CANDIDATE_SHA"
             --blocks "$BLOCKS"
-            --max-blocks 3
+            --confirmation-blocks 1
+            --regression-threshold 1
+            --improvement-threshold 3
             --out-dir "perf-output/${ENGINE}"
           )
           if [[ -n "$RUNNER_PREFIX" ]]; then
@@ -328,15 +336,6 @@ jobs:
             # under qemu-riscv32 and therefore prints infinite bandwidth.
             # The other ten benchmarks still provide usable measurements.
             args+=(--exclude stream/stream.wasm)
-          fi
-          if [[ -f scripts/bench_thresholds.json ]]; then
-            # Thresholds are intentionally absent until workflow_dispatch
-            # calibration runs establish per-platform, per-engine noise.
-            args+=(
-              --thresholds scripts/bench_thresholds.json
-              --fail-on-regression
-              --fail-on-unstable
-            )
           fi
           python3 "${args[@]}"
           cat "perf-output/${ENGINE}/summary.md" >> "$GITHUB_STEP_SUMMARY"
