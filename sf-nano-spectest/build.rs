@@ -25,10 +25,10 @@ fn main() {
     };
 
     if need_download {
-        println!("cargo:warning=Downloading WebAssembly testsuite...");
+        eprintln!("Downloading WebAssembly testsuite...");
         download_and_extract_testsuite(&testsuite_dir).expect("Failed to download testsuite");
         fs::write(&version_file, TESTSUITE_VERSION).expect("Failed to write version file");
-        println!("cargo:warning=WebAssembly testsuite downloaded and extracted");
+        eprintln!("WebAssembly testsuite downloaded and extracted");
     }
 
     println!("cargo:rerun-if-changed=build.rs");

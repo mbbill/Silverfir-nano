@@ -10,9 +10,27 @@ concurrency:
   group: correctness-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+permissions:
+  contents: read
+
 jobs:
+  lint-policy:
+    name: warning and suppression policy
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      - name: Test lint policy
+        run: python3 -m unittest scripts.test_check scripts.test_lint_policy
+
+      - name: Enforce lint policy
+        run: python3 scripts/check_lint_policy.py
+
   check:
     name: ${{ matrix.platform }}
+    needs: lint-policy
     runs-on: ${{ matrix.runner }}
     timeout-minutes: ${{ matrix.timeout_minutes }}
     strategy:
@@ -72,7 +90,7 @@ jobs:
         run: git config --system core.longpaths true
 
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
 
       - name: Extract testsuite SHA
         id: testsuite
@@ -86,7 +104,7 @@ jobs:
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Cache WebAssembly testsuite
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: target/webassembly-testsuite
           key: testsuite-${{ matrix.platform }}-${{ steps.testsuite.outputs.sha }}
@@ -103,7 +121,7 @@ jobs:
           components: rust-src
 
       - name: Cargo cache
-        uses: Swatinem/rust-cache@v2
+        uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: correctness-${{ matrix.platform }}
 
@@ -113,18 +131,23 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-user-static
 
+      - name: Cache Zig
+        if: matrix.zig
+        uses: actions/cache@v6
+        with:
+          path: ${{ runner.tool_cache }}/zig/0.14.0/x86_64
+          key: zig-0.14.0-linux-x64
+
       - name: Install Zig
         if: matrix.zig
-        uses: mlugg/setup-zig@v1
-        with:
-          version: 0.14.0
+        run: bash scripts/install_zig_ci.sh
 
       - name: Run correctness suite
         run: ${{ matrix.python }} scripts/check.py ${{ matrix.check_args }}
 
       - name: Upload check logs on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: correctness-${{ matrix.platform }}-logs
           path: target/check*-logs/

@@ -112,11 +112,6 @@ pub(crate) struct LoweredMachineModule {
     pub abi: MachineModuleAbi,
 }
 
-#[allow(dead_code)]
-pub(crate) fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModule, WasmError> {
-    lower_module_with_table_dispatch_modes(input, &[])
-}
-
 pub(crate) fn lower_module_with_table_dispatch_modes(
     input: LowerModuleInput,
     table_dispatch_modes: &[TableDispatchMode],
@@ -187,30 +182,6 @@ pub(crate) fn lower_module_with_table_dispatch_modes(
     module.validate()?;
 
     Ok(LoweredMachineModule { module, abi })
-}
-
-#[allow(dead_code)]
-pub(crate) fn lower_single_function(
-    backend: BackendConfig,
-    function: LowerFunctionInput,
-    runtime: &mut [MachineFunctionAbi],
-    is_local_func: &[bool],
-    const_pool: &mut ConstPoolBuilder,
-    #[cfg(sf_has_guard_pages)] guard_pages: bool,
-    #[cfg(sf_has_guard_pages)] stack_guard_pages: bool,
-) -> Result<(MachineFunction, MachineFunctionAbi), WasmError> {
-    lower_single_function_with_table_dispatch_modes(
-        backend,
-        function,
-        runtime,
-        is_local_func,
-        &[],
-        const_pool,
-        #[cfg(sf_has_guard_pages)]
-        guard_pages,
-        #[cfg(sf_has_guard_pages)]
-        stack_guard_pages,
-    )
 }
 
 pub(crate) fn lower_single_function_with_table_dispatch_modes(

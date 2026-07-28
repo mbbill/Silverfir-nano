@@ -19,8 +19,6 @@ use super::super::reg::X86Reg;
 pub(in crate::vm::jit::arch::x86_64) const C_ARG0: X86Reg = X86Reg::RDI;
 pub(in crate::vm::jit::arch::x86_64) const C_ARG1: X86Reg = X86Reg::RSI;
 pub(in crate::vm::jit::arch::x86_64) const C_ARG2: X86Reg = X86Reg::RDX;
-#[allow(dead_code)]
-pub(in crate::vm::jit::arch::x86_64) const C_ARG3: X86Reg = X86Reg::RCX;
 pub(in crate::vm::jit::arch::x86_64) const C_RET0: X86Reg = X86Reg::RAX;
 
 // ── Callee-saved set ────────────────────────────────────────────────────────

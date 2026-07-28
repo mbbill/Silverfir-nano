@@ -42,7 +42,6 @@ impl Default for TextEmitter {
     }
 }
 
-#[allow(dead_code)]
 impl TextEmitter {
     #[inline]
     pub(crate) fn new() -> Self {
@@ -168,17 +167,6 @@ impl TextEmitter {
     }
 
     // ── Patch ────────────────────────────────────────────────────────────
-
-    #[inline]
-    pub(crate) fn patch_u8(&mut self, offset: usize, byte: u8) {
-        match &mut self.storage {
-            TextStorage::Owned(text) => text[offset] = byte,
-            TextStorage::CodeBuffer { buf, start, len } => {
-                assert!(offset < *len, "patch beyond written region");
-                unsafe { (&mut **buf).patch_u8(*start + offset, byte) };
-            }
-        }
-    }
 
     #[inline]
     pub(crate) fn patch_u32(&mut self, offset: usize, inst: u32) {

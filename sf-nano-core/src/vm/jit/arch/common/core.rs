@@ -199,7 +199,6 @@ impl<'a> CompilerCore<'a> {
     }
 
     #[inline]
-    #[allow(dead_code)]
     pub(crate) fn preserved_clobbers(&self) -> &[MachineReg] {
         self.body
             .mir_function()
@@ -278,7 +277,6 @@ impl<'a> CompilerCore<'a> {
 
     // ── Runtime metadata ─────────────────────────────────────────────────
 
-    #[allow(dead_code)]
     pub(crate) fn runtime_for(
         &self,
         func_id: MachineFuncId,

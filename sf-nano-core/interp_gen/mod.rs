@@ -29,6 +29,24 @@ use instr::{op_from_index, Op};
 use isa::{Isa, Stubs, Variant};
 use layout::{build_op_base, family, total_slots, Cls, DstCls, Fam, PairDstCls, N_OPS};
 
+impl PairDstCls {
+    pub(crate) fn first(self) -> Option<DstCls> {
+        match self {
+            PairDstCls::FirstL0 | PairDstCls::L0L1 => Some(DstCls::L0),
+            PairDstCls::FirstL1 | PairDstCls::L1L0 => Some(DstCls::L1),
+            PairDstCls::None | PairDstCls::SecondL0 | PairDstCls::SecondL1 => None,
+        }
+    }
+
+    pub(crate) fn second(self) -> Option<DstCls> {
+        match self {
+            PairDstCls::SecondL0 | PairDstCls::L1L0 => Some(DstCls::L0),
+            PairDstCls::SecondL1 | PairDstCls::L0L1 => Some(DstCls::L1),
+            PairDstCls::None | PairDstCls::FirstL0 | PairDstCls::FirstL1 => None,
+        }
+    }
+}
+
 /// One emission group: a run of ops sharing a shape, in the order the
 /// engine wants them laid out.
 struct Group {

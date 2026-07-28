@@ -1,0 +1,24 @@
+# Every entry is a reviewed exception to the repository-wide ban on
+# dead-code/unused lint suppression. Keep this list small and exact.
+version = 1
+
+[[suppression]]
+path = "sf-nano-core/build.rs"
+kind = "allow"
+lints = ["dead_code"]
+anchor = "mod instr;"
+reason = "The build-time generator imports shared instruction metadata but intentionally consumes only a subset; the runtime compilation remains unsuppressed."
+
+[[suppression]]
+path = "sf-nano-core/build.rs"
+kind = "allow"
+lints = ["dead_code"]
+anchor = "mod interp_gen;"
+reason = "One selected target generator is used per build, while this module tree contains all supported target implementations."
+
+[[suppression]]
+path = "sf-nano-core/build.rs"
+kind = "allow"
+lints = ["dead_code"]
+anchor = "mod layout;"
+reason = "The build-time generator and runtime share layout definitions but intentionally consume different helpers; the runtime compilation remains unsuppressed."

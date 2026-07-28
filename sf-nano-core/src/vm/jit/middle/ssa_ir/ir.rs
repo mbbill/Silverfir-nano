@@ -380,7 +380,6 @@ impl SsaInst {
 /// `#[cfg(any(debug_assertions, test))]`, leaving some fields produce-only
 /// in release.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
 pub(crate) enum SsaInstView<'a> {
     Fill {
         slot: FrameSlot,

@@ -324,9 +324,8 @@ def is_runnable_x64_host(host: Host) -> bool:
 def cargo_env(target: Optional[str], env: Optional[Dict[str, str]] = None) -> Dict[str, str]:
     # Per-target linkers and codegen flags live in .cargo/config.toml. Setting
     # RUSTFLAGS here would *replace* `target.<triple>.rustflags` rather than
-    # merge with it, so this runner deliberately sets no RUSTFLAGS at all;
-    # strict mode fails on warnings via the WARN step count in final_report()
-    # instead of via `-D warnings`.
+    # merge with it, so this runner deliberately sets no RUSTFLAGS at all.
+    # CheckRunner treats every compiler warning as a failed validation.
     proc_env = dict(env or {})
     if target == RISCV32_TARGET:
         proc_env.setdefault("ZIG_GLOBAL_CACHE_DIR", str(TARGET_DIR / "zig-cache"))
@@ -373,7 +372,10 @@ def parse_log(log_path: Path, rc: int, max_diagnostics: int) -> Tuple[int, int, 
         kind = "error" if match.group(1).startswith("error") else "warning"
         if kind == "error":
             errors += 1
-        else:
+        elif not GENERATED_WARNINGS_RE.search(line):
+            # Cargo repeats rustc's warning count in a final
+            # "`crate` generated N warnings" line. Keep that line as a useful
+            # diagnostic, but do not count it as an additional warning.
             warnings += 1
 
         location = None
@@ -415,14 +417,12 @@ class CheckRunner:
     def __init__(
         self,
         host: Host,
-        strict: bool,
         install_targets: bool,
         max_diagnostics: int,
         phase: Optional[str] = None,
         dry_run: bool = False,
     ) -> None:
         self.host = host
-        self.strict = strict
         self.install_targets = install_targets
         self.max_diagnostics = max_diagnostics
         self.phase = phase
@@ -445,7 +445,6 @@ class CheckRunner:
         env: Optional[Dict[str, str]] = None,
         cwd: Path = ROOT,
         log_name: Optional[str] = None,
-        ignore_warnings: bool = False,
     ) -> StepResult:
         self.step_index += 1
         log_path = self.log_dir / f"{log_name or clean_label(name)}.log"
@@ -498,9 +497,6 @@ class CheckRunner:
 
         seconds = time.monotonic() - start
         errors, warnings, diagnostics = parse_log(log_path, rc, self.max_diagnostics)
-        if ignore_warnings and rc == 0:
-            warnings = 0
-            diagnostics = [d for d in diagnostics if d.kind != "warning"]
 
         if rc != 0:
             status = "FAIL"
@@ -580,8 +576,7 @@ class CheckRunner:
         for result in self.results:
             counts[result.status] += 1
 
-        fail_on_warn = self.strict and counts["WARN"] > 0
-        rc = 1 if counts["FAIL"] > 0 or fail_on_warn else 0
+        rc = 1 if counts["FAIL"] > 0 or counts["WARN"] > 0 else 0
         if not print_report:
             return rc
 
@@ -923,9 +918,7 @@ def cargo_check(
     env: Optional[Dict[str, str]] = None,
     log_name: Optional[str] = None,
     cwd: Path = ROOT,
-    ignore_warnings: bool = False,
 ) -> StepResult:
-    ignore_warnings = ignore_warnings or interpreter_only(feature_spec)
     argv = cargo_argv("check", target)
     if profile_name == "release":
         argv.append("--release")
@@ -944,7 +937,6 @@ def cargo_check(
         env=cargo_env(target, env),
         cwd=cwd,
         log_name=log_name,
-        ignore_warnings=ignore_warnings,
     )
 
 
@@ -969,7 +961,6 @@ def cargo_build(
         argv,
         env=cargo_env(target),
         log_name=log_name,
-        ignore_warnings=interpreter_only(features),
     )
 
 
@@ -1007,19 +998,12 @@ def run_workspace_tests(runner: CheckRunner, profile_name: str = "debug") -> Non
     )
 
 
-def interpreter_only(feature_spec: Optional[str]) -> bool:
-    """Whether a feature spec compiles the interpreter without the JIT.
-
-    Such a build warns about dead code across the shared substrate -- the
-    store, the entity model, the value encoding -- because those are the
-    JIT's and the interpreter calls none of them. That is a property of the
-    layout, not of the build, so these rows are compiled for breakage
-    rather than for cleanliness.
-    """
-    if not feature_spec or feature_spec in {"DEFAULT", "ALL"}:
-        return False
-    features = {f.strip() for f in feature_spec.split(",")}
-    return "interp" in features and "jit" not in features
+def run_lint_policy(runner: CheckRunner) -> None:
+    runner.run(
+        "warning and suppression policy",
+        [sys.executable, str(ROOT / "scripts" / "check_lint_policy.py")],
+        log_name="lint-policy",
+    )
 
 
 def full_core_combos() -> List[Tuple[str, str]]:
@@ -1381,7 +1365,6 @@ def run_binary_if_present(
     *,
     env: Optional[Dict[str, str]] = None,
     log_name: Optional[str] = None,
-    ignore_warnings: bool = False,
 ) -> Optional[StepResult]:
     binary_text = str(argv[0])
     binary = Path(binary_text)
@@ -1396,7 +1379,7 @@ def run_binary_if_present(
         if not exists:
             runner.fail(name, f"expected binary not found: {binary_text}", command=shlex_join(argv))
             return None
-    return runner.run(name, argv, env=env, log_name=log_name, ignore_warnings=ignore_warnings)
+    return runner.run(name, argv, env=env, log_name=log_name)
 
 
 def run_x64_spectest(
@@ -1637,11 +1620,11 @@ def run_armv7_binary(
             binary,
             *args,
         ]
-        runner.run(name, argv, log_name=log_name, ignore_warnings=True)
+        runner.run(name, argv, log_name=log_name)
         return
 
     argv = ["qemu-arm-static", "-cpu", "cortex-a15", binary, *args]
-    runner.run(name, argv, env=env, log_name=log_name, ignore_warnings=True)
+    runner.run(name, argv, env=env, log_name=log_name)
 
 
 def run_riscv64_binary(
@@ -1668,10 +1651,10 @@ def run_riscv64_binary(
             binary,
             *args,
         ]
-        return runner.run(name, argv, log_name=log_name, ignore_warnings=True)
+        return runner.run(name, argv, log_name=log_name)
 
     argv = ["qemu-riscv64-static", "-cpu", "rv64", binary, *args]
-    return runner.run(name, argv, env=env, log_name=log_name, ignore_warnings=True)
+    return runner.run(name, argv, env=env, log_name=log_name)
 
 
 def run_riscv32_binary(
@@ -1698,10 +1681,10 @@ def run_riscv32_binary(
             binary,
             *args,
         ]
-        return runner.run(name, argv, log_name=log_name, ignore_warnings=True)
+        return runner.run(name, argv, log_name=log_name)
 
     argv = ["qemu-riscv32-static", "-cpu", "rv32", binary, *args]
-    return runner.run(name, argv, env=env, log_name=log_name, ignore_warnings=True)
+    return runner.run(name, argv, env=env, log_name=log_name)
 
 
 def run_wasitest_suite(
@@ -1859,7 +1842,6 @@ def run_wasitest_release_cross_targets(
             [native_wasitest, "--cli-path", wrapper, *engine.args, *extra_args],
             env={"TMPDIR": str(runner.tmp_dir)},
             log_name=f"wasitest{tag}-{label}-release",
-            ignore_warnings=True,
         )
 
 
@@ -1900,7 +1882,6 @@ def run_riscv64_wasitest_release(
         [native_wasitest, "--cli-path", wrapper, *engine.args, *extra_args],
         env={"TMPDIR": str(runner.tmp_dir)},
         log_name=f"wasitest{tag}-riscv64-release",
-        ignore_warnings=True,
     )
 
 
@@ -1948,7 +1929,6 @@ def run_riscv32_wasitest_release(
         ],
         env={"TMPDIR": str(runner.tmp_dir)},
         log_name=f"wasitest{tag}-riscv32-release",
-        ignore_warnings=True,
     )
 
 
@@ -2174,6 +2154,7 @@ def run_windows_native_full(
     extra_args: Sequence[str],
 ) -> None:
     profiles = selected_profiles(debug_only, release_only)
+    run_lint_policy(runner)
     if "debug" in profiles:
         runner.run(
             "windows x64 workspace check (debug)",
@@ -2217,7 +2198,6 @@ def run_windows_native_full(
 def run_windows_native_phase(args: argparse.Namespace, host: Host, *, print_report: bool = True) -> int:
     runner = CheckRunner(
         host,
-        strict=args.strict,
         install_targets=args.install_targets,
         max_diagnostics=max(1, args.max_diagnostics),
         dry_run=args.dry_run,
@@ -2266,6 +2246,7 @@ def run_full(
     skip_target_labels: Optional[set[str]] = None,
 ) -> None:
     profiles = selected_profiles(debug_only, release_only)
+    run_lint_policy(runner)
     for profile_name in profiles:
         run_workspace_tests(runner, profile_name)
     run_feature_checks(runner, profiles=profiles)
@@ -2312,7 +2293,6 @@ def parse_args(argv: Sequence[str]) -> argparse.Namespace:
             """
         ),
     )
-    parser.add_argument("--strict", action="store_true", help="make warnings fail where supported")
     parser.add_argument("--install-targets", action="store_true", help="install missing rustup targets")
     parser.add_argument("--max-diagnostics", type=int, default=8, help="diagnostics to print per issue step")
     parser.add_argument("--debug-only", action="store_true", help="run debug profile checks only")
@@ -2351,7 +2331,6 @@ def main(argv: Sequence[str]) -> int:
 
     runner = CheckRunner(
         host,
-        strict=args.strict,
         install_targets=args.install_targets,
         max_diagnostics=max(1, args.max_diagnostics),
         dry_run=args.dry_run,

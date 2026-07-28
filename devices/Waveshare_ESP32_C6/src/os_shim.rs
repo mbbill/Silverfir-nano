@@ -6,7 +6,6 @@ use crate::config::CODE_ARENA_BYTES;
 
 #[repr(align(16))]
 struct CodeArena {
-    #[allow(dead_code)]
     bytes: [u8; CODE_ARENA_BYTES],
 }
 
@@ -32,7 +31,7 @@ pub extern "C" fn sf_os_alloc_executable(capacity: usize) -> *mut u8 {
         return core::ptr::null_mut();
     }
 
-    let ptr = core::ptr::addr_of_mut!(CODE_ARENA) as *mut u8;
+    let ptr = core::ptr::addr_of_mut!(CODE_ARENA.bytes).cast::<u8>();
     debug_assert!(ptr as usize % 16 == 0);
     ptr
 }

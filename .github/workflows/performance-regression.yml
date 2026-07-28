@@ -49,7 +49,7 @@ jobs:
       calibration: ${{ steps.refs.outputs.calibration }}
       matrix: ${{ steps.refs.outputs.matrix }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
@@ -188,13 +188,15 @@ jobs:
             echo "- calibration: \`$calibration\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Validate staged performance gate
-        run: python3 -m unittest scripts.test_bench_compare
+      - name: Validate CI policy scripts
+        run: |
+          python3 -m unittest scripts.test_bench_compare scripts.test_check scripts.test_lint_policy
+          python3 scripts/check_lint_policy.py
 
       - uses: dtolnay/rust-toolchain@1.97.0
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.1
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')
         with:
           shared-key: dev-build
@@ -202,6 +204,55 @@ jobs:
       - name: cargo build (workspace)
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')
         run: cargo build --workspace
+
+      - name: Surface architecture-sensitive warnings
+        id: warning-audit
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+          status=0
+
+          audit() {
+            local name="$1"
+            shift
+            local log
+            local rc
+            log="$(mktemp)"
+            echo "::group::$name"
+            "$@" 2>&1 | tee "$log"
+            rc="${PIPESTATUS[0]}"
+            echo "::endgroup::"
+            if [[ "$rc" -ne 0 ]] || grep -qE '^warning(\[[^]]+\])?:' "$log"; then
+              status=1
+            fi
+            rm -f "$log"
+          }
+
+          audit "release / default features" \
+            cargo check --release -p sf-nano-core
+          audit "release / JIT only" \
+            cargo check --release -p sf-nano-core \
+              --no-default-features --features jit
+          audit "release / interpreter only" \
+            cargo check --release -p sf-nano-core \
+              --no-default-features --features interp
+
+          if [[ "$status" -ne 0 ]]; then
+            {
+              echo "## Warning audit"
+              echo
+              echo "> [!CAUTION]"
+              echo "> **ACTION REQUIRED.** One or more representative release"
+              echo "> configurations emitted compiler warnings. The benchmark"
+              echo "> will continue so correctness debt does not hide performance"
+              echo "> data; inspect this step's three log groups."
+            } >> "$GITHUB_STEP_SUMMARY"
+            echo "::warning title=Warning audit::Correctness warning debt is present; benchmark measurement will continue."
+          fi
+
+          exit "$status"
 
       - name: Mark dev soft-fail as action required
         if: failure() && startsWith(github.ref, 'refs/heads/dev/')
@@ -241,12 +292,12 @@ jobs:
         run: git config --system core.longpaths true
 
       - name: Checkout candidate
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.candidate }}
 
       - name: Checkout baseline
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: ${{ needs.prepare.outputs.baseline }}
           path: baseline
@@ -261,7 +312,7 @@ jobs:
         with:
           components: rust-src
 
-      - uses: Swatinem/rust-cache@v2
+      - uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: perf-${{ matrix.platform }}-${{ matrix.engine }}
           workspaces: ". -> perf-target"
@@ -272,10 +323,16 @@ jobs:
           sudo apt-get update -qq
           sudo apt-get install -y -qq qemu-user-static
 
-      - uses: mlugg/setup-zig@v1
+      - name: Cache Zig
         if: matrix.platform == 'riscv32'
+        uses: actions/cache@v6
         with:
-          version: 0.14.0
+          path: ${{ runner.tool_cache }}/zig/0.14.0/x86_64
+          key: zig-0.14.0-linux-x64
+
+      - name: Install Zig
+        if: matrix.platform == 'riscv32'
+        run: bash scripts/install_zig_ci.sh
 
       - name: Build baseline and candidate
         env:
@@ -368,7 +425,7 @@ jobs:
           fi
           exit "$status"
 
-      - uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v7
         if: always()
         with:
           name: performance-${{ matrix.platform }}-${{ matrix.engine }}

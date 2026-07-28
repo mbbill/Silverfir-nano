@@ -30,7 +30,6 @@ pub(crate) struct ExnInstance {
     pub(crate) tag: TagHandle,
     // JIT-only builds retain payloads for exception identity/lifetime even
     // though only the interpreter currently reads them back at a catch.
-    #[cfg_attr(not(feature = "interp"), allow(dead_code))]
     pub(crate) fields: collections::Vec<Value>,
 }
 
