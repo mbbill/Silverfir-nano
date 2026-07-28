@@ -74,6 +74,11 @@ const MEM_OPS: &[Op] = &[
 
 fn emit_order() -> Vec<Group> {
     vec![
+        // Keep the established handler layout contiguous: inserting these
+        // specialized loop branches inside it regresses workloads that do
+        // not use the fusion. Prefixing the bank also keeps it close to the
+        // integer and branch families that feed it.
+        g(&[I32_SubBrIf, I64_SubBrIf]),
         g(&[Return]),
         g(&[MovSlot, MovConst]),
         // integer ALU, the hottest family
@@ -126,8 +131,6 @@ fn emit_order() -> Vec<Group> {
             I64_BrGeU,
             I32_BrAnd,
             I32_BrAndNot,
-            I32_SubBrIf,
-            I64_SubBrIf,
         ]),
         g(&[Select]),
         g(&[BrTable]),
