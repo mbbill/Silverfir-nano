@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Compare two sf-nano-cli builds with a staged ABBA performance gate.
+"""Compare two sf-nano-cli builds with a staged alternating performance gate.
 
 Both binaries run on the same machine against this checkout's benchmark
-corpus. One ABBA block contains two adjacent baseline/candidate pairs:
-baseline/candidate/candidate/baseline. The next block reverses that order.
+corpus. Measured blocks alternate baseline/candidate/baseline/candidate and
+candidate/baseline/candidate/baseline. Every pair is adjacent, no version runs
+twice consecutively, and follow-up rounds reverse which version runs first.
 
 The initial block produces two paired deltas for every metric. Initial
-regressions and improvements are selected for a second ABBA round. A regression
-that remains below the threshold receives a third and final ABBA round and
-fails only if it remains below the threshold again. An improvement is reported
-only if it remains above its threshold in the second round.
+regressions and improvements are selected for a second round. A regression
+that remains below the threshold receives up to two more rounds and fails only
+if all four rounds remain below the threshold. An improvement is reported only
+if it remains above its threshold in the second round.
 
 Only metrics selected by the initial screen can affect later classification.
 New changes observed while rerunning a multi-metric benchmark are ignored.
@@ -115,11 +116,11 @@ def run_once(
 
 def pair_block(runs: list[dict[str, Any]]) -> list[tuple[dict, dict]]:
     versions = [run["version"] for run in runs]
-    if versions == ["baseline", "candidate", "candidate", "baseline"]:
-        return [(runs[0], runs[1]), (runs[3], runs[2])]
-    if versions == ["candidate", "baseline", "baseline", "candidate"]:
-        return [(runs[1], runs[0]), (runs[2], runs[3])]
-    raise ValueError(f"unexpected ABBA schedule: {versions}")
+    if versions == ["baseline", "candidate", "baseline", "candidate"]:
+        return [(runs[0], runs[1]), (runs[2], runs[3])]
+    if versions == ["candidate", "baseline", "candidate", "baseline"]:
+        return [(runs[1], runs[0]), (runs[3], runs[2])]
+    raise ValueError(f"unexpected alternating schedule: {versions}")
 
 
 def analyze_phase(
@@ -130,7 +131,7 @@ def analyze_phase(
 ) -> dict[str, dict[str, Any]]:
     block_indices = list(blocks)
     if not block_indices:
-        raise ValueError(f"{test_name}: phase has no ABBA blocks")
+        raise ValueError(f"{test_name}: phase has no alternating blocks")
 
     expected_names = [
         label for label, _regex, _unit, _direction
@@ -245,18 +246,42 @@ def third_round_candidates(
     }
 
 
+def fourth_round_candidates(
+    initial: dict[str, dict[str, Any]],
+    confirmation: dict[str, dict[str, Any]],
+    third_round: dict[str, dict[str, Any]],
+    regression_threshold: float,
+) -> set[str]:
+    selected = third_round_candidates(
+        initial,
+        confirmation,
+        regression_threshold,
+    )
+    missing = selected - third_round.keys()
+    if missing:
+        raise ValueError(
+            f"{sorted(missing)[0]}: persistent metric has no third round"
+        )
+    return {
+        name
+        for name in selected
+        if third_round[name]["delta_percent"] < -regression_threshold
+    }
+
+
 def classify_metrics(
     *,
     initial: dict[str, dict[str, Any]],
     confirmation: dict[str, dict[str, Any]],
     third_round: dict[str, dict[str, Any]],
+    fourth_round: dict[str, dict[str, Any]],
     regression_threshold: float,
     improvement_threshold: float,
 ) -> dict[str, dict[str, Any]]:
     """Apply the staged gate to candidates frozen by the initial screen.
 
-    `confirmation` contains initial regressions and improvements. `third_round`
-    contains only initial regressions that were still negative in confirmation.
+    `confirmation` contains initial regressions and improvements. Later maps
+    contain only initial regressions still negative in every preceding round.
     Other measurements produced by multi-metric benchmarks are omitted.
     """
     regressions = regression_candidates(initial, regression_threshold)
@@ -267,6 +292,7 @@ def classify_metrics(
     for name, initial_metric in initial.items():
         confirmation_metric = confirmation.get(name) if name in selected else None
         third_metric = None
+        fourth_metric = None
 
         if name in selected:
             if confirmation_metric is None:
@@ -281,11 +307,20 @@ def classify_metrics(
                     raise ValueError(
                         f"{name}: persistent metric has no third round"
                     )
-                status = (
-                    "REGRESSION"
-                    if third_metric["delta_percent"] < -regression_threshold
-                    else "RECOVERED"
-                )
+                if third_metric["delta_percent"] >= -regression_threshold:
+                    status = "RECOVERED"
+                else:
+                    fourth_metric = fourth_round.get(name)
+                    if fourth_metric is None:
+                        raise ValueError(
+                            f"{name}: persistent metric has no fourth round"
+                        )
+                    status = (
+                        "REGRESSION"
+                        if fourth_metric["delta_percent"]
+                        < -regression_threshold
+                        else "RECOVERED"
+                    )
         elif name in improvements:
             status = (
                 "IMPROVEMENT"
@@ -299,6 +334,7 @@ def classify_metrics(
             **initial_metric,
             "confirmation": confirmation_metric,
             "third_round": third_metric,
+            "fourth_round": fourth_metric,
             "regression_threshold_percent": regression_threshold,
             "improvement_threshold_percent": improvement_threshold,
             "status": status,
@@ -332,8 +368,9 @@ def render_summary(
         "",
         (
             f"> Gate: initial delta below `-{regression_threshold:.2f}%` "
-            "gets a second ABBA round. If it remains below the threshold, "
-            "a third round decides REGRESSION versus RECOVERED. Initial "
+            "gets a second alternating round. If it remains below the threshold, "
+            "third and fourth rounds decide REGRESSION versus RECOVERED. "
+            "The order alternates ABAB/BABA between rounds. Initial "
             f"improvements above `+{improvement_threshold:.2f}%` are reported "
             "only when the second round also exceeds that threshold."
         ),
@@ -341,9 +378,9 @@ def render_summary(
         (
             "| Metric | Baseline | Candidate | "
             "Initial delta (pairs) | Second delta (pairs) | "
-            "Third delta (pairs) | Gate |"
+            "Third delta (pairs) | Fourth delta (pairs) | Gate |"
         ),
-        "|---|---:|---:|---:|---:|---:|---|",
+        "|---|---:|---:|---:|---:|---:|---:|---|",
     ]
     for test in results.values():
         for name, metric in test["metrics"].items():
@@ -377,6 +414,17 @@ def render_summary(
                     f"{third_metric['delta_percent']:+.2f}% "
                     f"({third_pairs})"
                 )
+            fourth_metric = metric["fourth_round"]
+            fourth = "—"
+            if fourth_metric is not None:
+                fourth_pairs = ", ".join(
+                    f"{delta:+.2f}%"
+                    for delta in fourth_metric["pair_deltas_percent"]
+                )
+                fourth = (
+                    f"{fourth_metric['delta_percent']:+.2f}% "
+                    f"({fourth_pairs})"
+                )
             gate = metric["status"]
             if gate in {"REGRESSION", "IMPROVEMENT"}:
                 gate = f"**{gate}**"
@@ -385,7 +433,8 @@ def render_summary(
                 f"{name} | "
                 f"{format_number(metric['baseline_geomean'])} | "
                 f"{format_number(metric['candidate_geomean'])} | "
-                f"{initial} | {confirmation} | {third} | {gate} |"
+                f"{initial} | {confirmation} | {third} | {fourth} | "
+                f"{gate} |"
             )
     lines.append("")
     lines.append(
@@ -416,13 +465,13 @@ def main() -> int:
         "--blocks",
         type=int,
         default=1,
-        help="Initial ABBA blocks per benchmark (one block is two pairs)",
+        help="Initial alternating blocks per benchmark (two adjacent pairs)",
     )
     parser.add_argument(
         "--confirmation-blocks",
         type=int,
         default=1,
-        help="ABBA blocks in each follow-up round (default: 1)",
+        help="Alternating blocks in each follow-up round (default: 1)",
     )
     parser.add_argument(
         "--regression-threshold",
@@ -535,6 +584,7 @@ def main() -> int:
     initial_by_test: dict[str, dict[str, dict[str, Any]]] = {}
     confirmation_by_test: dict[str, dict[str, dict[str, Any]]] = {}
     third_by_test: dict[str, dict[str, dict[str, Any]]] = {}
+    fourth_by_test: dict[str, dict[str, dict[str, Any]]] = {}
 
     try:
         def add_block(
@@ -543,9 +593,9 @@ def main() -> int:
             block: int,
         ) -> None:
             schedule = (
-                ["baseline", "candidate", "candidate", "baseline"]
+                ["baseline", "candidate", "baseline", "candidate"]
                 if block % 2 == 0
-                else ["candidate", "baseline", "baseline", "candidate"]
+                else ["candidate", "baseline", "candidate", "baseline"]
             )
             for slot, version in enumerate(schedule):
                 command = (
@@ -564,7 +614,7 @@ def main() -> int:
                     )
                 )
 
-        # Stage 1: every selected benchmark gets the initial ABBA blocks.
+        # Stage 1: every selected benchmark gets the initial alternating blocks.
         for index, test in enumerate(selected_tests, 1):
             name = test["name"]
             print(
@@ -667,6 +717,51 @@ def main() -> int:
                 for metric_name in selected_metrics
             }
 
+        fourth_targets = [
+            test
+            for test in third_targets
+            if fourth_round_candidates(
+                initial_by_test[test["name"]],
+                confirmation_by_test[test["name"]],
+                third_by_test[test["name"]],
+                args.regression_threshold,
+            )
+        ]
+
+        # Stage 4: the final gate runs only initial regressions that remained
+        # below threshold in both preceding confirmation rounds.
+        for index, test in enumerate(fourth_targets, 1):
+            name = test["name"]
+            selected_metrics = fourth_round_candidates(
+                initial_by_test[name],
+                confirmation_by_test[name],
+                third_by_test[name],
+                args.regression_threshold,
+            )
+            print(
+                (
+                    f"[fourth {index}/{len(fourth_targets)}] "
+                    f"{name}: {', '.join(sorted(selected_metrics))}"
+                ),
+                flush=True,
+            )
+            runs = runs_by_test[name]
+            fourth_range = range(
+                args.blocks + 2 * args.confirmation_blocks,
+                args.blocks + 3 * args.confirmation_blocks,
+            )
+            for block in fourth_range:
+                add_block(test, runs, block)
+            all_fourth_metrics = analyze_phase(
+                test_name=name,
+                runs=runs,
+                blocks=fourth_range,
+            )
+            fourth_by_test[name] = {
+                metric_name: all_fourth_metrics[metric_name]
+                for metric_name in selected_metrics
+            }
+
         for test in selected_tests:
             name = test["name"]
             second_metrics = confirmation_candidates(
@@ -679,10 +774,17 @@ def main() -> int:
                 confirmation_by_test.get(name, {}),
                 args.regression_threshold,
             )
+            fourth_metrics = fourth_round_candidates(
+                initial_by_test[name],
+                confirmation_by_test.get(name, {}),
+                third_by_test.get(name, {}),
+                args.regression_threshold,
+            )
             metrics = classify_metrics(
                 initial=initial_by_test[name],
                 confirmation=confirmation_by_test.get(name, {}),
                 third_round=third_by_test.get(name, {}),
+                fourth_round=fourth_by_test.get(name, {}),
                 regression_threshold=args.regression_threshold,
                 improvement_threshold=args.improvement_threshold,
             )
@@ -695,8 +797,12 @@ def main() -> int:
                 "third_blocks": (
                     args.confirmation_blocks if third_metrics else 0
                 ),
+                "fourth_blocks": (
+                    args.confirmation_blocks if fourth_metrics else 0
+                ),
                 "confirmed_metrics": sorted(second_metrics),
                 "third_round_metrics": sorted(third_metrics),
+                "fourth_round_metrics": sorted(fourth_metrics),
                 "metrics": metrics,
             }
     except (KeyError, RuntimeError, ValueError) as exc:
@@ -704,7 +810,7 @@ def main() -> int:
         return 2
 
     document = {
-        "schema_version": 3,
+        "schema_version": 4,
         "created_at": datetime.now(timezone.utc).isoformat(),
         "platform": args.platform,
         "engine": args.engine,

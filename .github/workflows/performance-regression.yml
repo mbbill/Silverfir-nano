@@ -18,7 +18,7 @@ on:
         default: false
         type: boolean
       blocks:
-        description: "Initial ABBA blocks; each block contains two paired runs"
+        description: "Initial alternating blocks; each block has two A/B pairs"
         required: true
         default: "3"
         type: choice
@@ -178,9 +178,10 @@ jobs:
             echo
             echo "- baseline: \`$baseline\`"
             echo "- candidate: \`$candidate\`"
-            echo "- initial ABBA blocks: \`$blocks\`"
-            echo "- follow-up ABBA blocks: \`1\` per round"
-            echo "- regression rounds: up to \`3\`"
+            echo "- initial alternating blocks: \`$blocks\`"
+            echo "- follow-up alternating blocks: \`1\` per round"
+            echo "- order: \`ABAB / BABA\` alternating"
+            echo "- regression rounds: up to \`4\`"
             echo "- improvement rounds: up to \`2\`"
             echo "- regression threshold: \`1%\`"
             echo "- improvement threshold: \`3%\`"
@@ -323,7 +324,7 @@ jobs:
           build_one baseline baseline
           build_one . candidate
 
-      - name: Compare performance (ABBA)
+      - name: Compare performance (alternating A/B)
         env:
           BASELINE_SHA: ${{ needs.prepare.outputs.baseline }}
           CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate }}
