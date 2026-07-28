@@ -46,4 +46,4 @@ mod predecode;
 pub use exec::{FuncRefHost, InterpInstance};
 // The slot encoding is the boundary contract: `vm::instance` converts host
 // `Value::Ref`s with the same two functions the engine uses internally.
-pub(crate) use exec::{ref_to_slot, slot_to_ref};
+pub(crate) use exec::{raw_to_value_for_interp, value_to_raw_for_interp};

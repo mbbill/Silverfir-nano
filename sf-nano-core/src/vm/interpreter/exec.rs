@@ -417,7 +417,7 @@ fn op_counts(table: &[u64]) -> Vec<(Op, u64)> {
 /// mul. `globals` is what has been initialized so far, which is exactly
 /// what `global.get` is allowed to reach in a constant expression.
 /// A numeric `Value` as the raw 64-bit slot this engine stores.
-fn value_to_raw_for_interp(v: &Value) -> Result<u64, WasmError> {
+pub(crate) fn value_to_raw_for_interp(v: &Value) -> Result<u64, WasmError> {
     Ok(match v {
         Value::I32(x) => *x as u32 as u64,
         Value::I64(x) => *x as u64,
@@ -428,7 +428,7 @@ fn value_to_raw_for_interp(v: &Value) -> Result<u64, WasmError> {
     })
 }
 
-fn raw_to_value_for_interp(raw: u64, ty: ValueType) -> Result<Value, WasmError> {
+pub(crate) fn raw_to_value_for_interp(raw: u64, ty: ValueType) -> Result<Value, WasmError> {
     Ok(match ty {
         ValueType::I32 => Value::I32(raw as u32 as i32),
         ValueType::I64 => Value::I64(raw as i64),
