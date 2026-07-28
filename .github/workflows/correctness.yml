@@ -26,12 +26,15 @@ jobs:
           components: rustfmt
 
       - name: Test CI implementation
+        if: ${{ always() && !cancelled() }}
         run: python3 -m unittest discover -s ci -p 'test_*.py'
 
       - name: Enforce lint suppression policy
+        if: ${{ always() && !cancelled() }}
         run: python3 -m ci.lint_policy
 
       - name: Check Rust formatting
+        if: ${{ always() && !cancelled() }}
         run: cargo fmt --all -- --check
 
   platform:

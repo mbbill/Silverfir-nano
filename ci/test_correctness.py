@@ -214,6 +214,16 @@ class CoveragePlanTests(unittest.TestCase):
         self.assertNotIn("scripts/check.py", workflow)
         self.assertIn("unittest discover -s ci -p 'test_*.py'", workflow)
         self.assertIn("if: ${{ always() && !cancelled() }}", workflow)
+        for step in (
+            "Test CI implementation",
+            "Enforce lint suppression policy",
+            "Check Rust formatting",
+        ):
+            self.assertRegex(
+                workflow,
+                rf"- name: {re.escape(step)}\s+"
+                r"if: \$\{\{ always\(\) && !cancelled\(\) \}\}",
+            )
         for platform in ("armv7-linux", "riscv64-linux", "riscv32-linux"):
             self.assertIn(f"platform: cross-{platform}", workflow)
         self.assertNotIn("x86_64-pc-windows-gnu", workflow)
