@@ -172,9 +172,10 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 8; i++) printf("%02x", hash[i]);
     printf("...\n");
 
-    double rate = bench_ramp(hash_batch, 0, bench_target(argc, argv), 0);
+    bench_result result = bench_run(hash_batch, 0, argc, argv);
+    if (result.n == 0) return 2;
     printf("sha256: throughput = %.2f MB/s\n",
-           rate * (double)DATA_SIZE / (1024.0 * 1024.0));
+           result.rate * (double)DATA_SIZE / (1024.0 * 1024.0));
 
     free(g_input);
     return 0;

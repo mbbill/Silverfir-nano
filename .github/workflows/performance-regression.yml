@@ -163,6 +163,11 @@ jobs:
               if dev_only and not platform["dev"]:
                   continue
               row = {key: value for key, value in platform.items() if key != "dev"}
+              row["mode"] = (
+                  "correctness"
+                  if platform["runner_prefix"]
+                  else "performance"
+              )
               for engine in ("jit", "interp"):
                   include.append(dict(row, engine=engine))
           print(json.dumps({"include": include}, separators=(",", ":")))
@@ -324,13 +329,14 @@ jobs:
           build_one baseline baseline
           build_one . candidate
 
-      - name: Compare performance (alternating A/B)
+      - name: Run benchmark suite
         env:
           BASELINE_SHA: ${{ needs.prepare.outputs.baseline }}
           CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate }}
           BLOCKS: ${{ needs.prepare.outputs.blocks }}
           ENGINE: ${{ matrix.engine }}
           PLATFORM: ${{ matrix.platform }}
+          MODE: ${{ matrix.mode }}
           RUNNER_PREFIX: ${{ matrix.runner_prefix }}
           EXE: ${{ matrix.exe }}
         run: |
@@ -352,11 +358,8 @@ jobs:
           if [[ -n "$RUNNER_PREFIX" ]]; then
             args+=(--runner-prefix "$RUNNER_PREFIX")
           fi
-          if [[ "$PLATFORM" == "riscv32" ]]; then
-            # STREAM's gettimeofday path reports zero-duration samples
-            # under qemu-riscv32 and therefore prints infinite bandwidth.
-            # The other ten benchmarks still provide usable measurements.
-            args+=(--exclude stream/stream.wasm)
+          if [[ "$MODE" == "correctness" ]]; then
+            args+=(--correctness-only)
           fi
           status=0
           python3 "${args[@]}" || status=$?

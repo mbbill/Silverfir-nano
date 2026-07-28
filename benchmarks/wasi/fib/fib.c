@@ -23,7 +23,8 @@ static void fib_batch(long n, void *ctx) {
 int main(int argc, char **argv) {
     /* Validation: fixed small case, independent of the timed workload. */
     printf("fib(20) = %d\n", fib(20));
-    double rate = bench_ramp(fib_batch, 0, bench_target(argc, argv), 0);
-    printf("fib: rate = %.2f fib27/s\n", rate);
+    bench_result result = bench_run(fib_batch, 0, argc, argv);
+    if (result.n == 0) return 2;
+    printf("fib: rate = %.2f fib27/s\n", result.rate);
     return 0;
 }

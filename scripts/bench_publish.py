@@ -68,8 +68,8 @@ METRIC_EXTRACTORS = {
         ("stream-Add", r"Add:\s*([\d.]+)", "MB/s", "higher"),
         ("stream-Triad", r"Triad:\s*([\d.]+)", "MB/s", "higher"),
     ],
-    "sqlite/speedtest1.wasm": [
-        ("sqlite", r"^([\d.]+)\s*size/s", "size/s", "higher"),
+    "sqlite/sqlite_bench.wasm": [
+        ("sqlite", r"^([\d.]+)\s*iteration/s", "iteration/s", "higher"),
     ],
 }
 

@@ -62,6 +62,111 @@ def command_for(binary: Path, runner_prefix: str, engine: str) -> tuple[str, lis
     return runner, prefix[1:] + [str(binary)] + engine_args
 
 
+def run_correctness_suite(
+    *,
+    baseline_command: tuple[str, list[str]],
+    candidate_command: tuple[str, list[str]],
+    selected_tests: list[dict[str, Any]],
+    time_target: float,
+    platform: str,
+    engine: str,
+    baseline_sha: str,
+    candidate_sha: str,
+    out_dir: Path,
+) -> int:
+    """Run every benchmark once on A and B and validate its fixed oracle.
+
+    This mode is intended for emulated architectures. It executes the same
+    benchmark programs as performance mode, but records no A/B delta and
+    applies no performance threshold.
+    """
+    results: dict[str, Any] = {}
+    failed = False
+    commands = {
+        "baseline": baseline_command,
+        "candidate": candidate_command,
+    }
+
+    for index, test in enumerate(selected_tests, 1):
+        name = test["name"]
+        print(f"[correctness {index}/{len(selected_tests)}] {name}", flush=True)
+        test_results: dict[str, Any] = {}
+        for version in ("baseline", "candidate"):
+            cli, cli_extra = commands[version]
+            try:
+                _, status, metric, elapsed = run_tests.run_test(
+                    cli,
+                    test,
+                    cli_extra,
+                    time_target=time_target,
+                    correctness_only=True,
+                )
+            except Exception as exc:
+                status = "FAIL"
+                metric = str(exc)
+                elapsed = None
+            if status != "PASS":
+                failed = True
+            test_results[version] = {
+                "status": status,
+                "metric": metric,
+                "elapsed_seconds": elapsed,
+            }
+            print(
+                f"  {version}: {status} "
+                f"({elapsed:.3f}s) {metric}"
+                if elapsed is not None
+                else f"  {version}: {status} {metric}",
+                flush=True,
+            )
+        results[name] = test_results
+
+    document = {
+        "schema_version": 1,
+        "mode": "correctness",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+        "platform": platform,
+        "engine": engine,
+        "baseline_sha": baseline_sha,
+        "candidate_sha": candidate_sha,
+        "target_seconds": time_target,
+        "tests": results,
+    }
+    (out_dir / "correctness.json").write_text(
+        json.dumps(document, indent=2) + "\n",
+        encoding="utf-8",
+        newline="\n",
+    )
+
+    lines = [
+        f"## Benchmark correctness: {platform} / {engine}",
+        "",
+        f"`{baseline_sha or 'baseline'}` → `{candidate_sha or 'candidate'}`",
+        "",
+        "| Benchmark | Baseline | Candidate |",
+        "| --- | --- | --- |",
+    ]
+    for name, test_results in results.items():
+        baseline_status = test_results["baseline"]["status"]
+        candidate_status = test_results["candidate"]["status"]
+        lines.append(
+            f"| {name} | {baseline_status} | {candidate_status} |"
+        )
+    lines.extend([
+        "",
+        "> QEMU jobs validate benchmark outputs only. Performance deltas are "
+        "intentionally not calculated or gated.",
+        "",
+    ])
+    summary = "\n".join(lines)
+    (out_dir / "summary.md").write_text(
+        summary, encoding="utf-8", newline="\n"
+    )
+    print()
+    print(summary)
+    return 1 if failed else 0
+
+
 def run_once(
     *,
     version: str,
@@ -564,6 +669,11 @@ def main() -> int:
         ),
     )
     parser.add_argument("--out-dir", required=True, type=Path)
+    parser.add_argument(
+        "--correctness-only",
+        action="store_true",
+        help="Run every selected benchmark once on A and B without deltas",
+    )
     args = parser.parse_args()
 
     if args.time <= 0:
@@ -618,6 +728,19 @@ def main() -> int:
         parser.error(str(exc))
 
     args.out_dir.mkdir(parents=True, exist_ok=True)
+
+    if args.correctness_only:
+        return run_correctness_suite(
+            baseline_command=baseline_command,
+            candidate_command=candidate_command,
+            selected_tests=selected_tests,
+            time_target=args.time,
+            platform=args.platform,
+            engine=args.engine,
+            baseline_sha=args.baseline_sha,
+            candidate_sha=args.candidate_sha,
+            out_dir=args.out_dir,
+        )
 
     if args.warmup_time:
         print(

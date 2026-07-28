@@ -506,14 +506,12 @@ end
 ---------------------------------------------------------------------------
 -- The time budget is the LAST argument (see bench.lua); an optional N_USERS
 -- may precede it.
-local TIME_BUDGET = (arg and #arg > 0 and tonumber(arg[#arg]))
-    or tonumber(os.getenv("BENCH_TIME")) or 2
+local TIME_BUDGET = (arg and #arg > 0 and tonumber(arg[#arg])) or 2
 
 -- Shared timer. os.clock() returns 0 on some WASI runtimes (wasmtime 47),
 -- leaving only whole seconds; bench.align() puts the start of a measurement
 -- on a tick edge so a coarse clock is still accurate (see bench.lua).
 local bench = dofile("bench.lua")
-local gettime = bench.now
 
 local decode = newdecoder()
 local encode = newencoder()
@@ -525,48 +523,28 @@ local data = generate_data(N_USERS)
 
 local json_str = encode(data)
 print(string.format("JSON size: %d bytes (%.1f KB)", #json_str, #json_str / 1024))
+local validation = decode(json_str, 1)
+assert(validation.total_count == N_USERS)
+assert(#validation.users == N_USERS)
+assert(validation.users[1].id == data.users[1].id)
+assert(validation.users[1].username == data.users[1].username)
+print("JSON roundtrip validates")
 
 -- Run round-trips until time budget is exhausted.
 -- Check time every `batch` iterations to amortize gettime() overhead.
-print(string.format("Running for ~%.1fs...\n", TIME_BUDGET))
+print(string.format("Target time:   %.1fs\n", TIME_BUDGET))
 
-local t_start = bench.align()
 local total_bytes = 0
-local iters_done = 0
-local batch = 1
-
--- Calibrate the check interval. Scaled to the budget: a fixed cost here
--- would dominate the whole run at a small target.
-local t0 = bench.align()
-while true do
-    for _ = 1, batch do
-        local obj = decode(json_str, 1)
-        encode(obj)
-    end
-    iters_done = iters_done + batch
-    total_bytes = total_bytes + batch * (#json_str + #json_str)
-    if gettime() - t0 >= TIME_BUDGET / 8 then break end
-    batch = batch * 2
-end
--- `batch` now covers about an eighth of the budget; use it as the interval
-local check_interval = math.max(1, math.floor(batch / 2))
-
--- Main loop
-t_start = bench.align()
-iters_done = 0
-total_bytes = 0
-
-while true do
-    for _ = 1, check_interval do
+local function batch(n)
+    total_bytes = 0
+    for _ = 1, n do
         local obj = decode(json_str, 1)
         local out = encode(obj)
         total_bytes = total_bytes + #json_str + #out
     end
-    iters_done = iters_done + check_interval
-    if gettime() - t_start >= TIME_BUDGET then break end
 end
 
-local elapsed = gettime() - t_start
+local _, iters_done, elapsed = bench.run(batch, TIME_BUDGET)
 
 print("=== JSON Benchmark Results ===")
 print(string.format("Round-trips:    %d", iters_done))
