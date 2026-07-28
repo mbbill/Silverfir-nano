@@ -17,12 +17,10 @@ path = "src/main.rs"
 default = ["jit", "interp"]
 jit = ["sf-nano-core/jit", "sf-nano-core/guard-pages"]
 interp = ["sf-nano-core/interp"]
-call-trace = ["sf-nano-core/call-trace"]
+# This is a CLI capability, not a pass-through: it installs the tracked
+# global allocator and adds the HTML report writer below. Core-only
+# diagnostics are selected as `sf-nano-core/<feature>` at the Cargo CLI.
 memprof = ["sf-nano-core/memprof", "dep:tracked_alloc", "dep:memprof_report"]
-# Pass-through of sf-nano-core's thumb2-test. Enables emitting Thumb-2 JIT
-# code under sf_backend_armv7a for validation via the existing armv7-linux
-# qemu harness against cortex-a15. See sf-nano-core/Cargo.toml.
-thumb2-test = ["sf-nano-core/thumb2-test"]
 
 [dependencies]
 sf-nano-core = { path = "../sf-nano-core", default-features = false, features = [

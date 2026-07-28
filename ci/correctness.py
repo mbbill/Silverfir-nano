@@ -83,7 +83,7 @@ CROSS_PLATFORMS = {
         target="armv7-unknown-linux-musleabihf",
         qemu="qemu-arm-static",
         cpu="cortex-a15",
-        jit_variants=(("armv7a", ""), ("armv7m", "thumb2-test")),
+        jit_variants=(("armv7a", ""), ("armv7m", "sf-nano-core/thumb2-test")),
     ),
     "riscv64": CrossPlatform(
         name="riscv64",
@@ -228,8 +228,8 @@ def run_host_feature_matrix(runner: Runner) -> None:
     #
     # Default features are already compiled and tested by
     # run_host_builds_and_tests(). The three engine configurations below are
-    # the independently shipped boundaries. Diagnostics such as ir-dump,
-    # jitdump, call-trace, interp-count, and memprof are development aids:
+    # the independently shipped boundaries. Diagnostics such as jit-debug,
+    # call-trace, interp-count, and memprof are development aids:
     # compile them together once rather than manufacturing pairwise
     # combinations that users do not ship.
     for package in ("sf-nano-core", "sf-nano-cli"):

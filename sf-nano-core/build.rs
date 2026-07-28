@@ -46,7 +46,7 @@
 //
 // Feature → cfg mapping:
 //   (derived)      → sf_has_std          (set whenever any feature that needs libstd is on:
-//                                          wasi, call-trace, guard-pages)
+//                                          wasi, call-trace, guard-pages, jit-debug)
 //   (derived)      → sf_has_guard_pages  (guard-pages + jit + native 64-bit backend + supported OS)
 //   (derived)      → sf_has_debug_regions (set when any consumer of DebugRegion is compiled
 //                                          in: sf_ir_dump or sf_jitdump)
@@ -56,9 +56,8 @@
 //   wasi           → sf_wasi_host
 //   validator      → sf_module_validator
 //   call-trace     → sf_call_trace
-//   ir-dump        → sf_ir_dump          (also auto-on when PROFILE=debug; requires std)
-//   jitdump        → sf_jitdump          (emits JIT symbol/code info for external profilers
-//                                          like samply/perf; requires jit + std)
+//   jit-debug      → sf_ir_dump + sf_jitdump
+//                    (IR dump is also auto-on when PROFILE=debug; both require std)
 //
 // There is no user-facing `std` feature. libstd availability is derived from
 // whichever std-requiring feature the user selected, not requested directly.
@@ -450,11 +449,12 @@ fn has_std_enabled() -> bool {
     env::var_os("CARGO_FEATURE_WASI").is_some()
         || env::var_os("CARGO_FEATURE_CALL_TRACE").is_some()
         || env::var_os("CARGO_FEATURE_GUARD_PAGES").is_some()
+        || env::var_os("CARGO_FEATURE_JIT_DEBUG").is_some()
 }
 
 fn compute_want_ir_dump() -> bool {
-    // ir-dump is a dev-tool feature: always on in debug builds, opt-in for
-    // release builds via the `ir-dump` feature.
+    // IR dumping is always on in hosted debug builds and opt-in for release
+    // builds through the shared `jit-debug` observability feature.
     //
     // Requires: `jit` (the dumper inspects JIT-only IR/Machine types) AND a
     // feature that pulls in libstd (the dumper writes files). If the build
@@ -471,16 +471,16 @@ fn compute_want_ir_dump() -> bool {
         return false;
     }
     let is_debug_profile = env::var("PROFILE").as_deref() == Ok("debug");
-    env::var_os("CARGO_FEATURE_IR_DUMP").is_some() || is_debug_profile
+    env::var_os("CARGO_FEATURE_JIT_DEBUG").is_some() || is_debug_profile
 }
 
 fn compute_want_jitdump() -> bool {
     // Emits jitdump records so external profilers (samply, perf) can resolve
     // JIT-compiled code regions to symbols. Not a profiler itself — just the
     // exporter side. Requires jit (there's no JIT code without it) and libstd
-    // (it writes files). Opt-in via the `jitdump` feature; not auto-enabled
+    // (it writes files). Opt-in via the `jit-debug` feature; not auto-enabled
     // in debug builds because it is primarily a release-profile tool.
-    if env::var_os("CARGO_FEATURE_JITDUMP").is_none() {
+    if env::var_os("CARGO_FEATURE_JIT_DEBUG").is_none() {
         return false;
     }
     if env::var_os("CARGO_FEATURE_JIT").is_none() {

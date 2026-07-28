@@ -483,7 +483,11 @@ mod tests {
     #[test]
     fn tail_call_entry_replaces_active_trace_frame() {
         let _guard = TraceTestGuard::new();
-        let mut store = Store::new(ModuleInst::new(String::from("m"), TypeContext::empty()));
+        let mut store = Store::new(ModuleInst::new(
+            crate::config::Config::new(),
+            String::from("m"),
+            TypeContext::empty(),
+        ));
         let n_globals = store.module().globals.len();
         let mut ctx =
             NativeContext::new((&mut store) as *mut Store, core::ptr::null_mut(), n_globals);
