@@ -39,6 +39,9 @@ jobs:
     name: resolve refs and build dev branch
     runs-on: ubuntu-latest
     timeout-minutes: 20
+    # Dev failures stay visible in logs but must not trigger failure email.
+    # They are action-required soft failures, not successful validation.
+    continue-on-error: ${{ startsWith(github.ref, 'refs/heads/dev/') }}
     outputs:
       baseline: ${{ steps.refs.outputs.baseline }}
       candidate: ${{ steps.refs.outputs.candidate }}
@@ -176,13 +179,15 @@ jobs:
             echo "- baseline: \`$baseline\`"
             echo "- candidate: \`$candidate\`"
             echo "- initial ABBA blocks: \`$blocks\`"
-            echo "- confirmation ABBA blocks: \`1\` (only initial regressions)"
+            echo "- follow-up ABBA blocks: \`1\` per round"
+            echo "- regression rounds: up to \`3\`"
+            echo "- improvement rounds: up to \`2\`"
             echo "- regression threshold: \`1%\`"
-            echo "- improvement marker: \`3%\`"
+            echo "- improvement threshold: \`3%\`"
             echo "- calibration: \`$calibration\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      - name: Validate two-stage performance gate
+      - name: Validate staged performance gate
         run: python3 -m unittest scripts.test_bench_compare
 
       - uses: dtolnay/rust-toolchain@1.97.0
@@ -197,11 +202,26 @@ jobs:
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')
         run: cargo build --workspace
 
+      - name: Mark dev soft-fail as action required
+        if: failure() && startsWith(github.ref, 'refs/heads/dev/')
+        run: |
+          {
+            echo "## Dev CI soft-fail"
+            echo
+            echo "> [!CAUTION]"
+            echo "> **ACTION REQUIRED.** Email is suppressed for dev branches,"
+            echo "> but a preceding step failed. This is not a passing result."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=Dev CI soft-fail::Action required; this run did not pass."
+
   compare:
     name: ${{ matrix.platform }} / ${{ matrix.engine }}
     needs: prepare
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 50
+    # See CLAUDE.md and AGENTS.md: this suppresses dev failure email only.
+    # A failed dev job still requires correction.
+    continue-on-error: ${{ startsWith(github.ref, 'refs/heads/dev/') }}
     strategy:
       fail-fast: false
       # prepare emits eight native rows for dev/** and fourteen rows for
@@ -337,8 +357,15 @@ jobs:
             # The other ten benchmarks still provide usable measurements.
             args+=(--exclude stream/stream.wasm)
           fi
-          python3 "${args[@]}"
-          cat "perf-output/${ENGINE}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          status=0
+          python3 "${args[@]}" || status=$?
+          if [[ -f "perf-output/${ENGINE}/summary.md" ]]; then
+            cat "perf-output/${ENGINE}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ "$status" -ne 0 && "$GITHUB_REF" == refs/heads/dev/* ]]; then
+            echo "::warning title=Dev performance soft-fail::Action required; see the job summary and artifact."
+          fi
+          exit "$status"
 
       - uses: actions/upload-artifact@v4
         if: always()
@@ -347,3 +374,14 @@ jobs:
           path: perf-output/${{ matrix.engine }}/
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Mark dev soft-fail as action required
+        if: failure() && startsWith(github.ref, 'refs/heads/dev/')
+        run: |
+          {
+            echo
+            echo "> [!CAUTION]"
+            echo "> **SOFT-FAIL — ACTION REQUIRED.** Email is suppressed for"
+            echo "> dev branches, but a preceding step failed. This is not a pass."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=Dev CI soft-fail::Action required; this job did not pass."
