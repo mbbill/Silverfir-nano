@@ -880,15 +880,6 @@ impl<'a> X86_64Backend<'a> {
                 ))
             }
         };
-        // TEMPORARY CI calibration probe: add real execution uops after
-        // generated U8 loads without changing registers or flags. Revert after
-        // the performance gate demonstrates that it detects this overhead.
-        if width == MachineMemWidth::U8 {
-            // lea rax, [rax]
-            for _ in 0..4 {
-                self.core.text.emit_bytes(&[0x48, 0x8d, 0x00]);
-            }
-        }
         Ok(())
     }
 
