@@ -18,6 +18,7 @@ Original Author: Shay Gal-on
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include "coremark.h"
 #if CALLGRIND_RUN
 #include <valgrind/callgrind.h>
@@ -200,6 +201,8 @@ time_in_secs(CORE_TICKS ticks)
 #endif /* SAMPLE_TIME_IMPLEMENTATION */
 
 ee_u32 default_num_contexts = MULTITHREAD;
+ee_f32 coremark_target_seconds = 0.0;
+ee_u8  coremark_target_seconds_invalid = 0;
 
 /* Function: portable_init
         Target specific initialization code
@@ -208,6 +211,10 @@ ee_u32 default_num_contexts = MULTITHREAD;
 void
 portable_init(core_portable *p, int *argc, char *argv[])
 {
+    static const char target_prefix[] = "--target-seconds=";
+    int               target_seen = 0;
+    int               arg_index;
+
 #if PRINT_ARGS
     int i;
     for (i = 0; i < *argc; i++)
@@ -216,9 +223,46 @@ portable_init(core_portable *p, int *argc, char *argv[])
     }
 #endif
 
-    (void)argc; // prevent unused warning
-    (void)argv; // prevent unused warning
-    
+    /*
+     * This is a port-specific extension, so consume it before CoreMark parses
+     * its positional seed and iteration arguments. With no such option the
+     * upstream command-line contract is unchanged.
+     */
+    for (arg_index = 1; arg_index < *argc;)
+    {
+        if (strncmp(argv[arg_index],
+                    target_prefix,
+                    sizeof(target_prefix) - 1)
+            == 0)
+        {
+            char  *end;
+            ee_f32 value = strtod(
+                argv[arg_index] + sizeof(target_prefix) - 1, &end);
+            int shift_index;
+
+            if (target_seen || *end != '\0' || !(value > 0.0)
+                || !(value < 1.0e9))
+            {
+                ee_printf(
+                    "ERROR! --target-seconds must appear once with a "
+                    "positive finite value.\n");
+                coremark_target_seconds_invalid = 1;
+            }
+            else
+            {
+                coremark_target_seconds = value;
+            }
+            target_seen = 1;
+
+            for (shift_index = arg_index; shift_index + 1 < *argc;
+                 shift_index++)
+                argv[shift_index] = argv[shift_index + 1];
+            --*argc;
+            continue;
+        }
+        arg_index++;
+    }
+
     if (sizeof(ee_ptr_int) != sizeof(ee_u8 *))
     {
         ee_printf(

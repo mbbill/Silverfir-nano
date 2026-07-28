@@ -85,6 +85,75 @@ ee_s32 get_seed_32(int i);
 ee_u8 static_memblk[TOTAL_DATA_SIZE];
 #endif
 char *mem_name[3] = { "Static", "Heap", "Stack" };
+
+#if HAS_FLOAT
+#define COREMARK_MIN_PROBE_SECONDS 0.001
+#define COREMARK_MAX_ITERATIONS    ((ee_u32)1 << 28)
+
+/*
+ * Estimate an iteration count from a short probe, then leave the caller to
+ * perform a fresh timed run. Only the fresh run is reported as the benchmark
+ * sample; calibration time never contributes to Iterations/Sec.
+ */
+static ee_u32
+calibrate_for_target(core_results *result, ee_f32 target_seconds)
+{
+    ee_f32 probe_target = target_seconds / 8.0;
+    ee_u32 iterations   = 1;
+
+    if (probe_target < COREMARK_MIN_PROBE_SECONDS)
+        probe_target = COREMARK_MIN_PROBE_SECONDS;
+
+    for (;;)
+    {
+        ee_f32 elapsed;
+        ee_u32 next;
+
+        result->iterations = iterations;
+        start_time();
+        iterate(result);
+        stop_time();
+        elapsed = time_in_secs(get_time());
+
+        if (elapsed >= probe_target
+            || iterations >= COREMARK_MAX_ITERATIONS)
+        {
+            ee_f32 estimate;
+
+            if (elapsed <= 0.0)
+                return iterations;
+            estimate = (ee_f32)iterations * target_seconds / elapsed;
+            if (estimate < 1.0)
+                return 1;
+            if (estimate >= (ee_f32)COREMARK_MAX_ITERATIONS)
+                return COREMARK_MAX_ITERATIONS;
+            return (ee_u32)(estimate + 0.5);
+        }
+
+        if (elapsed < COREMARK_MIN_PROBE_SECONDS)
+        {
+            next = iterations <= COREMARK_MAX_ITERATIONS / 8
+                       ? iterations * 8
+                       : COREMARK_MAX_ITERATIONS;
+        }
+        else
+        {
+            ee_f32 estimate
+                = (ee_f32)iterations * probe_target * 1.05 / elapsed;
+            next = estimate >= (ee_f32)COREMARK_MAX_ITERATIONS
+                       ? COREMARK_MAX_ITERATIONS
+                       : (ee_u32)estimate;
+            if (iterations <= COREMARK_MAX_ITERATIONS / 8
+                && next > iterations * 8)
+                next = iterations * 8;
+            if (next <= iterations)
+                next = iterations + 1;
+        }
+        iterations = next;
+    }
+}
+#endif
+
 /* Function: main
         Main entry routine for the benchmark.
         This function is responsible for the following steps:
@@ -125,6 +194,11 @@ main(int argc, char *argv[])
 #endif
     /* first call any initializations needed */
     portable_init(&(results[0].port), &argc, argv);
+    if (coremark_target_seconds_invalid)
+    {
+        portable_fini(&(results[0].port));
+        return MAIN_RETURN_VAL;
+    }
     /* First some checks to make sure benchmark will run ok */
     if (sizeof(struct list_head_s) > 128)
     {
@@ -238,8 +312,30 @@ for (i = 0; i < MULTITHREAD; i++)
         }
     }
 
+    if (coremark_target_seconds > 0.0 && results[0].iterations != 0)
+    {
+        ee_printf(
+            "ERROR! --target-seconds requires automatic iterations "
+            "(iteration argument 0 or omitted).\n");
+#if (MEM_METHOD == MEM_MALLOC)
+        for (i = 0; i < MULTITHREAD; i++)
+            portable_free(results[i].memblock[0]);
+#endif
+        portable_fini(&(results[0].port));
+        return MAIN_RETURN_VAL;
+    }
     /* automatically determine number of iterations if not set */
-    if (results[0].iterations == 0)
+    if (coremark_target_seconds > 0.0)
+    {
+#if HAS_FLOAT
+        results[0].iterations
+            = calibrate_for_target(&results[0], coremark_target_seconds);
+#else
+        ee_printf("ERROR! --target-seconds requires floating-point support.\n");
+        return MAIN_RETURN_VAL;
+#endif
+    }
+    else if (results[0].iterations == 0)
     {
         secs_ret secs_passed = 0;
         ee_u32   divisor;
@@ -358,6 +454,10 @@ for (i = 0; i < MULTITHREAD; i++)
     ee_printf("CoreMark Size    : %lu\n", (long unsigned)results[0].size);
     ee_printf("Total ticks      : %lu\n", (long unsigned)total_time);
 #if HAS_FLOAT
+    if (coremark_target_seconds > 0.0)
+        ee_printf(
+            "Regression target : %f secs (non-standard CoreMark run)\n",
+            coremark_target_seconds);
     ee_printf("Total time (secs): %f\n", time_in_secs(total_time));
     if (time_in_secs(total_time) > 0)
         ee_printf("Iterations/Sec   : %f\n",
@@ -370,7 +470,15 @@ for (i = 0; i < MULTITHREAD; i++)
                   default_num_contexts * results[0].iterations
                       / time_in_secs(total_time));
 #endif
-    if (time_in_secs(total_time) < 10)
+    if (coremark_target_seconds > 0.0
+        && time_in_secs(total_time) < coremark_target_seconds * 0.5)
+    {
+        ee_printf(
+            "ERROR! Calibrated run was less than half its requested target!\n");
+        total_errors++;
+    }
+    else if (coremark_target_seconds == 0.0
+             && time_in_secs(total_time) < 10)
     {
         ee_printf(
             "ERROR! Must execute for at least 10 secs for a valid result!\n");
@@ -404,7 +512,7 @@ for (i = 0; i < MULTITHREAD; i++)
             "Correct operation validated. See README.md for run and reporting "
             "rules.\n");
 #if HAS_FLOAT
-        if (known_id == 3)
+        if (known_id == 3 && coremark_target_seconds == 0.0)
         {
             ee_printf("CoreMark 1.0 : %f / %s %s",
                       default_num_contexts * results[0].iterations

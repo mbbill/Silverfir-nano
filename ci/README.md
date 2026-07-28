@@ -55,8 +55,11 @@ ratios:
   signals observed incidentally while rerunning a multi-metric benchmark are
   ignored.
 
-CoreMark keeps the official EEMBC command line and 10-second-minimum measured
-interval. The requested duration applies to the other self-timing benchmarks.
+The requested duration applies to every benchmark. In CI, CoreMark uses its
+explicit `--target-seconds` regression mode, which calibrates separately from
+the reported sample and labels the result non-standard. A bare CoreMark
+invocation remains unchanged and keeps the official EEMBC
+10-second-minimum measured interval.
 
 If `ci.performance_build` records byte-identical baseline and candidate
 executables, the run is an implicit drift calibration: measurements still

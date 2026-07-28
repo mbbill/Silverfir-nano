@@ -249,6 +249,14 @@ typedef size_t         ee_size_t;
 */
 extern ee_u32 default_num_contexts;
 
+/*
+ * A non-zero value requests the Silverfir regression-harness timing mode.
+ * The normal CoreMark command line leaves this at zero and retains the
+ * upstream 10-second-minimum calibration and reporting rules.
+ */
+extern ee_f32 coremark_target_seconds;
+extern ee_u8  coremark_target_seconds_invalid;
+
 #if (MULTITHREAD > 1)
 #if USE_PTHREAD
 #include <pthread.h>
