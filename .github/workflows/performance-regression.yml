@@ -44,6 +44,7 @@ jobs:
       candidate: ${{ steps.refs.outputs.candidate }}
       blocks: ${{ steps.refs.outputs.blocks }}
       calibration: ${{ steps.refs.outputs.calibration }}
+      matrix: ${{ steps.refs.outputs.matrix }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -88,10 +89,87 @@ jobs:
           fi
 
           blocks="${INPUT_BLOCKS:-1}"
+          matrix="$(python3 - <<'PY'
+          import json
+          import os
+
+          platforms = [
+              {
+                  "platform": "x64-linux",
+                  "runner": "ubuntu-latest",
+                  "target": "",
+                  "runner_prefix": "",
+                  "exe": "",
+                  "dev": True,
+              },
+              {
+                  "platform": "arm64-linux",
+                  "runner": "ubuntu-24.04-arm",
+                  "target": "",
+                  "runner_prefix": "",
+                  "exe": "",
+                  "dev": True,
+              },
+              {
+                  "platform": "arm64-darwin",
+                  "runner": "macos-14",
+                  "target": "",
+                  "runner_prefix": "",
+                  "exe": "",
+                  "dev": True,
+              },
+              {
+                  "platform": "x64-windows",
+                  "runner": "windows-latest",
+                  "target": "",
+                  "runner_prefix": "",
+                  "exe": ".exe",
+                  "dev": True,
+              },
+              {
+                  "platform": "armv7-a",
+                  "runner": "ubuntu-latest",
+                  "target": "armv7-unknown-linux-musleabihf",
+                  "runner_prefix": "qemu-arm-static -cpu cortex-a15",
+                  "exe": "",
+                  "dev": False,
+              },
+              {
+                  "platform": "riscv64",
+                  "runner": "ubuntu-latest",
+                  "target": "riscv64gc-unknown-linux-musl",
+                  "runner_prefix": "qemu-riscv64-static",
+                  "exe": "",
+                  "dev": False,
+              },
+              {
+                  "platform": "riscv32",
+                  "runner": "ubuntu-latest",
+                  "target": "riscv32gc-unknown-linux-musl",
+                  "runner_prefix": "qemu-riscv32-static",
+                  "exe": "",
+                  "dev": False,
+              },
+          ]
+          dev_only = (
+              os.environ["GITHUB_EVENT_NAME"] == "push"
+              and os.environ["GITHUB_REF"].startswith("refs/heads/dev/")
+          )
+          include = []
+          for platform in platforms:
+              if dev_only and not platform["dev"]:
+                  continue
+              row = {key: value for key, value in platform.items() if key != "dev"}
+              for engine in ("jit", "interp"):
+                  include.append(dict(row, engine=engine))
+          print(json.dumps({"include": include}, separators=(",", ":")))
+          PY
+          )"
           echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
           echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
           echo "blocks=$blocks" >> "$GITHUB_OUTPUT"
           echo "calibration=$calibration" >> "$GITHUB_OUTPUT"
+          echo "matrix=$matrix" >> "$GITHUB_OUTPUT"
           {
             echo "### Performance comparison"
             echo
@@ -120,58 +198,10 @@ jobs:
     timeout-minutes: 50
     strategy:
       fail-fast: false
-      matrix:
-        platform:
-          - x64-linux
-          - arm64-linux
-          - arm64-darwin
-          - x64-windows
-          - armv7-a
-          - riscv64
-          - riscv32
-        engine:
-          - jit
-          - interp
-        # QEMU targets are valuable coverage but dominate the feedback
-        # loop. dev/** keeps the complete suite on four native hosted
-        # platforms; PR, main, and manual runs retain the extended targets.
-        exclude: ${{ fromJSON(github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/') && '[{"platform":"armv7-a"},{"platform":"riscv64"},{"platform":"riscv32"}]' || '[]') }}
-        include:
-          - platform: x64-linux
-            runner: ubuntu-latest
-            target: ""
-            runner_prefix: ""
-            exe: ""
-          - platform: arm64-linux
-            runner: ubuntu-24.04-arm
-            target: ""
-            runner_prefix: ""
-            exe: ""
-          - platform: arm64-darwin
-            runner: macos-14
-            target: ""
-            runner_prefix: ""
-            exe: ""
-          - platform: x64-windows
-            runner: windows-latest
-            target: ""
-            runner_prefix: ""
-            exe: ".exe"
-          - platform: armv7-a
-            runner: ubuntu-latest
-            target: armv7-unknown-linux-musleabihf
-            runner_prefix: "qemu-arm-static -cpu cortex-a15"
-            exe: ""
-          - platform: riscv64
-            runner: ubuntu-latest
-            target: riscv64gc-unknown-linux-musl
-            runner_prefix: "qemu-riscv64-static"
-            exe: ""
-          - platform: riscv32
-            runner: ubuntu-latest
-            target: riscv32gc-unknown-linux-musl
-            runner_prefix: "qemu-riscv32-static"
-            exe: ""
+      # prepare emits eight native rows for dev/** and fourteen rows for
+      # PR, main, and workflow_dispatch. Explicit rows avoid matrix
+      # include/exclude re-adding partial platform entries.
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
     defaults:
       run:
         shell: bash
