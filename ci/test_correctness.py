@@ -85,6 +85,77 @@ class CoveragePlanTests(unittest.TestCase):
         self.assertEqual(diagnostic.kwargs["features"], "all")
         self.assertEqual(diagnostic.kwargs["extra"], ("--workspace",))
 
+    @mock.patch.object(correctness, "cargo")
+    def test_native_workspace_tests_run_once_but_both_profiles_build(
+        self,
+        cargo: mock.Mock,
+    ) -> None:
+        correctness.run_host_builds_and_tests(mock.Mock())
+
+        self.assertEqual(
+            [
+                (call.args[2], call.kwargs.get("profile", "debug"))
+                for call in cargo.call_args_list
+            ],
+            [
+                ("build", "debug"),
+                ("test", "debug"),
+                ("build", "release"),
+            ],
+        )
+
+    @mock.patch.object(correctness, "ensure_testsuite", return_value=True)
+    @mock.patch.object(correctness, "cargo")
+    def test_native_runtime_suites_use_release_artifacts(
+        self,
+        cargo: mock.Mock,
+        _testsuite: mock.Mock,
+    ) -> None:
+        cargo.return_value = Result(
+            name="build",
+            status="OK",
+            argv=("cargo", "build"),
+            log=None,
+        )
+        runner = mock.Mock()
+
+        correctness.run_native_spectest(runner)
+        spectest_calls = list(cargo.call_args_list)
+        cargo.reset_mock()
+        correctness.run_native_wasitest(runner)
+        wasi_calls = list(cargo.call_args_list)
+
+        self.assertEqual(len(spectest_calls), 2)
+        self.assertEqual(len(wasi_calls), 3)
+        self.assertTrue(
+            all(call.kwargs["profile"] == "release" for call in spectest_calls + wasi_calls)
+        )
+
+    @mock.patch.object(correctness, "copy_built_binary", return_value=None)
+    @mock.patch.object(correctness, "ensure_testsuite", return_value=True)
+    @mock.patch.object(correctness, "cargo")
+    def test_cross_spectest_does_not_repeat_debug_runtime(
+        self,
+        cargo: mock.Mock,
+        _testsuite: mock.Mock,
+        _copy: mock.Mock,
+    ) -> None:
+        cargo.return_value = Result(
+            name="build",
+            status="OK",
+            argv=("cargo", "build"),
+            log=None,
+        )
+        correctness.run_cross_spectest(
+            mock.Mock(),
+            correctness.CROSS_PLATFORMS["armv7"],
+        )
+
+        self.assertEqual(len(cargo.call_args_list), 3)
+        self.assertTrue(
+            all(call.kwargs["profile"] == "release" for call in cargo.call_args_list)
+        )
+
     def test_cross_platforms_are_one_target_per_job(self) -> None:
         self.assertEqual(
             {config.target for config in correctness.CROSS_PLATFORMS.values()},
@@ -145,6 +216,7 @@ class CoveragePlanTests(unittest.TestCase):
         self.assertIn("if: ${{ always() && !cancelled() }}", workflow)
         for platform in ("armv7-linux", "riscv64-linux", "riscv32-linux"):
             self.assertIn(f"platform: cross-{platform}", workflow)
+        self.assertNotIn("x86_64-pc-windows-gnu", workflow)
 
         performance_workflow = (
             ROOT / ".github" / "workflows" / "performance-regression.yml"

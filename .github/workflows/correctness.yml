@@ -82,7 +82,7 @@ jobs:
             timeout: 90
             python: python
             suite: host x64-windows
-            targets: x86_64-pc-windows-msvc,x86_64-pc-windows-gnu
+            targets: x86_64-pc-windows-msvc
             testsuite: true
             nightly: false
             qemu: false

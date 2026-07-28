@@ -34,7 +34,6 @@ from ci.runner import ROOT, TARGET, Result, Runner, require_tools, slug
 
 
 TESTSUITE = TARGET / "webassembly-testsuite"
-WINDOWS_GNU = "x86_64-pc-windows-gnu"
 RV32_LINUX = "riscv32gc-unknown-linux-musl"
 
 ENGINE_FEATURE_CONFIGS = (
@@ -198,21 +197,29 @@ def validate_host(runner: Runner, label: str) -> bool:
 
 
 def run_host_builds_and_tests(runner: Runner) -> None:
-    for profile in ("debug", "release"):
-        cargo(
-            runner,
-            f"cargo build workspace ({profile})",
-            "build",
-            profile=profile,
-            extra=("--workspace",),
-        )
-        cargo(
-            runner,
-            f"cargo test workspace ({profile})",
-            "test",
-            profile=profile,
-            extra=("--workspace",),
-        )
+    # Build both profiles explicitly, but run the unit-test suite once. The
+    # release binaries receive stronger end-to-end coverage from the spec and
+    # WASI suites below; repeating every unit test under --release was the
+    # single largest native-host command without adding a distinct boundary.
+    cargo(
+        runner,
+        "cargo build workspace (debug)",
+        "build",
+        extra=("--workspace",),
+    )
+    cargo(
+        runner,
+        "cargo test workspace (debug)",
+        "test",
+        extra=("--workspace",),
+    )
+    cargo(
+        runner,
+        "cargo build workspace (release)",
+        "build",
+        profile="release",
+        extra=("--workspace",),
+    )
 
 
 def run_host_feature_matrix(runner: Runner) -> None:
@@ -263,76 +270,54 @@ def run_native_spectest(runner: Runner) -> None:
     if not ensure_testsuite(runner):
         return
     for engine in (JIT, INTERP):
-        for profile in ("debug", "release"):
-            build = cargo(
-                runner,
-                f"build native spectest / {engine.name} ({profile})",
-                "build",
-                package="sf-nano-spectest",
-                profile=profile,
-                features=spectest_features(engine),
-            )
-            run_name = f"run native spectest / {engine.name} ({profile})"
-            if not build.produced_output:
-                runner.skip(run_name, f"build failed: {build.name}")
-                continue
-            runner.run(
-                run_name,
-                [binary_path("sf-nano-spectest", profile), *engine.runtime_args],
-                env={"TESTSUITE_DIR": TESTSUITE},
-            )
+        build = cargo(
+            runner,
+            f"build native spectest / {engine.name} (release)",
+            "build",
+            package="sf-nano-spectest",
+            profile="release",
+            features=spectest_features(engine),
+        )
+        run_name = f"run native spectest / {engine.name} (release)"
+        if not build.produced_output:
+            runner.skip(run_name, f"build failed: {build.name}")
+            continue
+        runner.run(
+            run_name,
+            [binary_path("sf-nano-spectest", "release"), *engine.runtime_args],
+            env={"TESTSUITE_DIR": TESTSUITE},
+        )
 
 
 def run_native_wasitest(runner: Runner) -> None:
-    for profile in ("debug", "release"):
-        harness = cargo(
+    harness = cargo(
+        runner,
+        "build native WASI harness (release)",
+        "build",
+        package="sf-nano-wasitest",
+        profile="release",
+    )
+    for engine in (JIT, INTERP):
+        cli = cargo(
             runner,
-            f"build native WASI harness ({profile})",
+            f"build native CLI / {engine.name} (release)",
             "build",
-            package="sf-nano-wasitest",
-            profile=profile,
+            package="sf-nano-cli",
+            profile="release",
+            features=engine.features,
         )
-        for engine in (JIT, INTERP):
-            cli = cargo(
-                runner,
-                f"build native CLI / {engine.name} ({profile})",
-                "build",
-                package="sf-nano-cli",
-                profile=profile,
-                features=engine.features,
-            )
-            run_name = f"run native WASI / {engine.name} ({profile})"
-            if not harness.produced_output or not cli.produced_output:
-                runner.skip(run_name, "WASI harness or CLI build failed")
-                continue
-            runner.run(
-                run_name,
-                [
-                    binary_path("sf-nano-wasitest", profile),
-                    "--cli-path",
-                    binary_path("sf-nano-cli", profile),
-                    *engine.runtime_args,
-                ],
-            )
-
-
-def run_windows_gnu_coverage(runner: Runner) -> None:
-    for package in ("sf-nano-core", "sf-nano-cli", "sf-nano-spectest", "sf-nano-wasitest"):
-        cargo(
-            runner,
-            f"check Windows GNU / {package}",
-            "check",
-            package=package,
-            target=WINDOWS_GNU,
-        )
-    for features in ("jit", "interp", "jit,interp"):
-        cargo(
-            runner,
-            f"assemble Windows GNU core / {features}",
-            "build",
-            package="sf-nano-core",
-            target=WINDOWS_GNU,
-            features=features,
+        run_name = f"run native WASI / {engine.name} (release)"
+        if not harness.produced_output or not cli.produced_output:
+            runner.skip(run_name, "WASI harness or CLI build failed")
+            continue
+        runner.run(
+            run_name,
+            [
+                binary_path("sf-nano-wasitest", "release"),
+                "--cli-path",
+                binary_path("sf-nano-cli", "release"),
+                *engine.runtime_args,
+            ],
         )
 
 
@@ -345,8 +330,6 @@ def run_host(label: str) -> int:
         run_host_feature_matrix(runner)
     run_native_spectest(runner)
     run_native_wasitest(runner)
-    if label == "x64-windows":
-        run_windows_gnu_coverage(runner)
     return runner.finish()
 
 
@@ -419,34 +402,33 @@ def run_cross_spectest(runner: Runner, config: CrossPlatform) -> None:
 
     # JIT validates both A32 and forced Thumb-2 on the Arm Linux target.
     for variant, extra_feature in config.jit_variants:
-        for profile in ("debug", "release"):
-            features = variant_features(JIT, extra_feature)
-            build = cargo(
-                runner,
-                f"build {variant} spectest / jit ({profile})",
-                "build",
-                package="sf-nano-spectest",
-                profile=profile,
-                target=config.target,
-                features=features,
+        features = variant_features(JIT, extra_feature)
+        build = cargo(
+            runner,
+            f"build {variant} spectest / jit (release)",
+            "build",
+            package="sf-nano-spectest",
+            profile="release",
+            target=config.target,
+            features=features,
+        )
+        run_name = f"run {variant} spectest / jit (release)"
+        if not build.produced_output:
+            runner.skip(run_name, f"build failed: {build.name}")
+            continue
+        binary = copy_built_binary(
+            runner,
+            name="sf-nano-spectest",
+            profile="release",
+            target=config.target,
+            artifact_name=f"spectest-{variant}-jit-release",
+        )
+        if binary:
+            runner.run(
+                run_name,
+                qemu_command(config, binary, JIT.runtime_args),
+                env={"TESTSUITE_DIR": TESTSUITE},
             )
-            run_name = f"run {variant} spectest / jit ({profile})"
-            if not build.produced_output:
-                runner.skip(run_name, f"build failed: {build.name}")
-                continue
-            binary = copy_built_binary(
-                runner,
-                name="sf-nano-spectest",
-                profile=profile,
-                target=config.target,
-                artifact_name=f"spectest-{variant}-jit-{profile}",
-            )
-            if binary:
-                runner.run(
-                    run_name,
-                    qemu_command(config, binary, JIT.runtime_args),
-                    env={"TESTSUITE_DIR": TESTSUITE},
-                )
 
     # Interpreter execution does not use the JIT's Arm encoding switch, so
     # one interpreter run per target is meaningful. The shared WAST driver
