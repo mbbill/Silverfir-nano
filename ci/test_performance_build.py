@@ -83,6 +83,37 @@ class PerformanceBuildTests(unittest.TestCase):
                 {"RUSTFLAGS": "-C target-cpu=native"},
             )
 
+    def test_baseline_and_candidate_use_isolated_target_directories(
+        self,
+    ) -> None:
+        source = Path("checkout").resolve()
+        shared = str(Path("perf-target").resolve())
+        baseline = performance_build.isolated_build_environment(
+            source,
+            label="baseline",
+            target="",
+            environ={"CARGO_TARGET_DIR": shared},
+        )
+        candidate = performance_build.isolated_build_environment(
+            source,
+            label="candidate",
+            target="",
+            environ={"CARGO_TARGET_DIR": shared},
+        )
+
+        self.assertEqual(
+            Path(baseline["CARGO_TARGET_DIR"]),
+            Path(shared) / "baseline",
+        )
+        self.assertEqual(
+            Path(candidate["CARGO_TARGET_DIR"]),
+            Path(shared) / "candidate",
+        )
+        self.assertNotEqual(
+            baseline["CARGO_TARGET_DIR"],
+            candidate["CARGO_TARGET_DIR"],
+        )
+
     def test_sha256_file_records_the_copied_binary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "cli"

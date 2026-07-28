@@ -21,6 +21,10 @@ but its measured effect and variance can still resolve within the budget, more
 pairs are added and the requirement is estimated again. This sample split
 avoids selection bias from choosing a direction on the same data used for the
 decision, while re-estimation avoids trusting one noisy pilot variance estimate.
+The final one-sided probability thresholds use a Bonferroni correction across
+all metrics, parallel performance jobs, and possible adaptive confirmation
+looks so the requested probability controls the whole benchmark family rather
+than being reapplied independently at every opportunity.
 
 Metrics that were not selected by the initial screen cannot become regressions
 or improvements merely because their benchmark was rerun for another metric.
@@ -202,6 +206,26 @@ def direction_probability_for_pairs(
         return 1.0
     t_value = magnitude / (log_ratio_stddev / math.sqrt(pair_count))
     return student_t_cdf(t_value, pair_count - 1)
+
+
+def family_adjusted_probability(
+    probability: float,
+    *,
+    metric_count: int,
+    job_count: int,
+    maximum_looks: int,
+) -> float:
+    """Convert a family-wide probability into a per-look threshold."""
+    if not 0.5 < probability < 1.0:
+        raise ValueError("probability must be between 0.5 and 1")
+    if metric_count <= 0:
+        raise ValueError("metric count must be positive")
+    if job_count <= 0:
+        raise ValueError("job count must be positive")
+    if maximum_looks <= 0:
+        raise ValueError("maximum looks must be positive")
+    hypotheses = metric_count * job_count * maximum_looks
+    return 1.0 - (1.0 - probability) / hypotheses
 
 
 def required_pairs(
@@ -619,11 +643,11 @@ def format_number(value: float) -> str:
 
 
 def format_probability(value: float) -> str:
-    if value >= 0.999995:
-        return ">99.999%"
-    if value <= 0.000005:
-        return "<0.001%"
-    return f"{value * 100:.3f}%"
+    if value >= 0.999999995:
+        return ">99.999999%"
+    if value <= 0.000000005:
+        return "<0.000001%"
+    return f"{value * 100:.6f}%"
 
 
 def render_summary(
@@ -638,6 +662,11 @@ def render_summary(
     pilot_probability: float,
     regression_probability: float,
     improvement_probability: float,
+    effective_regression_probability: float,
+    effective_improvement_probability: float,
+    family_metric_count: int,
+    family_job_count: int,
+    maximum_looks: int,
     results: dict[str, Any],
 ) -> str:
     lines = [
@@ -652,10 +681,16 @@ def render_summary(
             f"independent confirmation. Confirmation starts at "
             f"`{minimum_pairs}` pairs and adaptively grows to at most "
             f"`{maximum_pairs}` while the frozen direction can still "
-            f"converge. REGRESSION needs "
-            f"`P(regression) >= {regression_probability * 100:.3f}%`; "
-            f"IMPROVEMENT needs "
-            f"`P(improvement) >= {improvement_probability * 100:.3f}%`."
+            f"converge. Requested family-wide confidence is "
+            f"`{regression_probability * 100:.3f}%` for regressions and "
+            f"`{improvement_probability * 100:.3f}%` for improvements across "
+            f"`{family_metric_count}` metrics, `{family_job_count}` performance "
+            f"jobs, and at most `{maximum_looks}` confirmation looks. "
+            f"Bonferroni-adjusted per-look gates are "
+            f"`P(regression) >= "
+            f"{effective_regression_probability * 100:.6f}%` and "
+            f"`P(improvement) >= "
+            f"{effective_improvement_probability * 100:.6f}%`."
         ),
         "",
         (
@@ -763,6 +798,15 @@ def main() -> int:
         help="Directional pilot probability required to start confirmation",
     )
     parser.add_argument(
+        "--family-jobs",
+        type=int,
+        default=1,
+        help=(
+            "Parallel performance jobs covered by the requested family-wide "
+            "probability (default: 1 for a local run)"
+        ),
+    )
+    parser.add_argument(
         "--only",
         action="append",
         default=[],
@@ -800,6 +844,8 @@ def main() -> int:
         parser.error("--max-pairs cannot be below --min-pairs")
     if args.min_pairs % 2 or args.max_pairs % 2:
         parser.error("--min-pairs and --max-pairs must be even")
+    if args.family_jobs <= 0:
+        parser.error("--family-jobs must be positive")
     for option, value in (
         ("--pilot-probability", args.pilot_probability),
         ("--regression-probability", args.regression_probability),
@@ -935,10 +981,28 @@ def main() -> int:
                 blocks=range(args.blocks),
             )
             initial_by_test[name] = initial
+
+        family_metric_count = sum(
+            len(metrics) for metrics in initial_by_test.values()
+        )
+        maximum_looks = 1 + (args.max_pairs - args.min_pairs) // 2
+        effective_regression_probability = family_adjusted_probability(
+            regression_probability,
+            metric_count=family_metric_count,
+            job_count=args.family_jobs,
+            maximum_looks=maximum_looks,
+        )
+        effective_improvement_probability = family_adjusted_probability(
+            improvement_probability,
+            metric_count=family_metric_count,
+            job_count=args.family_jobs,
+            maximum_looks=maximum_looks,
+        )
+        for name, initial in initial_by_test.items():
             plans_by_test[name] = metric_plans(
                 initial,
-                regression_probability=regression_probability,
-                improvement_probability=improvement_probability,
+                regression_probability=effective_regression_probability,
+                improvement_probability=effective_improvement_probability,
                 minimum_pairs=args.min_pairs,
                 maximum_pairs=args.max_pairs,
                 pilot_probability=pilot_probability,
@@ -1029,7 +1093,8 @@ def main() -> int:
                             state = f"next->{projected}"
                             unresolved_targets.append(projected)
                     look_detail.append(
-                        f"{metric_name}:{probability * 100:.3f}% {state}"
+                        f"{metric_name}:{format_probability(probability)} "
+                        f"{state}"
                     )
                 print(
                     f"  {confirmation_pairs} confirmation pairs: "
@@ -1051,8 +1116,8 @@ def main() -> int:
                 initial=initial_by_test[name],
                 final=final_by_test.get(name, {}),
                 plans=plans,
-                regression_probability=regression_probability,
-                improvement_probability=improvement_probability,
+                regression_probability=effective_regression_probability,
+                improvement_probability=effective_improvement_probability,
             )
             selected_plans = {
                 metric_name: plan
@@ -1082,8 +1147,8 @@ def main() -> int:
         return 2
 
     document = {
-        "schema_version": 6,
-        "model": "paired-log-student-t-adaptive-confirmation",
+        "schema_version": 7,
+        "model": "paired-log-student-t-family-corrected-adaptive-confirmation",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "platform": args.platform,
         "engine": args.engine,
@@ -1096,6 +1161,15 @@ def main() -> int:
         "pilot_probability": pilot_probability,
         "regression_probability": regression_probability,
         "improvement_probability": improvement_probability,
+        "effective_regression_probability": (
+            effective_regression_probability
+        ),
+        "effective_improvement_probability": (
+            effective_improvement_probability
+        ),
+        "family_metric_count": family_metric_count,
+        "family_job_count": args.family_jobs,
+        "maximum_confirmation_looks": maximum_looks,
         "excluded_selectors": sorted(exclusions),
         "tests": results,
     }
@@ -1127,6 +1201,15 @@ def main() -> int:
         pilot_probability=pilot_probability,
         regression_probability=regression_probability,
         improvement_probability=improvement_probability,
+        effective_regression_probability=(
+            effective_regression_probability
+        ),
+        effective_improvement_probability=(
+            effective_improvement_probability
+        ),
+        family_metric_count=family_metric_count,
+        family_job_count=args.family_jobs,
+        maximum_looks=maximum_looks,
         results=results,
     )
     if exclusions:

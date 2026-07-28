@@ -167,6 +167,11 @@ jobs:
               )
               for engine in ("jit", "interp"):
                   include.append(dict(row, engine=engine))
+          performance_jobs = sum(
+              row["mode"] == "performance" for row in include
+          )
+          for row in include:
+              row["family_jobs"] = performance_jobs
           print(json.dumps({"include": include}, separators=(",", ":")))
           PY
           )"
@@ -306,7 +311,6 @@ jobs:
       run:
         shell: bash
     env:
-      CARGO_TARGET_DIR: ${{ github.workspace }}/perf-target
       ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/perf-zig-cache
     steps:
       - name: Enable Git long paths
@@ -403,6 +407,7 @@ jobs:
             --pilot-probability 80
             --regression-probability 99.99
             --improvement-probability 99.99
+            --family-jobs "${{ matrix.family_jobs }}"
             --out-dir "perf-output/${ENGINE}"
           )
           if [[ -n "$RUNNER_PREFIX" ]]; then

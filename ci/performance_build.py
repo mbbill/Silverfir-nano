@@ -104,6 +104,20 @@ def cargo_target_dir(source: Path, environ: dict[str, str]) -> Path:
     return target_dir if target_dir.is_absolute() else source / target_dir
 
 
+def isolated_build_environment(
+    source: Path,
+    *,
+    label: str,
+    target: str,
+    environ: dict[str, str],
+) -> dict[str, str]:
+    env = remapped_environment(source, target, environ)
+    env["CARGO_TARGET_DIR"] = str(
+        (cargo_target_dir(source, env) / label).resolve()
+    )
+    return env
+
+
 def built_executable(
     source: Path,
     *,
@@ -134,7 +148,12 @@ def build_one(
     environ: dict[str, str],
 ) -> dict[str, object]:
     source = source.resolve()
-    env = remapped_environment(source, target, environ)
+    env = isolated_build_environment(
+        source,
+        label=label,
+        target=target,
+        environ=environ,
+    )
     command = cargo_command(engine=engine, target=target)
     print(f"[build {label}] {' '.join(command)}", flush=True)
     subprocess.run(command, cwd=source, env=env, check=True)
