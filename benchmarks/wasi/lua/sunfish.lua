@@ -543,74 +543,49 @@ local function printboard(board)
    end
 end
 
-local TIME_BUDGET = (arg and #arg > 0 and tonumber(arg[#arg]))
-   or tonumber(os.getenv("BENCH_TIME")) or 2 -- seconds
+local TIME_BUDGET = (arg and #arg > 0 and tonumber(arg[#arg])) or 2
 
 -- Shared timer. os.clock() returns 0 on some WASI runtimes (wasmtime 47),
 -- leaving only whole seconds; bench.align() puts the start of a measurement
 -- on a tick edge so a coarse clock is still accurate (see bench.lua).
 local bench = dofile("bench.lua")
-local gettime = bench.now
 
 local function main()
-   -- Calibration: search from starting position, repeat until measurable
-   io.write("Calibrating... ")
-   io.flush()
-   local cal_n = 0
-   local cal_nodes_total = 0
-   local cal_time
-   local t0 = bench.align()
-   repeat
-      local pos0 = Position.new(initial, 0, {true,true}, {true,true}, 0, 0)
-      search(pos0)
-      cal_n = cal_n + 1
-      cal_nodes_total = cal_nodes_total + nodes
-      cal_time = gettime() - t0
-   until cal_time >= TIME_BUDGET / 8
-   print(string.format("%.3fs for %d searches, %d nodes", cal_time, cal_n, cal_nodes_total))
-
-   -- Play moves across games, checking time after each move
-   local t_start = bench.align()
    local total_nodes = 0
-   local total_moves = 0
-   local games_done = 0
+   local last_move
+   local last_score
 
-   while true do
-      local pos = Position.new(initial, 0, {true,true}, {true,true}, 0, 0)
-      -- Clear TP table between games
-      tp = {}
-      tp_index = {}
-      tp_count = 0
-
-      for ply = 1, 200 do
-         local move, score = search(pos)
+   -- One unit is one deterministic search of the same initial position.
+   -- Repetition changes only sample duration, never the search problem.
+   local function batch(n)
+      total_nodes = 0
+      for _ = 1, n do
+         tp = {}
+         tp_index = {}
+         tp_count = 0
+         local pos = Position.new(
+            initial, 0, {true,true}, {true,true}, 0, 0)
+         last_move, last_score = search(pos)
          total_nodes = total_nodes + nodes
-         total_moves = total_moves + 1
-
-         if not move or math.abs(score) >= MATE_VALUE then break end
-         pos = pos:move(move)
-
-         if gettime() - t_start >= TIME_BUDGET then break end
       end
-      games_done = games_done + 1
-      if gettime() - t_start >= TIME_BUDGET then break end
    end
 
-   local elapsed = gettime() - t_start
+   local _, searches, elapsed = bench.run(batch, TIME_BUDGET)
 
    print("")
    print("=== Sunfish Chess Benchmark ===")
-   print(string.format("Games:         %d", games_done))
-   print(string.format("Moves:         %d", total_moves))
+   print(string.format("Searches:      %d", searches))
    print(string.format("Total nodes:   %d", total_nodes))
    print(string.format("Time:          %.3f s", elapsed))
    print(string.format("Nodes/sec:     %.0f", total_nodes / elapsed))
    print(string.format("Score:         %.0f", total_nodes / elapsed))
+   local move_text = last_move
+      and (render(last_move[1]) .. render(last_move[2])) or "none"
+   print(string.format("Result:        %s / %s",
+      move_text, tostring(last_score)))
 end
 
 main()
-
-
 
 
 

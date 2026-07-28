@@ -71,8 +71,10 @@ static int bench_main(int argc, char **argv) {
     // Validation: one grid, so the checksum is independent of the target.
     mandel_batch(1, 0);
     printf("mandel: checksum = %08x\n", g_checksum);
-    double rate = bench_ramp(mandel_batch, 0, bench_target(argc, argv), 0);
-    printf("mandel: rate = %.2f Kpixel/s\n", rate * (GRID * GRID) / 1000.0);
+    bench_result result = bench_run(mandel_batch, 0, argc, argv);
+    if (result.n == 0) return 2;
+    printf("mandel: rate = %.2f Kpixel/s\n",
+           result.rate * (GRID * GRID) / 1000.0);
     return 0;
 }
 
@@ -80,7 +82,7 @@ int main(int argc, char **argv) {
     int size = 1024;
     double mag = 400000.0;
     // Image mode needs both <size> and <mag>; anything less is bench mode
-    // (where a lone argument is the time target).
+    // (where a lone numeric argument selects the target duration).
     if (argc < 3) return bench_main(argc, argv);
     size = atoi(argv[1]);
     mag = strtod(argv[2], NULL);

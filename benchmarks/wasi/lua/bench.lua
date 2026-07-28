@@ -1,107 +1,113 @@
 -- Shared self-timing driver for the Lua benchmarks.
 --
--- Mirrors common/bench.h: a geometric ramp grows the batch until one batch
--- alone meets a wall-clock target, the clock is read once per BATCH, and the
--- reported metric is a rate taken from the final batch only. Total cost is
--- bounded at roughly 3x the target on any engine, so the same script costs
--- the same whether it runs on a native JIT or on an interpreter under qemu.
---
--- Same rule as the C driver: keep the batch unit small. The ramp cannot
--- regulate below the cost of one unit, so if one unit already exceeds the
--- target nothing can bound the run.
---
--- CLOCK RESOLUTION. os.clock() is a process-CPU clock, and not every WASI
--- runtime implements one -- wasmtime 47 returns 0.0, so we fall back to
--- os.time(), which counts whole seconds. A 1-second clock read naively
--- costs up to 1s of error, which at a 2s target is 50% -- enough to make a
--- cross-runtime comparison meaningless. The fix is to ALIGN the start of
--- the measurement to a tick edge (see M.align): the reading is then exact
--- to within one check interval rather than one whole second, so a coarse
--- clock still gives a trustworthy number at the default target.
+-- The batch unit has fixed semantics. Calibration only chooses how many
+-- identical units to repeat for the requested time; a separate fresh batch
+-- produces the reported work/second rate.
 
 local M = {}
 
--- True when os.clock() is unavailable and we are down to whole seconds.
+local MIN_DT = 1e-3
+local MAX_N = 2 ^ 28
+
 function M.coarse()
-   local c = os.clock()
-   return not (c and c > 0)
+   local value = os.clock()
+   return not (value and value > 0)
 end
 
 function M.now()
-   local c = os.clock()
-   if c and c > 0 then return c end
+   local value = os.clock()
+   if value and value > 0 then return value end
    return os.time()
 end
 
--- Busy-wait to the next tick edge and return the time there. On a fine
--- clock this is just "now" -- there is no edge worth waiting for.
 function M.align()
    if not M.coarse() then return M.now() end
-   local t0 = os.time()
-   local t = t0
-   while t == t0 do t = os.time() end
-   return t
+   local start = os.time()
+   local current = start
+   while current == start do current = os.time() end
+   return current
 end
 
--- The target is the last command-line argument when it parses as a positive
--- number, matching the convention the C benchmarks use.
 function M.target(default)
    if arg and #arg > 0 then
-      local v = tonumber(arg[#arg])
-      if v and v > 0 then return v end
+      local value = tonumber(arg[#arg])
+      if value and value > 0 then return value end
    end
    return default or 2.0
 end
 
--- Coarse-clock path: one aligned measurement, accumulating work until the
--- budget elapses. Per-batch timing is impossible at 1s resolution, so we
--- never try -- we count total work over one exactly-delimited interval.
-local function ramp_coarse(batch, target)
-   local t0 = M.align()
-   local n, done, dt, sized = 1, 0, 0, false
-   while dt < target do
-      batch(n)
-      done = done + n
-      dt = M.now() - t0
-      if dt == 0 then
-         n = n * 2 -- still inside the first tick; nothing measurable yet
-      elseif not sized then
-         -- Rate is now roughly known: pick a batch that lets us notice the
-         -- closing tick promptly (~20 checks across the budget).
-         n = math.max(1, math.floor(done / dt / 20))
-         sized = true
-      end
+function M.correctness_only()
+   if not arg then return false end
+   for i = 1, #arg do
+      if arg[i] == "--bench-correctness" then return true end
    end
-   return done / dt, done, dt
+   return false
 end
 
--- batch(n) must perform exactly n units of work.
--- Returns rate (units/second), the batch size, and its duration.
-function M.ramp(batch, target)
-   if M.coarse() then return ramp_coarse(batch, target) end
+local function timed_batch(batch, n)
+   local start = M.coarse() and M.align() or M.now()
+   batch(n)
+   return M.now() - start
+end
 
-   local n, total = 1, 0
-   while true do
-      local t0 = M.now()
-      batch(n)
-      local dt = M.now() - t0
-      total = total + dt
+function M.calibrate(batch, target)
+   local probe_target = math.max(MIN_DT, target / 8)
+   local n = 1
 
-      -- Out of budget but the sample is still usable: take it rather than
-      -- spend another, larger batch chasing the target exactly.
-      local out_of_budget = total >= 3.0 * target and dt >= target / 8.0
-      if dt >= target or out_of_budget then
-         if dt <= 0 then dt = 1e-9 end
-         return n / dt, n, dt
+   if M.coarse() then
+      target = math.max(target, 2.0)
+      local start = M.align()
+      local elapsed = 0
+      local total = 0
+      while elapsed < 1.0 and total < MAX_N do
+         n = math.min(n, MAX_N - total)
+         batch(n)
+         total = total + n
+         elapsed = M.now() - start
+         if elapsed < 1.0 then n = math.min(MAX_N, n * 8) end
       end
-
-      if dt < 1e-3 or dt < target / 8.0 then
-         n = n * 8 -- too short to extrapolate from; grow blindly
-      else
-         local est = math.floor(n * target * 1.25 / dt)
-         n = est > n and est or n + 1
-      end
+      if elapsed <= 0 then return math.max(1, total) end
+      return math.max(1, math.min(
+         MAX_N, math.floor(total * target / elapsed + 0.5)))
    end
+
+   while true do
+      local elapsed = timed_batch(batch, n)
+      if elapsed >= probe_target or n >= MAX_N then
+         if elapsed <= 0 then return n end
+         return math.max(1, math.min(
+            MAX_N, math.floor(n * target / elapsed + 0.5)))
+      end
+
+      local next_n
+      if elapsed < MIN_DT then
+         next_n = math.min(MAX_N, n * 8)
+      else
+         next_n = math.floor(n * probe_target * 1.05 / elapsed)
+         next_n = math.min(MAX_N, next_n, n * 8)
+         if next_n <= n then next_n = n + 1 end
+      end
+      n = next_n
+   end
+end
+
+function M.measure(batch, workload)
+   local elapsed = timed_batch(batch, workload)
+   if elapsed <= 0 then
+      error("timer did not advance during measured batch")
+   end
+   return workload / elapsed, workload, elapsed
+end
+
+function M.run(batch, target)
+   if M.correctness_only() then
+      batch(1)
+      print("BENCH_WORKLOAD=1 (correctness only)")
+      return 1.0, 1, 1.0
+   end
+   local workload = M.calibrate(batch, target)
+   print(string.format("BENCH_WORKLOAD=%d", workload))
+   return M.measure(batch, workload)
 end
 
 return M

@@ -167,20 +167,20 @@ int main(int argc, char **argv) {
 	uint32_t *pixels;
 	int rays_per_pixel = 1;
 	FILE *infile = stdin, *outfile = stdout;
-	double bench_seconds = -1.0;
+	int benchmark_mode = 0;
 
-	/* No arguments, or a single numeric one, means benchmark mode; the
-	   number is the wall-clock target in seconds. Anything else is the
-	   stock c-ray CLI. */
+	/* No arguments, or one positive time target, means benchmark mode.
+	   Anything else is the stock c-ray CLI. */
 	if(argc == 1) {
-		bench_seconds = BENCH_DEFAULT_SEC;
+		benchmark_mode = 1;
 	} else if(argc == 2) {
-		double v = atof(argv[1]);
-		if(v > 0.0) bench_seconds = v;
+		double value = atof(argv[1]);
+		benchmark_mode = value > 0.0 ||
+			strcmp(argv[1], "--bench-correctness") == 0;
 	}
 
-	if(bench_seconds > 0.0) {
-		double rate;
+	if(benchmark_mode) {
+		bench_result result;
 		if(!(bench_fb = malloc(BENCH_RES * BENCH_RES * sizeof *bench_fb))) {
 			perror("pixel buffer allocation failed");
 			return EXIT_FAILURE;
@@ -193,9 +193,10 @@ int main(int argc, char **argv) {
 		/* Validation: one frame, so the checksum is target-independent. */
 		cray_batch(1, 0);
 		printf("c-ray: checksum = %08x\n", bench_checksum);
-		rate = bench_ramp(cray_batch, 0, bench_seconds, 0);
+		result = bench_run(cray_batch, 0, argc, argv);
+		if(result.n == 0) return EXIT_FAILURE;
 		printf("c-ray: rate = %.2f Kpixel/s\n",
-		       rate * (BENCH_RES * BENCH_RES) / 1000.0);
+		       result.rate * (BENCH_RES * BENCH_RES) / 1000.0);
 		return 0;
 	}
 

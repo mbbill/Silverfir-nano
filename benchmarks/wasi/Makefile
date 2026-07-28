@@ -23,9 +23,9 @@ COMMON := common/bench.h
 
 WASM := sha256/sha256.wasm bzip2/bzip2.wasm lz4/lz4.wasm fib/fib.wasm \
         mandelbrot/mandel.wasm stream/stream.wasm coremark/coremark.wasm \
-        c-ray/c-ray.wasm
+        c-ray/c-ray.wasm sqlite/sqlite_bench.wasm
 
-.PHONY: all profile clean sha256 bzip2 lz4 fib mandel stream coremark c-ray
+.PHONY: all profile clean sha256 bzip2 lz4 fib mandel stream coremark c-ray sqlite
 
 all: $(WASM)
 
@@ -64,6 +64,13 @@ c-ray: c-ray/c-ray.wasm
 c-ray/c-ray.wasm: c-ray/c-ray-f.c $(COMMON)
 	$(CC) $(CFLAGS) -D__unix__ -o $@ c-ray/c-ray-f.c -lm
 
+sqlite: sqlite/sqlite_bench.wasm
+sqlite/sqlite_bench.wasm: sqlite/bench_sqlite.c \
+             sqlite/sqlite-amalgamation-3470200/sqlite3.c $(COMMON)
+	$(CC) $(CFLAGS) -DSQLITE_THREADSAFE=0 -DSQLITE_OMIT_LOAD_EXTENSION \
+	    -o $@ sqlite/bench_sqlite.c \
+	    sqlite/sqlite-amalgamation-3470200/sqlite3.c
+
 # CoreMark, built against its POSIX port (in coremark/port/). PERFORMANCE_RUN
 # selects the standard seed set whose CRCs the suite validates. FLAGS_STR is
 # required by the reporting rules and must name the actual flags used.
@@ -99,5 +106,5 @@ lz4/lz4_profile.wasm: lz4/bench_lz4_profile.c lz4/lz4.c
 clean:
 	rm -f sha256/sha256.wasm bzip2/bzip2.wasm lz4/lz4.wasm fib/fib.wasm \
 	      mandelbrot/mandel.wasm stream/stream.wasm \
-	      coremark/coremark.wasm c-ray/c-ray.wasm \
+	      coremark/coremark.wasm c-ray/c-ray.wasm sqlite/sqlite_bench.wasm \
 	      sha256/sha256_profile.wasm bzip2/bzip2_profile.wasm lz4/lz4_profile.wasm

@@ -26,5 +26,5 @@ local function batch(n)
   sink = acc
 end
 
-local rate = bench.ramp(batch, bench.target(2.0))
+local rate = bench.run(batch, bench.target(2.0))
 print(string.format("fib: rate = %.2f fib%d/s", rate, FIB_N))
