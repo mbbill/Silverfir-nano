@@ -15,6 +15,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Sequence
 
@@ -49,15 +50,49 @@ def cargo_command(*, engine: str, target: str) -> list[str]:
     return command
 
 
-def remapped_environment(source: Path, environ: dict[str, str]) -> dict[str, str]:
+def cargo_config_rustflags(source: Path, target: str) -> list[str]:
+    config_path = source / ".cargo" / "config.toml"
+    if not config_path.is_file():
+        return []
+    with config_path.open("rb") as stream:
+        config = tomllib.load(stream)
+
+    configured: object = config.get("build", {}).get("rustflags", [])
+    if target:
+        target_flags = config.get("target", {}).get(target, {}).get("rustflags")
+        if target_flags is not None:
+            configured = target_flags
+    if isinstance(configured, str):
+        raise TypeError(
+            f"{config_path}: string rustflags cannot be merged safely; use a TOML array"
+        )
+    if not isinstance(configured, list) or not all(
+        isinstance(flag, str) for flag in configured
+    ):
+        raise TypeError(f"{config_path}: rustflags must be an array of strings")
+    return list(configured)
+
+
+def remapped_environment(
+    source: Path,
+    target: str,
+    environ: dict[str, str],
+) -> dict[str, str]:
     env = dict(environ)
-    flag = f"--remap-path-prefix={source.resolve()}={VIRTUAL_SOURCE_ROOT}"
+    remap = f"--remap-path-prefix={source.resolve()}={VIRTUAL_SOURCE_ROOT}"
     encoded = env.get("CARGO_ENCODED_RUSTFLAGS")
     if encoded is not None:
-        env["CARGO_ENCODED_RUSTFLAGS"] = f"{encoded}\x1f{flag}" if encoded else flag
+        flags = encoded.split("\x1f") if encoded else []
     else:
-        existing = env.get("RUSTFLAGS", "").strip()
-        env["RUSTFLAGS"] = f"{existing} {flag}".strip()
+        rustflags = env.get("RUSTFLAGS", "").strip()
+        if rustflags:
+            raise ValueError(
+                "performance CI requires CARGO_ENCODED_RUSTFLAGS when external "
+                "flags are present; whitespace-split RUSTFLAGS cannot be merged safely"
+            )
+        flags = cargo_config_rustflags(source, target)
+    env.pop("RUSTFLAGS", None)
+    env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join([*flags, remap])
     return env
 
 
@@ -99,7 +134,7 @@ def build_one(
     environ: dict[str, str],
 ) -> dict[str, object]:
     source = source.resolve()
-    env = remapped_environment(source, environ)
+    env = remapped_environment(source, target, environ)
     command = cargo_command(engine=engine, target=target)
     print(f"[build {label}] {' '.join(command)}", flush=True)
     subprocess.run(command, cwd=source, env=env, check=True)

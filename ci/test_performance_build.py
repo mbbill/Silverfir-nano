@@ -25,28 +25,63 @@ class PerformanceBuildTests(unittest.TestCase):
         self.assertEqual(rv32[-2:], ["--target", performance_build.RV32_LINUX])
         self.assertIn("interp", rv32)
 
-    def test_source_paths_are_remapped_without_dropping_existing_flags(self) -> None:
+    def test_source_paths_are_remapped_without_dropping_encoded_flags(self) -> None:
         source = Path("checkout").resolve()
         env = performance_build.remapped_environment(
             source,
-            {"RUSTFLAGS": "-C target-cpu=native"},
+            "",
+            {"CARGO_ENCODED_RUSTFLAGS": "-C\x1ftarget-cpu=native"},
         )
         self.assertEqual(
-            env["RUSTFLAGS"],
-            (
-                "-C target-cpu=native "
-                f"--remap-path-prefix={source}={performance_build.VIRTUAL_SOURCE_ROOT}"
-            ),
-        )
-
-        encoded = performance_build.remapped_environment(
-            source,
-            {"CARGO_ENCODED_RUSTFLAGS": "-C\x1fopt-level=2"},
-        )
-        self.assertEqual(
-            encoded["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")[-1],
+            env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")[-1],
             f"--remap-path-prefix={source}={performance_build.VIRTUAL_SOURCE_ROOT}",
         )
+        self.assertEqual(
+            env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")[:-1],
+            ["-C", "target-cpu=native"],
+        )
+
+    def test_target_config_rustflags_survive_path_remapping(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            source = Path(directory)
+            config_dir = source / ".cargo"
+            config_dir.mkdir()
+            (config_dir / "config.toml").write_text(
+                "[target.riscv64gc-unknown-linux-musl]\n"
+                'rustflags = ["-C", "target-feature=+crt-static", '
+                '"-C", "link-self-contained=yes", "-C", "panic=abort"]\n',
+                encoding="utf-8",
+            )
+            env = performance_build.remapped_environment(
+                source,
+                "riscv64gc-unknown-linux-musl",
+                {},
+            )
+
+        flags = env["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+        self.assertEqual(
+            flags[:-1],
+            [
+                "-C",
+                "target-feature=+crt-static",
+                "-C",
+                "link-self-contained=yes",
+                "-C",
+                "panic=abort",
+            ],
+        )
+        self.assertEqual(
+            flags[-1],
+            f"--remap-path-prefix={source.resolve()}={performance_build.VIRTUAL_SOURCE_ROOT}",
+        )
+
+    def test_whitespace_rustflags_are_rejected_instead_of_guessed(self) -> None:
+        with self.assertRaisesRegex(ValueError, "CARGO_ENCODED_RUSTFLAGS"):
+            performance_build.remapped_environment(
+                Path("checkout"),
+                "",
+                {"RUSTFLAGS": "-C target-cpu=native"},
+            )
 
     def test_sha256_file_records_the_copied_binary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
