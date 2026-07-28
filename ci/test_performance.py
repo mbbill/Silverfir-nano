@@ -9,6 +9,7 @@ from unittest.mock import patch
 import ci.performance as bench_compare
 from ci.performance import (
     classify_metrics,
+    family_adjusted_probability,
     metric_plans,
     probability_summary,
     required_pairs,
@@ -77,15 +78,32 @@ class ProbabilityGateTests(unittest.TestCase):
         self.assertEqual(stable_pairs, 6)
         self.assertTrue(noisy_pairs is None or noisy_pairs > stable_pairs)
 
+    def test_family_probability_covers_metrics_jobs_and_adaptive_looks(
+        self,
+    ) -> None:
+        adjusted = family_adjusted_probability(
+            0.9999,
+            metric_count=15,
+            job_count=8,
+            maximum_looks=10,
+        )
+        self.assertAlmostEqual(adjusted, 1.0 - 0.0001 / 1200, places=15)
+
     def test_one_percent_regression_is_detectable_when_stable(self) -> None:
         pilot = measured_metric([-0.8, -1.2, -0.9, -1.1])
         confirmation = measured_metric(
             [-0.8, -1.2, -0.9, -1.1] * 6
         )
+        adjusted = family_adjusted_probability(
+            0.9999,
+            metric_count=15,
+            job_count=8,
+            maximum_looks=10,
+        )
 
         target_pairs = required_pairs(
             pilot,
-            probability=0.9999,
+            probability=adjusted,
             minimum_pairs=6,
             maximum_pairs=24,
         )
@@ -94,7 +112,7 @@ class ProbabilityGateTests(unittest.TestCase):
         self.assertLessEqual(target_pairs, 24)
         self.assertGreaterEqual(
             confirmation["probability_regression"],
-            0.9999,
+            adjusted,
         )
 
     def test_directional_pilot_can_confirm_when_variance_forecast_cannot(
@@ -202,6 +220,53 @@ class ProbabilityGateTests(unittest.TestCase):
         self.assertGreater(measured["probability_improvement"], 0.999)
         self.assertLess(measured["probability_improvement"], 0.9999)
         self.assertEqual(result["score"]["status"], "PASS")
+
+    def test_calibrated_false_regression_stays_below_family_gate(
+        self,
+    ) -> None:
+        measured = measured_metric([
+            -1.5625,
+            -2.3622047244094557,
+            -0.78125,
+            -0.7874015748031482,
+            0.0,
+            -3.1007751937984556,
+            -2.3255813953488413,
+            -0.78125,
+            -0.7751937984496138,
+            0.0,
+            -0.78125,
+            -2.34375,
+            -1.5748031496062964,
+            -0.7874015748031482,
+            -3.0534351145038214,
+            -2.3076923076923106,
+        ])
+        adjusted = family_adjusted_probability(
+            0.9999,
+            metric_count=15,
+            job_count=8,
+            maximum_looks=10,
+        )
+        initial = {"score": measured_metric([-1.0] * 4)}
+        plans = metric_plans(
+            initial,
+            regression_probability=adjusted,
+            improvement_probability=adjusted,
+            minimum_pairs=6,
+            maximum_pairs=24,
+        )
+        result = classify_metrics(
+            initial=initial,
+            final={"score": measured},
+            plans=plans,
+            regression_probability=adjusted,
+            improvement_probability=adjusted,
+        )
+
+        self.assertGreater(measured["probability_regression"], 0.9999)
+        self.assertLess(measured["probability_regression"], adjusted)
+        self.assertEqual(result["score"]["status"], "RECOVERED")
 
     def test_confirmation_reestimates_after_pilot_underestimates_pairs(
         self,
@@ -358,7 +423,7 @@ class ScriptIntegrationTests(unittest.TestCase):
             result = document["tests"]["synthetic"]
 
         self.assertEqual(exit_code, 1)
-        self.assertEqual(document["schema_version"], 6)
+        self.assertEqual(document["schema_version"], 7)
         self.assertEqual(len(result["runs"]), 20)
         schedules = [
             [
@@ -478,7 +543,7 @@ class ScriptIntegrationTests(unittest.TestCase):
             -2.0,
             -2.0,
             0.5,
-        ] + [-2.0] * 8
+        ] + [-2.0] * 18
 
         def fake_run_once(**kwargs: object) -> dict:
             block = int(kwargs["block"])
@@ -556,8 +621,8 @@ class ScriptIntegrationTests(unittest.TestCase):
             result = document["tests"]["synthetic"]
 
         self.assertEqual(exit_code, 1)
-        self.assertEqual(result["confirmation_looks"], [6, 14])
-        self.assertEqual(result["metrics"]["score"]["pair_count"], 14)
+        self.assertEqual(result["confirmation_looks"], [6, 16])
+        self.assertEqual(result["metrics"]["score"]["pair_count"], 16)
         self.assertEqual(result["metrics"]["score"]["status"], "REGRESSION")
 
 
