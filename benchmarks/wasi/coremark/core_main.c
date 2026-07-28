@@ -21,7 +21,6 @@ Original Author: Shay Gal-on
    initial parameters, tun t he benchmark and report the results.
 */
 #include "coremark.h"
-#include "../common/bench.h"
 
 /* Function: iterate
         Run the benchmark for a specified number of iterations.
@@ -49,12 +48,6 @@ static ee_u16 state_known_crc[]  = { (ee_u16)0x5e47,
                                     (ee_u16)0xe5a4,
                                     (ee_u16)0x8e3a,
                                     (ee_u16)0x8d84 };
-
-/* Global timing storage for individual benchmarks */
-static CORE_TICKS list_time = 0;
-static CORE_TICKS matrix_time = 0;
-static CORE_TICKS state_time = 0;
-
 void *
 iterate(void *pres)
 {
@@ -75,66 +68,6 @@ iterate(void *pres)
         res->crc = crcu16(crc, res->crc);
         if (i == 0)
             res->crclist = res->crc;
-    }
-    return NULL;
-}
-
-/* Separate iteration functions for individual benchmark timing */
-void *
-iterate_list_only(void *pres)
-{
-    ee_u32        i;
-    ee_u16        crc;
-    core_results *res        = (core_results *)pres;
-    ee_u32        iterations = res->iterations;
-    ee_u16        saved_crc  = res->crc;
-
-    /* Run list benchmark in isolation (no matrix/state calls) */
-    for (i = 0; i < iterations; i++)
-    {
-        crc      = core_bench_list(res, 1);
-        saved_crc = crcu16(crc, saved_crc);
-        crc      = core_bench_list(res, -1);
-        saved_crc = crcu16(crc, saved_crc);
-    }
-    return NULL;
-}
-
-void *
-iterate_matrix_only(void *pres)
-{
-    ee_u32        i;
-    core_results *res        = (core_results *)pres;
-    ee_u32        iterations = res->iterations;
-    ee_u16        crc        = 0;
-    ee_s16        seed       = 0x11; /* representative seed value */
-
-    /* Run matrix benchmark in isolation */
-    for (i = 0; i < iterations; i++)
-    {
-        crc = core_bench_matrix(&(res->mat), seed, crc);
-    }
-    return NULL;
-}
-
-void *
-iterate_state_only(void *pres)
-{
-    ee_u32        i;
-    core_results *res        = (core_results *)pres;
-    ee_u32        iterations = res->iterations;
-    ee_u16        crc        = 0;
-    ee_s16        step       = 0x33; /* representative step value */
-
-    /* Run state benchmark in isolation */
-    for (i = 0; i < iterations; i++)
-    {
-        crc = core_bench_state(res->size,
-                               res->memblock[3],
-                               res->seed1,
-                               res->seed2,
-                               step,
-                               crc);
     }
     return NULL;
 }
@@ -186,32 +119,11 @@ main(int argc, char *argv[])
     ee_s16       known_id = -1, total_errors = 0;
     ee_u16       seedcrc = 0;
     CORE_TICKS   total_time;
-    double       bench_seconds = BENCH_DEFAULT_SEC;
-    int          correctness_only = 0;
     core_results results[MULTITHREAD];
 #if (MEM_METHOD == MEM_STACK)
     ee_u8 stack_memblock[TOTAL_DATA_SIZE * MULTITHREAD];
 #endif
     /* first call any initializations needed */
-    /* A lone argument is the wall-clock target in seconds; drop it so the
-       seed arguments keep their defaults (which is what validates the
-       standard CRCs). Stock usage -- seeds plus an explicit iteration
-       count -- is unaffected. */
-    if (argc == 2 && strcmp(argv[1], "--bench-correctness") == 0)
-    {
-        correctness_only = 1;
-        argc             = 1;
-    }
-    else if (argc == 2)
-    {
-        double v = atof(argv[1]);
-        if (v > 0.0)
-        {
-            bench_seconds = v;
-            argc          = 1;
-        }
-    }
-
     portable_init(&(results[0].port), &argc, argv);
     /* First some checks to make sure benchmark will run ok */
     if (sizeof(struct list_head_s) > 128)
@@ -330,36 +242,25 @@ for (i = 0; i < MULTITHREAD; i++)
     if (results[0].iterations == 0)
     {
         secs_ret secs_passed = 0;
+        ee_u32   divisor;
         results[0].iterations = 1;
-        if (correctness_only)
-            goto calibration_complete;
-        /*
-         * Probe fixed CoreMark iterations from small to large. The probe
-         * selects only the repetition count; the timed run below is a fresh
-         * measurement and is the sole source of the reported score.
-         */
-        while (1)
+        while (secs_passed < (secs_ret)1)
         {
+            results[0].iterations *= 10;
             start_time();
             iterate(&results[0]);
             stop_time();
             secs_passed = time_in_secs(get_time());
-            if (secs_passed >= (secs_ret)(bench_seconds / 8.0))
-                break;
-            if (results[0].iterations >= ((ee_u32)1 << 28))
-                break;
-            results[0].iterations *= 8;
         }
-        if (secs_passed > 0)
-        {
-            double scaled = (double)results[0].iterations * bench_seconds
-                            / (double)secs_passed;
-            results[0].iterations = (ee_u32)(scaled > 1.0 ? scaled : 1.0);
-        }
+        /* now we know it executes for at least 1 sec, set actual run time at
+         * about 10 secs */
+        divisor = (ee_u32)secs_passed;
+        if (divisor == 0) /* some machines cast float to int as 0 since this
+                             conversion is not defined by ANSI, but we know at
+                             least one second passed */
+            divisor = 1;
+        results[0].iterations *= 1 + 10 / divisor;
     }
-calibration_complete:
-    ee_printf("BENCH_WORKLOAD=%lu\n",
-              (long unsigned)results[0].iterations);
     /* perform actual benchmark */
     start_time();
 #if (MULTITHREAD > 1)
@@ -382,40 +283,6 @@ calibration_complete:
 #endif
     stop_time();
     total_time = get_time();
-
-    /* Now run individual benchmarks to measure their separate times */
-    /* List benchmark timing */
-    if (results[0].execs & ID_LIST)
-    {
-        /* Re-initialize list for clean timing */
-        results[0].list = core_list_init(
-            results[0].size, results[0].memblock[1], results[0].seed1);
-        start_time();
-        iterate_list_only(&results[0]);
-        stop_time();
-        list_time = get_time();
-    }
-
-    /* Matrix benchmark timing */
-    if (results[0].execs & ID_MATRIX)
-    {
-        start_time();
-        iterate_matrix_only(&results[0]);
-        stop_time();
-        matrix_time = get_time();
-    }
-
-    /* State benchmark timing */
-    if (results[0].execs & ID_STATE)
-    {
-        /* Re-initialize state for clean timing */
-        core_init_state(
-            results[0].size, results[0].seed1, results[0].memblock[3]);
-        start_time();
-        iterate_state_only(&results[0]);
-        stop_time();
-        state_time = get_time();
-    }
     /* get a function of the input to report */
     seedcrc = crc16(results[0].seed1, seedcrc);
     seedcrc = crc16(results[0].seed2, seedcrc);
@@ -503,60 +370,11 @@ calibration_complete:
                   default_num_contexts * results[0].iterations
                       / time_in_secs(total_time));
 #endif
-
-    /* Report individual benchmark scores */
-    ee_printf("\n--- Individual Benchmark Scores ---\n");
-#if HAS_FLOAT
-    if ((results[0].execs & ID_LIST) && time_in_secs(list_time) > 0)
-    {
-        ee_printf("List   time (secs): %f\n", time_in_secs(list_time));
-        ee_printf("List   Iter/Sec   : %f\n",
-                  default_num_contexts * results[0].iterations
-                      / time_in_secs(list_time));
-    }
-    if ((results[0].execs & ID_MATRIX) && time_in_secs(matrix_time) > 0)
-    {
-        ee_printf("Matrix time (secs): %f\n", time_in_secs(matrix_time));
-        ee_printf("Matrix Iter/Sec   : %f\n",
-                  default_num_contexts * results[0].iterations
-                      / time_in_secs(matrix_time));
-    }
-    if ((results[0].execs & ID_STATE) && time_in_secs(state_time) > 0)
-    {
-        ee_printf("State  time (secs): %f\n", time_in_secs(state_time));
-        ee_printf("State  Iter/Sec   : %f\n",
-                  default_num_contexts * results[0].iterations
-                      / time_in_secs(state_time));
-    }
-#else
-    if ((results[0].execs & ID_LIST) && time_in_secs(list_time) > 0)
-    {
-        ee_printf("List   time (secs): %d\n", time_in_secs(list_time));
-        ee_printf("List   Iter/Sec   : %d\n",
-                  default_num_contexts * results[0].iterations
-                      / time_in_secs(list_time));
-    }
-    if ((results[0].execs & ID_MATRIX) && time_in_secs(matrix_time) > 0)
-    {
-        ee_printf("Matrix time (secs): %d\n", time_in_secs(matrix_time));
-        ee_printf("Matrix Iter/Sec   : %d\n",
-                  default_num_contexts * results[0].iterations
-                      / time_in_secs(matrix_time));
-    }
-    if ((results[0].execs & ID_STATE) && time_in_secs(state_time) > 0)
-    {
-        ee_printf("State  time (secs): %d\n", time_in_secs(state_time));
-        ee_printf("State  Iter/Sec   : %d\n",
-                  default_num_contexts * results[0].iterations
-                      / time_in_secs(state_time));
-    }
-#endif
-    ee_printf("-----------------------------------\n");
     if (time_in_secs(total_time) < 10)
     {
         ee_printf(
-            "NOTE: A published CoreMark score requires at least 10 seconds; "
-            "this shorter run is for relative regression testing only.\n");
+            "ERROR! Must execute for at least 10 secs for a valid result!\n");
+        total_errors++;
     }
 
     ee_printf("Iterations       : %lu\n",

@@ -2,18 +2,21 @@
 """Run the WASI benchmark suite with sf-nano-cli and collect results.
 
 Usage:
-    python3 run_tests.py                # run the suite (2s per benchmark)
-    python3 run_tests.py --time 10      # 10s per benchmark, for formal runs
+    python3 run_tests.py                # run the suite (2s, except CoreMark)
+    python3 run_tests.py --time 10      # 10s per adjustable benchmark
     python3 run_tests.py --interp       # run with the interpreter engine
     python3 run_tests.py --exec PATH    # run with a different runtime
 
-Every benchmark is self-timing: it takes a wall-clock target in seconds as
-its LAST argument and calibrates how many identical work units fit it. The
+Most benchmarks are self-timing: they take a wall-clock target in seconds as
+their LAST argument and calibrate how many identical work units fit it. The
 work unit, data size, algorithm, and working set stay fixed; only the repeat
 count changes. Calibration is not a performance sample: a fresh batch is
 timed after calibration and reports work/second. This keeps run time bounded
 across native JITs, interpreters, and qemu without comparing different
 problem sizes. See common/bench.h for the shared contract.
+
+CoreMark is deliberately exempt: its source and normal invocation follow the
+upstream EEMBC benchmark, including its own 10-second-minimum calibration.
 
 Validation is always a fixed, target-independent check (a checksum, a hash,
 a CRC), never anything that scales with the workload.
@@ -44,6 +47,8 @@ TESTS = [
     # --- Integer / control flow ---
     bench("coremark/coremark.wasm", "coremark", ["coremark.wasm"],
           r"Iterations/Sec\s*:\s*(\S+)",
+          standard_duration=True,
+          correctness_args=["0", "0", "102", "1"],
           contains=["seedcrc          : 0xe9f5",
                     "[0]crclist       : 0xe714",
                     "[0]crcmatrix     : 0x1fd7",
@@ -91,6 +96,16 @@ def _invoke(cli, test, cli_extra, prog_args, stdin_data):
     return proc, time.monotonic() - t0
 
 
+def program_args(test, time_target, correctness_only=False):
+    """Return benchmark argv while preserving standard benchmark contracts."""
+    args = list(test["args"])
+    if correctness_only:
+        args.extend(test.get("correctness_args", ["--bench-correctness"]))
+    elif not test.get("standard_duration"):
+        args.append(str(time_target))
+    return args
+
+
 def run_test(
     cli, test, cli_extra=(), time_target=None, correctness_only=False
 ):
@@ -109,11 +124,7 @@ def run_test(
         with open(stdin_file, "rb") as f:
             stdin_data = f.read()
 
-    prog_args = list(test["args"])
-    if correctness_only:
-        prog_args.append("--bench-correctness")
-    else:
-        prog_args.append(str(target))
+    prog_args = program_args(test, target, correctness_only)
 
     try:
         proc, elapsed = _invoke(cli, test, cli_extra, prog_args, stdin_data)
@@ -171,8 +182,15 @@ def main():
                    help="Path to the WASM runtime executable")
     p.add_argument("--cli-args", default="",
                    help="Extra args for the runtime (e.g. '--dir .' for wasmtime)")
-    p.add_argument("--time", type=float, default=DEFAULT_TARGET,
-                   help=f"Seconds per benchmark (default {DEFAULT_TARGET})")
+    p.add_argument(
+        "--time",
+        type=float,
+        default=DEFAULT_TARGET,
+        help=(
+            "Seconds per adjustable benchmark "
+            f"(default {DEFAULT_TARGET}; CoreMark keeps its official duration)"
+        ),
+    )
     p.add_argument("--interp", action="store_true",
                    help="Run with the interpreter (passes --interp to sf-nano-cli)")
     p.add_argument(
@@ -200,7 +218,7 @@ def main():
     mode = (
         "correctness only"
         if args.correctness_only
-        else f"{target}s/benchmark"
+        else f"{target}s/adjustable benchmark; CoreMark official duration"
     ) + (", interp" if args.interp else "")
     print(f"Runtime: {' '.join(cli_parts)} ({mode})")
     print()

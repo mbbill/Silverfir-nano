@@ -675,6 +675,12 @@ def render_summary(
         f"`{baseline_sha[:12]}` -> `{candidate_sha[:12]}`",
         "",
         (
+            "> Timing: the requested duration applies to adjustable "
+            "benchmarks. CoreMark keeps the official EEMBC invocation and "
+            "10-second-minimum measured interval."
+        ),
+        "",
+        (
             f"> Probability gate: start with `{initial_pairs}` paired samples. "
             f"A direction with at least "
             f"`{pilot_probability * 100:.1f}%` pilot probability enters an "
@@ -912,11 +918,16 @@ def main() -> int:
         )
 
     if args.warmup_time:
+        warm_test = next(
+            test
+            for test in run_tests.TESTS
+            if not test.get("standard_duration")
+        )
         print(
-            f"Warm-up: coremark, {args.warmup_time}s per binary",
+            f"Warm-up: {warm_test['name']}, "
+            f"{args.warmup_time}s per binary",
             flush=True,
         )
-        warm_test = run_tests.TESTS[0]
         for version, command in (
             ("baseline", baseline_command),
             ("candidate", candidate_command),
@@ -1155,6 +1166,11 @@ def main() -> int:
         "baseline_sha": args.baseline_sha,
         "candidate_sha": args.candidate_sha,
         "target_seconds": args.time,
+        "standard_duration_tests": [
+            test["name"]
+            for test in selected_tests
+            if test.get("standard_duration")
+        ],
         "initial_pairs": initial_pairs,
         "minimum_pairs": args.min_pairs,
         "maximum_pairs": args.max_pairs,

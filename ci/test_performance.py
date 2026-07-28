@@ -35,6 +35,31 @@ def measured_metric(deltas_percent: list[float]) -> dict:
 
 
 class ProbabilityGateTests(unittest.TestCase):
+    def test_coremark_preserves_official_invocation(self) -> None:
+        coremark = bench_compare.run_tests.TESTS[0]
+        sha256 = bench_compare.run_tests.TESTS[1]
+
+        self.assertEqual(
+            bench_compare.run_tests.program_args(coremark, 2.0),
+            ["coremark.wasm"],
+        )
+        self.assertEqual(
+            bench_compare.run_tests.program_args(
+                coremark, 2.0, correctness_only=True
+            ),
+            ["coremark.wasm", "0", "0", "102", "1"],
+        )
+        self.assertEqual(
+            bench_compare.run_tests.program_args(sha256, 2.0),
+            ["sha256.wasm", "2.0"],
+        )
+        self.assertEqual(
+            bench_compare.run_tests.program_args(
+                sha256, 2.0, correctness_only=True
+            ),
+            ["sha256.wasm", "--bench-correctness"],
+        )
+
     def test_student_t_cdf_known_values_and_symmetry(self) -> None:
         self.assertAlmostEqual(student_t_cdf(0.0, 1), 0.5, places=12)
         self.assertAlmostEqual(student_t_cdf(1.0, 1), 0.75, places=12)
