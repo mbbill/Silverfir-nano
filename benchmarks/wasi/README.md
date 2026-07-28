@@ -6,10 +6,12 @@ Winch 47.0.2, wasm3, and wasmi 2.0.0-beta.7. Winch was added and the Silverfir
 interpreter re-measured on 2026-07-25; wasmi moved from 1.1.0 to 2.0.0-beta.7
 on 2026-07-26.
 
-Every metric is a **rate — higher is better**. Each benchmark self-times to a
-wall-clock target (2 s by default) and reports work per second, so a run costs
-about the same on any engine and the numbers stay comparable across a 20× spread
-in speed.
+Every metric is a **rate — higher is better**. The adjustable benchmarks
+self-time to a wall-clock target (2 s by default) and report work per second,
+so a run costs about the same on any engine and the numbers stay comparable
+across a 20× spread in speed. CoreMark is the deliberate exception: its source
+and normal command line remain compatible with upstream EEMBC CoreMark, and its
+own calibration runs the measured interval for at least 10 seconds.
 
 The compiled and interpreted engines get **separate charts**: a compiler is ~7×
 an interpreter here, so putting both on one scale would crush the interpreter
@@ -71,9 +73,9 @@ arithmetic kernels and Lua, wasm3 on CoreMark, bzip2, LZ4 and the float pair.
 ## Running them
 
 ```sh
-python3 run_tests.py                 # this repo, JIT, 2s per benchmark
+python3 run_tests.py                 # JIT; 2s adjustable tests, official CoreMark
 python3 run_tests.py --interp        # this repo, interpreter
-python3 run_tests.py --time 10       # longer target, for formal runs
+python3 run_tests.py --time 10       # 10s adjustable tests; CoreMark unchanged
 python3 run_tests.py --exec "<path>/wasmtime run" --cli-args "--dir ."
 python3 run_tests.py --exec "<path>/wasmtime run" --cli-args "-C compiler=winch --dir ."
 python3 run_tests.py --exec "<path>/wasm3"

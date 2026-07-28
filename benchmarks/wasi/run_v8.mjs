@@ -11,10 +11,11 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 
-// Mirrors run_tests.py: every benchmark takes the wall-clock target in
-// seconds as its LAST argument and calibrates only a repeat count for its
-// fixed work unit. The patterns and validation strings are kept identical
-// so the two harnesses report the same normalized rate.
+// Mirrors run_tests.py: adjustable benchmarks take the wall-clock target in
+// seconds as their LAST argument and calibrate only a repeat count for their
+// fixed work unit. CoreMark preserves its official invocation and duration.
+// The patterns and validation strings are kept identical so the two harnesses
+// report the same normalized rate.
 const DEFAULT_TARGET = 2.0;
 const TARGET = (() => {
   const i = process.argv.indexOf('--time');
@@ -31,6 +32,7 @@ const TESTS = [
     name: 'coremark/coremark.wasm',
     cwd: path.join(SCRIPT_DIR, 'coremark'),
     args: ['coremark.wasm'],
+    standardDuration: true,
     pattern: /Iterations\/Sec\s*:\s*(\S+)/,
     source: 'stdout',
     contains: [
@@ -142,8 +144,11 @@ async function runTest(test, extraArgs) {
     const wasmPath = path.join(test.cwd, test.args[0]);
     if (!fs.existsSync(wasmPath)) return { status: 'SKIP', metric: 'wasm file not found' };
 
-    const runArgs = extraArgs ? [...test.args, ...extraArgs]
-                              : [...test.args, String(TARGET)];
+    const runArgs = extraArgs
+      ? [...test.args, ...extraArgs]
+      : test.standardDuration
+        ? [...test.args]
+        : [...test.args, String(TARGET)];
 
     const wasi = new WASI({
       version: 'preview1',
@@ -228,8 +233,12 @@ async function runTest(test, extraArgs) {
 }
 
 async function main() {
-  console.log('Runtime: Node.js %s (V8 %s), %ss/benchmark\n',
-              process.version, process.versions.v8, TARGET);
+  console.log(
+    'Runtime: Node.js %s (V8 %s), %ss/adjustable benchmark; CoreMark official duration\n',
+    process.version,
+    process.versions.v8,
+    TARGET,
+  );
 
   const results = [];
   for (let i = 0; i < TESTS.length; i++) {

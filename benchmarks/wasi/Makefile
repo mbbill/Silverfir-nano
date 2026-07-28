@@ -77,7 +77,10 @@ sqlite/sqlite_bench.wasm: sqlite/bench_sqlite.c \
 CM_SRC := coremark/core_main.c coremark/core_list_join.c \
           coremark/core_matrix.c coremark/core_state.c coremark/core_util.c \
           coremark/port/core_portme.c
-CM_FLAGS := -O2 $(TARGET) -Icoremark -Icoremark/port -DPERFORMANCE_RUN=1
+# Newer wasi-sdk sysroots carry DWARF in their libc objects even without -g.
+# It has no bearing on the score and needlessly triples the committed module.
+CM_FLAGS := -O2 $(TARGET) -Icoremark -Icoremark/port -DPERFORMANCE_RUN=1 \
+            -Wl,--strip-debug
 
 coremark: coremark/coremark.wasm
 coremark/coremark.wasm: $(CM_SRC) $(COMMON)

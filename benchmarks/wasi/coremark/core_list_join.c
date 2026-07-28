@@ -83,30 +83,6 @@ calc_func(ee_s16 *pdata, core_results *res)
             = ((data >> 3)
                & 0xf);       /* bits 3-6 is specific data for the operation */
         dtype |= dtype << 4; /* replicate the lower 4 bits to get an 8b value */
-#if defined(MATRIX_ONLY)
-        /* Always run matrix benchmark */
-        (void)flag;
-        retval = core_bench_matrix(&(res->mat), dtype, res->crc);
-        if (res->crcmatrix == 0)
-            res->crcmatrix = retval;
-#elif defined(STATE_ONLY)
-        /* Always run state benchmark */
-        (void)flag;
-        if (dtype < 0x22)
-            dtype = 0x22;
-        retval = core_bench_state(res->size,
-                                  res->memblock[3],
-                                  res->seed1,
-                                  res->seed2,
-                                  dtype,
-                                  res->crc);
-        if (res->crcstate == 0)
-            res->crcstate = retval;
-#elif defined(LIST_ONLY)
-        /* Skip all sub-benchmarks */
-        (void)flag;
-        retval = data;
-#else
         switch (flag)
         {
             case 0:
@@ -130,7 +106,6 @@ calc_func(ee_s16 *pdata, core_results *res)
                 retval = data;
                 break;
         }
-#endif
         res->crc = crcu16(retval, res->crc);
         retval &= 0x007f;
         *pdata = (data & 0xff00) | 0x0080 | retval; /* cache the result */
