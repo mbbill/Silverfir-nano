@@ -71,6 +71,11 @@ class CoveragePlanTests(unittest.TestCase):
         self.assertEqual(correctness.CROSS_PLATFORMS["riscv64"].qemu, "qemu-riscv64-static")
         self.assertEqual(correctness.CROSS_PLATFORMS["riscv32"].qemu, "qemu-riscv32-static")
 
+    def test_interpreter_wast_runtime_keeps_pure_interp_compile_coverage(self) -> None:
+        self.assertEqual(correctness.INTERP.features, "interp")
+        self.assertEqual(correctness.spectest_features(correctness.INTERP), "jit,interp")
+        self.assertEqual(correctness.spectest_features(correctness.JIT), "jit")
+
     def test_bare_targets_are_explicitly_separate_from_qemu_user(self) -> None:
         self.assertEqual(
             correctness.BARE_PLATFORMS,

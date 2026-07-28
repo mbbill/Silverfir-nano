@@ -69,6 +69,19 @@ JIT = Engine("jit", "jit", ("--backend", "native"))
 INTERP = Engine("interp", "interp", ("--interp",))
 
 
+def spectest_features(engine: Engine) -> str:
+    """Features needed by the shared WAST harness for this runtime tier.
+
+    The interpreter itself remains an interp build, but sf-nano-spectest's
+    WAST driver currently lives behind its `jit` feature because both tiers
+    share that entity-model harness.  Keep pure-interp compilation in the
+    feature matrices; only the executable that actually drives WAST needs
+    the combined harness.
+    """
+
+    return "jit,interp" if engine == INTERP else engine.features
+
+
 @dataclass(frozen=True)
 class CrossPlatform:
     name: str
@@ -316,7 +329,7 @@ def run_native_spectest(runner: Runner) -> None:
                 "build",
                 package="sf-nano-spectest",
                 profile=profile,
-                features=engine.features,
+                features=spectest_features(engine),
             )
             run_name = f"run native spectest / {engine.name} ({profile})"
             if not build.produced_output:
@@ -493,8 +506,10 @@ def run_cross_spectest(runner: Runner, config: CrossPlatform) -> None:
                     env={"TESTSUITE_DIR": TESTSUITE},
                 )
 
-    # Interpreter code generation does not use the JIT's Arm encoding switch,
-    # so one pure-interpreter binary per target is the meaningful coverage.
+    # Interpreter execution does not use the JIT's Arm encoding switch, so
+    # one interpreter run per target is meaningful. The shared WAST driver
+    # itself currently requires both harness features; compile coverage above
+    # still verifies the pure-interp configuration independently.
     build = cargo(
         runner,
         f"build {config.name} spectest / interp (release)",
@@ -502,7 +517,7 @@ def run_cross_spectest(runner: Runner, config: CrossPlatform) -> None:
         package="sf-nano-spectest",
         profile="release",
         target=config.target,
-        features=INTERP.features,
+        features=spectest_features(INTERP),
     )
     run_name = f"run {config.name} spectest / interp (release)"
     if not build.produced_output:
