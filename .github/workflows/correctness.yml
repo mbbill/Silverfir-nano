@@ -26,7 +26,7 @@ jobs:
           components: rustfmt
 
       - name: Test CI implementation
-        run: python3 -m unittest ci.test_correctness ci.test_lint_policy ci.test_performance
+        run: python3 -m unittest discover -s ci -p 'test_*.py'
 
       - name: Enforce lint suppression policy
         run: python3 -m ci.lint_policy

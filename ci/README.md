@@ -11,7 +11,7 @@ platform:
 | Job kind | Platforms | Coverage |
 |---|---|---|
 | Native host | x64 Linux, ARM64 Linux, ARM64 macOS, x64 Windows | workspace debug/release build and tests, complete core/CLI feature matrix, native JIT and interpreter spec/WASI |
-| Linux QEMU-user | ARMv7/Thumb-2, RV64 Linux, RV32 Linux | target builds plus JIT and pure-interpreter spec/WASI execution |
+| Linux QEMU-user | ARMv7/Thumb-2, RV64 Linux, RV32 Linux | target builds plus JIT and interpreter-tier spec/WASI execution; pure-interpreter compilation is checked separately |
 | Bare-metal compile | ARMv8-M `thumbv8m`, RV32IMAC `none-elf` | real `cargo build` and JIT/interpreter assembler coverage; no fake runtime claim |
 
 All cross-runtime jobs intentionally use x64 Linux. macOS Colima, WSL
@@ -43,6 +43,12 @@ python -m ci.lint_policy
 - Improvement candidates above +3% are reported only when all four rounds
   remain above +3%; improvements never fail CI.
 - Metrics that were not initial candidates cannot enter the gate later.
+
+`ci.performance_build` builds the two CLI executables with both checkout
+roots remapped to the same virtual source path. It records executable hashes,
+sizes, revisions, and whether the binaries are byte-identical in
+`build-metadata.json`, which is uploaded with every performance artifact.
+This separates source changes from build-path/code-layout noise.
 
 `dev/**` uses the native performance subset and soft-fails only to suppress
 failure email. The warning annotation and job summary remain action-required.

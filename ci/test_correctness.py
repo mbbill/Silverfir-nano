@@ -114,11 +114,15 @@ class CoveragePlanTests(unittest.TestCase):
         }
         self.assertEqual(actual, expected)
         self.assertNotIn("scripts/check.py", workflow)
+        self.assertIn("unittest discover -s ci -p 'test_*.py'", workflow)
         self.assertIn("if: ${{ always() && !cancelled() }}", workflow)
 
         performance_workflow = (
             ROOT / ".github" / "workflows" / "performance-regression.yml"
         ).read_text(encoding="utf-8")
+        self.assertIn("python3 -m ci.performance_build", performance_workflow)
+        self.assertNotIn("build_one()", performance_workflow)
+        self.assertIn("unittest discover -s ci -p 'test_*.py'", performance_workflow)
         self.assertIn("id: lint-policy", performance_workflow)
         self.assertIn("continue-on-error: true", performance_workflow)
         self.assertIn(

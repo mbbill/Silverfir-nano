@@ -1,0 +1,180 @@
+"""Build reproducible baseline/candidate CLI binaries for performance CI.
+
+The two revisions live in different checkout directories. Rust may otherwise
+let those absolute paths affect diagnostics, metadata, and ultimately code
+layout. Each source root is remapped to the same virtual path before copying
+the resulting executable and recording its SHA-256 digest.
+"""
+
+from __future__ import annotations
+
+import argparse
+import hashlib
+import json
+import os
+import shutil
+import subprocess
+import sys
+from pathlib import Path
+from typing import Sequence
+
+
+RV32_LINUX = "riscv32gc-unknown-linux-musl"
+VIRTUAL_SOURCE_ROOT = "/workspace"
+
+
+def cargo_command(*, engine: str, target: str) -> list[str]:
+    if target == RV32_LINUX:
+        command = [
+            "cargo",
+            "+nightly",
+            "build",
+            "-Z",
+            "build-std=std,panic_abort",
+        ]
+    else:
+        command = ["cargo", "+1.97.0", "build"]
+    command.extend(
+        [
+            "--release",
+            "-p",
+            "sf-nano-cli",
+            "--no-default-features",
+            "--features",
+            engine,
+        ]
+    )
+    if target:
+        command.extend(["--target", target])
+    return command
+
+
+def remapped_environment(source: Path, environ: dict[str, str]) -> dict[str, str]:
+    env = dict(environ)
+    flag = f"--remap-path-prefix={source.resolve()}={VIRTUAL_SOURCE_ROOT}"
+    encoded = env.get("CARGO_ENCODED_RUSTFLAGS")
+    if encoded is not None:
+        env["CARGO_ENCODED_RUSTFLAGS"] = f"{encoded}\x1f{flag}" if encoded else flag
+    else:
+        existing = env.get("RUSTFLAGS", "").strip()
+        env["RUSTFLAGS"] = f"{existing} {flag}".strip()
+    return env
+
+
+def cargo_target_dir(source: Path, environ: dict[str, str]) -> Path:
+    configured = environ.get("CARGO_TARGET_DIR")
+    if not configured:
+        return source / "target"
+    target_dir = Path(configured)
+    return target_dir if target_dir.is_absolute() else source / target_dir
+
+
+def built_executable(
+    source: Path,
+    *,
+    target: str,
+    exe_suffix: str,
+    environ: dict[str, str],
+) -> Path:
+    target_prefix = Path(target) if target else Path()
+    return cargo_target_dir(source, environ) / target_prefix / "release" / f"sf-nano-cli{exe_suffix}"
+
+
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def build_one(
+    *,
+    label: str,
+    source: Path,
+    output: Path,
+    engine: str,
+    target: str,
+    exe_suffix: str,
+    environ: dict[str, str],
+) -> dict[str, object]:
+    source = source.resolve()
+    env = remapped_environment(source, environ)
+    command = cargo_command(engine=engine, target=target)
+    print(f"[build {label}] {' '.join(command)}", flush=True)
+    subprocess.run(command, cwd=source, env=env, check=True)
+
+    artifact = built_executable(
+        source,
+        target=target,
+        exe_suffix=exe_suffix,
+        environ=env,
+    )
+    if not artifact.is_file():
+        raise FileNotFoundError(f"cargo succeeded but executable is missing: {artifact}")
+    output.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(artifact, output)
+    digest = sha256_file(output)
+    size = output.stat().st_size
+    print(f"[build {label}] sha256={digest} size={size}", flush=True)
+    return {
+        "sha256": digest,
+        "size": size,
+        "virtual_source_root": VIRTUAL_SOURCE_ROOT,
+    }
+
+
+def parse_args(argv: Sequence[str]) -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--baseline-source", type=Path, required=True)
+    parser.add_argument("--candidate-source", type=Path, required=True)
+    parser.add_argument("--out-dir", type=Path, required=True)
+    parser.add_argument("--engine", choices=("jit", "interp"), required=True)
+    parser.add_argument("--platform", required=True)
+    parser.add_argument("--target", default="")
+    parser.add_argument("--exe-suffix", default="")
+    parser.add_argument("--baseline-sha", required=True)
+    parser.add_argument("--candidate-sha", required=True)
+    return parser.parse_args(argv)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    args = parse_args(argv if argv is not None else sys.argv[1:])
+    out_dir = args.out_dir.resolve()
+    environ = dict(os.environ)
+    builds = {}
+    for label, source, revision in (
+        ("baseline", args.baseline_source, args.baseline_sha),
+        ("candidate", args.candidate_source, args.candidate_sha),
+    ):
+        builds[label] = {
+            "revision": revision,
+            **build_one(
+                label=label,
+                source=source,
+                output=out_dir / f"{label}{args.exe_suffix}",
+                engine=args.engine,
+                target=args.target,
+                exe_suffix=args.exe_suffix,
+                environ=environ,
+            ),
+        }
+
+    metadata = {
+        "platform": args.platform,
+        "engine": args.engine,
+        "target": args.target,
+        "builds": builds,
+        "identical_binaries": builds["baseline"]["sha256"] == builds["candidate"]["sha256"],
+    }
+    metadata_path = out_dir / "build-metadata.json"
+    metadata_path.write_text(json.dumps(metadata, indent=2) + "\n", encoding="utf-8")
+    print(
+        f"[build comparison] identical_binaries={str(metadata['identical_binaries']).lower()}",
+        flush=True,
+    )
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

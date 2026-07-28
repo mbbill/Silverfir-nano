@@ -189,7 +189,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Test CI implementation
-        run: python3 -m unittest ci.test_performance ci.test_correctness ci.test_lint_policy
+        run: python3 -m unittest discover -s ci -p 'test_*.py'
 
       - name: Surface lint suppression debt
         id: lint-policy
@@ -362,44 +362,16 @@ jobs:
           EXE: ${{ matrix.exe }}
         run: |
           set -euo pipefail
-          mkdir -p perf-bin
-
-          build_one() {
-            local source_dir="$1"
-            local output_name="$2"
-            pushd "$source_dir" >/dev/null
-            if [[ "$PLATFORM" == "riscv32" ]]; then
-              cargo +nightly build -Z build-std=std,panic_abort \
-                --release \
-                --target "$TARGET" \
-                -p sf-nano-cli \
-                --no-default-features \
-                --features "$ENGINE"
-            else
-              args=(
-                +1.97.0 build --release
-                -p sf-nano-cli
-                --no-default-features
-                --features "$ENGINE"
-              )
-              if [[ -n "$TARGET" ]]; then
-                args+=(--target "$TARGET")
-              fi
-              cargo "${args[@]}"
-            fi
-            popd >/dev/null
-
-            target_prefix=""
-            if [[ -n "$TARGET" ]]; then
-              target_prefix="$TARGET/"
-            fi
-            cp \
-              "perf-target/${target_prefix}release/sf-nano-cli${EXE}" \
-              "perf-bin/${output_name}${EXE}"
-          }
-
-          build_one baseline baseline
-          build_one . candidate
+          python3 -m ci.performance_build \
+            --baseline-source baseline \
+            --candidate-source . \
+            --out-dir perf-bin \
+            --engine "$ENGINE" \
+            --platform "$PLATFORM" \
+            --target "$TARGET" \
+            --exe-suffix "$EXE" \
+            --baseline-sha "${{ needs.prepare.outputs.baseline }}" \
+            --candidate-sha "${{ needs.prepare.outputs.candidate }}"
 
       - name: Compare performance (alternating A/B)
         env:
@@ -449,7 +421,9 @@ jobs:
         if: always()
         with:
           name: performance-${{ matrix.platform }}-${{ matrix.engine }}
-          path: perf-output/${{ matrix.engine }}/
+          path: |
+            perf-output/${{ matrix.engine }}/
+            perf-bin/build-metadata.json
           if-no-files-found: warn
           retention-days: 14
 
