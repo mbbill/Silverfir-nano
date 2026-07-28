@@ -8,7 +8,7 @@
     <a href="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-linux-arm.yml"><img alt="check-linux-arm" src="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-linux-arm.yml/badge.svg?branch=main"></a>
     <a href="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-macos.yml"><img alt="check-macos" src="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-macos.yml/badge.svg?branch=main"></a>
     <a href="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-windows.yml"><img alt="check-windows" src="https://github.com/mbbill/Silverfir-nano/actions/workflows/check-windows.yml/badge.svg?branch=main"></a>
-    <a href="https://github.com/mbbill/Silverfir-nano/actions/workflows/bench.yml"><img alt="bench" src="https://github.com/mbbill/Silverfir-nano/actions/workflows/bench.yml/badge.svg?branch=main"></a>
+    <a href="https://github.com/mbbill/Silverfir-nano/actions/workflows/performance-regression.yml"><img alt="performance regression" src="https://github.com/mbbill/Silverfir-nano/actions/workflows/performance-regression.yml/badge.svg?branch=main"></a>
   </p>
 
   <p>

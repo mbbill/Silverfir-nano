@@ -1,0 +1,310 @@
+name: performance-regression
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+      - "dev/**"
+  workflow_dispatch:
+    inputs:
+      baseline:
+        description: "Baseline ref; empty means main merge-base (or HEAD^ on main)"
+        required: false
+        type: string
+      calibration:
+        description: "Compare two builds of the same commit to measure CI drift"
+        required: true
+        default: false
+        type: boolean
+      blocks:
+        description: "ABBA blocks per benchmark (3 is useful for calibration)"
+        required: true
+        default: "3"
+        type: choice
+        options:
+          - "1"
+          - "2"
+          - "3"
+
+concurrency:
+  group: performance-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  prepare:
+    name: resolve refs and build dev branch
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    outputs:
+      baseline: ${{ steps.refs.outputs.baseline }}
+      candidate: ${{ steps.refs.outputs.candidate }}
+      blocks: ${{ steps.refs.outputs.blocks }}
+      calibration: ${{ steps.refs.outputs.calibration }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve baseline and candidate
+        id: refs
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE: ${{ github.event.before }}
+          INPUT_BASELINE: ${{ inputs.baseline }}
+          INPUT_BLOCKS: ${{ inputs.blocks }}
+          INPUT_CALIBRATION: ${{ inputs.calibration }}
+        run: |
+          set -euo pipefail
+          candidate="$GITHUB_SHA"
+          calibration="${INPUT_CALIBRATION:-false}"
+
+          if [[ "$calibration" == "true" ]]; then
+            baseline="$candidate"
+          elif [[ -n "${INPUT_BASELINE:-}" ]]; then
+            if baseline="$(git rev-parse "${INPUT_BASELINE}^{commit}" 2>/dev/null)"; then
+              :
+            else
+              git fetch --quiet origin "$INPUT_BASELINE"
+              baseline="$(git rev-parse "FETCH_HEAD^{commit}")"
+            fi
+          elif [[ "$EVENT_NAME" == "pull_request" ]]; then
+            baseline="$PR_BASE"
+          elif [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            if [[ -n "${PUSH_BEFORE:-}" && \
+                  "$PUSH_BEFORE" != "0000000000000000000000000000000000000000" ]]; then
+              baseline="$PUSH_BEFORE"
+            else
+              baseline="$(git rev-parse "${candidate}^")"
+            fi
+          else
+            git fetch --quiet origin main
+            baseline="$(git merge-base origin/main "$candidate")"
+          fi
+
+          blocks="${INPUT_BLOCKS:-1}"
+          echo "baseline=$baseline" >> "$GITHUB_OUTPUT"
+          echo "candidate=$candidate" >> "$GITHUB_OUTPUT"
+          echo "blocks=$blocks" >> "$GITHUB_OUTPUT"
+          echo "calibration=$calibration" >> "$GITHUB_OUTPUT"
+          {
+            echo "### Performance comparison"
+            echo
+            echo "- baseline: \`$baseline\`"
+            echo "- candidate: \`$candidate\`"
+            echo "- ABBA blocks: \`$blocks\`"
+            echo "- calibration: \`$calibration\`"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')
+
+      - uses: Swatinem/rust-cache@v2
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')
+        with:
+          shared-key: dev-build
+
+      - name: cargo build (workspace)
+        if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')
+        run: cargo build --workspace
+
+  compare:
+    name: ${{ matrix.platform }} / ${{ matrix.engine }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 50
+    strategy:
+      fail-fast: false
+      matrix:
+        platform:
+          - x64-linux
+          - arm64-linux
+          - arm64-darwin
+          - x64-windows
+          - armv7-a
+          - riscv64
+          - riscv32
+        engine:
+          - jit
+          - interp
+        include:
+          - platform: x64-linux
+            runner: ubuntu-latest
+            target: ""
+            runner_prefix: ""
+            exe: ""
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            target: ""
+            runner_prefix: ""
+            exe: ""
+          - platform: arm64-darwin
+            runner: macos-14
+            target: ""
+            runner_prefix: ""
+            exe: ""
+          - platform: x64-windows
+            runner: windows-latest
+            target: ""
+            runner_prefix: ""
+            exe: ".exe"
+          - platform: armv7-a
+            runner: ubuntu-latest
+            target: armv7-unknown-linux-musleabihf
+            runner_prefix: "qemu-arm-static -cpu cortex-a15"
+            exe: ""
+          - platform: riscv64
+            runner: ubuntu-latest
+            target: riscv64gc-unknown-linux-musl
+            runner_prefix: "qemu-riscv64-static"
+            exe: ""
+          - platform: riscv32
+            runner: ubuntu-latest
+            target: riscv32gc-unknown-linux-musl
+            runner_prefix: "qemu-riscv32-static"
+            exe: ""
+    defaults:
+      run:
+        shell: bash
+    env:
+      CARGO_TARGET_DIR: ${{ github.workspace }}/perf-target
+      ZIG_GLOBAL_CACHE_DIR: ${{ github.workspace }}/perf-zig-cache
+    steps:
+      - name: Enable Git long paths
+        if: runner.os == 'Windows'
+        run: git config --system core.longpaths true
+
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.candidate }}
+
+      - name: Checkout baseline
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.prepare.outputs.baseline }}
+          path: baseline
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+        if: matrix.platform != 'riscv32'
+        with:
+          targets: ${{ matrix.target }}
+
+      - uses: dtolnay/rust-toolchain@nightly
+        if: matrix.platform == 'riscv32'
+        with:
+          components: rust-src
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          shared-key: perf-${{ matrix.platform }}-${{ matrix.engine }}
+          workspaces: ". -> perf-target"
+
+      - name: Install QEMU user-static
+        if: matrix.runner_prefix != ''
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq qemu-user-static
+
+      - uses: mlugg/setup-zig@v1
+        if: matrix.platform == 'riscv32'
+        with:
+          version: 0.14.0
+
+      - name: Build baseline and candidate
+        env:
+          ENGINE: ${{ matrix.engine }}
+          PLATFORM: ${{ matrix.platform }}
+          TARGET: ${{ matrix.target }}
+          EXE: ${{ matrix.exe }}
+        run: |
+          set -euo pipefail
+          mkdir -p perf-bin
+
+          build_one() {
+            local source_dir="$1"
+            local output_name="$2"
+            pushd "$source_dir" >/dev/null
+            if [[ "$PLATFORM" == "riscv32" ]]; then
+              cargo +nightly build -Z build-std=std,panic_abort \
+                --release \
+                --target "$TARGET" \
+                -p sf-nano-cli \
+                --no-default-features \
+                --features "$ENGINE"
+            else
+              args=(
+                +1.97.0 build --release
+                -p sf-nano-cli
+                --no-default-features
+                --features "$ENGINE"
+              )
+              if [[ -n "$TARGET" ]]; then
+                args+=(--target "$TARGET")
+              fi
+              cargo "${args[@]}"
+            fi
+            popd >/dev/null
+
+            target_prefix=""
+            if [[ -n "$TARGET" ]]; then
+              target_prefix="$TARGET/"
+            fi
+            cp \
+              "perf-target/${target_prefix}release/sf-nano-cli${EXE}" \
+              "perf-bin/${output_name}${EXE}"
+          }
+
+          build_one baseline baseline
+          build_one . candidate
+
+      - name: Compare performance (ABBA)
+        env:
+          BASELINE_SHA: ${{ needs.prepare.outputs.baseline }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate }}
+          BLOCKS: ${{ needs.prepare.outputs.blocks }}
+          ENGINE: ${{ matrix.engine }}
+          PLATFORM: ${{ matrix.platform }}
+          RUNNER_PREFIX: ${{ matrix.runner_prefix }}
+          EXE: ${{ matrix.exe }}
+        run: |
+          set -euo pipefail
+          args=(
+            scripts/bench_compare.py
+            --baseline-exec "perf-bin/baseline${EXE}"
+            --candidate-exec "perf-bin/candidate${EXE}"
+            --engine "$ENGINE"
+            --platform "$PLATFORM"
+            --baseline-sha "$BASELINE_SHA"
+            --candidate-sha "$CANDIDATE_SHA"
+            --blocks "$BLOCKS"
+            --max-blocks 3
+            --out-dir "perf-output/${ENGINE}"
+          )
+          if [[ -n "$RUNNER_PREFIX" ]]; then
+            args+=(--runner-prefix "$RUNNER_PREFIX")
+          fi
+          if [[ -f scripts/bench_thresholds.json ]]; then
+            # Thresholds are intentionally absent until workflow_dispatch
+            # calibration runs establish per-platform, per-engine noise.
+            args+=(
+              --thresholds scripts/bench_thresholds.json
+              --fail-on-regression
+              --fail-on-unstable
+            )
+          fi
+          python3 "${args[@]}"
+          cat "perf-output/${ENGINE}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: performance-${{ matrix.platform }}-${{ matrix.engine }}
+          path: perf-output/${{ matrix.engine }}/
+          if-no-files-found: warn
+          retention-days: 14

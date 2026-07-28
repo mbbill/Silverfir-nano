@@ -74,6 +74,26 @@ METRIC_EXTRACTORS = {
 }
 
 
+def extract_metrics(test_name: str, metric_str: str) -> list[dict]:
+    """Parse one run_tests metric string into normalized metric entries."""
+    entries: list[dict] = []
+    for label, regex, unit, direction in METRIC_EXTRACTORS.get(test_name, []):
+        match = re.search(regex, metric_str)
+        if not match:
+            continue
+        try:
+            value = float(match.group(1))
+        except ValueError:
+            continue
+        entries.append({
+            "name": label,
+            "unit": unit,
+            "direction": direction,
+            "value": value,
+        })
+    return entries
+
+
 def write_json(path: Path, entries: list[dict]) -> None:
     """Write one result file with LF endings on every host.
 
@@ -126,21 +146,20 @@ def main() -> int:
             continue
         if status != "PASS":
             continue
-        if name not in METRIC_EXTRACTORS:
-            continue
-
-        for label, regex, unit, direction in METRIC_EXTRACTORS[name]:
-            m = re.search(regex, metric_str)
-            if not m:
-                print(f"  warn: pattern {regex!r} did not match {metric_str!r}")
-                continue
-            try:
-                value = float(m.group(1))
-            except ValueError:
-                print(f"  warn: non-numeric value {m.group(1)!r}")
-                continue
-            entry = {"name": label, "unit": unit, "value": value}
-            (higher if direction == "higher" else lower).append(entry)
+        entries = extract_metrics(name, metric_str)
+        expected = len(METRIC_EXTRACTORS.get(name, []))
+        if len(entries) != expected:
+            print(
+                f"  warn: parsed {len(entries)}/{expected} metrics from "
+                f"{metric_str!r}"
+            )
+        for entry in entries:
+            output = {
+                "name": entry["name"],
+                "unit": entry["unit"],
+                "value": entry["value"],
+            }
+            (higher if entry["direction"] == "higher" else lower).append(output)
 
     write_json(args.out_dir / "higher.json", higher)
     write_json(args.out_dir / "lower.json", lower)

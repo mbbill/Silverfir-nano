@@ -25,7 +25,7 @@ because it is a compiler, but it is not trying to win that comparison — it
 trades roughly half the throughput for much lower compile latency, and the
 charts show the throughput half of that trade only.
 
-Charts: [README.md](README.md) · Internal tracking dashboard: https://mbbill.github.io/Silverfir-nano/dev/bench/
+Charts: [README.md](README.md)
 
 ## How to read these numbers
 
