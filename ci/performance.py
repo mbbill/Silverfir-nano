@@ -14,11 +14,13 @@ volatility, and Student-t posterior determine how many total pairs would be
 needed to reach the requested regression or improvement probability.
 
 Only benchmarks with an initial signal that can be resolved within the pair
-budget are rerun. The target pair count is chosen once from the initial data.
-The initial sample is a pilot and is not reused by the final gate: probability
-is calculated from a new, independent confirmation sample. This two-stage
-sample split avoids both repeated peeking and selection bias from choosing a
-direction on the same data used for the decision.
+budget are rerun. The initial sample is a pilot and is not reused by the final
+gate: probability is calculated from a new, independent confirmation sample.
+Confirmation starts at the minimum pair count. If it has not crossed the gate
+but its measured effect and variance can still resolve within the budget, more
+pairs are added and the requirement is estimated again. This sample split
+avoids selection bias from choosing a direction on the same data used for the
+decision, while re-estimation avoids trusting one noisy pilot variance estimate.
 
 Metrics that were not selected by the initial screen cannot become regressions
 or improvements merely because their benchmark was rerun for another metric.
@@ -228,6 +230,33 @@ def required_pairs(
     return None
 
 
+def required_pairs_for_direction(
+    metric: dict[str, Any],
+    *,
+    direction: str,
+    probability: float,
+    minimum_pairs: int,
+    maximum_pairs: int,
+) -> int | None:
+    """Predict pairs for a direction frozen before this sample was taken."""
+    mean_log = float(metric["mean_log_ratio"])
+    if direction == "regression":
+        directed_mean = -mean_log
+    elif direction == "improvement":
+        directed_mean = mean_log
+    else:
+        raise ValueError(f"unknown candidate direction: {direction}")
+
+    if directed_mean <= 0.0:
+        return None
+    return required_pairs(
+        metric,
+        probability=probability,
+        minimum_pairs=minimum_pairs,
+        maximum_pairs=maximum_pairs,
+    )
+
+
 def metric_plans(
     metrics: dict[str, dict[str, Any]],
     *,
@@ -235,19 +264,29 @@ def metric_plans(
     improvement_probability: float,
     minimum_pairs: int,
     maximum_pairs: int,
+    pilot_probability: float = 0.8,
 ) -> dict[str, dict[str, Any]]:
+    if not 0.5 < pilot_probability < 1.0:
+        raise ValueError("pilot probability must be between 0.5 and 1")
     plans: dict[str, dict[str, Any]] = {}
     for name, metric in metrics.items():
         mean_log = float(metric["mean_log_ratio"])
         if mean_log < 0.0:
             direction = "regression"
             target_probability = regression_probability
+            pilot_direction_probability = float(
+                metric["probability_regression"]
+            )
         elif mean_log > 0.0:
             direction = "improvement"
             target_probability = improvement_probability
+            pilot_direction_probability = float(
+                metric["probability_improvement"]
+            )
         else:
             direction = None
             target_probability = None
+            pilot_direction_probability = 0.5
 
         target_pairs = None
         if direction is not None:
@@ -261,7 +300,11 @@ def metric_plans(
             "direction": direction,
             "target_probability": target_probability,
             "target_pairs": target_pairs,
-            "selected": target_pairs is not None,
+            "pilot_direction_probability": pilot_direction_probability,
+            "selected": (
+                direction is not None
+                and pilot_direction_probability >= pilot_probability
+            ),
         }
     return plans
 
@@ -592,6 +635,7 @@ def render_summary(
     initial_pairs: int,
     minimum_pairs: int,
     maximum_pairs: int,
+    pilot_probability: float,
     regression_probability: float,
     improvement_probability: float,
     results: dict[str, Any],
@@ -603,9 +647,12 @@ def render_summary(
         "",
         (
             f"> Probability gate: start with `{initial_pairs}` paired samples. "
-            f"Initial variance selects an independent confirmation sample of "
-            f"`{minimum_pairs}` to `{maximum_pairs}` pairs for candidate "
-            f"metrics. REGRESSION needs "
+            f"A direction with at least "
+            f"`{pilot_probability * 100:.1f}%` pilot probability enters an "
+            f"independent confirmation. Confirmation starts at "
+            f"`{minimum_pairs}` pairs and adaptively grows to at most "
+            f"`{maximum_pairs}` while the frozen direction can still "
+            f"converge. REGRESSION needs "
             f"`P(regression) >= {regression_probability * 100:.3f}%`; "
             f"IMPROVEMENT needs "
             f"`P(improvement) >= {improvement_probability * 100:.3f}%`."
@@ -613,7 +660,7 @@ def render_summary(
         "",
         (
             "| Metric | Baseline | Candidate | Delta (pair range) | "
-            "Pair volatility | P(reg) | P(imp) | Pairs | Planned | Gate |"
+            "Pair volatility | P(reg) | P(imp) | Pairs | Pilot | Gate |"
         ),
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
     ]
@@ -623,7 +670,7 @@ def render_summary(
             pair_range = (
                 f"{min(pair_deltas):+.2f}%..{max(pair_deltas):+.2f}%"
             )
-            planned = (
+            pilot_plan = (
                 str(metric["target_pairs"])
                 if metric["target_pairs"] is not None
                 else (
@@ -649,7 +696,7 @@ def render_summary(
                 f"{metric['volatility_percent']:.2f}% | "
                 f"{format_probability(metric['probability_regression'])} | "
                 f"{format_probability(metric['probability_improvement'])} | "
-                f"{pairs} | {planned} | {gate} |"
+                f"{pairs} | {pilot_plan} | {gate} |"
             )
     lines.extend([
         "",
@@ -709,6 +756,13 @@ def main() -> int:
         help="Probability required to report an improvement",
     )
     parser.add_argument(
+        "--pilot-probability",
+        type=float,
+        default=80.0,
+        metavar="PERCENT",
+        help="Directional pilot probability required to start confirmation",
+    )
+    parser.add_argument(
         "--only",
         action="append",
         default=[],
@@ -747,12 +801,14 @@ def main() -> int:
     if args.min_pairs % 2 or args.max_pairs % 2:
         parser.error("--min-pairs and --max-pairs must be even")
     for option, value in (
+        ("--pilot-probability", args.pilot_probability),
         ("--regression-probability", args.regression_probability),
         ("--improvement-probability", args.improvement_probability),
     ):
         if not 50.0 < value < 100.0:
             parser.error(f"{option} must be between 50 and 100")
 
+    pilot_probability = args.pilot_probability / 100.0
     regression_probability = args.regression_probability / 100.0
     improvement_probability = args.improvement_probability / 100.0
 
@@ -833,6 +889,7 @@ def main() -> int:
     initial_by_test: dict[str, dict[str, dict[str, Any]]] = {}
     plans_by_test: dict[str, dict[str, dict[str, Any]]] = {}
     final_by_test: dict[str, dict[str, dict[str, Any]]] = {}
+    confirmation_looks_by_test: dict[str, list[int]] = {}
 
     try:
         def add_block(
@@ -884,6 +941,7 @@ def main() -> int:
                 improvement_probability=improvement_probability,
                 minimum_pairs=args.min_pairs,
                 maximum_pairs=args.max_pairs,
+                pilot_probability=pilot_probability,
             )
 
         target_tests = [
@@ -903,33 +961,88 @@ def main() -> int:
                 for metric_name, plan in plans.items()
                 if plan["selected"]
             }
-            target_pairs = max(
-                int(plan["target_pairs"])
-                for plan in selected_plans.values()
-            )
-            target_blocks = target_pairs // 2
             detail = ", ".join(
                 f"{metric_name}:{plan['direction']}->{plan['target_pairs']}"
                 for metric_name, plan in sorted(selected_plans.items())
             )
             print(
-                f"[target {index}/{len(target_tests)}] {name}: {detail}",
+                f"[confirm {index}/{len(target_tests)}] {name}: "
+                f"pilot {detail}",
                 flush=True,
             )
             runs = runs_by_test[name]
             confirmation_start = args.blocks
-            confirmation_stop = args.blocks + target_blocks
-            for block in range(confirmation_start, confirmation_stop):
-                add_block(test, runs, block)
-            all_final = analyze_phase(
-                test_name=name,
-                runs=runs,
-                blocks=range(confirmation_start, confirmation_stop),
-            )
-            final_by_test[name] = {
-                metric_name: all_final[metric_name]
-                for metric_name in selected_plans
-            }
+            confirmation_pairs = 0
+            next_pairs: int | None = args.min_pairs
+            confirmation_looks: list[int] = []
+
+            while next_pairs is not None:
+                previous_blocks = confirmation_pairs // 2
+                target_blocks = next_pairs // 2
+                for relative_block in range(previous_blocks, target_blocks):
+                    add_block(
+                        test,
+                        runs,
+                        confirmation_start + relative_block,
+                    )
+                confirmation_pairs = next_pairs
+                confirmation_looks.append(confirmation_pairs)
+
+                confirmation_stop = (
+                    confirmation_start + confirmation_pairs // 2
+                )
+                all_final = analyze_phase(
+                    test_name=name,
+                    runs=runs,
+                    blocks=range(confirmation_start, confirmation_stop),
+                )
+                final_selected = {
+                    metric_name: all_final[metric_name]
+                    for metric_name in selected_plans
+                }
+                final_by_test[name] = final_selected
+
+                unresolved_targets: list[int] = []
+                look_detail = []
+                for metric_name, plan in sorted(selected_plans.items()):
+                    metric = final_selected[metric_name]
+                    direction = str(plan["direction"])
+                    probability = (
+                        float(metric["probability_regression"])
+                        if direction == "regression"
+                        else float(metric["probability_improvement"])
+                    )
+                    target_probability = float(plan["target_probability"])
+                    if probability >= target_probability:
+                        state = "crossed"
+                    else:
+                        projected = required_pairs_for_direction(
+                            metric,
+                            direction=direction,
+                            probability=target_probability,
+                            minimum_pairs=confirmation_pairs + 2,
+                            maximum_pairs=args.max_pairs,
+                        )
+                        if projected is None:
+                            state = "futile"
+                        else:
+                            state = f"next->{projected}"
+                            unresolved_targets.append(projected)
+                    look_detail.append(
+                        f"{metric_name}:{probability * 100:.3f}% {state}"
+                    )
+                print(
+                    f"  {confirmation_pairs} confirmation pairs: "
+                    + ", ".join(look_detail),
+                    flush=True,
+                )
+                next_pairs = (
+                    min(unresolved_targets)
+                    if unresolved_targets
+                    else None
+                )
+
+            confirmation_looks_by_test[name] = confirmation_looks
 
         for test in selected_tests:
             name = test["name"]
@@ -946,18 +1059,20 @@ def main() -> int:
                 for metric_name, plan in plans.items()
                 if plan["selected"]
             }
-            target_pairs = max(
+            confirmation_pairs = max(
                 (
-                    int(plan["target_pairs"])
-                    for plan in selected_plans.values()
+                    int(metric["pair_count"])
+                    for metric_name, metric in metrics.items()
+                    if metric_name in selected_plans
                 ),
-                default=initial_pairs,
+                default=0,
             )
             results[name] = {
                 "runs": runs_by_test[name],
                 "initial_blocks": args.blocks,
-                "confirmation_blocks": (
-                    target_pairs // 2 if selected_plans else 0
+                "confirmation_blocks": confirmation_pairs // 2,
+                "confirmation_looks": confirmation_looks_by_test.get(
+                    name, []
                 ),
                 "candidate_metrics": sorted(selected_plans),
                 "metrics": metrics,
@@ -967,8 +1082,8 @@ def main() -> int:
         return 2
 
     document = {
-        "schema_version": 5,
-        "model": "paired-log-student-t-two-stage",
+        "schema_version": 6,
+        "model": "paired-log-student-t-adaptive-confirmation",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "platform": args.platform,
         "engine": args.engine,
@@ -978,6 +1093,7 @@ def main() -> int:
         "initial_pairs": initial_pairs,
         "minimum_pairs": args.min_pairs,
         "maximum_pairs": args.max_pairs,
+        "pilot_probability": pilot_probability,
         "regression_probability": regression_probability,
         "improvement_probability": improvement_probability,
         "excluded_selectors": sorted(exclusions),
@@ -1008,6 +1124,7 @@ def main() -> int:
         initial_pairs=initial_pairs,
         minimum_pairs=args.min_pairs,
         maximum_pairs=args.max_pairs,
+        pilot_probability=pilot_probability,
         regression_probability=regression_probability,
         improvement_probability=improvement_probability,
         results=results,
