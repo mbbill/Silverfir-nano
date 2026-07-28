@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# Pinned Zig installer for GitHub Actions cross-target jobs.
 set -euo pipefail
 
 version="0.14.0"

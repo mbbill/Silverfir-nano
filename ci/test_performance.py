@@ -5,8 +5,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
-import scripts.bench_compare as bench_compare
-from scripts.bench_compare import (
+import ci.performance as bench_compare
+from ci.performance import (
     classify_metrics,
     confirmation_candidates,
     fourth_round_candidates,

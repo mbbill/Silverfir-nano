@@ -1,7 +1,7 @@
 [alias]
 memprof = "run --release -p sf-nano-cli --features memprof --bin sf-nano-cli -- --memprof"
 
-# Single source of truth for per-target cross-build settings. `scripts/check.py`
+# Single source of truth for per-target cross-build settings. `ci/correctness.py`
 # and the CI workflows deliberately set no RUSTFLAGS: cargo lets the RUSTFLAGS
 # environment variable *replace* `target.<triple>.rustflags` wholesale rather
 # than merge with it, so any RUSTFLAGS writer would silently drop everything
@@ -28,8 +28,9 @@ rustflags = [
 
 [target.riscv32gc-unknown-linux-musl]
 # Zig supplies the musl C toolchain rust-lld cannot self-contain for rv32.
-# Requires `cargo +nightly -Z build-std=std,panic_abort`; see scripts/check.py.
-linker = "scripts/zig-riscv32-linux-musl-cc.sh"
+# Requires `cargo +nightly -Z build-std=std,panic_abort`; see
+# `ci/correctness.py`.
+linker = "ci/zig-riscv32-linux-musl-cc.sh"
 rustflags = [
     "-C", "target-feature=+crt-static",
     "-C", "link-self-contained=no",

@@ -4,7 +4,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from scripts.check_lint_policy import check
+from ci.lint_policy import check
 
 
 EMPTY_MANIFEST = "version = 1\n"

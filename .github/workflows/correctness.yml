@@ -14,118 +14,173 @@ permissions:
   contents: read
 
 jobs:
-  lint-policy:
-    name: warning and suppression policy
+  policy:
+    name: formatting, warning policy, and CI unit tests
     runs-on: ubuntu-latest
-    timeout-minutes: 5
+    timeout-minutes: 10
     steps:
-      - name: Checkout
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-      - name: Test lint policy
-        run: python3 -m unittest scripts.test_check scripts.test_lint_policy
+      - uses: dtolnay/rust-toolchain@1.97.0
+        with:
+          components: rustfmt
 
-      - name: Enforce lint policy
-        run: python3 scripts/check_lint_policy.py
+      - name: Test CI implementation
+        run: python3 -m unittest ci.test_correctness ci.test_lint_policy ci.test_performance
 
-  check:
+      - name: Enforce lint suppression policy
+        run: python3 -m ci.lint_policy
+
+      - name: Check Rust formatting
+        run: cargo fmt --all -- --check
+
+  platform:
     name: ${{ matrix.platform }}
-    needs: lint-policy
+    needs: policy
     runs-on: ${{ matrix.runner }}
-    timeout-minutes: ${{ matrix.timeout_minutes }}
+    timeout-minutes: ${{ matrix.timeout }}
     strategy:
       fail-fast: false
       matrix:
         include:
           - platform: x64-linux
             runner: ubuntu-latest
-            timeout_minutes: 180
+            timeout: 90
             python: python3
-            check_args: --install-targets --all-targets
-            targets: x86_64-unknown-linux-gnu,armv7-unknown-linux-musleabihf,riscv64gc-unknown-linux-musl,thumbv8m.main-none-eabihf,riscv32imac-unknown-none-elf
-            skip_cross_runtime: ""
-            no_wsl_reexec: ""
+            suite: host x64-linux
+            targets: x86_64-unknown-linux-gnu
+            testsuite: true
+            nightly: false
+            qemu: false
+            zig: false
+
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            timeout: 90
+            python: python3
+            suite: host arm64-linux
+            targets: aarch64-unknown-linux-gnu
+            testsuite: true
+            nightly: false
+            qemu: false
+            zig: false
+
+          - platform: arm64-darwin
+            runner: macos-14
+            timeout: 90
+            python: python3
+            suite: host arm64-darwin
+            targets: aarch64-apple-darwin
+            testsuite: true
+            nightly: false
+            qemu: false
+            zig: false
+
+          - platform: x64-windows
+            runner: windows-latest
+            timeout: 90
+            python: python
+            suite: host x64-windows
+            targets: x86_64-pc-windows-msvc,x86_64-pc-windows-gnu
+            testsuite: true
+            nightly: false
+            qemu: false
+            zig: false
+
+          - platform: armv7-linux
+            runner: ubuntu-latest
+            timeout: 60
+            python: python3
+            suite: cross armv7
+            targets: armv7-unknown-linux-musleabihf
+            testsuite: true
+            nightly: false
+            qemu: true
+            zig: false
+
+          - platform: riscv64-linux
+            runner: ubuntu-latest
+            timeout: 60
+            python: python3
+            suite: cross riscv64
+            targets: riscv64gc-unknown-linux-musl
+            testsuite: true
+            nightly: false
+            qemu: true
+            zig: false
+
+          - platform: riscv32-linux
+            runner: ubuntu-latest
+            timeout: 60
+            python: python3
+            suite: cross riscv32
+            targets: x86_64-unknown-linux-gnu
+            testsuite: true
             nightly: true
             qemu: true
             zig: true
-          - platform: arm64-linux
-            runner: ubuntu-24.04-arm
-            timeout_minutes: 120
+
+          - platform: thumbv8m-bare
+            runner: ubuntu-latest
+            timeout: 20
             python: python3
-            check_args: --install-targets --default-targets
-            targets: aarch64-unknown-linux-gnu,x86_64-unknown-linux-gnu,aarch64-apple-darwin,x86_64-apple-darwin,x86_64-pc-windows-gnu,thumbv8m.main-none-eabihf,riscv32imac-unknown-none-elf
-            skip_cross_runtime: "1"
-            no_wsl_reexec: ""
+            suite: bare thumbv8m
+            targets: thumbv8m.main-none-eabihf
+            testsuite: false
             nightly: false
             qemu: false
             zig: false
-          - platform: arm64-darwin
-            runner: macos-14
-            timeout_minutes: 120
+
+          - platform: riscv32-bare
+            runner: ubuntu-latest
+            timeout: 20
             python: python3
-            check_args: --install-targets --default-targets
-            targets: aarch64-apple-darwin,x86_64-apple-darwin,aarch64-unknown-linux-gnu,x86_64-unknown-linux-gnu,x86_64-pc-windows-gnu,thumbv8m.main-none-eabihf,riscv32imac-unknown-none-elf
-            skip_cross_runtime: "1"
-            no_wsl_reexec: ""
+            suite: bare riscv32
+            targets: riscv32imac-unknown-none-elf
+            testsuite: false
             nightly: false
             qemu: false
             zig: false
-          - platform: x64-windows
-            runner: windows-latest
-            timeout_minutes: 120
-            python: python
-            check_args: --install-targets
-            targets: x86_64-pc-windows-msvc,x86_64-pc-windows-gnu,aarch64-unknown-linux-gnu,thumbv8m.main-none-eabihf,riscv32imac-unknown-none-elf
-            skip_cross_runtime: ""
-            no_wsl_reexec: "1"
-            nightly: false
-            qemu: false
-            zig: false
-    env:
-      SF_CHECK_SKIP_CROSS_RUNTIME: ${{ matrix.skip_cross_runtime }}
-      SF_CHECK_NO_WSL_REEXEC: ${{ matrix.no_wsl_reexec }}
+
     steps:
       - name: Enable Git long paths
         if: runner.os == 'Windows'
         run: git config --system core.longpaths true
 
-      - name: Checkout
-        uses: actions/checkout@v7
+      - uses: actions/checkout@v7
 
-      - name: Extract testsuite SHA
+      - name: Extract testsuite revision
+        if: matrix.testsuite
         id: testsuite
         shell: bash
         run: |
           sha=$(grep -E '^const TESTSUITE_VERSION:' sf-nano-spectest/build.rs | sed -E 's/.*"([0-9a-f]+)".*/\1/')
-          if [ -z "$sha" ]; then
-            echo "could not parse TESTSUITE_VERSION" >&2
-            exit 1
-          fi
+          test -n "$sha"
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
 
       - name: Cache WebAssembly testsuite
+        if: matrix.testsuite
         uses: actions/cache@v6
         with:
           path: target/webassembly-testsuite
-          key: testsuite-${{ matrix.platform }}-${{ steps.testsuite.outputs.sha }}
+          key: testsuite-${{ steps.testsuite.outputs.sha }}
 
-      - name: Install Rust (stable)
+      - name: Install stable Rust
         uses: dtolnay/rust-toolchain@1.97.0
         with:
           targets: ${{ matrix.targets }}
 
-      - name: Install Rust (nightly + rust-src)
+      - name: Install nightly Rust and rust-src
         if: matrix.nightly
         uses: dtolnay/rust-toolchain@nightly
         with:
           components: rust-src
 
-      - name: Cargo cache
-        uses: Swatinem/rust-cache@v2.9.1
+      - uses: Swatinem/rust-cache@v2.9.1
         with:
           shared-key: correctness-${{ matrix.platform }}
 
-      - name: Install QEMU user-static
+      - name: Install QEMU user-mode emulators
         if: matrix.qemu
         run: |
           sudo apt-get update -qq
@@ -140,16 +195,16 @@ jobs:
 
       - name: Install Zig
         if: matrix.zig
-        run: bash scripts/install_zig_ci.sh
+        run: bash ci/install_zig.sh
 
-      - name: Run correctness suite
-        run: ${{ matrix.python }} scripts/check.py ${{ matrix.check_args }}
+      - name: Run platform correctness
+        run: ${{ matrix.python }} -m ci.correctness ${{ matrix.suite }}
 
-      - name: Upload check logs on failure
+      - name: Upload correctness logs
         if: failure()
         uses: actions/upload-artifact@v7
         with:
           name: correctness-${{ matrix.platform }}-logs
-          path: target/check*-logs/
+          path: target/ci-logs/
           if-no-files-found: ignore
           retention-days: 14

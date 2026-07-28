@@ -14,17 +14,17 @@ overall conclusion. Pull requests and `main` remain hard-fail gates.
 
 ## Warnings and lint suppressions
 
-Correctness has one behavior: every compiler warning fails `scripts/check.py`;
+Correctness has one behavior: every compiler warning fails `ci/correctness.py`;
 there is no strict/lenient switch. Performance jobs may continue compiling so
 they can finish measuring, but must leave warnings visible and mark the
-warning audit as action-required. CI runs `scripts/check_lint_policy.py`
+warning audit as action-required. CI runs `ci/lint_policy.py`
 before either workflow; it rejects unreviewed `allow` / `expect` attributes
 for `warnings`, `dead_code`, and `unused*`, lint-lowering compiler flags or
 Cargo lint settings, and stale exception entries.
 
 Fix the cause. Remove genuinely dead code and unnecessary fields or imports.
 Do not add `#[allow(dead_code)]`, `#[allow(unused)]`, broad `cfg` gates,
-underscore/`let _` band-aids, or edit `scripts/lint_suppressions.toml` merely
+underscore/`let _` band-aids, or edit `ci/lint_suppressions.toml` merely
 to get a green run. A new exception requires an explicit human design decision
 and an inline reason.
 

@@ -1,7 +1,7 @@
 [build]
 # Pin a sensible default target so an ad-hoc `cargo check` inside this
 # crate always exercises the `target_os = "none"` code path in
-# sf-nano-core, not the host. The root validation runner overrides with
+# sf-nano-core, not the host. The CI correctness runner overrides with
 # `--target <t>` to cover both embedded bare-metal rows:
 #
 #   thumbv8m.main-none-eabihf      - Cortex-M33 / Pico 2 RP2350

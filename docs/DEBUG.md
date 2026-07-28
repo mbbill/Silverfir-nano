@@ -43,15 +43,14 @@ cargo test -p sf-nano-core --lib
 cargo run --bin sf-nano-spectest -- --backend native
 ```
 
-Run the project validation gates:
+Run the usual local validation:
 
 ```bash
-# The gate: workspace tests, full feature matrix, target matrix, spectests, and WASI tests.
-python3 scripts/check.py
-
-# Narrow it when iterating.
-python3 scripts/check.py --release-only --default-targets
+cargo build --workspace
+cargo test --workspace
 ```
+
+The exhaustive multi-platform gates run in GitHub Actions from `ci/`.
 
 ## Engines
 
@@ -577,107 +576,27 @@ Then inspect:
 ## Cross-Architecture Testing
 
 The native backend targets RV64GC, RV32GC, and ARMv7-A in addition to ARM64
-and x86_64.
-For normal validation, use the unified runner:
+and x86_64. Exhaustive cross-runtime validation runs in GitHub Actions: each
+target gets an independent x64 Linux runner and QEMU-user job.
 
 ```bash
-python3 scripts/check.py
-python3 scripts/check.py --release-only
+python3 -m ci.correctness cross armv7
+python3 -m ci.correctness cross riscv64
+python3 -m ci.correctness cross riscv32
 ```
 
-The runner uses Colima plus `qemu-*-static` on macOS, and local
-`qemu-*-static` on Linux/WSL. The manual commands below are only for
-debugging the cross-architecture environment directly.
-
-### RV64 prerequisites
-
-Linux/WSL:
-
-```bash
-sudo apt-get install -y qemu-user-static
-rustup target add riscv64gc-unknown-linux-musl
-```
-
-macOS:
-
-```bash
-brew install colima docker qemu
-colima start
-colima ssh -- sudo apt-get update -qq && colima ssh -- sudo apt-get install -y -qq qemu-user-static
-rustup target add riscv64gc-unknown-linux-musl
-```
-
-### RV64 smoke tests
-
-Use the checked-in helper scripts when debugging RV64 directly:
-
-```bash
-./scripts/riscv64-spectest.sh -- if
-./scripts/riscv64-run-tests.sh
-```
-
-The scripts cross-compile with the static musl RV64GC target and run the CLI
-or spectest binary under `qemu-riscv64-static -cpu rv64`.
-
-### RV32 prerequisites
-
-Linux/WSL:
-
-```bash
-sudo apt-get install -y qemu-user-static zig
-rustup toolchain install nightly
-```
-
-macOS:
-
-```bash
-brew install colima docker qemu zig
-colima start
-colima ssh -- sudo apt-get update -qq && colima ssh -- sudo apt-get install -y -qq qemu-user-static
-rustup toolchain install nightly
-```
+Those entry points intentionally support x64 Linux only; CI installs the
+required Rust target, QEMU, nightly Rust, and Zig.
 
 RV32 uses `riscv32gc-unknown-linux-musl` with `cargo +nightly -Z build-std`
-and `scripts/zig-riscv32-linux-musl-cc.sh`; rustup does not ship a prebuilt
+and `ci/zig-riscv32-linux-musl-cc.sh`; rustup does not ship a prebuilt
 standard library for this target.
 
-### RV32 smoke tests
-
-Use the checked-in helper scripts when debugging RV32 directly:
-
-```bash
-./scripts/riscv32-spectest.sh -- if
-./scripts/riscv32-run-tests.sh
-```
-
-The scripts cross-compile with the static musl RV32GC target and run the CLI
-or spectest binary under `qemu-riscv32-static -cpu rv32`.
-
-For WASI validation, the unified runner passes
+For WASI validation, the RV32 job passes
 `--skip-rv32-qemu-timestamp-tests` to `sf-nano-wasitest`. This skips only
 `fd_filestat_set`, `path_filestat`, and `symlink_filestat`: qemu-riscv32-static
 returns ENOSYS for both timestamp-setting syscall paths observed in this
-runner. On macOS, the RISC-V WASI wrapper also copies preopened directories to
-VM `/tmp` before invoking QEMU, because Colima's shared `/Users` mount does not
-preserve the hard-link behavior the WASI `path_link` test requires.
-
-### ARMv7 prerequisites
-
-Linux/WSL:
-
-```bash
-sudo apt-get install -y qemu-user-static
-rustup target add armv7-unknown-linux-musleabihf
-```
-
-macOS:
-
-```bash
-brew install colima docker qemu
-colima start
-colima ssh -- sudo apt-get update -qq && colima ssh -- sudo apt-get install -y -qq qemu-user-static
-rustup target add armv7-unknown-linux-musleabihf
-```
+runner.
 
 ### ARMv7 Step 1: Verify the environment with the interpreter
 

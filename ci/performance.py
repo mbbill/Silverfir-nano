@@ -32,10 +32,9 @@ from typing import Any, Iterable
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "benchmarks" / "wasi"))
-sys.path.insert(0, str(ROOT / "scripts"))
 
 import run_tests  # noqa: E402
-from bench_publish import METRIC_EXTRACTORS, extract_metrics, write_json  # noqa: E402
+from ci.bench_metrics import METRIC_EXTRACTORS, extract_metrics, write_json  # noqa: E402
 
 
 def geometric_mean(values: list[float]) -> float:

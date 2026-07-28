@@ -190,8 +190,8 @@ jobs:
 
       - name: Validate CI policy scripts
         run: |
-          python3 -m unittest scripts.test_bench_compare scripts.test_check scripts.test_lint_policy
-          python3 scripts/check_lint_policy.py
+          python3 -m unittest ci.test_performance ci.test_correctness ci.test_lint_policy
+          python3 -m ci.lint_policy
 
       - uses: dtolnay/rust-toolchain@1.97.0
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')
@@ -334,7 +334,7 @@ jobs:
 
       - name: Install Zig
         if: matrix.platform == 'riscv32'
-        run: bash scripts/install_zig_ci.sh
+        run: bash ci/install_zig.sh
 
       - name: Build baseline and candidate
         env:
@@ -395,7 +395,7 @@ jobs:
         run: |
           set -euo pipefail
           args=(
-            scripts/bench_compare.py
+            -m ci.performance
             --baseline-exec "perf-bin/baseline${EXE}"
             --candidate-exec "perf-bin/candidate${EXE}"
             --engine "$ENGINE"

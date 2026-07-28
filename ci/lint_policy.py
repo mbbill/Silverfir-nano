@@ -29,7 +29,7 @@ FORBIDDEN_FLAG_RE = re.compile(
     r"|--cap-lints(?:=|\s+|[\"']\s*,\s*[\"'])(?:allow|warn)\b"
 )
 FLAG_SCAN_SUFFIXES = {".py", ".ps1", ".rs", ".sh", ".toml", ".yaml", ".yml"}
-FLAG_SCAN_EXCLUDES = {"scripts/test_lint_policy.py"}
+FLAG_SCAN_EXCLUDES = {"ci/test_lint_policy.py"}
 
 
 @dataclasses.dataclass(frozen=True, order=True)
@@ -227,7 +227,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument(
         "--manifest",
         type=Path,
-        default=default_root / "scripts" / "lint_suppressions.toml",
+        default=default_root / "ci" / "lint_suppressions.toml",
     )
     return parser.parse_args(argv)
 

@@ -1,5 +1,7 @@
 target
 /tmp
+__pycache__/
+*.py[cod]
 # design build records (per-run audit trails) are archived but not tracked;
 # the design tree itself IS the committed deliverable
 design/_bak-*/

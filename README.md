@@ -241,21 +241,16 @@ cargo run --release -p sf-nano-cli --no-default-features --features interp -- pr
 
 ## Validation
 
-Use the Python runner as the canonical validation entry point:
+Local iteration uses ordinary Cargo commands:
 
 ```bash
-# The gate: workspace tests, full feature matrix, target matrix, spectests, and WASI tests.
-python3 scripts/check.py
-
-# Narrow it when iterating: one profile, host-friendly target rows only.
-python3 scripts/check.py --release-only --default-targets
-
-# Show the full platform-specific plan without running subprocesses.
-python3 scripts/check.py --release-only --default-targets --dry-run
-
-# Forward extra spectest arguments after --.
-python3 scripts/check.py -- i32 --log-level info
+cargo build --workspace
+cargo test --workspace
 ```
+
+GitHub Actions owns the exhaustive host, feature, QEMU cross-runtime,
+bare-metal, spec, WASI, warning, and performance matrices. Their
+implementation lives in `ci/`; see `ci/README.md`.
 
 ## License
 

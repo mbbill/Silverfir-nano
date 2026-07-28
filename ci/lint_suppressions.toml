@@ -1,4 +1,4 @@
-# Every entry is a reviewed exception to the repository-wide ban on
+# Every entry is a human-reviewed exception to the repository-wide ban on
 # dead-code/unused lint suppression. Keep this list small and exact.
 version = 1
 

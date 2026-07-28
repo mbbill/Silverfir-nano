@@ -34,11 +34,11 @@ simpler solution that workarounds would never reach.
 
 ## Do not suppress warnings or errors with band-aids
 
-Correctness has one warning behavior: `scripts/check.py` always fails when a
+Correctness has one warning behavior: `ci/correctness.py` always fails when a
 compiler warning appears. There is no `--strict` mode and no warning-ignore
 mode. Performance builds may compile through a warning so measurement can
 still finish, but the warning must remain visible and its audit is
-action-required. CI also runs `scripts/check_lint_policy.py`, which rejects
+action-required. CI also runs `ci/lint_policy.py`, which rejects
 unreviewed `allow` / `expect` attributes for `warnings`, `dead_code`, and
 `unused*`, compiler flags or Cargo lint settings that lower those lints, and
 stale exception entries.
@@ -50,7 +50,7 @@ just to make the compiler quiet. These hide real problems.
 If code is unused, remove it. If a parameter is unused, remove it from the
 signature and fix the call sites. If you believe a suppression is genuinely
 the right call, always ask the user for permission first and explain why.
-Do not add or modify `scripts/lint_suppressions.toml` merely to make CI green.
+Do not add or modify `ci/lint_suppressions.toml` merely to make CI green.
 That file records human-reviewed exceptional compilation boundaries; it is
 not an agent-owned allowlist.
 
