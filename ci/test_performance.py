@@ -1,4 +1,5 @@
 import json
+import math
 import sys
 import tempfile
 import unittest
@@ -8,433 +9,137 @@ from unittest.mock import patch
 import ci.performance as bench_compare
 from ci.performance import (
     classify_metrics,
-    confirmation_candidates,
-    fourth_round_candidates,
-    fourth_round_improvement_candidates,
-    paired_sign_evidence,
-    regression_candidates,
-    third_round_candidates,
-    third_round_improvement_candidates,
+    metric_plans,
+    probability_summary,
+    required_pairs,
+    student_t_cdf,
 )
 
 
-def metric(
-    delta_percent: float,
-    pair_deltas: list[float] | None = None,
-) -> dict:
-    pair_deltas = pair_deltas or [delta_percent, delta_percent]
+def measured_metric(deltas_percent: list[float]) -> dict:
+    ratios = [1.0 + delta / 100.0 for delta in deltas_percent]
+    statistics = probability_summary(ratios)
     return {
         "unit": "units/s",
         "direction": "higher",
-        "baseline_samples": [100.0, 100.0],
-        "candidate_samples": [100.0, 100.0],
+        "baseline_samples": [100.0] * len(ratios),
+        "candidate_samples": [100.0 * ratio for ratio in ratios],
         "baseline_geomean": 100.0,
-        "candidate_geomean": 100.0,
-        "pair_deltas_percent": pair_deltas,
-        "delta_percent": delta_percent,
+        "candidate_geomean": 100.0 * math.exp(
+            statistics["mean_log_ratio"]
+        ),
+        **statistics,
     }
 
 
-class StagedGateTests(unittest.TestCase):
-    def test_exact_sign_gate_requires_seven_of_eight_pairs(self) -> None:
-        seven_of_eight = [
-            metric(-2.0),
-            metric(-2.0),
-            metric(-2.0),
-            metric(-2.0, [-2.0, -0.5]),
-        ]
-        six_of_eight = [
-            metric(-2.0),
-            metric(-2.0),
-            metric(-2.0, [-2.0, 4.0]),
-            metric(-2.0, [-2.0, 4.0]),
-        ]
+class ProbabilityGateTests(unittest.TestCase):
+    def test_student_t_cdf_known_values_and_symmetry(self) -> None:
+        self.assertAlmostEqual(student_t_cdf(0.0, 1), 0.5, places=12)
+        self.assertAlmostEqual(student_t_cdf(1.0, 1), 0.75, places=12)
+        for degrees in (2, 5, 30):
+            for value in (0.25, 1.0, 3.0):
+                self.assertAlmostEqual(
+                    student_t_cdf(-value, degrees),
+                    1.0 - student_t_cdf(value, degrees),
+                    places=12,
+                )
 
-        confident = paired_sign_evidence(
-            seven_of_eight,
-            threshold_percent=1.0,
-            direction="regression",
-        )
-        unstable = paired_sign_evidence(
-            six_of_eight,
-            threshold_percent=1.0,
-            direction="regression",
+    def test_probability_summary_recognizes_direction(self) -> None:
+        regression = measured_metric([-2.0] * 6)
+        improvement = measured_metric([2.0] * 6)
+        stable = measured_metric([-2.0, 2.0, -1.5, 1.5])
+
+        self.assertEqual(regression["probability_regression"], 1.0)
+        self.assertEqual(improvement["probability_improvement"], 1.0)
+        self.assertLess(
+            abs(stable["probability_regression"] - 0.5),
+            0.03,
         )
 
-        self.assertEqual(confident["crossed_pair_count"], 7)
-        self.assertAlmostEqual(confident["p_value"], 9 / 256)
-        self.assertTrue(confident["confident"])
-        self.assertEqual(unstable["crossed_pair_count"], 6)
-        self.assertAlmostEqual(unstable["p_value"], 37 / 256)
-        self.assertFalse(unstable["confident"])
+    def test_required_pairs_grows_with_volatility(self) -> None:
+        stable = measured_metric([-2.0, -2.1, -1.9, -2.0])
+        noisy = measured_metric([-6.0, 2.0, -4.0, 0.0])
 
-    def test_persistent_but_contradictory_regression_is_unstable(self) -> None:
-        noisy = metric(-2.0, [-12.0, 8.0])
-        result = classify_metrics(
-            initial={"noisy": noisy},
-            confirmation={"noisy": noisy},
-            third_round={"noisy": noisy},
-            fourth_round={"noisy": noisy},
-            regression_threshold=1.0,
-            improvement_threshold=3.0,
+        stable_pairs = required_pairs(
+            stable,
+            probability=0.999,
+            minimum_pairs=6,
+            maximum_pairs=24,
+        )
+        noisy_pairs = required_pairs(
+            noisy,
+            probability=0.999,
+            minimum_pairs=6,
+            maximum_pairs=24,
         )
 
-        self.assertEqual(result["noisy"]["status"], "UNSTABLE")
-        evidence = result["noisy"]["paired_sign_evidence"]
-        self.assertEqual(evidence["crossed_pair_count"], 4)
-        self.assertFalse(evidence["confident"])
+        self.assertEqual(stable_pairs, 6)
+        self.assertTrue(noisy_pairs is None or noisy_pairs > stable_pairs)
 
-    def test_byte_identical_executables_cannot_fail_or_claim_improvement(
-        self,
-    ) -> None:
-        regression = metric(-2.0)
-        improvement = metric(4.0)
-        result = classify_metrics(
-            initial={
-                "regression": regression,
-                "improvement": improvement,
-            },
-            confirmation={
-                "regression": regression,
-                "improvement": improvement,
-            },
-            third_round={
-                "regression": regression,
-                "improvement": improvement,
-            },
-            fourth_round={
-                "regression": regression,
-                "improvement": improvement,
-            },
-            regression_threshold=1.0,
-            improvement_threshold=3.0,
-            identical_binaries=True,
+    def test_one_percent_regression_is_detectable_when_stable(self) -> None:
+        pilot = measured_metric([-0.8, -1.2, -0.9, -1.1])
+        confirmation = measured_metric(
+            [-0.8, -1.2, -0.9, -1.1] * 6
         )
 
-        self.assertEqual(result["regression"]["status"], "UNSTABLE")
-        self.assertEqual(result["improvement"]["status"], "PASS")
-
-    def test_observed_identical_binary_stream_drift_is_unstable(self) -> None:
-        # ARM64 macOS / interpreter in Actions run 30343088166. Baseline and
-        # candidate hashes were identical, yet all four aggregate deltas
-        # crossed -1% because the individual pairs swung in both directions.
-        rounds = [
-            metric(-1.48, [-12.61, 11.06]),
-            metric(-3.38, [-2.20, -4.55]),
-            metric(-10.32, [-12.45, -8.14]),
-            metric(-3.18, [4.47, -10.27]),
-        ]
-        result = classify_metrics(
-            initial={"stream-Copy": rounds[0]},
-            confirmation={"stream-Copy": rounds[1]},
-            third_round={"stream-Copy": rounds[2]},
-            fourth_round={"stream-Copy": rounds[3]},
-            regression_threshold=1.0,
-            improvement_threshold=3.0,
+        target_pairs = required_pairs(
+            pilot,
+            probability=0.9999,
+            minimum_pairs=6,
+            maximum_pairs=24,
         )
 
-        evidence = result["stream-Copy"]["paired_sign_evidence"]
-        self.assertEqual(result["stream-Copy"]["status"], "UNSTABLE")
-        self.assertEqual(evidence["crossed_pair_count"], 6)
-        self.assertAlmostEqual(evidence["p_value"], 37 / 256)
-
-    def test_inconsistent_four_round_improvement_remains_pass(self) -> None:
-        noisy = metric(4.0, [12.0, -4.0])
-        result = classify_metrics(
-            initial={"noisy": noisy},
-            confirmation={"noisy": noisy},
-            third_round={"noisy": noisy},
-            fourth_round={"noisy": noisy},
-            regression_threshold=1.0,
-            improvement_threshold=3.0,
+        self.assertIsNotNone(target_pairs)
+        self.assertLessEqual(target_pairs, 24)
+        self.assertGreaterEqual(
+            confirmation["probability_regression"],
+            0.9999,
         )
 
-        self.assertEqual(result["noisy"]["status"], "PASS")
-        self.assertFalse(
-            result["noisy"]["paired_sign_evidence"]["confident"]
-        )
-
-    def test_regression_and_improvement_rules(self) -> None:
+    def test_classification_freezes_initial_direction(self) -> None:
         initial = {
-            "second_recovers": metric(-1.5),
-            "third_recovers": metric(-1.2),
-            "fourth_recovers": metric(-1.1),
-            "persists": metric(-2.0),
-            "new_second_regression": metric(-0.5),
-            "new_second_improvement": metric(0.5),
-            "confirmed_improvement": metric(3.1),
-            "faded_improvement": metric(4.0),
-            "third_faded_improvement": metric(3.5),
-            "fourth_faded_improvement": metric(3.5),
+            "regression": measured_metric([-2.0] * 4),
+            "late": measured_metric([0.0] * 4),
+            "improvement": measured_metric([3.0] * 4),
         }
-        confirmation = {
-            "second_recovers": metric(-0.5),
-            "third_recovers": metric(-1.1),
-            "fourth_recovers": metric(-1.1),
-            "persists": metric(-1.1),
-            "confirmed_improvement": metric(3.2),
-            "faded_improvement": metric(3.0),
-            "third_faded_improvement": metric(3.2),
-            "fourth_faded_improvement": metric(3.2),
-            # This must be ignored because it passed the initial screen.
-            "new_second_regression": metric(-9.0),
-            "new_second_improvement": metric(9.0),
-        }
-        third_round = {
-            "third_recovers": metric(-0.9),
-            "fourth_recovers": metric(-1.1),
-            "persists": metric(-1.01),
-            "confirmed_improvement": metric(3.3),
-            "third_faded_improvement": metric(3.0),
-            "fourth_faded_improvement": metric(3.2),
-            # This remains ignored despite sharing a rerun benchmark.
-            "new_second_regression": metric(-20.0),
-            "new_second_improvement": metric(20.0),
-        }
-        fourth_round = {
-            "fourth_recovers": metric(-0.9),
-            "persists": metric(-1.01),
-            "confirmed_improvement": metric(3.4),
-            "fourth_faded_improvement": metric(3.0),
-            "new_second_improvement": metric(20.0),
-        }
-
-        self.assertEqual(
-            regression_candidates(initial, 1.0),
-            {
-                "second_recovers",
-                "third_recovers",
-                "fourth_recovers",
-                "persists",
-            },
+        plans = metric_plans(
+            initial,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            minimum_pairs=6,
+            maximum_pairs=24,
         )
-        self.assertEqual(
-            confirmation_candidates(initial, 1.0, 3.0),
-            {
-                "second_recovers",
-                "third_recovers",
-                "fourth_recovers",
-                "persists",
-                "confirmed_improvement",
-                "faded_improvement",
-                "third_faded_improvement",
-                "fourth_faded_improvement",
-            },
-        )
-        self.assertEqual(
-            third_round_candidates(initial, confirmation, 1.0),
-            {"third_recovers", "fourth_recovers", "persists"},
-        )
-        self.assertEqual(
-            fourth_round_candidates(
-                initial,
-                confirmation,
-                third_round,
-                1.0,
-            ),
-            {"fourth_recovers", "persists"},
-        )
-        self.assertEqual(
-            third_round_improvement_candidates(
-                initial,
-                confirmation,
-                3.0,
-            ),
-            {
-                "confirmed_improvement",
-                "third_faded_improvement",
-                "fourth_faded_improvement",
-            },
-        )
-        self.assertEqual(
-            fourth_round_improvement_candidates(
-                initial,
-                confirmation,
-                third_round,
-                3.0,
-            ),
-            {"confirmed_improvement", "fourth_faded_improvement"},
-        )
-
-        result = classify_metrics(
-            initial=initial,
-            confirmation=confirmation,
-            third_round=third_round,
-            fourth_round=fourth_round,
-            regression_threshold=1.0,
-            improvement_threshold=3.0,
-        )
-
-        self.assertEqual(result["second_recovers"]["status"], "RECOVERED")
-        self.assertIsNone(result["second_recovers"]["third_round"])
-        self.assertEqual(result["third_recovers"]["status"], "RECOVERED")
-        self.assertIsNone(result["third_recovers"]["fourth_round"])
-        self.assertEqual(result["fourth_recovers"]["status"], "RECOVERED")
-        self.assertEqual(result["persists"]["status"], "REGRESSION")
-        self.assertEqual(result["new_second_regression"]["status"], "PASS")
-        self.assertIsNone(
-            result["new_second_regression"]["confirmation"]
-        )
-        self.assertIsNone(result["new_second_regression"]["third_round"])
-        self.assertIsNone(result["new_second_regression"]["fourth_round"])
-        self.assertEqual(result["new_second_improvement"]["status"], "PASS")
-        self.assertIsNone(
-            result["new_second_improvement"]["confirmation"]
-        )
-        self.assertIsNone(
-            result["new_second_improvement"]["third_round"]
-        )
-        self.assertIsNone(
-            result["new_second_improvement"]["fourth_round"]
-        )
-        self.assertEqual(
-            result["confirmed_improvement"]["status"],
-            "IMPROVEMENT",
-        )
-        self.assertEqual(result["faded_improvement"]["status"], "PASS")
-        self.assertEqual(
-            result["third_faded_improvement"]["status"],
-            "PASS",
-        )
-        self.assertIsNone(
-            result["third_faded_improvement"]["fourth_round"]
-        )
-        self.assertEqual(
-            result["fourth_faded_improvement"]["status"],
-            "PASS",
-        )
-        self.assertIsNotNone(
-            result["confirmed_improvement"]["third_round"]
-        )
-        self.assertIsNotNone(
-            result["confirmed_improvement"]["fourth_round"]
-        )
-        self.assertIsNone(
-            result["faded_improvement"]["third_round"]
-        )
-
-    def test_threshold_boundaries_are_inclusive_passes(self) -> None:
-        initial = {
-            "negative_boundary": metric(-1.0),
-            "positive_boundary": metric(3.0),
+        final = {
+            "regression": measured_metric([-2.0] * 6),
+            "improvement": measured_metric([3.0] * 6),
+            # This must be ignored because it had no initial direction.
+            "late": measured_metric([-20.0] * 6),
         }
         result = classify_metrics(
             initial=initial,
-            confirmation={},
-            third_round={},
-            fourth_round={},
-            regression_threshold=1.0,
-            improvement_threshold=3.0,
+            final=final,
+            plans=plans,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
         )
 
-        self.assertEqual(result["negative_boundary"]["status"], "PASS")
-        self.assertEqual(result["positive_boundary"]["status"], "PASS")
+        self.assertEqual(result["regression"]["status"], "REGRESSION")
+        self.assertEqual(result["improvement"]["status"], "IMPROVEMENT")
+        self.assertEqual(result["late"]["status"], "PASS")
+        self.assertEqual(result["late"]["pair_count"], 4)
 
-    def test_later_round_boundaries_recover(self) -> None:
-        result = classify_metrics(
-            initial={
-                "second_boundary": metric(-1.01),
-                "third_boundary": metric(-1.01),
-                "fourth_boundary": metric(-1.01),
-            },
-            confirmation={
-                "second_boundary": metric(-1.0),
-                "third_boundary": metric(-1.01),
-                "fourth_boundary": metric(-1.01),
-            },
-            third_round={
-                "third_boundary": metric(-1.0),
-                "fourth_boundary": metric(-1.01),
-            },
-            fourth_round={"fourth_boundary": metric(-1.0)},
-            regression_threshold=1.0,
-            improvement_threshold=3.0,
+    def test_unstable_signal_is_not_selected_within_budget(self) -> None:
+        initial = {
+            "unstable": measured_metric([-20.0, 20.0, -18.0, 18.0])
+        }
+        plans = metric_plans(
+            initial,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            minimum_pairs=6,
+            maximum_pairs=24,
         )
-
-        self.assertEqual(result["second_boundary"]["status"], "RECOVERED")
-        self.assertEqual(result["third_boundary"]["status"], "RECOVERED")
-        self.assertEqual(result["fourth_boundary"]["status"], "RECOVERED")
-
-    def test_later_improvement_boundaries_pass(self) -> None:
-        result = classify_metrics(
-            initial={
-                "second_boundary": metric(3.01),
-                "third_boundary": metric(3.01),
-                "fourth_boundary": metric(3.01),
-            },
-            confirmation={
-                "second_boundary": metric(3.0),
-                "third_boundary": metric(3.01),
-                "fourth_boundary": metric(3.01),
-            },
-            third_round={
-                "third_boundary": metric(3.0),
-                "fourth_boundary": metric(3.01),
-            },
-            fourth_round={"fourth_boundary": metric(3.0)},
-            regression_threshold=1.0,
-            improvement_threshold=3.0,
-        )
-
-        self.assertEqual(result["second_boundary"]["status"], "PASS")
-        self.assertEqual(result["third_boundary"]["status"], "PASS")
-        self.assertEqual(result["fourth_boundary"]["status"], "PASS")
-
-    def test_selected_metric_requires_second_round(self) -> None:
-        with self.assertRaisesRegex(
-            ValueError,
-            "selected metric has no second round",
-        ):
-            classify_metrics(
-                initial={"missing": metric(-1.01)},
-                confirmation={},
-                third_round={},
-                fourth_round={},
-                regression_threshold=1.0,
-                improvement_threshold=3.0,
-            )
-
-    def test_persistent_regression_requires_third_round(self) -> None:
-        with self.assertRaisesRegex(
-            ValueError,
-            "persistent metric has no third round",
-        ):
-            classify_metrics(
-                initial={"missing": metric(-1.01)},
-                confirmation={"missing": metric(-1.01)},
-                third_round={},
-                fourth_round={},
-                regression_threshold=1.0,
-                improvement_threshold=3.0,
-            )
-
-    def test_persistent_regression_requires_fourth_round(self) -> None:
-        with self.assertRaisesRegex(
-            ValueError,
-            "persistent metric has no fourth round",
-        ):
-            classify_metrics(
-                initial={"missing": metric(-1.01)},
-                confirmation={"missing": metric(-1.01)},
-                third_round={"missing": metric(-1.01)},
-                fourth_round={},
-                regression_threshold=1.0,
-                improvement_threshold=3.0,
-            )
-
-    def test_persistent_improvement_requires_fourth_round(self) -> None:
-        with self.assertRaisesRegex(
-            ValueError,
-            "persistent improvement has no fourth round",
-        ):
-            classify_metrics(
-                initial={"missing": metric(3.01)},
-                confirmation={"missing": metric(3.01)},
-                third_round={"missing": metric(3.01)},
-                fourth_round={},
-                regression_threshold=1.0,
-                improvement_threshold=3.0,
-            )
+        self.assertFalse(plans["unstable"]["selected"])
 
 
 class ScriptIntegrationTests(unittest.TestCase):
@@ -480,7 +185,7 @@ class ScriptIntegrationTests(unittest.TestCase):
             "PASS",
         )
 
-    def test_main_runs_four_rounds_and_ignores_late_regression(self) -> None:
+    def test_main_targets_selected_metric_and_ignores_late_change(self) -> None:
         tests = [{"name": "synthetic"}]
         extractors = {
             "synthetic": [
@@ -509,7 +214,7 @@ class ScriptIntegrationTests(unittest.TestCase):
                     "late": {
                         "value": (
                             100.0
-                            if baseline or block == 0
+                            if baseline or block < 2
                             else 80.0
                         ),
                         "unit": "units/s",
@@ -520,17 +225,6 @@ class ScriptIntegrationTests(unittest.TestCase):
 
         with tempfile.TemporaryDirectory() as temp_dir:
             out_dir = Path(temp_dir)
-            metadata = out_dir / "build-metadata.json"
-            metadata.write_text(
-                json.dumps(
-                    {
-                        "platform": "synthetic",
-                        "engine": "interp",
-                        "identical_binaries": False,
-                    }
-                ),
-                encoding="utf-8",
-            )
             argv = [
                 "bench_compare.py",
                 "--baseline-exec",
@@ -541,12 +235,16 @@ class ScriptIntegrationTests(unittest.TestCase):
                 "interp",
                 "--platform",
                 "synthetic",
-                "--build-metadata",
-                str(metadata),
                 "--warmup-time",
                 "0",
                 "--time",
                 "0.01",
+                "--blocks",
+                "2",
+                "--min-pairs",
+                "6",
+                "--max-pairs",
+                "24",
                 "--out-dir",
                 str(out_dir),
             ]
@@ -574,16 +272,14 @@ class ScriptIntegrationTests(unittest.TestCase):
 
         self.assertEqual(exit_code, 1)
         self.assertEqual(document["schema_version"], 5)
-        self.assertEqual(document["paired_sign_alpha"], 0.05)
-        self.assertFalse(document["identical_binaries"])
-        self.assertEqual(len(result["runs"]), 16)
+        self.assertEqual(len(result["runs"]), 20)
         schedules = [
             [
                 run["version"]
                 for run in result["runs"]
                 if run["block"] == block
             ]
-            for block in range(4)
+            for block in range(5)
         ]
         self.assertEqual(
             schedules,
@@ -592,19 +288,16 @@ class ScriptIntegrationTests(unittest.TestCase):
                 ["candidate", "baseline", "candidate", "baseline"],
                 ["baseline", "candidate", "baseline", "candidate"],
                 ["candidate", "baseline", "candidate", "baseline"],
+                ["baseline", "candidate", "baseline", "candidate"],
             ],
         )
-        self.assertEqual(result["third_round_metrics"], ["score"])
-        self.assertEqual(result["fourth_round_metrics"], ["score"])
+        self.assertEqual(result["candidate_metrics"], ["score"])
         self.assertEqual(result["metrics"]["score"]["status"], "REGRESSION")
+        self.assertEqual(result["metrics"]["score"]["pair_count"], 6)
         self.assertEqual(result["metrics"]["late"]["status"], "PASS")
-        self.assertIsNone(
-            result["metrics"]["late"]["confirmation"]
-        )
-        self.assertIsNone(result["metrics"]["late"]["third_round"])
-        self.assertIsNone(result["metrics"]["late"]["fourth_round"])
+        self.assertEqual(result["metrics"]["late"]["pair_count"], 4)
 
-    def test_main_confirms_improvement_in_four_rounds(self) -> None:
+    def test_main_confirms_improvement_at_planned_pair_count(self) -> None:
         tests = [{"name": "synthetic"}]
         extractors = {
             "synthetic": [("score", None, "units/s", "higher")]
@@ -643,6 +336,12 @@ class ScriptIntegrationTests(unittest.TestCase):
                 "0",
                 "--time",
                 "0.01",
+                "--blocks",
+                "2",
+                "--min-pairs",
+                "6",
+                "--max-pairs",
+                "24",
                 "--out-dir",
                 str(out_dir),
             ]
@@ -669,18 +368,12 @@ class ScriptIntegrationTests(unittest.TestCase):
             result = document["tests"]["synthetic"]
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(len(result["runs"]), 16)
-        self.assertEqual(result["third_round_metrics"], ["score"])
-        self.assertEqual(result["fourth_round_metrics"], ["score"])
+        self.assertEqual(len(result["runs"]), 20)
         self.assertEqual(
             result["metrics"]["score"]["status"],
             "IMPROVEMENT",
         )
-        self.assertIsNotNone(
-            result["metrics"]["score"]["confirmation"]
-        )
-        self.assertIsNotNone(result["metrics"]["score"]["third_round"])
-        self.assertIsNotNone(result["metrics"]["score"]["fourth_round"])
+        self.assertEqual(result["metrics"]["score"]["pair_count"], 6)
 
 
 if __name__ == "__main__":

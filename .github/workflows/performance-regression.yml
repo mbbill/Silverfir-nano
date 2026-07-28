@@ -18,9 +18,9 @@ on:
         default: false
         type: boolean
       blocks:
-        description: "Initial alternating blocks; each block has two A/B pairs"
+        description: "Initial alternating blocks; each block has two paired samples"
         required: true
-        default: "3"
+        default: "2"
         type: choice
         options:
           - "1"
@@ -91,7 +91,7 @@ jobs:
             baseline="$(git merge-base origin/main "$candidate")"
           fi
 
-          blocks="${INPUT_BLOCKS:-1}"
+          blocks="${INPUT_BLOCKS:-2}"
           matrix="$(python3 - <<'PY'
           import json
           import os
@@ -154,10 +154,7 @@ jobs:
                   "dev": False,
               },
           ]
-          dev_only = (
-              os.environ["GITHUB_EVENT_NAME"] == "push"
-              and os.environ["GITHUB_REF"].startswith("refs/heads/dev/")
-          )
+          dev_only = os.environ["GITHUB_REF"].startswith("refs/heads/dev/")
           include = []
           for platform in platforms:
               if dev_only and not platform["dev"]:
@@ -183,13 +180,12 @@ jobs:
             echo
             echo "- baseline: \`$baseline\`"
             echo "- candidate: \`$candidate\`"
-            echo "- initial alternating blocks: \`$blocks\`"
-            echo "- follow-up alternating blocks: \`1\` per round"
+            echo "- initial paired samples: \`$((blocks * 2))\`"
             echo "- order: \`ABAB / BABA\` alternating"
-            echo "- regression rounds: up to \`4\`"
-            echo "- improvement rounds: up to \`4\`"
-            echo "- regression threshold: \`1%\`"
-            echo "- improvement threshold: \`3%\`"
+            echo "- targeted pair budget: \`6..24\`"
+            echo "- regression probability: \`99.99%\`"
+            echo "- improvement probability: \`99.9%\`"
+            echo "- model: \`paired log delta + Student-t\`"
             echo "- calibration: \`$calibration\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -401,9 +397,10 @@ jobs:
             --candidate-sha "$CANDIDATE_SHA"
             --build-metadata "perf-bin/build-metadata.json"
             --blocks "$BLOCKS"
-            --confirmation-blocks 1
-            --regression-threshold 1
-            --improvement-threshold 3
+            --min-pairs 6
+            --max-pairs 24
+            --regression-probability 99.99
+            --improvement-probability 99.9
             --out-dir "perf-output/${ENGINE}"
           )
           if [[ -n "$RUNNER_PREFIX" ]]; then

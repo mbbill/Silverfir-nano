@@ -1,21 +1,27 @@
 #!/usr/bin/env python3
-"""Compare two sf-nano-cli builds with a staged alternating performance gate.
+"""Compare two sf-nano-cli builds with paired, probability-based sampling.
 
 Both binaries run on the same machine against this checkout's benchmark
-corpus. Measured blocks alternate baseline/candidate/baseline/candidate and
-candidate/baseline/candidate/baseline. Every pair is adjacent, no version runs
-twice consecutively, and follow-up rounds reverse which version runs first.
+corpus. Alternating blocks contain two adjacent A/B pairs and reverse order
+between blocks:
 
-The initial block produces two paired deltas for every metric. Initial
-regressions and improvements are selected for a second round. A regression
-that remains below the threshold receives up to two more rounds and fails only
-if all four rounds remain below the threshold and the pooled adjacent pairs
-pass a one-sided exact sign test. An improvement is reported only if all four
-rounds remain above its threshold and the same consistency check passes.
+    baseline, candidate, baseline, candidate
+    candidate, baseline, candidate, baseline
 
-Only metrics selected by the initial screen can affect later classification.
-New changes observed while rerunning a multi-metric benchmark are ignored.
-Raw samples from every executed round are retained in the output.
+The initial blocks run every selected benchmark. For each metric, paired
+candidate/baseline ratios are converted to log deltas. Their mean, sample
+volatility, and Student-t posterior determine how many total pairs would be
+needed to reach the requested regression or improvement probability.
+
+Only benchmarks with an initial signal that can be resolved within the pair
+budget are rerun. The target pair count is chosen once from the initial data.
+The initial sample is a pilot and is not reused by the final gate: probability
+is calculated from a new, independent confirmation sample. This two-stage
+sample split avoids both repeated peeking and selection bias from choosing a
+direction on the same data used for the decision.
+
+Metrics that were not selected by the initial screen cannot become regressions
+or improvements merely because their benchmark was rerun for another metric.
 """
 
 from __future__ import annotations
@@ -35,19 +41,281 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "benchmarks" / "wasi"))
 
 import run_tests  # noqa: E402
-from ci.bench_metrics import METRIC_EXTRACTORS, extract_metrics, write_json  # noqa: E402
-
-
-PAIRED_SIGN_ALPHA = 0.05
+from ci.bench_metrics import (  # noqa: E402
+    METRIC_EXTRACTORS,
+    extract_metrics,
+    write_json,
+)
 
 
 def geometric_mean(values: list[float]) -> float:
     if not values or any(value <= 0 for value in values):
         raise ValueError("geometric mean requires positive samples")
-    return math.exp(sum(math.log(value) for value in values) / len(values))
+    return math.exp(math.fsum(math.log(value) for value in values) / len(values))
 
 
-def command_for(binary: Path, runner_prefix: str, engine: str) -> tuple[str, list[str]]:
+def _beta_continued_fraction(a: float, b: float, x: float) -> float:
+    """Evaluate the continued fraction used by regularized incomplete beta."""
+    max_iterations = 200
+    epsilon = 3e-14
+    tiny = 1e-300
+    qab = a + b
+    qap = a + 1.0
+    qam = a - 1.0
+    c = 1.0
+    d = 1.0 - qab * x / qap
+    if abs(d) < tiny:
+        d = tiny
+    d = 1.0 / d
+    result = d
+
+    for iteration in range(1, max_iterations + 1):
+        even = 2 * iteration
+        coefficient = (
+            iteration * (b - iteration) * x
+            / ((qam + even) * (a + even))
+        )
+        d = 1.0 + coefficient * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + coefficient / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        result *= d * c
+
+        coefficient = -(
+            (a + iteration) * (qab + iteration) * x
+            / ((a + even) * (qap + even))
+        )
+        d = 1.0 + coefficient * d
+        if abs(d) < tiny:
+            d = tiny
+        c = 1.0 + coefficient / c
+        if abs(c) < tiny:
+            c = tiny
+        d = 1.0 / d
+        delta = d * c
+        result *= delta
+        if abs(delta - 1.0) <= epsilon:
+            return result
+
+    raise ArithmeticError("incomplete beta continued fraction did not converge")
+
+
+def regularized_incomplete_beta(x: float, a: float, b: float) -> float:
+    if a <= 0.0 or b <= 0.0:
+        raise ValueError("beta parameters must be positive")
+    if x <= 0.0:
+        return 0.0
+    if x >= 1.0:
+        return 1.0
+
+    log_factor = (
+        math.lgamma(a + b)
+        - math.lgamma(a)
+        - math.lgamma(b)
+        + a * math.log(x)
+        + b * math.log1p(-x)
+    )
+    factor = math.exp(log_factor)
+    if x < (a + 1.0) / (a + b + 2.0):
+        return factor * _beta_continued_fraction(a, b, x) / a
+    return 1.0 - (
+        factor * _beta_continued_fraction(b, a, 1.0 - x) / b
+    )
+
+
+def student_t_cdf(value: float, degrees_of_freedom: int) -> float:
+    """CDF of Student's t without a scipy dependency."""
+    if degrees_of_freedom <= 0:
+        raise ValueError("degrees of freedom must be positive")
+    if value == 0.0:
+        return 0.5
+    if math.isinf(value):
+        return 1.0 if value > 0.0 else 0.0
+
+    df = float(degrees_of_freedom)
+    x = df / (df + value * value)
+    tail = 0.5 * regularized_incomplete_beta(x, df / 2.0, 0.5)
+    return 1.0 - tail if value > 0.0 else tail
+
+
+def probability_summary(pair_ratios: list[float]) -> dict[str, Any]:
+    if len(pair_ratios) < 2:
+        raise ValueError("probability analysis requires at least two pairs")
+    if any(ratio <= 0.0 for ratio in pair_ratios):
+        raise ValueError("paired ratios must be positive")
+
+    log_deltas = [math.log(ratio) for ratio in pair_ratios]
+    pair_count = len(log_deltas)
+    mean_log = math.fsum(log_deltas) / pair_count
+    squared = math.fsum(
+        (value - mean_log) ** 2 for value in log_deltas
+    )
+    stddev_log = math.sqrt(squared / (pair_count - 1))
+    standard_error = stddev_log / math.sqrt(pair_count)
+
+    if standard_error == 0.0:
+        if mean_log < 0.0:
+            probability_regression = 1.0
+        elif mean_log > 0.0:
+            probability_regression = 0.0
+        else:
+            probability_regression = 0.5
+    else:
+        zero_t = -mean_log / standard_error
+        probability_regression = student_t_cdf(
+            zero_t, pair_count - 1
+        )
+
+    return {
+        "pair_count": pair_count,
+        "log_deltas": log_deltas,
+        "mean_log_ratio": mean_log,
+        "log_ratio_stddev": stddev_log,
+        "standard_error": standard_error,
+        "probability_regression": probability_regression,
+        "probability_improvement": 1.0 - probability_regression,
+        "delta_percent": math.expm1(mean_log) * 100.0,
+        "volatility_percent": math.expm1(stddev_log) * 100.0,
+        "pair_deltas_percent": [
+            math.expm1(value) * 100.0 for value in log_deltas
+        ],
+    }
+
+
+def direction_probability_for_pairs(
+    *,
+    mean_log_ratio: float,
+    log_ratio_stddev: float,
+    pair_count: int,
+) -> float:
+    if pair_count < 2:
+        raise ValueError("pair count must be at least two")
+    magnitude = abs(mean_log_ratio)
+    if magnitude == 0.0:
+        return 0.5
+    if log_ratio_stddev == 0.0:
+        return 1.0
+    t_value = magnitude / (log_ratio_stddev / math.sqrt(pair_count))
+    return student_t_cdf(t_value, pair_count - 1)
+
+
+def required_pairs(
+    metric: dict[str, Any],
+    *,
+    probability: float,
+    minimum_pairs: int,
+    maximum_pairs: int,
+) -> int | None:
+    """Predict a fixed final pair count from the initial effect and variance."""
+    if not 0.5 < probability < 1.0:
+        raise ValueError("probability must be between 0.5 and 1")
+    current_pairs = int(metric["pair_count"])
+    start = max(current_pairs, minimum_pairs)
+    if start % 2:
+        start += 1
+
+    for pair_count in range(start, maximum_pairs + 1, 2):
+        observed_probability = direction_probability_for_pairs(
+            mean_log_ratio=float(metric["mean_log_ratio"]),
+            log_ratio_stddev=float(metric["log_ratio_stddev"]),
+            pair_count=pair_count,
+        )
+        if observed_probability >= probability:
+            return pair_count
+    return None
+
+
+def metric_plans(
+    metrics: dict[str, dict[str, Any]],
+    *,
+    regression_probability: float,
+    improvement_probability: float,
+    minimum_pairs: int,
+    maximum_pairs: int,
+) -> dict[str, dict[str, Any]]:
+    plans: dict[str, dict[str, Any]] = {}
+    for name, metric in metrics.items():
+        mean_log = float(metric["mean_log_ratio"])
+        if mean_log < 0.0:
+            direction = "regression"
+            target_probability = regression_probability
+        elif mean_log > 0.0:
+            direction = "improvement"
+            target_probability = improvement_probability
+        else:
+            direction = None
+            target_probability = None
+
+        target_pairs = None
+        if direction is not None:
+            target_pairs = required_pairs(
+                metric,
+                probability=float(target_probability),
+                minimum_pairs=minimum_pairs,
+                maximum_pairs=maximum_pairs,
+            )
+        plans[name] = {
+            "direction": direction,
+            "target_probability": target_probability,
+            "target_pairs": target_pairs,
+            "selected": target_pairs is not None,
+        }
+    return plans
+
+
+def classify_metrics(
+    *,
+    initial: dict[str, dict[str, Any]],
+    final: dict[str, dict[str, Any]],
+    plans: dict[str, dict[str, Any]],
+    regression_probability: float,
+    improvement_probability: float,
+) -> dict[str, dict[str, Any]]:
+    """Classify only directions frozen by the initial screening stage."""
+    metrics: dict[str, dict[str, Any]] = {}
+    for name, initial_metric in initial.items():
+        plan = plans[name]
+        selected = bool(plan["selected"])
+        measured = final.get(name) if selected else initial_metric
+        if measured is None:
+            raise ValueError(f"{name}: selected metric has no final sample")
+
+        direction = plan["direction"]
+        if direction == "regression" and selected:
+            status = (
+                "REGRESSION"
+                if measured["probability_regression"]
+                >= regression_probability
+                else "RECOVERED"
+            )
+        elif direction == "improvement" and selected:
+            status = (
+                "IMPROVEMENT"
+                if measured["probability_improvement"]
+                >= improvement_probability
+                else "PASS"
+            )
+        else:
+            status = "PASS"
+
+        metrics[name] = {
+            **measured,
+            "initial": initial_metric,
+            "candidate_direction": direction,
+            "target_pairs": plan["target_pairs"],
+            "status": status,
+        }
+    return metrics
+
+
+def command_for(
+    binary: Path,
+    runner_prefix: str,
+    engine: str,
+) -> tuple[str, list[str]]:
     binary = binary.resolve()
     if not binary.is_file():
         raise ValueError(f"runtime binary not found: {binary}")
@@ -77,12 +345,7 @@ def run_correctness_suite(
     candidate_sha: str,
     out_dir: Path,
 ) -> int:
-    """Run every benchmark once on A and B and validate its fixed oracle.
-
-    This mode is intended for emulated architectures. It executes the same
-    benchmark programs as performance mode, but records no A/B delta and
-    applies no performance threshold.
-    """
+    """Run every benchmark once on A and B and validate its fixed oracle."""
     results: dict[str, Any] = {}
     failed = False
     commands = {
@@ -144,16 +407,17 @@ def run_correctness_suite(
     lines = [
         f"## Benchmark correctness: {platform} / {engine}",
         "",
-        f"`{baseline_sha or 'baseline'}` → `{candidate_sha or 'candidate'}`",
+        f"`{baseline_sha or 'baseline'}` -> "
+        f"`{candidate_sha or 'candidate'}`",
         "",
         "| Benchmark | Baseline | Candidate |",
         "| --- | --- | --- |",
     ]
     for name, test_results in results.items():
-        baseline_status = test_results["baseline"]["status"]
-        candidate_status = test_results["candidate"]["status"]
         lines.append(
-            f"| {name} | {baseline_status} | {candidate_status} |"
+            f"| {name} | "
+            f"{test_results['baseline']['status']} | "
+            f"{test_results['candidate']['status']} |"
         )
     lines.extend([
         "",
@@ -222,7 +486,9 @@ def run_once(
     }
 
 
-def pair_block(runs: list[dict[str, Any]]) -> list[tuple[dict, dict]]:
+def pair_block(
+    runs: list[dict[str, Any]],
+) -> list[tuple[dict[str, Any], dict[str, Any]]]:
     versions = [run["version"] for run in runs]
     if versions == ["baseline", "candidate", "baseline", "candidate"]:
         return [(runs[0], runs[1]), (runs[2], runs[3])]
@@ -242,7 +508,8 @@ def analyze_phase(
         raise ValueError(f"{test_name}: phase has no alternating blocks")
 
     expected_names = [
-        label for label, _regex, _unit, _direction
+        label
+        for label, _regex, _unit, _direction
         in METRIC_EXTRACTORS[test_name]
     ]
     metrics: dict[str, Any] = {}
@@ -268,7 +535,9 @@ def analyze_phase(
                 base_metric = baseline["metrics"][metric_name]
                 candidate_metric = candidate["metrics"][metric_name]
                 if base_metric["unit"] != candidate_metric["unit"]:
-                    raise ValueError(f"unit changed for {test_name}/{metric_name}")
+                    raise ValueError(
+                        f"unit changed for {test_name}/{metric_name}"
+                    )
                 if base_metric["direction"] != candidate_metric["direction"]:
                     raise ValueError(
                         f"direction changed for {test_name}/{metric_name}"
@@ -284,316 +553,15 @@ def analyze_phase(
                     ratio = base_value / candidate_value
                 pair_ratios.append(ratio)
 
-        baseline_mean = geometric_mean(baseline_values)
-        candidate_mean = geometric_mean(candidate_values)
-        relative = geometric_mean(pair_ratios)
-        delta_percent = (relative - 1.0) * 100.0
-        pair_deltas = [(ratio - 1.0) * 100.0 for ratio in pair_ratios]
-
+        statistics = probability_summary(pair_ratios)
         metrics[metric_name] = {
             "unit": unit,
             "direction": direction,
             "baseline_samples": baseline_values,
             "candidate_samples": candidate_values,
-            "baseline_geomean": baseline_mean,
-            "candidate_geomean": candidate_mean,
-            "pair_deltas_percent": pair_deltas,
-            "delta_percent": delta_percent,
-        }
-
-    return metrics
-
-
-def regression_candidates(
-    metrics: dict[str, dict[str, Any]],
-    threshold_percent: float,
-) -> set[str]:
-    return {
-        name
-        for name, metric in metrics.items()
-        if metric["delta_percent"] < -threshold_percent
-    }
-
-
-def improvement_candidates(
-    metrics: dict[str, dict[str, Any]],
-    threshold_percent: float,
-) -> set[str]:
-    return {
-        name
-        for name, metric in metrics.items()
-        if metric["delta_percent"] > threshold_percent
-    }
-
-
-def paired_sign_evidence(
-    phases: Iterable[dict[str, Any]],
-    *,
-    threshold_percent: float,
-    direction: str,
-) -> dict[str, Any]:
-    """Exact one-sided sign evidence across adjacent A/B pairs.
-
-    Round geomeans decide which candidates receive another measurement. The
-    final label additionally needs pair-level consistency: under the null
-    hypothesis that a pair is no more likely than not to cross the material
-    threshold, the exact binomial upper tail must be at most 5%.
-
-    With the normal CI schedule (two pairs in each of four rounds), this means
-    at least seven of eight pairs must independently cross the same boundary.
-    Large but contradictory swings therefore remain visible as UNSTABLE
-    instead of becoming a false regression.
-    """
-    pair_deltas = [
-        float(delta)
-        for phase in phases
-        for delta in phase["pair_deltas_percent"]
-    ]
-    if not pair_deltas:
-        raise ValueError("paired sign evidence requires at least one pair")
-    if direction == "regression":
-        boundary = -threshold_percent
-        crossed = sum(delta < boundary for delta in pair_deltas)
-    elif direction == "improvement":
-        boundary = threshold_percent
-        crossed = sum(delta > boundary for delta in pair_deltas)
-    else:
-        raise ValueError(f"unknown paired sign direction: {direction}")
-
-    pair_count = len(pair_deltas)
-    p_value = (
-        sum(
-            math.comb(pair_count, successes)
-            for successes in range(crossed, pair_count + 1)
-        )
-        / (2**pair_count)
-    )
-    return {
-        "direction": direction,
-        "threshold_percent": threshold_percent,
-        "pair_count": pair_count,
-        "crossed_pair_count": crossed,
-        "p_value": p_value,
-        "alpha": PAIRED_SIGN_ALPHA,
-        "confident": p_value <= PAIRED_SIGN_ALPHA,
-    }
-
-
-def confirmation_candidates(
-    metrics: dict[str, dict[str, Any]],
-    regression_threshold: float,
-    improvement_threshold: float,
-) -> set[str]:
-    return regression_candidates(
-        metrics, regression_threshold
-    ) | improvement_candidates(metrics, improvement_threshold)
-
-
-def third_round_candidates(
-    initial: dict[str, dict[str, Any]],
-    confirmation: dict[str, dict[str, Any]],
-    regression_threshold: float,
-) -> set[str]:
-    selected = regression_candidates(initial, regression_threshold)
-    missing = selected - confirmation.keys()
-    if missing:
-        raise ValueError(
-            f"{sorted(missing)[0]}: selected metric has no second round"
-        )
-    return {
-        name
-        for name in selected
-        if confirmation[name]["delta_percent"] < -regression_threshold
-    }
-
-
-def third_round_improvement_candidates(
-    initial: dict[str, dict[str, Any]],
-    confirmation: dict[str, dict[str, Any]],
-    improvement_threshold: float,
-) -> set[str]:
-    selected = improvement_candidates(initial, improvement_threshold)
-    missing = selected - confirmation.keys()
-    if missing:
-        raise ValueError(
-            f"{sorted(missing)[0]}: selected metric has no second round"
-        )
-    return {
-        name
-        for name in selected
-        if confirmation[name]["delta_percent"] > improvement_threshold
-    }
-
-
-def fourth_round_candidates(
-    initial: dict[str, dict[str, Any]],
-    confirmation: dict[str, dict[str, Any]],
-    third_round: dict[str, dict[str, Any]],
-    regression_threshold: float,
-) -> set[str]:
-    selected = third_round_candidates(
-        initial,
-        confirmation,
-        regression_threshold,
-    )
-    missing = selected - third_round.keys()
-    if missing:
-        raise ValueError(
-            f"{sorted(missing)[0]}: persistent metric has no third round"
-        )
-    return {
-        name
-        for name in selected
-        if third_round[name]["delta_percent"] < -regression_threshold
-    }
-
-
-def fourth_round_improvement_candidates(
-    initial: dict[str, dict[str, Any]],
-    confirmation: dict[str, dict[str, Any]],
-    third_round: dict[str, dict[str, Any]],
-    improvement_threshold: float,
-) -> set[str]:
-    selected = third_round_improvement_candidates(
-        initial,
-        confirmation,
-        improvement_threshold,
-    )
-    missing = selected - third_round.keys()
-    if missing:
-        raise ValueError(
-            f"{sorted(missing)[0]}: persistent improvement has no third round"
-        )
-    return {
-        name
-        for name in selected
-        if third_round[name]["delta_percent"] > improvement_threshold
-    }
-
-
-def classify_metrics(
-    *,
-    initial: dict[str, dict[str, Any]],
-    confirmation: dict[str, dict[str, Any]],
-    third_round: dict[str, dict[str, Any]],
-    fourth_round: dict[str, dict[str, Any]],
-    regression_threshold: float,
-    improvement_threshold: float,
-    identical_binaries: bool = False,
-) -> dict[str, dict[str, Any]]:
-    """Apply the staged gate to candidates frozen by the initial screen.
-
-    `confirmation` contains initial regressions and improvements. Later maps
-    contain only initial candidates still beyond their threshold in every
-    preceding round. Other measurements from multi-metric benchmarks are
-    omitted.
-    """
-    regressions = regression_candidates(initial, regression_threshold)
-    improvements = improvement_candidates(initial, improvement_threshold)
-    selected = regressions | improvements
-    metrics: dict[str, dict[str, Any]] = {}
-
-    for name, initial_metric in initial.items():
-        confirmation_metric = confirmation.get(name) if name in selected else None
-        third_metric = None
-        fourth_metric = None
-        sign_evidence = None
-
-        if name in selected:
-            if confirmation_metric is None:
-                raise ValueError(f"{name}: selected metric has no second round")
-
-        if name in regressions:
-            if confirmation_metric["delta_percent"] >= -regression_threshold:
-                status = "RECOVERED"
-            else:
-                third_metric = third_round.get(name)
-                if third_metric is None:
-                    raise ValueError(
-                        f"{name}: persistent metric has no third round"
-                    )
-                if third_metric["delta_percent"] >= -regression_threshold:
-                    status = "RECOVERED"
-                else:
-                    fourth_metric = fourth_round.get(name)
-                    if fourth_metric is None:
-                        raise ValueError(
-                            f"{name}: persistent metric has no fourth round"
-                        )
-                    if fourth_metric["delta_percent"] >= -regression_threshold:
-                        status = "RECOVERED"
-                    else:
-                        sign_evidence = paired_sign_evidence(
-                            (
-                                initial_metric,
-                                confirmation_metric,
-                                third_metric,
-                                fourth_metric,
-                            ),
-                            threshold_percent=regression_threshold,
-                            direction="regression",
-                        )
-                        status = (
-                            "REGRESSION"
-                            if sign_evidence["confident"]
-                            else "UNSTABLE"
-                        )
-        elif name in improvements:
-            if confirmation_metric["delta_percent"] <= improvement_threshold:
-                status = "PASS"
-            else:
-                third_metric = third_round.get(name)
-                if third_metric is None:
-                    raise ValueError(
-                        f"{name}: persistent improvement has no third round"
-                    )
-                if third_metric["delta_percent"] <= improvement_threshold:
-                    status = "PASS"
-                else:
-                    fourth_metric = fourth_round.get(name)
-                    if fourth_metric is None:
-                        raise ValueError(
-                            f"{name}: persistent improvement has no fourth round"
-                        )
-                    if fourth_metric["delta_percent"] <= improvement_threshold:
-                        status = "PASS"
-                    else:
-                        sign_evidence = paired_sign_evidence(
-                            (
-                                initial_metric,
-                                confirmation_metric,
-                                third_metric,
-                                fourth_metric,
-                            ),
-                            threshold_percent=improvement_threshold,
-                            direction="improvement",
-                        )
-                        status = (
-                            "IMPROVEMENT"
-                            if sign_evidence["confident"]
-                            else "PASS"
-                        )
-        else:
-            status = "PASS"
-
-        # Byte-identical executables cannot contain a source performance
-        # change. Keep any apparent persistent difference visible as drift,
-        # but never let scheduling noise fail the gate or claim improvement.
-        if identical_binaries:
-            if status == "REGRESSION":
-                status = "UNSTABLE"
-            elif status == "IMPROVEMENT":
-                status = "PASS"
-
-        metrics[name] = {
-            **initial_metric,
-            "confirmation": confirmation_metric,
-            "third_round": third_metric,
-            "fourth_round": fourth_metric,
-            "regression_threshold_percent": regression_threshold,
-            "improvement_threshold_percent": improvement_threshold,
-            "paired_sign_evidence": sign_evidence,
-            "status": status,
+            "baseline_geomean": geometric_mean(baseline_values),
+            "candidate_geomean": geometric_mean(candidate_values),
+            **statistics,
         }
 
     return metrics
@@ -607,15 +575,25 @@ def format_number(value: float) -> str:
     return f"{value:.3f}"
 
 
+def format_probability(value: float) -> str:
+    if value >= 0.999995:
+        return ">99.999%"
+    if value <= 0.000005:
+        return "<0.001%"
+    return f"{value * 100:.3f}%"
+
+
 def render_summary(
     *,
     platform: str,
     engine: str,
     baseline_sha: str,
     candidate_sha: str,
-    regression_threshold: float,
-    improvement_threshold: float,
-    identical_binaries: bool,
+    initial_pairs: int,
+    minimum_pairs: int,
+    maximum_pairs: int,
+    regression_probability: float,
+    improvement_probability: float,
     results: dict[str, Any],
 ) -> str:
     lines = [
@@ -623,115 +601,63 @@ def render_summary(
         "",
         f"`{baseline_sha[:12]}` -> `{candidate_sha[:12]}`",
         "",
-    ]
-    if identical_binaries:
-        lines.extend(
-            [
-                (
-                    "> **Byte-identical executables:** measured differences "
-                    "are runner drift and cannot fail the performance gate."
-                ),
-                "",
-            ]
-        )
-    lines.extend(
-        [
         (
-            f"> Gate: initial delta below `-{regression_threshold:.2f}%` "
-            "gets a second alternating round. If it remains below the threshold, "
-            "third and fourth rounds decide REGRESSION versus RECOVERED. "
-            "The order alternates ABAB/BABA between rounds. Initial "
-            f"improvements above `+{improvement_threshold:.2f}%` are reported "
-            "only when all four rounds exceed that threshold. Final labels "
-            "also require one-sided exact paired-sign confidence "
-            f"`p <= {PAIRED_SIGN_ALPHA:.2f}`."
+            f"> Probability gate: start with `{initial_pairs}` paired samples. "
+            f"Initial variance selects an independent confirmation sample of "
+            f"`{minimum_pairs}` to `{maximum_pairs}` pairs for candidate "
+            f"metrics. REGRESSION needs "
+            f"`P(regression) >= {regression_probability * 100:.3f}%`; "
+            f"IMPROVEMENT needs "
+            f"`P(improvement) >= {improvement_probability * 100:.3f}%`."
         ),
         "",
         (
-            "| Metric | Baseline | Candidate | "
-            "Initial delta (pairs) | Second delta (pairs) | "
-            "Third delta (pairs) | Fourth delta (pairs) | Gate |"
+            "| Metric | Baseline | Candidate | Delta (pair range) | "
+            "Pair volatility | P(reg) | P(imp) | Pairs | Planned | Gate |"
         ),
-        "|---|---:|---:|---:|---:|---:|---:|---|",
-        ]
-    )
+        "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
+    ]
     for test in results.values():
         for name, metric in test["metrics"].items():
-            initial_pairs = ", ".join(
-                f"{delta:+.2f}%"
-                for delta in metric["pair_deltas_percent"]
+            pair_deltas = metric["pair_deltas_percent"]
+            pair_range = (
+                f"{min(pair_deltas):+.2f}%..{max(pair_deltas):+.2f}%"
             )
-            initial = (
-                f"{metric['delta_percent']:+.2f}% "
-                f"({initial_pairs})"
+            planned = (
+                str(metric["target_pairs"])
+                if metric["target_pairs"] is not None
+                else (
+                    f">{maximum_pairs}"
+                    if metric["candidate_direction"] is not None
+                    else "-"
+                )
             )
-            confirmation_metric = metric["confirmation"]
-            confirmation = "—"
-            if confirmation_metric is not None:
-                confirmation_pairs = ", ".join(
-                    f"{delta:+.2f}%"
-                    for delta in confirmation_metric["pair_deltas_percent"]
-                )
-                confirmation = (
-                    f"{confirmation_metric['delta_percent']:+.2f}% "
-                    f"({confirmation_pairs})"
-                )
-            third_metric = metric["third_round"]
-            third = "—"
-            if third_metric is not None:
-                third_pairs = ", ".join(
-                    f"{delta:+.2f}%"
-                    for delta in third_metric["pair_deltas_percent"]
-                )
-                third = (
-                    f"{third_metric['delta_percent']:+.2f}% "
-                    f"({third_pairs})"
-                )
-            fourth_metric = metric["fourth_round"]
-            fourth = "—"
-            if fourth_metric is not None:
-                fourth_pairs = ", ".join(
-                    f"{delta:+.2f}%"
-                    for delta in fourth_metric["pair_deltas_percent"]
-                )
-                fourth = (
-                    f"{fourth_metric['delta_percent']:+.2f}% "
-                    f"({fourth_pairs})"
-                )
             gate = metric["status"]
-            if gate in {"REGRESSION", "IMPROVEMENT", "UNSTABLE"}:
+            if gate in {"REGRESSION", "IMPROVEMENT"}:
                 gate = f"**{gate}**"
-            sign_evidence = metric["paired_sign_evidence"]
-            if sign_evidence is not None:
-                relation = (
-                    f"< -{sign_evidence['threshold_percent']:.2f}%"
-                    if sign_evidence["direction"] == "regression"
-                    else f"> +{sign_evidence['threshold_percent']:.2f}%"
-                )
-                gate += (
-                    "<br><sub>"
-                    f"{sign_evidence['crossed_pair_count']}/"
-                    f"{sign_evidence['pair_count']} pairs {relation}; "
-                    f"p={sign_evidence['p_value']:.3f}"
-                    "</sub>"
-                )
+            pairs = (
+                f"{initial_pairs}+{metric['pair_count']}"
+                if metric["target_pairs"] is not None
+                else str(metric["pair_count"])
+            )
             lines.append(
                 "| "
                 f"{name} | "
                 f"{format_number(metric['baseline_geomean'])} | "
                 f"{format_number(metric['candidate_geomean'])} | "
-                f"{initial} | {confirmation} | {third} | {fourth} | "
-                f"{gate} |"
+                f"{metric['delta_percent']:+.2f}% ({pair_range}) | "
+                f"{metric['volatility_percent']:.2f}% | "
+                f"{format_probability(metric['probability_regression'])} | "
+                f"{format_probability(metric['probability_improvement'])} | "
+                f"{pairs} | {planned} | {gate} |"
             )
-    lines.append("")
-    lines.append(
-        "> Later-round measurements from metrics that passed the initial "
-        "screen are ignored by design. Both regressions and improvements "
-        "must remain beyond their threshold in all four rounds and pass the "
-        "paired-sign consistency gate. A persistent but inconsistent "
-        "regression candidate is reported as **UNSTABLE** and does not fail CI."
-    )
-    lines.append("")
+    lines.extend([
+        "",
+        "> Only directions selected from the initial full-suite sample may "
+        "change the gate. Metrics observed incidentally during a targeted "
+        "rerun are ignored.",
+        "",
+    ])
     return "\n".join(lines)
 
 
@@ -748,41 +674,39 @@ def main() -> int:
     parser.add_argument("--platform", required=True)
     parser.add_argument("--baseline-sha", default="")
     parser.add_argument("--candidate-sha", default="")
-    parser.add_argument(
-        "--build-metadata",
-        type=Path,
-        help=(
-            "Metadata from ci.performance_build; byte-identical executables "
-            "are treated as a drift calibration and cannot fail"
-        ),
-    )
     parser.add_argument("--time", type=float, default=run_tests.DEFAULT_TARGET)
     parser.add_argument("--warmup-time", type=float, default=0.5)
     parser.add_argument(
         "--blocks",
         type=int,
-        default=1,
-        help="Initial alternating blocks per benchmark (two adjacent pairs)",
+        default=2,
+        help="Initial alternating blocks; each block contains two pairs",
     )
     parser.add_argument(
-        "--confirmation-blocks",
+        "--min-pairs",
         type=int,
-        default=1,
-        help="Alternating blocks in each follow-up round (default: 1)",
+        default=6,
+        help="Minimum total pairs for an initially selected metric",
     )
     parser.add_argument(
-        "--regression-threshold",
-        type=float,
-        default=1.0,
-        metavar="PERCENT",
-        help="Initial and confirmation regression threshold (default: 1.0)",
+        "--max-pairs",
+        type=int,
+        default=24,
+        help="Maximum total pairs for an initially selected metric",
     )
     parser.add_argument(
-        "--improvement-threshold",
+        "--regression-probability",
         type=float,
-        default=3.0,
+        default=99.99,
         metavar="PERCENT",
-        help="Improvement threshold applied to all rounds (default: 3.0)",
+        help="Probability required to fail the regression gate",
+    )
+    parser.add_argument(
+        "--improvement-probability",
+        type=float,
+        default=99.9,
+        metavar="PERCENT",
+        help="Probability required to report an improvement",
     )
     parser.add_argument(
         "--only",
@@ -815,29 +739,22 @@ def main() -> int:
         parser.error("--warmup-time cannot be negative")
     if args.blocks <= 0:
         parser.error("--blocks must be positive")
-    if args.confirmation_blocks <= 0:
-        parser.error("--confirmation-blocks must be positive")
-    if args.regression_threshold <= 0:
-        parser.error("--regression-threshold must be positive")
-    if args.improvement_threshold <= 0:
-        parser.error("--improvement-threshold must be positive")
+    initial_pairs = args.blocks * 2
+    if args.min_pairs < max(2, initial_pairs):
+        parser.error("--min-pairs cannot be below the initial pair count")
+    if args.max_pairs < args.min_pairs:
+        parser.error("--max-pairs cannot be below --min-pairs")
+    if args.min_pairs % 2 or args.max_pairs % 2:
+        parser.error("--min-pairs and --max-pairs must be even")
+    for option, value in (
+        ("--regression-probability", args.regression_probability),
+        ("--improvement-probability", args.improvement_probability),
+    ):
+        if not 50.0 < value < 100.0:
+            parser.error(f"{option} must be between 50 and 100")
 
-    identical_binaries = False
-    if args.build_metadata is not None:
-        try:
-            build_metadata = json.loads(
-                args.build_metadata.read_text(encoding="utf-8")
-            )
-            if build_metadata["platform"] != args.platform:
-                raise ValueError("build metadata platform does not match")
-            if build_metadata["engine"] != args.engine:
-                raise ValueError("build metadata engine does not match")
-            if not isinstance(build_metadata["identical_binaries"], bool):
-                raise ValueError("build metadata identical_binaries is not boolean")
-            identical_binaries = build_metadata["identical_binaries"]
-        except (KeyError, OSError, ValueError, json.JSONDecodeError) as exc:
-            print(f"ERROR: invalid build metadata: {exc}", file=sys.stderr)
-            return 2
+    regression_probability = args.regression_probability / 100.0
+    improvement_probability = args.improvement_probability / 100.0
 
     selected_tests = []
     selectors = set(args.only)
@@ -914,9 +831,8 @@ def main() -> int:
     results: dict[str, Any] = {}
     runs_by_test: dict[str, list[dict[str, Any]]] = {}
     initial_by_test: dict[str, dict[str, dict[str, Any]]] = {}
-    confirmation_by_test: dict[str, dict[str, dict[str, Any]]] = {}
-    third_by_test: dict[str, dict[str, dict[str, Any]]] = {}
-    fourth_by_test: dict[str, dict[str, dict[str, Any]]] = {}
+    plans_by_test: dict[str, dict[str, dict[str, Any]]] = {}
+    final_by_test: dict[str, dict[str, dict[str, Any]]] = {}
 
     try:
         def add_block(
@@ -946,7 +862,6 @@ def main() -> int:
                     )
                 )
 
-        # Stage 1: every selected benchmark gets the initial alternating blocks.
         for index, test in enumerate(selected_tests, 1):
             name = test["name"]
             print(
@@ -957,250 +872,114 @@ def main() -> int:
             for block in range(args.blocks):
                 add_block(test, runs, block)
             runs_by_test[name] = runs
-            initial_by_test[name] = analyze_phase(
+            initial = analyze_phase(
                 test_name=name,
                 runs=runs,
                 blocks=range(args.blocks),
             )
+            initial_by_test[name] = initial
+            plans_by_test[name] = metric_plans(
+                initial,
+                regression_probability=regression_probability,
+                improvement_probability=improvement_probability,
+                minimum_pairs=args.min_pairs,
+                maximum_pairs=args.max_pairs,
+            )
 
-        confirmation_targets = [
+        target_tests = [
             test
             for test in selected_tests
-            if confirmation_candidates(
-                initial_by_test[test["name"]],
-                args.regression_threshold,
-                args.improvement_threshold,
+            if any(
+                plan["selected"]
+                for plan in plans_by_test[test["name"]].values()
             )
         ]
 
-        # Stage 2: rerun benchmarks containing an initial regression or
-        # improvement. Other metrics measured as a side effect are ignored.
-        for index, test in enumerate(confirmation_targets, 1):
+        for index, test in enumerate(target_tests, 1):
             name = test["name"]
-            selected_metrics = confirmation_candidates(
-                initial_by_test[name],
-                args.regression_threshold,
-                args.improvement_threshold,
-            )
-            print(
-                (
-                    f"[second {index}/{len(confirmation_targets)}] "
-                    f"{name}: {', '.join(sorted(selected_metrics))}"
-                ),
-                flush=True,
-            )
-            runs = runs_by_test[name]
-            confirmation_range = range(
-                args.blocks,
-                args.blocks + args.confirmation_blocks,
-            )
-            for block in confirmation_range:
-                add_block(test, runs, block)
-            all_confirmation_metrics = analyze_phase(
-                test_name=name,
-                runs=runs,
-                blocks=confirmation_range,
-            )
-            confirmation_by_test[name] = {
-                metric_name: all_confirmation_metrics[metric_name]
-                for metric_name in selected_metrics
+            plans = plans_by_test[name]
+            selected_plans = {
+                metric_name: plan
+                for metric_name, plan in plans.items()
+                if plan["selected"]
             }
-
-        third_targets = [
-            test
-            for test in confirmation_targets
-            if (
-                third_round_candidates(
-                    initial_by_test[test["name"]],
-                    confirmation_by_test[test["name"]],
-                    args.regression_threshold,
-                )
-                | third_round_improvement_candidates(
-                    initial_by_test[test["name"]],
-                    confirmation_by_test[test["name"]],
-                    args.improvement_threshold,
-                )
+            target_pairs = max(
+                int(plan["target_pairs"])
+                for plan in selected_plans.values()
             )
-        ]
-
-        # Stage 3: only initial candidates that remained beyond their
-        # threshold in stage 2 can reach this round.
-        for index, test in enumerate(third_targets, 1):
-            name = test["name"]
-            selected_metrics = (
-                third_round_candidates(
-                    initial_by_test[name],
-                    confirmation_by_test[name],
-                    args.regression_threshold,
-                )
-                | third_round_improvement_candidates(
-                    initial_by_test[name],
-                    confirmation_by_test[name],
-                    args.improvement_threshold,
-                )
+            target_blocks = target_pairs // 2
+            detail = ", ".join(
+                f"{metric_name}:{plan['direction']}->{plan['target_pairs']}"
+                for metric_name, plan in sorted(selected_plans.items())
             )
             print(
-                (
-                    f"[third {index}/{len(third_targets)}] "
-                    f"{name}: {', '.join(sorted(selected_metrics))}"
-                ),
+                f"[target {index}/{len(target_tests)}] {name}: {detail}",
                 flush=True,
             )
             runs = runs_by_test[name]
-            third_range = range(
-                args.blocks + args.confirmation_blocks,
-                args.blocks + 2 * args.confirmation_blocks,
-            )
-            for block in third_range:
+            confirmation_start = args.blocks
+            confirmation_stop = args.blocks + target_blocks
+            for block in range(confirmation_start, confirmation_stop):
                 add_block(test, runs, block)
-            all_third_metrics = analyze_phase(
+            all_final = analyze_phase(
                 test_name=name,
                 runs=runs,
-                blocks=third_range,
+                blocks=range(confirmation_start, confirmation_stop),
             )
-            third_by_test[name] = {
-                metric_name: all_third_metrics[metric_name]
-                for metric_name in selected_metrics
-            }
-
-        fourth_targets = [
-            test
-            for test in third_targets
-            if (
-                fourth_round_candidates(
-                    initial_by_test[test["name"]],
-                    confirmation_by_test[test["name"]],
-                    third_by_test[test["name"]],
-                    args.regression_threshold,
-                )
-                | fourth_round_improvement_candidates(
-                    initial_by_test[test["name"]],
-                    confirmation_by_test[test["name"]],
-                    third_by_test[test["name"]],
-                    args.improvement_threshold,
-                )
-            )
-        ]
-
-        # Stage 4: the final gate runs only initial candidates still beyond
-        # their threshold in both preceding confirmation rounds.
-        for index, test in enumerate(fourth_targets, 1):
-            name = test["name"]
-            selected_metrics = (
-                fourth_round_candidates(
-                    initial_by_test[name],
-                    confirmation_by_test[name],
-                    third_by_test[name],
-                    args.regression_threshold,
-                )
-                | fourth_round_improvement_candidates(
-                    initial_by_test[name],
-                    confirmation_by_test[name],
-                    third_by_test[name],
-                    args.improvement_threshold,
-                )
-            )
-            print(
-                (
-                    f"[fourth {index}/{len(fourth_targets)}] "
-                    f"{name}: {', '.join(sorted(selected_metrics))}"
-                ),
-                flush=True,
-            )
-            runs = runs_by_test[name]
-            fourth_range = range(
-                args.blocks + 2 * args.confirmation_blocks,
-                args.blocks + 3 * args.confirmation_blocks,
-            )
-            for block in fourth_range:
-                add_block(test, runs, block)
-            all_fourth_metrics = analyze_phase(
-                test_name=name,
-                runs=runs,
-                blocks=fourth_range,
-            )
-            fourth_by_test[name] = {
-                metric_name: all_fourth_metrics[metric_name]
-                for metric_name in selected_metrics
+            final_by_test[name] = {
+                metric_name: all_final[metric_name]
+                for metric_name in selected_plans
             }
 
         for test in selected_tests:
             name = test["name"]
-            second_metrics = confirmation_candidates(
-                initial_by_test[name],
-                args.regression_threshold,
-                args.improvement_threshold,
-            )
-            third_metrics = (
-                third_round_candidates(
-                    initial_by_test[name],
-                    confirmation_by_test.get(name, {}),
-                    args.regression_threshold,
-                )
-                | third_round_improvement_candidates(
-                    initial_by_test[name],
-                    confirmation_by_test.get(name, {}),
-                    args.improvement_threshold,
-                )
-            )
-            fourth_metrics = (
-                fourth_round_candidates(
-                    initial_by_test[name],
-                    confirmation_by_test.get(name, {}),
-                    third_by_test.get(name, {}),
-                    args.regression_threshold,
-                )
-                | fourth_round_improvement_candidates(
-                    initial_by_test[name],
-                    confirmation_by_test.get(name, {}),
-                    third_by_test.get(name, {}),
-                    args.improvement_threshold,
-                )
-            )
+            plans = plans_by_test[name]
             metrics = classify_metrics(
                 initial=initial_by_test[name],
-                confirmation=confirmation_by_test.get(name, {}),
-                third_round=third_by_test.get(name, {}),
-                fourth_round=fourth_by_test.get(name, {}),
-                regression_threshold=args.regression_threshold,
-                improvement_threshold=args.improvement_threshold,
-                identical_binaries=identical_binaries,
+                final=final_by_test.get(name, {}),
+                plans=plans,
+                regression_probability=regression_probability,
+                improvement_probability=improvement_probability,
+            )
+            selected_plans = {
+                metric_name: plan
+                for metric_name, plan in plans.items()
+                if plan["selected"]
+            }
+            target_pairs = max(
+                (
+                    int(plan["target_pairs"])
+                    for plan in selected_plans.values()
+                ),
+                default=initial_pairs,
             )
             results[name] = {
                 "runs": runs_by_test[name],
                 "initial_blocks": args.blocks,
                 "confirmation_blocks": (
-                    args.confirmation_blocks if second_metrics else 0
+                    target_pairs // 2 if selected_plans else 0
                 ),
-                "third_blocks": (
-                    args.confirmation_blocks if third_metrics else 0
-                ),
-                "fourth_blocks": (
-                    args.confirmation_blocks if fourth_metrics else 0
-                ),
-                "confirmed_metrics": sorted(second_metrics),
-                "third_round_metrics": sorted(third_metrics),
-                "fourth_round_metrics": sorted(fourth_metrics),
+                "candidate_metrics": sorted(selected_plans),
                 "metrics": metrics,
             }
-    except (KeyError, RuntimeError, ValueError) as exc:
+    except (ArithmeticError, KeyError, RuntimeError, ValueError) as exc:
         print(f"ERROR: {exc}", file=sys.stderr)
         return 2
 
     document = {
         "schema_version": 5,
+        "model": "paired-log-student-t-two-stage",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "platform": args.platform,
         "engine": args.engine,
         "baseline_sha": args.baseline_sha,
         "candidate_sha": args.candidate_sha,
         "target_seconds": args.time,
-        "initial_blocks": args.blocks,
-        "confirmation_blocks": args.confirmation_blocks,
-        "regression_threshold_percent": args.regression_threshold,
-        "improvement_threshold_percent": args.improvement_threshold,
-        "paired_sign_alpha": PAIRED_SIGN_ALPHA,
-        "identical_binaries": identical_binaries,
+        "initial_pairs": initial_pairs,
+        "minimum_pairs": args.min_pairs,
+        "maximum_pairs": args.max_pairs,
+        "regression_probability": regression_probability,
+        "improvement_probability": improvement_probability,
         "excluded_selectors": sorted(exclusions),
         "tests": results,
     }
@@ -1226,9 +1005,11 @@ def main() -> int:
         engine=args.engine,
         baseline_sha=args.baseline_sha,
         candidate_sha=args.candidate_sha,
-        regression_threshold=args.regression_threshold,
-        improvement_threshold=args.improvement_threshold,
-        identical_binaries=identical_binaries,
+        initial_pairs=initial_pairs,
+        minimum_pairs=args.min_pairs,
+        maximum_pairs=args.max_pairs,
+        regression_probability=regression_probability,
+        improvement_probability=improvement_probability,
         results=results,
     )
     if exclusions:
@@ -1248,19 +1029,6 @@ def main() -> int:
         for test in results.values()
         for metric in test["metrics"].values()
     ]
-    unstable = [
-        metric_name
-        for test in results.values()
-        for metric_name, metric in test["metrics"].items()
-        if metric["status"] == "UNSTABLE"
-    ]
-    if unstable and os.environ.get("GITHUB_ACTIONS") == "true":
-        print(
-            "::warning title=Unstable performance candidates::"
-            + ", ".join(sorted(unstable))
-            + " crossed the aggregate threshold in all four rounds but "
-            "failed pair-level consistency; inspect the job summary."
-        )
     return 1 if "REGRESSION" in statuses else 0
 
 
