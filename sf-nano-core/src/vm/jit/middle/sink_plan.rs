@@ -42,7 +42,6 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<CellId>]) {
     if ops.is_empty() {
         return;
     }
-
     // Step 1: Record producer positions for single-result Value/Call ops. SSA
     // values are numbered across the whole function, but this analysis is
     // block-local, so offset the scratch array by this block's first producer.
@@ -51,6 +50,12 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<CellId>]) {
     let Some((value_base, value_count)) = sinkable_result_range(ops) else {
         return;
     };
+    let mut cache_aliases: collections::Vec<(SsaValue, CellId)> = ops
+        .iter()
+        .filter(|inst| inst.op == SsaOp::CELL_GET_CACHE && inst.result.is_some())
+        .map(|inst| (inst.result, CellId(inst.meta)))
+        .collect();
+    cache_aliases.sort_unstable_by_key(|entry| entry.0);
     let mut producer_pos: collections::Vec<Option<u32>> = collections::vec![None; value_count];
 
     for (pos, inst) in ops.iter().enumerate() {
@@ -106,6 +111,27 @@ fn plan_block_sinks(block: &SsaBlock, sinks: &mut [Option<CellId>]) {
             matches!(i.op, SsaOp::CELL_GET_CACHE | SsaOp::CELL_GET_SLOT) && CellId(i.meta) == slot
         });
         if old_value_live {
+            continue;
+        }
+
+        // The discipline pass publishes a cached local's older live snapshots
+        // immediately before overwriting that cache lane. Sinking the producer
+        // would move the overwrite earlier than those Spill ops and destroy
+        // the value before it reaches its frame slot. Keep the ordinary
+        // transient result in this case; machine lowering can then execute the
+        // planned spills before the later CellSetCache.
+        let old_alias_spilled = ops[prod_pos + 1..set_pos].iter().any(|i| {
+            if i.op != SsaOp::SPILL {
+                return false;
+            }
+            i.args[0].as_value().and_then(|value| {
+                cache_aliases
+                    .binary_search_by_key(&value, |entry| entry.0)
+                    .ok()
+                    .map(|index| cache_aliases[index].1)
+            }) == Some(slot)
+        });
+        if old_alias_spilled {
             continue;
         }
 
@@ -259,6 +285,24 @@ mod tests {
 
         plan_sinks(&mut program);
         assert_eq!(program.value_sink_cell[0], None);
+    }
+
+    #[test]
+    fn does_not_sink_before_an_older_cache_alias_is_spilled() {
+        let mut program = make_program(collections::Vec::new(), 2);
+        let old_value = SsaInst::cell_get_cache(CellId(0), SsaValue(0));
+        let replacement = prim_inst(
+            &mut program,
+            PrimitiveOpKind::I32Const { value: 42 },
+            SsaValue(1),
+            [SsaOperand::NONE, SsaOperand::NONE],
+        );
+        let spill_old = SsaInst::spill(FrameSlot(0), SsaValue(0));
+        let set_cache = SsaInst::cell_set_cache(CellId(0), SsaValue(1));
+        program.blocks[0].ops = collections::vec![old_value, replacement, spill_old, set_cache];
+
+        plan_sinks(&mut program);
+        assert_eq!(program.value_sink_cell[1], None);
     }
 
     #[test]
