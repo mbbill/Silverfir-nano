@@ -340,6 +340,7 @@ def classify_metrics(
     plans: dict[str, dict[str, Any]],
     regression_probability: float,
     improvement_probability: float,
+    identical_binaries: bool = False,
 ) -> dict[str, dict[str, Any]]:
     """Classify only directions frozen by the initial screening stage."""
     metrics: dict[str, dict[str, Any]] = {}
@@ -368,6 +369,15 @@ def classify_metrics(
         else:
             status = "PASS"
 
+        # Byte-identical executables cannot contain a source performance
+        # change. Keep an apparent regression visible as runner drift, but
+        # never let it fail the gate or claim a source improvement.
+        if identical_binaries:
+            if status == "REGRESSION":
+                status = "UNSTABLE"
+            elif status == "IMPROVEMENT":
+                status = "PASS"
+
         metrics[name] = {
             **measured,
             "initial": initial_metric,
@@ -376,6 +386,33 @@ def classify_metrics(
             "status": status,
         }
     return metrics
+
+
+def load_build_metadata(
+    path: Path | None,
+    *,
+    platform: str,
+    engine: str,
+) -> bool:
+    """Validate build metadata and return whether the binaries are identical."""
+    if path is None:
+        return False
+
+    try:
+        metadata = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(metadata, dict):
+            raise ValueError("document is not an object")
+        if metadata.get("platform") != platform:
+            raise ValueError("platform does not match")
+        if metadata.get("engine") != engine:
+            raise ValueError("engine does not match")
+        identical_binaries = metadata.get("identical_binaries")
+        if not isinstance(identical_binaries, bool):
+            raise ValueError("identical_binaries is not boolean")
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        raise ValueError(f"invalid build metadata: {exc}") from exc
+
+    return identical_binaries
 
 
 def command_for(
@@ -667,6 +704,7 @@ def render_summary(
     family_metric_count: int,
     family_job_count: int,
     maximum_looks: int,
+    identical_binaries: bool,
     results: dict[str, Any],
 ) -> str:
     lines = [
@@ -674,6 +712,17 @@ def render_summary(
         "",
         f"`{baseline_sha[:12]}` -> `{candidate_sha[:12]}`",
         "",
+    ]
+    if identical_binaries:
+        lines.extend([
+            (
+                "> **Byte-identical executables:** measured differences are "
+                "runner drift. They remain visible, but cannot fail the gate "
+                "or claim an improvement."
+            ),
+            "",
+        ])
+    lines.extend([
         (
             "> Timing: the requested duration applies to adjustable "
             "benchmarks. CoreMark keeps the official EEMBC invocation and "
@@ -704,7 +753,7 @@ def render_summary(
             "Pair volatility | P(reg) | P(imp) | Pairs | Pilot | Gate |"
         ),
         "|---|---:|---:|---:|---:|---:|---:|---:|---:|---|",
-    ]
+    ])
     for test in results.values():
         for name, metric in test["metrics"].items():
             pair_deltas = metric["pair_deltas_percent"]
@@ -721,7 +770,7 @@ def render_summary(
                 )
             )
             gate = metric["status"]
-            if gate in {"REGRESSION", "IMPROVEMENT"}:
+            if gate in {"REGRESSION", "IMPROVEMENT", "UNSTABLE"}:
                 gate = f"**{gate}**"
             pairs = (
                 f"{initial_pairs}+{metric['pair_count']}"
@@ -762,6 +811,14 @@ def main() -> int:
     parser.add_argument("--platform", required=True)
     parser.add_argument("--baseline-sha", default="")
     parser.add_argument("--candidate-sha", default="")
+    parser.add_argument(
+        "--build-metadata",
+        type=Path,
+        help=(
+            "Metadata from ci.performance_build; byte-identical executables "
+            "are treated as drift calibration and cannot fail"
+        ),
+    )
     parser.add_argument("--time", type=float, default=run_tests.DEFAULT_TARGET)
     parser.add_argument("--warmup-time", type=float, default=0.5)
     parser.add_argument(
@@ -863,6 +920,16 @@ def main() -> int:
     pilot_probability = args.pilot_probability / 100.0
     regression_probability = args.regression_probability / 100.0
     improvement_probability = args.improvement_probability / 100.0
+
+    try:
+        identical_binaries = load_build_metadata(
+            args.build_metadata,
+            platform=args.platform,
+            engine=args.engine,
+        )
+    except ValueError as exc:
+        print(f"ERROR: {exc}", file=sys.stderr)
+        return 2
 
     selected_tests = []
     selectors = set(args.only)
@@ -1129,6 +1196,7 @@ def main() -> int:
                 plans=plans,
                 regression_probability=effective_regression_probability,
                 improvement_probability=effective_improvement_probability,
+                identical_binaries=identical_binaries,
             )
             selected_plans = {
                 metric_name: plan
@@ -1158,7 +1226,7 @@ def main() -> int:
         return 2
 
     document = {
-        "schema_version": 7,
+        "schema_version": 8,
         "model": "paired-log-student-t-family-corrected-adaptive-confirmation",
         "created_at": datetime.now(timezone.utc).isoformat(),
         "platform": args.platform,
@@ -1186,6 +1254,7 @@ def main() -> int:
         "family_metric_count": family_metric_count,
         "family_job_count": args.family_jobs,
         "maximum_confirmation_looks": maximum_looks,
+        "identical_binaries": identical_binaries,
         "excluded_selectors": sorted(exclusions),
         "tests": results,
     }
@@ -1226,6 +1295,7 @@ def main() -> int:
         family_metric_count=family_metric_count,
         family_job_count=args.family_jobs,
         maximum_looks=maximum_looks,
+        identical_binaries=identical_binaries,
         results=results,
     )
     if exclusions:
