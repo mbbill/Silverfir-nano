@@ -8,7 +8,8 @@ from pathlib import Path
 # (label, regex, unit, direction) tuples. The regex is applied to the metric
 # string returned by run_tests.run_test; group(1) is parsed as float.
 #
-# Test names not listed here are simply skipped.
+# Every active performance test must have an entry. ci.test_performance keeps
+# this mapping in lockstep with run_tests.TESTS.
 METRIC_EXTRACTORS = {
     "coremark/coremark.wasm": [
         ("coremark", r"^([\d.]+)", "Iter/s", "higher"),
@@ -44,8 +45,13 @@ METRIC_EXTRACTORS = {
         ("stream-Add", r"Add:\s*([\d.]+)", "MB/s", "higher"),
         ("stream-Triad", r"Triad:\s*([\d.]+)", "MB/s", "higher"),
     ],
-    "sqlite/speedtest1.wasm": [
-        ("sqlite", r"^([\d.]+)\s*size/s", "size/s", "higher"),
+    "sqlite/sqlite_bench.wasm": [
+        (
+            "sqlite",
+            r"^([\d.]+)\s*iteration/s",
+            "iteration/s",
+            "higher",
+        ),
     ],
 }
 
