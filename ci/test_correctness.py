@@ -48,15 +48,42 @@ class WarningGateTests(unittest.TestCase):
 
 class CoveragePlanTests(unittest.TestCase):
     def test_feature_matrices_cover_shipping_engine_boundaries(self) -> None:
-        core = dict(correctness.core_feature_matrix())
-        cli = dict(correctness.cli_feature_matrix())
-        for matrix in (core, cli):
-            self.assertEqual(matrix["jit-only"], "jit")
-            self.assertEqual(matrix["interp-only"], "interp")
-            self.assertEqual(matrix["default"], "default")
-            self.assertEqual(matrix["all"], "all")
-        self.assertEqual(len(core), len(correctness.core_feature_matrix()))
-        self.assertEqual(len(cli), len(correctness.cli_feature_matrix()))
+        self.assertEqual(
+            correctness.ENGINE_FEATURE_CONFIGS,
+            (
+                ("jit-only", "jit"),
+                ("interp-only", "interp"),
+                ("dual-engine", "jit,interp"),
+            ),
+        )
+
+    @mock.patch.object(correctness, "cargo")
+    def test_feature_coverage_uses_six_engine_boundaries_and_one_diagnostic_smoke(
+        self,
+        cargo: mock.Mock,
+    ) -> None:
+        correctness.run_host_feature_matrix(mock.Mock())
+
+        self.assertEqual(cargo.call_count, 7)
+        engine_calls = cargo.call_args_list[:6]
+        self.assertEqual(
+            [
+                (call.kwargs["package"], call.kwargs["features"])
+                for call in engine_calls
+            ],
+            [
+                ("sf-nano-core", "jit"),
+                ("sf-nano-core", "interp"),
+                ("sf-nano-core", "jit,interp"),
+                ("sf-nano-cli", "jit"),
+                ("sf-nano-cli", "interp"),
+                ("sf-nano-cli", "jit,interp"),
+            ],
+        )
+        diagnostic = cargo.call_args_list[-1]
+        self.assertIsNone(diagnostic.kwargs.get("package"))
+        self.assertEqual(diagnostic.kwargs["features"], "all")
+        self.assertEqual(diagnostic.kwargs["extra"], ("--workspace",))
 
     def test_cross_platforms_are_one_target_per_job(self) -> None:
         self.assertEqual(
@@ -116,6 +143,8 @@ class CoveragePlanTests(unittest.TestCase):
         self.assertNotIn("scripts/check.py", workflow)
         self.assertIn("unittest discover -s ci -p 'test_*.py'", workflow)
         self.assertIn("if: ${{ always() && !cancelled() }}", workflow)
+        for platform in ("armv7-linux", "riscv64-linux", "riscv32-linux"):
+            self.assertIn(f"platform: cross-{platform}", workflow)
 
         performance_workflow = (
             ROOT / ".github" / "workflows" / "performance-regression.yml"
@@ -123,6 +152,8 @@ class CoveragePlanTests(unittest.TestCase):
         self.assertIn("python3 -m ci.performance_build", performance_workflow)
         self.assertNotIn("build_one()", performance_workflow)
         self.assertIn("unittest discover -s ci -p 'test_*.py'", performance_workflow)
+        for platform in ("armv7-a", "riscv64", "riscv32"):
+            self.assertIn(f'"platform": "cross-{platform}"', performance_workflow)
         self.assertIn("id: lint-policy", performance_workflow)
         self.assertIn("continue-on-error: true", performance_workflow)
         self.assertIn(

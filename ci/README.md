@@ -1,6 +1,6 @@
 # CI implementation
 
-This directory owns exhaustive validation. Local development should normally
+This directory owns CI validation. Local development should normally
 use `cargo build` and focused `cargo test` commands.
 
 ## Correctness jobs
@@ -10,7 +10,7 @@ platform:
 
 | Job kind | Platforms | Coverage |
 |---|---|---|
-| Native host | x64 Linux, ARM64 Linux, ARM64 macOS, x64 Windows | workspace debug/release build and tests, complete core/CLI feature matrix, native JIT and interpreter spec/WASI |
+| Native host | x64 Linux, ARM64 Linux, ARM64 macOS, x64 Windows | workspace debug/release build and tests plus native JIT and interpreter spec/WASI; x64 Linux also checks the engine feature boundaries and one combined diagnostic-feature smoke |
 | Linux QEMU-user | ARMv7/Thumb-2, RV64 Linux, RV32 Linux | target builds plus JIT and interpreter-tier spec/WASI execution; pure-interpreter compilation is checked separately |
 | Bare-metal compile | ARMv8-M `thumbv8m`, RV32IMAC `none-elf` | real `cargo build` and JIT/interpreter assembler coverage; no fake runtime claim |
 

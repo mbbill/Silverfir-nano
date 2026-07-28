@@ -1,4 +1,4 @@
-"""Exhaustive correctness gates, partitioned one logical platform per CI job.
+"""Correctness gates, partitioned one logical platform per CI job.
 
 Usage:
     python -m ci.correctness host x64-linux
@@ -20,7 +20,6 @@ binaries.
 from __future__ import annotations
 
 import argparse
-import itertools
 import os
 import platform
 import shlex
@@ -38,23 +37,10 @@ TESTSUITE = TARGET / "webassembly-testsuite"
 WINDOWS_GNU = "x86_64-pc-windows-gnu"
 RV32_LINUX = "riscv32gc-unknown-linux-musl"
 
-CORE_OPTIONAL_FEATURES = (
-    "interp",
-    "interp-count",
-    "wasi",
-    "validator",
-    "call-trace",
-    "guard-pages",
-    "ir-dump",
-    "jitdump",
-    "memprof",
-    "thumb2-test",
-)
-CLI_OPTIONAL_FEATURES = (
-    "interp",
-    "call-trace",
-    "memprof",
-    "thumb2-test",
+ENGINE_FEATURE_CONFIGS = (
+    ("jit-only", "jit"),
+    ("interp-only", "interp"),
+    ("dual-engine", "jit,interp"),
 )
 
 
@@ -211,59 +197,6 @@ def validate_host(runner: Runner, label: str) -> bool:
     return False
 
 
-def core_feature_matrix() -> list[tuple[str, str]]:
-    combinations = [
-        ("default", "default"),
-        ("all", "all"),
-        ("jit-only", "jit"),
-        ("interp-only", "interp"),
-    ]
-    combinations.extend((f"jit+{feature}", f"jit,{feature}") for feature in CORE_OPTIONAL_FEATURES)
-    combinations.extend(
-        (
-            f"jit+{left}+{right}",
-            f"jit,{left},{right}",
-        )
-        for left, right in itertools.combinations(CORE_OPTIONAL_FEATURES, 2)
-    )
-    combinations.extend(
-        [
-            ("cli", "jit,wasi,guard-pages"),
-            ("cli+tracing", "jit,wasi,guard-pages,call-trace"),
-            ("cli+ir-dump", "jit,wasi,guard-pages,ir-dump"),
-            ("cli+jitdump", "jit,wasi,guard-pages,jitdump"),
-            ("cli+memprof", "jit,wasi,guard-pages,memprof"),
-            ("spectest", "jit,validator,guard-pages"),
-            ("full-runtime", "jit,wasi,validator,guard-pages"),
-            (
-                "full-dev",
-                "jit,wasi,validator,call-trace,guard-pages,ir-dump,jitdump,memprof",
-            ),
-            ("cli+thumb2", "jit,wasi,guard-pages,thumb2-test"),
-            ("spectest+thumb2", "jit,validator,guard-pages,thumb2-test"),
-        ]
-    )
-    return combinations
-
-
-def cli_feature_matrix() -> list[tuple[str, str]]:
-    combinations = [
-        ("default", "default"),
-        ("all", "all"),
-        ("jit-only", "jit"),
-        ("interp-only", "interp"),
-    ]
-    combinations.extend((f"jit+{feature}", f"jit,{feature}") for feature in CLI_OPTIONAL_FEATURES)
-    combinations.extend(
-        (
-            f"jit+{left}+{right}",
-            f"jit,{left},{right}",
-        )
-        for left, right in itertools.combinations(CLI_OPTIONAL_FEATURES, 2)
-    )
-    return combinations
-
-
 def run_host_builds_and_tests(runner: Runner) -> None:
     for profile in ("debug", "release"):
         cargo(
@@ -283,25 +216,33 @@ def run_host_builds_and_tests(runner: Runner) -> None:
 
 
 def run_host_feature_matrix(runner: Runner) -> None:
-    for profile in ("debug", "release"):
-        for label, features in core_feature_matrix():
+    # Feature coverage is about Cargo boundaries, not host architecture, so
+    # run it once on x64 Linux instead of repeating it on every native runner.
+    #
+    # Default features are already compiled and tested by
+    # run_host_builds_and_tests(). The three engine configurations below are
+    # the independently shipped boundaries. Diagnostics such as ir-dump,
+    # jitdump, call-trace, interp-count, and memprof are development aids:
+    # compile them together once rather than manufacturing pairwise
+    # combinations that users do not ship.
+    for package in ("sf-nano-core", "sf-nano-cli"):
+        for label, features in ENGINE_FEATURE_CONFIGS:
             cargo(
                 runner,
-                f"core features {label} ({profile})",
+                f"{package} features {label} (release)",
                 "check",
-                package="sf-nano-core",
-                profile=profile,
+                package=package,
+                profile="release",
                 features=features,
             )
-        for label, features in cli_feature_matrix():
-            cargo(
-                runner,
-                f"cli features {label} ({profile})",
-                "check",
-                package="sf-nano-cli",
-                profile=profile,
-                features=features,
-            )
+    cargo(
+        runner,
+        "workspace diagnostic features (release)",
+        "check",
+        profile="release",
+        features="all",
+        extra=("--workspace",),
+    )
 
 
 def ensure_testsuite(runner: Runner) -> bool:
@@ -400,7 +341,8 @@ def run_host(label: str) -> int:
     if not require_tools(runner, ("cargo", "rustc")) or not validate_host(runner, label):
         return runner.finish()
     run_host_builds_and_tests(runner)
-    run_host_feature_matrix(runner)
+    if label == "x64-linux":
+        run_host_feature_matrix(runner)
     run_native_spectest(runner)
     run_native_wasitest(runner)
     if label == "x64-windows":
