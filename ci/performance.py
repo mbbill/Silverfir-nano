@@ -13,9 +13,9 @@ candidate/baseline ratios are converted to log deltas. Their mean, sample
 volatility, and Student-t posterior determine how many total pairs would be
 needed to reach the requested regression or improvement probability.
 
-Only benchmarks with an initial signal that can be resolved within the pair
-budget are rerun. The initial sample is a pilot and is not reused by the final
-gate: probability is calculated from a new, independent confirmation sample.
+Only benchmarks whose initial directional probability crosses the pilot screen
+are rerun. The initial sample is a pilot and is not reused by the final gate:
+probability is calculated from a new, independent confirmation sample.
 Confirmation starts at the minimum pair count. If it has not crossed the gate
 but its measured effect and variance can still resolve within the budget, more
 pairs are added and the requirement is estimated again. This sample split
