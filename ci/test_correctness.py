@@ -57,6 +57,15 @@ class CoveragePlanTests(unittest.TestCase):
             ),
         )
 
+    def test_armv7_thumb2_variant_selects_the_core_owned_feature(self) -> None:
+        self.assertEqual(
+            correctness.CROSS_PLATFORMS["armv7"].jit_variants,
+            (
+                ("armv7a", ""),
+                ("armv7m", "sf-nano-core/thumb2-test"),
+            ),
+        )
+
     @mock.patch.object(correctness, "cargo")
     def test_feature_coverage_uses_six_engine_boundaries_and_one_diagnostic_smoke(
         self,

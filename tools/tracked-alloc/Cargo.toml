@@ -11,5 +11,4 @@ name = "tracked_alloc"
 path = "src/lib.rs"
 
 [features]
-default = []
 memprof = []

@@ -77,12 +77,11 @@ interp-count = ["interp"]
 # Per-call tracing through the JIT's runtime boundary.
 call-trace = ["jit"]
 
-# Dump the JIT's IR at each pipeline stage. Auto-on in debug builds.
-ir-dump = ["jit"]
-
-# Emit jitdump records so external profilers (samply, perf) can resolve
-# JIT-compiled code to symbols.
-jitdump = ["jit"]
+# Compile the JIT observability exporters used by SF_NATIVE_DUMP_DIR and
+# SF_JITDUMP. Both consume the same emitted-code debug regions, so they share
+# one build-time boundary; the environment selects which output is produced.
+# IR dumping remains auto-on in hosted debug builds.
+jit-debug = ["jit"]
 
 # Route every allocation through the tracked-alloc facade and report phases.
 memprof = ["tracked_alloc/memprof"]

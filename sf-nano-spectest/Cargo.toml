@@ -17,7 +17,8 @@ path = "src/main.rs"
 default = ["jit", "interp"]
 jit = ["sf-nano-core/jit", "sf-nano-core/guard-pages"]
 interp = ["sf-nano-core/interp"]
-thumb2-test = ["sf-nano-core/thumb2-test"]
+# CI-only core variants such as thumb2-test are selected directly with
+# `sf-nano-core/<feature>` rather than duplicated as pass-through features.
 
 [dependencies]
 sf-nano-core = { path = "../sf-nano-core", default-features = false, features = [

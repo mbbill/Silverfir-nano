@@ -29,10 +29,10 @@ Run native spectest:
 cargo run --bin sf-nano-spectest -- --backend native
 ```
 
-Run the memory tracer:
+Run the memory profiler:
 
 ```bash
-cargo memprof --memtrace-output /tmp/run.jsonl -- \
+cargo memprof --memprof-report /tmp/run.html \
   --backend native benchmarks/wasi/lua/lua.wasm benchmarks/wasi/lua/fib_small.lua
 ```
 
@@ -144,206 +144,34 @@ RUST_BACKTRACE=1 \
 cargo run --bin sf-nano-spectest -- --backend native --log-level info if
 ```
 
-## Memory Trace
+## Memory Profiling
 
-Use the CLI's `memtrace` feature when you want exact raw allocation tracing
-from process startup through wasm parsing, validation, instantiation, JIT
-compilation, and execution.
-
-What it records:
-
-- `alloc::` heap traffic through the process global allocator
-- raw alloc/free/realloc events with timestamps
-- interned stack tables with raw PCs
-- JIT executable buffer usage
-- guard-page linear-memory reservation and committed bytes
-
-Build and run through the cargo alias:
+The CLI's `memprof` feature records allocation ownership and compiler phases,
+then writes a self-contained HTML report. Use the cargo alias:
 
 ```bash
-cargo memprof --memtrace-output /tmp/coremark-mem.jsonl -- \
+cargo memprof --memprof-report /tmp/coremark-mem.html \
   --backend native benchmarks/wasi/coremark/coremark.wasm
 ```
 
-Equivalent manual build/run:
+`--memprof-report` enables recording and chooses the output path. Plain
+`--memprof` writes to the system temporary directory and prints the final path.
+The equivalent manual build and run is:
 
 ```bash
-cargo build --release -p sf-nano-cli --features memtrace --bin sf-nano-cli
+cargo build --release -p sf-nano-cli --features memprof --bin sf-nano-cli
 
 target/release/sf-nano-cli \
-  --memtrace \
-  --memtrace-output /tmp/coremark-mem.jsonl \
+  --memprof \
+  --memprof-report /tmp/coremark-mem.html \
   --backend native \
   benchmarks/wasi/coremark/coremark.wasm
 ```
 
-Useful flags:
-
-- `--memtrace` enables raw tracing
-- `--memtrace-output <path>` writes the raw trace log to `<path>`
-- `--memtrace-help` shows memtrace-specific CLI help
-
-Outputs:
-
-- one raw JSONL trace file
-- one short stderr line that prints the final trace path
-
-Example:
-
-```bash
-cargo memprof --memtrace-output /tmp/lua-mem.jsonl -- \
-  --backend native benchmarks/wasi/lua/lua.wasm benchmarks/wasi/lua/fib_small.lua
-```
-
-Notes:
-
-- `cargo memprof` is just a convenience alias for `sf-nano-cli --features memtrace`
-- the runtime trace is intentionally raw; peak finding, curves, categorization,
-  and flamegraphs belong in post-processing tools, not in the CLI
-- the raw trace can get large because it logs every allocation event
-- the raw trace includes:
-  - `meta` with command line and schema version
-  - `image` records for offline symbolization on macOS
-  - `stack` records with interned raw PCs
-  - `alloc` / `free` / `realloc`
-  - `exec` / `exec_drop`
-  - `guard` / `guard_drop`
-- if you want cleaner native call stacks, rebuild with frame pointers:
-
-```bash
-RUSTFLAGS="-C force-frame-pointers=yes" \
-cargo build --release -p sf-nano-cli --features memtrace --bin sf-nano-cli
-```
-
-## Memory Trace Analysis
-
-Use the offline analyzer in `tools/memtrace/analyze.py` to turn the raw JSONL
-trace into spike candidates, bucketed timeline data, or one selected snapshot.
-
-Best current workflow: run the trace and launch the local viewer in one command:
-
-```bash
-python3 tools/memtrace/analyze.py record-view -- \
-  --backend native benchmarks/wasi/lua/lua.wasm benchmarks/wasi/lua/fib_small.lua
-```
-
-That command will:
-
-1. run `sf-nano-cli` with `memtrace`
-2. write one raw trace file
-3. build the bucketed curve data
-4. start a localhost viewer
-5. open the browser
-
-Inside the viewer:
-
-- the top pane is the live-memory step curve
-- clicking any point requests an exact snapshot for that timestamp
-- the lower pane renders a flamegraph for allocations still live at that moment
-- the flamegraph root is grouped by logical memtrace tags first
-- the right pane shows top live tags first, then top live stack sites
-
-If you already have a raw trace and only want the viewer:
-
-```bash
-python3 tools/memtrace/analyze.py serve /tmp/lua-mem.jsonl
-```
-
-Find the biggest spike timestamps:
-
-```bash
-python3 tools/memtrace/analyze.py spikes /tmp/lua-mem.jsonl --top 10
-```
-
-Emit bucketed timeline data for a step-curve viewer:
-
-```bash
-python3 tools/memtrace/analyze.py timeline /tmp/lua-mem.jsonl \
-  --bucket-us 1000 \
-  --json /tmp/lua-timeline.json
-```
-
-Write a standalone HTML curve viewer:
-
-```bash
-python3 tools/memtrace/analyze.py curve-html /tmp/lua-mem.jsonl \
-  --bucket-us 1000 \
-  --out /tmp/lua-curve.html
-```
-
-Reconstruct live memory at one selected timestamp:
-
-```bash
-python3 tools/memtrace/analyze.py snapshot /tmp/lua-mem.jsonl \
-  --time-us 3095866 \
-  --top 20
-```
-
-Tagged snapshot output now includes:
-
-- `top_live_tags`
-- `top_live_stacks`
-
-The main tags are aligned with the native compiler pipeline:
-
-- `native.compile.decode`
-- `native.compile.inline`
-- `native.compile.prepare`
-- `native.compile.lower_inputs`
-- `native.compile.lower`
-- `native.compile.optimize`
-- `native.compile.runtime_module`
-- `native.compile.backend_emit`
-- `native.compile.publish`
-
-Backend emission also has narrower tags such as:
-
-- `native.compile.backend.blocks`
-- `native.compile.backend.edges`
-- `native.compile.backend.literal_pool`
-- `native.compile.backend.tail`
-- `native.compile.backend.patch_fixups`
-
-Interpretation:
-
-- `top_live_tags` tells you which compiler phase still owns memory at the chosen time
-- `top_live_stacks` tells you which allocation site inside that phase contributed the bytes
-- a row like `tag=native.compile.prepare ...` is usually much more actionable than a raw caller stack alone
-
-Generate collapsed stacks for flamegraph tools from a selected snapshot:
-
-```bash
-python3 tools/memtrace/analyze.py snapshot /tmp/lua-mem.jsonl \
-  --time-us 3095866 \
-  --collapsed-out /tmp/lua-peak.folded
-```
-
-Symbolize snapshot frames with `atos` when the trace contains `image` records:
-
-```bash
-python3 tools/memtrace/analyze.py snapshot /tmp/lua-mem.jsonl \
-  --time-us 3095866 \
-  --symbolize \
-  --top 20
-```
-
-Practical workflow:
-
-1. Record one raw trace with `cargo memprof`.
-2. Prefer `record-view` when you want the curve and click-to-flamegraph UI immediately.
-3. Use `serve` when you already have a raw trace file.
-4. Use `spikes` when you want the peak times in plain text or JSON.
-5. Use `timeline` when you want compact curve data for a future custom UI.
-6. Use `snapshot --time-us <peak>` when you want a one-off exact dump at a chosen time.
-7. Add `--collapsed-out` when you want a flamegraph input file for external tools.
-8. Add `--symbolize` when you want function names instead of raw PCs.
-
-If `--symbolize` is too sparse, rebuild with debug info:
-
-```bash
-CARGO_PROFILE_RELEASE_DEBUG=1 \
-cargo build --release -p sf-nano-cli --features memtrace --bin sf-nano-cli
-```
+The report contains the allocation curve, compiler-phase overlays, executable
+and guard-page memory, and point-in-time live allocations grouped by type and
+size. It is generated directly by `sf-nano-memprof-report`; there is no raw
+JSONL analyzer or separate viewer to run.
 
 ## Static Native Dump
 
@@ -352,9 +180,12 @@ The native backend can now emit a static compile-time dump with exactly two file
 - `native_index.txt`
 - `native_code.bin`
 
-Enable it with `SF_NATIVE_DUMP_DIR`:
+Release builds need the core `jit-debug` feature; hosted dev builds compile
+the IR exporter automatically. Build and enable it with:
 
 ```bash
+cargo build --release -p sf-nano-cli --features sf-nano-core/jit-debug
+
 SF_NATIVE_DUMP_DIR=/tmp/coremark-native-dump \
 ./target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
 ```
@@ -447,13 +278,13 @@ Example symbols now look like:
 ## Jitdump for samply
 
 Jitdump emission lets external profilers (samply, perf) resolve JIT-compiled
-code regions to symbols. It's a dev-tool feature controlled by the `jitdump`
-Cargo feature; the module is compiled out of release builds by default.
+code regions to symbols. It is one of the two exporters compiled by the
+core `jit-debug` feature; `SF_JITDUMP` selects it at runtime.
 
 Build with the feature:
 
 ```bash
-cargo build --release -p sf-nano-cli --features jitdump
+cargo build --release -p sf-nano-cli --features sf-nano-core/jit-debug
 ```
 
 Then set `SF_JITDUMP=1` when recording with `samply-for-ai`:
@@ -479,32 +310,20 @@ Use `native_index.txt` together with these symbols. `samply` gives runtime hotne
 
 ## Function (Call) Trace
 
-For backend-vs-backend trace comparison, use the dedicated function trace
-workflow in [FUNCTION_TRACE_DEBUGGING.md](./FUNCTION_TRACE_DEBUGGING.md).
-
-The feature is called `call-trace` on `sf-nano-core` and routed via
-`sf-nano-cli`'s own `call-trace` feature.
+To record sparse JIT function-boundary events, enable the core `call-trace`
+feature. The CLI does not duplicate core-only diagnostic features.
 
 Build:
 
 ```bash
-cargo build --release -p sf-nano-cli --features call-trace
+cargo build --release -p sf-nano-cli --features sf-nano-core/call-trace
 ```
 
 Record:
 
 ```bash
-SF_FUNCTION_TRACE=/tmp/arm64.trace \
+SF_FUNCTION_TRACE=/tmp/coremark.trace \
 ./target/release/sf-nano-cli --backend native benchmarks/wasi/coremark/coremark.wasm
-
-SF_FUNCTION_TRACE=/tmp/interp.trace \
-./target/release/sf-nano-cli --engine interp benchmarks/wasi/coremark/coremark.wasm
-```
-
-Compare:
-
-```bash
-diff -u /tmp/arm64.trace /tmp/interp.trace
 ```
 
 Extra knob:
@@ -512,10 +331,6 @@ Extra knob:
 - `SF_FUNCTION_TRACE_MEMORY=1` also hashes memory in each event; use only when needed because it is more expensive
 
 ## Common Debug Loops
-
-For a disciplined performance-improvement process, including measurement rules,
-IR/assembly proof requirements, and landing criteria, see
-[NATIVE_OPTIMIZATION_WORKFLOW.md](./NATIVE_OPTIMIZATION_WORKFLOW.md).
 
 ### Validate native correctness first
 
@@ -550,16 +365,14 @@ Then use:
 ### Inspect a memory spike
 
 ```bash
-cargo memprof --memtrace-output /tmp/coremark-mem.jsonl -- \
+cargo memprof --memprof-report /tmp/coremark-mem.html \
   --backend native benchmarks/wasi/coremark/coremark.wasm
 ```
 
 Then inspect:
 
-- the raw event log in `/tmp/coremark-mem.jsonl`
-- the interned stack records in the same file
-- an offline post-processing tool or UI for curves, peak reconstruction, and
-  flamegraphs at selected times
+- the allocation curve and compiler-phase overlays in `/tmp/coremark-mem.html`
+- a selected point's live allocations, grouped by type and size
 
 ## Useful Environment Variables
 
@@ -567,10 +380,10 @@ Then inspect:
 |---|---|
 | `TESTSUITE_DIR` | Override the WABT/spec testsuite location for `sf-nano-spectest` |
 | `RUST_BACKTRACE=1` | Show backtraces on unexpected panics |
-| `SF_NATIVE_DUMP_DIR` | Write `native_index.txt` and `native_code.bin` (requires `ir-dump` feature, auto-on in dev builds) |
-| `SF_JITDUMP=1` | Emit jitdump records for profiling tools (requires `jitdump` feature) |
+| `SF_NATIVE_DUMP_DIR` | Write `native_index.txt` and `native_code.bin` (`jit-debug` in release; auto-on in hosted dev builds) |
+| `SF_JITDUMP=1` | Emit jitdump records for profiling tools (requires `jit-debug`) |
 | `SF_JITDUMP_DIR` | Override jitdump output directory |
-| `SF_FUNCTION_TRACE` | Record sparse function-boundary traces (requires `call-trace` feature) |
+| `SF_FUNCTION_TRACE` | Record sparse function-boundary traces (requires core `call-trace`) |
 | `SF_FUNCTION_TRACE_MEMORY=1` | Add memory hashing to function traces |
 
 ## Cross-Architecture Testing
@@ -671,5 +484,8 @@ colima ssh -- qemu-arm-static \
 
 - Use `native` for normal runs; it's the only real execution backend today.
 - Use `--engine interp` as a second opinion when you suspect a JIT codegen bug: the interpreter runs the same module through an entirely separate execution path.
-- Use `native_index.txt` (via `SF_NATIVE_DUMP_DIR` + `ir-dump` feature) for static meaning and `samply-for-ai` with jitdump for runtime hotness.
-- If `base`, `fusion`, `micro-jit`, `function-trace`, or `SF_JIT_MAP` come up in old notes, scripts, or external docs: those are obsolete. The current names are `native`, `jit`, `call-trace`, and jitdump respectively.
+- Use `native_index.txt` (via `SF_NATIVE_DUMP_DIR` + `jit-debug` in release) for static meaning and `samply-for-ai` with jitdump for runtime hotness.
+- If `base`, `fusion`, `micro-jit`, `function-trace`, or `SF_JIT_MAP`
+  come up in old notes, scripts, or external docs, they are obsolete. The
+  current engine and diagnostic feature names are `native`, `jit`,
+  `call-trace`, and `jit-debug`; jitdump is the profiler file format.
