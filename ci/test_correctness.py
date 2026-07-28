@@ -242,6 +242,18 @@ class CoveragePlanTests(unittest.TestCase):
             performance_workflow,
         )
 
+    def test_workflow_inventory_and_readme_badges_have_no_legacy_entries(self) -> None:
+        workflows = ROOT / ".github" / "workflows"
+        self.assertEqual(
+            {path.name for path in workflows.glob("*.yml")},
+            {"correctness.yml", "performance-regression.yml"},
+        )
+
+        readme = (ROOT / "README.md").read_text(encoding="utf-8")
+        self.assertIn("actions/workflows/correctness.yml", readme)
+        self.assertIn("actions/workflows/performance-regression.yml", readme)
+        self.assertNotIn("actions/workflows/check-", readme)
+
     @mock.patch.object(correctness, "cargo")
     @mock.patch.object(correctness, "require_tools", return_value=True)
     @mock.patch.object(correctness.platform, "system", return_value="Linux")
