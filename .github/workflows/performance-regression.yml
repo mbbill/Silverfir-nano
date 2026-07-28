@@ -182,7 +182,7 @@ jobs:
             echo "- follow-up alternating blocks: \`1\` per round"
             echo "- order: \`ABAB / BABA\` alternating"
             echo "- regression rounds: up to \`4\`"
-            echo "- improvement rounds: up to \`2\`"
+            echo "- improvement rounds: up to \`4\`"
             echo "- regression threshold: \`1%\`"
             echo "- improvement threshold: \`3%\`"
             echo "- calibration: \`$calibration\`"

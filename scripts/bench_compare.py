@@ -10,7 +10,7 @@ The initial block produces two paired deltas for every metric. Initial
 regressions and improvements are selected for a second round. A regression
 that remains below the threshold receives up to two more rounds and fails only
 if all four rounds remain below the threshold. An improvement is reported only
-if it remains above its threshold in the second round.
+if all four rounds remain above its threshold.
 
 Only metrics selected by the initial screen can affect later classification.
 New changes observed while rerunning a multi-metric benchmark are ignored.
@@ -246,6 +246,24 @@ def third_round_candidates(
     }
 
 
+def third_round_improvement_candidates(
+    initial: dict[str, dict[str, Any]],
+    confirmation: dict[str, dict[str, Any]],
+    improvement_threshold: float,
+) -> set[str]:
+    selected = improvement_candidates(initial, improvement_threshold)
+    missing = selected - confirmation.keys()
+    if missing:
+        raise ValueError(
+            f"{sorted(missing)[0]}: selected metric has no second round"
+        )
+    return {
+        name
+        for name in selected
+        if confirmation[name]["delta_percent"] > improvement_threshold
+    }
+
+
 def fourth_round_candidates(
     initial: dict[str, dict[str, Any]],
     confirmation: dict[str, dict[str, Any]],
@@ -269,6 +287,29 @@ def fourth_round_candidates(
     }
 
 
+def fourth_round_improvement_candidates(
+    initial: dict[str, dict[str, Any]],
+    confirmation: dict[str, dict[str, Any]],
+    third_round: dict[str, dict[str, Any]],
+    improvement_threshold: float,
+) -> set[str]:
+    selected = third_round_improvement_candidates(
+        initial,
+        confirmation,
+        improvement_threshold,
+    )
+    missing = selected - third_round.keys()
+    if missing:
+        raise ValueError(
+            f"{sorted(missing)[0]}: persistent improvement has no third round"
+        )
+    return {
+        name
+        for name in selected
+        if third_round[name]["delta_percent"] > improvement_threshold
+    }
+
+
 def classify_metrics(
     *,
     initial: dict[str, dict[str, Any]],
@@ -281,8 +322,9 @@ def classify_metrics(
     """Apply the staged gate to candidates frozen by the initial screen.
 
     `confirmation` contains initial regressions and improvements. Later maps
-    contain only initial regressions still negative in every preceding round.
-    Other measurements produced by multi-metric benchmarks are omitted.
+    contain only initial candidates still beyond their threshold in every
+    preceding round. Other measurements from multi-metric benchmarks are
+    omitted.
     """
     regressions = regression_candidates(initial, regression_threshold)
     improvements = improvement_candidates(initial, improvement_threshold)
@@ -322,11 +364,28 @@ def classify_metrics(
                         else "RECOVERED"
                     )
         elif name in improvements:
-            status = (
-                "IMPROVEMENT"
-                if confirmation_metric["delta_percent"] > improvement_threshold
-                else "PASS"
-            )
+            if confirmation_metric["delta_percent"] <= improvement_threshold:
+                status = "PASS"
+            else:
+                third_metric = third_round.get(name)
+                if third_metric is None:
+                    raise ValueError(
+                        f"{name}: persistent improvement has no third round"
+                    )
+                if third_metric["delta_percent"] <= improvement_threshold:
+                    status = "PASS"
+                else:
+                    fourth_metric = fourth_round.get(name)
+                    if fourth_metric is None:
+                        raise ValueError(
+                            f"{name}: persistent improvement has no fourth round"
+                        )
+                    status = (
+                        "IMPROVEMENT"
+                        if fourth_metric["delta_percent"]
+                        > improvement_threshold
+                        else "PASS"
+                    )
         else:
             status = "PASS"
 
@@ -372,7 +431,7 @@ def render_summary(
             "third and fourth rounds decide REGRESSION versus RECOVERED. "
             "The order alternates ABAB/BABA between rounds. Initial "
             f"improvements above `+{improvement_threshold:.2f}%` are reported "
-            "only when the second round also exceeds that threshold."
+            "only when all four rounds exceed that threshold."
         ),
         "",
         (
@@ -439,8 +498,8 @@ def render_summary(
     lines.append("")
     lines.append(
         "> Later-round measurements from metrics that passed the initial "
-        "screen are ignored by design. Improvement candidates stop after "
-        "the second round."
+        "screen are ignored by design. Both regressions and improvements "
+        "must remain beyond their threshold in all four rounds."
     )
     lines.append("")
     return "\n".join(lines)
@@ -485,7 +544,7 @@ def main() -> int:
         type=float,
         default=3.0,
         metavar="PERCENT",
-        help="Initial and confirmation improvement threshold (default: 3.0)",
+        help="Improvement threshold applied to all rounds (default: 3.0)",
     )
     parser.add_argument(
         "--only",
@@ -677,21 +736,35 @@ def main() -> int:
         third_targets = [
             test
             for test in confirmation_targets
-            if third_round_candidates(
-                initial_by_test[test["name"]],
-                confirmation_by_test[test["name"]],
-                args.regression_threshold,
+            if (
+                third_round_candidates(
+                    initial_by_test[test["name"]],
+                    confirmation_by_test[test["name"]],
+                    args.regression_threshold,
+                )
+                | third_round_improvement_candidates(
+                    initial_by_test[test["name"]],
+                    confirmation_by_test[test["name"]],
+                    args.improvement_threshold,
+                )
             )
         ]
 
-        # Stage 3: only initial regressions that remained below threshold in
-        # stage 2 can reach this round. Improvements never reach stage 3.
+        # Stage 3: only initial candidates that remained beyond their
+        # threshold in stage 2 can reach this round.
         for index, test in enumerate(third_targets, 1):
             name = test["name"]
-            selected_metrics = third_round_candidates(
-                initial_by_test[name],
-                confirmation_by_test[name],
-                args.regression_threshold,
+            selected_metrics = (
+                third_round_candidates(
+                    initial_by_test[name],
+                    confirmation_by_test[name],
+                    args.regression_threshold,
+                )
+                | third_round_improvement_candidates(
+                    initial_by_test[name],
+                    confirmation_by_test[name],
+                    args.improvement_threshold,
+                )
             )
             print(
                 (
@@ -720,23 +793,39 @@ def main() -> int:
         fourth_targets = [
             test
             for test in third_targets
-            if fourth_round_candidates(
-                initial_by_test[test["name"]],
-                confirmation_by_test[test["name"]],
-                third_by_test[test["name"]],
-                args.regression_threshold,
+            if (
+                fourth_round_candidates(
+                    initial_by_test[test["name"]],
+                    confirmation_by_test[test["name"]],
+                    third_by_test[test["name"]],
+                    args.regression_threshold,
+                )
+                | fourth_round_improvement_candidates(
+                    initial_by_test[test["name"]],
+                    confirmation_by_test[test["name"]],
+                    third_by_test[test["name"]],
+                    args.improvement_threshold,
+                )
             )
         ]
 
-        # Stage 4: the final gate runs only initial regressions that remained
-        # below threshold in both preceding confirmation rounds.
+        # Stage 4: the final gate runs only initial candidates still beyond
+        # their threshold in both preceding confirmation rounds.
         for index, test in enumerate(fourth_targets, 1):
             name = test["name"]
-            selected_metrics = fourth_round_candidates(
-                initial_by_test[name],
-                confirmation_by_test[name],
-                third_by_test[name],
-                args.regression_threshold,
+            selected_metrics = (
+                fourth_round_candidates(
+                    initial_by_test[name],
+                    confirmation_by_test[name],
+                    third_by_test[name],
+                    args.regression_threshold,
+                )
+                | fourth_round_improvement_candidates(
+                    initial_by_test[name],
+                    confirmation_by_test[name],
+                    third_by_test[name],
+                    args.improvement_threshold,
+                )
             )
             print(
                 (
@@ -769,16 +858,31 @@ def main() -> int:
                 args.regression_threshold,
                 args.improvement_threshold,
             )
-            third_metrics = third_round_candidates(
-                initial_by_test[name],
-                confirmation_by_test.get(name, {}),
-                args.regression_threshold,
+            third_metrics = (
+                third_round_candidates(
+                    initial_by_test[name],
+                    confirmation_by_test.get(name, {}),
+                    args.regression_threshold,
+                )
+                | third_round_improvement_candidates(
+                    initial_by_test[name],
+                    confirmation_by_test.get(name, {}),
+                    args.improvement_threshold,
+                )
             )
-            fourth_metrics = fourth_round_candidates(
-                initial_by_test[name],
-                confirmation_by_test.get(name, {}),
-                third_by_test.get(name, {}),
-                args.regression_threshold,
+            fourth_metrics = (
+                fourth_round_candidates(
+                    initial_by_test[name],
+                    confirmation_by_test.get(name, {}),
+                    third_by_test.get(name, {}),
+                    args.regression_threshold,
+                )
+                | fourth_round_improvement_candidates(
+                    initial_by_test[name],
+                    confirmation_by_test.get(name, {}),
+                    third_by_test.get(name, {}),
+                    args.improvement_threshold,
+                )
             )
             metrics = classify_metrics(
                 initial=initial_by_test[name],

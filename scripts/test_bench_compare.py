@@ -10,8 +10,10 @@ from scripts.bench_compare import (
     classify_metrics,
     confirmation_candidates,
     fourth_round_candidates,
+    fourth_round_improvement_candidates,
     regression_candidates,
     third_round_candidates,
+    third_round_improvement_candidates,
 )
 
 
@@ -36,8 +38,11 @@ class StagedGateTests(unittest.TestCase):
             "fourth_recovers": metric(-1.1),
             "persists": metric(-2.0),
             "new_second_regression": metric(-0.5),
+            "new_second_improvement": metric(0.5),
             "confirmed_improvement": metric(3.1),
             "faded_improvement": metric(4.0),
+            "third_faded_improvement": metric(3.5),
+            "fourth_faded_improvement": metric(3.5),
         }
         confirmation = {
             "second_recovers": metric(-0.5),
@@ -46,19 +51,29 @@ class StagedGateTests(unittest.TestCase):
             "persists": metric(-1.1),
             "confirmed_improvement": metric(3.2),
             "faded_improvement": metric(3.0),
+            "third_faded_improvement": metric(3.2),
+            "fourth_faded_improvement": metric(3.2),
             # This must be ignored because it passed the initial screen.
             "new_second_regression": metric(-9.0),
+            "new_second_improvement": metric(9.0),
         }
         third_round = {
             "third_recovers": metric(-0.9),
             "fourth_recovers": metric(-1.1),
             "persists": metric(-1.01),
+            "confirmed_improvement": metric(3.3),
+            "third_faded_improvement": metric(3.0),
+            "fourth_faded_improvement": metric(3.2),
             # This remains ignored despite sharing a rerun benchmark.
             "new_second_regression": metric(-20.0),
+            "new_second_improvement": metric(20.0),
         }
         fourth_round = {
             "fourth_recovers": metric(-0.9),
             "persists": metric(-1.01),
+            "confirmed_improvement": metric(3.4),
+            "fourth_faded_improvement": metric(3.0),
+            "new_second_improvement": metric(20.0),
         }
 
         self.assertEqual(
@@ -79,6 +94,8 @@ class StagedGateTests(unittest.TestCase):
                 "persists",
                 "confirmed_improvement",
                 "faded_improvement",
+                "third_faded_improvement",
+                "fourth_faded_improvement",
             },
         )
         self.assertEqual(
@@ -93,6 +110,27 @@ class StagedGateTests(unittest.TestCase):
                 1.0,
             ),
             {"fourth_recovers", "persists"},
+        )
+        self.assertEqual(
+            third_round_improvement_candidates(
+                initial,
+                confirmation,
+                3.0,
+            ),
+            {
+                "confirmed_improvement",
+                "third_faded_improvement",
+                "fourth_faded_improvement",
+            },
+        )
+        self.assertEqual(
+            fourth_round_improvement_candidates(
+                initial,
+                confirmation,
+                third_round,
+                3.0,
+            ),
+            {"confirmed_improvement", "fourth_faded_improvement"},
         )
 
         result = classify_metrics(
@@ -116,16 +154,40 @@ class StagedGateTests(unittest.TestCase):
         )
         self.assertIsNone(result["new_second_regression"]["third_round"])
         self.assertIsNone(result["new_second_regression"]["fourth_round"])
+        self.assertEqual(result["new_second_improvement"]["status"], "PASS")
+        self.assertIsNone(
+            result["new_second_improvement"]["confirmation"]
+        )
+        self.assertIsNone(
+            result["new_second_improvement"]["third_round"]
+        )
+        self.assertIsNone(
+            result["new_second_improvement"]["fourth_round"]
+        )
         self.assertEqual(
             result["confirmed_improvement"]["status"],
             "IMPROVEMENT",
         )
         self.assertEqual(result["faded_improvement"]["status"], "PASS")
-        self.assertIsNone(
-            result["confirmed_improvement"]["third_round"]
+        self.assertEqual(
+            result["third_faded_improvement"]["status"],
+            "PASS",
         )
         self.assertIsNone(
+            result["third_faded_improvement"]["fourth_round"]
+        )
+        self.assertEqual(
+            result["fourth_faded_improvement"]["status"],
+            "PASS",
+        )
+        self.assertIsNotNone(
+            result["confirmed_improvement"]["third_round"]
+        )
+        self.assertIsNotNone(
             result["confirmed_improvement"]["fourth_round"]
+        )
+        self.assertIsNone(
+            result["faded_improvement"]["third_round"]
         )
 
     def test_threshold_boundaries_are_inclusive_passes(self) -> None:
@@ -170,6 +232,31 @@ class StagedGateTests(unittest.TestCase):
         self.assertEqual(result["third_boundary"]["status"], "RECOVERED")
         self.assertEqual(result["fourth_boundary"]["status"], "RECOVERED")
 
+    def test_later_improvement_boundaries_pass(self) -> None:
+        result = classify_metrics(
+            initial={
+                "second_boundary": metric(3.01),
+                "third_boundary": metric(3.01),
+                "fourth_boundary": metric(3.01),
+            },
+            confirmation={
+                "second_boundary": metric(3.0),
+                "third_boundary": metric(3.01),
+                "fourth_boundary": metric(3.01),
+            },
+            third_round={
+                "third_boundary": metric(3.0),
+                "fourth_boundary": metric(3.01),
+            },
+            fourth_round={"fourth_boundary": metric(3.0)},
+            regression_threshold=1.0,
+            improvement_threshold=3.0,
+        )
+
+        self.assertEqual(result["second_boundary"]["status"], "PASS")
+        self.assertEqual(result["third_boundary"]["status"], "PASS")
+        self.assertEqual(result["fourth_boundary"]["status"], "PASS")
+
     def test_selected_metric_requires_second_round(self) -> None:
         with self.assertRaisesRegex(
             ValueError,
@@ -207,6 +294,20 @@ class StagedGateTests(unittest.TestCase):
                 initial={"missing": metric(-1.01)},
                 confirmation={"missing": metric(-1.01)},
                 third_round={"missing": metric(-1.01)},
+                fourth_round={},
+                regression_threshold=1.0,
+                improvement_threshold=3.0,
+            )
+
+    def test_persistent_improvement_requires_fourth_round(self) -> None:
+        with self.assertRaisesRegex(
+            ValueError,
+            "persistent improvement has no fourth round",
+        ):
+            classify_metrics(
+                initial={"missing": metric(3.01)},
+                confirmation={"missing": metric(3.01)},
+                third_round={"missing": metric(3.01)},
                 fourth_round={},
                 regression_threshold=1.0,
                 improvement_threshold=3.0,
@@ -323,7 +424,7 @@ class ScriptIntegrationTests(unittest.TestCase):
         self.assertIsNone(result["metrics"]["late"]["third_round"])
         self.assertIsNone(result["metrics"]["late"]["fourth_round"])
 
-    def test_main_confirms_improvement_in_two_rounds(self) -> None:
+    def test_main_confirms_improvement_in_four_rounds(self) -> None:
         tests = [{"name": "synthetic"}]
         extractors = {
             "synthetic": [("score", None, "units/s", "higher")]
@@ -388,9 +489,9 @@ class ScriptIntegrationTests(unittest.TestCase):
             result = document["tests"]["synthetic"]
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(len(result["runs"]), 8)
-        self.assertEqual(result["third_round_metrics"], [])
-        self.assertEqual(result["fourth_round_metrics"], [])
+        self.assertEqual(len(result["runs"]), 16)
+        self.assertEqual(result["third_round_metrics"], ["score"])
+        self.assertEqual(result["fourth_round_metrics"], ["score"])
         self.assertEqual(
             result["metrics"]["score"]["status"],
             "IMPROVEMENT",
@@ -398,8 +499,8 @@ class ScriptIntegrationTests(unittest.TestCase):
         self.assertIsNotNone(
             result["metrics"]["score"]["confirmation"]
         )
-        self.assertIsNone(result["metrics"]["score"]["third_round"])
-        self.assertIsNone(result["metrics"]["score"]["fourth_round"])
+        self.assertIsNotNone(result["metrics"]["score"]["third_round"])
+        self.assertIsNotNone(result["metrics"]["score"]["fourth_round"])
 
 
 if __name__ == "__main__":
