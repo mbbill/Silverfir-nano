@@ -12,6 +12,7 @@ from ci.performance import (
     metric_plans,
     probability_summary,
     required_pairs,
+    required_pairs_for_direction,
     student_t_cdf,
 )
 
@@ -96,6 +97,28 @@ class ProbabilityGateTests(unittest.TestCase):
             0.9999,
         )
 
+    def test_directional_pilot_can_confirm_when_variance_forecast_cannot(
+        self,
+    ) -> None:
+        initial = {
+            "small": measured_metric([-0.3, -1.8, -1.0, 0.2])
+        }
+        plans = metric_plans(
+            initial,
+            regression_probability=0.9999,
+            improvement_probability=0.999,
+            minimum_pairs=6,
+            maximum_pairs=24,
+            pilot_probability=0.8,
+        )
+
+        self.assertIsNone(plans["small"]["target_pairs"])
+        self.assertGreater(
+            plans["small"]["pilot_direction_probability"],
+            0.8,
+        )
+        self.assertTrue(plans["small"]["selected"])
+
     def test_classification_freezes_initial_direction(self) -> None:
         initial = {
             "regression": measured_metric([-2.0] * 4),
@@ -140,6 +163,31 @@ class ProbabilityGateTests(unittest.TestCase):
             maximum_pairs=24,
         )
         self.assertFalse(plans["unstable"]["selected"])
+
+    def test_confirmation_reestimates_after_pilot_underestimates_pairs(
+        self,
+    ) -> None:
+        confirmation = measured_metric(
+            [-2.0, -2.0, -2.0, -2.0, -2.0, 0.5]
+        )
+
+        next_pairs = required_pairs_for_direction(
+            confirmation,
+            direction="regression",
+            probability=0.9999,
+            minimum_pairs=8,
+            maximum_pairs=24,
+        )
+        opposite = required_pairs_for_direction(
+            measured_metric([1.0] * 6),
+            direction="regression",
+            probability=0.9999,
+            minimum_pairs=8,
+            maximum_pairs=24,
+        )
+
+        self.assertEqual(next_pairs, 14)
+        self.assertIsNone(opposite)
 
 
 class ScriptIntegrationTests(unittest.TestCase):
@@ -271,7 +319,7 @@ class ScriptIntegrationTests(unittest.TestCase):
             result = document["tests"]["synthetic"]
 
         self.assertEqual(exit_code, 1)
-        self.assertEqual(document["schema_version"], 5)
+        self.assertEqual(document["schema_version"], 6)
         self.assertEqual(len(result["runs"]), 20)
         schedules = [
             [
@@ -296,6 +344,7 @@ class ScriptIntegrationTests(unittest.TestCase):
         self.assertEqual(result["metrics"]["score"]["pair_count"], 6)
         self.assertEqual(result["metrics"]["late"]["status"], "PASS")
         self.assertEqual(result["metrics"]["late"]["pair_count"], 4)
+        self.assertEqual(result["confirmation_looks"], [6])
 
     def test_main_confirms_improvement_at_planned_pair_count(self) -> None:
         tests = [{"name": "synthetic"}]
@@ -374,6 +423,103 @@ class ScriptIntegrationTests(unittest.TestCase):
             "IMPROVEMENT",
         )
         self.assertEqual(result["metrics"]["score"]["pair_count"], 6)
+        self.assertEqual(result["confirmation_looks"], [6])
+
+    def test_main_extends_confirmation_when_pilot_plan_is_too_short(
+        self,
+    ) -> None:
+        tests = [{"name": "synthetic"}]
+        extractors = {
+            "synthetic": [("score", None, "units/s", "higher")]
+        }
+        confirmation_deltas = [
+            -2.0,
+            -2.0,
+            -2.0,
+            -2.0,
+            -2.0,
+            0.5,
+        ] + [-2.0] * 8
+
+        def fake_run_once(**kwargs: object) -> dict:
+            block = int(kwargs["block"])
+            slot = int(kwargs["slot"])
+            version = str(kwargs["version"])
+            if version == "baseline":
+                value = 100.0
+            elif block < 2:
+                value = 98.0
+            else:
+                pair_index = (block - 2) * 2 + slot // 2
+                value = 100.0 * (
+                    1.0 + confirmation_deltas[pair_index] / 100.0
+                )
+            return {
+                "block": block,
+                "slot": slot,
+                "version": version,
+                "elapsed_seconds": 0.01,
+                "metric_text": "synthetic",
+                "metrics": {
+                    "score": {
+                        "value": value,
+                        "unit": "units/s",
+                        "direction": "higher",
+                    }
+                },
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            out_dir = Path(temp_dir)
+            argv = [
+                "bench_compare.py",
+                "--baseline-exec",
+                "baseline",
+                "--candidate-exec",
+                "candidate",
+                "--engine",
+                "jit",
+                "--platform",
+                "synthetic",
+                "--warmup-time",
+                "0",
+                "--time",
+                "0.01",
+                "--blocks",
+                "2",
+                "--min-pairs",
+                "6",
+                "--max-pairs",
+                "24",
+                "--out-dir",
+                str(out_dir),
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(bench_compare.run_tests, "TESTS", tests),
+                patch.object(bench_compare, "METRIC_EXTRACTORS", extractors),
+                patch.object(
+                    bench_compare,
+                    "command_for",
+                    return_value=("fake", []),
+                ),
+                patch.object(
+                    bench_compare,
+                    "run_once",
+                    side_effect=fake_run_once,
+                ),
+            ):
+                exit_code = bench_compare.main()
+
+            document = json.loads(
+                (out_dir / "comparison.json").read_text(encoding="utf-8")
+            )
+            result = document["tests"]["synthetic"]
+
+        self.assertEqual(exit_code, 1)
+        self.assertEqual(result["confirmation_looks"], [6, 14])
+        self.assertEqual(result["metrics"]["score"]["pair_count"], 14)
+        self.assertEqual(result["metrics"]["score"]["status"], "REGRESSION")
 
 
 if __name__ == "__main__":

@@ -183,9 +183,10 @@ jobs:
             echo "- initial paired samples: \`$((blocks * 2))\`"
             echo "- order: \`ABAB / BABA\` alternating"
             echo "- targeted pair budget: \`6..24\`"
+            echo "- pilot direction probability: \`80%\`"
             echo "- regression probability: \`99.99%\`"
             echo "- improvement probability: \`99.9%\`"
-            echo "- model: \`paired log delta + Student-t\`"
+            echo "- model: \`paired log delta + adaptive Student-t confirmation\`"
             echo "- calibration: \`$calibration\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
@@ -399,6 +400,7 @@ jobs:
             --blocks "$BLOCKS"
             --min-pairs 6
             --max-pairs 24
+            --pilot-probability 80
             --regression-probability 99.99
             --improvement-probability 99.9
             --out-dir "perf-output/${ENGINE}"
