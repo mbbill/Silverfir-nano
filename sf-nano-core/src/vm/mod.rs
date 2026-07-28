@@ -23,6 +23,7 @@
 //! gated on the same features, so in a single-engine build the choice is a
 //! zero-sized type and the switch disappears.
 
+pub(crate) mod const_eval;
 pub(crate) mod engine;
 pub(crate) mod entities;
 pub(crate) mod imports;

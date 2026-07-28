@@ -25,7 +25,6 @@ use crate::module::entities::{Data, Element, ElementInit, GlobalDef, MemoryDef, 
 use crate::module::type_context::{concrete_type_matches_cross_context, TypeContext};
 use crate::module::type_defs::CompositeType;
 use crate::module::Module;
-use crate::opcodes::Opcode;
 use crate::utils::limits::{Limitable, Limits};
 use crate::value_type::{AbstractHeapType, HeapType, RefType, ValueType};
 use crate::vm::engine::Engine;
@@ -408,14 +407,6 @@ fn op_counts(table: &[u64]) -> Vec<(Op, u64)> {
     out
 }
 
-/// Evaluate the simple constant expressions v1 supports for offsets and
-/// global initializers: a single `t.const` (or `ref.func`/`ref.null`).
-/// Evaluate a constant expression.
-///
-/// Covers the extended set: `t.const`, `ref.null`, `ref.func`, `global.get`
-/// of an already-initialized immutable global, and `i32`/`i64` add, sub and
-/// mul. `globals` is what has been initialized so far, which is exactly
-/// what `global.get` is allowed to reach in a constant expression.
 /// A numeric `Value` as the raw 64-bit slot this engine stores.
 pub(crate) fn value_to_raw_for_interp(v: &Value) -> Result<u64, WasmError> {
     Ok(match v {
@@ -441,124 +432,80 @@ pub(crate) fn raw_to_value_for_interp(raw: u64, ty: ValueType) -> Result<Value, 
     })
 }
 
-fn eval_const(expr: &[u8], globals: &[u64]) -> Result<u64, WasmError> {
-    use crate::op_decoder::{Decoder, Immediate, OpStream, OpcodeHandler};
-    use crate::opcodes::WasmOpcode;
+/// Evaluate a constant expression to the raw 64-bit slot this engine stores.
+///
+/// The grammar lives in `vm::const_eval`; this resolver reads
+/// already-initialized globals from the flat array (`globals` is what has
+/// been initialized so far, which is exactly what `global.get` may reach),
+/// widens `ref.func` to a plain handle whose payload IS the function index,
+/// and refuses the GC constructors this engine does not support.
+fn eval_const(module: &Module, expr: &[u8], globals: &[u64]) -> Result<u64, WasmError> {
+    use crate::vm::const_eval::{self, ConstResolver};
 
-    struct H<'g> {
-        stack: Vec<u64>,
-        globals: &'g [u64],
+    struct R<'a> {
+        module: &'a Module,
+        globals: &'a [u64],
     }
 
-    impl H<'_> {
-        fn pop2(&mut self) -> Result<(u64, u64), WasmError> {
-            let b = self.stack.pop();
-            let a = self.stack.pop();
-            match (a, b) {
-                (Some(a), Some(b)) => Ok((a, b)),
-                _ => Err(WasmError::invalid("interp: constant expression underflows")),
-            }
+    impl ConstResolver for R<'_> {
+        fn func_ref(&mut self, func_idx: u32) -> Result<Value, WasmError> {
+            let function = self
+                .module
+                .functions()
+                .get(func_idx as usize)
+                .ok_or_else(|| WasmError::invalid("ref.func: function index out of range"))?;
+            Ok(Value::Ref(
+                RefHandle::new(func_idx as usize),
+                crate::value_type::RefType::new(
+                    false,
+                    crate::value_type::HeapType::Concrete(function.type_index()),
+                ),
+            ))
         }
-    }
 
-    impl OpcodeHandler for H<'_> {
-        fn on_decode_begin(&mut self) -> Result<(), WasmError> {
-            Ok(())
+        fn global_get(&mut self, global_idx: u32) -> Result<Value, WasmError> {
+            // Only an already-initialized global is reachable: the spec
+            // restricts a constant expression to imported and
+            // previously-declared ones.
+            let raw = self
+                .globals
+                .get(global_idx as usize)
+                .copied()
+                .ok_or_else(|| {
+                    WasmError::invalid("interp: constant expression reads a later global")
+                })?;
+            let ty = self
+                .module
+                .globals()
+                .get(global_idx as usize)
+                .map(|g| g.value_type())
+                .ok_or_else(|| WasmError::invalid("global.get: index out of range"))?;
+            raw_to_value_for_interp(raw, ty)
         }
-        fn on_stream<'x, 'y, 'z>(
+
+        fn ref_i31(&mut self, _value: i32) -> Result<Value, WasmError> {
+            Err(WasmError::invalid("interp: GC is not supported"))
+        }
+
+        fn alloc_struct(
             &mut self,
-            stream: &mut OpStream<'x, 'y, 'z>,
-        ) -> Result<(), WasmError> {
-            while let Some(op) = stream.next()? {
-                match (op.wasm_op, &op.imm) {
-                    (WasmOpcode::OP(Opcode::I32_CONST), Immediate::I32(v)) => {
-                        self.stack.push(*v as u32 as u64)
-                    }
-                    (WasmOpcode::OP(Opcode::I64_CONST), Immediate::I64(v)) => {
-                        self.stack.push(*v as u64)
-                    }
-                    (WasmOpcode::OP(Opcode::F32_CONST), Immediate::F32(v)) => {
-                        self.stack.push(v.to_bits() as u64)
-                    }
-                    (WasmOpcode::OP(Opcode::F64_CONST), Immediate::F64(v)) => {
-                        self.stack.push(v.to_bits())
-                    }
-                    (WasmOpcode::OP(Opcode::REF_FUNC), Immediate::FunctionIndex(i)) => {
-                        self.stack.push(*i as u64)
-                    }
-                    (WasmOpcode::OP(Opcode::REF_NULL), _) => self.stack.push(NULL_REF_SLOT),
-                    (WasmOpcode::OP(Opcode::GLOBAL_GET), Immediate::GlobalIndex(i)) => {
-                        // Only an already-initialized global is reachable:
-                        // the spec restricts a constant expression to
-                        // imported and previously-declared immutable ones.
-                        let v =
-                            self.globals
-                                .get(*i as usize)
-                                .copied()
-                                .ok_or(WasmError::invalid(
-                                    "interp: constant expression reads a later global",
-                                ))?;
-                        self.stack.push(v);
-                    }
-                    (WasmOpcode::OP(Opcode::I32_ADD), _) => {
-                        let (a, b) = self.pop2()?;
-                        self.stack.push((a as u32).wrapping_add(b as u32) as u64);
-                    }
-                    (WasmOpcode::OP(Opcode::I32_SUB), _) => {
-                        let (a, b) = self.pop2()?;
-                        self.stack.push((a as u32).wrapping_sub(b as u32) as u64);
-                    }
-                    (WasmOpcode::OP(Opcode::I32_MUL), _) => {
-                        let (a, b) = self.pop2()?;
-                        self.stack.push((a as u32).wrapping_mul(b as u32) as u64);
-                    }
-                    (WasmOpcode::OP(Opcode::I64_ADD), _) => {
-                        let (a, b) = self.pop2()?;
-                        self.stack.push(a.wrapping_add(b));
-                    }
-                    (WasmOpcode::OP(Opcode::I64_SUB), _) => {
-                        let (a, b) = self.pop2()?;
-                        self.stack.push(a.wrapping_sub(b));
-                    }
-                    (WasmOpcode::OP(Opcode::I64_MUL), _) => {
-                        let (a, b) = self.pop2()?;
-                        self.stack.push(a.wrapping_mul(b));
-                    }
-                    (WasmOpcode::OP(Opcode::END), _) => continue,
-                    _ => {
-                        return Err(WasmError::invalid(
-                            "interp: unsupported constant expression",
-                        ))
-                    }
-                }
-            }
-            Ok(())
+            _type_idx: u32,
+            _fields: crate::collections::Vec<Value>,
+        ) -> Result<Value, WasmError> {
+            Err(WasmError::invalid("interp: GC is not supported"))
         }
-        fn on_decode_end(&mut self) -> Result<(), WasmError> {
-            Ok(())
+
+        fn alloc_array(
+            &mut self,
+            _type_idx: u32,
+            _elements: crate::collections::Vec<Value>,
+        ) -> Result<Value, WasmError> {
+            Err(WasmError::invalid("interp: GC is not supported"))
         }
     }
 
-    let mut h = H {
-        stack: Vec::new(),
-        globals,
-    };
-    // A const expr is an expression body: decode it like a function body.
-    // The decoder is scoped so its borrow of `h` provably ends before the
-    // read below (with tracked-alloc's memprof feature unified in, its Vec
-    // has a destructor and the borrow would otherwise extend to it).
-    {
-        let mut d = Decoder::new(expr);
-        d.add_handler(&mut h);
-        d.decode_function()?;
-    }
-    match h.stack.len() {
-        1 => Ok(h.stack[0]),
-        0 => Err(WasmError::invalid("interp: empty constant expression")),
-        _ => Err(WasmError::invalid(
-            "interp: constant expression leaves more than one value",
-        )),
-    }
+    let value = const_eval::eval_const_expr(expr, module.types(), &mut R { module, globals })?;
+    value_to_raw_for_interp(&value)
 }
 
 /// Whether a provided global's reference type satisfies a declared one.
@@ -850,7 +797,7 @@ impl InterpInstance {
         for g in module.globals() {
             match g.def() {
                 GlobalDef::Local(spec) => {
-                    let mut v = eval_const(spec.init_expr(), &globals)?;
+                    let mut v = eval_const(&module, spec.init_expr(), &globals)?;
                     // A funcref in an EXPORTED global is as invisible to its
                     // importer as one in a shared table, and for the same
                     // reason: the index means nothing outside this instance.
@@ -998,7 +945,7 @@ impl InterpInstance {
             // (ref.func $d))` full of nulls.
             let init_slot = match t.spec().init_expr() {
                 Some(expr) => {
-                    let raw = eval_const(expr, &globals)?;
+                    let raw = eval_const(&module, expr, &globals)?;
                     let handle = slot_to_ref(raw);
                     match (&funcref_host, handle.is_null() || handle.is_special()) {
                         // Shared tables carry globally-named references; see
@@ -1096,7 +1043,7 @@ impl InterpInstance {
             else {
                 continue;
             };
-            let off = eval_const(&offset_expr, &self.globals)? as u64;
+            let off = eval_const(&self.module, &offset_expr, &self.globals)? as u64;
             let shared_now = matches!(
                 self.tables.get(table_index).map(|t| &t.entries),
                 Some(TableEntries::Shared(_))
@@ -1134,7 +1081,7 @@ impl InterpInstance {
                 }
                 ElementInit::InitExprs { exprs, .. } => {
                     for (k, expr) in exprs.iter().enumerate() {
-                        let v = eval_const(expr, &self.globals)?;
+                        let v = eval_const(&self.module, expr, &self.globals)?;
                         self.tables[table_index].entries.set(off as usize + k, v)?;
                     }
                 }
@@ -1160,7 +1107,7 @@ impl InterpInstance {
                 else {
                     continue;
                 };
-                let off = eval_const(offset_expr, &self.globals)? as u64;
+                let off = eval_const(&self.module, offset_expr, &self.globals)? as u64;
                 (*memory_index, off, init.clone())
             };
             let mem = self
@@ -1454,7 +1401,7 @@ impl InterpInstance {
             Some(ElementInit::InitExprs { exprs, .. }) => exprs
                 .get(k)
                 .ok_or(WasmError::trap("out of bounds table access"))
-                .and_then(|e| eval_const(e, &self.globals)),
+                .and_then(|e| eval_const(&self.module, e, &self.globals)),
             None => Err(WasmError::trap("out of bounds table access")),
         }
     }
