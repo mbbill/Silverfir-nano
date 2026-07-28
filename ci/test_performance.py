@@ -35,6 +35,25 @@ def measured_metric(deltas_percent: list[float]) -> dict:
 
 
 class ProbabilityGateTests(unittest.TestCase):
+    def test_metric_extractors_cover_the_active_benchmark_suite(self) -> None:
+        test_names = {
+            test["name"] for test in bench_compare.run_tests.TESTS
+        }
+
+        self.assertEqual(set(bench_compare.METRIC_EXTRACTORS), test_names)
+        self.assertEqual(
+            bench_compare.extract_metrics(
+                "sqlite/sqlite_bench.wasm",
+                "8369.37 iteration/s",
+            ),
+            [{
+                "name": "sqlite",
+                "unit": "iteration/s",
+                "direction": "higher",
+                "value": 8369.37,
+            }],
+        )
+
     def test_coremark_preserves_official_invocation(self) -> None:
         coremark = bench_compare.run_tests.TESTS[0]
         sha256 = bench_compare.run_tests.TESTS[1]
