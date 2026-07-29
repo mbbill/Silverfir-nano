@@ -32,7 +32,7 @@
 
 use super::asm::Asm;
 use super::instr::Op;
-use super::isa::{Caps, Isa, Stubs, Variant, CLASSES, DSTS};
+use super::isa::{Caps, Isa, PairDstSplit, Stubs, Variant, CLASSES, DSTS};
 use super::layout::{Cls, DstCls, Fam};
 
 const RAX: u32 = 0;

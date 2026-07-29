@@ -380,10 +380,7 @@ impl SsaInst {
 /// with std (`guard-pages`, debug); without them those fields are
 /// produce-only.
 #[derive(Clone, Copy, Debug)]
-#[allow(
-    dead_code,
-    reason = "some payload fields are read only by the sf_ir_dump exporters, which need std"
-)]
+#[allow(dead_code)]
 pub(crate) enum SsaInstView<'a> {
     Fill {
         slot: FrameSlot,

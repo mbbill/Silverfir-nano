@@ -383,7 +383,8 @@ mod tests {
         utils::limits::Limits,
         value_type::ValueType,
         vm::{
-            entities::{HostFn, MemInst, ModuleInst},
+            entities::{HostFn, MemInst},
+            jit::entities::ModuleInst,
             jit::runtime::{common::NativeCallStatus, context::NativeContextBox},
             jit::store::Store,
         },

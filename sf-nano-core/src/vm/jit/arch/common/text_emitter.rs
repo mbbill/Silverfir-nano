@@ -42,10 +42,6 @@ impl Default for TextEmitter {
     }
 }
 
-#[allow(
-    dead_code,
-    reason = "shared emitter surface; each native backend uses a different subset of widths and patch helpers"
-)]
 impl TextEmitter {
     #[inline]
     pub(crate) fn new() -> Self {
@@ -55,6 +51,8 @@ impl TextEmitter {
     }
 
     #[inline]
+    // Its one caller (`into_artifact`) exists only in std builds.
+    #[cfg(sf_has_std)]
     pub(crate) fn from_owned(text: collections::Vec<u8>) -> Self {
         Self {
             storage: TextStorage::Owned(text),
@@ -82,6 +80,7 @@ impl TextEmitter {
 
     // ── Emit ─────────────────────────────────────────────────────────────
 
+    #[cfg(sf_backend_x64)]
     #[inline]
     pub(crate) fn emit_u8(&mut self, byte: u8) -> usize {
         match &mut self.storage {
@@ -99,6 +98,7 @@ impl TextEmitter {
         }
     }
 
+    #[cfg(sf_arm32_isa_thumb)]
     #[inline]
     pub(crate) fn emit_u16(&mut self, value: u16) -> usize {
         match &mut self.storage {
@@ -136,6 +136,7 @@ impl TextEmitter {
         }
     }
 
+    #[cfg(any(sf_backend_arm64, sf_backend_x64, sf_backend_riscv64))]
     #[inline]
     pub(crate) fn emit_u64(&mut self, value: u64) -> usize {
         match &mut self.storage {
@@ -154,6 +155,7 @@ impl TextEmitter {
     }
 
     #[inline]
+    #[cfg(sf_backend_x64)]
     pub(crate) fn emit_bytes(&mut self, bytes: &[u8]) -> usize {
         match &mut self.storage {
             TextStorage::Owned(text) => {
@@ -172,17 +174,7 @@ impl TextEmitter {
 
     // ── Patch ────────────────────────────────────────────────────────────
 
-    #[inline]
-    pub(crate) fn patch_u8(&mut self, offset: usize, byte: u8) {
-        match &mut self.storage {
-            TextStorage::Owned(text) => text[offset] = byte,
-            TextStorage::CodeBuffer { buf, start, len } => {
-                assert!(offset < *len, "patch beyond written region");
-                unsafe { (&mut **buf).patch_u8(*start + offset, byte) };
-            }
-        }
-    }
-
+    #[cfg(not(sf_backend_x64))]
     #[inline]
     pub(crate) fn patch_u32(&mut self, offset: usize, inst: u32) {
         match &mut self.storage {
@@ -196,6 +188,7 @@ impl TextEmitter {
         }
     }
 
+    #[cfg(sf_backend_x64)]
     #[inline]
     pub(crate) fn patch_i32(&mut self, offset: usize, value: i32) {
         match &mut self.storage {
@@ -209,6 +202,7 @@ impl TextEmitter {
         }
     }
 
+    #[cfg(any(sf_backend_arm64, sf_backend_x64, sf_backend_riscv64))]
     #[inline]
     pub(crate) fn patch_u64(&mut self, offset: usize, value: u64) {
         match &mut self.storage {

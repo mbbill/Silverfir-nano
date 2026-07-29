@@ -14,11 +14,6 @@ pub struct TestConfig {
     pub root: Option<String>,
     pub stdout: Option<String>,
     pub stderr: Option<String>,
-    #[allow(
-        dead_code,
-        reason = "declared key of the suite's TOML schema; not consulted by the current runner"
-    )]
-    pub wasi_functions: Option<Vec<String>>,
 }
 
 #[derive(Debug)]
@@ -37,16 +32,10 @@ pub struct TestFailure {
 #[derive(Debug)]
 pub struct TestResult {
     pub name: String,
-    #[allow(dead_code, reason = "failure diagnostics, reported through Debug")]
-    pub config: TestConfig,
-    #[allow(dead_code, reason = "failure diagnostics, reported through Debug")]
-    pub output: Option<TestOutput>,
     pub is_executed: bool,
     pub skip_reason: Option<String>,
     pub failures: Vec<TestFailure>,
     pub duration: std::time::Duration,
-    #[allow(dead_code, reason = "failure diagnostics, reported through Debug")]
-    pub command_line: Option<String>,
 }
 
 impl TestResult {
@@ -69,11 +58,6 @@ impl TestResult {
 pub struct TestSuite {
     pub name: String,
     pub test_results: Vec<TestResult>,
-    #[allow(
-        dead_code,
-        reason = "aggregate timing kept for future reporting; per-test durations are printed today"
-    )]
-    pub duration: std::time::Duration,
 }
 
 impl TestSuite {

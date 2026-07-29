@@ -18,7 +18,8 @@ mod imp {
     use crate::error::WasmError;
     use crate::module::entities::FunctionSpec;
     use crate::value_type::ValueType;
-    use crate::vm::entities::{FunctionInst, ModuleInst};
+    use crate::vm::entities::FunctionInst;
+    use crate::vm::jit::entities::ModuleInst;
     use crate::vm::jit::runtime::context::NativeContext;
     use crate::vm::jit::store::Store;
 
@@ -379,23 +380,6 @@ mod imp {
         );
     }
 
-    #[allow(
-        dead_code,
-        reason = "tail-call trace hook exercised by tests but not yet wired into codegen; tail calls currently trace as plain entries"
-    )]
-    pub(crate) fn native_function_trace_tail_call_enter_func_idx(
-        ctx: &mut NativeContext,
-        func_idx: u32,
-    ) {
-        if !enabled() {
-            return;
-        }
-        if !ctx.trace_stack.is_empty() {
-            ctx.trace_stack.pop();
-        }
-        native_function_trace_enter_func_idx(ctx, func_idx);
-    }
-
     #[unsafe(no_mangle)]
     pub(crate) unsafe extern "C" fn native_function_trace_enter_func_idx_entry(
         ctx: *mut NativeContext,
@@ -450,7 +434,9 @@ mod tests {
 
     use super::imp::*;
     use crate::module::type_context::TypeContext;
-    use crate::vm::{entities::ModuleInst, jit::runtime::context::NativeContext, store::Store};
+    use crate::vm::{
+        jit::entities::ModuleInst, jit::runtime::context::NativeContext, jit::store::Store,
+    };
 
     struct TraceTestGuard {
         path: PathBuf,
@@ -481,23 +467,5 @@ mod tests {
             init_from_env();
             let _ = std::fs::remove_file(&self.path);
         }
-    }
-
-    #[test]
-    fn tail_call_entry_replaces_active_trace_frame() {
-        let _guard = TraceTestGuard::new();
-        let mut store = Store::new(ModuleInst::new(
-            crate::config::Config::new(),
-            String::from("m"),
-            TypeContext::empty(),
-        ));
-        let n_globals = store.module().globals.len();
-        let mut ctx =
-            NativeContext::new((&mut store) as *mut Store, core::ptr::null_mut(), n_globals);
-
-        native_function_trace_enter_func_idx(&mut ctx, 7);
-        native_function_trace_tail_call_enter_func_idx(&mut ctx, 9);
-
-        assert_eq!(ctx.trace_stack.as_slice(), &[9]);
     }
 }

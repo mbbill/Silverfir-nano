@@ -15,6 +15,33 @@ use super::asm::Asm;
 use super::instr::Op;
 use super::layout::{Cls, DstCls, PairDstCls};
 
+/// Build-time-only views of [`PairDstCls`]: which destination class the
+/// first and second results of a pair op land in. Only the generator asks
+/// this question — the runtime library indexes the already-generated
+/// handler table and never splits a pair class again.
+pub trait PairDstSplit {
+    fn first(self) -> Option<DstCls>;
+    fn second(self) -> Option<DstCls>;
+}
+
+impl PairDstSplit for PairDstCls {
+    fn first(self) -> Option<DstCls> {
+        match self {
+            PairDstCls::FirstL0 | PairDstCls::L0L1 => Some(DstCls::L0),
+            PairDstCls::FirstL1 | PairDstCls::L1L0 => Some(DstCls::L1),
+            PairDstCls::None | PairDstCls::SecondL0 | PairDstCls::SecondL1 => None,
+        }
+    }
+
+    fn second(self) -> Option<DstCls> {
+        match self {
+            PairDstCls::SecondL0 | PairDstCls::L1L0 => Some(DstCls::L0),
+            PairDstCls::SecondL1 | PairDstCls::L0L1 => Some(DstCls::L1),
+            PairDstCls::None | PairDstCls::FirstL0 | PairDstCls::FirstL1 => None,
+        }
+    }
+}
+
 /// The full operand-class set. A backend narrows it in [`Caps`] when
 /// emitted-code size matters more than the last few percent of residency.
 pub const CLASSES: [Cls; 5] = [Cls::Slot, Cls::Const, Cls::Acc, Cls::L0, Cls::L1];

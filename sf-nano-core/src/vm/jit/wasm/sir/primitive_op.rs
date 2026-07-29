@@ -245,7 +245,9 @@ macro_rules! for_each_primitive_op {
             ExternConvertAny => (1, 1),
             RefTest { ref_type: crate::value_type::RefType } => (1, 1),
             RefCast { ref_type: crate::value_type::RefType } => (1, 1),
-            StructNew { type_idx: u32, field_count: u32 } => (*field_count as usize, 1),
+            // Dynamic arity: `stack_effect` answers from the op's own
+            // `field_count` before this constant table is consulted.
+            StructNew { type_idx: u32, field_count: u32 } => (0, 1),
             StructNewDefault { type_idx: u32 } => (0, 1),
             StructGet { type_idx: u32, field_idx: u32 } => (1, 1),
             StructGetS { type_idx: u32, field_idx: u32 } => (1, 1),
@@ -253,7 +255,8 @@ macro_rules! for_each_primitive_op {
             StructSet { type_idx: u32, field_idx: u32 } => (2, 0),
             ArrayNew { type_idx: u32 } => (2, 1),
             ArrayNewDefault { type_idx: u32 } => (1, 1),
-            ArrayNewFixed { type_idx: u32, count: u32 } => (*count as usize, 1),
+            // Dynamic arity: `stack_effect` answers from the op's own `count`.
+            ArrayNewFixed { type_idx: u32, count: u32 } => (0, 1),
             ArrayNewData { type_idx: u32, data_idx: u32 } => (2, 1),
             ArrayNewElem { type_idx: u32, elem_idx: u32 } => (2, 1),
             ArrayGet { type_idx: u32 } => (2, 1),
@@ -288,14 +291,24 @@ macro_rules! define_primitive_ops {
             $( $name $( { $($field : $ty),* } )?, )*
         }
 
-        #[allow(
-            unused_variables,
-            reason = "macro-generated match arms destructure every variant's fields and return constants"
-        )]
+        /// Stack effect of every op with table-constant arity. The two ops
+        /// whose pop count rides in the op itself are answered by
+        /// [`stack_effect`] before this table is consulted.
+        #[inline]
+        fn constant_stack_effect(kind: &PrimitiveOpKind) -> (usize, usize) {
+            match kind {
+                // `field: _` binds nothing, so constant arms create no
+                // unused variables.
+                $( PrimitiveOpKind::$name $( { $($field: _),* } )? => ($pops, $pushes), )*
+            }
+        }
+
         #[inline]
         pub(crate) fn stack_effect(kind: &PrimitiveOpKind) -> (usize, usize) {
             match kind {
-                $( PrimitiveOpKind::$name $( { $($field),* } )? => ($pops, $pushes), )*
+                PrimitiveOpKind::StructNew { field_count, .. } => (*field_count as usize, 1),
+                PrimitiveOpKind::ArrayNewFixed { count, .. } => (*count as usize, 1),
+                _ => constant_stack_effect(kind),
             }
         }
     };

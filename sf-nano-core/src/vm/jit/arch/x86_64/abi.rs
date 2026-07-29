@@ -99,11 +99,6 @@ pub(super) fn callee_saved_gp_regs() -> &'static [X86Reg] {
 // The actual values live in `callconv::sysv` / `callconv::win64`; re-exported
 // here so existing `use super::abi::{C_ARG0, ...}` imports keep working.
 
-#[allow(
-    unused_imports,
-    reason = "Win64 host calls take four register args; the SysV build re-exports the name unused"
-)]
-pub(super) use super::callconv::C_ARG3;
 pub(super) use super::callconv::{C_ARG0, C_ARG1, C_ARG2, C_RET0};
 
 // ── Derived config ───────────────────────────────────────────────────────────

@@ -356,6 +356,7 @@ fn patch_direct_call_code_buffer(
     callee_addr: usize,
 ) -> Result<(), WasmError> {
     match patch.site {
+        #[cfg(not(sf_backend_arm64))]
         DirectCallPatchSite::AddressLiteral { offset } => {
             let code_offset = function_base
                 .checked_add(offset)
@@ -1526,7 +1527,8 @@ mod tests {
         utils::limits::Limits,
         value_type::ValueType,
         vm::{
-            entities::{FunctionInst, MemInst, ModuleInst},
+            entities::{FunctionInst, MemInst},
+            jit::entities::ModuleInst,
             jit::store::Store,
         },
     };
