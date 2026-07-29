@@ -79,10 +79,11 @@ pub(super) struct EnterState {
     pub l1_value: u64,    // 96: current function's l1 local value (in only)
     pub acc_value: u64,   // 104: the accumulator (in AND out — call results
     // ride it across activation boundaries)
-    pub table0_base: u64, // 112: table 0 entries (in only, RefHandle slots)
-    pub table0_len: u64,  // 120
+    pub table0_base: u64,   // 112: table 0 entries (in only, RefHandle slots)
+    pub table0_len: u64,    // 120
     pub indirect_base: u64, // 128: per-function indirect-call info, [u64;3]
-                          // per function index (in only)
+    // per function index (in only)
+    pub indirect_len: u64, // 136: number of per-function info entries
 }
 
 /// One 32-byte dispatch cell: [`Instr`] with the leading word replaced by

@@ -2463,6 +2463,10 @@ impl InterpInstance {
                 .native
                 .as_ref()
                 .map_or(0, |n| n.indirect_info.as_ptr() as u64),
+            indirect_len: self
+                .native
+                .as_ref()
+                .map_or(0, |n| n.indirect_info.len() as u64),
         };
         let mut cur_base = act.base;
         let mut cur_l0_slot = (l0_off / 8) as usize;
@@ -5199,6 +5203,8 @@ mod tests {
 
     #[test]
     fn special_funcref_in_private_table_takes_slow_path() {
+        const FUNCADDR_TOP: usize = (1 << 28) - 2;
+
         // Keep the table index non-constant: constant-index call sites link
         // directly to the slow stub and do not exercise the native guard.
         let bin: StdVec<u8> = wat::parse_str(
@@ -5216,8 +5222,11 @@ mod tests {
         .expect("wat");
         let module = Module::new("special-private-table", &bin).expect("module");
         let special = ref_to_slot(RefHandle::hostref(7));
+        let out_of_range = ref_to_slot(RefHandle::new(FUNCADDR_TOP));
+        assert_eq!(out_of_range >> 32, 0);
+        let mut returned_refs = [special, out_of_range].into_iter();
         let host = InterpInstance::boxed_host(move |_module, _name, _memory, _args, results| {
-            results[0] = special;
+            results[0] = returned_refs.next().expect("one reference per invocation");
             Ok(())
         });
         let mut inst = InterpInstance::new(
@@ -5232,6 +5241,10 @@ mod tests {
         assert!(matches!(
             inst.invoke(go, &[0], &mut [0]),
             Err(WasmError::Trap("indirect call type mismatch"))
+        ));
+        assert!(matches!(
+            inst.invoke(go, &[0], &mut [0]),
+            Err(WasmError::Trap("undefined element"))
         ));
     }
 

@@ -671,6 +671,8 @@ impl Isa for X86_64 {
         a.ins("mov rdx, rcx");
         a.ins("shr rdx, 32");
         a.ins(&format!("jnz {}", st.slow)); // upper 32 bits are nonzero
+        a.ins("cmp rcx, [r15 + 136]"); // info length
+        a.ins(&format!("jae {}", st.slow)); // function index out of bounds
         a.ins("mov rdx, [r15 + 128]"); // info base
         a.ins("lea rax, [rcx + rcx*2]"); // fi*3
         a.ins("lea rdx, [rdx + rax*8]"); // entry = info + fi*24
