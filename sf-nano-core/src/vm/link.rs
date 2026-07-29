@@ -156,7 +156,9 @@ impl InstanceTable {
         }
         drop(slots);
         drop(generations);
-        self.0.reusable.borrow_mut().push(id.index());
+        if self.advance_generation(id.index()) {
+            self.0.reusable.borrow_mut().push(id.index());
+        }
         Ok(())
     }
 
@@ -276,18 +278,21 @@ impl InstanceTable {
             &mut self.0.slots.borrow_mut()[id.index() as usize],
             WorldSlot::Vacant,
         );
-        let mut generations = self.0.generations.borrow_mut();
-        let generation = &mut generations[id.index() as usize];
-        if *generation != u32::MAX {
-            *generation += 1;
-        }
-        let reusable = *generation != u32::MAX;
-        drop(generations);
+        let reusable = self.advance_generation(id.index());
         self.0.release_pending.borrow_mut()[id.index() as usize] = false;
         if reusable {
             self.0.reusable.borrow_mut().push(id.index());
         }
         drop(removed);
+    }
+
+    fn advance_generation(&self, index: u32) -> bool {
+        let mut generations = self.0.generations.borrow_mut();
+        let generation = &mut generations[index as usize];
+        if *generation != u32::MAX {
+            *generation += 1;
+        }
+        *generation != u32::MAX
     }
 
     #[inline]
@@ -784,20 +789,24 @@ mod instance_table_tests {
     use crate::vm::jit::entities::ModuleInst;
     use tracked_alloc::string::String;
 
-    fn occupied_store(registry: &LinkRegistry) -> (InstanceId, InstanceHandle) {
-        let (id, handle) = registry.reserve_instance();
-        let store = Box::new(Store::new_with_registries(
+    fn test_store(registry: &LinkRegistry, handle: InstanceHandle, name: &str) -> Box<Store> {
+        Box::new(Store::new_with_registries(
             ModuleInst::new(
                 Config::new(),
-                String::from("instance-table-test"),
+                String::from(name),
                 TypeContext::new(collections::Vec::new()),
             ),
-            handle.clone(),
+            handle,
             registry.function_registry_shared(),
             registry.ref_registry_shared(),
             #[cfg(sf_has_simd)]
             registry.simd_registry_shared(),
-        ));
+        ))
+    }
+
+    fn occupied_store(registry: &LinkRegistry) -> (InstanceId, InstanceHandle) {
+        let (id, handle) = registry.reserve_instance();
+        let store = test_store(registry, handle.clone(), "instance-table-test");
         registry
             .instance_table()
             .occupy_jit(id, store)
@@ -824,8 +833,38 @@ mod instance_table_tests {
 
         assert_ne!(first.index(), second.index());
         table.abandon(first).expect("abandon first reservation");
-        assert_eq!(table.reserve(), first);
+        let reused = table.reserve();
+        assert_eq!(reused.index(), first.index());
+        assert_ne!(reused.generation(), first.generation());
+        table
+            .occupy_jit(
+                reused,
+                test_store(&registry, table.handle(reused), "reused-reservation"),
+            )
+            .expect("occupy reused reservation");
+        assert!(table.checkout(first).is_none());
+        let replacement = table.checkout(reused).expect("new generation checks out");
+        drop(replacement);
+        table.free(reused).expect("free reused reservation");
         table.abandon(second).expect("abandon second reservation");
+    }
+
+    #[test]
+    fn abandoning_maximum_generation_retires_slot() {
+        let registry = LinkRegistry::new();
+        let table = registry.instance_table();
+        let id = table.reserve();
+        table.0.generations.borrow_mut()[id.index() as usize] = u32::MAX - 1;
+        let last = InstanceId::from_parts(id.index(), u32::MAX - 1);
+
+        table.abandon(last).expect("retire vacant slot");
+
+        let replacement = table.reserve();
+        assert_ne!(replacement.index(), last.index());
+        assert_eq!(
+            table.0.generations.borrow()[last.index() as usize],
+            u32::MAX
+        );
     }
 
     #[test]
