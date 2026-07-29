@@ -1,7 +1,12 @@
-- Runtime state shared across an invocation lives in a store-rooted structure
-  that is backend-agnostic: module instances, function/global/memory/table
-  instances, and the cross-store registries that resolve raw handles back to
-  their values (`Store`).
+- The store-rooted structure — module instance, GC heap, constant-expression
+  evaluation, machine value encodings, and the per-invocation native caches —
+  is the JIT engine's runtime world; the interpreter keeps its own flat
+  per-instance state and never constructs a store (`Store`).
+
+- What the engines share is the entity model (memory/table/global/function
+  instances, aliased across linked instances), the public value model, and
+  the cross-instance link registry that resolves pooled handles back to their
+  values and carries each engine's minted identities.
 
 - Frame slots are the canonical source of truth for locals, spilled deep-stack
   values, call arguments and results, and call-link records; registers are
@@ -55,6 +60,43 @@
   slots (nulling the owner pointer) and dispatch-view refresh emits an INVALID
   function view for a dead slot rather than filtering it out, so surviving
   handles keep their registry-index alignment (code).
+
+- 2026-07-28 (fec5adb5) statement: the store-rooted layer's JIT ownership was
+  made explicit after the interpreter-only feature build measured it as dead
+  code (42 warnings spanning the store, GC heap, const-expr evaluator, machine
+  encodings, and registries' store-rooted API): the interpreter never
+  constructs a `Store`, and its only reach into one is resolving a pooled GC
+  entry minted by the JIT (code).
+
+- 2026-07-28 rationale: per the author, the original global-index store
+  (see the [[runtime-store]] alternative) was deliberately spec-accurate — one
+  unified linear space where every instantiated module's entities carry unique
+  store-wide indices and linking records an index. The deeper forces behind the
+  2026-02-14 single-module split were JIT-era: generated code caches raw
+  addresses of entity cells, which a growing unified arena relocates, and
+  whole-store `&mut` ownership fought the native re-entry path; per-entity
+  `Rc` aliasing was the escape hatch, and raw-pointer cross-store identity was
+  the collateral cost (sourced).
+
+- 2026-07-28 (0d984f61) statement: direction agreed for the storage redesign
+  (docs/RUNTIME_WORLD.md): restore spec-accurate *indexing* without spec-naive
+  *storage* — module instances live boxed in generational slots of a
+  linker-owned world, identity is a slot id plus generation instead of a store
+  pointer, and flat u32 address tables are scoped to exactly what the type
+  system lets escape at runtime (func/extern/exn/GC — the link registry's
+  existing inventory); entities keep link-time `Rc` aliasing. Alternatives
+  weighed and set aside in discussion: a pure spec store (unified arena growth
+  relocates entity cells under the native caches, and it has no reclamation
+  story for instance churn), wasmtime-style append-until-store-death (the spec
+  suite's module churn and embedded RAM budgets require module instances to
+  die inside a living app), and the status quo (pointer identity requires the
+  drop-scan protocol and unchecked resolution) (sourced).
+
+- 2026-07-28 statement: open measured decision for the redesign: interpreter
+  funcref slots carry local function indices consumed directly by the
+  private-table indirect-call fast path; a canonical global funcaddr would
+  insert a translation there, so that step is gated on the performance CI
+  rather than decided in design (sourced).
 
 ## Moves
 
