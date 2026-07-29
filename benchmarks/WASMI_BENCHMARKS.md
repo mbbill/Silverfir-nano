@@ -9,6 +9,61 @@ Silverfir-nano checkout to the suite and collect all of its scores.
 The external benchmark checkout is measurement infrastructure. Compiler and
 runtime changes belong in the Silverfir-nano repository.
 
+## Performance-regression CI
+
+`.github/workflows/performance-regression.yml` runs this suite as four
+independent jobs:
+
+- x64 Linux, JIT;
+- x64 Linux, interpreter;
+- arm64 Linux, JIT;
+- arm64 Linux, interpreter.
+
+These jobs depend only on the workflow's ref-resolution/build job. They run in
+parallel with the native performance matrix, so wasmi-benchmarks does not add
+its runtime to the end of an x64 job.
+
+The CI integration pins:
+
+- wasmi-benchmarks commit
+  `16a3d7c8fdb05506c116a9451175732d1ac77099`;
+- Rust 1.97.0;
+- cargo-criterion 1.1.0.
+
+Each job enables exactly one adapter feature with Cargo default features
+disabled:
+
+| Engine | Cargo feature | Runtime ID |
+|---|---|---|
+| JIT | `silverfir-nano-jit` | `silverfir-nano.jit` |
+| Interpreter | `silverfir-nano-interp` | `silverfir-nano.interpreter` |
+
+The CI runs all 20 execution and seven startup Criterion groups. This includes
+`startup/coremark`, which measures compile-and-instantiate time. It does not
+run the separate `coremark` score binary; the native Silverfir-nano suite
+already provides that execution signal.
+
+For every case, the pilot alternates process order across the corpus. Each
+side contributes Criterion's ten internal samples. Only directions selected
+by the pilot are confirmed, using fresh reverse/alternating A/B process pairs.
+The shared probability gate and family correction are the same as the native
+performance workflow. Later confirmation samples cannot introduce a new
+candidate.
+
+`ci.wasmi_performance` creates isolated copies of the pinned suite for baseline
+and candidate. A generated `.cargo/config.toml` patches only `sf-nano-core` to
+the checkout under test. The script validates Cargo metadata before measuring:
+the selected local source must resolve, and `rt-silverfir-nano` must be the
+only reachable runtime adapter. This avoids modifying the upstream checkout
+and prevents a stale Git dependency or a default engine from being measured
+silently.
+
+Each baseline/candidate build uses a stable, private `CRITERION_HOME`. The
+directory is cleared before every case and copied into that case's artifact
+afterward. Keeping the environment path stable avoids relinking the benchmark
+runner for every filter while still preventing stale Criterion data from
+leaking into the next result.
+
 ## Scores produced by the suite
 
 | Category | Command filter | What is timed | Direction |
@@ -22,6 +77,8 @@ At the time of writing, a complete Silverfir-nano run contains:
 - 20 Criterion execution timings;
 - seven Criterion startup timings;
 - one dedicated CoreMark score.
+
+The automated regression CI intentionally uses only the first 27 timings.
 
 Startup is only one part of the suite. Run the execution benchmarks after
 compiler or code-generation changes: a change that reduces compilation time
@@ -40,11 +97,11 @@ git clone https://github.com/wasmi-labs/wasmi-benchmarks.git \
   "$WASMI_BENCH_REPO"
 ```
 
-Use a `wasmi-benchmarks` revision that contains the Silverfir-nano adapter, such
-as the work from
+Use a `wasmi-benchmarks` revision that contains the merged Silverfir-nano
+adapter from
 [`wasmi-benchmarks` PR #51](https://github.com/wasmi-labs/wasmi-benchmarks/pull/51).
-The commands below assume the checkout exposes a Cargo feature named
-`silverfir-nano` and a runtime ID named `silverfir-nano`.
+For reproducible regression results, use the exact commit pinned above. It
+exposes the split features and runtime IDs listed in the CI table.
 
 Record both revisions and the toolchain with every result:
 
@@ -60,17 +117,18 @@ toolchain unless a benchmark campaign deliberately changes it.
 
 ## Connect the local Silverfir-nano checkout
 
-In
-`$WASMI_BENCH_REPO/runtimes/silverfir-nano/Cargo.toml`, point
-`sf-nano-core` at the source being measured. Cargo does not expand shell
-variables in TOML, so write the checkout's actual absolute path:
+Patch the suite's Git dependency from
+`$WASMI_BENCH_REPO/.cargo/config.toml`. Cargo does not expand shell variables
+in TOML, so write the checkout's actual absolute path:
 
 ```toml
+[patch."https://github.com/mbbill/Silverfir-nano"]
 sf-nano-core = { path = "/absolute/path/to/Silverfir-nano/sf-nano-core" }
 ```
 
-Do not leave the adapter on an old pinned Git revision when evaluating local
-work. Verify the resolved dependency before running:
+Do not edit the adapter manifest or leave it on the pinned Git revision when
+evaluating local work. The patch keeps the upstream lockfile and adapter
+unchanged. Verify the resolved dependency before running:
 
 ```sh
 cd "$WASMI_BENCH_REPO"
@@ -114,24 +172,22 @@ Do not replace every registered callback with an inert stub:
 Silverfir-nano's `Import::func` accepts capturing closures, so the adapter can
 capture the function pointer recorded by the benchmark linker's entry.
 
-### Allow explicit serial compilation
+### Keep startup compilation policy explicit
 
-For intrinsic compiler-throughput comparisons, the adapter should install a
-Nano `RuntimeConfig` once, before any other sf-nano-core API is used:
+The pinned adapter installs one Nano configuration before using the runtime:
 
 ```rust
 use sf_nano_core::{Config, Engine};
 
 let config = Config::new()
-    .parallel_compilation(std::env::var_os("SF_NANO_BENCH_SERIAL").is_none());
+    .tier(tier)
+    .parallel_compilation(false);
 let engine = Engine::new(config).expect("engine configuration");
 // then instantiate through it: Instance::new(&engine, wasm, &imports)
 ```
 
-`SF_NANO_BENCH_SERIAL=1` then selects the serial implementation of the same
-eager compiler pipeline. It does not enable lazy compilation.
-
-This switch is only needed for compile/startup analysis. Instantiation occurs
+This fixed serial policy makes startup comparisons reproducible and avoids
+mixing compiler-thread scheduling into the A/B result. Instantiation occurs
 outside the timed loop in execution benchmarks.
 
 ## Select engines
@@ -139,7 +195,9 @@ outside the timed loop in execution benchmarks.
 To measure Silverfir-nano alone:
 
 ```sh
-export BENCH_FEATURES="silverfir-nano"
+export BENCH_FEATURES="silverfir-nano-jit"
+# Or, in a separate build/run:
+export BENCH_FEATURES="silverfir-nano-interp"
 ```
 
 For the JIT comparison used during performance work:
@@ -166,8 +224,10 @@ Building all engines can take several minutes.
 
 ## Run all Criterion scores
 
-With `BENCH_FEATURES=silverfir-nano`, this command collects every Criterion
-execution and startup score for Nano:
+With one of the tier-specific `BENCH_FEATURES` values above, this command
+collects every Criterion execution and startup score for that Nano tier.
+The aggregate `silverfir-nano` feature enables both tiers and should not be
+used for a single-tier regression run:
 
 ```sh
 cargo +1.97.0 bench \
@@ -226,10 +286,9 @@ operation is timed.
 
 ## Run startup scores
 
-Run all startup cases with Nano's normal hosted worker policy:
+Run all startup cases:
 
 ```sh
-unset SF_NANO_BENCH_SERIAL
 cargo +1.97.0 bench \
   --no-default-features \
   --features "$BENCH_FEATURES" \
@@ -262,29 +321,18 @@ Run an individual case by replacing `startup/` with its full filter.
 
 ### Serial eager compiler comparison
 
-Use serial compilation when comparing intrinsic compiler throughput across
-machines:
-
-```sh
-SF_NANO_BENCH_SERIAL=1 cargo +1.97.0 bench \
-  --no-default-features \
-  --features "$BENCH_FEATURES" \
-  --bench criterion \
-  -- startup/ --noplot
-```
-
 For a valid cross-engine serial table:
 
-- Nano uses `SF_NANO_BENCH_SERIAL=1`;
+- the pinned Nano adapter already disables parallel compilation;
 - Wasmtime must be built without its `parallel-compilation` feature; the
   benchmark adapter currently uses `default-features = false`, so verify this
   remains true;
 - Wasmer Cranelift and Singlepass must call `num_threads(1)` on their compiler
   configuration before constructing the engine.
 
-Report this table separately from normal parallel wall-clock startup. Never
-compare parallel Nano against serial Cranelift as a statement about intrinsic
-compiler efficiency.
+Report this table separately from any parallel wall-clock startup table.
+Never compare engines with different compilation-thread policies as a
+statement about intrinsic compiler efficiency.
 
 Prefer isolated startup runs for final numbers. SpiderMonkey and FFmpeg can
 heat the machine enough to distort the small CoreMark, Argon2, and ERC20 cases
@@ -293,7 +341,9 @@ and rerun small cases individually.
 
 ## Run the CoreMark score
 
-CoreMark is a dedicated score runner, not a Criterion timing:
+CoreMark is a dedicated score runner, not a Criterion timing. It is available
+for manual cross-engine comparisons but is not part of the automated
+wasmi-benchmarks regression jobs:
 
 ```sh
 cargo +1.97.0 run \
@@ -323,7 +373,7 @@ The point estimates are nanoseconds. For example:
 
 ```sh
 jq '.mean.point_estimate / 1000000' \
-  target/criterion/startup_bz2/silverfir-nano/new/estimates.json
+target/criterion/startup_bz2/silverfir-nano.jit/new/estimates.json
 ```
 
 To locate every Nano result:
@@ -358,6 +408,6 @@ For a focused change:
 7. Run CoreMark when host calls or CoreMark-generated code may be affected.
 8. Run Silverfir-nano's correctness checks before retaining the change.
 
-Do not infer a compiler improvement from one warm-machine sample. Keep
-parallel startup, serial compiler throughput, execution timings, and CoreMark
-scores as separate result categories.
+Do not infer a compiler improvement from one warm-machine sample. Keep startup,
+execution timings, and CoreMark scores as separate result categories, and
+record the compilation-thread policy used for startup.
