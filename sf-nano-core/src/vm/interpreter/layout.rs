@@ -124,14 +124,6 @@ impl DstCls {
     }
 }
 
-// This file is compiled twice: into the crate and into build.rs (which
-// generates the dispatch handlers). `first`/`second` are called only by the
-// build-time generator, so the runtime compilation sees them as dead on
-// every target.
-#[allow(
-    dead_code,
-    reason = "helpers consumed only by the build-script compilation of this shared source"
-)]
 impl PairDstCls {
     pub(crate) fn index(self) -> usize {
         match self {
@@ -142,22 +134,6 @@ impl PairDstCls {
             PairDstCls::SecondL1 => 4,
             PairDstCls::L0L1 => 5,
             PairDstCls::L1L0 => 6,
-        }
-    }
-
-    pub(crate) fn first(self) -> Option<DstCls> {
-        match self {
-            PairDstCls::FirstL0 | PairDstCls::L0L1 => Some(DstCls::L0),
-            PairDstCls::FirstL1 | PairDstCls::L1L0 => Some(DstCls::L1),
-            PairDstCls::None | PairDstCls::SecondL0 | PairDstCls::SecondL1 => None,
-        }
-    }
-
-    pub(crate) fn second(self) -> Option<DstCls> {
-        match self {
-            PairDstCls::SecondL0 | PairDstCls::L1L0 => Some(DstCls::L0),
-            PairDstCls::SecondL1 | PairDstCls::L0L1 => Some(DstCls::L1),
-            PairDstCls::None | PairDstCls::FirstL0 | PairDstCls::FirstL1 => None,
         }
     }
 }

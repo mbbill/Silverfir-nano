@@ -198,11 +198,8 @@ impl<'a> CompilerCore<'a> {
             .ok_or_else(|| WasmError::internal("template emission does not have a MachineFunction"))
     }
 
+    #[cfg(any(sf_backend_arm64, sf_backend_armv7a, sf_backend_thumbm))]
     #[inline]
-    #[allow(
-        dead_code,
-        reason = "consumed by the arm64 and arm32 backends; other targets compile this shared layer without a caller"
-    )]
     pub(crate) fn preserved_clobbers(&self) -> &[MachineReg] {
         self.body
             .mir_function()
@@ -281,10 +278,7 @@ impl<'a> CompilerCore<'a> {
 
     // ── Runtime metadata ─────────────────────────────────────────────────
 
-    #[allow(
-        dead_code,
-        reason = "consumed by every backend except arm64; each target compiles this shared layer with a different subset"
-    )]
+    #[cfg(not(sf_backend_arm64))]
     pub(crate) fn runtime_for(
         &self,
         func_id: MachineFuncId,

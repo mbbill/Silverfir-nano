@@ -9,7 +9,8 @@
 //!
 //! | symbol                          | kind        | description                           |
 //! |---------------------------------|-------------|---------------------------------------|
-//! | `C_ARG0` .. `C_ARG3`, `C_RET0`  | const X86Reg| C ABI argument / return registers     |
+//! | `C_ARG0` .. `C_ARG2`, `C_RET0`  | const X86Reg| C ABI argument / return registers     |
+//! | `C_ARG3` (win64 only)           | const X86Reg| fourth register arg, win64-internal   |
 //! | `CALLEE_SAVED_GP`               | const slice | GP registers the ABI says we must save|
 //! | `STACK_PADDING`                 | const u32   | extra bytes so RSP stays 16-aligned   |
 //! | `emit_prologue_extra`           | fn          | extra spills after GP saves (XMM6-15) |

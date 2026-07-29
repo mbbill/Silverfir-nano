@@ -6,10 +6,7 @@ use crate::config::CODE_ARENA_BYTES;
 
 #[repr(align(16))]
 struct CodeArena {
-    #[allow(
-        dead_code,
-        reason = "reserves the arena's aligned storage; reached only by raw-pointer cast in sf_os_alloc_executable"
-    )]
+    #[allow(dead_code)]
     bytes: [u8; CODE_ARENA_BYTES],
 }
 

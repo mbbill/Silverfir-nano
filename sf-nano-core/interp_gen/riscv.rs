@@ -42,7 +42,9 @@
 
 use super::asm::Asm;
 use super::instr::Op;
-use super::isa::{Caps, Isa, Stubs, Variant, CLASSES, CLASSES_NO_L1, DSTS, DSTS_NO_L1};
+use super::isa::{
+    Caps, Isa, PairDstSplit, Stubs, Variant, CLASSES, CLASSES_NO_L1, DSTS, DSTS_NO_L1,
+};
 use super::layout::{Cls, DstCls, Fam};
 
 const PC: &str = "s2";

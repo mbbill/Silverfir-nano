@@ -59,14 +59,11 @@ pub(crate) struct DirectCallPatch {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[allow(
-    dead_code,
-    reason = "`AddressLiteral` is constructed by every backend except arm64, which patches branches in place"
-)]
 pub(crate) enum DirectCallPatchSite {
-    AddressLiteral {
-        offset: usize,
-    },
+    /// A raw callee address written into the instruction stream. arm64
+    /// patches its `bl`/`b` encodings in place instead.
+    #[cfg(not(sf_backend_arm64))]
+    AddressLiteral { offset: usize },
     #[cfg(sf_backend_arm64)]
     Arm64Bl {
         inst_offset: usize,
@@ -82,10 +79,7 @@ pub(crate) enum DirectCallPatchSite {
 }
 
 impl DirectCallPatch {
-    #[allow(
-        dead_code,
-        reason = "constructor for `DirectCallPatchSite::AddressLiteral`; see its suppression"
-    )]
+    #[cfg(not(sf_backend_arm64))]
     pub(crate) const fn address_literal(offset: usize, callee: MachineFuncId) -> Self {
         Self {
             callee,

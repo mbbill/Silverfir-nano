@@ -52,15 +52,12 @@ pub(crate) struct BackendConfig {
 }
 
 impl BackendConfig {
-    /// Compatibility constructor for tests and synthetic configurations
-    /// that do not yet split their dynamic bank by volatility. All allocatable
-    /// lanes are volatile; the historical internal GP scratch tail remains
-    /// reserved.
+    /// Constructor for backends whose ABI does not split the dynamic bank
+    /// by volatility (x86-64, riscv), and for synthetic test configurations
+    /// on any host. Arm targets reach `BackendConfig` only through
+    /// [`Self::with_volatility`].
+    #[cfg(any(sf_backend_x64, sf_backend_riscv32, sf_backend_riscv64, test))]
     #[inline]
-    #[allow(
-        dead_code,
-        reason = "constructor for backends whose ABI does not split the dynamic bank by volatility (x86-64, riscv); arm targets reach BackendConfig only through the split constructor"
-    )]
     pub(crate) const fn new(
         gp_unit_bytes: u8,
         gp_dynamic_budget: u8,
@@ -180,10 +177,7 @@ const fn min_u8(lhs: u8, rhs: u8) -> u8 {
 }
 
 #[inline]
-#[allow(
-    dead_code,
-    reason = "called only by `BackendConfig::new`; see its suppression"
-)]
+#[cfg(any(sf_backend_x64, sf_backend_riscv32, sf_backend_riscv64, test))]
 const fn default_gp_internal_scratch(gp_unit_bytes: u8, gp_dynamic_budget: u8) -> u8 {
     let preferred = if gp_unit_bytes == 4 { 2 } else { 1 };
     let max_reserve = gp_dynamic_budget.saturating_sub(1);
@@ -195,19 +189,13 @@ const fn default_gp_internal_scratch(gp_unit_bytes: u8, gp_dynamic_budget: u8) -
 }
 
 #[inline]
-#[allow(
-    dead_code,
-    reason = "called only by `BackendConfig::new`; see its suppression"
-)]
+#[cfg(any(sf_backend_x64, sf_backend_riscv32, sf_backend_riscv64, test))]
 const fn default_gp_arg_lanes(gp_volatile_dynamic: u8) -> u8 {
     min_u8(gp_volatile_dynamic, 4)
 }
 
 #[inline]
-#[allow(
-    dead_code,
-    reason = "called only by `BackendConfig::new`; see its suppression"
-)]
+#[cfg(any(sf_backend_x64, sf_backend_riscv32, sf_backend_riscv64, test))]
 const fn default_fp_arg_lanes(fp_volatile_dynamic: u8) -> u8 {
     min_u8(fp_volatile_dynamic, 4)
 }

@@ -198,6 +198,7 @@ fn patch_direct_call(
     callee_addr: usize,
 ) -> Result<(), WasmError> {
     match patch.site {
+        #[cfg(not(sf_backend_arm64))]
         DirectCallPatchSite::AddressLiteral { offset } => {
             text.patch_u64(offset, callee_addr as u64);
             Ok(())

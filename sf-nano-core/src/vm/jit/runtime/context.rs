@@ -940,9 +940,7 @@ mod tests {
         },
         value_type::ValueType,
         vm::{
-            entities::{Caller, ModuleInst},
-            jit::store::Store,
-            link::LinkRegistry,
+            entities::Caller, jit::entities::ModuleInst, jit::store::Store, link::LinkRegistry,
             value::Value,
         },
     };

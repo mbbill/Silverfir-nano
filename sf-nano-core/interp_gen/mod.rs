@@ -26,7 +26,7 @@ pub mod x86_64;
 
 use asm::{Asm, ObjFmt};
 use instr::{op_from_index, Op};
-use isa::{Isa, Stubs, Variant};
+use isa::{Isa, PairDstSplit, Stubs, Variant};
 use layout::{build_op_base, family, total_slots, Cls, DstCls, Fam, PairDstCls, N_OPS};
 
 /// One emission group: a run of ops sharing a shape, in the order the

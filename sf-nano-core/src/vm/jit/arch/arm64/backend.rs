@@ -968,9 +968,10 @@ impl<'a> ArchBackend<'a> for Arm64Backend<'a> {
     // zero-latency rename. The 3-instruction sequence `mov + add + ldr-reg`
     // effectively executes as a single load there; the burst form's
     // `add x, base, w_idx, UXTW` is not AGU-fusable so its N dependent loads
-    // pay an extra cycle of critical-path latency. See `try_lower_indexed_burst`
-    // in inst.rs (kept under `#[allow(dead_code)]`) for the experiment and the
-    // measured numbers.
+    // pay an extra cycle of critical-path latency. The full experiment
+    // (`try_lower_indexed_burst` / `try_emit_burst_pair` in inst.rs) and its
+    // measurements were removed as dead code; recover them from git history
+    // if the tradeoff is ever revisited on a non-Apple core.
     fn emit_inst_at(&mut self, inst: &'a MachineInst, index: usize) -> Result<(), WasmError> {
         self.dispatch_seq = self.dispatch_seq.wrapping_add(1);
         if let MachineInstKind::Store { addr, width, .. } = &inst.kind {

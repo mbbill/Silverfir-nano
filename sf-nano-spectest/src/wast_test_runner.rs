@@ -69,11 +69,6 @@ impl TestError {
 pub enum TestResult {
     Pass,
     Fail(TestError),
-    #[allow(
-        dead_code,
-        reason = "part of the harness result vocabulary; current WAST driver reports skips out of band"
-    )]
-    Skip(String),
     Error(String),
 }
 
@@ -82,7 +77,6 @@ impl fmt::Display for TestResult {
         match self {
             TestResult::Pass => write!(f, "PASS"),
             TestResult::Fail(err) => write!(f, "FAIL: {}", err),
-            TestResult::Skip(msg) => write!(f, "SKIP: {}", msg),
             TestResult::Error(msg) => write!(f, "ERROR: {}", msg),
         }
     }
