@@ -8,9 +8,8 @@
   values; the runtime cast/test checks compare against the module's declared
   types.
 
-- Exception instances live in a separate per-store arena, also indexed by a
-  `Copy` index (`ExnRef`), with the exception's field payload stored out of
-  line from the registry entry.
+- Exception instances are registry-owned shared payloads allocated through
+  one path both engines use ([[exception-storage]]).
 
 - A raw pooled reference is resolved back to its value through a cross-store
   reference registry shared across linked stores whose entries carry an i31
