@@ -340,6 +340,7 @@ impl Low32DeadHiDefs {
             | MachineInstKind::EhAllocExnRef { dst, .. }
             | MachineInstKind::RefFunc { dst, .. }
             | MachineInstKind::RefAsNonNull { dst, .. }
+            | MachineInstKind::RefAbsolutize { dst, .. }
             | MachineInstKind::RefEq { dst, .. }
             | MachineInstKind::RefI31 { dst, .. }
             | MachineInstKind::I31GetS { dst, .. }

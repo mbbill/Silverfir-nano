@@ -18,8 +18,8 @@ use crate::{
         },
         jit::store::Store,
         jit::value_encoding::{
-            machine_raw_to_ref, try_machine_raw_to_value_in_store, try_raw_to_value_in_store,
-            value_to_machine_raw_in_store,
+            localize, machine_raw_to_ref, try_machine_raw_to_value_in_store,
+            try_raw_to_value_in_store, value_to_machine_raw_in_store,
         },
         tag::TagHandle,
         value::RefHandle,
@@ -181,59 +181,115 @@ fn call_runtime_by_handle(
     if handle.is_null() {
         return Err(trap_error("null function reference"));
     }
-    let entry = {
-        let store = ctx
-            .store()
-            .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
-        store
-            .function_entry_for_handle(handle)
-            .ok_or_else(|| trap_error("invalid function reference"))?
+    let caller_store_ptr = ctx.store;
+    if caller_store_ptr.is_null() {
+        return Err(internal_error("runtime-call context is missing store"));
+    }
+    let localized = {
+        let caller_store = unsafe { &*caller_store_ptr };
+        localize(caller_store, handle)
     };
-    let owner_store = unsafe { entry.store.as_mut() }
+
+    if !localized.is_special()
+        && (localized.encoded() < unsafe { &*caller_store_ptr }.module().functions.len())
+    {
+        let local_index = u32::try_from(localized.encoded())
+            .map_err(|_| internal_error("runtime-call local function index exceeds u32"))?;
+        let owner_store = unsafe { &mut *caller_store_ptr };
+        validate_runtime_target_type(
+            owner_store,
+            local_index,
+            owner_store,
+            expected_type_idx,
+            type_check_kind,
+        )?;
+        let callee_ptr = runtime_callee_ptr(owner_store, local_index)?;
+        let callee = unsafe { &*callee_ptr };
+        return invoke_runtime_target(ctx, frame, owner_store, callee, args_region, results_region);
+    }
+
+    let entry = unsafe { &*caller_store_ptr }
+        .function_entry_for_handle(localized)
+        .ok_or_else(|| trap_error("invalid function reference"))?;
+    let mut owner = unsafe { &*caller_store_ptr }
+        .instance_handle()
+        .checkout(entry.owner)
         .ok_or_else(|| internal_error("runtime-call referenced dead function owner"))?;
-    let callee_ptr = owner_store
+    {
+        let owner_store = owner
+            .jit()
+            .ok_or_else(|| internal_error("runtime-call referenced a non-JIT function owner"))?;
+        let caller_store = unsafe { &*caller_store_ptr };
+        validate_runtime_target_type(
+            owner_store,
+            entry.local_index,
+            caller_store,
+            expected_type_idx,
+            type_check_kind,
+        )?;
+    }
+
+    let owner_store = owner
+        .jit_mut()
+        .ok_or_else(|| internal_error("runtime-call referenced a non-JIT function owner"))?;
+    let callee_ptr = runtime_callee_ptr(owner_store, entry.local_index)?;
+    let callee = unsafe { &*callee_ptr };
+    invoke_runtime_target(ctx, frame, owner_store, callee, args_region, results_region)
+}
+
+#[inline]
+fn runtime_callee_ptr(
+    owner_store: &Store,
+    local_index: u32,
+) -> Result<*const FunctionInst, WasmError> {
+    Ok(owner_store
         .module()
         .functions
-        .get(entry.local_index)
+        .get(local_index as usize)
         .ok_or_else(|| internal_error("runtime-call referenced invalid function index"))?
-        as *const FunctionInst;
-    let callee = unsafe { &*callee_ptr };
-    if expected_type_idx != u32::MAX {
-        let caller_store = ctx
-            .store()
-            .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
-        let actual_type_idx = callee.type_index();
-        let compatible = if actual_type_idx != u32::MAX {
-            concrete_type_matches_cross_context(
-                &owner_store.module().types,
-                actual_type_idx,
-                &caller_store.module().types,
-                expected_type_idx,
-            )
-        } else {
-            let expected_type = caller_store
-                .module()
-                .get_type(expected_type_idx)
-                .ok_or_else(|| {
-                    internal_error("runtime-call expected type index is out of range")
-                })?;
-            expected_type.as_ref() == callee.func_type()
-                || check_function_types_equivalent(
-                    expected_type.as_ref(),
-                    callee.func_type(),
-                    &caller_store.module().types,
-                )
-        };
-        if !compatible {
-            let trap = match type_check_kind {
-                RuntimeCallTypeCheckKind::CallRef => "call_ref type mismatch",
-                RuntimeCallTypeCheckKind::IndirectCall => "indirect call type mismatch",
-                RuntimeCallTypeCheckKind::None => "call_ref type mismatch",
-            };
-            return Err(trap_error(trap));
-        }
+        as *const FunctionInst)
+}
+
+fn validate_runtime_target_type(
+    owner_store: &Store,
+    local_index: u32,
+    caller_store: &Store,
+    expected_type_idx: u32,
+    type_check_kind: RuntimeCallTypeCheckKind,
+) -> Result<(), WasmError> {
+    if expected_type_idx == u32::MAX {
+        return Ok(());
     }
-    invoke_runtime_target(ctx, frame, owner_store, callee, args_region, results_region)
+    let callee = unsafe { &*runtime_callee_ptr(owner_store, local_index)? };
+    let actual_type_idx = callee.type_index();
+    let compatible = if actual_type_idx != u32::MAX {
+        concrete_type_matches_cross_context(
+            &owner_store.module().types,
+            actual_type_idx,
+            &caller_store.module().types,
+            expected_type_idx,
+        )
+    } else {
+        let expected_type = caller_store
+            .module()
+            .get_type(expected_type_idx)
+            .ok_or_else(|| internal_error("runtime-call expected type index is out of range"))?;
+        expected_type.as_ref() == callee.func_type()
+            || check_function_types_equivalent(
+                expected_type.as_ref(),
+                callee.func_type(),
+                &caller_store.module().types,
+            )
+    };
+    if compatible {
+        return Ok(());
+    }
+    let trap = match type_check_kind {
+        RuntimeCallTypeCheckKind::CallRef => "call_ref type mismatch",
+        RuntimeCallTypeCheckKind::IndirectCall => "indirect call type mismatch",
+        RuntimeCallTypeCheckKind::None => "call_ref type mismatch",
+    };
+    Err(trap_error(trap))
 }
 
 fn invoke_runtime_target(
@@ -245,6 +301,16 @@ fn invoke_runtime_target(
     results_region: RuntimeCallFrameRegion,
 ) -> Result<NativeCallStatus, WasmError> {
     let func_type = Rc::new(callee.func_type().clone());
+    let frame_owner_ptr = ctx.store;
+    if frame_owner_ptr.is_null() {
+        return Err(internal_error(
+            "runtime-call context is missing frame owner",
+        ));
+    }
+    let frame_is_owned_by_target = core::ptr::eq(
+        frame_owner_ptr.cast_const(),
+        core::ptr::from_ref::<Store>(owner_store),
+    );
 
     require_region_slots(
         args_region,
@@ -257,22 +323,29 @@ fn invoke_runtime_target(
         "runtime-call result span does not match function arity",
     )?;
 
-    let args: collections::Vec<Value> = func_type
-        .params()
-        .iter()
-        .enumerate()
-        .map(|(index, ty)| unsafe {
-            region_read(
-                frame,
-                args_region,
-                index as u16,
-                "runtime-call arg slot is out of bounds",
-            )
-            .and_then(|raw| {
-                try_machine_raw_to_value_in_store(raw, *ty, active_gp_unit_bytes(), owner_store)
+    let args: collections::Vec<Value> = {
+        let frame_owner = if frame_is_owned_by_target {
+            &*owner_store
+        } else {
+            unsafe { &*frame_owner_ptr }
+        };
+        func_type
+            .params()
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| unsafe {
+                region_read(
+                    frame,
+                    args_region,
+                    index as u16,
+                    "runtime-call arg slot is out of bounds",
+                )
+                .and_then(|raw| {
+                    try_machine_raw_to_value_in_store(raw, *ty, active_gp_unit_bytes(), frame_owner)
+                })
             })
-        })
-        .collect::<Result<_, _>>()?;
+            .collect::<Result<_, _>>()?
+    };
     let mut ret_vals = collections::vec![Value::default(); func_type.results().len()];
 
     match callee {
@@ -335,12 +408,18 @@ fn invoke_runtime_target(
     ctx.refresh_cached_views();
 
     for (index, value) in ret_vals.into_iter().enumerate() {
+        let raw = if frame_is_owned_by_target {
+            value_to_machine_raw_in_store(value, active_gp_unit_bytes(), owner_store)
+        } else {
+            let frame_owner = unsafe { &mut *frame_owner_ptr };
+            value_to_machine_raw_in_store(value, active_gp_unit_bytes(), frame_owner)
+        };
         unsafe {
             region_write(
                 frame,
                 results_region,
                 index as u16,
-                value_to_machine_raw_in_store(value, active_gp_unit_bytes(), owner_store),
+                raw,
                 "runtime-call result slot is out of bounds",
             )?;
         }

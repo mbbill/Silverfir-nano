@@ -36,7 +36,9 @@ use crate::vm::jit::entities::{
 use crate::vm::jit::expr_eval::eval_const_expr;
 use crate::vm::jit::runtime;
 use crate::vm::jit::store::Store;
-use crate::vm::jit::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store};
+use crate::vm::jit::value_encoding::{
+    absolutize, retag_for_container, try_raw_to_value_in_store, value_to_container_raw_in_store,
+};
 use crate::vm::link::{InstanceId, InstanceLease, LinkRegistry};
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
@@ -344,6 +346,16 @@ impl JitInstance {
         }
 
         let start_func_index = module.start_function_index();
+        let table_reachable = module
+            .tables()
+            .iter()
+            .map(|table| table.is_import() || !table.export_names().is_empty())
+            .collect();
+        let global_reachable = module
+            .globals()
+            .iter()
+            .map(|global| global.is_import() || !global.export_names().is_empty())
+            .collect();
         #[cfg(sf_jit)]
         let table_dispatch_modes = compute_static_table_dispatch_modes(&module)
             .map_err(InstanceInstantiationError::Complete)?;
@@ -847,6 +859,8 @@ impl JitInstance {
         {
             module_inst.table_dispatch_modes = table_dispatch_modes;
         }
+        module_inst.table_reachable = table_reachable;
+        module_inst.global_reachable = global_reachable;
         let (instance_id, instance_handle) = registry.reserve_instance();
         let lease_handle = instance_handle.clone();
         let mut store = Box::new(Store::new_with_registries(
@@ -874,6 +888,21 @@ impl JitInstance {
                 let _ = store.register_local_function(func_idx);
             }
         }
+        // Imported value globals are created before local functions receive
+        // world addresses. Normalize any reachable funcref cell now that the
+        // complete local-index map exists.
+        for global_idx in 0..store.module().globals.len() {
+            if !store.module().global_needs_funcref_retag(global_idx) {
+                continue;
+            }
+            let (raw, value_type) = {
+                let global = store.global(global_idx);
+                (global.raw(), global.value_type)
+            };
+            let value = try_raw_to_value_in_store(raw, value_type, store)?;
+            let raw = value_to_container_raw_in_store(value, true, store);
+            store.global_mut(global_idx).set_raw(raw);
+        }
 
         let init_result = (|| -> Result<(), WasmError> {
             #[cfg(sf_jit)]
@@ -882,7 +911,8 @@ impl JitInstance {
             for (i, global) in mod_globals.iter().enumerate() {
                 if let GlobalDef::Local(spec) = global.def() {
                     let value = eval_const_expr(spec.init_expr(), store)?;
-                    let raw = value_to_raw_in_store(value, store);
+                    let reachable = store.module().global_is_reachable(i);
+                    let raw = value_to_container_raw_in_store(value, reachable, store);
                     store.global_mut(i).set_raw(raw);
                 }
             }
@@ -898,7 +928,10 @@ impl JitInstance {
 
                 let value = eval_const_expr(init_expr, store)?;
                 let init_ref = match value {
-                    Value::Ref(handle, _) => handle,
+                    Value::Ref(handle, _) => {
+                        let reachable = store.module().table_is_reachable(i);
+                        retag_for_container(store, handle, reachable)
+                    }
                     _ => {
                         return Err(WasmError::invalid(
                             "table initializer must evaluate to a reference",
@@ -924,7 +957,8 @@ impl JitInstance {
                             return Err(WasmError::unlinkable("unknown table"));
                         }
                         let offset = eval_offset(offset_expr, store.module())?;
-                        let refs = materialize_element_init(init, store)?;
+                        let reachable = store.module().table_is_reachable(*table_index);
+                        let refs = materialize_element_init(init, store, reachable)?;
 
                         let table = store.table_mut(*table_index);
                         let mut elements = table.elements_mut();
@@ -936,7 +970,10 @@ impl JitInstance {
                         store.module_mut().elements[i].drop_segment();
                     }
                     Element::Passive { init } => {
-                        let refs = materialize_element_init(init, store)?;
+                        // Passive segments are not statically private. Their
+                        // eventual table.init destination decides whether the
+                        // absolute value is localized again.
+                        let refs = materialize_element_init(init, store, true)?;
                         store.module_mut().elements[i] =
                             ElementInst::new(refs, element.value_type());
                     }
@@ -1149,7 +1186,8 @@ impl JitInstance {
 
     pub fn replace_global_at(&mut self, idx: usize, value: Value) -> Result<(), WasmError> {
         let store = self.store_mut();
-        let raw = value_to_raw_in_store(value, store);
+        let reachable = store.module().global_is_reachable(idx);
+        let raw = value_to_container_raw_in_store(value, reachable, store);
         let global = store
             .module_mut()
             .globals
@@ -1168,7 +1206,8 @@ impl JitInstance {
             .map(|(_, _, idx)| *idx)
             .ok_or_else(|| WasmError::invalid("global not found"))?;
         let store = self.store_mut();
-        let raw = value_to_raw_in_store(value, store);
+        let reachable = store.module().global_is_reachable(idx);
+        let raw = value_to_container_raw_in_store(value, reachable, store);
         let global = store.global_mut(idx);
         if !global.mutable {
             return Err(WasmError::invalid("cannot set immutable global"));
@@ -1290,8 +1329,13 @@ impl JitInstance {
             .map(FunctionInst::type_index)
     }
 
+    /// Mint the function's absolute reference form for external use.
     pub fn function_handle_at(&self, idx: usize) -> Option<RefHandle> {
-        self.store().module().function_handle(idx)
+        let store = self.store();
+        store
+            .module()
+            .function_handle(idx)
+            .map(|handle| absolutize(store, handle))
     }
 
     /// Resolve an exported tag to its runtime identity. Required for
@@ -1496,6 +1540,7 @@ fn eval_offset(expr: &ConstExpr, module: &ModuleInst) -> Result<usize, WasmError
 fn materialize_element_init(
     init: &ElementInit,
     store: &mut Store,
+    reachable_destination: bool,
 ) -> Result<collections::Vec<RefHandle>, WasmError> {
     match init {
         ElementInit::FunctionIndexes(indices) => indices
@@ -1504,6 +1549,7 @@ fn materialize_element_init(
                 store
                     .module()
                     .function_handle(idx)
+                    .map(|handle| retag_for_container(store, handle, reachable_destination))
                     .ok_or_else(|| WasmError::invalid("element function index out of range".into()))
             })
             .collect(),
@@ -1512,7 +1558,9 @@ fn materialize_element_init(
             .map(|expr| {
                 let value = eval_const_expr(expr, store)?;
                 match value {
-                    Value::Ref(handle, _) => Ok(handle),
+                    Value::Ref(handle, _) => {
+                        Ok(retag_for_container(store, handle, reachable_destination))
+                    }
                     _ => Err(WasmError::invalid(
                         "element init must be a reference".into(),
                     )),

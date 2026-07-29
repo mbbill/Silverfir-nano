@@ -72,6 +72,7 @@ pub(super) fn copy_propagate(
             MachineInstKind::CallRuntime(_)
                 | MachineInstKind::RefFunc { .. }
                 | MachineInstKind::RefAsNonNull { .. }
+                | MachineInstKind::RefAbsolutize { .. }
                 | MachineInstKind::RefEq { .. }
                 | MachineInstKind::RefI31 { .. }
                 | MachineInstKind::I31GetS { .. }
@@ -172,6 +173,7 @@ fn can_elide_reg_move(
             MachineInstKind::CallRuntime(_)
                 | MachineInstKind::RefFunc { .. }
                 | MachineInstKind::RefAsNonNull { .. }
+                | MachineInstKind::RefAbsolutize { .. }
                 | MachineInstKind::RefEq { .. }
                 | MachineInstKind::RefI31 { .. }
                 | MachineInstKind::I31GetS { .. }
@@ -418,6 +420,7 @@ fn rewrite_sources(kind: &mut MachineInstKind, aliases: &[Option<MachineReg>]) {
         }
         MachineInstKind::StructNewDefault { .. } => {}
         MachineInstKind::RefAsNonNull { src, .. }
+        | MachineInstKind::RefAbsolutize { src, .. }
         | MachineInstKind::RefI31 { src, .. }
         | MachineInstKind::I31GetS { src, .. }
         | MachineInstKind::I31GetU { src, .. }

@@ -9,7 +9,7 @@ use crate::value_type::{AbstractHeapType, HeapType, RefType};
 use crate::vm::const_eval::{self, ConstResolver};
 use crate::vm::entities::FunctionInst;
 use crate::vm::jit::store::Store;
-use crate::vm::jit::value_encoding::try_raw_to_value_in_store;
+use crate::vm::jit::value_encoding::{absolutize, try_raw_to_value_in_store};
 use crate::vm::value::Value;
 
 struct StoreResolver<'a> {
@@ -31,7 +31,7 @@ impl ConstResolver for StoreResolver<'_> {
             FunctionInst::Host { .. } | FunctionInst::Linked { .. } => 0,
         };
         Ok(Value::Ref(
-            handle,
+            absolutize(self.store, handle),
             RefType::new(false, HeapType::Concrete(type_idx)),
         ))
     }

@@ -6,6 +6,13 @@
 use crate::value_type::{RefType, ValueType};
 use core::fmt::Display;
 
+/// Highest payload used by either local or absolute function references.
+///
+/// Local function indices allocate upward from zero. A world function address
+/// is encoded in the absolute form as `FUNCADDR_TOP - funcaddr`, allocating
+/// downward from this bound. `(1 << 28) - 1` remains unused as a guard rail.
+pub(crate) const FUNCADDR_TOP: usize = (1 << 28) - 2;
+
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RefHandle(pub(crate) usize);
@@ -134,6 +141,8 @@ impl RefHandle {
         }
     }
 }
+
+const _: () = assert!(FUNCADDR_TOP < RefHandle::SPECIAL_TAG);
 
 impl From<RefHandle> for usize {
     fn from(val: RefHandle) -> Self {

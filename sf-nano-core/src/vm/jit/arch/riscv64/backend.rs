@@ -1333,6 +1333,16 @@ impl<'a> Riscv64Backend<'a> {
                 MachineStorageType::GpWord,
                 *dst,
             ),
+            MachineInstKind::RefAbsolutize { src, dst } => self.lower_preserved_result(
+                preserved_op::REF_ABSOLUTIZE,
+                0,
+                0,
+                *src,
+                MachineValue::Imm64(0),
+                MachineValue::Imm64(0),
+                MachineStorageType::GpWord,
+                *dst,
+            ),
             MachineInstKind::RefEq { lhs, rhs, dst } => self.lower_preserved_result(
                 preserved_op::REF_EQ,
                 0,

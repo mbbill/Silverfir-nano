@@ -93,6 +93,7 @@ pub(super) fn reuse_loaded_values(
             MachineInstKind::CallRuntime(_)
             | MachineInstKind::RefFunc { .. }
             | MachineInstKind::RefAsNonNull { .. }
+            | MachineInstKind::RefAbsolutize { .. }
             | MachineInstKind::RefEq { .. }
             | MachineInstKind::RefI31 { .. }
             | MachineInstKind::I31GetS { .. }

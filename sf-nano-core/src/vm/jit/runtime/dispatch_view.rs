@@ -11,7 +11,6 @@ use crate::vm::{jit::backend::BackendConfig, jit::machine::machine_ir::MachineMo
 pub(crate) mod function_kind {
     pub(crate) const LOCAL: u32 = 0;
     pub(crate) const EXTERNAL: u32 = 1;
-    pub(crate) const INVALID: u32 = 2;
 }
 
 /// Per-function dispatch facts used by indirect dispatch.

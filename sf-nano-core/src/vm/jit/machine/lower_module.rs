@@ -1908,8 +1908,16 @@ fn lower_indirect_dispatch_cluster(
                         },
                     },
                     then_edge: MachineEdge {
-                        target: trap_invalid_ref,
-                        args: collections::Vec::new(),
+                        target: if fixed_local_table {
+                            trap_invalid_ref
+                        } else {
+                            runtime_call.expect("generic indirect dispatch should allocate runtime")
+                        },
+                        args: if fixed_local_table {
+                            collections::Vec::new()
+                        } else {
+                            carried_args.param_values()
+                        },
                     },
                     else_edge: MachineEdge {
                         target: type_check,
@@ -2090,8 +2098,9 @@ fn lower_indirect_dispatch_cluster(
                         rhs: MachineValue::Reg(indirect_temps.lane1),
                     },
                     then_edge: MachineEdge {
-                        target: trap_invalid_ref,
-                        args: collections::Vec::new(),
+                        target: runtime_call
+                            .expect("call_ref indirect dispatch should allocate runtime"),
+                        args: carried_args.entry_args.clone(),
                     },
                     else_edge: MachineEdge {
                         target: type_check,

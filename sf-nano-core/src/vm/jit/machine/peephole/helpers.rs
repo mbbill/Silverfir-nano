@@ -245,6 +245,7 @@ pub(crate) fn visit_source_values(kind: &MachineInstKind, mut f: impl FnMut(&Mac
         }
         MachineInstKind::StructNewDefault { .. } => {}
         MachineInstKind::RefAsNonNull { src, .. }
+        | MachineInstKind::RefAbsolutize { src, .. }
         | MachineInstKind::RefI31 { src, .. }
         | MachineInstKind::I31GetS { src, .. }
         | MachineInstKind::I31GetU { src, .. }

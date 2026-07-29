@@ -12,7 +12,7 @@ use crate::collections;
 use crate::config::Config;
 use crate::error::WasmError;
 use crate::module::{type_context::TypeContext, type_defs::FunctionType};
-use crate::value_type::ValueType;
+use crate::value_type::{AbstractHeapType, HeapType, ValueType};
 use crate::vm::entities::{FunctionInst, GlobalInst, MemBacking, MemInst, TableInst};
 use crate::vm::jit::runtime::code_buf::CodeBuffer;
 use crate::vm::tag::TagHandle;
@@ -189,6 +189,12 @@ pub struct ModuleInst {
     pub elements: collections::Vec<ElementInst>,
     pub data: collections::Vec<DataInst>,
     pub(crate) table_dispatch_modes: collections::Vec<TableDispatchMode>,
+    /// Static container reachability, keyed by module table/global index.
+    ///
+    /// These facts are independent of dispatch mode: growable or otherwise
+    /// generic private tables remain unreachable.
+    pub(crate) table_reachable: collections::Vec<bool>,
+    pub(crate) global_reachable: collections::Vec<bool>,
     native_buf: RefCell<Option<CodeBuffer>>,
 }
 
@@ -207,6 +213,8 @@ impl ModuleInst {
             elements: collections::Vec::new(),
             data: collections::Vec::new(),
             table_dispatch_modes: collections::Vec::new(),
+            table_reachable: collections::Vec::new(),
+            global_reachable: collections::Vec::new(),
             native_buf: RefCell::new(None),
         }
     }
@@ -237,6 +245,30 @@ impl ModuleInst {
     #[inline]
     pub(crate) fn table_dispatch_modes(&self) -> &[TableDispatchMode] {
         &self.table_dispatch_modes
+    }
+
+    #[inline]
+    pub(crate) fn table_is_reachable(&self, index: usize) -> bool {
+        self.table_reachable.get(index).copied().unwrap_or(true)
+    }
+
+    #[inline]
+    pub(crate) fn global_is_reachable(&self, index: usize) -> bool {
+        self.global_reachable.get(index).copied().unwrap_or(true)
+    }
+
+    #[inline]
+    pub(crate) fn global_needs_funcref_retag(&self, index: usize) -> bool {
+        if !self.global_is_reachable(index) {
+            return false;
+        }
+        let Some(ValueType::Ref(ref_type)) = self.globals.get(index).map(|g| g.value_type) else {
+            return false;
+        };
+        matches!(
+            ref_type.heap_type.top_type(&self.types),
+            HeapType::Abstract(AbstractHeapType::Func)
+        )
     }
 
     pub(crate) fn clear_native_code(&self) {
@@ -300,6 +332,8 @@ impl Default for ModuleInst {
             elements: collections::Vec::new(),
             data: collections::Vec::new(),
             table_dispatch_modes: collections::Vec::new(),
+            table_reachable: collections::Vec::new(),
+            global_reachable: collections::Vec::new(),
             native_buf: RefCell::new(None),
         }
     }

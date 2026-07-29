@@ -523,6 +523,12 @@ pub(crate) enum MachineInstKind {
         func_idx: u32,
         dst: MachineReg,
     },
+    /// Convert an owning instance's local funcref into the absolute form
+    /// before writing it to a reachable container.
+    RefAbsolutize {
+        src: MachineValue,
+        dst: MachineReg,
+    },
     RefAsNonNull {
         src: MachineValue,
         dst: MachineReg,
@@ -711,6 +717,7 @@ impl MachineInstKind {
             | Self::MemoryGrow { .. }
             | Self::TableGrow { .. }
             | Self::RefFunc { .. }
+            | Self::RefAbsolutize { .. }
             | Self::RefAsNonNull { .. }
             | Self::RefEq { .. }
             | Self::RefI31 { .. }
@@ -794,6 +801,7 @@ impl MachineInstKind {
             | Self::TestBits { dst, .. }
             | Self::EhAllocExnRef { dst, .. }
             | Self::RefFunc { dst, .. }
+            | Self::RefAbsolutize { dst, .. }
             | Self::RefAsNonNull { dst, .. }
             | Self::RefEq { dst, .. }
             | Self::RefI31 { dst, .. }

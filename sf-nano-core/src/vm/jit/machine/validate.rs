@@ -614,6 +614,7 @@ impl MachineProgram {
                 self.validate_reg_storage_type(*dst, MachineStorageType::GpWord, config)?;
             }
             MachineInstKind::RefAsNonNull { src, dst }
+            | MachineInstKind::RefAbsolutize { src, dst }
             | MachineInstKind::RefI31 { src, dst }
             | MachineInstKind::I31GetS { src, dst }
             | MachineInstKind::I31GetU { src, dst }

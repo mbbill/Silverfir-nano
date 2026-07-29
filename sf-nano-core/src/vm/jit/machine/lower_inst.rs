@@ -782,8 +782,8 @@ impl<'a> BlockLowerContext<'a> {
                 self.lower_global_get(*idx, results)?;
                 LeafLowering::InPlace
             }
-            P::GlobalSet { idx } => {
-                self.lower_global_set(*idx, args)?;
+            P::GlobalSet { idx, retag } => {
+                self.lower_global_set(*idx, args, *retag)?;
                 LeafLowering::InPlace
             }
             P::TableSize { table_idx } => {
@@ -793,8 +793,8 @@ impl<'a> BlockLowerContext<'a> {
             P::TableGet { table_idx } => {
                 self.lower_table_get(*table_idx, args, results, continuation, trap)?
             }
-            P::TableSet { table_idx } => {
-                self.lower_table_set(*table_idx, args, continuation, trap)?
+            P::TableSet { table_idx, retag } => {
+                self.lower_table_set(*table_idx, args, *retag, continuation, trap)?
             }
             #[cfg(sf_has_simd)]
             P::V128Load { offset, memidx } => {

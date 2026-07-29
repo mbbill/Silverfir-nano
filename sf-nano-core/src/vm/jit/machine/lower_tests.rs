@@ -1485,7 +1485,10 @@ fn lowers_i64_global_get_set_directly_to_legal_32bit_machineir() {
         }
         {
             let __pidx = ssa
-                .intern_primitive(PrimitiveOpKind::GlobalSet { idx: 3 })
+                .intern_primitive(PrimitiveOpKind::GlobalSet {
+                    idx: 3,
+                    retag: false,
+                })
                 .unwrap();
             __blk0.ops.push(SsaInst::primitive(
                 __pidx,
@@ -5173,6 +5176,37 @@ fn lowers_call_indirect_local_path_with_live_register_args() {
                 .any(|inst| matches!(inst.kind, MachineInstKind::CallRuntime(_)))
         })
         .expect("expected runtime fallback block");
+    assert_eq!(
+        runtime_block.params.len(),
+        4,
+        "runtime fallback should receive every live register argument"
+    );
+    let checked_block = match &program.blocks[0].terminator {
+        MachineTerminator::Branch { else_edge, .. } => &program.blocks[else_edge.target.as_usize()],
+        other => panic!("expected table bounds branch, got {other:?}"),
+    };
+    let range_fallback = match &checked_block.terminator {
+        MachineTerminator::Branch { then_edge, .. } => then_edge,
+        other => panic!("expected function-reference range branch, got {other:?}"),
+    };
+    assert_eq!(
+        range_fallback.target, runtime_block.id,
+        "generic-table out-of-local-range references must use the runtime helper"
+    );
+    assert_eq!(
+        range_fallback.args.len(),
+        runtime_block.params.len(),
+        "generic-table range fallback must carry every continuation-block argument"
+    );
+    assert_eq!(
+        range_fallback.args,
+        runtime_block
+            .params
+            .iter()
+            .map(|param| MachineValue::Reg(param.reg))
+            .collect::<collections::Vec<_>>(),
+        "generic-table range fallback must bind the runtime block parameters"
+    );
     let arg_offsets = collections::vec![
         i32::from(call_base.0) * 8,
         i32::from(call_base.advance(1).0) * 8,
@@ -5527,6 +5561,209 @@ fn lowers_call_ref_with_local_and_runtime_dispatch_paths() {
 }
 
 #[test]
+fn lowers_call_ref_range_fallback_with_live_register_args() {
+    let frame = plan_frame_layout(0, 8, 4);
+    let call_base = frame.operand_slot(0);
+    let ssa = {
+        let mut ssa = SsaProgram::default();
+        ssa.entry = SsaTarget(0);
+        ssa.cell_types = collections::vec![];
+        ssa.cell_info = collections::vec![];
+        ssa.block_entry_cached_cells = collections::vec![];
+        ssa.value_types = collections::vec![
+            ValueType::I32,
+            ValueType::I32,
+            ValueType::I32,
+            ValueType::I32,
+        ];
+        ssa.value_sink_cell = collections::vec![];
+        let mut block = SsaBlock {
+            id: SsaTarget(0),
+            params: collections::vec![],
+            ops: collections::vec![],
+            extra_args: collections::vec![],
+            terminator: SsaTerminator::TrapUnreachable,
+        };
+        for value in 0..4 {
+            let prim = ssa
+                .intern_primitive(PrimitiveOpKind::I32Const { value: value + 1 })
+                .unwrap();
+            block.ops.push(SsaInst::primitive(
+                prim,
+                SsaValue(value),
+                [SsaOperand::NONE, SsaOperand::NONE],
+                0,
+            ));
+        }
+        let args = SsaCallArgs {
+            frame_base: call_base,
+            total_params: 4,
+            param_types: collections::vec![
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+                ValueType::I32,
+            ],
+            stack_prefix_count: 0,
+            live_suffix: collections::vec![
+                SsaCallLiveArg {
+                    param_index: 0,
+                    value: SsaValue(0),
+                    ty: ValueType::I32,
+                    frame_slot: call_base,
+                },
+                SsaCallLiveArg {
+                    param_index: 1,
+                    value: SsaValue(1),
+                    ty: ValueType::I32,
+                    frame_slot: call_base.advance(1),
+                },
+                SsaCallLiveArg {
+                    param_index: 2,
+                    value: SsaValue(2),
+                    ty: ValueType::I32,
+                    frame_slot: call_base.advance(2),
+                },
+                SsaCallLiveArg {
+                    param_index: 3,
+                    value: SsaValue(3),
+                    ty: ValueType::I32,
+                    frame_slot: call_base.advance(3),
+                },
+            ],
+        };
+        let call_idx = ssa.push_call_op(SsaCallOp::CallRef {
+            type_idx: 3,
+            callee_ref: SsaCallOperandLoc::Stack {
+                slot: call_base.advance(4),
+            },
+            args,
+            results: FrameSpan::new(call_base, 0),
+            result_types: collections::Vec::new(),
+        });
+        block.ops.push(SsaInst::call(call_idx));
+        ssa.blocks.push(block);
+        set_default_entry_cache_metadata(&mut ssa);
+        ssa
+    };
+
+    let lowered = lower_module(LowerModuleInput {
+        backend: host_backend_config(0, 10, 0, 2),
+        #[cfg(sf_has_guard_pages)]
+        use_guard_pages: false,
+        #[cfg(sf_has_guard_pages)]
+        use_stack_guard_pages: false,
+        functions: collections::vec![LowerFunctionInput {
+            id: MachineFuncId(0),
+            frame,
+            ssa,
+            result_count: 0,
+        }],
+    })
+    .expect("call_ref live register args should lower");
+
+    let program = &lowered.module.functions[0].program;
+    let call_args = program
+        .blocks
+        .iter()
+        .find_map(|block| match &block.terminator {
+            MachineTerminator::Call {
+                target: MachineCallTarget::Indirect { .. },
+                args,
+                ..
+            } => Some(args),
+            _ => None,
+        })
+        .expect("expected local call_ref terminator");
+    assert_eq!(call_args.lane_args.len(), 4);
+    assert!(call_args.lane_args.iter().all(|arg| matches!(
+        arg,
+        MachineCallLaneArg::Gp {
+            src: MachineArgSrc::Reg(_),
+            ..
+        }
+    )));
+
+    let runtime_block = program
+        .blocks
+        .iter()
+        .find(|block| {
+            block
+                .ops
+                .iter()
+                .any(|inst| matches!(inst.kind, MachineInstKind::CallRuntime(_)))
+        })
+        .expect("expected call_ref runtime fallback block");
+    assert_eq!(
+        runtime_block.params.len(),
+        4,
+        "call_ref runtime fallback should receive every live register argument"
+    );
+    let range_fallback = match &program.blocks[0].terminator {
+        MachineTerminator::Branch { then_edge, .. } => then_edge,
+        other => panic!("expected call_ref range branch, got {other:?}"),
+    };
+    assert_eq!(
+        range_fallback.target, runtime_block.id,
+        "out-of-local-range call_ref must use the runtime helper"
+    );
+    assert_eq!(
+        range_fallback.args.len(),
+        runtime_block.params.len(),
+        "call_ref range fallback must carry every entry-block argument"
+    );
+    assert_eq!(
+        range_fallback.args,
+        runtime_block
+            .params
+            .iter()
+            .map(|param| MachineValue::Reg(param.reg))
+            .collect::<collections::Vec<_>>(),
+        "call_ref range fallback must bind the runtime block parameters"
+    );
+
+    let arg_offsets = collections::vec![
+        i32::from(call_base.0) * 8,
+        i32::from(call_base.advance(1).0) * 8,
+        i32::from(call_base.advance(2).0) * 8,
+        i32::from(call_base.advance(3).0) * 8,
+    ];
+    let is_arg_frame_store = |inst: &crate::vm::jit::machine::machine_ir::MachineInst| {
+        matches!(
+            inst.kind,
+            MachineInstKind::Store {
+                addr:
+                    MachineAddr {
+                        base: MACHINE_FP_REG,
+                        offset,
+                    },
+                ..
+            } if arg_offsets.contains(&offset)
+        )
+    };
+    let hot_arg_stores = program
+        .blocks
+        .iter()
+        .filter(|block| block.id != runtime_block.id)
+        .flat_map(|block| block.ops.iter())
+        .filter(|inst| is_arg_frame_store(inst))
+        .count();
+    assert_eq!(
+        hot_arg_stores, 0,
+        "local call_ref hot path must carry live args instead of eagerly publishing them"
+    );
+    let runtime_arg_stores = runtime_block
+        .ops
+        .iter()
+        .filter(|inst| is_arg_frame_store(inst))
+        .count();
+    assert_eq!(
+        runtime_arg_stores, 4,
+        "call_ref runtime fallback must publish carried args before the runtime helper"
+    );
+}
+
+#[test]
 fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
     let frame = plan_frame_layout(0, 6, 4);
     let call_base = frame.operand_slot(0);
@@ -5826,7 +6063,10 @@ fn lowers_global_get_and_set_without_helpers() {
         }
         {
             let __pidx = ssa
-                .intern_primitive(PrimitiveOpKind::GlobalSet { idx: 3 })
+                .intern_primitive(PrimitiveOpKind::GlobalSet {
+                    idx: 3,
+                    retag: false,
+                })
                 .unwrap();
             __blk0.ops.push(SsaInst::primitive(
                 __pidx,
