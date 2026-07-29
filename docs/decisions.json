@@ -1,0 +1,777 @@
+{
+  "decisions": [
+    {
+      "id": 1,
+      "title": "The plan counts 4 cross-instance `*mut Store` deref sites; there are 20, and no migration step converts 15 of them",
+      "issue_summary": "Plan claimed 4 cross-instance *mut Store deref sites; actual count is ~19 across two populations (13 GC-entry derefs via two resolvers in preserved/ops.rs, function-entry derefs in runtime_call/entry.rs and native_eval.rs, plus gc_type_check and interp exec), and no migration step converted the Gc registry entries, so Drop poisoning could never be deleted as step 2 claimed.",
+      "alternatives_considered": [],
+      "decision": "Three edits to the plan.\n(1) Replace 'All four cross-instance `unsafe` deref sites' with the two populations and their real sizes: ~13 GC-entry derefs reached through two resolvers (`resolve_struct_ref`/`resolve_array_ref`, ops.rs:582-597), and 4 function-entry derefs (entry.rs:192, native_eval.rs:50, gc_type_check.rs:104, context.rs:491), plus gc_type_check.rs:35 and interp exec.rs:1466 on the Gc side.\n(2) Insert a new migration step between the current steps 2 and 3: convert `RefRegistryEntry::Gc { store: *mut Store, gc_ref }` to `Gc { owner: InstanceId, gc_ref }` and re-point the two resolvers at the world. Note in the step that this is one signature change covering all 13 call sites, so it is not the 13-site slog the count implies.\n(3) Move the `Drop`-poisoning deletion from step 2 to the end of that new step, and state the precondition explicitly: both registries must be pointer-free before `impl Drop for Store` can go.",
+      "critic_acceptance_notes": "Agreed, and the refiner's count is the one to use: 19 by their enumeration versus my 20 -- I did not recount to find the off-by-one because it changes nothing about the direction, and the plan should not quote a number either of us derived by hand. Write it as populations, as their edit (1) does.\n\nWhat convinced me on the fix being cheaper than the count: I verified that all 13 ops.rs sites obtain the pointer from exactly two resolvers, `resolve_struct_ref` and `resolve_array_ref` (ops.rs:582-597 for the array twin), each of which returns `(*mut Store, GcRef)` destructured straight from `RefRegistryEntry::Gc`. Changing those two return types to `(InstanceId, GcRef)` does convert all 13 in one signature change. That is a materially different migration cost than the raw count implies and it belongs in the plan.\n\nThe part I care most about is accepted in full: the new migration step between 2 and 3, and moving the `Drop`-poisoning deletion to the end of it with the precondition stated. That closes the gap where the 5-step sequence terminated with store.rs:318-325 still live.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:173-177",
+        "docs/RUNTIME_WORLD.md:201-203",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:582-597",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:610",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:876-919",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:1110",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:192-193",
+        "sf-nano-core/src/vm/jit/runtime/native_eval.rs:46-60",
+        "sf-nano-core/src/vm/jit/store.rs:307-327",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:192"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 2,
+      "title": "`world.store(id) -> Option<&Store>` cannot express the two-store borrows the runtime helpers already perform",
+      "issue_summary": "world.store(id) -> Option<&Store>/&mut cannot serve call sites needing two stores at once; the do_array_copy sub-claim was withdrawn (borrows are already sequential via to_vec), but the runtime-call type-check and re-entrant eval sites stand.",
+      "alternatives_considered": [],
+      "decision": "Because (a) dissolves, no disjoint-pair accessor is needed. Two additions and one honest restatement.\n\n(1) For (b): the type check does not need `&mut` at all. Resolve the owner as `&Store` for the comparison at entry.rs:201-226, let that borrow end, and resolve again as `&mut Store` only for the invoke. Two shared borrows coexist on the same slot without trouble, so this site needs nothing beyond `world.store(id)`.\n\n(2) For (c): add one primitive to the world and make it the plan's named seam -- `world.checkout(id) -> Option<InstanceToken>`, where the bounds-plus-generation check is safe and the token carries a validated raw pointer. The world borrow is released at checkout; the token is what crosses the native call; re-entry takes a *fresh* world borrow rather than nesting one. This is the shape the tree already uses twice: `NativeContextBox` is taken out of the store for the duration of an invocation and put back after (arch/common/eval.rs:109, :186), and `InterpInstance::drive` takes its stack buffers out of `self` so a re-entrant call finds them absent and allocates its own (exec.rs:1872-1888).\n\n(3) Restate the safety claim to match: the design does not remove `unsafe` from the cross-instance path -- it collapses ~19 unaudited derefs, each relying on every consumer honoring the poisoning contract, into one audited primitive whose precondition (generation matched at checkout) is checked in one place. That is still the design's main win and it survives being stated accurately.",
+      "critic_acceptance_notes": "Sub-claim (a) withdrawn -- the refiner is right and I was wrong. I re-read ops.rs:897-911: `let copied = { ... src_array.elements[..].to_vec() };` closes its block at :908 before `dst_store` is taken at :910, and `to_vec()` at :907 is what makes the source borrow droppable. That is resolve-use-release-resolve, and it needs no disjoint-pair accessor. I will not raise it again.\n\n(b)'s fix I checked and it works with one addition the plan should carry: `callee` is derived from `owner_store` through a raw pointer at entry.rs:196-200 and is then read at :205 (`type_index()`), :220 (`func_type()`) and passed on at :236. So splitting into 'shared borrow for the type check, re-resolve mutable for the invoke' also requires `callee` to be re-derived after the second resolve rather than held across the gap -- otherwise the split moves the aliasing into `callee` instead of removing it.\n\nOn `world.checkout(id) -> InstanceToken`: I verified both cited precedents and the shape is sound, but they are precedent for different halves and the plan should not overstate them. `drive` (exec.rs:1873-1888) is a true release -- `core::mem::take` moves the buffers out of `self`, `reentrant = stack.is_empty()",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:97-102",
+        "docs/RUNTIME_WORLD.md:214-219",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:860-919",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:184-236",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:239-350",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:685-692",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:897-911",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:192",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:201-226",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:321"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 3,
+      "title": "The borrow seam is not JIT-only: the interpreter reaches it with no native code on the stack, where the plan's handover has no analogue",
+      "issue_summary": "The borrow/re-entrancy seam exists on the interpreter side too (host-throw payload validation path pending_from_error -> host_value_matches_type -> foreign-store deref), so a JIT-ABI-only handover answer cannot resolve open question 1.",
+      "alternatives_considered": [],
+      "decision": "Rewrite open question 1 so it is engine-neutral, and answer it with the checkout primitive from issue 2 rather than with a JIT-specific handover.\n\nReplace 'Where exactly does `&mut World` release and the one raw ABI pointer (`*mut NativeContext`) take over' with: 'Where does the world borrow release, and what carries identity across the gap?' The answer is the same on both engines -- `world.checkout(id) -> InstanceToken` releases the borrow at the call boundary, and the token (not a `&mut`) is what the callee runs against. The JIT's `*mut NativeContext` becomes one instance of that token, not the mechanism itself.\n\nAdd a paragraph to 'What the interpreter gains' recording the precedent and its limit: `drive`'s take-and-restore protocol (exec.rs:1872-1888) already makes per-instance execution state re-entrancy-safe, so `WorldSlot::Interp` inherits a working answer for buffers; what the world must add is the borrow discipline, which the checkout token supplies. State plainly that in-world linking relocates the existing raw pointer from the embedder (wast_test_runner.rs:271-282) into the engine rather than eliminating it.",
+      "critic_acceptance_notes": "The narrowing is correct and I verified the call chain is closed: `ref_handle_matches_type` is defined at exec.rs:1433 and called from exactly one place, `host_value_matches_type` at :1537, which is called from exactly one place, `pending_from_error` at :1690 -- and `pending_from_error` takes `&mut self` (:1667) and runs from the driver at :2429. So the seam is host-throw payload validation, not a general `ref.test`, and my issue overstated the breadth. The shape stands unchanged: a mutably-borrowed running instance must reach a peer in the same world, with no native frame to hand off to.\n\nWhat convinced me the engine-neutral rewrite is the right answer rather than a papering-over: `drive`'s protocol at exec.rs:1873-1888 really does solve the state half already, and it does it by *releasing* (`core::mem::take`) rather than by nesting -- which is the same discipline `checkout` generalizes. So the interpreter is not being retrofitted with a JIT concept; it is the tree's clearest existing instance of the concept.\n\nI also want the refiner's 'against' point kept in the plan verbatim in spirit: the embedder still forms the second `&mut` through a raw pointer (wast_test_runner.rs:271-282)",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:71-77",
+        "docs/RUNTIME_WORLD.md:136-138",
+        "docs/RUNTIME_WORLD.md:214-219",
+        "sf-nano-core/src/vm/interpreter/exec.rs:1433-1492",
+        "sf-nano-core/src/vm/interpreter/exec.rs:2428",
+        "sf-nano-core/src/vm/interpreter/exec.rs:3181-3238",
+        "sf-nano-core/src/vm/interpreter/exec.rs:3457-3516",
+        "sf-nano-core/src/vm/interpreter/exec.rs:1433",
+        "sf-nano-core/src/vm/interpreter/exec.rs:1537",
+        "sf-nano-core/src/vm/interpreter/exec.rs:1667-1690"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 5,
+      "title": "Folding `Func` into `RefRegistryEntry` makes every funcref a pooled `is_special()` handle, which four existing fast paths reject by construction",
+      "issue_summary": "Folding Func into RefRegistryEntry would make funcrefs pooled/is_special(), which four fast paths reject by construction, and would shrink the 32-bit pooled payload to 27 bits; plan text was ambiguous between one and two address spaces.",
+      "alternatives_considered": [],
+      "decision": "Keep two address spaces, and say so where the sketch currently implies one.\n\n(1) Take `Func` out of `RefRegistryEntry`. The world gets its own function address space -- `RuntimeWorld { functions: Vec<FuncEntry>, ... }` with `FuncEntry { owner: InstanceId, local_index: u32 }` -- alongside the pooled ref arena, which keeps `I31`/`Gc`/`Exn` only. The plan's own framing already supports this: plan:47-51 describes 'flat `u32` address spaces' plural, one per escaping entity kind.\n(2) Funcrefs keep the untagged encoding. The only change is what the payload *means*: a world funcaddr instead of a per-store registry index. Every fast path above stays as written -- store.rs:250, context.rs:620, exec.rs:3186/:3471 and gc_type_check.rs:26 all keep their current predicates and their current meaning.\n(3) Rewrite plan:161-164 to state the two spaces and their tags explicitly instead of 'registry indices or local function indices', so the encoding question cannot be read two ways again.\n(4) Add one sentence noting that the `ref.test` unification does not depend on the encoding choice -- it depends on provenance existing at all -- so keeping funcrefs untagged costs the plan none of its stated wins.",
+      "critic_acceptance_notes": "Agreed on the fix -- two spaces, `Func` out of `RefRegistryEntry`, funcrefs stay untagged. What convinced me is that it costs the plan nothing, and I verified the strongest part of the refiner's case myself: on the JIT side the payload is *already* a cross-instance address. `SharedFunctionRegistry` is cloned into every linked store (link.rs:51-54, `function_registry_shared`), and `function_views` is indexed by `handle.encoded()` (context.rs:623) into that shared registry, so 'world funcaddr' is a rename of what the JIT already does. That is why store.rs:250, context.rs:620 and gc_type_check.rs:26 genuinely need no change.\n\nI also accept the pushback on `ref.test`: the divergences come from `OpaqueInterpFunc` matching nothing (gc_type_check.rs:51) and from `hostref` being overloaded for published funcrefs, not from the bit layout, so provenance fixes them at either encoding. My issue implied otherwise and that was wrong.\n\nOne correction to carry into the plan text rather than a rejection: the solution's claim that exec.rs:3186/:3471 keep 'their current predicates and their current meaning' is true for the predicate and false for the meaning. `is_special()` still separates tagged fro",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:88-95",
+        "docs/RUNTIME_WORLD.md:132-135",
+        "docs/RUNTIME_WORLD.md:201-203",
+        "sf-nano-core/src/vm/jit/store.rs:224-238",
+        "sf-nano-core/src/vm/jit/store.rs:240-256",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:618-625",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:576-594",
+        "sf-nano-core/src/vm/jit/gc_type_check.rs:26-63",
+        "sf-nano-core/src/vm/value.rs:82-97",
+        "sf-nano-core/src/vm/interpreter/exec.rs:3186"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 6,
+      "title": "The world reclaims instance slots but not registry entries, so the design's own motivating scenario still leaks -- and on 32-bit it leaks into a 27/28-bit address budget",
+      "issue_summary": "Eager total function registration means registry growth is unbounded under instance churn even with slot reclamation, and refresh_function_views scans the whole registry; the design's own motivating workload still leaks.",
+      "alternatives_considered": [],
+      "decision": "Bound the growth at the source rather than adding a reclamation scheme, and cost the rest honestly.\n\n(1) Register only functions that can escape, instead of all of them. The validator already proves the escapable set is statically known: `ref.func x` is rejected as 'undeclared function reference' unless x appears in an element segment (functions.rs:1026-1054). So the set is (element-segment function indices) union (functions named by `ref.func` in code and const-exprs) union (exported functions, reachable via the public `Instance::function_handle_at`). One caveat to record: the validator's `InitExprs` arm sets `is_declared` for any index (functions.rs:1045-1048), so the code-section scan -- not the element segments alone -- has to be the authoritative input. On a module like CoreMark this turns hundreds of registrations into a handful, and it needs no free list, no index generations, and no extra bits in the 32-bit budget.\n(2) Guard the per-call refresh. `refresh_cached_views` at entry.rs:335 should go through the revision check that `prepare_for_invocation` already uses (context.rs:201-203), so an unchanged world costs one `cached_views_are_current` pass -- O(tables + memories + globals) -- instead of a full rebuild. Land this behind the performance gate and verify first that `cached_views_are_current` (context.rs:250-319) covers everything a callee can mutate; it currently checks module/registry/table revisions, globals pointers and memory bases, which looks complete but should be confirmed rather than assumed.\n(3) Add the 32-bit budget to the design as an explicit constraint: with the escapable-set filter the funcaddr space is bounded by live instances rather than by churn, and the plan should state the resulting ceiling (2^27 pooled / 2^28 untagged) and that bits 30-31 of the TARGET32 word remain free.\n(4) Soften plan:191-192 so it does not read as an unqualified win: teardown does get cheaper, and the per-call refresh is the larger cost, addressed by (1) and (2).",
+      "critic_acceptance_notes": "Agreed, and the escapable-set solution is better than the reclamation scheme I was implicitly steering toward -- bounding growth at the source removes the need for index generations and free lists entirely.\n\nI verified the validator evidence because the whole solution rests on it. functions.rs:1026-1054 is as described: `REF_FUNC` walks every element segment and rejects with 'undeclared function reference' unless the index is declared, so the escapable set is statically known. The refiner's caveat is accurate and load-bearing -- the `ElementInit::InitExprs` arm at :1045-1048 sets `is_declared = true` unconditionally, for any index, without inspecting the expressions. So element segments alone over-approximate to 'everything' on any module using expression-form segments, and the code-section `ref.func` scan must be the authoritative input. That caveat needs to survive into the plan text, not just this thread.\n\nI accept the qualification on sub-claim (a): the per-call `refresh_cached_views` at entry.rs:335 is pre-existing and this design neither creates nor worsens it. Agreeing that the plan must cost it is all I was after, and the reason is the one the refiner gives -- plan:191-192 ",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:43-44",
+        "docs/RUNTIME_WORLD.md:58-61",
+        "docs/RUNTIME_WORLD.md:96-102",
+        "docs/RUNTIME_WORLD.md:185-192",
+        "sf-nano-core/src/vm/jit/instance.rs:861-867",
+        "sf-nano-core/src/vm/jit/store.rs:307-327",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:487-532",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:1037-1076",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:335",
+        "sf-nano-core/src/vm/value.rs:21-38"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 7,
+      "title": "Deleting `Store::drop`'s registry walk also deletes the only teardown bump of the epoch that `NativeContext` validates its caches against",
+      "issue_summary": "Deleting Store::drop's registry walk silently deletes the only teardown-time bump of the function-registry revision that cached-view validation depends on; no stated replacement existed.",
+      "alternatives_considered": [],
+      "decision": "Give the world's function address space its own revision counter and make slot-free an advance event.\n\nConcretely: `RuntimeWorld` carries `functions_revision: u64`, bumped on instantiate, on any mutation of the function table, and -- the new edge -- on slot free. `NativeContext` snapshots `functions_revision` in place of `cached_function_registry_revision` (context.rs:238-246) and compares it in `cached_views_are_current` (context.rs:258). That is a rename plus one extra bump site, and it preserves the existing epoch contract exactly rather than inventing a second invalidation mechanism next to it.\n\nAdd a sentence to 'What the JIT keeps' recording the invariant, since the plan currently keeps the epoch machinery without saying what feeds it: every event that can invalidate a cached cross-instance view must advance a revision the context snapshots, and instance death is one of those events. Also note in the migration plan that this bump must land in the same step that deletes `Store::drop`, so the edge is never absent in an intermediate state.",
+      "critic_acceptance_notes": "Agreed. `functions_revision` on the world, snapshotted by `NativeContext` in place of `cached_function_registry_revision` (context.rs:238-246) and compared in `cached_views_are_current` (context.rs:258), preserves the existing epoch contract instead of adding a second invalidation mechanism beside it -- which is what I was worried about. It is a rename plus one bump site.\n\nThe detail that closes the issue for me is the migration note: the bump must land in the same step that deletes `Store::drop`, so the edge is never absent in an intermediate state. That was the actual risk -- not the end state, which either design reaches, but a step boundary where the walk is gone and nothing has replaced it. With that constraint written down, the concern is answered.\n\nI also appreciate that the refiner re-derived my safety caveat rather than taking it on trust; lower_module.rs:2055-2068 routing non-LOCAL views to the runtime helper is what keeps this a contract gap rather than a live defect, and it is worth the plan saying so explicitly so nobody later 'optimizes' that branch away without restoring the epoch.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:99-102",
+        "docs/RUNTIME_WORLD.md:105-119",
+        "sf-nano-core/src/vm/link.rs:66-81",
+        "sf-nano-core/src/vm/jit/store.rs:5-11",
+        "sf-nano-core/src/vm/jit/store.rs:307-315",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:228-260",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:195-204",
+        "sf-nano-core/src/vm/jit/machine/lower_module.rs:2044-2069",
+        "sf-nano-core/src/vm/link.rs:72-75",
+        "sf-nano-core/src/vm/jit/store.rs:310"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 8,
+      "title": "Neither proposed embedder API shape survives cross-instance re-entrancy, and the current embedder is direct evidence of why",
+      "issue_summary": "Both proposed embedder API shapes fail cross-instance re-entrancy (nested &mut World unformable; RefCell borrow_mut panics); the spectest runner's *mut Instance map and FuncRefHost's doc show re-entrancy is a live requirement.",
+      "alternatives_considered": [],
+      "decision": "Show the re-entrant signature in the plan, and reframe question 3 around it.\n\n(1) Replace the API sketch with one that survives nesting. The embedder-facing call keeps `&mut RuntimeWorld`, but the *engine-internal* call boundary does not: `world.invoke(id, name, args)` resolves and checks out (issue 2's `world.checkout`), releases the world borrow, and runs the callee against the token. A cross-instance call from inside that callee re-enters through a fresh checkout, not a nested borrow. Show the nested case in the code sample -- the current sample at plan:148-151 shows only the flat one, which is why the problem is invisible in it.\n(2) Add the argument the plan is missing, as the answer to question 4: `FuncRefHost` exists because the embedder owned the instance storage and the engine could only reach it by raw pointer (exec.rs:114-120). A world owns that storage, so the objection lapses and in-world linking is sound where an engine-side registry previously was not. That is what makes retiring `FuncRefHost` defensible -- not that no embedder needs it.\n(3) Correct the goal statement at plan:30-32. 'Ideally no `unsafe` on the cross-instance paths' should become the accurate claim: the cross-instance raw pointer moves from the embedder, where it is unauditable and its validity rests on a comment about single-threaded test execution, into one generation-checked primitive inside the engine. Keep `FuncRefHost` as the documented escape hatch for instances the embedder deliberately keeps outside the world, and say that is what it is for.",
+      "critic_acceptance_notes": "Agreed on all three items, and item (2) is the one I want to credit: it is a better argument than the one I made. I framed the world-owns-storage point as 'that may well be the right move'; the refiner is right that it is the *decisive* answer to open question 4 and that the plan currently does not make it. `FuncRefHost`'s objection at exec.rs:114-120 is conditional -- 'an engine-side registry could only manage it with a raw pointer into storage the embedder is free to move' -- and a `RuntimeWorld` that owns boxed instances in its own slots falsifies the antecedent. That is why in-world linking is sound where the embedder's `HashMap<String, *mut Instance>` (wast_test_runner.rs:269-282) is not, and it should be stated as the reason for retiring `FuncRefHost` rather than 'no embedder needs it'.\n\nItem (1) resolves what I actually raised: showing the nested call in the sample. The flat sample at plan:148-151 is why the problem was invisible, and a sample whose inner call re-enters through a fresh checkout rather than a nested borrow demonstrates the mechanism instead of asserting it.\n\nItem (3) is consistent with issue 2(3), which matters -- the goal statement at plan:30-32 and the safe",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:30-32",
+        "docs/RUNTIME_WORLD.md:141-159",
+        "docs/RUNTIME_WORLD.md:226-230",
+        "sf-nano-spectest/src/wast_test_runner.rs:266-290",
+        "sf-nano-spectest/src/wast_test_runner.rs:1396-1428",
+        "sf-nano-core/src/vm/interpreter/exec.rs:112-132",
+        "sf-nano-spectest/src/wast_test_runner.rs:269-282",
+        "docs/RUNTIME_WORLD.md:70-77",
+        "docs/RUNTIME_WORLD.md:141-151",
+        "docs/RUNTIME_WORLD.md:148-151"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 9,
+      "title": "`WorldSlot` carries generation state in two places, and generation wraparound is unaddressed",
+      "issue_summary": "WorldSlot::Vacant{next_generation} and generations: Vec<u32> duplicated the same fact, and generation wraparound was unaddressed for a high-churn workload.",
+      "alternatives_considered": [],
+      "decision": "Two edits to the sketch.\n\n(1) Make `generations: Vec<u32>` the single source of truth, indexed by slot, and reduce `Vacant` to a unit variant:\n    pub(crate) enum WorldSlot {\n        #[cfg(sf_jit)]   Jit(Box<Store>),\n        #[cfg(sf_interp)] Interp(Box<InterpInstance>),\n        Vacant,\n    }\nState that `world.store(id)` validates `id.generation` against `generations[id.index]`, so there is one place to read and one to bump.\n\n(2) Add a sentence on wraparound with a policy rather than a reassurance: a slot whose generation would wrap is retired instead of reused (saturate at `u32::MAX` and never hand the slot out again). That makes stale-id aliasing unreachable by construction, costs one comparison on the free path, and leaks at most one slot per 2^32 reuses of it -- which no workload in this tree approaches.",
+      "critic_acceptance_notes": "Agreed on both edits. Collapsing `Vacant` to a unit variant with `generations: Vec<u32>` as the single indexed source of truth removes the desync path, and naming the validation site ('`world.store(id)` validates `id.generation` against `generations[id.index]`') gives the invariant one place to read and one to bump.\n\nOn wraparound, the retire-on-saturate policy is a better answer than the reassurance I would have accepted. I was going to settle for 'not reachable in practice'; making stale-id aliasing unreachable *by construction* costs one comparison on the free path and removes the need to reason about the bound at all. Leaking one slot per 2^32 reuses of that slot is not a cost worth weighing against it.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:68-84",
+        "docs/RUNTIME_WORLD.md:58-61",
+        "docs/RUNTIME_WORLD.md:96-102"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": "theme-unsafe-claim",
+      "title": "Honest restatement of the plan's safety claim (converged from issues 2, 3, 8)",
+      "issue_summary": "The plan asserted 'no unsafe at any consumer' while listing the enabling mechanism as unresolved.",
+      "alternatives_considered": [
+        "Keep the absolute no-unsafe claim",
+        "Restate as containment"
+      ],
+      "decision": "The plan's safety claim is restated once: the design collapses ~19 unaudited *mut Store derefs into one audited checkout primitive (world.checkout(id) -> InstanceToken with bounds+generation check, borrow released at the call boundary, re-entry takes a fresh checkout) rather than eliminating unsafe outright. That containment is the design's main win and survives accurate statement.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md",
+        "sf-nano-core/src/vm/interpreter/exec.rs:1873-1888"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 4,
+      "title": "A canonical global funcaddr turns the interpreter's native call_indirect fast path from a trap into a silent wrong-function call",
+      "issue_summary": "A canonical global funcaddr is a small untagged integer that passes the interpreter fast paths' guards and silently dispatches the wrong local function (or wrong import by index) \u2014 via native call_indirect handlers, and via Op::CallRef's operand-slot path which has no type check; unbounded indirect_info read on the generated path.",
+      "alternatives_considered": [
+        "Table-scoped invariant with translation at table.set (withdrawn: operand slots cross instances outside tables)",
+        "Translation at the two Rust consumers (dead: three generated-assembly handlers never reach exec_ins)",
+        "Read-side translation to a minted local index (dead: indirect_info's raw base is captured into EnterState; growth dangles the running chain's pointer)"
+      ],
+      "decision": "Provenance lives in the encoding: a local funcref is untagged with a local-index payload; a foreign funcref is tagged with a world-funcaddr payload, and the tag MUST sit in the low 32 bits (TARGET32-style, bits 27-29 with 30-31 free) because the JIT's by-handle dispatch loads the ref slot as U32 and bounds-checks against function_views_len, making any tag above bit 32 invisible to it. Amendments: (1) the invariant is two-directional \u2014 a local funcref escaping to another instance must be retagged at the transfer boundary (model on exec.rs:1069-1076, :950-958, :1576-1595, localize_exception_field :1605-1614) or the receiver misreads it as its own local index; (2) on RV64, whose generated handler tests only the null sentinel, the indirect_info bound check is the ONLY guard rejecting tagged values \u2014 it is load-bearing there and must not be removed as redundant on backends where the high-bits test subsumes it. Side effect: function_views re-indexes by local index \u2014 every entry local by construction, INVALID dead-peer arm and ptr::eq identity deleted, per-call refresh drops from O(world) to O(local functions). The one perf-gate item: one added tag test before the view load in a block that already bounds-tests.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:50-51",
+        "docs/RUNTIME_WORLD.md:221-227",
+        "sf-nano-core/interp_gen/arm64.rs:639-663",
+        "sf-nano-core/interp_gen/x86_64.rs:658-683",
+        "sf-nano-core/src/vm/interpreter/exec.rs:1206-1218",
+        "sf-nano-core/src/vm/interpreter/exec.rs:942-976",
+        "sf-nano-core/src/vm/interpreter/exec.rs:171-179",
+        "sf-nano-core/src/vm/interpreter/exec.rs:3457-3527",
+        "sf-nano-core/src/vm/value.rs:14-20",
+        "sf-nano-core/interp_gen/x86_64.rs:666-676",
+        "sf-nano-core/interp_gen/arm64.rs:648-657",
+        "sf-nano-core/interp_gen/riscv.rs:1854-1861"
+      ],
+      "resolved_at_round": 3
+    },
+    {
+      "id": 10,
+      "title": "Runtime table-mutation ops are unlisted retag boundaries; JIT table.set is inline emitted code",
+      "issue_summary": "TableSet/TableGrow/TableFill/TableCopy/TableInit write raw operand slots into possibly-shared tables with no publication event; the InitExprs sibling arm stores eval_const output unpublished; the JIT's table.set is fully inline emitted code into an Rc-aliased element vec, contradicting the plan's 'no emitted instruction is affected'.",
+      "alternatives_considered": [],
+      "decision": "All six interpreter sites plus the JIT write path get retag-on-transfer. The JIT half is bounded by a NEW per-table static fact ('reachable by another instance' = imported or exported), computed at instantiation and PLUMBED TO LOWERING as its own array entry \u2014 TableDispatchMode::Generic is NOT a usable proxy (growable tables, non-null init, non-local elements, declared subtyping, or any module-wide table mutation all force Generic, which would push private-table writes onto the helper path in exactly the modules the perf gate measures). Private-table table.set keeps its inline store; only shared-table writes take the helper. The plan's 'no emitted instruction is affected' claim is corrected to 'no emitted instruction on the perf-gate benchmarks is affected'.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:367-392",
+        "docs/RUNTIME_WORLD.md:220",
+        "docs/RUNTIME_WORLD.md:421-427",
+        "docs/RUNTIME_WORLD.md:536-537",
+        "sf-nano-core/src/vm/interpreter/exec.rs:3252-3263",
+        "sf-nano-core/src/vm/interpreter/exec.rs:3272-3288",
+        "sf-nano-core/src/vm/interpreter/exec.rs:3289-3305",
+        "sf-nano-core/src/vm/interpreter/exec.rs:3306-3341",
+        "sf-nano-core/src/vm/interpreter/exec.rs:1064-1088",
+        "sf-nano-core/src/vm/jit/machine/lower_inst.rs:796-797",
+        "sf-nano-core/src/vm/jit/machine/lower_leaf_special.rs:831-873",
+        "sf-nano-core/src/vm/entities.rs:170-171"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 12,
+      "title": "NativeContext cannot reach a world-owned functions_revision; counter retired instead",
+      "issue_summary": "Moving functions_revision to the world would force either a second raw pointer in the hot context or an Rc back-reference; and after decision 4's function_views re-indexing the cross-instance cache the counter guards ceases to exist.",
+      "alternatives_considered": [],
+      "decision": "Retire function_registry_revision outright. Verified exhaustively by both sides: exactly two readers in the crate (context.rs:237 snapshot, :257 compare), both guarding the cache that decision 4 eliminates; module_revision (already checked at :256) covers the remaining local invalidation. NativeContext needs no world pointer.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:201-211",
+        "docs/RUNTIME_WORLD.md:104-106",
+        "docs/RUNTIME_WORLD.md:408-420",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:95-116",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:228-247",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:250-258",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:470-481",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:576-594",
+        "sf-nano-core/src/vm/jit/store.rs:30-43",
+        "sf-nano-core/src/vm/link.rs:49-81",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:116",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:236-237"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 13,
+      "title": "Migration steps 2/3 left the epoch teardown edge absent across a boundary",
+      "issue_summary": "Store::drop's registry-half deletion in step 2 uncompiles the only teardown bump of the counter, while the replacement was pinned to step 3 \u2014 exactly the forbidden intermediate state of decision 7.",
+      "alternatives_considered": [],
+      "decision": "Dissolved by deletion: fold decision 4's function_views re-indexing into step 2 alongside the FunctionRegistryEntry replacement (they are one change seen from two sides); with the cross-instance cache gone in the same step, no epoch edge is ever missing. Amends decision 7. SEQUENCING CONSTRAINT: step 2 also carries the build_call_ref_validate_block tag test, so step 2 cannot land green until issue 11's bit placement is resolved \u2014 this constraint goes in the migration text.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:483-484",
+        "docs/RUNTIME_WORLD.md:485-495",
+        "docs/RUNTIME_WORLD.md:201-211",
+        "docs/RUNTIME_WORLD.md:518-519",
+        "docs/RUNTIME_WORLD.md:110",
+        "sf-nano-core/src/vm/jit/store.rs:307-327",
+        "sf-nano-core/src/vm/link.rs:42-47",
+        "sf-nano-core/src/vm/link.rs:66-81",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:237",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:257",
+        "sf-nano-core/src/vm/jit/store.rs:307-314",
+        "sf-nano-core/src/vm/jit/store.rs:318-325"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 14,
+      "title": "Checkout token validated once but dereferenced for the whole call; freeing a checked-out slot representable",
+      "issue_summary": "Generation-matched-at-checkout is instantaneous while the token's raw pointer lives for the callee's execution; releasing the world borrow removes the static guarantee that the slot outlives it. The replaced mechanism re-validates on every use; today's &mut self invoke makes free-during-call unrepresentable.",
+      "alternatives_considered": [],
+      "decision": "The checkout is an RAII guard holding a per-slot in-use COUNT (not a flag: mutual recursion and self-recursion through a foreign hop legally check out the same slot repeatedly); world.free on a slot with a nonzero count errors. The containment claim becomes two invariants: (a) generation matched at checkout, (b) a checked-out slot cannot be freed. RECORDED REQUIREMENT: the guard-page trap path redirects the signal frame's PC to a normal error return (trap_signal.rs:22-27) so every intervening Rust frame returns normally and Drop runs \u2014 RAII soundness depends on this trap-mechanism property; if the redirect is ever changed to jump past frames, checkout counts leak silently. This must be stated as a requirement in the plan.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:45-51",
+        "docs/RUNTIME_WORLD.md:139-156",
+        "docs/RUNTIME_WORLD.md:76-80",
+        "docs/RUNTIME_WORLD.md:113-119",
+        "docs/RUNTIME_WORLD.md:132-137",
+        "docs/RUNTIME_WORLD.md:258-266",
+        "docs/RUNTIME_WORLD.md:273-281",
+        "docs/RUNTIME_WORLD.md:523-528",
+        "sf-nano-core/src/vm/instance.rs:233-245",
+        "sf-nano-core/src/vm/jit/store.rs:240-256",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:606-615",
+        "docs/RUNTIME_WORLD.md:150-153"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 15,
+      "title": "The world sketch drops LinkRegistry's SIMD arena",
+      "issue_summary": "LinkRegistry has three arenas (functions, refs, simd); RuntimeWorld claimed to subsume the type but had no home for the v128 payload arena, and 'untagged means local function index' was unscoped against raw v128 slots (untagged non-RefHandle integers).",
+      "alternatives_considered": [],
+      "decision": "The SIMD arena is homed in the RuntimeWorld sketch; the untagged-payload rule is explicitly scoped to reference-typed slots. The arena's append-only linear-scan-dedup growth with no reclamation is inherited and filed separately (fail-loudly-at-ceiling shape) alongside the RV64 note.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:66-70",
+        "docs/RUNTIME_WORLD.md:96-108",
+        "docs/RUNTIME_WORLD.md:283-288",
+        "sf-nano-core/src/vm/link.rs:198-205",
+        "sf-nano-core/src/vm/link.rs:85-136",
+        "sf-nano-core/src/vm/link.rs:274-298",
+        "sf-nano-core/src/vm/jit/store.rs:34-35",
+        "sf-nano-core/src/vm/jit/store.rs:292-304",
+        "sf-nano-core/src/vm/jit/instance.rs:854-860",
+        "sf-nano-core/src/vm/jit/value_encoding.rs:127-146",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:282-292",
+        "sf-nano-core/src/vm/link.rs:85-94"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 16,
+      "title": "Pooled-index overflow masks rather than fails; ceilings scoped honestly",
+      "issue_summary": "The escapable-set filter bounds only the funcaddr space; pooled entries are minted per operation (one per exception, one per escaping GC object, no dedup, never reclaimed), and from_pool_index silently masks at 2^27 on 32-bit, aliasing entry 0.",
+      "alternatives_considered": [],
+      "decision": "The plan's ceiling sentence is scoped: the escapable-set bound applies to the function address space only; the pooled arena's real bound is per-operation minting with no reclamation. The silent masking at the ceiling is filed separately with the same fail-loudly fix shape as the SIMD arena and RV64 items.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:429-436",
+        "sf-nano-core/src/vm/value.rs:21-38",
+        "sf-nano-core/src/vm/value.rs:82-97",
+        "sf-nano-core/src/vm/link.rs:184-196",
+        "sf-nano-core/src/vm/jit/store.rs:258-285",
+        "sf-nano-core/src/vm/jit/store.rs:315-317",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:144",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:177",
+        "sf-nano-core/src/vm/interpreter/exec.rs:1646-1647",
+        "sf-nano-core/src/vm/interpreter/exec.rs:1694-1695",
+        "sf-nano-core/src/vm/value.rs:86-89",
+        "sf-nano-core/src/vm/value.rs:95-97"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 11,
+      "title": "Foreign-funcref provenance: disjoint-range encoding replaces the tag bit",
+      "issue_summary": "The public linking API hands out provenance-free handles, and the bits-30-31 tag placement was arithmetically unsound: 32-bit payload_mask() (bits 0..27) strips it (silent wrong-function via function_entry_for_handle), and the TARGET32 wire round-trip masks (1<<28)-1 in both directions so the tag never reaches generated code.",
+      "alternatives_considered": [
+        "Tag at bits 30-31 (refuted: stripped by 32-bit payload mask and TARGET32 round trip)",
+        "Tag below bit 27 (withdrawn by critic: spends pooled payload width to buy what a comparison provides free)",
+        "is_funcaddr() predicate + typed accessors (superseded: no predicate changes meaning under the range scheme)"
+      ],
+      "decision": "Disjoint-range encoding, no provenance bit: FUNCADDR_TOP = (1<<28)-2; local funcrefs allocate upward from 0, foreign funcaddrs encode as FUNCADDR_TOP - funcaddr downward. Every value <= 2^28-2 passes all four masks as identity (64-bit payload (1<<60)-1; 32-bit payload (1<<28)-1; TARGET32 encode/decode (1<<28)-1). is_special() stays false at both widths so is_pooled()/is_host()/pooled_index() keep their meanings (each gates on is_special() first; on 32-bit a funcref >= 2^27 sets the pool_payload_tag bit harmlessly for exactly that reason - record this). Discriminator = the existing unsigned Ge bounds compare; JIT change is re-targeting its failure edge from trap_invalid_ref to the runtime helper at lower_module.rs:2084-2101 (edge plumbing with carried args, not one word); interpreter's indirect_info bound check IS the provenance test (built (0..funcs.len())). AMENDMENTS: (1) the plan's RV64-uniquely-exposed paragraph is rewritten - x86_64 (shr rdx,32/jnz) and arm64 (lsr #32/cbnz) high-bits tests are blind to both schemes, so ALL THREE backends depend equally on the new bound check; without it the value flows unbounded into info + fi*24. (2) Drop the false null-sentinel-adjacency rationale for reserving (1<<28)-1 (null is u32::MAX, far above; keep as plain guard rail). (3) Issue 13's sequencing dependency is discharged: the step-2 tag test is withdrawn, not blocked. Cost: one shared 2^28 ceiling across both ranges, loud failure at exhaustion against the largest live module's function count.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:341-346",
+        "docs/RUNTIME_WORLD.md:354-365",
+        "docs/RUNTIME_WORLD.md:319-322",
+        "sf-nano-core/src/vm/instance.rs:388-392",
+        "sf-nano-core/src/vm/jit/instance.rs:1251",
+        "sf-nano-spectest/src/wast_test_runner.rs:1501-1522",
+        "sf-nano-core/src/vm/jit/instance.rs:861-867",
+        "sf-nano-core/src/vm/jit/store.rs:240-256",
+        "sf-nano-core/src/vm/value.rs:14-19",
+        "sf-nano-core/src/vm/value.rs:124-135",
+        "sf-nano-core/src/vm/interpreter/exec.rs:1572-1575",
+        "sf-nano-spectest/src/wast_test_runner.rs:1509-1520"
+      ],
+      "resolved_at_round": 3
+    },
+    {
+      "id": 17,
+      "title": "World reachability: state split \u2014 arenas stay Rc side-objects, only the instance table is world-owned",
+      "issue_summary": "RuntimeWorld as sketched owned both the instances and the arenas, but the ~13 GC runtime-helper sites (and the interpreter's pure-Rust ref-type check) sit below generated frames with only &Store/&mut self in scope \u2014 no path to the world, and the decision-12 paragraph foreclosed both access routes; an Rc back-reference would additionally be silently unsound (a &mut Store derived from inside world.slots overlapping a RefCell borrow the cell never sees).",
+      "alternatives_considered": [],
+      "decision": "STATE SPLIT. The ref arena, function address space, and SIMD arena keep the LinkRegistry shape \u2014 Rc-shared, cloned into every Store and InterpInstance, owning no instances \u2014 with entries holding InstanceId instead of *mut Store (the point, independent of arena location). Only the instance table is world-owned, reached via InstanceTable(Rc<...>) with one operation: checkout(&self, id) -> Option<InstanceToken>, callable from the &Store the sites already hold. Soundness rests on DISJOINTNESS, stated explicitly: Ref/RefMut<Vec<WorldSlot>> cover the Vec buffer (discriminants + Box pointers) while instance bodies are separate heap allocations, so a live &mut Store from ctx.store never overlaps the table borrow. Consequences recorded: checkout obtains the pointer WITHOUT forming a reference to the pointee (&raw const/mut **b); Vec<Box<Store>> must never be flattened to Vec<Store> (that one change reintroduces the UB). AMENDMENT (A): the safety invariant lives on the TOKEN, not the table \u2014 the token holds a raw pointer, and materializing &Store/&mut Store from it is scoped, must not span a call, and must not overlap another materialization of the same slot (two live tokens for one slot is a REQUIRED state under decision 14's recursion count; do_struct_set's block-scoping at ops.rs:634-652 is today's load-bearing example; do_array_new_default's whole-body &mut Store is the anti-pattern shape). The table API additionally never yields references \u2014 an API rule, not the safety property. free's in_use check protects only the slot being dropped. Concession recorded: the Rc survives; what dies is raw-pointer identity, the Drop scan, and the poisoning contract. Decision 12's paragraph narrows to the retired counter.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:250-251",
+        "docs/RUNTIME_WORLD.md:113-128",
+        "docs/RUNTIME_WORLD.md:167-177",
+        "docs/RUNTIME_WORLD.md:192-194",
+        "docs/RUNTIME_WORLD.md:269-281",
+        "docs/RUNTIME_WORLD.md:728-736",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:95-131",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:28-40",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:582-597",
+        "sf-nano-core/src/vm/jit/store.rs:30-36",
+        "sf-nano-core/src/vm/jit/store.rs:287-290",
+        "sf-nano-core/src/vm/link.rs:198-205"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 18,
+      "title": "Mixed-engine worlds rejected at instantiate; engine-neutral resolution typing fixed",
+      "issue_summary": "A unified funcaddr space makes a cross-engine reference look callable while every by-handle consumer is JIT-typed end to end; the plan deleted both mechanisms serving cross-engine calls today and booked unification as a one-clause gain; world.store(id) -> Option<&Store> is JIT-only-typed and cannot address WorldSlot::Interp.",
+      "alternatives_considered": [],
+      "decision": "Reject mixed Jit/Interp worlds at instantiate (resolution iii), with cross-engine funcaddr callability named as follow-up work (resolution ii). Cost verified zero: the spectest harness builds every registry uniform-tier (one Engine, one LinkRegistry, single tier), and today's mixed case only ever worked through FuncRefHost \u2014 which survives, gaining a second concrete justification. Correction adopted by the critic: the mixed capability is NOT new (from_module_with_registry already has arms for both tiers); what is new is the unified space making it look callable. The world.store typing defect is fixed regardless: the engine-neutral seam's primitive cannot have a JIT-only return type while WorldSlot::Interp exists.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:105-111",
+        "docs/RUNTIME_WORLD.md:130",
+        "docs/RUNTIME_WORLD.md:134",
+        "docs/RUNTIME_WORLD.md:152-153",
+        "docs/RUNTIME_WORLD.md:302-303",
+        "docs/RUNTIME_WORLD.md:308-310",
+        "docs/RUNTIME_WORLD.md:316-317",
+        "docs/RUNTIME_WORLD.md:319-327",
+        "docs/RUNTIME_WORLD.md:658-661",
+        "docs/RUNTIME_WORLD.md:756-757",
+        "sf-nano-core/src/vm/link.rs:9-12",
+        "sf-nano-core/src/vm/link.rs:26-29"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 19,
+      "title": "Embedder linking boundary: function_handle_at becomes a conversion site minting the absolute form",
+      "issue_summary": "The structural retag rule had no arm for the embedder boundary: function_handle_at would mint the local form under the rule-as-written and the embedder installs it into another instance's imports where it reads as the receiver's local index \u2014 a regression, since today's handle is an absolute shared-registry index. The arm was proposed in issue 11 round 1 and lost between discussion and document.",
+      "alternatives_considered": [],
+      "decision": "The embedder boundary is the FIFTH storage class of the retag rule, not an exception. AMENDMENT: this is a conversion SITE, not a doc change \u2014 module.function_handles[] holds MIXED forms by design (ref.func via do_ref_func, const-expr resolution, and element-segment materialization must yield the local form; the public function_handle_at must look up or mint the world funcaddr for the local index at jit/instance.rs:1252). Import binding (jit/instance.rs:861-867) genuinely needs no change \u2014 the conversion is one-directional. Public-API behavior change recorded; a spectest-shaped round-trip test (export handle -> import into second instance -> call) is added, whose absence is why this survived a full pass. Process note recorded: twice this review, a rule stated over engine-internal structure lacked an arm for the boundary OUT of it \u2014 a standing check for the remaining rules.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:417-424",
+        "docs/RUNTIME_WORLD.md:499-518",
+        "docs/RUNTIME_WORLD.md:506-509",
+        "docs/RUNTIME_WORLD.md:512-514",
+        "docs/RUNTIME_WORLD.md:520-534",
+        "sf-nano-core/src/vm/instance.rs:387-397",
+        "sf-nano-core/src/vm/imports.rs:59-64",
+        "sf-nano-core/src/vm/imports.rs:210-221",
+        "sf-nano-core/src/vm/jit/store.rs:224-238",
+        "sf-nano-spectest/src/wast_test_runner.rs:1501-1522",
+        "docs/RUNTIME_WORLD.md:506-518",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:255-261"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 22,
+      "title": "Instantiation window: id reserved up front, slot vacant until init completes",
+      "issue_summary": "Registration publishes every local function before the fallible init closure, making the slot checkout-able while &mut store is held across the start function, with re-entry reachable through genuinely-shared imported table element vectors; the design's token invariant named this a violation while the audit scope (GC sites only) could not find it. Aliasing pre-existing; violation new.",
+      "alternatives_considered": [],
+      "decision": "Reserve the InstanceId up front but leave the slot Vacant until init_result returns: the reachable window and the materialized-&mut window become disjoint by construction. Behavior change recorded: re-entry into a still-initializing instance traps (checkout finds Vacant). VERIFIED against the suite: only linking.wast, linking3.wast, ref_func.wast combine (start with call_indirect, none self-reference through the world during init. The audit scope is re-derived from the invariant: every site that materializes a reference from a token, not the GC subset. NOTE from issue 24: a self-dispatch reaching checkout during init depends on the owner==self primitive being checked BEFORE checkout.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:263-268",
+        "docs/RUNTIME_WORLD.md:284-292",
+        "docs/RUNTIME_WORLD.md:45-61",
+        "docs/RUNTIME_WORLD.md:136",
+        "sf-nano-core/src/vm/jit/instance.rs:854-867",
+        "sf-nano-core/src/vm/jit/instance.rs:907-938",
+        "sf-nano-core/src/vm/jit/instance.rs:972-976",
+        "sf-nano-core/src/vm/jit/instance.rs:528-533",
+        "sf-nano-core/src/vm/entities.rs:170-171",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:192",
+        "sf-nano-core/src/vm/jit/runtime/native_eval.rs:46-60",
+        "docs/RUNTIME_WORLD.md:290-292"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 23,
+      "title": "Failed instantiation: slot stays occupied, error carries InstanceId (joint with 21)",
+      "issue_summary": "Failed instantiation had no defined slot ownership; the spectest harness retains partial instances whose published funcrefs must stay callable after a trap; freeing breaks that, stranding compounds the leak; interp diverges by discarding its partial.",
+      "alternatives_considered": [],
+      "decision": "The slot stays occupied on failure and the error carries an InstanceId instead of a JitInstance \u2014 engine-neutral (removes the vm/instance.rs:136 divergence and genuinely resolves the cfg(sf_jit) error-type asymmetry), implementable under a world (a by-value JitInstance is not, the Box lives in a slot), and POSITIVELY CONFIRMED by linking.wast:592-611: a module writes its $f into an imported table, traps in start, and the suite then invokes through that table expecting 0xdead \u2014 occupied-slot-with-unbumped-generation preserves this by construction. DEPENDENCY stated both ways: occupied-on-failure is only safe because issue 21's fix makes world drop reclaim slots; without it, occupied means stranded. Public API change with its own migration step.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:529-532",
+        "docs/RUNTIME_WORLD.md:989-990",
+        "sf-nano-core/src/vm/jit/instance.rs:981-987",
+        "sf-nano-core/src/vm/jit/instance.rs:52-58",
+        "sf-nano-core/src/vm/jit/instance.rs:861-867",
+        "sf-nano-core/src/vm/instance.rs:114-120",
+        "sf-nano-core/src/vm/instance.rs:136",
+        "sf-nano-spectest/src/wast_test_runner.rs:685-688",
+        "sf-nano-spectest/src/wast_test_runner.rs:1369-1373",
+        "sf-nano-spectest/src/wast_test_runner.rs:1436-1444"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 21,
+      "title": "InstanceTable ownership cycle: Weak back-references, with the tracked-alloc prerequisite",
+      "issue_summary": "The state split's Rc clone into every Store closed an ownership cycle (table -> slots -> Box<Store> -> table clone; strong count N+1, world drop never reaches zero) \u2014 today's acyclicity is bought by the non-owning *mut pointers. First fix rejected: under memprof, tracked_alloc's transparent Rc wrapper exports no downgrade, inner is private, and re-exported Weak::upgrade yields the inner type; the all-features correctness gate compiles memprof, so a hard CI failure.",
+      "alternatives_considered": [],
+      "decision": "Weak back-references (owner outside the shared structure, back-refs non-owning \u2014 restoring exactly today's acyclicity property); checkout upgrades, failure = None indistinguishable from generation mismatch. PREREQUISITE as its own migration item ORDERED BEFORE the world work: add downgrade to the tracked-alloc wrapper (verified: inner::Rc = alloc::rc::Rc so inner::Rc::downgrade yields the re-exported Weak and type-checks). Call-site constraints, silent if missed: associated-function syntax Rc::downgrade(&x) (compiles against both cfg arms); never name alloc::rc::Weak directly. Accounting is forced, not chosen: downgrade must not release, upgrade retains via from_alloc_rc, and a test asserts a downgrade/upgrade/drop cycle leaves live bytes unchanged (an asymmetry surfaces as a slow leak blamed on the world). Caveat: every upgrade captures a stack under memprof \u2014 dev aid, never a measurement. Tripwire recorded: Weak->Rc is the one edit that silently reintroduces the leak.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:101-105",
+        "docs/RUNTIME_WORLD.md:116-123",
+        "docs/RUNTIME_WORLD.md:128-134",
+        "docs/RUNTIME_WORLD.md:144-156",
+        "docs/RUNTIME_WORLD.md:158-162",
+        "docs/RUNTIME_WORLD.md:192-195",
+        "docs/RUNTIME_WORLD.md:91-95",
+        "docs/RUNTIME_WORLD.md:527-528",
+        "tools/tracked-alloc/src/lib.rs:3838-3840",
+        "tools/tracked-alloc/src/lib.rs:20-21",
+        "sf-nano-core/src/vm/jit/instance.rs:47-50",
+        "sf-nano-core/src/vm/jit/store.rs:30-36"
+      ],
+      "resolved_at_round": 3
+    },
+    {
+      "id": 24,
+      "title": "Shared-table self-dispatch: generic-path regression, benchmark as migration prerequisite",
+      "issue_summary": "The absolute-form-always rule puts an instance's own functions in its exported table as funcaddr-range values, so self-dispatch fails the value < function_views_len discriminator and leaves inline dispatch. Original mechanism claim corrected by the refiner and verified by the critic: the fixed-call tables were never in play for exported tables (refresh_fixed_call_table_views skips non-FixedLocalOnly at context.rs:571-574; exported tables cannot be FixedLocalOnly); the regression is the same size on the GENERIC path (Ne(lane2, LOCAL) -> helper vs local_prepare inline, lower_module.rs:2144-2160, where ptr::eq currently sets kind=LOCAL for self).",
+      "alternatives_considered": [],
+      "decision": "A shared-table indirect-call benchmark is a migration PREREQUISITE: no benchmark in the suite exports a table, so the perf gate structurally cannot see this shape \u2014 'the gate stays flat' is true and uninformative until it can. The block-allocation optimization (per-instance contiguous funcaddr block + register range test) is named as a measured decision with its real cost (the escapable-set filter breaks offset-equals-local-index, so it needs a per-instance index map). Two options explicitly rejected: keeping the local form in exported tables (reintroduces the misdispatch the rule prevents) and re-localizing on every table read (arena lookup on the load path). The owner==self primitive is defined WITH its ordering constraint \u2014 before checkout, arena-only \u2014 or issue 22's vacant-window fix silently stops working. plan:826-828 needs no qualification.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:683-685",
+        "docs/RUNTIME_WORLD.md:263-268",
+        "docs/RUNTIME_WORLD.md:826-828",
+        "docs/RUNTIME_WORLD.md:838-851",
+        "docs/RUNTIME_WORLD.md:418-422",
+        "docs/RUNTIME_WORLD.md:914-921",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:576-593",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:618-625",
+        "sf-nano-spectest/target/webassembly-testsuite/linking.wast:1-13",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:571-574",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:581-587",
+        "sf-nano-core/src/vm/jit/runtime/context.rs:498-503"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 20,
+      "title": "Host boundary funcref crossings: five crossings enumerated by what leaves the structure, with self_id",
+      "issue_summary": "The host-call marshalling boundary was an unlisted retag site in both directions on both engines (hosts receive the local form and can return funcrefs written straight into callee slots, contradicting 'one-directional'); the owner==self operation required a self_id neither engine has; the interpreter side cannot localize in the conversion functions (free functions; HostDispatch std-only; bind builds the closure before the InterpInstance exists); and FuncRefHost::invoke was a fifth crossing that never forms a Value (raw frame slots to the embedder, reached from CallRef/CallIndirect outside call_host).",
+      "alternatives_considered": [
+        "Clause-per-API additions to the checklist (rejected: enumerating by representation is how crossings get missed)",
+        "Localizing in the HostDispatch closure (structurally impossible: built from &Module before the instance exists)"
+      ],
+      "decision": "The rule is stated by WHAT CROSSES \u2014 every place a value leaves the engine's storage, whatever it is carried in (Value or raw slot). Five crossings: (1) function_handle_at (conversion site, decision 19); (2) JIT host-call marshalling (match arm in the *_in_store conversions); (3) interpreter host calls \u2014 localization moves into call_host, which holds &mut self and destructures disjointly, localizing raw u64 slots so the HostDispatch boundary stays byte-identical; (4) embedder-passed args via invoke/call &[Value]; (5) FuncRefHost::invoke \u2014 raw-slot treatment like call_host; its own doc comment states the invariant and is quoted, not paraphrased, in the plan. self_id: InstanceId on both engines is named as THE replacement for raw-pointer identity (self as *mut Store, ptr::eq, published's prose), carried in InstanceHandle { table: Weak<...>, self_id }. The stale interp_imports.rs:10-13 header is fixed as part of the work. Process note sharpened: enumerating by Value was still enumerating by representation.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:683-688",
+        "docs/RUNTIME_WORLD.md:716-722",
+        "docs/RUNTIME_WORLD.md:736-756",
+        "docs/RUNTIME_WORLD.md:758-767",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:260-275",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:292",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:337-347",
+        "sf-nano-core/src/vm/jit/value_encoding.rs:144",
+        "sf-nano-core/src/vm/jit/value_encoding.rs:161-170",
+        "sf-nano-core/src/vm/jit/runtime/native_eval.rs:40-43",
+        "sf-nano-core/src/vm/instance/interp_imports.rs:279-290",
+        "sf-nano-core/src/vm/instance/interp_imports.rs:10-13"
+      ],
+      "resolved_at_round": 3
+    },
+    {
+      "id": 25,
+      "title": "The retag partition is inverted: local form lives in a closed, property-stated set; everything else holds absolute",
+      "issue_summary": "The partition minted by producing operation, not destination: element-segment materialization writes local forms into IMPORTED tables (no import filter at jit/instance.rs:907-925, unlike :881-883) and const-exprs into exported global cells \u2014 linking.wast:592-607 becomes a signature-compatible silent misdispatch (assertions at :609/:610: returns 104, the 'h' of a data segment, instead of 0xdead) in a test that passes today and that migration step 8 rests on. Fifth failure of enumerate-the-absolute-containers.",
+      "alternatives_considered": [],
+      "decision": "INVERTED PARTITION, stated by property: a reference MAY be local only in (1) a reference-typed operand/frame slot, or (2) a container statically proven unreachable by any other instance (private tables AND private globals \u2014 statically decidable; symmetric); everywhere else, ALWAYS absolute. 'May', not 'is': foreign references have no local form, so operand slots legitimately hold absolute values. Rationale: default-absolute fails safe (an unnecessary localize), default-local fails unsafe (silent misdispatch) \u2014 a rule whose omissions cost performance survives incompleteness. Carve-out: module.function_handles[] is a LOOKUP TABLE holding mixed forms by design (decision 19), not a container the rule ranges over. Direction flip recorded: passive element segments hold absolute, so table.init into a private table becomes an inbound localize. The per-container static fact is needed at INSTANTIATION (before lowering exists; derivable from the parsed module). The interpreter ALREADY computes the fact and implements the exported-global arm (exec.rs:806-826, :876, :3141-3155) \u2014 the JIT const-expr half is a divergence gap, same shape as the element arms; riders: re-establish the interp arm on the new mechanism when `published` dies, and key the fact on is_import() || exported, not 'has a shared cell'. linking.wast:592-611 (assertions :609-:610) is named as a regression case in the step that could introduce the defect.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:799-808",
+        "docs/RUNTIME_WORLD.md:775-778",
+        "docs/RUNTIME_WORLD.md:894-899",
+        "docs/RUNTIME_WORLD.md:1283-1290",
+        "sf-nano-core/src/vm/jit/instance.rs:1444-1458",
+        "sf-nano-core/src/vm/jit/instance.rs:907-925",
+        "sf-nano-core/src/vm/jit/instance.rs:881-883",
+        "sf-nano-core/src/vm/jit/instance.rs:873-878",
+        "sf-nano-core/src/vm/jit/instance.rs:745-749",
+        "sf-nano-core/src/vm/jit/expr_eval.rs:20-28",
+        "sf-nano-spectest/target/webassembly-testsuite/linking.wast:578-611",
+        "sf-nano-spectest/target/webassembly-testsuite/linking.wast:105"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 26,
+      "title": "Shared mutable funcref globals: per-global static fact with a type guard",
+      "issue_summary": "Named by the partition, then never returned to \u2014 no crossing, no checklist site, no mechanism; import binds the exporter's GlobalCell and the JIT's global.set is fully inline on every width path; a local-form funcref written into an exported global is read directly by a peer.",
+      "alternatives_considered": [],
+      "decision": "Per-global static fact `reachable && funcref-typed` (the type guard matters: globals are per-global typed, so without it the helper cost lands on every shared i32 global), plumbed at instantiation, routing only qualifying global.set through the retag helper. Private funcref globals join the local set (decision 25's property form). The static analysis already exists on the interpreter (exec.rs:806-826); the read side pays decision 24's self-dispatch shape and is covered by the generalized benchmark.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:775-778",
+        "docs/RUNTIME_WORLD.md:818-867",
+        "docs/RUNTIME_WORLD.md:894-911",
+        "docs/RUNTIME_WORLD.md:929-948",
+        "sf-nano-core/src/vm/entities.rs:351-378",
+        "sf-nano-core/src/vm/jit/instance.rs:745-749",
+        "sf-nano-core/src/vm/interpreter/exec.rs:3141-3155",
+        "sf-nano-core/src/vm/jit/machine/lower_leaf_special.rs:602-651",
+        "sf-nano-core/src/vm/jit/machine/lower_i64_gp64.rs:131-137",
+        "sf-nano-spectest/target/webassembly-testsuite/linking.wast:105",
+        "sf-nano-spectest/target/webassembly-testsuite/linking.wast:126",
+        "sf-nano-core/src/vm/entities.rs:351-356"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 27,
+      "title": "GC heap fields settle by derivation: dynamic reachability means no GC field is ever statically private",
+      "issue_summary": "GC heap fields and array elements were an unlisted storage class; do_struct_set decodes with the writer's store and stores into the owner's heap, do_struct_get returns into the reader's frame; no spec test passes GC objects between instances.",
+      "alternatives_considered": [],
+      "decision": "Settled by decision 25's property form BY DERIVATION: a GC object's reachability is dynamic, so no GC field can ever be statically proven private \u2014 GC fields hold the absolute form always, as a consequence rather than a list entry. The encoding limit is promoted into the Encodings section: the ranges distinguish local from absolute, but 'local' is instance-relative \u2014 it never says WHOSE \u2014 which is why the absolute form must begin at the container boundary rather than being recoverable at the read. A cross-instance GC test is added that asserts the returned VALUE, not absence of a trap (the failure mode is signature-compatible silent misdispatch). Gate-blindness now spans three containers; migration step 5's benchmark generalizes to the SHAPE: absolute-form funcref read, then called.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:775-778",
+        "docs/RUNTIME_WORLD.md:818-867",
+        "docs/RUNTIME_WORLD.md:894-911",
+        "docs/RUNTIME_WORLD.md:900-904",
+        "docs/RUNTIME_WORLD.md:374-378",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:582-597",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:599-626",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:628-658",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:57-68",
+        "sf-nano-core/src/vm/jit/gc_heap.rs:28-30",
+        "sf-nano-core/src/module/type_defs.rs:292-295",
+        "sf-nano-spectest/target/webassembly-testsuite/array_fill.wast:29"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 28,
+      "title": "The sixth crossing closes structurally: owner-bound local form, Value = absolute, conversions keyed to the frame's owner",
+      "issue_summary": "Wasm-to-wasm cross-instance calls moved values permitted-local -> permitted-local with no forbidden container in the path (both endpoints clause-(1) containers): invoke_runtime_target reads/writes the CALLER's frame with the CALLEE's store (entry.rs:264-275, :337-347), harmless today only because the Ref arms ignore the store \u2014 which crossing 2 proposed to change, keyed to the wrong instance. Broadened: not Linked-only (host imports in another module hit the same lines); the interpreter half is NEW work (Linked becomes drivable). Created by the design, not pre-existing.",
+      "alternatives_considered": [],
+      "decision": "Clause (1) binds the permission to an OWNER: I's local form lives only where only I can see it. Enforcement invariant: a frame slot holds its owner's local form; a Value holds the ABSOLUTE form; absolutize/localize convert against THE STORE THAT OWNS THE FRAME being read or written \u2014 an argument the call site must pass, not always owner_store. The wasm-to-wasm call then needs no new conversion code (right store at the two entry.rs sites); native_eval's Linked arm correct under Value=absolute; crossings 1/2/4 collapse into the invariant. AMENDMENTS: (A) the conversion surface is FOUR functions with Ref arms (+1 composer), enumerated from value_encoding.rs with the count \u2014 value_to_machine_raw_in_store, try_machine_raw_to_value_in_store, value_to_raw_in_store (:124), try_raw_to_value_in_store (:182) \u2014 the omitted two ARE the public API's conversions (instance getters/setters incl. the unlisted funcref-global getter/setter crossing at jit/instance.rs:1097-1131); state the fix over 'the functions carrying a Ref arm'. (B) Value=absolute makes exception payloads and GC fields absolute BY REPRESENTATION (Vec<Value> in link.rs:34-40, gc_heap.rs:27-36) \u2014 independently confirming decision 27 and closing the JIT exception-payload question. (C) normalize_machine_raw_in_store composes correctly only by luck; give it a stated output form. EXHAUSTIVENESS: a value leaves the only-I-observe region by aliasing, control transfer, or engine escape \u2014 five fourth-channel candidates tried and refuted (shared Module refuted by value-ownership at jit/store.rs:30-31, jit/entities.rs:184; unwinding covered twice; no persistence; no ref-typed memory; arena residency = UNCONDITIONAL aliasing covered by Value=absolute, NOT by the tables/globals static fact \u2014 term sharpened). Same-instance direct calls verified untouched; same-instance indirect dispatch through an own exported table stacks the marshalling lookup on decision 24's regression \u2014 recorded into the benchmark's interpretation. Cost: one arena lookup per funcref-typed arg/result on a path already allocating Vec<Value>; no emitted instruction changes.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:787-794",
+        "docs/RUNTIME_WORLD.md:694-698",
+        "docs/RUNTIME_WORLD.md:909-928",
+        "docs/RUNTIME_WORLD.md:1041-1043",
+        "docs/RUNTIME_WORLD.md:526-527",
+        "docs/RUNTIME_WORLD.md:1267",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:162-169",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:192-193",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:260-275",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:309-321",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:337-347",
+        "sf-nano-core/src/vm/jit/value_encoding.rs:138-153"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 29,
+      "title": "Coverage prerequisites move to step 1: a baseline taken after the change has no baseline",
+      "issue_summary": "Step 5 was stated as a prerequisite ('before the encoding lands') but numbered after step 2 which introduces the cliff; the GC test was off by two from step 3's retag sites.",
+      "alternatives_considered": [],
+      "decision": "Both coverage items (shared-shape benchmark + cross-instance GC value-asserting test) move to STEP 1, run against the unmodified tree with results recorded, and the text names the gated steps (step 2's discriminator re-targeting; step 3's GC retag sites). The benchmark's reading is annotated as measuring TWO stacked costs on one shape \u2014 decision 24's dispatch regression plus decision 28's marshalling lookup \u2014 so the first regression reading is not attributed wholly to whichever change is under review.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:1439-1459",
+        "docs/RUNTIME_WORLD.md:1368-1388",
+        "docs/RUNTIME_WORLD.md:1408-1414",
+        "docs/RUNTIME_WORLD.md:1415-1423",
+        "docs/RUNTIME_WORLD.md:1176-1185",
+        "docs/RUNTIME_WORLD.md:1005-1020",
+        "docs/RUNTIME_WORLD.md:1207-1214",
+        "docs/RUNTIME_WORLD.md:1331-1340",
+        "sf-nano-core/src/vm/jit/machine/lower_module.rs:2084-2101",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:599-626",
+        "sf-nano-core/src/vm/jit/runtime/preserved/ops.rs:628-658",
+        "sf-nano-core/src/vm/jit/machine/lower_module.rs:596-601"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 30,
+      "title": "Directional vocabulary completed: absolutize/localize with type-signature discipline",
+      "issue_summary": "The document named only one direction (localize), so two crossings drifted into 'localize outbound' \u2014 a literal implementation no-ops on already-local values and ships the local form to the embedder.",
+      "alternatives_considered": [],
+      "decision": "absolutize is defined alongside localize; the rule reads 'absolutize outbound, localize inbound'; and both words carry a type signature: absolutize takes the store owning the frame being READ, localize the store owning the frame being WRITTEN \u2014 direction checkable by word, instance checkable by ARGUMENT (the discipline that would have caught issue 28 at the two entry.rs sites).",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:918-920",
+        "docs/RUNTIME_WORLD.md:929-942",
+        "docs/RUNTIME_WORLD.md:946-958",
+        "docs/RUNTIME_WORLD.md:960-963",
+        "docs/RUNTIME_WORLD.md:283-286",
+        "sf-nano-core/src/vm/interpreter/exec.rs:115-116",
+        "docs/RUNTIME_WORLD.md:938-941",
+        "docs/RUNTIME_WORLD.md:951-953",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:260-275",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:337-347"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 32,
+      "title": "Caller-less raw table accessors deleted early; the crossing audit becomes two-armed",
+      "issue_summary": "table_elements_at/replace_table_elements_at were an unlisted seventh crossing (raw &[RefHandle] in/out, no conversion) with no callers anywhere in core/spectest/cli.",
+      "alternatives_considered": [],
+      "decision": "DELETE both, scheduled in step 3 (not step 9): the obligation is live from step 3, the functions are dead, so early deletion is free and honors 'no intermediate state missing an invalidator'. The step-3 audit becomes TWO-ARMED, both greps: (i) every pub fn on Instance/JitInstance whose signature mentions RefHandle or Value \u2014 value crossings; (ii) every pub fn yielding a container or storage handle (TableInst, GlobalInst, ImportedTableState, ImportedGlobalState, &Store) \u2014 ALIASING crossings, where the static fact is decided; arm (ii) is the one that finds the issue-31 class (shared_table_state_at and store() mention neither RefHandle nor Value).",
+      "evidence": [
+        "sf-nano-core/src/vm/jit/instance.rs:1201-1206",
+        "sf-nano-core/src/vm/jit/instance.rs:1208-1233",
+        "docs/RUNTIME_WORLD.md:1080-1085",
+        "docs/RUNTIME_WORLD.md:720-725",
+        "docs/RUNTIME_WORLD.md:919-949",
+        "docs/RUNTIME_WORLD.md:1036-1044",
+        "sf-nano-core/src/vm/jit/instance.rs:1097-1131",
+        "sf-nano-core/src/vm/jit/instance.rs:1225-1231",
+        "sf-nano-spectest/src/wast_test_runner.rs:1464",
+        "sf-nano-spectest/src/wast_test_runner.rs:1594",
+        "sf-nano-core/src/vm/jit/instance.rs:1265-1289",
+        "sf-nano-core/src/vm/jit/instance.rs:1082-1088"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 33,
+      "title": "Stale step references fixed; steps named; the Drop precondition restated as a code property",
+      "issue_summary": "Five stale step cross-references survived the pass-6 renumbering; the dangerous one stated the Drop-deletion precondition by number, inviting a one-step-early deletion while the ref registry still held raw pointers.",
+      "alternatives_considered": [],
+      "decision": "The five references corrected; steps carry NAMES alongside numbers (a stale name is self-evidently wrong; a stale number silently points somewhere real); the Drop-deletion precondition is restated as a property of the code \u2014 impl Drop for Store is deletable when the ref registry no longer holds raw pointers \u2014 checkable by reading store.rs rather than by trusting a number.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:1427",
+        "docs/RUNTIME_WORLD.md:1444-1446",
+        "docs/RUNTIME_WORLD.md:1784",
+        "docs/RUNTIME_WORLD.md:1633",
+        "docs/RUNTIME_WORLD.md:1668-1670",
+        "docs/RUNTIME_WORLD.md:1671-1685",
+        "docs/RUNTIME_WORLD.md:1579-1582",
+        "docs/RUNTIME_WORLD.md:1686"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 34,
+      "title": "Total, range-conditional conversion primitives; the third declaration reconciled; the identity arm's load-bearing note",
+      "issue_summary": "absolutize had two signatures and was undefined on inputs its call sites hand it (most commonly null); localize's None arm was also unstated; a third localize declaration with a receiver lived in the InstanceHandle sketch.",
+      "alternatives_considered": [],
+      "decision": "Both primitives get total, range-conditional definitions returning values (identity outside the local range); the second local_index-taking signature is deleted; the third declaration in the InstanceHandle sketch is reconciled (or the arena-level primitive renamed apart from the conversion). RIDER, stated where the arm is defined: localize's local-range identity arm is FORCED by the encoding limit and is itself default-local \u2014 safe only because absolutize is total at every outbound crossing, so a missed absolutize degrades to silent misdispatch on the far side, not to a slow path. Outbound completeness is load-bearing.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:289-297",
+        "docs/RUNTIME_WORLD.md:299-303",
+        "docs/RUNTIME_WORLD.md:1045-1056",
+        "docs/RUNTIME_WORLD.md:839-842",
+        "docs/RUNTIME_WORLD.md:793-795",
+        "docs/RUNTIME_WORLD.md:752-763",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:260-275",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:337-347",
+        "docs/RUNTIME_WORLD.md:180-183",
+        "docs/RUNTIME_WORLD.md:720-731",
+        "docs/RUNTIME_WORLD.md:888-895"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 35,
+      "title": "Interpreter Linked calls: named follow-up with a named failure mode",
+      "issue_summary": "The interpreter's Linked marshalling was assigned to 'the step that makes them drivable' and no step did; it is a new interp-to-interp invoke path plus conversion obligation.",
+      "alternatives_considered": [],
+      "decision": "Follow-up rather than a numbered step, on decision 18's own reasoning; verified and recorded that nothing in the stage depends on it (the deletions rest on provenance from step 3, not on calls being drivable). RIDER: the deferred state is named \u2014 a foreign funcref in an interp world that type-tests as a function (the stated ref.test win) but cannot be called TRAPS WITH A STATED ERROR, the way mixed worlds are rejected at instantiate with a named error, rather than half-working (today's OpaqueInterpFunc fails test and call together; the design splits them).",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:1145-1149",
+        "docs/RUNTIME_WORLD.md:552-554",
+        "docs/RUNTIME_WORLD.md:1612-1725",
+        "docs/RUNTIME_WORLD.md:606-611",
+        "docs/RUNTIME_WORLD.md:1726",
+        "sf-nano-core/src/vm/instance/interp_imports.rs:116-119",
+        "sf-nano-core/src/vm/jit/runtime/runtime_call/entry.rs:184-245",
+        "docs/RUNTIME_WORLD.md:548-554",
+        "docs/RUNTIME_WORLD.md:575-579",
+        "sf-nano-core/src/vm/jit/gc_type_check.rs:43-51"
+      ],
+      "resolved_at_round": 2
+    },
+    {
+      "id": 31,
+      "title": "The static privacy fact becomes unfalsifiable through the crate's public API: accessor narrowing + stored per-container facts + maintained tripwire",
+      "issue_summary": "Clause (2)'s 'statically proven unreachable' was falsifiable through public API: not just shared_*_state_at (no export/import filter), but a second door \u2014 as_jit() -> store() (pub) -> Store::table/global -> clone_shared_elements/clone_shared_cell -> from_shared into a peer \u2014 already used out-of-crate; the interpreter's table_state_at/global_state_at bypass the wrapper entirely and the all-interp world is common under single-tier; TableInst carries no is_import so the fact cannot be re-derived at the accessor.",
+      "alternatives_considered": [
+        "Filter only the two shared_*_state_at functions (insufficient: the second door and the interp arm remain)",
+        "Scope the claim to 'the declared sharing API' (unavailable: a proof contingent on the embedder declining a pub call is a convention \u2014 clause 2 would downgrade from proven to assumed, conceding fail-safe-by-construction)"
+      ],
+      "decision": "The sharing accessors' precondition BECOMES the stored static fact (return Some iff reachable); JitInstance::store/store_mut go pub(crate), with the single out-of-crate caller (verified across ALL workspace members: one hit, wast_test_runner.rs:2458) served by JitInstance::function_has_native_code(idx) -> Option<bool> \u2014 the site has THREE arms (Local asserts, Host and Linked panic) and None absorbs Host/Linked/out-of-range; diagnostic is slightly blunter, a fair price, not an improvement. The interp accessors are filtered identically (no out-of-crate callers; the CLI's as_interp is statistics only). The fact is STORED per container on both engines (table_reachable/global_reachable beside table_dispatch_modes; the interpreter completes the computation it half-does at exec.rs:819-826, keyed is_import() || exported per decision 26's rider). The claim is restated with an ONGOING TRIPWIRE beside Vec-never-flattened and Weak-never-Rc: no pub API yields an aliasing handle to a container the stored fact marks private \u2014 a property of the audited accessor surface, maintained by extending issue 32's mechanical grep to entity-valued accessors; unfalsifiable through the crate's public API as it stands, not in principle. ORDERING RIDER: the narrowing, the accessor filters, and function_has_native_code land in STEP 3 with the fact itself \u2014 they are prerequisites for clause (2) being true, not consequences; leaving store() pub through steps 3-8 is the intermediate state decision 13 forbids.",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md:817-819",
+        "docs/RUNTIME_WORLD.md:1022-1026",
+        "docs/RUNTIME_WORLD.md:1271-1277",
+        "docs/RUNTIME_WORLD.md:1008-1020",
+        "sf-nano-core/src/vm/instance.rs:483-508",
+        "sf-nano-core/src/vm/jit/instance.rs:1265-1289",
+        "sf-nano-core/src/vm/entities.rs:169-175",
+        "sf-nano-core/src/vm/imports.rs:326-337",
+        "sf-nano-core/src/vm/jit/instance.rs:529-536",
+        "sf-nano-core/src/vm/jit/instance.rs:1225-1231",
+        "sf-nano-core/src/vm/jit/instance.rs:277-290",
+        "sf-nano-spectest/src/wast_test_runner.rs:1592-1595"
+      ],
+      "resolved_at_round": 3
+    }
+  ]
+}
