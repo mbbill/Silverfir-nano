@@ -28,7 +28,9 @@ The CI integration pins:
 - wasmi-benchmarks commit
   `16a3d7c8fdb05506c116a9451175732d1ac77099`;
 - Rust 1.97.0;
-- cargo-criterion 1.1.0.
+- cargo-criterion 1.1.0;
+- Linux `libfontconfig1-dev`, required while compiling the upstream
+  Criterion/Plotters dependency even when report plotting is disabled.
 
 Each job enables exactly one adapter feature with Cargo default features
 disabled:
