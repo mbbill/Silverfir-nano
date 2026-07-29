@@ -115,6 +115,12 @@ def isolated_build_environment(
     env["CARGO_TARGET_DIR"] = str(
         (cargo_target_dir(source, env) / label).resolve()
     )
+    # Baseline and candidate must compile with the same toolchain or the
+    # measurement confounds compiler differences with code differences. A
+    # baseline checkout may still carry a pinned rust-toolchain.toml, which
+    # rustup would otherwise honor per working directory. An explicit
+    # `cargo +nightly` (the rv32 build-std path) outranks this variable.
+    env.setdefault("RUSTUP_TOOLCHAIN", "stable")
     return env
 
 

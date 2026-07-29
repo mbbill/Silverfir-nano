@@ -116,6 +116,24 @@ class PerformanceBuildTests(unittest.TestCase):
             candidate["CARGO_TARGET_DIR"],
         )
 
+    def test_both_builds_pin_one_toolchain_over_checkout_files(self) -> None:
+        source = Path("checkout").resolve()
+        pinned = performance_build.isolated_build_environment(
+            source,
+            label="baseline",
+            target="",
+            environ={},
+        )
+        overridden = performance_build.isolated_build_environment(
+            source,
+            label="candidate",
+            target="",
+            environ={"RUSTUP_TOOLCHAIN": "beta"},
+        )
+
+        self.assertEqual(pinned["RUSTUP_TOOLCHAIN"], "stable")
+        self.assertEqual(overridden["RUSTUP_TOOLCHAIN"], "beta")
+
     def test_sha256_file_records_the_copied_binary(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             binary = Path(directory) / "cli"
