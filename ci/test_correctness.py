@@ -180,6 +180,37 @@ class CoveragePlanTests(unittest.TestCase):
         self.assertEqual(correctness.CROSS_PLATFORMS["riscv64"].qemu, "qemu-riscv64-static")
         self.assertEqual(correctness.CROSS_PLATFORMS["riscv32"].qemu, "qemu-riscv32-static")
 
+    @mock.patch.object(correctness, "cargo")
+    def test_riscv64_guard_regression_runs_as_a_focused_qemu_libtest(
+        self,
+        cargo: mock.Mock,
+    ) -> None:
+        for config in correctness.CROSS_PLATFORMS.values():
+            correctness.run_cross_regression_tests(mock.Mock(), config)
+
+        cargo.assert_called_once()
+        call = cargo.call_args
+        config = correctness.CROSS_PLATFORMS["riscv64"]
+        self.assertEqual(call.args[2], "test")
+        self.assertEqual(call.kwargs["package"], "sf-nano-core")
+        self.assertEqual(call.kwargs["profile"], "release")
+        self.assertEqual(call.kwargs["target"], config.target)
+        self.assertEqual(call.kwargs["features"], "interp")
+        self.assertEqual(
+            call.kwargs["extra"],
+            (
+                "--config",
+                f'target.{config.target}.rustflags=["-C","panic=unwind"]',
+                "--config",
+                f'target.{config.target}.runner=["{config.qemu}","-cpu","{config.cpu}"]',
+                "--lib",
+                correctness.SPECIAL_FUNCREF_GUARD_TEST,
+                "--",
+                "--exact",
+                "--nocapture",
+            ),
+        )
+
     def test_interpreter_wast_runtime_keeps_pure_interp_compile_coverage(self) -> None:
         self.assertEqual(correctness.INTERP.features, "interp")
         self.assertEqual(correctness.spectest_features(correctness.INTERP), "jit,interp")

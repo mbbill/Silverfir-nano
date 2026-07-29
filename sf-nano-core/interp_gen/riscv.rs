@@ -1851,13 +1851,14 @@ impl RiscV {
         self.br_far(a, "bgeu", T2, T3, &st.slow);
         a.ins(&format!("ld {T3}, 112({STATE})")); // table 0 entries
                                                   // Entries are `RefHandle` slots (8 bytes); a plain handle's payload
-                                                  // is the function index. Null is all-ones and a tagged handle has
-                                                  // high bits set, so both exceed u32::MAX and take the slow path.
+                                                  // is the function index. The slot-form guard below rejects exactly
+                                                  // normalized null (all-ones); every other encoding proceeds to the
+                                                  // per-function info lookup.
         a.ins(&format!("slli {T4}, {T2}, 3"));
         a.ins(&format!("add {T3}, {T3}, {T4}"));
         a.ins(&format!("ld {T4}, 0({T3})")); // fi (all-ones = null)
         a.ins(&format!("li {T5}, -1"));
-        self.br_far(a, "beq", T4, T5, &st.slow);
+        self.br_far(a, "beq", T4, T5, &st.slow); // normalized null only
         a.ins(&format!("ld {T5}, 128({STATE})")); // info base
         a.ins(&format!("slli {T6}, {T4}, 1"));
         a.ins(&format!("add {T6}, {T6}, {T4}")); // fi*3

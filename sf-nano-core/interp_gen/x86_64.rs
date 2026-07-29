@@ -664,12 +664,13 @@ impl Isa for X86_64 {
         a.ins(&format!("jae {}", st.slow));
         a.ins("mov rcx, [r15 + 112]"); // table 0 entries
                                        // Entries are `RefHandle` slots (8 bytes); a plain handle's payload
-                                       // is the function index. Null is all-ones and a tagged handle has
-                                       // high bits set, so both fail the bound and take the slow path.
+                                       // is the function index. The fast path requires the upper 32 bits
+                                       // to be zero. Normalized null and current 64-bit tagged encodings
+                                       // fail that test and take the slow path.
         a.ins("mov rcx, [rcx + rax*8]"); // fi
         a.ins("mov rdx, rcx");
         a.ins("shr rdx, 32");
-        a.ins(&format!("jnz {}", st.slow)); // null or tagged entry
+        a.ins(&format!("jnz {}", st.slow)); // upper 32 bits are nonzero
         a.ins("mov rdx, [r15 + 128]"); // info base
         a.ins("lea rax, [rcx + rcx*2]"); // fi*3
         a.ins("lea rdx, [rdx + rax*8]"); // entry = info + fi*24

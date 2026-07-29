@@ -5198,6 +5198,44 @@ mod tests {
     }
 
     #[test]
+    fn special_funcref_in_private_table_takes_slow_path() {
+        // Keep the table index non-constant: constant-index call sites link
+        // directly to the slow stub and do not exercise the native guard.
+        let bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (type $callee (func (result i32)))
+                (import "host" "foreign" (func $foreign (result funcref)))
+                (table 1 funcref)
+                (func (export "go") (param $table_index i32) (result i32)
+                    i32.const 0
+                    call $foreign
+                    table.set
+                    local.get $table_index
+                    call_indirect (type $callee)))"#,
+        )
+        .expect("wat");
+        let module = Module::new("special-private-table", &bin).expect("module");
+        let special = ref_to_slot(RefHandle::hostref(7));
+        let host = InterpInstance::boxed_host(move |_module, _name, _memory, _args, results| {
+            results[0] = special;
+            Ok(())
+        });
+        let mut inst = InterpInstance::new(
+            &crate::vm::engine::Engine::with_defaults(),
+            module,
+            Some(host),
+            &[],
+        )
+        .expect("instance");
+        let go = inst.find_export("go").expect("go");
+
+        assert!(matches!(
+            inst.invoke(go, &[0], &mut [0]),
+            Err(WasmError::Trap("indirect call type mismatch"))
+        ));
+    }
+
+    #[test]
     fn float_kernel() {
         let src = r#"(module (func (export "hyp") (param f64 f64) (result f64)
             local.get 0 local.get 0 f64.mul

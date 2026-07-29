@@ -35,6 +35,9 @@ from ci.runner import ROOT, TARGET, Result, Runner, require_tools, slug
 
 TESTSUITE = TARGET / "webassembly-testsuite"
 RV32_LINUX = "riscv32gc-unknown-linux-musl"
+SPECIAL_FUNCREF_GUARD_TEST = (
+    "vm::interpreter::exec::tests::special_funcref_in_private_table_takes_slow_path"
+)
 
 ENGINE_FEATURE_CONFIGS = (
     ("jit-only", "jit"),
@@ -396,6 +399,35 @@ def run_cross_compile_coverage(runner: Runner, config: CrossPlatform) -> None:
         )
 
 
+def run_cross_regression_tests(runner: Runner, config: CrossPlatform) -> None:
+    if config.name != "riscv64":
+        return
+
+    # This target normally uses panic=abort, which stable libtest refuses.
+    # Appending panic=unwind overrides only that setting; Cargo preserves the
+    # target's preceding static-link flags from .cargo/config.toml.
+    cargo(
+        runner,
+        "run riscv64 special-funcref call_indirect guard (release)",
+        "test",
+        package="sf-nano-core",
+        profile="release",
+        target=config.target,
+        features=INTERP.features,
+        extra=(
+            "--config",
+            f'target.{config.target}.rustflags=["-C","panic=unwind"]',
+            "--config",
+            f'target.{config.target}.runner=["{config.qemu}","-cpu","{config.cpu}"]',
+            "--lib",
+            SPECIAL_FUNCREF_GUARD_TEST,
+            "--",
+            "--exact",
+            "--nocapture",
+        ),
+    )
+
+
 def run_cross_spectest(runner: Runner, config: CrossPlatform) -> None:
     if not ensure_testsuite(runner):
         return
@@ -543,6 +575,7 @@ def run_cross(label: str) -> int:
     if not require_tools(runner, required):
         return runner.finish()
     run_cross_compile_coverage(runner, config)
+    run_cross_regression_tests(runner, config)
     run_cross_spectest(runner, config)
     run_cross_wasitest(runner, config)
     return runner.finish()
