@@ -37,6 +37,56 @@ jobs:
         if: ${{ always() && !cancelled() }}
         run: cargo fmt --all -- --check
 
+  miri:
+    name: Miri instance-table token discipline
+    needs: policy
+    if: ${{ always() && !cancelled() }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CARGO_BUILD_JOBS: 4
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: miri
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: correctness-miri
+
+      - name: Set up Miri sysroot
+        run: cargo +nightly miri setup
+
+      - name: Check scoped materialization under Stacked Borrows
+        env:
+          MIRIFLAGS: -Zmiri-strict-provenance
+        run: >-
+          cargo +nightly miri test
+          -p sf-nano-core
+          --no-default-features
+          --features jit,interp
+          --lib
+          vm::link::instance_table_tests::miri_instance_table_scopes_materializations
+          --
+          --exact
+          --nocapture
+
+      - name: Check scoped materialization under Tree Borrows
+        env:
+          MIRIFLAGS: -Zmiri-tree-borrows
+        run: >-
+          cargo +nightly miri test
+          -p sf-nano-core
+          --no-default-features
+          --features jit,interp
+          --lib
+          vm::link::instance_table_tests::miri_instance_table_scopes_materializations
+          --
+          --exact
+          --nocapture
+
   platform:
     name: ${{ matrix.platform }}
     needs: policy

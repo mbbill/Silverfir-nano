@@ -924,6 +924,40 @@ mod instance_table_tests {
     }
 
     #[test]
+    fn miri_instance_table_scopes_materializations() {
+        let registry = LinkRegistry::new();
+        let table = registry.instance_table();
+        let (id, _) = occupied_store(&registry);
+        let mut first = table.checkout(id).expect("first checkout");
+        let mut second = table.checkout(id).expect("second checkout");
+
+        assert_eq!(table.in_use(id), Some(2));
+        {
+            let store = first.jit_mut().expect("first materialization");
+            assert_eq!(store.instance_handle().self_id(), id);
+        }
+        {
+            let store = second.jit_mut().expect("second materialization");
+            assert_eq!(store.instance_handle().self_id(), id);
+        }
+        {
+            let store = first.jit_mut().expect("rematerialize first token");
+            assert_eq!(store.instance_handle().self_id(), id);
+        }
+
+        let wrong_generation = InstanceId::from_parts(id.index(), id.generation() + 1);
+        assert!(table.checkout(wrong_generation).is_none());
+        assert_eq!(table.free(id), Err(InstanceFreeError::InUse));
+
+        drop(second);
+        assert_eq!(table.in_use(id), Some(1));
+        drop(first);
+        assert_eq!(table.in_use(id), Some(0));
+        table.free(id).expect("free after checkouts end");
+        assert!(table.checkout(id).is_none());
+    }
+
+    #[test]
     fn maximum_generation_retires_slot() {
         let registry = LinkRegistry::new();
         let table = registry.instance_table();
