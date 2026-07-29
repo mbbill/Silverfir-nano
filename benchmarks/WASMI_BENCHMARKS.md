@@ -11,8 +11,9 @@ runtime changes belong in the Silverfir-nano repository.
 
 ## Performance-regression CI
 
-`.github/workflows/performance-regression.yml` runs this suite as four
-independent jobs:
+`.github/workflows/performance-regression.yml` runs this suite as eight
+independent jobs. Each platform/engine pair is split into `execute` and
+`startup` shards:
 
 - x64 Linux, JIT;
 - x64 Linux, interpreter;
@@ -21,7 +22,10 @@ independent jobs:
 
 These jobs depend only on the workflow's ref-resolution/build job. They run in
 parallel with the native performance matrix, so wasmi-benchmarks does not add
-its runtime to the end of an x64 job.
+its runtime to the end of an x64 job. The two shards also run in parallel, so
+the slowest startup workload does not serialize the execution corpus. All 27
+groups remain covered, and the family correction still covers 27 metrics
+across the four platform/engine pairs.
 
 The CI integration pins:
 
