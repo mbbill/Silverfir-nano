@@ -2851,6 +2851,15 @@ mod tests {
         assert_eq!(init_elem.as_slice(), &[Value::I32(1)]);
     }
 
+    #[cfg(feature = "jit")]
+    #[test]
+    fn native_cross_instance_gc_array_funcref_call_preserves_identity() {
+        let mut runner = WastTestRunner::new(engine_for(Tier::Jit));
+        runner
+            .execute_wast_content(include_str!("../tests/runtime_world_gc_funcref.wast"))
+            .expect("cross-instance GC funcref array");
+    }
+
     #[test]
     fn native_if_params_id_break_uses_join_payload() {
         let mut runner = instantiate_first_module_with_backend("if.wast", Tier::Jit);

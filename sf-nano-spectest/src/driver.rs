@@ -265,7 +265,10 @@ fn print_engine(tier: Tier) {
 fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> bool {
     let start_time = Instant::now();
 
-    let wast_files = find_wast_files(testsuite_dir);
+    let mut wast_files = find_wast_files(testsuite_dir);
+    let supplemental_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
+    wast_files.extend(find_wast_files(&supplemental_dir));
+    wast_files.sort();
     info!("Found {} WAST files", wast_files.len());
 
     // Separate filters into file paths (.wast) and test names

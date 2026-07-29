@@ -68,6 +68,29 @@ class ProbabilityGateTests(unittest.TestCase):
                 "value": 8369.37,
             }],
         )
+        self.assertEqual(
+            bench_compare.extract_metrics(
+                "funcref/funcref.wasm",
+                (
+                    "funcref exported-table: rate = 1234.50 calls/s; "
+                    "funcref direct: rate = 2345.75 calls/s"
+                ),
+            ),
+            [
+                {
+                    "name": "funcref-exported-table",
+                    "unit": "calls/s",
+                    "direction": "higher",
+                    "value": 1234.5,
+                },
+                {
+                    "name": "funcref-direct",
+                    "unit": "calls/s",
+                    "direction": "higher",
+                    "value": 2345.75,
+                },
+            ],
+        )
 
     def test_coremark_uses_explicit_regression_duration(self) -> None:
         coremark = bench_compare.run_tests.TESTS[0]

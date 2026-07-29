@@ -24,6 +24,20 @@ METRIC_EXTRACTORS = {
         ("lz4-compress", r"lz4 compress: throughput = ([\d.]+)", "MB/s", "higher"),
         ("lz4-decompress", r"lz4 decompress: throughput = ([\d.]+)", "MB/s", "higher"),
     ],
+    "funcref/funcref.wasm": [
+        (
+            "funcref-exported-table",
+            r"funcref exported-table: rate = ([\d.]+)",
+            "calls/s",
+            "higher",
+        ),
+        (
+            "funcref-direct",
+            r"funcref direct: rate = ([\d.]+)",
+            "calls/s",
+            "higher",
+        ),
+    ],
     "lua/fib": [
         ("lua-fib", r"^([\d.]+)\s*fib20/s", "fib20/s", "higher"),
     ],

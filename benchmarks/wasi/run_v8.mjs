@@ -67,6 +67,15 @@ const TESTS = [
     multi: true,
     contains: '64 KB input -> 27 KB compressed',
   },
+  {
+    name: 'funcref/funcref.wasm',
+    cwd: path.join(SCRIPT_DIR, 'funcref'),
+    args: ['funcref.wasm'],
+    pattern: /(funcref (?:exported-table|direct): rate = \S+ calls\/s)/g,
+    source: 'stdout',
+    multi: true,
+    contains: 'funcref validates: table=264 direct=264',
+  },
   // --- Lua ---
   {
     name: 'lua/fib',
