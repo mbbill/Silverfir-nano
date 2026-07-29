@@ -262,14 +262,45 @@ fn print_engine(tier: Tier) {
 }
 
 #[cfg(feature = "jit")]
+enum WastInput {
+    File(PathBuf),
+    Embedded {
+        path: &'static str,
+        content: &'static str,
+    },
+}
+
+#[cfg(feature = "jit")]
+impl WastInput {
+    fn path(&self) -> &Path {
+        match self {
+            Self::File(path) => path,
+            Self::Embedded { path, .. } => Path::new(path),
+        }
+    }
+
+    fn run(&self, runner: &mut WastTestRunner) -> TestResult {
+        match self {
+            Self::File(path) => runner.run_wast_file(path),
+            Self::Embedded { content, .. } => runner.run_wast_content(content),
+        }
+    }
+}
+
+#[cfg(feature = "jit")]
 fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> bool {
     let start_time = Instant::now();
 
-    let mut wast_files = find_wast_files(testsuite_dir);
-    let supplemental_dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests");
-    wast_files.extend(find_wast_files(&supplemental_dir));
-    wast_files.sort();
-    info!("Found {} WAST files", wast_files.len());
+    let mut wast_inputs: Vec<_> = find_wast_files(testsuite_dir)
+        .into_iter()
+        .map(WastInput::File)
+        .collect();
+    wast_inputs.push(WastInput::Embedded {
+        path: "runtime_world_gc_funcref.wast",
+        content: include_str!("../tests/runtime_world_gc_funcref.wast"),
+    });
+    wast_inputs.sort_by(|left, right| left.path().cmp(right.path()));
+    info!("Found {} WAST files", wast_inputs.len());
 
     // Separate filters into file paths (.wast) and test names
     let (file_path_filters, name_filters): (Vec<_>, Vec<_>) =
@@ -289,17 +320,17 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
             };
 
             if abs_path.exists() && abs_path.is_file() {
-                files.push(abs_path);
+                files.push(WastInput::File(abs_path));
             } else {
                 error!("File not found: {}", file_path);
             }
         }
 
         if !name_filters.is_empty() {
-            let matched: Vec<_> = wast_files
+            let matched: Vec<_> = wast_inputs
                 .into_iter()
-                .filter(|path| {
-                    if let Some(stem) = path.file_stem().and_then(|s| s.to_str()) {
+                .filter(|input| {
+                    if let Some(stem) = input.path().file_stem().and_then(|s| s.to_str()) {
                         name_filters.iter().any(|f| f.as_str() == stem)
                     } else {
                         false
@@ -311,7 +342,7 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
 
         files
     } else {
-        wast_files
+        wast_inputs
     };
 
     let filter_desc = if !filters.is_empty() {
@@ -355,7 +386,8 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         *last_panic_hook.lock().unwrap() = Some(full_msg);
     }));
 
-    for wast_file in filtered_files {
+    for wast_input in filtered_files {
+        let wast_file = wast_input.path();
         let test_name = wast_file
             .file_stem()
             .and_then(|name| name.to_str())
@@ -388,7 +420,7 @@ fn run_wast_tests(engine: Engine, testsuite_dir: &Path, filters: &[String]) -> b
         let result = std::panic::catch_unwind(AssertUnwindSafe(|| {
             reset_native_runtime_state();
             let mut runner = WastTestRunner::new(engine);
-            runner.run_wast_file(&wast_file)
+            wast_input.run(&mut runner)
         }));
 
         let duration = test_start.elapsed();
