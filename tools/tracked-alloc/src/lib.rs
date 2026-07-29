@@ -3037,6 +3037,11 @@ impl<T: ?Sized> Rc<T> {
     }
 
     #[inline]
+    pub fn downgrade(this: &Self) -> rc::Weak<T> {
+        inner::Rc::downgrade(&this.inner)
+    }
+
+    #[inline]
     pub fn get_mut(this: &mut Self) -> Option<&mut T> {
         inner::Rc::get_mut(&mut this.inner)
     }
@@ -4193,6 +4198,34 @@ mod tests {
         drop(cloned);
         drop(value);
         assert!(snapshot().records.is_empty());
+        set_tracking_enabled(false);
+        reset_tracking();
+    }
+
+    #[cfg(feature = "memprof")]
+    #[test]
+    fn rc_downgrade_upgrade_cycle_preserves_live_bytes() {
+        let _guard = tracking_test_lock()
+            .lock()
+            .unwrap_or_else(|poison| poison.into_inner());
+        set_tracking_enabled(true);
+        reset_tracking();
+
+        let value = Rc::new(123u64);
+        let live_bytes = snapshot().total_bytes;
+        assert!(live_bytes > 0);
+
+        let weak = Rc::downgrade(&value);
+        assert_eq!(snapshot().total_bytes, live_bytes);
+
+        let upgraded = Rc::from_alloc_rc(weak.upgrade().expect("strong Rc remains live"));
+        assert_eq!(snapshot().total_bytes, live_bytes);
+
+        drop(upgraded);
+        assert_eq!(snapshot().total_bytes, live_bytes);
+
+        drop(value);
+        assert_eq!(snapshot().total_bytes, 0);
         set_tracking_enabled(false);
         reset_tracking();
     }
