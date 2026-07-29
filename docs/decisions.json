@@ -774,6 +774,27 @@
       "resolved_at_round": 3
     },
     {
+      "id": 38,
+      "title": "Post-review amendment: the conversion primitives resolve per-instance, not through InstanceHandle",
+      "issue_summary": "Step 3 item 1 stopped on a structural obstacle: the design's InstanceHandle sketch declares absolutize/localize on InstanceHandle, but the landed handle carries only Weak<InstanceTableInner> and self_id, so it cannot reach the function arena the primitives must resolve in. The arena is Vec<FuncEntry>, giving funcaddr -> (owner, local_index) in O(1) but the reverse direction only by linear scan. The design never specified absolutize's resolution mechanism.",
+      "alternatives_considered": [
+        "Add the shared function arena to InstanceHandle and merge items 1 and 2 (the implementing agent's recommendation); rejected as an unnecessary topology amendment once decision 34 was re-read",
+        "Pass the arena as a second argument to each primitive; rejected because it permits pairing an instance id with the wrong arena",
+        "Linear scan of Vec<FuncEntry> for absolutize; rejected outright as O(registered functions) on every crossing, a regression by construction",
+        "Add a reverse index to the arena; rejected as new shared state where per-instance state suffices"
+      ],
+      "decision": "The frame's owner stays an explicit argument (decisions 28 and 30). localize resolves through the shared function arena the engine instance already holds strongly today (Store carries SharedFunctionRegistry): FuncEntry at index funcaddr yields {owner, local_index}, compared against the argument's own id, O(1). absolutize reads a small per-instance local_index -> funcaddr map populated at registration, O(1), with a sentinel for non-escapable locals so step 5's escapable-set filter survives. This is the 'small per-instance index map and a load' the design already predicted at RUNTIME_WORLD.md:1609-1617. No InstanceHandle topology change, no new Rc in a per-instance type, no reverse index, no scan. Both invariants hold unchanged: resolution consults no instance slot and runs before any checkout, which is easy to hold because the frame being read or written always belongs to the currently-executing instance, so the conversion is always self-relative. Decision 34 is the licence: it had already flagged the InstanceHandle sketch's declaration as a redundant third declaration to be reconciled, so the review never committed the primitives to the handle.",
+      "evidence": [
+        "sf-nano-core/src/vm/link.rs:86-89 (InstanceHandle fields)",
+        "sf-nano-core/src/vm/jit/store.rs:32-39 (arena is a Store field)",
+        "docs/RUNTIME_WORLD.md:310-324 (primitive semantics; mechanism unspecified)",
+        "docs/RUNTIME_WORLD.md:1609-1617 (predicts the per-instance index map)",
+        "docs/decisions.json decision 34 (InstanceHandle declaration flagged redundant)",
+        "docs/decisions.json decisions 28 and 30 (frame owner is an argument, not always owner_store)"
+      ],
+      "resolved_at_round": "post-review, during step 3 implementation"
+    },
+    {
       "id": "final-summary",
       "title": "Review concluded by the project owner after seven passes",
       "issue_summary": "Adversarial design review of docs/RUNTIME_WORLD.md: two persistent roles (refiner + rotated critics), evidence-mandatory, three-round escalation rule.",

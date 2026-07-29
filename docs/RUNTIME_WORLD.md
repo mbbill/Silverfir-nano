@@ -189,13 +189,17 @@ impl InstanceHandle {
         // borrows released before returning.
     }
 
-    /// The two conversion primitives, both TOTAL and range-conditional,
-    /// both resolving in the ARENA and consulting no slot. `self` is the
-    /// handle of the instance owning the frame being read (`absolutize`) or
-    /// written (`localize`). See "The conversion primitives" for the arms —
-    /// this is the same pair, not a third declaration of it.
-    fn absolutize(&self, value: u32) -> u32;
-    fn localize(&self, value: u32) -> u32;
+    // AMENDED during implementation — see decision 38. The two conversion
+    // primitives do NOT live here. This handle carries only the Weak table
+    // reference and `self_id`, so it cannot reach the function arena the
+    // primitives must resolve in, and decision 34 had already flagged this
+    // declaration as a redundant third one to be reconciled. They resolve
+    // per-instance instead: `localize` through the shared function arena the
+    // engine instance already holds, `absolutize` through a small
+    // per-instance `local_index -> funcaddr` map. Both stay O(1), both keep
+    // the frame's owner an explicit argument (decisions 28 and 30), and both
+    // invariants are unchanged — no slot consulted, before any checkout.
+    // See "The conversion primitives" for the arms.
 }
 ```
 
