@@ -712,8 +712,12 @@ impl WastTestRunner {
             Ok(content) => content,
             Err(e) => return TestResult::Error(format!("Failed to read file: {}", e)),
         };
+        self.run_wast_content(&content)
+    }
 
-        match self.execute_wast_content(&content) {
+    /// Parse and execute WAST content embedded in the test binary.
+    pub fn run_wast_content(&mut self, content: &str) -> TestResult {
+        match self.execute_wast_content(content) {
             Ok(()) => TestResult::Pass,
             Err(e) => TestResult::Fail(e),
         }
