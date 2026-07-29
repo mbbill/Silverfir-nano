@@ -1,7 +1,20 @@
 # Runtime World: retiring `*mut Store` cross-instance identity
 
-**Status: PROPOSAL — not implemented. Stage 3 of the runtime-storage
-refactor; needs design sign-off before any code moves.**
+**Status: APPROVED FOR IMPLEMENTATION — not yet implemented.** Stage 3 of
+the runtime-storage refactor. This design passed a seven-pass adversarial
+review (35 issues raised and resolved on file:line evidence, zero
+escalations; the full record is `docs/decisions.json`, 37 entries) and was
+signed off by the project owner on 2026-07-29.
+
+**If you are implementing this, start with
+`docs/RUNTIME_WORLD_IMPLEMENTATION.md`** — the step-by-step playbook with
+per-step work items, verification commands, and success criteria. This
+document is the design itself: what to build and why every piece is shaped
+the way it is. When the playbook and this document disagree, this document
+wins; report the discrepancy.
+
+Design-history context (why the codebase is shaped this way at all) lives in
+`mcts_mem/silverfir/runtime.md` and its `.alt/runtime-store.md`.
 
 ## Problem
 
