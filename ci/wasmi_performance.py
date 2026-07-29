@@ -940,7 +940,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     parser.add_argument("--cargo", default="cargo")
-    parser.add_argument("--toolchain", default="1.97.0")
+    parser.add_argument("--toolchain", default="stable")
     parser.add_argument(
         "--suite-sha",
         default=WASMI_BENCHMARKS_REVISION,

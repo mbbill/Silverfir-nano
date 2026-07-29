@@ -100,7 +100,7 @@ class WasmiPerformanceTests(unittest.TestCase):
             config=Path("/suite/.cargo/config.toml"),
             target=Path("/target"),
             cargo="cargo",
-            toolchain="1.97.0",
+            toolchain="stable",
             feature="silverfir-nano-interp",
             runtime_id="silverfir-nano.interpreter",
             core_features="interp",
@@ -355,7 +355,7 @@ class WasmiPerformanceTests(unittest.TestCase):
             ),
             self.assertRaisesRegex(ValueError, "expected"),
         ):
-            wasmi_performance.verify_cargo_criterion("cargo", "1.97.0")
+            wasmi_performance.verify_cargo_criterion("cargo", "stable")
 
     def test_parse_criterion_json_normalizes_samples(self) -> None:
         output = criterion_message(

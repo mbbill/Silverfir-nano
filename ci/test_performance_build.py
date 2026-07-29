@@ -13,7 +13,7 @@ from ci import performance_build
 class PerformanceBuildTests(unittest.TestCase):
     def test_stable_and_rv32_commands_keep_the_same_feature_boundary(self) -> None:
         stable = performance_build.cargo_command(engine="jit", target="")
-        self.assertEqual(stable[:3], ["cargo", "+1.97.0", "build"])
+        self.assertEqual(stable[:2], ["cargo", "build"])
         self.assertEqual(stable[-2:], ["--features", "jit"])
 
         rv32 = performance_build.cargo_command(
