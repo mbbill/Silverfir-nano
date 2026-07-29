@@ -326,6 +326,22 @@ def reachable_packages(
     label: str,
 ) -> list[dict[str, Any]]:
     """Return only packages reachable with the selected Cargo features."""
+    resolve = metadata.get("resolve") or {}
+    root_id = resolve.get("root")
+    return dependency_closure_packages(
+        metadata,
+        root_id,
+        label=label,
+    )
+
+
+def dependency_closure_packages(
+    metadata: dict[str, Any],
+    root_id: Any,
+    *,
+    label: str,
+) -> list[dict[str, Any]]:
+    """Return a package and only its transitive dependencies."""
     packages = {
         package["id"]: package for package in metadata.get("packages", [])
     }
@@ -333,9 +349,10 @@ def reachable_packages(
     nodes = {
         node["id"]: node for node in resolve.get("nodes", [])
     }
-    root_id = resolve.get("root")
     if root_id not in nodes:
-        raise ValueError(f"{label}: Cargo metadata has no root node")
+        raise ValueError(
+            f"{label}: Cargo metadata has no node for root {root_id}"
+        )
 
     resolved_ids: set[str] = set()
     pending = [str(root_id)]
@@ -411,9 +428,14 @@ def verify_resolution(context: CargoContext) -> dict[str, Any]:
             + ", ".join(runtime_adapters)
         )
 
+    runtime_dependencies = dependency_closure_packages(
+        metadata,
+        nano[0]["id"],
+        label=f"{context.version} sf-nano-core",
+    )
     source_root = context.source.resolve()
     local_manifests = []
-    for package in resolved:
+    for package in runtime_dependencies:
         manifest = Path(str(package["manifest_path"])).resolve()
         try:
             manifest.relative_to(source_root)
@@ -717,6 +739,16 @@ def render_summary(
     identical_sources: bool,
     metrics: dict[str, dict[str, Any]],
 ) -> str:
+    schedule = (
+        "- schedule: one 10-sample adjacent A/B pilot; resolved local "
+        "runtime source is identical, so confirmation is skipped"
+        if identical_sources
+        else (
+            "- schedule: one 10-sample adjacent A/B pilot; selected "
+            f"benchmarks receive up to `{maximum_looks}` independent "
+            "reverse/alternating confirmation pairs"
+        )
+    )
     lines = [
         f"## wasmi-benchmarks: {platform} / {engine}",
         "",
@@ -727,11 +759,7 @@ def render_summary(
             f"- corpus: `{len(metrics)}` Criterion benchmarks; dedicated "
             "CoreMark score excluded, `startup/coremark` retained"
         ),
-        (
-            "- schedule: one 10-sample adjacent A/B pilot; selected "
-            f"benchmarks receive up to `{maximum_looks}` independent "
-            "reverse/alternating confirmation pairs"
-        ),
+        schedule,
         (
             f"- requested family confidence: regression "
             f"`{regression_probability * 100:.3f}%`, improvement "
@@ -1054,62 +1082,68 @@ def main() -> int:
         }
         pending = set(confirmation_pairs)
 
-        for run_index in range(args.max_confirmation_runs):
-            if not pending:
-                break
-            for index, group in enumerate(selected_groups):
-                if group not in pending:
-                    continue
-                pilot_baseline_first = index % 2 == 0
-                pair = measure_pair(
-                    contexts,
-                    group=group,
-                    phase="confirmation",
-                    run_index=run_index,
-                    baseline_first=(
-                        pilot_baseline_first
-                        if run_index % 2
-                        else not pilot_baseline_first
-                    ),
-                    raw_root=raw_root,
-                )
-                confirmation_pairs[group].append(pair)
-                metric = summarize_pairs(confirmation_pairs[group])
-                direction = str(plans[group]["direction"])
-                target = (
-                    effective_regression_probability
-                    if direction == "regression"
-                    else effective_improvement_probability
-                )
-                probability = float(
-                    metric[
-                        "probability_regression"
+        if identical_sources:
+            final = {
+                group: initial[group]
+                for group in confirmation_pairs
+            }
+        else:
+            for run_index in range(args.max_confirmation_runs):
+                if not pending:
+                    break
+                for index, group in enumerate(selected_groups):
+                    if group not in pending:
+                        continue
+                    pilot_baseline_first = index % 2 == 0
+                    pair = measure_pair(
+                        contexts,
+                        group=group,
+                        phase="confirmation",
+                        run_index=run_index,
+                        baseline_first=(
+                            pilot_baseline_first
+                            if run_index % 2
+                            else not pilot_baseline_first
+                        ),
+                        raw_root=raw_root,
+                    )
+                    confirmation_pairs[group].append(pair)
+                    metric = summarize_pairs(confirmation_pairs[group])
+                    direction = str(plans[group]["direction"])
+                    target = (
+                        effective_regression_probability
                         if direction == "regression"
-                        else "probability_improvement"
-                    ]
-                )
-                if probability >= target:
-                    pending.remove(group)
-                    continue
+                        else effective_improvement_probability
+                    )
+                    probability = float(
+                        metric[
+                            "probability_regression"
+                            if direction == "regression"
+                            else "probability_improvement"
+                        ]
+                    )
+                    if probability >= target:
+                        pending.remove(group)
+                        continue
 
-                current_pairs = int(metric["pair_count"])
-                if current_pairs >= max_pairs:
-                    pending.remove(group)
-                    continue
-                projected = required_pairs_for_direction(
-                    metric,
-                    direction=direction,
-                    probability=target,
-                    minimum_pairs=current_pairs + 2,
-                    maximum_pairs=max_pairs,
-                )
-                if projected is None:
-                    pending.remove(group)
+                    current_pairs = int(metric["pair_count"])
+                    if current_pairs >= max_pairs:
+                        pending.remove(group)
+                        continue
+                    projected = required_pairs_for_direction(
+                        metric,
+                        direction=direction,
+                        probability=target,
+                        minimum_pairs=current_pairs + 2,
+                        maximum_pairs=max_pairs,
+                    )
+                    if projected is None:
+                        pending.remove(group)
 
-        final = {
-            group: summarize_pairs(pairs)
-            for group, pairs in confirmation_pairs.items()
-        }
+            final = {
+                group: summarize_pairs(pairs)
+                for group, pairs in confirmation_pairs.items()
+            }
         metrics = classify_metrics(
             initial=initial,
             final=final,
@@ -1160,9 +1194,9 @@ def main() -> int:
 
     for group, metric in metrics.items():
         metric["process_pairs"] = (
-            len(confirmation_pairs[group])
-            if plans[group]["selected"]
-            else 1
+            1
+            if identical_sources or not plans[group]["selected"]
+            else len(confirmation_pairs[group])
         )
 
     document = {

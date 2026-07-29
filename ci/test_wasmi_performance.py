@@ -182,6 +182,47 @@ class WasmiPerformanceTests(unittest.TestCase):
             {"wasmi-benchmarks", "rt-silverfir-nano"},
         )
 
+    def test_runtime_dependency_closure_excludes_suite_parents(
+        self,
+    ) -> None:
+        packages = [
+            {"id": "suite", "name": "wasmi-benchmarks"},
+            {"id": "adapter", "name": "rt-silverfir-nano"},
+            {"id": "nano", "name": "sf-nano-core"},
+            {"id": "alloc", "name": "tracked-alloc"},
+            {"id": "utils", "name": "benchmark-utils"},
+        ]
+        metadata = {
+            "packages": packages,
+            "resolve": {
+                "root": "suite",
+                "nodes": [
+                    {
+                        "id": "suite",
+                        "deps": [
+                            {"pkg": "adapter"},
+                            {"pkg": "utils"},
+                        ],
+                    },
+                    {"id": "adapter", "deps": [{"pkg": "nano"}]},
+                    {"id": "nano", "deps": [{"pkg": "alloc"}]},
+                    {"id": "alloc", "deps": []},
+                    {"id": "utils", "deps": []},
+                ],
+            },
+        }
+
+        resolved = wasmi_performance.dependency_closure_packages(
+            metadata,
+            "nano",
+            label="candidate sf-nano-core",
+        )
+
+        self.assertEqual(
+            {package["name"] for package in resolved},
+            {"sf-nano-core", "tracked-alloc"},
+        )
+
     def test_failed_process_can_be_recorded_before_raising(self) -> None:
         result = subprocess.CompletedProcess(
             ["cargo", "criterion"],
@@ -378,6 +419,126 @@ class WasmiPerformanceTests(unittest.TestCase):
                 if metric["selected"]
             },
             {regression},
+        )
+
+    def test_main_skips_confirmation_for_identical_runtime_source(
+        self,
+    ) -> None:
+        calls: list[tuple[str, str]] = []
+
+        def measure_pair(
+            _contexts: object,
+            **kwargs: object,
+        ) -> dict:
+            group = str(kwargs["group"])
+            phase = str(kwargs["phase"])
+            calls.append((group, phase))
+            return {
+                "order": ["baseline", "candidate"],
+                "baseline": fake_run(100.0, "baseline"),
+                "candidate": fake_run(102.0, "candidate"),
+            }
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+            suite = root / "wasmi"
+            suite.mkdir()
+            (suite / "Cargo.toml").write_text(
+                "[package]\nname = \"wasmi-benchmarks\"\n",
+                encoding="utf-8",
+            )
+            (suite / "Cargo.lock").write_text(
+                "# pinned fixture\n",
+                encoding="utf-8",
+            )
+            for name in ("baseline", "candidate"):
+                core = root / name / "sf-nano-core"
+                core.mkdir(parents=True)
+                (core / "Cargo.toml").write_text(
+                    "[package]\nname = \"sf-nano-core\"\n",
+                    encoding="utf-8",
+                )
+            out_dir = root / "out"
+            argv = [
+                "wasmi_performance.py",
+                "--suite",
+                str(suite),
+                "--baseline-source",
+                str(root / "baseline"),
+                "--candidate-source",
+                str(root / "candidate"),
+                "--baseline-sha",
+                "base0000",
+                "--candidate-sha",
+                "head0000",
+                "--platform",
+                "arm64-linux",
+                "--engine",
+                "interp",
+                "--out-dir",
+                str(out_dir),
+                "--target-root",
+                str(root / "target"),
+            ]
+            with (
+                patch.object(sys, "argv", argv),
+                patch.object(
+                    wasmi_performance,
+                    "git_revision",
+                    side_effect=[
+                        wasmi_performance.WASMI_BENCHMARKS_REVISION,
+                        "base000000000000000000000000000000000000",
+                        "head000000000000000000000000000000000000",
+                    ],
+                ),
+                patch.object(
+                    wasmi_performance,
+                    "verify_cargo_criterion",
+                    return_value="cargo-criterion 1.1.0",
+                ),
+                patch.object(
+                    wasmi_performance,
+                    "build_context",
+                    side_effect=[
+                        {"source_fingerprint": "same"},
+                        {"source_fingerprint": "same"},
+                    ],
+                ),
+                patch.object(
+                    wasmi_performance,
+                    "measure_pair",
+                    side_effect=measure_pair,
+                ),
+            ):
+                exit_code = wasmi_performance.main()
+
+            document = json.loads(
+                (out_dir / "comparison.json").read_text(encoding="utf-8")
+            )
+
+        self.assertEqual(exit_code, 0)
+        self.assertEqual(len(calls), 27)
+        self.assertEqual({phase for _, phase in calls}, {"pilot"})
+        self.assertTrue(document["identical_sources"])
+        self.assertEqual(
+            set(document["confirmation_pairs"]),
+            set(wasmi_performance.BENCHMARK_GROUPS),
+        )
+        self.assertTrue(
+            all(not pairs for pairs in document["confirmation_pairs"].values())
+        )
+        self.assertEqual(
+            {
+                metric["status"]
+                for metric in document["metrics"].values()
+            },
+            {"UNSTABLE"},
+        )
+        self.assertTrue(
+            all(
+                metric["process_pairs"] == 1
+                for metric in document["metrics"].values()
+            )
         )
 
 

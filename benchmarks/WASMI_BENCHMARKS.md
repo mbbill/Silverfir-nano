@@ -50,7 +50,9 @@ side contributes Criterion's ten internal samples. Only directions selected
 by the pilot are confirmed, using fresh reverse/alternating A/B process pairs.
 The shared probability gate and family correction are the same as the native
 performance workflow. Later confirmation samples cannot introduce a new
-candidate.
+candidate. If the resolved local runtime sources are identical, all 27 pilot
+comparisons still run, but confirmation is skipped: an apparent regression is
+reported as runner instability instead of a source regression.
 
 `ci.wasmi_performance` creates isolated copies of the pinned suite for baseline
 and candidate. A generated `.cargo/config.toml` patches only `sf-nano-core` to
@@ -58,7 +60,9 @@ the checkout under test. The script validates Cargo metadata before measuring:
 the selected local source must resolve, and `rt-silverfir-nano` must be the
 only reachable runtime adapter. This avoids modifying the upstream checkout
 and prevents a stale Git dependency or a default engine from being measured
-silently.
+silently. Source identity is computed from the local dependency closure rooted
+at `sf-nano-core`; generated suite packages above that dependency cannot
+contaminate the fingerprint.
 
 Each baseline/candidate build uses a stable, private `CRITERION_HOME`. The
 directory is cleared before every case and copied into that case's artifact
