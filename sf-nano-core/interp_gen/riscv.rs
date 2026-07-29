@@ -1855,13 +1855,14 @@ impl RiscV {
                                                   // slot-form guard below therefore rejects every encoding with a
                                                   // nonzero upper half: normalized null (all-ones) and every special
                                                   // (tagged) handle, whose tag sits at bit 60. This matches x86_64 and
-                                                  // arm64. It does not bound the index against `indirect_info`'s
-                                                  // length; that check is a separate predicate.
+                                                  // arm64. The length check below is a separate predicate.
         a.ins(&format!("slli {T4}, {T2}, 3"));
         a.ins(&format!("add {T3}, {T3}, {T4}"));
         a.ins(&format!("ld {T4}, 0({T3})")); // fi
         a.ins(&format!("srli {T5}, {T4}, 32"));
         self.br_far(a, "bne", T5, "zero", &st.slow); // upper 32 bits are nonzero
+        a.ins(&format!("ld {T5}, 136({STATE})")); // info length
+        self.br_far(a, "bgeu", T4, T5, &st.slow);
         a.ins(&format!("ld {T5}, 128({STATE})")); // info base
         a.ins(&format!("slli {T6}, {T4}, 1"));
         a.ins(&format!("add {T6}, {T6}, {T4}")); // fi*3

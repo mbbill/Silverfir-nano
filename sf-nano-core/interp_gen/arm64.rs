@@ -652,6 +652,9 @@ impl Isa for Arm64 {
         a.ins("ldr x12, [x11, w10, uxtw #3]"); // fi = entries[t]
         a.ins("lsr x13, x12, #32");
         a.ins(&format!("cbnz x13, {}", st.slow)); // upper 32 bits are nonzero
+        a.ins("ldr x13, [x21, #136]"); // info length
+        a.ins("cmp x12, x13");
+        a.ins(&format!("b.hs {}", st.slow)); // function index out of bounds
         a.ins("ldr x13, [x21, #128]"); // info base
         a.ins("add x11, x12, x12, lsl #1"); // fi*3
         a.ins("add x13, x13, x11, lsl #3"); // entry = info + fi*24
