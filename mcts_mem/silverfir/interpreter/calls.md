@@ -12,12 +12,14 @@
   the invocation root compose with native calls on one shared record
   stack.
 
-- Indirect calls resolve inside the native chain: the handler indexes a
-  per-function-index callee-info table, compares one precomputed
-  canonical type id, and enters the shared activation path; table 0's
-  base and length come from the per-entry state, and every guard
-  failure (index bounds, null entry, type mismatch, import callee)
-  bails to the slow path.
+- Indirect calls resolve inside the native chain on the 64-bit backends:
+  the handler indexes a per-function-index callee-info table, compares
+  one precomputed canonical type id, and enters the shared activation
+  path; table 0's base and length come from the per-entry state, and
+  every guard failure (index bounds, a table entry that is not a plain
+  function index, type mismatch, import callee) bails to the slow path.
+  The 32-bit backends have no such fast path: their indirect-call label
+  enters the slow stub unconditionally.
 
 - Call depth and value-stack budget are both enforced natively and trap
   as call-stack exhaustion. Both budgets are sized from the embedder's
@@ -74,6 +76,17 @@
   workload and 5.5M on sqlite speedtest — and the op no longer appears
   in any benchmark's exit profile; the exits were C-library
   function-pointer dispatch, not wasm-level indirection (code).
+
+- 2026-07-29 (94026006) pitfall: the "entry is a plain function index" guard
+  was written per backend and drifted. x86_64 and arm64 rejected any nonzero
+  upper 32 bits, but RV64 rejected only the normalized null sentinel, so a
+  tagged reference handle stored into a private funcref table passed the guard
+  and the handler dereferenced the callee-info address computed from it —
+  SIGSEGV under qemu-riscv64, not a trap. The handler comments claimed the
+  stronger predicate on every backend, so reading them hid the divergence;
+  reading the generated assembly per target is what exposed it. The loaded
+  index is still not bounded against the callee-info table's length on any
+  64-bit backend (code).
 
 ## Moves
 
