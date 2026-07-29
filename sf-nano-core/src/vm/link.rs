@@ -73,6 +73,7 @@ struct InstanceTableInner {
     slots: RefCell<collections::Vec<WorldSlot>>,
     generations: RefCell<collections::Vec<u32>>,
     in_use: RefCell<collections::Vec<u32>>,
+    release_pending: RefCell<collections::Vec<bool>>,
     reusable: RefCell<collections::Vec<u32>>,
 }
 
@@ -114,6 +115,7 @@ impl InstanceTable {
             slots: RefCell::new(collections::Vec::new()),
             generations: RefCell::new(collections::Vec::new()),
             in_use: RefCell::new(collections::Vec::new()),
+            release_pending: RefCell::new(collections::Vec::new()),
             reusable: RefCell::new(collections::Vec::new()),
         }))
     }
@@ -129,11 +131,13 @@ impl InstanceTable {
         let mut slots = self.0.slots.borrow_mut();
         let mut generations = self.0.generations.borrow_mut();
         let mut in_use = self.0.in_use.borrow_mut();
+        let mut release_pending = self.0.release_pending.borrow_mut();
         let index = slots.len();
         assert!(u32::try_from(index).is_ok(), "instance table exhausted");
         slots.push(WorldSlot::Vacant);
         generations.push(0);
         in_use.push(0);
+        release_pending.push(false);
         InstanceId::from_parts(index as u32, 0)
     }
 
@@ -255,16 +259,23 @@ impl InstanceTable {
             return Err(InstanceFreeError::InUse);
         }
 
-        let removed = {
-            let mut slots = self.0.slots.borrow_mut();
-            let slot = slots
-                .get_mut(id.index() as usize)
-                .ok_or(InstanceFreeError::InvalidId)?;
-            if matches!(slot, WorldSlot::Vacant) {
-                return Err(InstanceFreeError::InvalidId);
-            }
-            core::mem::replace(slot, WorldSlot::Vacant)
-        };
+        if matches!(
+            self.0.slots.borrow().get(id.index() as usize),
+            Some(WorldSlot::Vacant) | None
+        ) {
+            return Err(InstanceFreeError::InvalidId);
+        }
+        self.reclaim(id);
+        Ok(())
+    }
+
+    fn reclaim(&self, id: InstanceId) {
+        // `free` validates an occupied, unused slot; deferred release is
+        // reached only by the last live token for the same generation.
+        let removed = core::mem::replace(
+            &mut self.0.slots.borrow_mut()[id.index() as usize],
+            WorldSlot::Vacant,
+        );
         let mut generations = self.0.generations.borrow_mut();
         let generation = &mut generations[id.index() as usize];
         if *generation != u32::MAX {
@@ -272,11 +283,11 @@ impl InstanceTable {
         }
         let reusable = *generation != u32::MAX;
         drop(generations);
+        self.0.release_pending.borrow_mut()[id.index() as usize] = false;
         if reusable {
             self.0.reusable.borrow_mut().push(id.index());
         }
         drop(removed);
-        Ok(())
     }
 
     #[inline]
@@ -362,11 +373,17 @@ impl InstanceToken {
 
 impl Drop for InstanceToken {
     fn drop(&mut self) {
-        let mut in_use = self.table.in_use.borrow_mut();
-        let count = &mut in_use[self.id.index() as usize];
-        *count = count
-            .checked_sub(1)
-            .expect("instance checkout count underflow");
+        let reclaim = {
+            let mut in_use = self.table.in_use.borrow_mut();
+            let count = &mut in_use[self.id.index() as usize];
+            *count = count
+                .checked_sub(1)
+                .expect("instance checkout count underflow");
+            *count == 0 && self.table.release_pending.borrow()[self.id.index() as usize]
+        };
+        if reclaim {
+            InstanceTable(Rc::clone(&self.table)).reclaim(self.id);
+        }
     }
 }
 
@@ -422,8 +439,15 @@ impl Drop for InstanceLease {
         let id = token.id;
         let table = InstanceTable(Rc::clone(&token.table));
         drop(token);
-        let result = table.free(id);
-        debug_assert_eq!(result, Ok(()));
+        match table.free(id) {
+            Ok(()) => {}
+            Err(InstanceFreeError::InUse) => {
+                table.0.release_pending.borrow_mut()[id.index() as usize] = true;
+            }
+            // A prior lease release can have requested reclamation, making
+            // this token's drop the operation that already freed the slot.
+            Err(InstanceFreeError::InvalidId) => {}
+        }
     }
 }
 
@@ -819,6 +843,25 @@ mod instance_table_tests {
         );
         drop(token);
         assert_eq!(registry.instance_table().free(id), Ok(()));
+    }
+
+    #[test]
+    fn lease_release_reclaims_after_the_last_checkout() {
+        let registry = LinkRegistry::new();
+        let table = registry.instance_table();
+        let (id, handle) = occupied_store(&registry);
+        let lease = InstanceLease::checkout(&handle).expect("instance lease");
+        let checkout = table.checkout(id).expect("second checkout");
+
+        drop(lease);
+        assert_eq!(table.in_use(id), Some(1));
+        assert_eq!(table.free(id), Err(InstanceFreeError::InUse));
+
+        drop(checkout);
+        assert!(table.checkout(id).is_none());
+        let replacement = table.reserve();
+        assert_eq!(replacement.index(), id.index());
+        assert_ne!(replacement.generation(), id.generation());
     }
 
     #[test]
