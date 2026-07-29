@@ -42,7 +42,9 @@ jobs:
     needs: policy
     if: ${{ always() && !cancelled() }}
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    # Budget covers a cold Miri sysroot build plus one compile per aliasing
+    # model; a warm rust-cache finishes in a fraction of this.
+    timeout-minutes: 35
     env:
       CARGO_BUILD_JOBS: 4
     steps:
