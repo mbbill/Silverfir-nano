@@ -7,10 +7,7 @@
 
 use crate::collections;
 
-use tracked_alloc::{
-    boxed::Box,
-    string::{String, ToString},
-};
+use tracked_alloc::{boxed::Box, string::ToString};
 
 use crate::error::WasmError;
 use crate::module::entities::{
@@ -40,13 +37,12 @@ use crate::vm::jit::expr_eval::eval_const_expr;
 use crate::vm::jit::runtime;
 use crate::vm::jit::store::Store;
 use crate::vm::jit::value_encoding::{try_raw_to_value_in_store, value_to_raw_in_store};
-use crate::vm::link::LinkRegistry;
+use crate::vm::link::{InstanceId, InstanceLease, LinkRegistry};
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 
 pub struct JitInstance {
-    store: Box<Store>,
-    exports: collections::Vec<(String, ExportKind, usize)>,
+    lease: InstanceLease,
 }
 
 pub enum InstanceInstantiationError {
@@ -80,7 +76,7 @@ impl InstanceInstantiationError {
 }
 
 #[derive(Clone, Copy)]
-enum ExportKind {
+pub(crate) enum ExportKind {
     Func,
     Table,
     Memory,
@@ -851,13 +847,26 @@ impl JitInstance {
         {
             module_inst.table_dispatch_modes = table_dispatch_modes;
         }
+        let (instance_id, instance_handle) = registry.reserve_instance();
+        let lease_handle = instance_handle.clone();
         let mut store = Box::new(Store::new_with_registries(
             module_inst,
+            instance_handle,
             registry.function_registry_shared(),
             registry.ref_registry_shared(),
             #[cfg(sf_has_simd)]
             registry.simd_registry_shared(),
         ));
+        store.set_exports(exports);
+        registry
+            .instance_table()
+            .occupy_jit(instance_id, store)
+            .expect("freshly reserved JIT instance slot");
+        let mut lease = InstanceLease::checkout(&lease_handle).expect("occupied JIT instance slot");
+        let store = lease
+            .token_mut()
+            .jit_mut()
+            .expect("JIT lease must resolve to a Store");
         for func_idx in 0..store.module().functions.len() {
             if let Some(handle) = store.module().functions[func_idx].linked_handle() {
                 store.module_mut().set_function_handle(func_idx, handle);
@@ -868,12 +877,12 @@ impl JitInstance {
 
         let init_result = (|| -> Result<(), WasmError> {
             #[cfg(sf_jit)]
-            crate::vm::jit::build::ensure_module_compiled(&store)?;
+            crate::vm::jit::build::ensure_module_compiled(store)?;
 
             for (i, global) in mod_globals.iter().enumerate() {
                 if let GlobalDef::Local(spec) = global.def() {
-                    let value = eval_const_expr(spec.init_expr(), &mut store)?;
-                    let raw = value_to_raw_in_store(value, &mut store);
+                    let value = eval_const_expr(spec.init_expr(), store)?;
+                    let raw = value_to_raw_in_store(value, store);
                     store.global_mut(i).set_raw(raw);
                 }
             }
@@ -887,7 +896,7 @@ impl JitInstance {
                     continue;
                 };
 
-                let value = eval_const_expr(init_expr, &mut store)?;
+                let value = eval_const_expr(init_expr, store)?;
                 let init_ref = match value {
                     Value::Ref(handle, _) => handle,
                     _ => {
@@ -915,7 +924,7 @@ impl JitInstance {
                             return Err(WasmError::unlinkable("unknown table"));
                         }
                         let offset = eval_offset(offset_expr, store.module())?;
-                        let refs = materialize_element_init(init, &mut store)?;
+                        let refs = materialize_element_init(init, store)?;
 
                         let table = store.table_mut(*table_index);
                         let mut elements = table.elements_mut();
@@ -927,7 +936,7 @@ impl JitInstance {
                         store.module_mut().elements[i].drop_segment();
                     }
                     Element::Passive { init } => {
-                        let refs = materialize_element_init(init, &mut store)?;
+                        let refs = materialize_element_init(init, store)?;
                         store.module_mut().elements[i] =
                             ElementInst::new(refs, element.value_type());
                     }
@@ -972,16 +981,16 @@ impl JitInstance {
             if let Some(start_idx) = start_func_index {
                 let func_ptr = &store.module().functions[start_idx] as *const FunctionInst;
                 let func_ref = unsafe { &*func_ptr };
-                runtime::eval(func_ref, &mut store, &[])?;
+                runtime::eval(func_ref, store, &[])?;
             }
 
             Ok(())
         })();
 
         match init_result {
-            Ok(()) => Ok(JitInstance { store, exports }),
+            Ok(()) => Ok(JitInstance { lease }),
             Err(error) => Err(InstanceInstantiationError::Partial {
-                instance: JitInstance { store, exports },
+                instance: JitInstance { lease },
                 error,
             }),
         }
@@ -992,31 +1001,40 @@ impl JitInstance {
         name: &str,
         args: &[Value],
     ) -> Result<collections::Vec<Value>, WasmError> {
-        let (_, _, idx) = self
-            .exports
+        Self::invoke_store(self.store_mut(), name, args)
+    }
+
+    pub(crate) fn invoke_store(
+        store: &mut Store,
+        name: &str,
+        args: &[Value],
+    ) -> Result<collections::Vec<Value>, WasmError> {
+        let (_, _, idx) = store
+            .exports()
             .iter()
             .find(|(n, k, _)| matches!(k, ExportKind::Func) && n == name)
             .ok_or_else(|| WasmError::invalid("exported function not found"))?;
         let idx = *idx;
 
-        let func_ptr = &self.store.module().functions[idx] as *const FunctionInst;
+        let func_ptr = &store.module().functions[idx] as *const FunctionInst;
         let func_ref = unsafe { &*func_ptr };
 
-        let result_stack = runtime::eval(func_ref, &mut self.store, args)?;
+        let result_stack = runtime::eval(func_ref, store, args)?;
         let ft = func_ref.func_type();
         let result_types = ft.results();
 
         let mut results = collections::Vec::with_capacity(result_types.len());
         for (i, ty) in result_types.iter().enumerate() {
             let raw = result_stack.peek_at_index(i);
-            results.push(try_raw_to_value_in_store(raw, *ty, &self.store)?);
+            results.push(try_raw_to_value_in_store(raw, *ty, store)?);
         }
         Ok(results)
     }
 
     /// The function index behind an exported name, resolved once.
     pub fn function_index_of_export(&self, name: &str) -> Option<usize> {
-        self.exports
+        self.store()
+            .exports()
             .iter()
             .find(|(n, k, _)| matches!(k, ExportKind::Func) && n == name)
             .map(|(_, _, idx)| *idx)
@@ -1029,8 +1047,8 @@ impl JitInstance {
         args: &[Value],
         results: &mut [Value],
     ) -> Result<(), WasmError> {
-        let func_ptr = self
-            .store
+        let store = self.store_mut();
+        let func_ptr = store
             .module()
             .functions
             .get(idx)
@@ -1038,11 +1056,11 @@ impl JitInstance {
             as *const FunctionInst;
         let func_ref = unsafe { &*func_ptr };
 
-        let result_stack = runtime::eval(func_ref, &mut self.store, args)?;
+        let result_stack = runtime::eval(func_ref, store, args)?;
         let result_types = func_ref.func_type().results();
         for (i, ty) in result_types.iter().enumerate() {
             let raw = result_stack.peek_at_index(i);
-            results[i] = try_raw_to_value_in_store(raw, *ty, &self.store)?;
+            results[i] = try_raw_to_value_in_store(raw, *ty, store)?;
         }
         Ok(())
     }
@@ -1052,8 +1070,8 @@ impl JitInstance {
         idx: usize,
         args: &[Value],
     ) -> Result<collections::Vec<Value>, WasmError> {
-        let func_ptr = self
-            .store
+        let store = self.store_mut();
+        let func_ptr = store
             .module()
             .functions
             .get(idx)
@@ -1061,58 +1079,78 @@ impl JitInstance {
             as *const FunctionInst;
         let func_ref = unsafe { &*func_ptr };
 
-        let result_stack = runtime::eval(func_ref, &mut self.store, args)?;
+        let result_stack = runtime::eval(func_ref, store, args)?;
         let ft = func_ref.func_type();
         let result_types = ft.results();
 
         let mut results = collections::Vec::with_capacity(result_types.len());
         for (i, ty) in result_types.iter().enumerate() {
             let raw = result_stack.peek_at_index(i);
-            results.push(try_raw_to_value_in_store(raw, *ty, &self.store)?);
+            results.push(try_raw_to_value_in_store(raw, *ty, store)?);
         }
         Ok(results)
     }
 
     pub fn has_function_export(&self, name: &str) -> bool {
-        self.exports
+        self.store()
+            .exports()
             .iter()
             .any(|(n, k, _)| matches!(k, ExportKind::Func) && n == name)
     }
 
     pub fn store(&self) -> &Store {
-        &self.store
+        self.lease
+            .token()
+            .jit()
+            .expect("JIT instance lease must resolve to a Store")
     }
 
     pub fn store_mut(&mut self) -> &mut Store {
-        &mut self.store
+        self.lease
+            .token_mut()
+            .jit_mut()
+            .expect("JIT instance lease must resolve to a Store")
+    }
+
+    pub(crate) fn instance_id(&self) -> InstanceId {
+        let id = self.store().instance_handle().self_id();
+        debug_assert_eq!(id, self.lease.id());
+        id
+    }
+
+    #[inline]
+    pub(crate) fn has_exclusive_lease(&self) -> bool {
+        self.lease.is_exclusive()
     }
 
     pub fn get_global(&self, name: &str) -> Result<Option<Value>, WasmError> {
+        let store = self.store();
         Ok(self
-            .exports
+            .store()
+            .exports()
             .iter()
             .find(|(n, k, _)| matches!(k, ExportKind::Global) && n == name)
             .map(|(_, _, idx)| {
-                let global = self.store.global(*idx);
-                try_raw_to_value_in_store(global.raw(), global.value_type, &self.store)
+                let global = store.global(*idx);
+                try_raw_to_value_in_store(global.raw(), global.value_type, store)
             })
             .transpose()?)
     }
 
     pub fn global_at(&self, idx: usize) -> Result<Option<Value>, WasmError> {
-        Ok(self
-            .store
+        let store = self.store();
+        Ok(store
             .module()
             .globals
             .get(idx)
-            .map(|g| try_raw_to_value_in_store(g.raw(), g.value_type, &self.store))
+            .map(|g| try_raw_to_value_in_store(g.raw(), g.value_type, store))
             .transpose()?)
     }
 
     pub fn replace_global_at(&mut self, idx: usize, value: Value) -> Result<(), WasmError> {
-        let raw = value_to_raw_in_store(value, &mut self.store);
-        let global = self
-            .store
+        let store = self.store_mut();
+        let raw = value_to_raw_in_store(value, store);
+        let global = store
             .module_mut()
             .globals
             .get_mut(idx)
@@ -1123,13 +1161,15 @@ impl JitInstance {
 
     pub fn set_global(&mut self, name: &str, value: Value) -> Result<(), WasmError> {
         let idx = self
-            .exports
+            .store()
+            .exports()
             .iter()
             .find(|(n, k, _)| matches!(k, ExportKind::Global) && n == name)
             .map(|(_, _, idx)| *idx)
             .ok_or_else(|| WasmError::invalid("global not found"))?;
-        let raw = value_to_raw_in_store(value, &mut self.store);
-        let global = self.store.global_mut(idx);
+        let store = self.store_mut();
+        let raw = value_to_raw_in_store(value, store);
+        let global = store.global_mut(idx);
         if !global.mutable {
             return Err(WasmError::invalid("cannot set immutable global"));
         }
@@ -1138,36 +1178,38 @@ impl JitInstance {
     }
 
     pub fn memory(&self) -> Option<&[u8]> {
-        if self.store.module().memories.is_empty() {
+        let store = self.store();
+        if store.module().memories.is_empty() {
             None
         } else {
-            let mem = self.store.memory(0);
+            let mem = store.memory(0);
             let len = mem.memory_len();
             Some(unsafe { core::slice::from_raw_parts(mem.memory_ptr(), len) })
         }
     }
 
     pub fn memory_mut(&mut self) -> Option<&mut [u8]> {
-        if self.store.module().memories.is_empty() {
+        let store = self.store_mut();
+        if store.module().memories.is_empty() {
             None
         } else {
-            let mem = self.store.memory_mut(0);
+            let mem = store.memory_mut(0);
             let len = mem.memory_len();
             Some(unsafe { core::slice::from_raw_parts_mut(mem.memory_ptr(), len) })
         }
     }
 
     pub fn memory_pages(&self, name: &str) -> Option<usize> {
-        for (n, kind, idx) in &self.exports {
+        for (n, kind, idx) in self.store().exports() {
             if n == name && matches!(kind, ExportKind::Memory) {
-                return Some(self.store.memory(*idx).current_pages());
+                return Some(self.store().memory(*idx).current_pages());
             }
         }
         None
     }
 
     pub fn memory_bytes_at(&self, idx: usize) -> Option<&[u8]> {
-        self.store.module().memories.get(idx).map(|mem| {
+        self.store().module().memories.get(idx).map(|mem| {
             let len = mem.memory_len();
             unsafe { core::slice::from_raw_parts(mem.memory_ptr(), len) }
         })
@@ -1175,7 +1217,7 @@ impl JitInstance {
 
     pub fn replace_memory_bytes_at(&mut self, idx: usize, bytes: &[u8]) -> Result<(), WasmError> {
         let mem = self
-            .store
+            .store_mut()
             .module_mut()
             .memories
             .get_mut(idx)
@@ -1190,16 +1232,16 @@ impl JitInstance {
     }
 
     pub fn table_size(&self, name: &str) -> Option<usize> {
-        for (n, kind, idx) in &self.exports {
+        for (n, kind, idx) in self.store().exports() {
             if n == name && matches!(kind, ExportKind::Table) {
-                return Some(self.store.table(*idx).size());
+                return Some(self.store().table(*idx).size());
             }
         }
         None
     }
 
     pub fn table_elements_at(&self, idx: usize) -> Option<&[RefHandle]> {
-        self.store.module().tables.get(idx).map(|table| {
+        self.store().module().tables.get(idx).map(|table| {
             let elements = table.elements();
             unsafe { core::slice::from_raw_parts(elements.as_ptr(), elements.len()) }
         })
@@ -1211,7 +1253,7 @@ impl JitInstance {
         elements: &[RefHandle],
     ) -> Result<(), WasmError> {
         let table = self
-            .store
+            .store_mut()
             .module_mut()
             .tables
             .get_mut(idx)
@@ -1224,16 +1266,16 @@ impl JitInstance {
         drop(table_elements);
         #[cfg(sf_jit)]
         {
-            for mode in &mut self.store.module_mut().table_dispatch_modes {
+            for mode in &mut self.store_mut().module_mut().table_dispatch_modes {
                 *mode = TableDispatchMode::Generic;
             }
-            self.store.module().clear_native_code();
+            self.store().module().clear_native_code();
         }
         Ok(())
     }
 
     pub fn function_type_at(&self, idx: usize) -> Option<FunctionType> {
-        self.store
+        self.store()
             .module()
             .functions
             .get(idx)
@@ -1241,7 +1283,7 @@ impl JitInstance {
     }
 
     pub fn function_type_index_at(&self, idx: usize) -> Option<u32> {
-        self.store
+        self.store()
             .module()
             .functions
             .get(idx)
@@ -1249,60 +1291,69 @@ impl JitInstance {
     }
 
     pub fn function_handle_at(&self, idx: usize) -> Option<RefHandle> {
-        self.store.module().function_handle(idx)
+        self.store().module().function_handle(idx)
     }
 
     /// Resolve an exported tag to its runtime identity. Required for
     /// cross-module tag linking via `Import::linked_tag_typed(...)`.
     pub fn tag_handle(&self, name: &str) -> Option<TagHandle> {
         let (_, _, idx) = self
-            .exports
+            .store()
+            .exports()
             .iter()
             .find(|(n, k, _)| matches!(k, ExportKind::Tag) && n == name)?;
-        self.store.module().tags.get(*idx).map(|t| t.handle)
+        self.store().module().tags.get(*idx).map(|t| t.handle)
     }
 
     pub fn shared_table_state_at(&self, idx: usize) -> Option<ImportedTableState> {
-        self.store
+        self.store()
             .module()
             .tables
             .get(idx)
             .cloned()
             .map(|table| ImportedTableState {
                 table,
-                type_ctx: Some(self.store.module().types.clone()),
+                type_ctx: Some(self.store().module().types.clone()),
             })
     }
 
     pub fn shared_global_state_at(&self, idx: usize) -> Option<ImportedGlobalState> {
-        self.store
+        self.store()
             .module()
             .globals
             .get(idx)
             .cloned()
             .map(|global| ImportedGlobalState {
                 global,
-                type_ctx: Some(self.store.module().types.clone()),
+                type_ctx: Some(self.store().module().types.clone()),
             })
     }
 
     pub fn shared_memory_at(&self, idx: usize) -> Option<MemInst> {
-        self.store.module().memories.get(idx).cloned()
+        self.store().module().memories.get(idx).cloned()
     }
 
     pub fn clone_function_registry(&self) -> LinkRegistry {
         #[cfg(sf_has_simd)]
         {
             LinkRegistry::from_shared(
-                self.store.clone_function_registry(),
-                self.store.clone_ref_registry(),
-                self.store.clone_simd_registry(),
+                self.store().clone_function_registry(),
+                self.store().clone_ref_registry(),
+                self.store().clone_simd_registry(),
+                self.store()
+                    .instance_handle()
+                    .table()
+                    .expect("live JIT instance table"),
             )
         }
         #[cfg(not(sf_has_simd))]
         LinkRegistry::from_shared(
-            self.store.clone_function_registry(),
-            self.store.clone_ref_registry(),
+            self.store().clone_function_registry(),
+            self.store().clone_ref_registry(),
+            self.store()
+                .instance_handle()
+                .table()
+                .expect("live JIT instance table"),
         )
     }
 
@@ -1315,12 +1366,13 @@ impl JitInstance {
             ) -> Result<(), WasmError>
             + 'static,
     {
-        let idx = self.store.module().functions.len();
-        self.store.module_mut().functions.push(FunctionInst::Host {
+        let store = self.store_mut();
+        let idx = store.module().functions.len();
+        store.module_mut().functions.push(FunctionInst::Host {
             func_type: tracked_alloc::rc::Rc::new(func_type),
             callback: HostCallback::new(callback),
         });
-        let _ = self.store.register_local_function(idx);
+        let _ = store.register_local_function(idx);
         idx
     }
 }
@@ -1623,8 +1675,8 @@ mod tests {
         )
         .expect("shared import should link");
 
-        assert_eq!(instance.store.memory(0).current_pages(), 2);
-        assert_eq!(instance.store.memory(0).limits.max(), Some(2));
+        assert_eq!(instance.store().memory(0).current_pages(), 2);
+        assert_eq!(instance.store().memory(0).limits.max(), Some(2));
     }
 
     #[test]
@@ -1649,8 +1701,8 @@ mod tests {
         )
         .expect("shared import should link");
 
-        assert_eq!(instance.store.table(0).size(), 2);
-        assert_eq!(instance.store.table(0).limits.max(), Some(2));
+        assert_eq!(instance.store().table(0).size(), 2);
+        assert_eq!(instance.store().table(0).limits.max(), Some(2));
     }
 
     #[test]

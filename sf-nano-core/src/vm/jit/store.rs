@@ -13,14 +13,16 @@
 use crate::collections;
 use crate::config::Config;
 use tracked_alloc::rc::Rc;
+use tracked_alloc::string::String;
 
 use crate::vm::entities::{FunctionInst, GlobalInst, MemInst, TableInst};
 use crate::vm::jit::entities::ModuleInst;
 use crate::vm::jit::gc_heap::{GcHeap, GcRef};
+use crate::vm::jit::instance::ExportKind;
 #[cfg(sf_has_simd)]
 use crate::vm::link::SharedSimdRegistry;
 use crate::vm::link::{
-    alloc_exn_in, FunctionRegistryEntry, RefRegistryEntry, SharedFunctionRegistry,
+    alloc_exn_in, FunctionRegistryEntry, InstanceHandle, RefRegistryEntry, SharedFunctionRegistry,
     SharedRefRegistry,
 };
 use crate::vm::tag::TagHandle;
@@ -29,6 +31,8 @@ use core::cell::RefCell;
 
 pub struct Store {
     module: ModuleInst,
+    exports: collections::Vec<(String, ExportKind, usize)>,
+    instance_handle: InstanceHandle,
     function_registry: SharedFunctionRegistry,
     ref_registry: SharedRefRegistry,
     #[cfg(sf_has_simd)]
@@ -45,8 +49,11 @@ pub struct Store {
 impl Store {
     #[inline]
     pub fn new(module: ModuleInst) -> Self {
+        let registry = crate::vm::link::LinkRegistry::new();
+        let (_, instance_handle) = registry.reserve_instance();
         Self::new_with_registries(
             module,
+            instance_handle,
             SharedFunctionRegistry::new(),
             Rc::new(RefCell::new(collections::Vec::new())),
             #[cfg(sf_has_simd)]
@@ -57,12 +64,15 @@ impl Store {
     #[inline]
     pub(crate) fn new_with_registries(
         module: ModuleInst,
+        instance_handle: InstanceHandle,
         function_registry: SharedFunctionRegistry,
         ref_registry: SharedRefRegistry,
         #[cfg(sf_has_simd)] simd_registry: SharedSimdRegistry,
     ) -> Self {
         Self {
             module,
+            exports: collections::Vec::new(),
+            instance_handle,
             function_registry,
             ref_registry,
             #[cfg(sf_has_simd)]
@@ -72,6 +82,11 @@ impl Store {
             native_context_cache: None,
             native_stack_cache: None,
         }
+    }
+
+    #[inline]
+    pub(crate) fn instance_handle(&self) -> &InstanceHandle {
+        &self.instance_handle
     }
 
     /// The engine configuration this store's module was created with.
@@ -89,6 +104,16 @@ impl Store {
     pub fn module_mut(&mut self) -> &mut ModuleInst {
         self.module_revision = self.module_revision.wrapping_add(1);
         &mut self.module
+    }
+
+    #[inline]
+    pub(crate) fn exports(&self) -> &[(String, ExportKind, usize)] {
+        &self.exports
+    }
+
+    #[inline]
+    pub(crate) fn set_exports(&mut self, exports: collections::Vec<(String, ExportKind, usize)>) {
+        self.exports = exports;
     }
 
     #[inline]
@@ -332,8 +357,10 @@ mod tests {
     use crate::vm::link::LinkRegistry;
 
     fn store_with(registry: &LinkRegistry) -> alloc::boxed::Box<Store> {
+        let (_, instance_handle) = registry.reserve_instance();
         alloc::boxed::Box::new(Store::new_with_registries(
             ModuleInst::default(),
+            instance_handle,
             registry.function_registry_shared(),
             registry.ref_registry_shared(),
             #[cfg(sf_has_simd)]
@@ -349,7 +376,10 @@ mod tests {
         let fields = collections::vec![Value::I32(23)];
         let handle = store.alloc_exn(tag, fields.clone());
 
-        let resolved = registry.resolve_exn(handle).expect("Store-owned exception");
+        let resolved = registry
+            .arenas()
+            .resolve_exn(handle)
+            .expect("Store-owned exception");
 
         assert_eq!(resolved.tag, tag);
         assert_eq!(resolved.fields, fields);
@@ -365,10 +395,11 @@ mod tests {
             (store.alloc_exn(tag, fields.clone()), tag, fields)
         };
 
-        let first = registry
+        let arenas = registry.arenas();
+        let first = arenas
             .resolve_exn(handle)
             .expect("registry must keep the exception alive");
-        let second = registry
+        let second = arenas
             .resolve_exn(handle)
             .expect("repeated resolution must retain the same object");
         assert!(Rc::ptr_eq(&first, &second));
@@ -381,10 +412,11 @@ mod tests {
         let registry = LinkRegistry::new();
         let mut store = store_with(&registry);
         let i31 = store.register_i31(7);
-        let exn = registry.alloc_exn(TagHandle::mint_fresh(), collections::vec![]);
+        let arenas = registry.arenas();
+        let exn = arenas.alloc_exn(TagHandle::mint_fresh(), collections::vec![]);
 
         assert_ne!(i31, exn);
-        assert!(registry.resolve_exn(i31).is_none());
-        assert!(registry.resolve_exn(exn).is_some());
+        assert!(arenas.resolve_exn(i31).is_none());
+        assert!(arenas.resolve_exn(exn).is_some());
     }
 }

@@ -23,11 +23,12 @@ use crate::module::Module;
 use crate::vm::engine::{Engine, Tier};
 use crate::vm::entities::{Caller, MemInst};
 use crate::vm::imports::ImportedGlobalState;
+use crate::vm::link::{InstanceId, LinkRegistry};
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 
 #[cfg(sf_interp)]
-use crate::vm::interpreter::InterpInstance;
+use crate::vm::interpreter::{InterpInstance, InterpInstanceLease};
 #[cfg(sf_jit)]
 use crate::vm::jit::instance::{InstanceInstantiationError, JitInstance};
 
@@ -45,7 +46,7 @@ enum Inner {
     #[cfg(sf_jit)]
     Jit(JitInstance),
     #[cfg(sf_interp)]
-    Interp(InterpInstance),
+    Interp(InterpInstanceLease),
 }
 
 /// Reject a module the spec says is invalid.
@@ -69,6 +70,14 @@ fn validate(module: &Module) -> Result<(), WasmError> {
 /// A module instantiated on one engine.
 pub struct Instance {
     inner: Inner,
+    registry: LinkRegistry,
+}
+
+/// An engine-owned collection of boxed instances addressed by generational
+/// ids. The existing `Instance` API uses a private one-slot world.
+pub(crate) struct RuntimeWorld {
+    registry: LinkRegistry,
+    instances: collections::Vec<(InstanceId, Instance)>,
 }
 
 /// An export resolved once, so calling it again does not look it up again.
@@ -94,6 +103,62 @@ impl Func {
 }
 
 impl Instance {
+    fn from_module_in_registry(
+        engine: &Engine,
+        module: Module,
+        imports: &[Import],
+        registry: &LinkRegistry,
+    ) -> Result<Self, (Option<Self>, WasmError)> {
+        validate(&module).map_err(|error| (None, error))?;
+        match engine.tier() {
+            #[cfg(sf_jit)]
+            Tier::Jit => {
+                match JitInstance::from_module_with_registry(engine, module, imports, registry) {
+                    Ok(inst) => Ok(Self {
+                        inner: Inner::Jit(inst),
+                        registry: registry.clone(),
+                    }),
+                    Err(error) => {
+                        let (partial, error) = error.into_parts();
+                        Err((
+                            partial.map(|inst| Self {
+                                inner: Inner::Jit(inst),
+                                registry: registry.clone(),
+                            }),
+                            error,
+                        ))
+                    }
+                }
+            }
+            #[cfg(sf_interp)]
+            Tier::Interp => {
+                let dispatch =
+                    interp_imports::bind(&module, imports).map_err(|error| (None, error))?;
+                InterpInstance::new_partial_with_registry(
+                    engine,
+                    module,
+                    Some(InterpInstance::boxed_host(dispatch)),
+                    imports,
+                    None,
+                    registry,
+                )
+                .map(|inst| Self {
+                    inner: Inner::Interp(inst),
+                    registry: registry.clone(),
+                })
+                .map_err(|(partial, error)| {
+                    (
+                        partial.map(|inst| Self {
+                            inner: Inner::Interp(inst),
+                            registry: registry.clone(),
+                        }),
+                        error,
+                    )
+                })
+            }
+        }
+    }
+
     /// Instantiate in `engine`, which decides the tier and the budgets.
     pub fn new(engine: &Engine, wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError> {
         Self::from_module(engine, Module::new("main", wasm_bytes)?, imports)
@@ -112,29 +177,16 @@ impl Instance {
         imports: &[Import],
         registry: &crate::vm::link::LinkRegistry,
     ) -> Result<Self, InstanceInstantiationError> {
-        validate(&module).map_err(InstanceInstantiationError::Complete)?;
-        match engine.tier() {
-            Tier::Jit => JitInstance::from_module_with_registry(engine, module, imports, registry)
-                .map(|inst| Self {
-                    inner: Inner::Jit(inst),
-                }),
-            #[cfg(sf_interp)]
-            Tier::Interp => {
-                let dispatch = interp_imports::bind(&module, imports)
-                    .map_err(InstanceInstantiationError::Complete)?;
-                InterpInstance::new_partial_with_registry(
-                    engine,
-                    module,
-                    Some(InterpInstance::boxed_host(dispatch)),
-                    imports,
-                    None,
-                    registry,
-                )
-                .map(|inst| Self {
-                    inner: Inner::Interp(inst),
-                })
-                .map_err(|(_, error)| InstanceInstantiationError::Complete(error))
-            }
+        match Self::from_module_in_registry(engine, module, imports, registry) {
+            Ok(instance) => Ok(instance),
+            Err((partial, error)) => match partial.map(|instance| instance.inner) {
+                Some(Inner::Jit(instance)) => {
+                    Err(InstanceInstantiationError::Partial { instance, error })
+                }
+                #[cfg(sf_interp)]
+                Some(Inner::Interp(_)) => Err(InstanceInstantiationError::Complete(error)),
+                None => Err(InstanceInstantiationError::Complete(error)),
+            },
         }
     }
 
@@ -183,10 +235,12 @@ impl Instance {
         ) {
             Ok(inst) => Ok(Self {
                 inner: Inner::Interp(inst),
+                registry: registry.clone(),
             }),
             Err((partial, error)) => Err((
                 partial.map(|inst| Self {
                     inner: Inner::Interp(inst),
+                    registry: registry.clone(),
                 }),
                 error,
             )),
@@ -199,24 +253,11 @@ impl Instance {
         module: Module,
         imports: &[Import],
     ) -> Result<Self, WasmError> {
-        validate(&module)?;
-        let inner = match engine.tier() {
-            #[cfg(sf_jit)]
-            Tier::Jit => Inner::Jit(JitInstance::from_module(engine, module, imports)?),
-            #[cfg(sf_interp)]
-            Tier::Interp => {
-                // The host goes in with the module: a start function may
-                // call an import, and it runs during instantiation.
-                let dispatch = interp_imports::bind(&module, imports)?;
-                Inner::Interp(InterpInstance::new(
-                    engine,
-                    module,
-                    Some(InterpInstance::boxed_host(dispatch)),
-                    imports,
-                )?)
-            }
-        };
-        Ok(Self { inner })
+        let mut world = RuntimeWorld::new();
+        let id = world.instantiate(engine, module, imports)?;
+        world
+            .take(id)
+            .ok_or_else(|| WasmError::invalid("new instance missing from its private world"))
     }
 
     /// Which tier is running this instance.
@@ -230,18 +271,31 @@ impl Instance {
         }
     }
 
+    fn instance_id(&self) -> InstanceId {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(instance) => instance.instance_id(),
+            #[cfg(sf_interp)]
+            Inner::Interp(instance) => instance.instance_id(),
+        }
+    }
+
+    fn has_exclusive_lease(&self) -> bool {
+        match &self.inner {
+            #[cfg(sf_jit)]
+            Inner::Jit(instance) => instance.has_exclusive_lease(),
+            #[cfg(sf_interp)]
+            Inner::Interp(instance) => instance.has_exclusive_lease(),
+        }
+    }
+
     /// Call an exported function by name.
     pub fn invoke(
         &mut self,
         name: &str,
         args: &[Value],
     ) -> Result<collections::Vec<Value>, WasmError> {
-        match &mut self.inner {
-            #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.invoke(name, args),
-            #[cfg(sf_interp)]
-            Inner::Interp(inst) => interp_imports::invoke_by_name(inst, name, args),
-        }
+        RuntimeWorld::from_registry(self.registry.clone()).invoke(self.instance_id(), name, args)
     }
 
     /// Resolve an exported function once for repeated calls.
@@ -572,5 +626,162 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(_) => None,
         }
+    }
+}
+
+impl RuntimeWorld {
+    pub(crate) fn new() -> Self {
+        Self {
+            registry: LinkRegistry::new(),
+            instances: collections::Vec::new(),
+        }
+    }
+
+    fn from_registry(registry: LinkRegistry) -> Self {
+        Self {
+            registry,
+            instances: collections::Vec::new(),
+        }
+    }
+
+    fn take(&mut self, id: InstanceId) -> Option<Instance> {
+        let index = self
+            .instances
+            .iter()
+            .position(|(candidate, _)| *candidate == id)?;
+        Some(self.instances.remove(index).1)
+    }
+
+    fn instantiate(
+        &mut self,
+        engine: &Engine,
+        module: Module,
+        imports: &[Import],
+    ) -> Result<InstanceId, WasmError> {
+        let instance = Instance::from_module_in_registry(engine, module, imports, &self.registry)
+            .map_err(|(_, error)| error)?;
+        let id = instance.instance_id();
+        self.instances.push((id, instance));
+        Ok(id)
+    }
+
+    fn free(&mut self, id: InstanceId) -> Result<(), WasmError> {
+        let index = self
+            .instances
+            .iter()
+            .position(|(candidate, _)| *candidate == id)
+            .ok_or_else(|| WasmError::invalid("unknown runtime-world instance"))?;
+        if !self.instances[index].1.has_exclusive_lease() {
+            return Err(WasmError::invalid(
+                "cannot free a checked-out runtime-world instance",
+            ));
+        }
+        let (_, instance) = self.instances.remove(index);
+        drop(instance);
+        Ok(())
+    }
+
+    fn invoke(
+        &mut self,
+        id: InstanceId,
+        name: &str,
+        args: &[Value],
+    ) -> Result<collections::Vec<Value>, WasmError> {
+        let mut token = self
+            .registry
+            .instance_table()
+            .checkout(id)
+            .ok_or_else(|| WasmError::invalid("unknown runtime-world instance"))?;
+        #[cfg(sf_jit)]
+        if let Some(store) = token.jit_mut() {
+            return JitInstance::invoke_store(store, name, args);
+        }
+        #[cfg(sf_interp)]
+        if let Some(instance) = token.interp_mut() {
+            return interp_imports::invoke_by_name(instance, name, args);
+        }
+        Err(WasmError::invalid(
+            "runtime-world instance has no enabled engine",
+        ))
+    }
+}
+
+impl Drop for RuntimeWorld {
+    fn drop(&mut self) {
+        while let Some((id, _)) = self.instances.last() {
+            let id = *id;
+            if self.free(id).is_err() {
+                break;
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const ADD_WASM: &[u8] = &[
+        0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f,
+        0x01, 0x7f, 0x03, 0x02, 0x01, 0x00, 0x07, 0x07, 0x01, 0x03, 0x61, 0x64, 0x64, 0x00, 0x00,
+        0x0a, 0x09, 0x01, 0x07, 0x00, 0x20, 0x00, 0x20, 0x01, 0x6a, 0x0b,
+    ];
+    #[cfg(feature = "memprof")]
+    const EMPTY_WASM: &[u8] = &[0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00];
+
+    #[test]
+    fn runtime_world_invokes_and_frees_by_generation_checked_id() {
+        let mut world = RuntimeWorld::new();
+        let module = Module::new("runtime-world-add", ADD_WASM).expect("parse add module");
+        let id = world
+            .instantiate(&Engine::with_defaults(), module, &[])
+            .expect("instantiate in world");
+
+        assert_eq!(
+            world
+                .invoke(id, "add", &[Value::I32(3), Value::I32(4)])
+                .expect("invoke through world"),
+            collections::vec![Value::I32(7)]
+        );
+
+        let checkout = world
+            .registry
+            .instance_table()
+            .checkout(id)
+            .expect("instance remains occupied");
+        assert!(world.free(id).is_err());
+        drop(checkout);
+        world.free(id).expect("free after checkout ends");
+        assert!(world.invoke(id, "add", &[]).is_err());
+    }
+
+    #[cfg(feature = "memprof")]
+    #[test]
+    fn empty_world_after_free_has_no_live_tracked_bytes() {
+        static TRACKING: std::sync::Mutex<()> = std::sync::Mutex::new(());
+        let tracking_guard = TRACKING.lock().unwrap_or_else(|poison| poison.into_inner());
+        tracked_alloc::set_tracking_enabled(true);
+        tracked_alloc::reset_tracking();
+
+        {
+            let mut world = RuntimeWorld::new();
+            let module =
+                Module::new("runtime-world-live-bytes", EMPTY_WASM).expect("parse empty module");
+            let id = world
+                .instantiate(&Engine::with_defaults(), module, &[])
+                .expect("instantiate in world");
+            world.free(id).expect("free world instance");
+            assert!(world.instances.is_empty());
+        }
+
+        let snapshot = tracked_alloc::snapshot();
+        assert_eq!(
+            snapshot.total_bytes, 0,
+            "live records: {:#?}",
+            snapshot.records
+        );
+        tracked_alloc::set_tracking_enabled(false);
+        tracked_alloc::reset_tracking();
+        drop(tracking_guard);
     }
 }
