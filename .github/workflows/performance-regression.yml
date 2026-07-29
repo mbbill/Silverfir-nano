@@ -500,6 +500,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@1.97.0
 
+      - name: Install wasmi benchmark system dependency
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y libfontconfig1-dev
+
       - name: Restore cargo-criterion
         id: cargo-criterion-cache
         uses: actions/cache@v6
