@@ -193,6 +193,8 @@ jobs:
             echo "- improvement probability: \`99.99%\`"
             echo "- model: \`paired log delta + adaptive Student-t confirmation\`"
             echo "- calibration: \`$calibration\`"
+            echo "- wasmi-benchmarks: \`x64-linux + arm64-linux, JIT + interpreter\`"
+            echo "- wasmi CoreMark score: \`disabled\`"
           } >> "$GITHUB_STEP_SUMMARY"
 
       - name: Test CI implementation
@@ -447,3 +449,126 @@ jobs:
             echo "> dev branches, but a preceding step failed. This is not a pass."
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning title=Dev CI soft-fail::Action required; this job did not pass."
+
+  wasmi:
+    name: wasmi / ${{ matrix.platform }} / ${{ matrix.engine }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 35
+    # Dev continue-on-error suppresses failure email only. A failure remains
+    # action-required and is surfaced in the summary below.
+    continue-on-error: ${{ startsWith(github.ref, 'refs/heads/dev/') }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: x64-linux
+            runner: ubuntu-latest
+            engine: jit
+          - platform: x64-linux
+            runner: ubuntu-latest
+            engine: interp
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            engine: jit
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            engine: interp
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - name: Checkout candidate
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.candidate }}
+
+      - name: Checkout baseline
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ needs.prepare.outputs.baseline }}
+          path: baseline
+
+      - name: Checkout pinned wasmi-benchmarks
+        uses: actions/checkout@v7
+        with:
+          repository: wasmi-labs/wasmi-benchmarks
+          ref: 16a3d7c8fdb05506c116a9451175732d1ac77099
+          path: wasmi-benchmarks
+          submodules: recursive
+          persist-credentials: false
+
+      - uses: dtolnay/rust-toolchain@1.97.0
+
+      - name: Restore cargo-criterion
+        id: cargo-criterion-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cargo/bin/cargo-criterion
+          key: cargo-criterion-1.1.0-${{ runner.os }}-${{ runner.arch }}-rust-1.97.0
+
+      - name: Install pinned cargo-criterion
+        if: steps.cargo-criterion-cache.outputs.cache-hit != 'true'
+        run: cargo install --locked --version 1.1.0 cargo-criterion
+
+      - name: Verify cargo-criterion
+        run: |
+          set -euo pipefail
+          cargo criterion --version | grep -F '1.1.0'
+
+      - uses: Swatinem/rust-cache@v2.9.1
+        with:
+          shared-key: wasmi-${{ matrix.platform }}-${{ matrix.engine }}
+          workspaces: ". -> wasmi-target"
+
+      - name: Compare wasmi-benchmarks
+        env:
+          BASELINE_SHA: ${{ needs.prepare.outputs.baseline }}
+          CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate }}
+          ENGINE: ${{ matrix.engine }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          status=0
+          python3 -m ci.wasmi_performance \
+            --suite wasmi-benchmarks \
+            --suite-sha 16a3d7c8fdb05506c116a9451175732d1ac77099 \
+            --baseline-source baseline \
+            --candidate-source . \
+            --baseline-sha "$BASELINE_SHA" \
+            --candidate-sha "$CANDIDATE_SHA" \
+            --platform "$PLATFORM" \
+            --engine "$ENGINE" \
+            --pilot-probability 80 \
+            --regression-probability 99.99 \
+            --improvement-probability 99.99 \
+            --family-jobs 4 \
+            --max-confirmation-runs 2 \
+            --target-root wasmi-target \
+            --out-dir "wasmi-output/${ENGINE}" || status=$?
+          if [[ -f "wasmi-output/${ENGINE}/summary.md" ]]; then
+            cat "wasmi-output/${ENGINE}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          if [[ "$status" -ne 0 && "$GITHUB_REF" == refs/heads/dev/* ]]; then
+            echo "::warning title=Dev wasmi performance soft-fail::Action required; see the job summary and artifact."
+          fi
+          exit "$status"
+
+      - uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: wasmi-performance-${{ matrix.platform }}-${{ matrix.engine }}
+          path: wasmi-output/${{ matrix.engine }}/
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Mark dev soft-fail as action required
+        if: failure() && startsWith(github.ref, 'refs/heads/dev/')
+        run: |
+          {
+            echo
+            echo "> [!CAUTION]"
+            echo "> **SOFT-FAIL — ACTION REQUIRED.** Email is suppressed for"
+            echo "> dev branches, but a preceding step failed. This is not a pass."
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo "::warning title=Dev CI soft-fail::Action required; this wasmi job did not pass."
