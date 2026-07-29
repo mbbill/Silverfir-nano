@@ -31,10 +31,13 @@ The CI integration pins:
 
 - wasmi-benchmarks commit
   `16a3d7c8fdb05506c116a9451175732d1ac77099`;
-- Rust 1.97.0;
 - cargo-criterion 1.1.0;
 - Linux `libfontconfig1-dev`, required while compiling the upstream
   Criterion/Plotters dependency even when report plotting is disabled.
+
+The Rust toolchain is not pinned: these jobs build with the current `stable`
+channel, and the cargo-criterion cache is keyed on the resolved compiler so a
+stable release bump rebuilds it.
 
 Each job enables exactly one adapter feature with Cargo default features
 disabled:
@@ -118,12 +121,14 @@ Record both revisions and the toolchain with every result:
 ```sh
 git -C "$SF_NANO_REPO" rev-parse HEAD
 git -C "$WASMI_BENCH_REPO" rev-parse HEAD
-cargo +1.97.0 -V
-rustc +1.97.0 -Vv
+cargo -V
+rustc -Vv
 ```
 
-Silverfir-nano currently pins Rust 1.97.0. Use the repository's pinned
-toolchain unless a benchmark campaign deliberately changes it.
+Silverfir-nano tracks the `stable` Rust channel (`rust-toolchain.toml`), so
+record the resolved compiler version with every result. A toolchain update
+changes generated code; scores taken under different `stable` releases are not
+directly comparable.
 
 ## Connect the local Silverfir-nano checkout
 
@@ -142,7 +147,7 @@ unchanged. Verify the resolved dependency before running:
 
 ```sh
 cd "$WASMI_BENCH_REPO"
-cargo +1.97.0 tree -p rt-silverfir-nano | rg sf-nano-core
+cargo tree -p rt-silverfir-nano | rg sf-nano-core
 ```
 
 If the local compiler changes, Cargo will rebuild the adapter and benchmark
@@ -223,7 +228,7 @@ Build the Criterion runner:
 
 ```sh
 cd "$WASMI_BENCH_REPO"
-cargo +1.97.0 bench \
+cargo bench \
   --no-default-features \
   --features "$BENCH_FEATURES" \
   --bench criterion \
@@ -240,7 +245,7 @@ The aggregate `silverfir-nano` feature enables both tiers and should not be
 used for a single-tier regression run:
 
 ```sh
-cargo +1.97.0 bench \
+cargo bench \
   --no-default-features \
   --features "$BENCH_FEATURES" \
   --bench criterion \
@@ -250,7 +255,7 @@ cargo +1.97.0 bench \
 When comparison engines are enabled, filter to Nano only with:
 
 ```sh
-cargo +1.97.0 bench \
+cargo bench \
   --no-default-features \
   --features "$BENCH_FEATURES" \
   --bench criterion \
@@ -261,7 +266,7 @@ To run all enabled engines and generate the complete comparison dataset, omit
 the `silverfir-nano` filter:
 
 ```sh
-cargo +1.97.0 bench \
+cargo bench \
   --no-default-features \
   --features "$BENCH_FEATURES" \
   --bench criterion \
@@ -273,7 +278,7 @@ cargo +1.97.0 bench \
 Run all execution cases for the enabled engines:
 
 ```sh
-cargo +1.97.0 bench \
+cargo bench \
   --no-default-features \
   --features "$BENCH_FEATURES" \
   --bench criterion \
@@ -283,7 +288,7 @@ cargo +1.97.0 bench \
 Run one case by using its group name:
 
 ```sh
-cargo +1.97.0 bench \
+cargo bench \
   --no-default-features \
   --features "$BENCH_FEATURES" \
   --bench criterion \
@@ -299,7 +304,7 @@ operation is timed.
 Run all startup cases:
 
 ```sh
-cargo +1.97.0 bench \
+cargo bench \
   --no-default-features \
   --features "$BENCH_FEATURES" \
   --bench criterion \
@@ -356,7 +361,7 @@ for manual cross-engine comparisons but is not part of the automated
 wasmi-benchmarks regression jobs:
 
 ```sh
-cargo +1.97.0 run \
+cargo run \
   --profile bench \
   --no-default-features \
   --features "$BENCH_FEATURES" \

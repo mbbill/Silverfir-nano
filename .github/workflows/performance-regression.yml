@@ -220,7 +220,7 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           echo "::warning title=Lint suppression audit::Unreviewed Rust lint suppressions are present; benchmark measurement will continue."
 
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@stable
         if: github.event_name == 'push' && startsWith(github.ref, 'refs/heads/dev/')
 
       - uses: Swatinem/rust-cache@v2.9.1
@@ -331,7 +331,7 @@ jobs:
           ref: ${{ needs.prepare.outputs.baseline }}
           path: baseline
 
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@stable
         if: matrix.target != 'riscv32gc-unknown-linux-musl'
         with:
           targets: ${{ matrix.target }}
@@ -518,7 +518,8 @@ jobs:
           submodules: recursive
           persist-credentials: false
 
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@stable
+        id: rust-toolchain
 
       - name: Install wasmi benchmark system dependency
         run: |
@@ -530,7 +531,7 @@ jobs:
         uses: actions/cache@v6
         with:
           path: ~/.cargo/bin/cargo-criterion
-          key: cargo-criterion-1.1.0-${{ runner.os }}-${{ runner.arch }}-rust-1.97.0
+          key: cargo-criterion-1.1.0-${{ runner.os }}-${{ runner.arch }}-rust-${{ steps.rust-toolchain.outputs.cachekey }}
 
       - name: Install pinned cargo-criterion
         if: steps.cargo-criterion-cache.outputs.cache-hit != 'true'

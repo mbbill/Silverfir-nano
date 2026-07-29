@@ -21,7 +21,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: dtolnay/rust-toolchain@1.97.0
+      - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
 
@@ -170,7 +170,7 @@ jobs:
           key: testsuite-${{ steps.testsuite.outputs.sha }}
 
       - name: Install stable Rust
-        uses: dtolnay/rust-toolchain@1.97.0
+        uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.targets }}
 

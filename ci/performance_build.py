@@ -34,7 +34,7 @@ def cargo_command(*, engine: str, target: str) -> list[str]:
             "build-std=std,panic_abort",
         ]
     else:
-        command = ["cargo", "+1.97.0", "build"]
+        command = ["cargo", "build"]
     command.extend(
         [
             "--release",
