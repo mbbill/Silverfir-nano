@@ -1851,14 +1851,17 @@ impl RiscV {
         self.br_far(a, "bgeu", T2, T3, &st.slow);
         a.ins(&format!("ld {T3}, 112({STATE})")); // table 0 entries
                                                   // Entries are `RefHandle` slots (8 bytes); a plain handle's payload
-                                                  // is the function index. The slot-form guard below rejects exactly
-                                                  // normalized null (all-ones); every other encoding proceeds to the
-                                                  // per-function info lookup.
+                                                  // is the function index, which always fits in the low 32 bits. The
+                                                  // slot-form guard below therefore rejects every encoding with a
+                                                  // nonzero upper half: normalized null (all-ones) and every special
+                                                  // (tagged) handle, whose tag sits at bit 60. This matches x86_64 and
+                                                  // arm64. It does not bound the index against `indirect_info`'s
+                                                  // length; that check is a separate predicate.
         a.ins(&format!("slli {T4}, {T2}, 3"));
         a.ins(&format!("add {T3}, {T3}, {T4}"));
-        a.ins(&format!("ld {T4}, 0({T3})")); // fi (all-ones = null)
-        a.ins(&format!("li {T5}, -1"));
-        self.br_far(a, "beq", T4, T5, &st.slow); // normalized null only
+        a.ins(&format!("ld {T4}, 0({T3})")); // fi
+        a.ins(&format!("srli {T5}, {T4}, 32"));
+        self.br_far(a, "bne", T5, "zero", &st.slow); // upper 32 bits are nonzero
         a.ins(&format!("ld {T5}, 128({STATE})")); // info base
         a.ins(&format!("slli {T6}, {T4}, 1"));
         a.ins(&format!("add {T6}, {T6}, {T4}")); // fi*3
