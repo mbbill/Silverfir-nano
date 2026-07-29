@@ -64,6 +64,9 @@ TESTS = [
     bench("lz4/lz4.wasm", "lz4", ["lz4.wasm"],
           r"(lz4 (?:compress|decompress): throughput = \S+ MB/s)",
           multi=True, contains="64 KB input -> 27 KB compressed"),
+    bench("funcref/funcref.wasm", "funcref", ["funcref.wasm"],
+          r"(funcref (?:exported-table|direct): rate = \S+ calls/s)",
+          multi=True, contains="funcref validates: table=264 direct=264"),
     # --- Lua ---
     bench("lua/fib", "lua", ["lua.wasm", "fib.lua"],
           r"fib: rate = (\S+ fib20/s)", contains="fib(20) = 6765"),

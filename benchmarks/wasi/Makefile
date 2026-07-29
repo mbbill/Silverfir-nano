@@ -22,10 +22,10 @@ CFLAGS := -O2 $(TARGET)
 COMMON := common/bench.h
 
 WASM := sha256/sha256.wasm bzip2/bzip2.wasm lz4/lz4.wasm fib/fib.wasm \
-        mandelbrot/mandel.wasm stream/stream.wasm coremark/coremark.wasm \
-        c-ray/c-ray.wasm sqlite/sqlite_bench.wasm
+        funcref/funcref.wasm mandelbrot/mandel.wasm stream/stream.wasm \
+        coremark/coremark.wasm c-ray/c-ray.wasm sqlite/sqlite_bench.wasm
 
-.PHONY: all profile clean sha256 bzip2 lz4 fib mandel stream coremark c-ray sqlite
+.PHONY: all profile clean sha256 bzip2 lz4 fib funcref mandel stream coremark c-ray sqlite
 
 all: $(WASM)
 
@@ -49,6 +49,11 @@ lz4/lz4.wasm: lz4/bench_lz4.c lz4/lz4.c $(COMMON)
 fib: fib/fib.wasm
 fib/fib.wasm: fib/fib.c $(COMMON)
 	$(CC) $(CFLAGS) -o $@ fib/fib.c
+
+funcref: funcref/funcref.wasm
+funcref/funcref.wasm: funcref/funcref.c $(COMMON)
+	$(CC) $(CFLAGS) -Wl,--export-table -Wl,--strip-debug \
+	    -o $@ funcref/funcref.c
 
 mandel: mandelbrot/mandel.wasm
 mandelbrot/mandel.wasm: mandelbrot/mandel.c
@@ -108,6 +113,6 @@ lz4/lz4_profile.wasm: lz4/bench_lz4_profile.c lz4/lz4.c
 
 clean:
 	rm -f sha256/sha256.wasm bzip2/bzip2.wasm lz4/lz4.wasm fib/fib.wasm \
-	      mandelbrot/mandel.wasm stream/stream.wasm \
+	      funcref/funcref.wasm mandelbrot/mandel.wasm stream/stream.wasm \
 	      coremark/coremark.wasm c-ray/c-ray.wasm sqlite/sqlite_bench.wasm \
 	      sha256/sha256_profile.wasm bzip2/bzip2_profile.wasm lz4/lz4_profile.wasm
