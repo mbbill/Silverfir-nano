@@ -772,6 +772,20 @@
         "sf-nano-spectest/src/wast_test_runner.rs:1592-1595"
       ],
       "resolved_at_round": 3
+    },
+    {
+      "id": "final-summary",
+      "title": "Review concluded by the project owner after seven passes",
+      "issue_summary": "Adversarial design review of docs/RUNTIME_WORLD.md: two persistent roles (refiner + rotated critics), evidence-mandatory, three-round escalation rule.",
+      "alternatives_considered": [
+        "Continue rotating critics until a fully clean pass (protocol default)"
+      ],
+      "decision": "Concluded at the owner's direction after pass 7. Totals: 7 passes, 5 rotated critics, 35 issues raised (ids 1-35), 35 resolved on file:line evidence, 0 escalations, 36 decisions preceding this entry. Find rate per pass: 9/7/3/5/3/3/5. The plan grew 236 -> 1997 lines and was structurally reshaped: state split (Rc arenas + Weak-backed world-owned instance table), checkout tokens with RAII in-use counts and the token-materialization invariant, disjoint-range funcref encoding, owner-bound partition with the Value=absolute enforcement invariant and conversion primitives keyed to the frame's owner, single-tier worlds, accessor narrowing with stored per-container facts and maintained tripwires, 10-step migration with coverage baselines preceding the changes they measure. Rationale for concluding rather than rotating: the dominant boundary-pattern class closed structurally (two independent fourth-channel searches failed) and the plan now mandates the mechanical checks (two-armed accessor grep, channel-exhaustiveness argument, named-failure rule, step-1 baselines) that convert reviewer vigilance into implementation-time procedure; residual scrutiny is routed to per-step implementation review. Known deliberately-open items: the interp-to-interp Linked call path (named follow-up with a stated trap), cross-engine funcaddr callability (follow-up per decision 18), and the three 'Filed separately' fail-loudly items (SIMD arena growth, pooled-ceiling masking, dispatch-guard comment divergence tracked as task #14).",
+      "evidence": [
+        "docs/RUNTIME_WORLD.md",
+        "docs/decisions.json"
+      ],
+      "resolved_at_round": null
     }
   ]
 }
