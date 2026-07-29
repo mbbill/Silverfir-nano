@@ -603,8 +603,40 @@ impl<'a> BlockLowerContext<'a> {
         &mut self,
         idx: u32,
         args: &[SsaOperand],
+        retag: bool,
     ) -> Result<(), WasmError> {
         let src_value = single_arg(args)?.unwrap_value();
+        if retag {
+            let src = self.use_value(src_value)?;
+            let scratch = self.borrow_free_gp_dynamic_regs(2)?;
+            let absolute = scratch[0];
+            let base = scratch[1];
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::RefAbsolutize {
+                    src: MachineValue::Reg(src),
+                    dst: absolute,
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Load {
+                    owner: MachineRegOwner::LinearValue,
+                    ty: MachineStorageType::GpWord,
+                    dst: base,
+                    addr: self.globals_ptr_slot_addr(idx)?,
+                    width: self.gp_word_mem_width(),
+                    extension: MachineLoadExtension::None,
+                },
+            });
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::Store {
+                    ty: MachineStorageType::GpWord,
+                    addr: MachineAddr { base, offset: 0 },
+                    width: self.gp_word_mem_width(),
+                    src: MachineValue::Reg(absolute),
+                },
+            });
+            return Ok(());
+        }
         let ty = self.value_storage_type(src_value);
         #[cfg(sf_has_simd)]
         if matches!(ty, MachineStorageType::V128) {
@@ -832,6 +864,7 @@ impl<'a> BlockLowerContext<'a> {
         &mut self,
         table_idx: u32,
         args: &[SsaOperand],
+        retag: bool,
         continuation: MachineBlockId,
         trap: MachineBlockId,
     ) -> Result<LeafLowering, WasmError> {
@@ -841,11 +874,25 @@ impl<'a> BlockLowerContext<'a> {
         };
         let index = self.use_value(index_value)?;
         let src = self.use_value(src_value)?;
-        let (index64, table_len) = if let Some(index64) = self.dead_value_reg(index_value) {
-            (index64, self.borrow_free_gp_dynamic_regs(1)?[0])
+        let dead_index = self.dead_value_reg(index_value);
+        let scratch_count = usize::from(retag) + if dead_index.is_some() { 1 } else { 2 };
+        let scratch = self.borrow_free_gp_dynamic_regs(scratch_count)?;
+        let (src, scratch_offset) = if retag {
+            let absolute = scratch[0];
+            self.emit_machine_inst(MachineInst {
+                kind: MachineInstKind::RefAbsolutize {
+                    src: MachineValue::Reg(src),
+                    dst: absolute,
+                },
+            });
+            (absolute, 1)
         } else {
-            let scratch = self.borrow_free_gp_dynamic_regs(2)?;
-            (scratch[0], scratch[1])
+            (src, 0)
+        };
+        let (index64, table_len) = if let Some(index64) = dead_index {
+            (index64, scratch[scratch_offset])
+        } else {
+            (scratch[scratch_offset], scratch[scratch_offset + 1])
         };
         let continuation_ops = self.lower_table_access_continuation(
             table_idx,

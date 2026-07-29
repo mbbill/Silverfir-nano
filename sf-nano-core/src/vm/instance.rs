@@ -438,7 +438,8 @@ impl Instance {
         }
     }
 
-    /// A reference handle for a function, for `ref.func` across instances.
+    /// An absolute reference handle for a function, suitable for crossing
+    /// instance boundaries.
     pub fn function_handle_at(&self, idx: usize) -> Option<RefHandle> {
         match &self.inner {
             #[cfg(sf_jit)]

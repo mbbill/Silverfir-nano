@@ -1336,6 +1336,9 @@ fn render_machine_inst(kind: &MachineInstKind) -> String {
         MachineInstKind::RefAsNonNull { src, dst } => {
             format!("ref.as_non_null {} -> r{}", mval(src), dst.0)
         }
+        MachineInstKind::RefAbsolutize { src, dst } => {
+            format!("ref.absolutize {} -> r{}", mval(src), dst.0)
+        }
         MachineInstKind::RefEq { lhs, rhs, dst } => {
             format!("ref.eq {} {} -> r{}", mval(lhs), mval(rhs), dst.0)
         }

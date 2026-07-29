@@ -1055,6 +1055,18 @@ impl<'a> Arm32Backend<'a> {
                     *dst,
                 )?;
             }
+            MachineInstKind::RefAbsolutize { src, dst } => {
+                self.compile_preserved_result(
+                    preserved_op::REF_ABSOLUTIZE,
+                    0,
+                    0,
+                    *src,
+                    MachineValue::Imm64(0),
+                    MachineValue::Imm64(0),
+                    MachineStorageType::GpWord,
+                    *dst,
+                )?;
+            }
             MachineInstKind::RefEq { lhs, rhs, dst } => {
                 self.compile_preserved_result(
                     preserved_op::REF_EQ,

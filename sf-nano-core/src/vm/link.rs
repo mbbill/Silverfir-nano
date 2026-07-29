@@ -17,10 +17,12 @@
 
 use crate::collections;
 use crate::vm::tag::TagHandle;
+#[cfg(sf_jit)]
+use crate::vm::value::FUNCADDR_TOP;
 use crate::vm::value::{RefHandle, Value};
 use core::cell::RefCell;
 #[cfg(sf_jit)]
-use core::cell::{Cell, Ref, RefMut};
+use core::cell::{Cell, Ref};
 use tracked_alloc::{
     boxed::Box,
     rc::{Rc, Weak},
@@ -469,16 +471,19 @@ pub(crate) struct ExnInstance {
 
 #[cfg(sf_jit)]
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct FunctionRegistryEntry {
-    pub(crate) store: *mut Store,
-    pub(crate) local_index: usize,
+pub(crate) struct FuncEntry {
+    pub(crate) owner: InstanceId,
+    pub(crate) local_index: u32,
 }
 
 #[cfg(sf_jit)]
 #[derive(Clone)]
 pub(crate) struct SharedFunctionRegistry {
-    entries: Rc<RefCell<collections::Vec<FunctionRegistryEntry>>>,
-    revision: Rc<Cell<u64>>,
+    entries: Rc<RefCell<collections::Vec<FuncEntry>>>,
+    // This is a lifetime high-water mark, not a cache revision. Absolute
+    // handles may outlive their owner, so shrinking it on instance teardown
+    // could make a stale absolute value alias a later instance's local range.
+    max_local_functions_ever: Rc<Cell<usize>>,
 }
 
 #[cfg(sf_jit)]
@@ -487,24 +492,47 @@ impl SharedFunctionRegistry {
     pub(crate) fn new() -> Self {
         Self {
             entries: Rc::new(RefCell::new(collections::Vec::new())),
-            revision: Rc::new(Cell::new(0)),
+            max_local_functions_ever: Rc::new(Cell::new(0)),
         }
     }
 
     #[inline]
-    pub(crate) fn borrow(&self) -> Ref<'_, collections::Vec<FunctionRegistryEntry>> {
+    pub(crate) fn borrow(&self) -> Ref<'_, collections::Vec<FuncEntry>> {
         self.entries.borrow()
     }
 
     #[inline]
-    pub(crate) fn borrow_mut(&self) -> RefMut<'_, collections::Vec<FunctionRegistryEntry>> {
-        self.revision.set(self.revision.get().wrapping_add(1));
-        self.entries.borrow_mut()
+    pub(crate) fn observe_local_function_count(&self, count: usize) {
+        assert!(
+            count <= FUNCADDR_TOP,
+            "local function index space exceeds the funcaddr encoding"
+        );
+        let max_local_functions = self.max_local_functions_ever.get().max(count);
+        if let Some(last_funcaddr) = self.entries.borrow().len().checked_sub(1) {
+            let lowest_absolute = FUNCADDR_TOP
+                .checked_sub(last_funcaddr)
+                .expect("world function address space exhausted");
+            assert!(
+                lowest_absolute >= max_local_functions,
+                "local and absolute function address ranges overlap"
+            );
+        }
+        self.max_local_functions_ever.set(max_local_functions);
     }
 
     #[inline]
-    pub(crate) fn revision(&self) -> u64 {
-        self.revision.get()
+    pub(crate) fn register(&self, entry: FuncEntry) -> usize {
+        let mut entries = self.entries.borrow_mut();
+        let funcaddr = entries.len();
+        let encoded = FUNCADDR_TOP
+            .checked_sub(funcaddr)
+            .expect("world function address space exhausted");
+        assert!(
+            encoded >= self.max_local_functions_ever.get(),
+            "local and absolute function address ranges overlap"
+        );
+        entries.push(entry);
+        funcaddr
     }
 }
 
@@ -955,6 +983,50 @@ mod instance_table_tests {
         assert_eq!(table.in_use(id), Some(0));
         table.free(id).expect("free after checkouts end");
         assert!(table.checkout(id).is_none());
+
+        let caller_id = table.reserve();
+        let caller_handle = table.handle(caller_id);
+        table
+            .occupy_jit(
+                caller_id,
+                test_store(&registry, caller_handle, "miri-caller"),
+            )
+            .expect("occupy Miri caller");
+        let owner_id = table.reserve();
+        let owner_handle = table.handle(owner_id);
+        table
+            .occupy_jit(
+                owner_id,
+                test_store(&registry, owner_handle, "miri-foreign-owner"),
+            )
+            .expect("occupy Miri foreign owner");
+        assert_ne!(caller_id, owner_id);
+
+        let mut caller = table.checkout(caller_id).expect("caller checkout");
+        let caller_store = caller.jit_mut().expect("caller materialization");
+        assert_eq!(caller_store.instance_handle().self_id(), caller_id);
+
+        let owned_owner = {
+            let owner = caller_store
+                .instance_handle()
+                .checkout(owner_id)
+                .expect("nested foreign-owner checkout");
+            let owner_store = owner.jit().expect("foreign-owner materialization");
+            (
+                owner_store.instance_handle().self_id(),
+                owner_store.module().name.clone(),
+            )
+        };
+
+        assert_eq!(owned_owner.0, owner_id);
+        assert_eq!(owned_owner.1, "miri-foreign-owner");
+        assert_eq!(table.in_use(owner_id), Some(0));
+        assert_eq!(caller_store.instance_handle().self_id(), caller_id);
+        assert_eq!(caller_store.module().name, "miri-caller");
+
+        drop(caller);
+        table.free(caller_id).expect("free Miri caller");
+        table.free(owner_id).expect("free Miri foreign owner");
     }
 
     #[test]

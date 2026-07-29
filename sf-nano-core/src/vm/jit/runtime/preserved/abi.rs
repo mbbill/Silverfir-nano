@@ -71,4 +71,5 @@ pub(crate) mod op {
     pub(crate) const EH_THROW: u32 = 42;
     pub(crate) const EH_THROW_REF: u32 = 43;
     pub(crate) const EH_ALLOC_EXN_REF: u32 = 44;
+    pub(crate) const REF_ABSOLUTIZE: u32 = 45;
 }

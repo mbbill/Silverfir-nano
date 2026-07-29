@@ -135,7 +135,6 @@ pub(crate) struct NativeContext {
     type_canon: collections::Vec<u32>,
     cached_table_revisions: collections::Vec<u64>,
     cached_module_revision: u64,
-    cached_function_registry_revision: u64,
     dispatch_gp_unit_bytes: u8,
     #[cfg(sf_call_trace)]
     pub(crate) trace_stack: collections::Vec<u32>,
@@ -230,11 +229,9 @@ impl NativeContext {
         let Some(store) = self.store() else {
             self.cached_table_revisions.clear();
             self.cached_module_revision = 0;
-            self.cached_function_registry_revision = 0;
             return;
         };
         let module_revision = store.module_revision();
-        let function_registry_revision = store.function_registry_revision();
         let table_revisions: collections::Vec<_> = store
             .module()
             .tables
@@ -242,7 +239,6 @@ impl NativeContext {
             .map(TableInstJit::revision)
             .collect();
         self.cached_module_revision = module_revision;
-        self.cached_function_registry_revision = function_registry_revision;
         self.cached_table_revisions = table_revisions;
     }
 
@@ -254,7 +250,6 @@ impl NativeContext {
         let module = store.module();
         if self.current_module != module as *const ModuleInst
             || self.cached_module_revision != store.module_revision()
-            || self.cached_function_registry_revision != store.function_registry_revision()
             || self.globals_len != module.globals.len()
             || self.memory_views.len() != module.memories.len()
             || self.table_views.len() != module.tables.len()
@@ -477,27 +472,12 @@ impl NativeContext {
 
         let module = store.module();
         let type_canon = &self.type_canon;
-        let current_store = self.store;
-        let registry = store.clone_function_registry();
-        let invalid_view = NativeFunctionView {
-            kind: function_kind::INVALID,
-            type_canon: u32::MAX,
-            local_target: u32::MAX,
-        };
-        let function_views: collections::Vec<_> = registry
-            .borrow()
+        let function_views: collections::Vec<_> = module
+            .functions
             .iter()
-            .map(|entry| {
-                let Some(owner_store) = (unsafe { entry.store.as_ref() }) else {
-                    return invalid_view;
-                };
-                let Some(func) = owner_store.module().functions.get(entry.local_index) else {
-                    return invalid_view;
-                };
-                let local_index = entry.local_index;
-                let is_local =
-                    core::ptr::eq(owner_store as *const Store, current_store as *const Store)
-                        && matches!(func, FunctionInst::Local { .. });
+            .enumerate()
+            .map(|(local_index, func)| {
+                let is_local = matches!(func, FunctionInst::Local { .. });
                 let (kind, local_target) = if is_local {
                     (function_kind::LOCAL, local_index as u32)
                 } else {
@@ -505,7 +485,7 @@ impl NativeContext {
                 };
                 let func_type = func.func_type();
                 let type_canon = match func {
-                    FunctionInst::Local { type_index, .. } if is_local => type_canon
+                    FunctionInst::Local { type_index, .. } => type_canon
                         .get(*type_index as usize)
                         .copied()
                         .unwrap_or(u32::MAX),
@@ -778,7 +758,6 @@ impl NativeContextBox {
                 type_canon: collections::Vec::new(),
                 cached_table_revisions: collections::Vec::new(),
                 cached_module_revision: 0,
-                cached_function_registry_revision: 0,
                 dispatch_gp_unit_bytes: core::mem::size_of::<usize>() as u8,
                 #[cfg(sf_call_trace)]
                 trace_stack: collections::Vec::new(),
@@ -1037,7 +1016,7 @@ mod tests {
     }
 
     #[test]
-    fn refresh_function_views_preserves_dead_registry_slots() {
+    fn refresh_function_views_are_indexed_only_by_local_function_index() {
         let registry = LinkRegistry::new();
         {
             let mut dropped_store = store_with_registry(module_with_local("dropped"), &registry);
@@ -1047,7 +1026,8 @@ mod tests {
 
         let mut live_store = store_with_registry(module_with_local("live"), &registry);
         let live_handle = live_store.register_local_function(0);
-        assert_eq!(live_handle.payload(), 1);
+        assert_eq!(live_handle.payload(), 0);
+        assert_eq!(live_store.clone_function_registry().borrow().len(), 2);
 
         let n_globals = live_store.module().globals.len();
         let ctx = NativeContext::new(
@@ -1056,19 +1036,11 @@ mod tests {
             n_globals,
         );
 
-        assert_eq!(ctx.function_views_len, 2);
+        assert_eq!(ctx.function_views_len, 1);
         let views =
             unsafe { core::slice::from_raw_parts(ctx.function_views_base, ctx.function_views_len) };
         assert_eq!(
             views[0],
-            NativeFunctionView {
-                kind: function_kind::INVALID,
-                type_canon: u32::MAX,
-                local_target: u32::MAX,
-            }
-        );
-        assert_eq!(
-            views[1],
             NativeFunctionView {
                 kind: function_kind::LOCAL,
                 type_canon: 0,

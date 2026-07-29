@@ -363,32 +363,44 @@ fn inline_throw_tag(
     Some((caller_tag_idx, tag_inst.handle, tag_arity))
 }
 
-fn inline_local_spec_for_func_idx<'a>(
-    compile: CompileContext<'a>,
+fn with_inline_local_spec<R>(
+    compile: CompileContext<'_>,
     func_idx: u32,
-) -> Option<(
-    &'a crate::module::entities::FunctionSpec,
-    &'a crate::vm::jit::store::Store,
-)> {
+    analyze: impl for<'owner> FnOnce(
+        &'owner crate::module::entities::FunctionSpec,
+        &'owner crate::vm::jit::store::Store,
+    ) -> Option<R>,
+) -> Option<R> {
     match compile.store.function(func_idx as usize) {
-        FunctionInst::Local { spec, .. } => Some((spec, compile.store)),
+        FunctionInst::Local { spec, .. } => analyze(spec, compile.store),
         FunctionInst::Linked { handle, .. } => {
             let entry = compile.store.function_entry_for_handle(*handle)?;
-            let owner_store = unsafe { entry.store.as_ref()? };
-            let FunctionInst::Local { spec, .. } = owner_store.function(entry.local_index) else {
+            if entry.owner == compile.store.instance_handle().self_id() {
+                let FunctionInst::Local { spec, .. } =
+                    compile.store.function(entry.local_index as usize)
+                else {
+                    return None;
+                };
+                return analyze(spec, compile.store);
+            }
+
+            let owner = compile.store.instance_handle().checkout(entry.owner)?;
+            let owner_store = owner.jit()?;
+            let FunctionInst::Local { spec, .. } = owner_store.function(entry.local_index as usize)
+            else {
                 return None;
             };
-            Some((spec, owner_store))
+            analyze(spec, owner_store)
         }
         FunctionInst::Host { .. } => None,
     }
 }
 
-fn simple_inline_throw_wrapper(
+fn analyze_simple_inline_throw_wrapper(
     compile: CompileContext<'_>,
-    func_idx: u32,
+    spec: &crate::module::entities::FunctionSpec,
+    owner_store: &crate::vm::jit::store::Store,
 ) -> Option<InlineThrowWrapper> {
-    let (spec, owner_store) = inline_local_spec_for_func_idx(compile, func_idx)?;
     let params = spec.func_type().params().len() as u32;
     let bytes: &[u8] = spec.code();
     let mut code: Payload = bytes.into();
@@ -458,11 +470,20 @@ fn simple_inline_throw_wrapper(
     })
 }
 
-fn simple_inline_conditional_throw_wrapper(
+fn simple_inline_throw_wrapper(
     compile: CompileContext<'_>,
     func_idx: u32,
+) -> Option<InlineThrowWrapper> {
+    with_inline_local_spec(compile, func_idx, |spec, owner_store| {
+        analyze_simple_inline_throw_wrapper(compile, spec, owner_store)
+    })
+}
+
+fn analyze_simple_inline_conditional_throw_wrapper(
+    compile: CompileContext<'_>,
+    spec: &crate::module::entities::FunctionSpec,
+    owner_store: &crate::vm::jit::store::Store,
 ) -> Option<InlineConditionalThrowWrapper> {
-    let (spec, owner_store) = inline_local_spec_for_func_idx(compile, func_idx)?;
     if spec.func_type().params() != [ValueType::I32]
         || spec.func_type().results() != [ValueType::I32]
     {
@@ -508,6 +529,15 @@ fn simple_inline_conditional_throw_wrapper(
         tag_idx: caller_tag_idx?,
         compare_const,
         result_const,
+    })
+}
+
+fn simple_inline_conditional_throw_wrapper(
+    compile: CompileContext<'_>,
+    func_idx: u32,
+) -> Option<InlineConditionalThrowWrapper> {
+    with_inline_local_spec(compile, func_idx, |spec, owner_store| {
+        analyze_simple_inline_conditional_throw_wrapper(compile, spec, owner_store)
     })
 }
 
@@ -1605,7 +1635,14 @@ impl<'a> DecodeContext<'a> {
             }
             OP(GLOBAL_SET) => {
                 if let Immediate::GlobalIndex(idx) = imm {
-                    self.handle_primitive(PrimitiveOpKind::GlobalSet { idx: *idx });
+                    self.handle_primitive(PrimitiveOpKind::GlobalSet {
+                        idx: *idx,
+                        retag: self
+                            .compile
+                            .store
+                            .module()
+                            .global_needs_funcref_retag(*idx as usize),
+                    });
                 }
             }
 
@@ -1623,6 +1660,11 @@ impl<'a> DecodeContext<'a> {
                 if let Immediate::TableIndex(table_idx) = imm {
                     self.handle_primitive(PrimitiveOpKind::TableSet {
                         table_idx: *table_idx,
+                        retag: self
+                            .compile
+                            .store
+                            .module()
+                            .table_is_reachable(*table_idx as usize),
                     });
                 }
             }

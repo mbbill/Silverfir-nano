@@ -22,18 +22,21 @@ use crate::vm::jit::instance::ExportKind;
 #[cfg(sf_has_simd)]
 use crate::vm::link::SharedSimdRegistry;
 use crate::vm::link::{
-    alloc_exn_in, FunctionRegistryEntry, InstanceHandle, RefRegistryEntry, SharedFunctionRegistry,
+    alloc_exn_in, FuncEntry, InstanceHandle, RefRegistryEntry, SharedFunctionRegistry,
     SharedRefRegistry,
 };
 use crate::vm::tag::TagHandle;
-use crate::vm::value::{RefHandle, Value};
+use crate::vm::value::{RefHandle, Value, FUNCADDR_TOP};
 use core::cell::RefCell;
+
+const UNREGISTERED_FUNCADDR: usize = usize::MAX;
 
 pub struct Store {
     module: ModuleInst,
     exports: collections::Vec<(String, ExportKind, usize)>,
     instance_handle: InstanceHandle,
     function_registry: SharedFunctionRegistry,
+    local_funcaddrs: collections::Vec<usize>,
     ref_registry: SharedRefRegistry,
     #[cfg(sf_has_simd)]
     simd_registry: SharedSimdRegistry,
@@ -69,11 +72,14 @@ impl Store {
         ref_registry: SharedRefRegistry,
         #[cfg(sf_has_simd)] simd_registry: SharedSimdRegistry,
     ) -> Self {
+        let function_count = module.functions.len();
+        function_registry.observe_local_function_count(function_count);
         Self {
             module,
             exports: collections::Vec::new(),
             instance_handle,
             function_registry,
+            local_funcaddrs: collections::vec![UNREGISTERED_FUNCADDR; function_count],
             ref_registry,
             #[cfg(sf_has_simd)]
             simd_registry,
@@ -165,11 +171,6 @@ impl Store {
     }
 
     #[inline]
-    pub(crate) fn function_registry_revision(&self) -> u64 {
-        self.function_registry.revision()
-    }
-
-    #[inline]
     pub(crate) fn take_native_context_cache(
         &mut self,
     ) -> Option<crate::vm::jit::runtime::context::NativeContextBox> {
@@ -247,37 +248,41 @@ impl Store {
     }
 
     pub(crate) fn register_local_function(&mut self, local_index: usize) -> RefHandle {
-        let self_ptr = self as *mut Store;
-        let handle = {
-            let mut registry = self.function_registry.borrow_mut();
-            let handle = RefHandle::new(registry.len());
-            registry.push(FunctionRegistryEntry {
-                store: self_ptr,
-                local_index,
-            });
-            handle
-        };
+        self.function_registry
+            .observe_local_function_count(self.module.functions.len());
+        let funcaddr = self.function_registry.register(FuncEntry {
+            owner: self.instance_handle.self_id(),
+            local_index: u32::try_from(local_index)
+                .expect("local function index exceeds the funcaddr encoding"),
+        });
+        if self.local_funcaddrs.len() <= local_index {
+            self.local_funcaddrs
+                .resize(local_index + 1, UNREGISTERED_FUNCADDR);
+        }
+        self.local_funcaddrs[local_index] = funcaddr;
+        let handle = RefHandle::new(local_index);
         self.module.ensure_function_handle_capacity(local_index + 1);
         self.module.set_function_handle(local_index, handle);
         handle
     }
 
-    pub(crate) fn function_entry_for_handle(
-        &self,
-        handle: RefHandle,
-    ) -> Option<FunctionRegistryEntry> {
+    #[inline]
+    pub(crate) fn funcaddr_for_local_index(&self, local_index: usize) -> Option<usize> {
+        let funcaddr = self.local_funcaddrs.get(local_index).copied()?;
+        (funcaddr != UNREGISTERED_FUNCADDR).then_some(funcaddr)
+    }
+
+    pub(crate) fn function_entry_for_handle(&self, handle: RefHandle) -> Option<FuncEntry> {
         if handle.is_null() || handle.is_special() {
             return None;
         }
-        let entry = self
-            .function_registry
-            .borrow()
-            .get(handle.payload())
-            .copied()?;
-        if entry.store.is_null() {
-            return None;
-        }
-        Some(entry)
+        let funcaddr = FUNCADDR_TOP.checked_sub(handle.encoded())?;
+        self.function_registry.borrow().get(funcaddr).copied()
+    }
+
+    #[inline]
+    pub(crate) fn function_entry_for_funcaddr(&self, funcaddr: usize) -> Option<FuncEntry> {
+        self.function_registry.borrow().get(funcaddr).copied()
     }
 
     pub(crate) fn register_i31(&mut self, value: i32) -> RefHandle {
@@ -332,11 +337,6 @@ impl Store {
 impl Drop for Store {
     fn drop(&mut self) {
         let self_ptr = self as *mut Store;
-        for entry in self.function_registry.borrow_mut().iter_mut() {
-            if entry.store == self_ptr {
-                entry.store = core::ptr::null_mut();
-            }
-        }
         // GC handles still point into their owner's arena. Poison that pointer
         // before the Store allocation disappears. Exception entries need no
         // cleanup: their `Rc` owns the object independently of this Store.

@@ -7,7 +7,7 @@ use crate::{
         jit::build,
         jit::result_buffer::ResultBuffer,
         jit::store::Store,
-        jit::value_encoding::value_to_raw_in_store,
+        jit::value_encoding::{absolutize, value_to_raw_in_store},
         value::Value,
     },
 };
@@ -44,15 +44,31 @@ pub(super) fn eval(
             Ok(out)
         }
         FunctionInst::Linked { handle, .. } => {
+            let absolute = absolutize(store, *handle);
             let entry = store
-                .function_entry_for_handle(*handle)
+                .function_entry_for_handle(absolute)
                 .ok_or_else(|| WasmError::internal("linked function handle not found"))?;
-            let owner_store = unsafe { entry.store.as_mut() }
+            if entry.owner == store.instance_handle().self_id() {
+                let callee_ptr = store
+                    .module()
+                    .functions
+                    .get(entry.local_index as usize)
+                    .ok_or_else(|| WasmError::internal("linked function index out of range"))?
+                    as *const FunctionInst;
+                let callee = unsafe { &*callee_ptr };
+                return eval(callee, store, args);
+            }
+            let mut owner = store
+                .instance_handle()
+                .checkout(entry.owner)
                 .ok_or_else(|| WasmError::internal("linked function owner no longer available"))?;
+            let owner_store = owner
+                .jit_mut()
+                .ok_or_else(|| WasmError::internal("linked function owner is not a JIT store"))?;
             let callee_ptr = owner_store
                 .module()
                 .functions
-                .get(entry.local_index)
+                .get(entry.local_index as usize)
                 .ok_or_else(|| WasmError::internal("linked function index out of range"))?
                 as *const FunctionInst;
             let callee = unsafe { &*callee_ptr };

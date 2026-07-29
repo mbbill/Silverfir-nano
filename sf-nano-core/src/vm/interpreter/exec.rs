@@ -23,7 +23,6 @@ use crate::config::Config;
 use crate::error::WasmError;
 use crate::module::entities::{Data, Element, ElementInit, GlobalDef, MemoryDef, TableDef, TagDef};
 use crate::module::type_context::{concrete_type_matches_cross_context, TypeContext};
-use crate::module::type_defs::CompositeType;
 use crate::module::Module;
 use crate::utils::limits::{Limitable, Limits};
 use crate::value_type::{AbstractHeapType, HeapType, RefType, ValueType};
@@ -44,6 +43,7 @@ use super::fmath;
 use super::instr::{op_from_index, Op};
 use super::instr::{Instr, FLAG_ADDR64, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
 use super::predecode::{predecode_function, PredecodedFunction, WIDE_MEMARG};
+use core::cell::RefCell;
 
 const PAGE: usize = 65536;
 /// A null reference, as it sits in an 8-byte slot.
@@ -106,6 +106,10 @@ fn configured_ret_records(stack_slots: usize) -> usize {
 
 /// Host dispatcher for imported functions: called with the import's module
 /// and field names, the linear memory, argument slots, and result slots.
+/// Funcref-typed argument and result slots use instance-independent published
+/// names at this boundary; the interpreter converts against the caller's frame
+/// immediately before and after the callback.
+///
 /// The signature carries only std types (`&mut [u8]`, not this crate's
 /// tracked collections), so external callers stay feature-independent.
 pub(crate) type HostDispatch =
@@ -128,9 +132,95 @@ pub(crate) type HostDispatch =
 pub struct FuncRefHost {
     /// Name local function `idx` of this instance.
     pub publish: alloc::boxed::Box<dyn Fn(usize) -> RefHandle>,
-    /// Call whatever `handle` names, wherever it lives.
+    /// Call whatever absolute `handle` names, wherever it lives.
+    ///
+    /// Funcref-typed argument and result slots are absolute at this boundary.
     pub invoke:
         alloc::boxed::Box<dyn FnMut(RefHandle, &[u64], &mut [u64]) -> Result<(), WasmError>>,
+}
+
+#[inline]
+fn value_type_is_function_ref(module: &Module, value_type: ValueType) -> bool {
+    let ValueType::Ref(ref_type) = value_type else {
+        return false;
+    };
+    matches!(
+        ref_type.heap_type.top_type(module.types()),
+        HeapType::Abstract(AbstractHeapType::Func)
+    )
+}
+
+/// Give a frame-local function reference an instance-independent name.
+///
+/// Published names are cached because the inverse mapping is also how this
+/// instance recognizes one of its own references on the way back in. Without
+/// an embedder resolver, a pooled opaque name still prevents a local index
+/// from silently naming a different instance's function.
+fn absolutize_ref_with(
+    module: &Module,
+    funcref_host: Option<&FuncRefHost>,
+    link_registry: &LinkArenas,
+    published: &RefCell<Vec<(RefHandle, usize)>>,
+    handle: RefHandle,
+) -> RefHandle {
+    if handle.is_null() || handle.is_special() {
+        return handle;
+    }
+    let local = handle.payload();
+    if module.functions().get(local).is_none() {
+        return handle;
+    }
+    if let Some(named) = published
+        .borrow()
+        .iter()
+        .find_map(|&(named, index)| (index == local).then_some(named))
+    {
+        return named;
+    }
+    let named = match funcref_host {
+        Some(host) => (host.publish)(local),
+        None => link_registry.alloc_opaque_interp_funcref(),
+    };
+    published.borrow_mut().push((named, local));
+    named
+}
+
+/// Recover this instance's frame-local index from a name it published.
+///
+/// Foreign names and every non-function reference are already in the only
+/// form this instance can retain, so the conversion is total and leaves them
+/// unchanged.
+fn localize_ref_with(published: &RefCell<Vec<(RefHandle, usize)>>, handle: RefHandle) -> RefHandle {
+    if handle.is_null() {
+        return handle;
+    }
+    published
+        .borrow()
+        .iter()
+        .find_map(|&(named, local)| (named == handle).then_some(RefHandle::new(local)))
+        .unwrap_or(handle)
+}
+
+#[inline]
+fn absolutize_slot_with(
+    module: &Module,
+    funcref_host: Option<&FuncRefHost>,
+    link_registry: &LinkArenas,
+    published: &RefCell<Vec<(RefHandle, usize)>>,
+    slot: u64,
+) -> u64 {
+    ref_to_slot(absolutize_ref_with(
+        module,
+        funcref_host,
+        link_registry,
+        published,
+        slot_to_ref(slot),
+    ))
+}
+
+#[inline]
+fn localize_slot_with(published: &RefCell<Vec<(RefHandle, usize)>>, slot: u64) -> u64 {
+    ref_to_slot(localize_ref_with(published, slot_to_ref(slot)))
 }
 
 /// `max` is a growth limit, consulted only by `table.grow`; the executor
@@ -369,11 +459,19 @@ pub struct InterpInstance {
     dropped_data: Vec<bool>,
     dropped_elems: Vec<bool>,
     globals: Vec<u64>,
-    /// Globals another instance can reach, by index. These live in an
-    /// `Rc`-owned cell rather than the array above, because both sides must
+    /// Globals backed by an aliased cell, by index. These live in an
+    /// `Rc`-owned cell rather than the array above because both sides must
     /// observe each other's writes; the array slot beside them is unused.
+    /// Reachability itself is recorded separately below.
     shared_globals: Vec<Option<GlobalInst>>,
+    /// Whether each global can be observed by another instance. This is a
+    /// semantic fact, not a proxy for whether this engine uses a shared cell.
+    global_reachable: Vec<bool>,
     tables: Vec<TableState>,
+    /// Whether each table can be observed by another instance. Imported
+    /// tables without a supplied backing can still use a private vector, so
+    /// `TableEntries::Shared` is deliberately not this fact.
+    table_reachable: Vec<bool>,
     /// Runtime tag identities, one per declared tag. Linking needs them;
     /// catches compare these handles rather than module-local indices.
     tags: Vec<TagHandle>,
@@ -391,10 +489,10 @@ pub struct InterpInstance {
     ret_stack: Vec<u64>,
     host: Option<HostDispatch>,
     funcref_host: Option<FuncRefHost>,
-    /// Names this instance handed out for its OWN functions, so a reference
-    /// read back from a shared table that we published resolves locally
+    /// Names this instance handed out for its OWN functions, so an absolute
+    /// reference read back at any boundary resolves to the local frame form
     /// instead of going out through the embedder and back.
-    published: Vec<(RefHandle, usize)>,
+    published: RefCell<Vec<(RefHandle, usize)>>,
     native: Option<NativeState>,
 }
 
@@ -754,7 +852,17 @@ impl InterpInstance {
         let config = *engine.config();
         // Names handed out for this instance's own functions, filled as
         // exported globals and shared tables are initialized.
-        let mut published: Vec<(RefHandle, usize)> = Vec::new();
+        let published = RefCell::new(Vec::new());
+        let global_reachable: Vec<bool> = module
+            .globals()
+            .iter()
+            .map(|global| global.is_import() || !global.export_names().is_empty())
+            .collect();
+        let table_reachable: Vec<bool> = module
+            .tables()
+            .iter()
+            .map(|table| table.is_import() || !table.export_names().is_empty())
+            .collect();
 
         // Resolve imported memories up front, indexed the way the module
         // declares them, so the loop below can take a shared backing
@@ -894,28 +1002,26 @@ impl InterpInstance {
         // Globals.
         let mut globals = Vec::new();
         let mut shared_globals: Vec<Option<GlobalInst>> = Vec::new();
-        for g in module.globals() {
+        for (global_idx, g) in module.globals().iter().enumerate() {
             match g.def() {
                 GlobalDef::Local(spec) => {
                     let mut v = eval_const(&module, spec.init_expr(), &globals)?;
-                    // A funcref in an EXPORTED global is as invisible to its
-                    // importer as one in a shared table, and for the same
-                    // reason: the index means nothing outside this instance.
-                    if !g.export_names().is_empty() {
-                        if let (ValueType::Ref(_), Some(h)) =
-                            (spec.value_type(), funcref_host.as_ref())
-                        {
-                            let handle = slot_to_ref(v);
-                            if !handle.is_null() && !handle.is_special() {
-                                let named = (h.publish)(handle.0);
-                                published.push((named, handle.0));
-                                v = ref_to_slot(named);
-                            }
-                        }
+                    if value_type_is_function_ref(&module, spec.value_type()) {
+                        v = if global_reachable[global_idx] {
+                            absolutize_slot_with(
+                                &module,
+                                funcref_host.as_ref(),
+                                &link_registry,
+                                &published,
+                                v,
+                            )
+                        } else {
+                            localize_slot_with(&published, v)
+                        };
                     }
-                    // A global another instance can reach must BE the shared
-                    // cell, so an importer's writes are visible here and ours
-                    // there. A private one stays in the array the chain reads.
+                    // An exported local global must BE the shared cell, so an
+                    // importer's writes are visible here and ours there. A
+                    // private one stays in the array the chain reads.
                     if g.export_names().is_empty() {
                         shared_globals.push(None);
                     } else {
@@ -947,8 +1053,22 @@ impl InterpInstance {
                         // current value is the whole story, so copying it
                         // in is exact.
                         Some((ImportedGlobal::Value(v), _)) => {
+                            let mut raw = value_to_raw_for_interp(&v.value)?;
+                            if value_type_is_function_ref(&module, *value_type) {
+                                raw = if global_reachable[global_idx] {
+                                    absolutize_slot_with(
+                                        &module,
+                                        funcref_host.as_ref(),
+                                        &link_registry,
+                                        &published,
+                                        raw,
+                                    )
+                                } else {
+                                    localize_slot_with(&published, raw)
+                                };
+                            }
                             shared_globals.push(None);
-                            globals.push(value_to_raw_for_interp(&v.value)?)
+                            globals.push(raw)
                         }
                         // Aliased, not copied: both sides must observe each
                         // other's writes. Accesses to it are denied a native
@@ -974,7 +1094,21 @@ impl InterpInstance {
                                 return Err(WasmError::unlinkable("incompatible import type"));
                             }
                             shared_globals.push(Some(st.global.clone()));
-                            globals.push(st.global.raw());
+                            let mut raw = st.global.raw();
+                            if value_type_is_function_ref(&module, *value_type) {
+                                raw = if global_reachable[global_idx] {
+                                    absolutize_slot_with(
+                                        &module,
+                                        funcref_host.as_ref(),
+                                        &link_registry,
+                                        &published,
+                                        raw,
+                                    )
+                                } else {
+                                    localize_slot_with(&published, raw)
+                                };
+                            }
+                            globals.push(raw);
                             continue;
                         }
                         None => return Err(WasmError::unlinkable("missing global import")),
@@ -985,7 +1119,7 @@ impl InterpInstance {
 
         // Tables (any reference type) + active element segments.
         let mut tables = Vec::new();
-        for t in module.tables() {
+        for (table_idx, t) in module.tables().iter().enumerate() {
             let mut shared_from_import: Option<TableInst> = None;
             // An imported table's size is the PROVIDER's, not the importing
             // module's declared minimum: `(table (import ..) 0 funcref)` sees
@@ -1046,16 +1180,20 @@ impl InterpInstance {
             let init_slot = match t.spec().init_expr() {
                 Some(expr) => {
                     let raw = eval_const(&module, expr, &globals)?;
-                    let handle = slot_to_ref(raw);
-                    match (&funcref_host, handle.is_null() || handle.is_special()) {
-                        // Shared tables carry globally-named references; see
-                        // `FuncRefHost`.
-                        (Some(h), false) if !t.export_names().is_empty() || t.is_import() => {
-                            let named = (h.publish)(handle.0);
-                            published.push((named, handle.0));
-                            ref_to_slot(named)
+                    if value_type_is_function_ref(&module, t.value_type()) {
+                        if table_reachable[table_idx] {
+                            absolutize_slot_with(
+                                &module,
+                                funcref_host.as_ref(),
+                                &link_registry,
+                                &published,
+                                raw,
+                            )
+                        } else {
+                            localize_slot_with(&published, raw)
                         }
-                        _ => raw,
+                    } else {
+                        raw
                     }
                 }
                 None => NULL_REF_SLOT,
@@ -1108,7 +1246,9 @@ impl InterpInstance {
             dropped_elems,
             globals,
             shared_globals,
+            global_reachable,
             tables,
+            table_reachable,
             tags,
             instance_handle,
             link_registry,
@@ -1145,10 +1285,6 @@ impl InterpInstance {
                 continue;
             };
             let off = eval_const(&self.module, &offset_expr, &self.globals)? as u64;
-            let shared_now = matches!(
-                self.tables.get(table_index).map(|t| &t.entries),
-                Some(TableEntries::Shared(_))
-            );
             let len = self
                 .tables
                 .get(table_index)
@@ -1165,16 +1301,8 @@ impl InterpInstance {
             match &init {
                 ElementInit::FunctionIndexes(idxs) => {
                     for (k, &fi) in idxs.iter().enumerate() {
-                        // A funcref entering a SHARED table needs a global
-                        // name; see `FuncRefHost`.
-                        let slot = match (shared_now, self.funcref_host.as_ref()) {
-                            (true, Some(h)) => {
-                                let handle = (h.publish)(fi);
-                                self.published.push((handle, fi));
-                                ref_to_slot(handle)
-                            }
-                            _ => ref_to_slot(RefHandle::new(fi)),
-                        };
+                        let slot = self
+                            .table_slot_for_storage(table_index, ref_to_slot(RefHandle::new(fi)));
                         self.tables[table_index]
                             .entries
                             .set(off as usize + k, slot)?;
@@ -1182,7 +1310,10 @@ impl InterpInstance {
                 }
                 ElementInit::InitExprs { exprs, .. } => {
                     for (k, expr) in exprs.iter().enumerate() {
-                        let v = eval_const(&self.module, expr, &self.globals)?;
+                        let v = self.table_slot_for_storage(
+                            table_index,
+                            eval_const(&self.module, expr, &self.globals)?,
+                        );
                         self.tables[table_index].entries.set(off as usize + k, v)?;
                     }
                 }
@@ -1490,21 +1621,29 @@ impl InterpInstance {
     }
 
     /// Resolve the element-segment function value at `seg[k]`.
-    /// One element-segment entry, as the reference slot a table holds.
+    ///
+    /// Passive segments have no statically private destination, so their
+    /// funcrefs are always absolute. `table.init` localizes only when its
+    /// eventual destination is private.
     fn elem_value(&self, seg: usize, k: usize) -> Result<u64, WasmError> {
-        match self.module.elements().get(seg).map(|e| e.get_init()) {
-            Some(ElementInit::FunctionIndexes(idxs)) => idxs
+        let element = self
+            .module
+            .elements()
+            .get(seg)
+            .ok_or(WasmError::trap("out of bounds table access"))?;
+        let raw = match element.get_init() {
+            ElementInit::FunctionIndexes(idxs) => idxs
                 .get(k)
                 .map(|&fi| ref_to_slot(RefHandle::new(fi as usize)))
                 .ok_or(WasmError::trap("out of bounds table access")),
             // Already a slot: `eval_const` yields `NULL_REF_SLOT` for
             // `ref.null` and a plain handle for `ref.func`.
-            Some(ElementInit::InitExprs { exprs, .. }) => exprs
+            ElementInit::InitExprs { exprs, .. } => exprs
                 .get(k)
                 .ok_or(WasmError::trap("out of bounds table access"))
                 .and_then(|e| eval_const(&self.module, e, &self.globals)),
-            None => Err(WasmError::trap("out of bounds table access")),
-        }
+        }?;
+        Ok(self.absolutize_slot_for_type(raw, element.value_type()))
     }
 
     /// This global's shared cell, when it has one.
@@ -1642,15 +1781,110 @@ impl InterpInstance {
         }
     }
 
-    fn ref_type_is_function(&self, ref_type: RefType) -> bool {
-        match ref_type.heap_type {
-            HeapType::Abstract(AbstractHeapType::Func | AbstractHeapType::NoFunc) => true,
-            HeapType::Concrete(idx) => self
-                .module
-                .types()
-                .get(idx)
-                .is_some_and(|ty| matches!(ty.composite, CompositeType::Func(_))),
-            _ => false,
+    #[inline]
+    fn absolutize_ref(&self, handle: RefHandle) -> RefHandle {
+        absolutize_ref_with(
+            &self.module,
+            self.funcref_host.as_ref(),
+            &self.link_registry,
+            &self.published,
+            handle,
+        )
+    }
+
+    #[inline]
+    fn localize_ref(&self, handle: RefHandle) -> RefHandle {
+        localize_ref_with(&self.published, handle)
+    }
+
+    #[inline]
+    fn absolutize_slot_for_type(&self, slot: u64, value_type: ValueType) -> u64 {
+        if value_type_is_function_ref(&self.module, value_type) {
+            ref_to_slot(self.absolutize_ref(slot_to_ref(slot)))
+        } else {
+            slot
+        }
+    }
+
+    #[inline]
+    fn localize_slot_for_type(&self, slot: u64, value_type: ValueType) -> u64 {
+        if value_type_is_function_ref(&self.module, value_type) {
+            ref_to_slot(self.localize_ref(slot_to_ref(slot)))
+        } else {
+            slot
+        }
+    }
+
+    #[inline]
+    fn table_slot_for_storage(&self, table_idx: usize, slot: u64) -> u64 {
+        let Some(table) = self.module.tables().get(table_idx) else {
+            return slot;
+        };
+        if !value_type_is_function_ref(&self.module, table.value_type()) {
+            return slot;
+        }
+        if self.table_reachable.get(table_idx).copied().unwrap_or(true) {
+            ref_to_slot(self.absolutize_ref(slot_to_ref(slot)))
+        } else {
+            ref_to_slot(self.localize_ref(slot_to_ref(slot)))
+        }
+    }
+
+    #[inline]
+    fn table_slot_for_frame(&self, table_idx: usize, slot: u64) -> u64 {
+        let Some(table) = self.module.tables().get(table_idx) else {
+            return slot;
+        };
+        self.localize_slot_for_type(slot, table.value_type())
+    }
+
+    #[inline]
+    fn global_slot_for_storage(&self, global_idx: usize, slot: u64) -> u64 {
+        let Some(global) = self.module.globals().get(global_idx) else {
+            return slot;
+        };
+        if !value_type_is_function_ref(&self.module, global.value_type()) {
+            return slot;
+        }
+        if self
+            .global_reachable
+            .get(global_idx)
+            .copied()
+            .unwrap_or(true)
+        {
+            ref_to_slot(self.absolutize_ref(slot_to_ref(slot)))
+        } else {
+            ref_to_slot(self.localize_ref(slot_to_ref(slot)))
+        }
+    }
+
+    #[inline]
+    fn global_slot_for_frame(&self, global_idx: usize, slot: u64) -> u64 {
+        let Some(global) = self.module.globals().get(global_idx) else {
+            return slot;
+        };
+        self.localize_slot_for_type(slot, global.value_type())
+    }
+
+    pub(crate) fn absolutize_value_for_type(&self, value: Value, value_type: ValueType) -> Value {
+        let Value::Ref(handle, ref_type) = value else {
+            return value;
+        };
+        if value_type_is_function_ref(&self.module, value_type) {
+            Value::Ref(self.absolutize_ref(handle), ref_type)
+        } else {
+            value
+        }
+    }
+
+    pub(crate) fn localize_value_for_type(&self, value: Value, value_type: ValueType) -> Value {
+        let Value::Ref(handle, ref_type) = value else {
+            return value;
+        };
+        if value_type_is_function_ref(&self.module, value_type) {
+            Value::Ref(self.localize_ref(handle), ref_type)
+        } else {
+            value
         }
     }
 
@@ -1658,7 +1892,7 @@ impl InterpInstance {
     /// names meaningful to every linked interpreter instance. Other
     /// references are already backend/global handles and remain untouched.
     fn canonicalize_exception_fields(
-        &mut self,
+        &self,
         mut fields: Vec<Value>,
         params: &[ValueType],
     ) -> Result<Vec<Value>, WasmError> {
@@ -1666,34 +1900,17 @@ impl InterpInstance {
             let (Value::Ref(handle, _), ValueType::Ref(ref_type)) = (*field, param) else {
                 continue;
             };
-            if handle.is_null() || handle.is_special() || !self.ref_type_is_function(ref_type) {
+            if handle.is_null()
+                || handle.is_special()
+                || !value_type_is_function_ref(&self.module, param)
+            {
                 *field = Value::Ref(handle, ref_type);
                 continue;
             }
             if self.module.functions().get(handle.payload()).is_none() {
                 return Err(WasmError::trap("host threw mistyped exception"));
             }
-            let local = handle.payload();
-            let named = match self
-                .published
-                .iter()
-                .find_map(|&(named, idx)| (idx == local).then_some(named))
-            {
-                Some(named) => named,
-                None => match self.funcref_host.as_ref() {
-                    Some(host) => {
-                        let named = (host.publish)(local);
-                        self.published.push((named, local));
-                        named
-                    }
-                    None => {
-                        let named = self.link_registry.alloc_opaque_interp_funcref();
-                        self.published.push((named, local));
-                        named
-                    }
-                },
-            };
-            *field = Value::Ref(named, ref_type);
+            *field = Value::Ref(self.absolutize_ref(handle), ref_type);
         }
         Ok(fields)
     }
@@ -1707,14 +1924,7 @@ impl InterpInstance {
         let Value::Ref(handle, ref_type) = value else {
             return value;
         };
-        let Some(local) = self
-            .published
-            .iter()
-            .find_map(|&(named, local)| (named == handle).then_some(local))
-        else {
-            return value;
-        };
-        Value::Ref(RefHandle::new(local), ref_type)
+        Value::Ref(self.localize_ref(handle), ref_type)
     }
 
     fn alloc_exception_from_frame(
@@ -1887,6 +2097,7 @@ impl InterpInstance {
 
     /// Overwrite a global's raw 64-bit value by index.
     pub fn set_global_at(&mut self, idx: usize, raw: u64) -> Result<(), WasmError> {
+        let raw = self.global_slot_for_storage(idx, raw);
         if let Some(Some(shared)) = self.shared_globals.get_mut(idx) {
             shared.set_raw(raw);
             return Ok(());
@@ -1917,8 +2128,12 @@ impl InterpInstance {
             .and_then(|i| self.globals.get(i).copied())
     }
 
-    /// Invoke a function by index. `args` and `results` are raw 64-bit
-    /// value slots (i32/f32 in the low bits).
+    /// Invoke a function by index. `args` and `results` are this instance's
+    /// raw frame slots (i32/f32 in the low bits, own funcrefs local).
+    ///
+    /// The typed `Instance` adapter converts its absolute [`Value`]s at this
+    /// boundary; direct raw callers already speak the
+    /// interpreter frame form.
     pub fn invoke(
         &mut self,
         func_index: usize,
@@ -2351,6 +2566,9 @@ impl InterpInstance {
             module,
             host,
             memories,
+            funcref_host,
+            link_registry,
+            published,
             ..
         } = self;
 
@@ -2364,8 +2582,9 @@ impl InterpInstance {
             }
             _ => return Err(WasmError::invalid("interp: not an import")),
         };
-        let p = func.func_type().params().len();
-        let r = func.func_type().results().len();
+        let func_type = func.func_type();
+        let p = func_type.params().len();
+        let r = func_type.results().len();
         let host = host
             .as_mut()
             .ok_or(WasmError::invalid("interp: no host dispatcher installed"))?;
@@ -2373,12 +2592,28 @@ impl InterpInstance {
         if r > results.len() {
             return Err(WasmError::invalid("interp: too many host results"));
         }
-        let args: Vec<u64> = frame[arg_base..arg_base + p].iter().copied().collect();
+        let mut args: Vec<u64> = frame[arg_base..arg_base + p].iter().copied().collect();
+        for (arg, &value_type) in args.iter_mut().zip(func_type.params()) {
+            if value_type_is_function_ref(module, value_type) {
+                *arg = absolutize_slot_with(
+                    module,
+                    funcref_host.as_ref(),
+                    link_registry,
+                    published,
+                    *arg,
+                );
+            }
+        }
         let mem0 = memories
             .first_mut()
             .map(|m| m.bytes_mut())
             .unwrap_or(&mut []);
         host(mod_name, field, mem0, &args, &mut results[..r])?;
+        for (result, &value_type) in results[..r].iter_mut().zip(func_type.results()) {
+            if value_type_is_function_ref(module, value_type) {
+                *result = localize_slot_with(published, *result);
+            }
+        }
         frame[arg_base..arg_base + r].copy_from_slice(&results[..r]);
         Ok(())
     }
@@ -3245,14 +3480,15 @@ impl InterpInstance {
             // ---- globals ----
             Op::GlobalGet => {
                 let i = ins.a as usize;
-                frame[ins.c as usize] = match self.shared_globals.get(i).and_then(|g| g.as_ref()) {
+                let value = match self.shared_globals.get(i).and_then(|g| g.as_ref()) {
                     Some(shared) => shared.raw(),
                     None => self.globals[i],
                 };
+                frame[ins.c as usize] = self.global_slot_for_frame(i, value);
             }
             Op::GlobalSet => {
-                let v = opa!(ins);
                 let i = ins.c as usize;
+                let v = self.global_slot_for_storage(i, opa!(ins));
                 match self.shared_globals.get_mut(i).and_then(|g| g.as_mut()) {
                     Some(shared) => shared.set_raw(v),
                     None => self.globals[i] = v,
@@ -3289,14 +3525,16 @@ impl InterpInstance {
                     return Err(WasmError::trap("null function reference"));
                 }
                 if r.is_special() {
-                    if !r.is_host() || r.is_extern() {
-                        return Err(WasmError::trap("indirect call type mismatch"));
-                    }
                     // A reference published by another interpreter instance
                     // keeps its global identity in the shared exception
                     // object. Invoke it through the same forwarding hook used
                     // by shared tables; local publications stay local.
-                    if let Some(&(_, local)) = self.published.iter().find(|(h, _)| *h == r) {
+                    let local = self
+                        .published
+                        .borrow()
+                        .iter()
+                        .find_map(|&(named, local)| (named == r).then_some(local));
+                    if let Some(local) = local {
                         return Ok(if ins.op == Op::ReturnCallRef {
                             Effect::TailCall {
                                 callee: local,
@@ -3309,23 +3547,37 @@ impl InterpInstance {
                             }
                         });
                     }
-                    let (np, nr) = self
+                    if !r.is_host() || r.is_extern() {
+                        return Err(WasmError::trap("indirect call type mismatch"));
+                    }
+                    let (param_types, result_types) = self
                         .module
                         .types()
                         .get_function_type(ins.c as u32)
-                        .map(|ft| (ft.params().len(), ft.results().len()))
+                        .map(|ft| {
+                            (
+                                ft.params().iter().copied().collect::<Vec<_>>(),
+                                ft.results().iter().copied().collect::<Vec<_>>(),
+                            )
+                        })
                         .ok_or(WasmError::trap("indirect call type mismatch"))?;
                     let base = ins.b as usize;
-                    let mut args: Vec<u64> = Vec::with_capacity(np);
-                    args.extend_from_slice(&frame[base..base + np]);
-                    let mut results = vec![0u64; nr];
+                    let mut args = Vec::with_capacity(param_types.len());
+                    args.extend_from_slice(&frame[base..base + param_types.len()]);
+                    for (arg, &value_type) in args.iter_mut().zip(&param_types) {
+                        *arg = self.absolutize_slot_for_type(*arg, value_type);
+                    }
+                    let mut results = vec![0u64; result_types.len()];
                     match self.funcref_host.as_mut() {
                         Some(host) => (host.invoke)(r, &args, &mut results)?,
                         None => return Err(WasmError::trap("indirect call type mismatch")),
                     }
-                    frame[base..base + nr].copy_from_slice(&results);
+                    for (result, &value_type) in results.iter_mut().zip(&result_types) {
+                        *result = self.localize_slot_for_type(*result, value_type);
+                    }
+                    frame[base..base + result_types.len()].copy_from_slice(&results);
                     if ins.op == Op::ReturnCallRef {
-                        frame.copy_within(base..base + nr, 0);
+                        frame.copy_within(base..base + result_types.len(), 0);
                         let target = func.slow_tail_return.ok_or(WasmError::invalid(
                             "interp: tail call has no return landing",
                         ))?;
@@ -3352,19 +3604,24 @@ impl InterpInstance {
                     .ok()
                     .and_then(|i| t.get(i))
                     .ok_or(WasmError::trap("out of bounds table access"))?;
-                frame[ins.c as usize] = v as u64;
+                frame[ins.c as usize] = self.table_slot_for_frame(ins.b as usize, v);
             }
             Op::TableSet => {
                 let i = opa!(ins);
-                let v = opb!(ins);
-                let t = &mut self
-                    .tables
-                    .get_mut(ins.c as usize)
-                    .ok_or(WasmError::trap("out of bounds table access"))?
-                    .entries;
+                let table_idx = ins.c as usize;
                 let i = usize::try_from(i)
                     .map_err(|_| WasmError::trap("out of bounds table access"))?;
-                t.set(i, v)?;
+                let len = self
+                    .tables
+                    .get(table_idx)
+                    .ok_or(WasmError::trap("out of bounds table access"))?
+                    .entries
+                    .len();
+                if i >= len {
+                    return Err(WasmError::trap("out of bounds table access"));
+                }
+                let v = self.table_slot_for_storage(table_idx, opb!(ins));
+                self.tables[table_idx].entries.set(i, v)?;
             }
             Op::TableSize => {
                 let n = self
@@ -3381,13 +3638,18 @@ impl InterpInstance {
                 let dst = (ins.c & 0xffff_ffff) as usize;
                 let t = self
                     .tables
-                    .get_mut(tidx)
+                    .get(tidx)
                     .ok_or(WasmError::trap("out of bounds table access"))?;
                 let cur = t.entries.len() as u64;
                 if cur + delta > t.max || cur + delta > u32::MAX as u64 {
                     frame[dst] = u32::MAX as u64;
                 } else {
-                    t.entries.resize((cur + delta) as usize, init);
+                    if delta > 0 {
+                        let init = self.table_slot_for_storage(tidx, init);
+                        self.tables[tidx]
+                            .entries
+                            .resize((cur + delta) as usize, init);
+                    }
                     frame[dst] = cur;
                 }
             }
@@ -3398,15 +3660,22 @@ impl InterpInstance {
                     frame[base + 1],
                     frame[base + 2] as u32 as u64,
                 );
-                let t = &mut self
+                let table_idx = ins.b as usize;
+                let len = self
                     .tables
-                    .get_mut(ins.b as usize)
+                    .get(table_idx)
                     .ok_or(WasmError::trap("out of bounds table access"))?
-                    .entries;
-                if i + n > t.len() as u64 {
+                    .entries
+                    .len() as u64;
+                if i + n > len {
                     return Err(WasmError::trap("out of bounds table access"));
                 }
-                t.fill(i as usize, n as usize, val);
+                if n > 0 {
+                    let val = self.table_slot_for_storage(table_idx, val);
+                    self.tables[table_idx]
+                        .entries
+                        .fill(i as usize, n as usize, val);
+                }
             }
             Op::TableCopy => {
                 let base = ins.a as usize;
@@ -3432,6 +3701,7 @@ impl InterpInstance {
                             .entries
                             .get(s0 as usize + k)
                             .ok_or_else(oob)?;
+                        let v = self.table_slot_for_storage(dt, v);
                         self.tables[dt].entries.set(d as usize + k, v)?;
                     }
                 } else {
@@ -3440,6 +3710,7 @@ impl InterpInstance {
                             .entries
                             .get(s0 as usize + k)
                             .ok_or_else(oob)?;
+                        let v = self.table_slot_for_storage(dt, v);
                         self.tables[dt].entries.set(d as usize + k, v)?;
                     }
                 }
@@ -3471,6 +3742,7 @@ impl InterpInstance {
                 }
                 for k in 0..n as usize {
                     let v = self.elem_value(seg, s0 as usize + k)?;
+                    let v = self.table_slot_for_storage(tidx, v);
                     self.tables[tidx].entries.set(d as usize + k, v)?;
                 }
             }
@@ -3574,13 +3846,15 @@ impl InterpInstance {
                     return Err(WasmError::trap("uninitialized element"));
                 }
                 if callee.is_special() {
-                    if !callee.is_host() || callee.is_extern() {
-                        return Err(WasmError::trap("indirect call type mismatch"));
-                    }
                     // A published reference. If WE published it the callee is
                     // ours: an exported table used from inside its own module
                     // must not pay a round trip through the embedder.
-                    if let Some(&(_, local)) = self.published.iter().find(|(h, _)| *h == callee) {
+                    let local = self
+                        .published
+                        .borrow()
+                        .iter()
+                        .find_map(|&(named, local)| (named == callee).then_some(local));
+                    if let Some(local) = local {
                         return Ok(if ins.op == Op::ReturnCallIndirect {
                             Effect::TailCall {
                                 callee: local,
@@ -3593,25 +3867,39 @@ impl InterpInstance {
                             }
                         });
                     }
+                    if !callee.is_host() || callee.is_extern() {
+                        return Err(WasmError::trap("indirect call type mismatch"));
+                    }
                     // Otherwise it names a function in another instance, and
                     // only the embedder can reach that.
-                    let (np, nr) = self
+                    let (param_types, result_types) = self
                         .module
                         .types()
                         .get_function_type(ins.c as u32)
-                        .map(|ft| (ft.params().len(), ft.results().len()))
+                        .map(|ft| {
+                            (
+                                ft.params().iter().copied().collect::<Vec<_>>(),
+                                ft.results().iter().copied().collect::<Vec<_>>(),
+                            )
+                        })
                         .ok_or(WasmError::trap("indirect call type mismatch"))?;
                     let base = ins.b as usize;
-                    let mut args: Vec<u64> = Vec::with_capacity(np);
-                    args.extend_from_slice(&frame[base..base + np]);
-                    let mut results = vec![0u64; nr];
+                    let mut args = Vec::with_capacity(param_types.len());
+                    args.extend_from_slice(&frame[base..base + param_types.len()]);
+                    for (arg, &value_type) in args.iter_mut().zip(&param_types) {
+                        *arg = self.absolutize_slot_for_type(*arg, value_type);
+                    }
+                    let mut results = vec![0u64; result_types.len()];
                     match self.funcref_host.as_mut() {
                         Some(h) => (h.invoke)(callee, &args, &mut results)?,
                         None => return Err(WasmError::trap("indirect call type mismatch")),
                     }
-                    frame[base..base + nr].copy_from_slice(&results);
+                    for (result, &value_type) in results.iter_mut().zip(&result_types) {
+                        *result = self.localize_slot_for_type(*result, value_type);
+                    }
+                    frame[base..base + result_types.len()].copy_from_slice(&results);
                     if ins.op == Op::ReturnCallIndirect {
-                        frame.copy_within(base..base + nr, 0);
+                        frame.copy_within(base..base + result_types.len(), 0);
                         let target = func.slow_tail_return.ok_or(WasmError::invalid(
                             "interp: tail call has no return landing",
                         ))?;

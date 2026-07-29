@@ -146,6 +146,7 @@ fn preserves_load(kind: &MachineInstKind, load: ContextLoad) -> bool {
         | MachineInstKind::TableGrow { .. }
         | MachineInstKind::RefFunc { .. }
         | MachineInstKind::RefAsNonNull { .. }
+        | MachineInstKind::RefAbsolutize { .. }
         | MachineInstKind::RefEq { .. }
         | MachineInstKind::RefI31 { .. }
         | MachineInstKind::I31GetS { .. }

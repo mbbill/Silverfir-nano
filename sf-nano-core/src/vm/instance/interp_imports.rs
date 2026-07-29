@@ -7,10 +7,11 @@
 //! and it lives here rather than in each embedder because otherwise every
 //! one of them writes it again (both the CLI and the Pico 2 firmware did).
 //!
-//! Conversion is numeric only. A host import taking or returning a
-//! reference is rejected at bind time rather than at the call, so an
-//! unsupported signature is an instantiation error and not a surprise
-//! mid-run.
+//! Numeric values and references both have raw slot forms. The live
+//! [`InterpInstance`] retags funcrefs at its frame boundaries; this adapter
+//! only translates the slot bits to and from typed [`Value`]s. A type with no
+//! raw slot form is rejected at bind time, so it remains an instantiation
+//! error rather than a surprise mid-run.
 
 use crate::collections::Vec;
 use crate::error::WasmError;
@@ -187,8 +188,9 @@ pub(super) fn invoke_by_name(
     }
 
     let mut raw_args: Vec<u64> = Vec::with_capacity(args.len());
-    for v in args {
-        raw_args.push(value_to_raw(v)?);
+    for (&value_type, &value) in func_type.params().iter().zip(args) {
+        let value = inst.localize_value_for_type(value, value_type);
+        raw_args.push(value_to_raw(&value)?);
     }
     let mut raw_results = crate::collections::vec![0u64; func_type.results().len()];
 
@@ -196,7 +198,8 @@ pub(super) fn invoke_by_name(
 
     let mut out: Vec<Value> = Vec::with_capacity(raw_results.len());
     for (ty, &raw) in func_type.results().iter().zip(raw_results.iter()) {
-        out.push(raw_to_value(*ty, raw)?);
+        let value = raw_to_value(*ty, raw)?;
+        out.push(inst.absolutize_value_for_type(value, *ty));
     }
     Ok(out)
 }
@@ -210,8 +213,17 @@ pub(super) fn call_by_index(
     results: &mut [Value],
 ) -> Result<(), WasmError> {
     let mut raw_args: Vec<u64> = Vec::with_capacity(args.len());
-    for v in args {
-        raw_args.push(value_to_raw(v)?);
+    {
+        let func_type = inst
+            .module()
+            .functions()
+            .get(index)
+            .ok_or(WasmError::invalid("function index out of range"))?
+            .func_type();
+        for (&value_type, &value) in func_type.params().iter().zip(args) {
+            let value = inst.localize_value_for_type(value, value_type);
+            raw_args.push(value_to_raw(&value)?);
+        }
     }
     let mut raw_results = crate::collections::vec![0u64; results.len()];
 
@@ -227,7 +239,8 @@ pub(super) fn call_by_index(
         .ok_or(WasmError::invalid("function index out of range"))?
         .func_type();
     for (i, ty) in func_type.results().iter().enumerate() {
-        results[i] = raw_to_value(*ty, raw_results[i])?;
+        let value = raw_to_value(*ty, raw_results[i])?;
+        results[i] = inst.absolutize_value_for_type(value, *ty);
     }
     Ok(())
 }
@@ -260,7 +273,8 @@ pub(super) fn global_at(inst: &InterpInstance, idx: usize) -> Result<Option<Valu
         .get(idx)
         .ok_or(WasmError::invalid("global index out of range"))?
         .value_type();
-    raw_to_value(ty, raw).map(Some)
+    let value = raw_to_value(ty, raw)?;
+    Ok(Some(inst.absolutize_value_for_type(value, ty)))
 }
 
 /// Overwrite a global by index, checked against its declared type.

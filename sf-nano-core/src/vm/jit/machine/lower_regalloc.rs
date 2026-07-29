@@ -1115,6 +1115,7 @@ fn visit_inst_source_regs(kind: &MachineInstKind, mut visit: impl FnMut(MachineR
         }
         MachineInstKind::StructNewDefault { .. } => {}
         MachineInstKind::RefAsNonNull { src, .. }
+        | MachineInstKind::RefAbsolutize { src, .. }
         | MachineInstKind::RefI31 { src, .. }
         | MachineInstKind::I31GetS { src, .. }
         | MachineInstKind::I31GetU { src, .. }

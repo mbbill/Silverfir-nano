@@ -668,6 +668,7 @@ fn arm64_inst_lowers_to_inline_native_call(kind: &MachineInstKind) -> bool {
         | MachineInstKind::ElemDrop { .. }
         | MachineInstKind::RefFunc { .. }
         | MachineInstKind::RefAsNonNull { .. }
+        | MachineInstKind::RefAbsolutize { .. }
         | MachineInstKind::RefEq { .. }
         | MachineInstKind::RefI31 { .. }
         | MachineInstKind::I31GetS { .. }

@@ -1,11 +1,8 @@
 use crate::{
     error::WasmError,
-    vm::{
-        jit::runtime::{
-            common::{internal_error, set_ctx_error, trap_error, NativeCallStatus},
-            context::NativeContext,
-        },
-        jit::value_encoding::machine_raw_to_ref,
+    vm::jit::runtime::{
+        common::{internal_error, set_ctx_error, trap_error, NativeCallStatus},
+        context::NativeContext,
     },
 };
 
@@ -18,9 +15,10 @@ use super::{
         do_array_init_elem, do_array_len, do_array_new, do_array_new_data, do_array_new_default,
         do_array_new_elem, do_array_new_fixed, do_array_set, do_eh_alloc_exn_ref, do_eh_throw,
         do_eh_throw_ref, do_extern_convert_any, do_i31_get_s, do_i31_get_u, do_memory_copy,
-        do_memory_grow, do_memory_init, do_ref_as_non_null, do_ref_cast, do_ref_eq, do_ref_func,
-        do_ref_i31, do_ref_test, do_struct_get, do_struct_new, do_struct_new_default,
-        do_struct_set, do_table_copy, do_table_grow, do_table_init,
+        do_memory_grow, do_memory_init, do_ref_absolutize, do_ref_as_non_null, do_ref_cast,
+        do_ref_eq, do_ref_func, do_ref_i31, do_ref_test, do_struct_get, do_struct_new,
+        do_struct_new_default, do_struct_set, do_table_copy, do_table_fill, do_table_grow,
+        do_table_init,
     },
 };
 
@@ -215,14 +213,7 @@ unsafe fn dispatch_preserved(
             let start = unsafe { *io_ptr.add(io::ARG0) } as usize;
             let val = unsafe { *io_ptr.add(io::ARG1) };
             let len = unsafe { *io_ptr.add(io::ARG2) } as usize;
-            let table = super::ops::table_mut(ctx, table_idx)?;
-            let mut elements = table.elements_mut();
-            if start.saturating_add(len) > elements.len() {
-                return Err(trap_error("out of bounds table access"));
-            }
-            elements[start..start + len]
-                .fill(machine_raw_to_ref(val, super::ops::active_gp_unit_bytes()));
-            Ok(())
+            do_table_fill(ctx, table_idx, start, val, len)
         }
         op::TABLE_COPY => {
             let dst_tbl = unsafe { *io_ptr.add(io::IMM0) } as u32;
@@ -276,6 +267,14 @@ unsafe fn dispatch_preserved(
         op::REF_FUNC => {
             let func_idx = unsafe { *io_ptr.add(io::IMM0) } as u32;
             let result = do_ref_func(ctx, func_idx)?;
+            unsafe {
+                *io_ptr.add(io::RET0) = result;
+            }
+            Ok(())
+        }
+        op::REF_ABSOLUTIZE => {
+            let raw_ref = unsafe { *io_ptr.add(io::ARG0) };
+            let result = do_ref_absolutize(ctx, raw_ref)?;
             unsafe {
                 *io_ptr.add(io::RET0) = result;
             }

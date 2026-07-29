@@ -3,7 +3,7 @@
 use crate::error::WasmError;
 use crate::value_type::ValueType;
 use crate::vm::jit::store::Store;
-use crate::vm::value::{RefHandle, Value};
+use crate::vm::value::{RefHandle, Value, FUNCADDR_TOP};
 
 pub(crate) type RawValue = u64;
 
@@ -120,17 +120,98 @@ pub(crate) fn machine_raw_to_ref(raw: RawValue, gp_unit_bytes: u8) -> RefHandle 
     }
 }
 
+/// Convert a function reference read from `frame_owner`'s local frame form
+/// into the instance-independent absolute form.
+///
+/// This is total: null, special references, and values already outside this
+/// instance's local-index range pass through unchanged. Resolution uses only
+/// the per-instance local-index map and never checks out an instance slot.
 #[inline]
-pub(crate) fn value_to_raw_in_store(val: Value, _store: &mut Store) -> RawValue {
+pub(crate) fn absolutize(frame_owner: &Store, handle: RefHandle) -> RefHandle {
+    if handle.is_null() || handle.is_special() {
+        return handle;
+    }
+    let local_index = handle.encoded();
+    if local_index >= frame_owner.module().functions.len() {
+        return handle;
+    }
+    let Some(funcaddr) = frame_owner.funcaddr_for_local_index(local_index) else {
+        return handle;
+    };
+    RefHandle::new(
+        FUNCADDR_TOP
+            .checked_sub(funcaddr)
+            .expect("registered funcaddr exceeds the encoding range"),
+    )
+}
+
+/// Convert a function reference written into `frame_owner`'s frame to that
+/// instance's local form when it names one of its own functions.
+///
+/// This is total: null, special references, local-range values, malformed
+/// out-of-range values, and another instance's absolute references pass
+/// through unchanged. Resolution uses only the shared function arena and
+/// never checks out an instance slot.
+#[inline]
+pub(crate) fn localize(frame_owner: &Store, handle: RefHandle) -> RefHandle {
+    if handle.is_null() || handle.is_special() {
+        return handle;
+    }
+    let encoded = handle.encoded();
+    if encoded < frame_owner.module().functions.len() {
+        return handle;
+    }
+    let Some(funcaddr) = FUNCADDR_TOP.checked_sub(encoded) else {
+        return handle;
+    };
+    let Some(entry) = frame_owner.function_entry_for_funcaddr(funcaddr) else {
+        return handle;
+    };
+    if entry.owner == frame_owner.instance_handle().self_id() {
+        RefHandle::new(entry.local_index as usize)
+    } else {
+        handle
+    }
+}
+
+/// Put a reference into the form required by a container owned by `store`.
+///
+/// Reachable containers hold the absolute form. A statically private
+/// container may hold the owning instance's local form. Both conversions are
+/// total, so foreign, null, and non-function references pass through.
+#[inline]
+pub(crate) fn retag_for_container(store: &Store, handle: RefHandle, reachable: bool) -> RefHandle {
+    if reachable {
+        absolutize(store, handle)
+    } else {
+        localize(store, handle)
+    }
+}
+
+#[inline]
+pub(crate) fn value_to_raw_in_store(val: Value, frame_owner: &mut Store) -> RawValue {
     match val {
         #[cfg(sf_has_simd)]
-        Value::V128(value) => _store.intern_v128(value),
+        Value::V128(value) => frame_owner.intern_v128(value),
         Value::I32(v) => from_i32(v),
         Value::I64(v) => from_i64(v),
         Value::F32(v) => from_f32(v),
         Value::F64(v) => from_f64(v),
-        Value::Ref(r, _) => from_ref(r),
+        Value::Ref(r, _) => from_ref(localize(frame_owner, r)),
         Value::Unknown => 0,
+    }
+}
+
+/// Convert an absolute [`Value`] for storage in a container owned by `store`.
+#[inline]
+pub(crate) fn value_to_container_raw_in_store(
+    val: Value,
+    reachable: bool,
+    store: &mut Store,
+) -> RawValue {
+    match val {
+        Value::Ref(r, _) => from_ref(retag_for_container(store, r, reachable)),
+        other => value_to_raw_in_store(other, store),
     }
 }
 
@@ -138,12 +219,12 @@ pub(crate) fn value_to_raw_in_store(val: Value, _store: &mut Store) -> RawValue 
 pub(crate) fn value_to_machine_raw_in_store(
     val: Value,
     gp_unit_bytes: u8,
-    _store: &mut Store,
+    frame_owner: &mut Store,
 ) -> RawValue {
     match val {
-        Value::Ref(r, _) => ref_to_machine_raw(r, gp_unit_bytes),
+        Value::Ref(r, _) => ref_to_machine_raw(localize(frame_owner, r), gp_unit_bytes),
         #[cfg(sf_has_simd)]
-        Value::V128(value) => _store.intern_v128(value),
+        Value::V128(value) => frame_owner.intern_v128(value),
         Value::I32(v) => from_i32(v),
         Value::I64(v) => from_i64(v),
         Value::F32(v) => from_f32(v),
@@ -163,16 +244,23 @@ pub(crate) fn try_machine_raw_to_value_in_store(
     raw: RawValue,
     value_type: ValueType,
     gp_unit_bytes: u8,
-    _store: &Store,
+    frame_owner: &Store,
 ) -> Result<Value, WasmError> {
     Ok(match value_type {
-        ValueType::Ref(ref_type) => Value::Ref(machine_raw_to_ref(raw, gp_unit_bytes), ref_type),
+        ValueType::Ref(ref_type) => Value::Ref(
+            absolutize(frame_owner, machine_raw_to_ref(raw, gp_unit_bytes)),
+            ref_type,
+        ),
         ValueType::I32 => Value::I32(as_i32(raw)),
         ValueType::I64 => Value::I64(as_i64(raw)),
         ValueType::F32 => Value::F32(as_f32(raw)),
         ValueType::F64 => Value::F64(as_f64(raw)),
         #[cfg(sf_has_simd)]
-        ValueType::V128 => Value::V128(_store.get_v128(raw).ok_or_else(invalid_v128_raw_error)?),
+        ValueType::V128 => Value::V128(
+            frame_owner
+                .get_v128(raw)
+                .ok_or_else(invalid_v128_raw_error)?,
+        ),
         #[cfg(not(sf_has_simd))]
         ValueType::V128 => Value::Unknown,
         _ => Value::Unknown,
@@ -182,7 +270,7 @@ pub(crate) fn try_machine_raw_to_value_in_store(
 pub(crate) fn try_raw_to_value_in_store(
     raw: RawValue,
     value_type: ValueType,
-    _store: &Store,
+    frame_owner: &Store,
 ) -> Result<Value, WasmError> {
     Ok(match value_type {
         ValueType::I32 => Value::I32(as_i32(raw)),
@@ -190,14 +278,24 @@ pub(crate) fn try_raw_to_value_in_store(
         ValueType::F32 => Value::F32(as_f32(raw)),
         ValueType::F64 => Value::F64(as_f64(raw)),
         #[cfg(sf_has_simd)]
-        ValueType::V128 => Value::V128(_store.get_v128(raw).ok_or_else(invalid_v128_raw_error)?),
+        ValueType::V128 => Value::V128(
+            frame_owner
+                .get_v128(raw)
+                .ok_or_else(invalid_v128_raw_error)?,
+        ),
         #[cfg(not(sf_has_simd))]
         ValueType::V128 => Value::Unknown,
-        ValueType::Ref(ref_type) => Value::Ref(as_ref(raw), ref_type),
+        ValueType::Ref(ref_type) => Value::Ref(absolutize(frame_owner, as_ref(raw)), ref_type),
         _ => Value::Unknown,
     })
 }
 
+/// Normalize a machine-width raw frame slot into the host-width raw frame
+/// form used by `frame_owner`.
+///
+/// Both the input and output belong to the same instance's frame: the
+/// intermediate [`Value`] is absolute, while a reference in the returned raw
+/// slot is localized again for `frame_owner`.
 #[inline]
 pub(crate) fn normalize_machine_raw_in_store(
     raw: RawValue,
@@ -209,4 +307,23 @@ pub(crate) fn normalize_machine_raw_in_store(
         try_machine_raw_to_value_in_store(raw, value_type, gp_unit_bytes, store)?,
         store,
     ))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn function_address_range_endpoints_round_trip_at_both_gp_widths() {
+        for gp_unit_bytes in [4, 8] {
+            for encoded in [0, FUNCADDR_TOP] {
+                let handle = RefHandle::new(encoded);
+                assert!(!handle.is_special());
+                let raw = ref_to_machine_raw(handle, gp_unit_bytes);
+                let decoded = machine_raw_to_ref(raw, gp_unit_bytes);
+                assert_eq!(decoded.raw(), encoded);
+                assert!(!decoded.is_special());
+            }
+        }
+    }
 }

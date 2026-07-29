@@ -14,8 +14,8 @@ use crate::{
         },
         jit::store::Store,
         jit::value_encoding::{
-            machine_raw_to_ref, ref_to_machine_raw, try_machine_raw_to_value_in_store,
-            value_to_machine_raw_in_store,
+            absolutize, machine_raw_to_ref, ref_to_machine_raw, retag_for_container,
+            try_machine_raw_to_value_in_store, value_to_machine_raw_in_store,
         },
         link::RefRegistryEntry,
         tag::TagHandle,
@@ -51,6 +51,13 @@ fn ref_from_machine(raw_ref: u64) -> RefHandle {
 #[inline]
 fn ref_to_machine(handle: RefHandle) -> u64 {
     ref_to_machine_raw(handle, active_gp_unit_bytes())
+}
+
+pub(super) fn do_ref_absolutize(ctx: &NativeContext, raw_ref: u64) -> Result<u64, WasmError> {
+    Ok(ref_to_machine(absolutize(
+        current_store(ctx)?,
+        ref_from_machine(raw_ref),
+    )))
 }
 
 #[inline]
@@ -603,26 +610,29 @@ pub(super) fn do_struct_get(
     raw_ref: u64,
     signed: Option<bool>,
 ) -> Result<u64, WasmError> {
-    let current = current_store(ctx)?;
-    let storage = struct_field_storage(current, type_idx, field_idx)?;
-    let handle = ref_from_machine(raw_ref);
-    let (origin_store_ptr, gc_ref) = resolve_struct_ref(current, handle)?;
-    let origin_store = unsafe { origin_store_ptr.as_mut() }
-        .ok_or_else(|| internal_error("struct ref points to missing store"))?;
-    let value = origin_store
-        .gc_heap()
-        .borrow()
-        .get_struct(gc_ref)
-        .map_err(|_| trap_error("invalid structure reference"))?
-        .fields
-        .get(field_idx as usize)
-        .copied()
-        .ok_or_else(|| internal_error("preserved helper referenced invalid struct field"))?;
+    let (storage, value) = {
+        let current = current_store(ctx)?;
+        let storage = struct_field_storage(current, type_idx, field_idx)?;
+        let handle = ref_from_machine(raw_ref);
+        let (origin_store_ptr, gc_ref) = resolve_struct_ref(current, handle)?;
+        let origin_store = unsafe { origin_store_ptr.as_ref() }
+            .ok_or_else(|| internal_error("struct ref points to missing store"))?;
+        let value = origin_store
+            .gc_heap()
+            .borrow()
+            .get_struct(gc_ref)
+            .map_err(|_| trap_error("invalid structure reference"))?
+            .fields
+            .get(field_idx as usize)
+            .copied()
+            .ok_or_else(|| internal_error("preserved helper referenced invalid struct field"))?;
+        (storage, value)
+    };
     let value = match signed {
         Some(is_signed) => extend_packed_field(value, storage, is_signed),
         None => value,
     };
-    Ok(value_to_machine(origin_store, value))
+    Ok(value_to_machine(current_store_mut(ctx)?, value))
 }
 
 pub(super) fn do_struct_set(
@@ -719,27 +729,30 @@ pub(super) fn do_array_get(
     raw_index: u64,
     signed: Option<bool>,
 ) -> Result<u64, WasmError> {
-    let current = current_store(ctx)?;
-    let storage = array_element_storage(current, type_idx)?;
-    let handle = ref_from_machine(raw_ref);
-    let (origin_store_ptr, gc_ref) = resolve_array_ref(current, handle)?;
-    let index = raw_index as u32 as usize;
-    let origin_store = unsafe { origin_store_ptr.as_mut() }
-        .ok_or_else(|| internal_error("array ref points to missing store"))?;
-    let value = origin_store
-        .gc_heap()
-        .borrow()
-        .get_array(gc_ref)
-        .map_err(|_| trap_error("invalid array reference"))?
-        .elements
-        .get(index)
-        .copied()
-        .ok_or_else(|| trap_error("array element index out of bounds"))?;
+    let (storage, value) = {
+        let current = current_store(ctx)?;
+        let storage = array_element_storage(current, type_idx)?;
+        let handle = ref_from_machine(raw_ref);
+        let (origin_store_ptr, gc_ref) = resolve_array_ref(current, handle)?;
+        let index = raw_index as u32 as usize;
+        let origin_store = unsafe { origin_store_ptr.as_ref() }
+            .ok_or_else(|| internal_error("array ref points to missing store"))?;
+        let value = origin_store
+            .gc_heap()
+            .borrow()
+            .get_array(gc_ref)
+            .map_err(|_| trap_error("invalid array reference"))?
+            .elements
+            .get(index)
+            .copied()
+            .ok_or_else(|| trap_error("array element index out of bounds"))?;
+        (storage, value)
+    };
     let value = match signed {
         Some(is_signed) => extend_packed_field(value, storage, is_signed),
         None => value,
     };
-    Ok(value_to_machine(origin_store, value))
+    Ok(value_to_machine(current_store_mut(ctx)?, value))
 }
 
 pub(super) fn do_array_len(ctx: &NativeContext, raw_ref: u64) -> Result<u64, WasmError> {
@@ -1354,7 +1367,11 @@ pub(super) fn do_table_grow(
     init_val_raw: u64,
     delta_raw: u64,
 ) -> Result<u64, WasmError> {
-    let fill = ref_from_machine(init_val_raw);
+    let fill = {
+        let store = current_store(ctx)?;
+        let reachable = store.module().table_is_reachable(table_idx as usize);
+        retag_for_container(store, ref_from_machine(init_val_raw), reachable)
+    };
     let table = table_mut(ctx, table_idx)?;
     let is_64 = table.limits.is64;
     let error_value = if is_64 { u64::MAX } else { u32::MAX as u64 };
@@ -1381,6 +1398,27 @@ pub(super) fn do_table_grow(
     Ok(result)
 }
 
+pub(super) fn do_table_fill(
+    ctx: &mut NativeContext,
+    table_idx: u32,
+    start: usize,
+    val_raw: u64,
+    len: usize,
+) -> Result<(), WasmError> {
+    let fill = {
+        let store = current_store(ctx)?;
+        let reachable = store.module().table_is_reachable(table_idx as usize);
+        retag_for_container(store, ref_from_machine(val_raw), reachable)
+    };
+    let table = table_mut(ctx, table_idx)?;
+    let mut elements = table.elements_mut();
+    if start.saturating_add(len) > elements.len() {
+        return Err(trap_error("out of bounds table access"));
+    }
+    elements[start..start + len].fill(fill);
+    Ok(())
+}
+
 pub(super) fn do_table_copy(
     ctx: &mut NativeContext,
     dst_tbl: u32,
@@ -1389,17 +1427,15 @@ pub(super) fn do_table_copy(
     src: usize,
     len: usize,
 ) -> Result<(), WasmError> {
-    let store = ctx
-        .store_mut()
-        .ok_or_else(|| internal_error("preserved helper context is missing store"))?;
     let di = dst_tbl as usize;
     let si = src_tbl as usize;
-    if di >= store.module().tables.len() || si >= store.module().tables.len() {
-        return Err(internal_error(
-            "preserved helper referenced invalid table index",
-        ));
-    }
     if di == si {
+        let store = current_store_mut(ctx)?;
+        if di >= store.module().tables.len() {
+            return Err(internal_error(
+                "preserved helper referenced invalid table index",
+            ));
+        }
         let table = store.table_mut(di);
         let mut elements = table.elements_mut();
         if src.saturating_add(len) > elements.len() || dest.saturating_add(len) > elements.len() {
@@ -1407,22 +1443,41 @@ pub(super) fn do_table_copy(
         }
         elements.copy_within(src..src + len, dest);
     } else {
-        let module = store.module_mut();
-        let (src_table, dst_table) = if si < di {
-            let (left, right) = module.tables.split_at_mut(di);
-            (&left[si], &mut right[0])
-        } else {
-            let (left, right) = module.tables.split_at_mut(si);
-            (&right[0] as &TableInst, &mut left[di])
+        let copied = {
+            let store = current_store(ctx)?;
+            let module = store.module();
+            if di >= module.tables.len() || si >= module.tables.len() {
+                return Err(internal_error(
+                    "preserved helper referenced invalid table index",
+                ));
+            }
+            let src_elements = module.tables[si].elements();
+            let dst_elements = module.tables[di].elements();
+            if src.saturating_add(len) > src_elements.len()
+                || dest.saturating_add(len) > dst_elements.len()
+            {
+                return Err(trap_error("out of bounds table access"));
+            }
+            let source_reachable = module.table_is_reachable(si);
+            let destination_reachable = module.table_is_reachable(di);
+            let mut copied = collections::Vec::new();
+            copied
+                .try_reserve(len)
+                .map_err(|_| trap_error("out of memory"))?;
+            if source_reachable == destination_reachable {
+                copied.extend_from_slice(&src_elements[src..src + len]);
+            } else {
+                copied.extend(
+                    src_elements[src..src + len]
+                        .iter()
+                        .map(|handle| retag_for_container(store, *handle, destination_reachable)),
+                );
+            }
+            copied
         };
-        let src_elements = src_table.elements();
-        let mut dst_elements = dst_table.elements_mut();
-        if src.saturating_add(len) > src_elements.len()
-            || dest.saturating_add(len) > dst_elements.len()
-        {
-            return Err(trap_error("out of bounds table access"));
-        }
-        dst_elements[dest..dest + len].copy_from_slice(&src_elements[src..src + len]);
+        let store = current_store_mut(ctx)?;
+        let mut dst_elements = store.module_mut().tables[di].elements_mut();
+        dst_elements[dest..dest + len].copy_from_slice(&copied);
     }
     Ok(())
 }
@@ -1435,38 +1490,52 @@ pub(super) fn do_table_init(
     src: usize,
     len: usize,
 ) -> Result<(), WasmError> {
-    let store = ctx
-        .store_mut()
-        .ok_or_else(|| internal_error("preserved helper context is missing store"))?;
-    let module = store.module_mut();
     let ti = table_idx as usize;
     let ei = elem_idx as usize;
-    if ti >= module.tables.len() {
-        return Err(internal_error(
-            "preserved helper referenced invalid table index",
-        ));
-    }
-    if ei >= module.elements.len() {
-        return Err(trap_error("out of bounds table access"));
-    }
-    let elem = &module.elements[ei];
-    let table_len = module.tables[ti].size();
-    if len == 0 {
-        if src > elem.refs.len() || dest > table_len {
+    let copied = {
+        let store = current_store(ctx)?;
+        let module = store.module();
+        if ti >= module.tables.len() {
+            return Err(internal_error(
+                "preserved helper referenced invalid table index",
+            ));
+        }
+        if ei >= module.elements.len() {
             return Err(trap_error("out of bounds table access"));
         }
-        return Ok(());
-    }
-    if src.saturating_add(len) > elem.refs.len() || dest.saturating_add(len) > table_len {
-        return Err(trap_error("out of bounds table access"));
-    }
-    if elem.is_dropped() {
-        return Err(trap_error("out of bounds table access"));
-    }
-    let mut table_elements = module.tables[ti].elements_mut();
-    for offset in 0..len {
-        table_elements[dest + offset] = module.elements[ei].refs[src + offset];
-    }
+        let elem = &module.elements[ei];
+        let table_len = module.tables[ti].size();
+        if len == 0 {
+            if src > elem.refs.len() || dest > table_len {
+                return Err(trap_error("out of bounds table access"));
+            }
+            return Ok(());
+        }
+        if src.saturating_add(len) > elem.refs.len() || dest.saturating_add(len) > table_len {
+            return Err(trap_error("out of bounds table access"));
+        }
+        if elem.is_dropped() {
+            return Err(trap_error("out of bounds table access"));
+        }
+        let reachable = module.table_is_reachable(ti);
+        let mut copied = collections::Vec::new();
+        copied
+            .try_reserve(len)
+            .map_err(|_| trap_error("out of memory"))?;
+        if reachable {
+            copied.extend_from_slice(&elem.refs[src..src + len]);
+        } else {
+            copied.extend(
+                elem.refs[src..src + len]
+                    .iter()
+                    .map(|handle| retag_for_container(store, *handle, false)),
+            );
+        }
+        copied
+    };
+    let store = current_store_mut(ctx)?;
+    let mut table_elements = store.module_mut().tables[ti].elements_mut();
+    table_elements[dest..dest + len].copy_from_slice(&copied);
     Ok(())
 }
 

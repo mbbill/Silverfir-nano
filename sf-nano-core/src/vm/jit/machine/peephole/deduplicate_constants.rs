@@ -26,6 +26,7 @@ pub(super) fn deduplicate_constants(block: &mut MachineBlock, first_fp_reg: u16)
             MachineInstKind::CallRuntime(_)
                 | MachineInstKind::RefFunc { .. }
                 | MachineInstKind::RefAsNonNull { .. }
+                | MachineInstKind::RefAbsolutize { .. }
                 | MachineInstKind::RefEq { .. }
                 | MachineInstKind::RefI31 { .. }
                 | MachineInstKind::I31GetS { .. }
