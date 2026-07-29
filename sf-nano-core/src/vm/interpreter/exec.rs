@@ -30,7 +30,9 @@ use crate::value_type::{AbstractHeapType, HeapType, RefType, ValueType};
 use crate::vm::engine::Engine;
 use crate::vm::entities::{GlobalInst, MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
-use crate::vm::link::{LinkRegistry, RefRegistryEntry};
+use crate::vm::link::{
+    InstanceHandle, InstanceId, InstanceLease, LinkArenas, LinkRegistry, RefRegistryEntry,
+};
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 
@@ -378,7 +380,8 @@ pub struct InterpInstance {
     /// Shared reference arena used by exception objects. Linked instances
     /// clone one registry so an exception retains both its payload and its
     /// identity while crossing an imported-function boundary.
-    link_registry: LinkRegistry,
+    instance_handle: InstanceHandle,
+    link_registry: LinkArenas,
     /// The operand stack and native return stack, allocated once at
     /// instantiation and reused by every call. They used to be allocated
     /// and zeroed inside each invocation, which put a 2 MiB allocation in
@@ -393,6 +396,46 @@ pub struct InterpInstance {
     /// instead of going out through the embedder and back.
     published: Vec<(RefHandle, usize)>,
     native: Option<NativeState>,
+}
+
+pub(crate) struct InterpInstanceLease {
+    lease: InstanceLease,
+}
+
+impl InterpInstanceLease {
+    #[inline]
+    pub(crate) fn instance_id(&self) -> InstanceId {
+        let id = self.instance_handle.self_id();
+        debug_assert_eq!(id, self.lease.id());
+        id
+    }
+
+    #[inline]
+    pub(crate) fn has_exclusive_lease(&self) -> bool {
+        self.lease.is_exclusive()
+    }
+}
+
+impl core::ops::Deref for InterpInstanceLease {
+    type Target = InterpInstance;
+
+    #[inline]
+    fn deref(&self) -> &Self::Target {
+        self.lease
+            .token()
+            .interp()
+            .expect("interpreter lease must resolve to an InterpInstance")
+    }
+}
+
+impl core::ops::DerefMut for InterpInstanceLease {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.lease
+            .token_mut()
+            .interp_mut()
+            .expect("interpreter lease must resolve to an InterpInstance")
+    }
 }
 
 /// Nonzero per-op counts, descending.
@@ -603,7 +646,18 @@ impl InterpInstance {
         funcref_host: Option<FuncRefHost>,
     ) -> Result<Self, (Option<Self>, WasmError)> {
         let registry = LinkRegistry::new();
-        Self::new_partial_with_registry(engine, module, host, imports, funcref_host, &registry)
+        let (_, instance_handle) = registry.reserve_instance();
+        let inst = Self::build(
+            engine,
+            module,
+            host,
+            imports,
+            funcref_host,
+            registry.arenas(),
+            instance_handle,
+        )
+        .map_err(|e| (None, e))?;
+        Self::initialize(inst)
     }
 
     /// Registry-aware partial instantiation used by linkers that keep several
@@ -615,16 +669,46 @@ impl InterpInstance {
         imports: &[Import],
         funcref_host: Option<FuncRefHost>,
         registry: &LinkRegistry,
-    ) -> Result<Self, (Option<Self>, WasmError)> {
-        let mut inst = Self::build(
+    ) -> Result<InterpInstanceLease, (Option<InterpInstanceLease>, WasmError)> {
+        let (instance_id, instance_handle) = registry.reserve_instance();
+        let lease_handle = instance_handle.clone();
+        let inst = match Self::build(
             engine,
             module,
             host,
             imports,
             funcref_host,
-            registry.clone(),
-        )
-        .map_err(|e| (None, e))?;
+            registry.arenas(),
+            instance_handle,
+        ) {
+            Ok(inst) => inst,
+            Err(error) => {
+                registry
+                    .instance_table()
+                    .abandon(instance_id)
+                    .expect("fresh interpreter reservation");
+                return Err((None, error));
+            }
+        };
+        match Self::initialize(inst) {
+            Ok(inst) => Self::lease_in(registry, instance_id, lease_handle, inst)
+                .map_err(|error| (None, error)),
+            Err((Some(inst), error)) => {
+                let leased = Self::lease_in(registry, instance_id, lease_handle, inst)
+                    .map_err(|lease_error| (None, lease_error))?;
+                Err((Some(leased), error))
+            }
+            Err((None, error)) => {
+                registry
+                    .instance_table()
+                    .abandon(instance_id)
+                    .expect("unoccupied interpreter reservation");
+                Err((None, error))
+            }
+        }
+    }
+
+    fn initialize(mut inst: Self) -> Result<Self, (Option<Self>, WasmError)> {
         // Link the dispatch chain BEFORE the data segments: a partial
         // instance handed back after a trap still has to be callable, and
         // linking is not observable, so its position is free.
@@ -643,13 +727,29 @@ impl InterpInstance {
         Ok(inst)
     }
 
+    fn lease_in(
+        registry: &LinkRegistry,
+        instance_id: InstanceId,
+        lease_handle: InstanceHandle,
+        inst: Self,
+    ) -> Result<InterpInstanceLease, WasmError> {
+        registry
+            .instance_table()
+            .occupy_interp(instance_id, Box::new(inst))
+            .map_err(|_| WasmError::invalid("interpreter instance slot is unavailable"))?;
+        let lease = InstanceLease::checkout(&lease_handle)
+            .ok_or_else(|| WasmError::invalid("interpreter instance checkout failed"))?;
+        Ok(InterpInstanceLease { lease })
+    }
+
     fn build(
         engine: &Engine,
         module: Module,
         host: Option<HostDispatch>,
         imports: &[Import],
         funcref_host: Option<FuncRefHost>,
-        link_registry: LinkRegistry,
+        link_registry: LinkArenas,
+        instance_handle: InstanceHandle,
     ) -> Result<Self, WasmError> {
         let config = *engine.config();
         // Names handed out for this instance's own functions, filled as
@@ -1010,6 +1110,7 @@ impl InterpInstance {
             shared_globals,
             tables,
             tags,
+            instance_handle,
             link_registry,
             // Zeroed in full: native dispatch roams the whole region
             // through raw pointers, so every slot must be initialized.

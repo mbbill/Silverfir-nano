@@ -966,8 +966,10 @@ mod tests {
     }
 
     fn store_with_registry(module: ModuleInst, registry: &LinkRegistry) -> Box<Store> {
+        let (_, instance_handle) = registry.reserve_instance();
         Box::new(Store::new_with_registries(
             module,
+            instance_handle,
             registry.function_registry_shared(),
             registry.ref_registry_shared(),
             #[cfg(sf_has_simd)]

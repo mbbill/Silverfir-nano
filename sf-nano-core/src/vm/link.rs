@@ -21,12 +21,411 @@ use crate::vm::value::{RefHandle, Value};
 use core::cell::RefCell;
 #[cfg(sf_jit)]
 use core::cell::{Cell, Ref, RefMut};
-use tracked_alloc::rc::Rc;
+use tracked_alloc::{
+    boxed::Box,
+    rc::{Rc, Weak},
+};
 
+#[cfg(sf_interp)]
+use crate::vm::interpreter::InterpInstance;
 #[cfg(sf_jit)]
 use crate::vm::jit::gc_heap::GcRef;
 #[cfg(sf_jit)]
 use crate::vm::jit::store::Store;
+
+/// Stable identity for one instance in a runtime world.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct InstanceId {
+    index: u32,
+    generation: u32,
+}
+
+impl InstanceId {
+    #[inline]
+    pub(crate) const fn from_parts(index: u32, generation: u32) -> Self {
+        Self { index, generation }
+    }
+
+    #[inline]
+    pub(crate) const fn index(self) -> u32 {
+        self.index
+    }
+
+    #[inline]
+    pub(crate) const fn generation(self) -> u32 {
+        self.generation
+    }
+}
+
+/// The instance storage owned by the world table.
+///
+/// The boxes are load-bearing: a table borrow covers the vector's slot and
+/// box-pointer storage, never the separately allocated instance body.
+pub(crate) enum WorldSlot {
+    #[cfg(sf_jit)]
+    Jit(Box<Store>),
+    #[cfg(sf_interp)]
+    Interp(Box<InterpInstance>),
+    Vacant,
+}
+
+struct InstanceTableInner {
+    slots: RefCell<collections::Vec<WorldSlot>>,
+    generations: RefCell<collections::Vec<u32>>,
+    in_use: RefCell<collections::Vec<u32>>,
+    reusable: RefCell<collections::Vec<u32>>,
+}
+
+/// The sole strong owner of the generational instance table.
+#[derive(Clone)]
+pub(crate) struct InstanceTable(Rc<InstanceTableInner>);
+
+/// A non-owning back-reference carried by each stored engine instance.
+#[derive(Clone)]
+pub(crate) struct InstanceHandle {
+    table: Weak<InstanceTableInner>,
+    self_id: InstanceId,
+}
+
+enum InstancePointer {
+    #[cfg(sf_jit)]
+    Jit(*mut Store),
+    #[cfg(sf_interp)]
+    Interp(*mut InterpInstance),
+}
+
+/// A generation-checked, RAII checkout of one instance slot.
+pub(crate) struct InstanceToken {
+    table: Rc<InstanceTableInner>,
+    id: InstanceId,
+    pointer: InstancePointer,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum InstanceFreeError {
+    InvalidId,
+    InUse,
+}
+
+impl InstanceTable {
+    #[inline]
+    fn new() -> Self {
+        Self(Rc::new(InstanceTableInner {
+            slots: RefCell::new(collections::Vec::new()),
+            generations: RefCell::new(collections::Vec::new()),
+            in_use: RefCell::new(collections::Vec::new()),
+            reusable: RefCell::new(collections::Vec::new()),
+        }))
+    }
+
+    pub(crate) fn reserve(&self) -> InstanceId {
+        while let Some(index) = self.0.reusable.borrow_mut().pop() {
+            let generation = self.0.generations.borrow()[index as usize];
+            if generation != u32::MAX {
+                return InstanceId::from_parts(index, generation);
+            }
+        }
+
+        let mut slots = self.0.slots.borrow_mut();
+        let mut generations = self.0.generations.borrow_mut();
+        let mut in_use = self.0.in_use.borrow_mut();
+        let index = slots.len();
+        assert!(u32::try_from(index).is_ok(), "instance table exhausted");
+        slots.push(WorldSlot::Vacant);
+        generations.push(0);
+        in_use.push(0);
+        InstanceId::from_parts(index as u32, 0)
+    }
+
+    #[cfg(any(sf_interp, test))]
+    pub(crate) fn abandon(&self, id: InstanceId) -> Result<(), InstanceFreeError> {
+        let generations = self.0.generations.borrow();
+        if generations.get(id.index() as usize).copied() != Some(id.generation()) {
+            return Err(InstanceFreeError::InvalidId);
+        }
+        let slots = self.0.slots.borrow();
+        if !matches!(slots.get(id.index() as usize), Some(WorldSlot::Vacant)) {
+            return Err(InstanceFreeError::InvalidId);
+        }
+        if self.0.in_use.borrow()[id.index() as usize] != 0 {
+            return Err(InstanceFreeError::InUse);
+        }
+        drop(slots);
+        drop(generations);
+        self.0.reusable.borrow_mut().push(id.index());
+        Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn handle(&self, id: InstanceId) -> InstanceHandle {
+        InstanceHandle {
+            table: Rc::downgrade(&self.0),
+            self_id: id,
+        }
+    }
+
+    #[cfg(sf_jit)]
+    pub(crate) fn occupy_jit(
+        &self,
+        id: InstanceId,
+        store: Box<Store>,
+    ) -> Result<(), InstanceFreeError> {
+        self.occupy(id, WorldSlot::Jit(store))
+    }
+
+    #[cfg(sf_interp)]
+    pub(crate) fn occupy_interp(
+        &self,
+        id: InstanceId,
+        instance: Box<InterpInstance>,
+    ) -> Result<(), InstanceFreeError> {
+        self.occupy(id, WorldSlot::Interp(instance))
+    }
+
+    fn occupy(&self, id: InstanceId, value: WorldSlot) -> Result<(), InstanceFreeError> {
+        let generations = self.0.generations.borrow();
+        let Some(&generation) = generations.get(id.index() as usize) else {
+            return Err(InstanceFreeError::InvalidId);
+        };
+        if generation != id.generation() {
+            return Err(InstanceFreeError::InvalidId);
+        }
+        let mut slots = self.0.slots.borrow_mut();
+        let Some(slot) = slots.get_mut(id.index() as usize) else {
+            return Err(InstanceFreeError::InvalidId);
+        };
+        if !matches!(slot, WorldSlot::Vacant) {
+            return Err(InstanceFreeError::InvalidId);
+        }
+        *slot = value;
+        Ok(())
+    }
+
+    pub(crate) fn checkout(&self, id: InstanceId) -> Option<InstanceToken> {
+        let generations = self.0.generations.borrow();
+        if generations.get(id.index() as usize).copied()? != id.generation() {
+            return None;
+        }
+
+        let slots = self.0.slots.borrow();
+        let pointer = match slots.get(id.index() as usize)? {
+            #[cfg(sf_jit)]
+            WorldSlot::Jit(store) => {
+                // Do not form a reference to the pointee inside the table
+                // borrow. The table covers only the box pointer.
+                InstancePointer::Jit((&raw const **store).cast_mut())
+            }
+            #[cfg(sf_interp)]
+            WorldSlot::Interp(instance) => {
+                InstancePointer::Interp((&raw const **instance).cast_mut())
+            }
+            WorldSlot::Vacant => return None,
+        };
+
+        let mut in_use = self.0.in_use.borrow_mut();
+        let count = in_use.get_mut(id.index() as usize)?;
+        *count = count.checked_add(1)?;
+        drop(in_use);
+        drop(slots);
+        drop(generations);
+
+        Some(InstanceToken {
+            table: Rc::clone(&self.0),
+            id,
+            pointer,
+        })
+    }
+
+    pub(crate) fn free(&self, id: InstanceId) -> Result<(), InstanceFreeError> {
+        {
+            let generations = self.0.generations.borrow();
+            if generations.get(id.index() as usize).copied() != Some(id.generation()) {
+                return Err(InstanceFreeError::InvalidId);
+            }
+        }
+        if self
+            .0
+            .in_use
+            .borrow()
+            .get(id.index() as usize)
+            .copied()
+            .ok_or(InstanceFreeError::InvalidId)?
+            != 0
+        {
+            return Err(InstanceFreeError::InUse);
+        }
+
+        let removed = {
+            let mut slots = self.0.slots.borrow_mut();
+            let slot = slots
+                .get_mut(id.index() as usize)
+                .ok_or(InstanceFreeError::InvalidId)?;
+            if matches!(slot, WorldSlot::Vacant) {
+                return Err(InstanceFreeError::InvalidId);
+            }
+            core::mem::replace(slot, WorldSlot::Vacant)
+        };
+        let mut generations = self.0.generations.borrow_mut();
+        let generation = &mut generations[id.index() as usize];
+        if *generation != u32::MAX {
+            *generation += 1;
+        }
+        let reusable = *generation != u32::MAX;
+        drop(generations);
+        if reusable {
+            self.0.reusable.borrow_mut().push(id.index());
+        }
+        drop(removed);
+        Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn in_use(&self, id: InstanceId) -> Option<u32> {
+        if self
+            .0
+            .generations
+            .borrow()
+            .get(id.index() as usize)
+            .copied()?
+            != id.generation()
+        {
+            return None;
+        }
+        self.0.in_use.borrow().get(id.index() as usize).copied()
+    }
+}
+
+impl InstanceHandle {
+    #[inline]
+    pub(crate) const fn self_id(&self) -> InstanceId {
+        self.self_id
+    }
+
+    pub(crate) fn checkout(&self, id: InstanceId) -> Option<InstanceToken> {
+        let table = self.table.upgrade()?;
+        InstanceTable(table.into()).checkout(id)
+    }
+
+    #[cfg(sf_jit)]
+    pub(crate) fn table(&self) -> Option<InstanceTable> {
+        let table = self.table.upgrade()?;
+        Some(InstanceTable(table.into()))
+    }
+}
+
+impl InstanceToken {
+    #[inline]
+    pub(crate) const fn id(&self) -> InstanceId {
+        self.id
+    }
+
+    #[cfg(sf_jit)]
+    #[inline]
+    pub(crate) fn jit(&self) -> Option<&Store> {
+        match self.pointer {
+            InstancePointer::Jit(pointer) => Some(unsafe { &*pointer }),
+            #[cfg(sf_interp)]
+            InstancePointer::Interp(_) => None,
+        }
+    }
+
+    #[cfg(sf_jit)]
+    #[inline]
+    pub(crate) fn jit_mut(&mut self) -> Option<&mut Store> {
+        match self.pointer {
+            InstancePointer::Jit(pointer) => Some(unsafe { &mut *pointer }),
+            #[cfg(sf_interp)]
+            InstancePointer::Interp(_) => None,
+        }
+    }
+
+    #[cfg(sf_interp)]
+    #[inline]
+    pub(crate) fn interp(&self) -> Option<&InterpInstance> {
+        match self.pointer {
+            #[cfg(sf_jit)]
+            InstancePointer::Jit(_) => None,
+            InstancePointer::Interp(pointer) => Some(unsafe { &*pointer }),
+        }
+    }
+
+    #[cfg(sf_interp)]
+    #[inline]
+    pub(crate) fn interp_mut(&mut self) -> Option<&mut InterpInstance> {
+        match self.pointer {
+            #[cfg(sf_jit)]
+            InstancePointer::Jit(_) => None,
+            InstancePointer::Interp(pointer) => Some(unsafe { &mut *pointer }),
+        }
+    }
+}
+
+impl Drop for InstanceToken {
+    fn drop(&mut self) {
+        let mut in_use = self.table.in_use.borrow_mut();
+        let count = &mut in_use[self.id.index() as usize];
+        *count = count
+            .checked_sub(1)
+            .expect("instance checkout count underflow");
+    }
+}
+
+/// The existing instance APIs own one lease for as long as their facade is
+/// alive. Dropping the facade releases its checkout and frees the slot.
+pub(crate) struct InstanceLease {
+    token: Option<InstanceToken>,
+}
+
+impl InstanceLease {
+    pub(crate) fn checkout(handle: &InstanceHandle) -> Option<Self> {
+        Some(Self {
+            token: Some(handle.checkout(handle.self_id())?),
+        })
+    }
+
+    #[inline]
+    pub(crate) fn id(&self) -> InstanceId {
+        self.token
+            .as_ref()
+            .expect("instance lease already released")
+            .id()
+    }
+
+    #[inline]
+    pub(crate) fn token(&self) -> &InstanceToken {
+        self.token
+            .as_ref()
+            .expect("instance lease already released")
+    }
+
+    #[inline]
+    pub(crate) fn token_mut(&mut self) -> &mut InstanceToken {
+        self.token
+            .as_mut()
+            .expect("instance lease already released")
+    }
+
+    pub(crate) fn is_exclusive(&self) -> bool {
+        let token = self
+            .token
+            .as_ref()
+            .expect("instance lease already released");
+        InstanceTable(Rc::clone(&token.table)).in_use(token.id) == Some(1)
+    }
+}
+
+impl Drop for InstanceLease {
+    fn drop(&mut self) {
+        let Some(token) = self.token.take() else {
+            return;
+        };
+        let id = token.id;
+        let table = InstanceTable(Rc::clone(&token.table));
+        drop(token);
+        let result = table.free(id);
+        debug_assert_eq!(result, Ok(()));
+    }
+}
 
 /// A backend-neutral exception object. Registry-owned: the shared `Rc` makes
 /// an exception's lifetime independent of the instance that allocated it.
@@ -196,7 +595,7 @@ pub(crate) fn alloc_exn_in(
 }
 
 #[derive(Clone)]
-pub struct LinkRegistry {
+pub(crate) struct LinkArenas {
     #[cfg(sf_jit)]
     functions: SharedFunctionRegistry,
     refs: SharedRefRegistry,
@@ -204,9 +603,9 @@ pub struct LinkRegistry {
     simd: SharedSimdRegistry,
 }
 
-impl LinkRegistry {
+impl LinkArenas {
     #[inline]
-    pub fn new() -> Self {
+    fn new() -> Self {
         Self {
             #[cfg(sf_jit)]
             functions: SharedFunctionRegistry::new(),
@@ -214,20 +613,6 @@ impl LinkRegistry {
             #[cfg(all(sf_jit, sf_has_simd))]
             simd: SharedSimdRegistry::new(),
         }
-    }
-
-    #[cfg(sf_jit)]
-    #[inline]
-    pub(crate) fn function_registry_shared(&self) -> SharedFunctionRegistry {
-        self.functions.clone()
-    }
-
-    // Only the JIT's instantiation path attaches a whole store to a shared
-    // registry; the interpreter goes through the typed helpers below.
-    #[cfg(sf_jit)]
-    #[inline]
-    pub(crate) fn ref_registry_shared(&self) -> SharedRefRegistry {
-        Rc::clone(&self.refs)
     }
 
     /// Allocate a backend-neutral exception object in the shared reference
@@ -238,9 +623,7 @@ impl LinkRegistry {
     }
 
     /// Mint a non-callable but globally unique identity for an interpreter
-    /// function reference. This is the safe fallback for linked runtimes that
-    /// share a registry but did not provide the mutable cross-instance call
-    /// resolver required to publish a callable host reference.
+    /// function reference.
     #[cfg(sf_interp)]
     pub(crate) fn alloc_opaque_interp_funcref(&self) -> RefHandle {
         let idx = {
@@ -252,7 +635,6 @@ impl LinkRegistry {
         RefHandle::from_pool_index(idx)
     }
 
-    /// Resolve an exception handle without copying its payload.
     #[cfg(sf_interp)]
     pub(crate) fn resolve_exn(&self, handle: RefHandle) -> Option<Rc<ExnInstance>> {
         let idx = handle.pooled_index()?;
@@ -260,21 +642,63 @@ impl LinkRegistry {
         entry.resolve_exn()
     }
 
-    /// Resolve a pooled reference for interpreter-side dynamic type checks.
-    ///
-    /// Entries are cloned out of the `RefCell` so callers never retain a
-    /// registry borrow while consulting an origin store. Exception clones
-    /// remain O(1) because their payload is shared through `Rc`.
     #[cfg(sf_interp)]
     pub(crate) fn ref_entry_for_handle(&self, handle: RefHandle) -> Option<RefRegistryEntry> {
         let idx = handle.pooled_index()?;
         self.refs.borrow().get(idx).cloned()
     }
+}
+
+#[derive(Clone)]
+pub struct LinkRegistry {
+    arenas: LinkArenas,
+    instances: InstanceTable,
+}
+
+impl LinkRegistry {
+    #[inline]
+    pub fn new() -> Self {
+        Self {
+            arenas: LinkArenas::new(),
+            instances: InstanceTable::new(),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn reserve_instance(&self) -> (InstanceId, InstanceHandle) {
+        let id = self.instances.reserve();
+        (id, self.instances.handle(id))
+    }
+
+    #[inline]
+    #[cfg(any(sf_interp, test))]
+    pub(crate) fn arenas(&self) -> LinkArenas {
+        self.arenas.clone()
+    }
+
+    #[inline]
+    pub(crate) fn instance_table(&self) -> InstanceTable {
+        self.instances.clone()
+    }
+
+    #[cfg(sf_jit)]
+    #[inline]
+    pub(crate) fn function_registry_shared(&self) -> SharedFunctionRegistry {
+        self.arenas.functions.clone()
+    }
+
+    // Only the JIT's instantiation path attaches a whole store to a shared
+    // registry; the interpreter goes through the typed helpers below.
+    #[cfg(sf_jit)]
+    #[inline]
+    pub(crate) fn ref_registry_shared(&self) -> SharedRefRegistry {
+        Rc::clone(&self.arenas.refs)
+    }
 
     #[inline]
     #[cfg(all(sf_jit, sf_has_simd))]
     pub(crate) fn simd_registry_shared(&self) -> SharedSimdRegistry {
-        self.simd.clone()
+        self.arenas.simd.clone()
     }
 
     #[inline]
@@ -283,18 +707,29 @@ impl LinkRegistry {
         functions: SharedFunctionRegistry,
         refs: SharedRefRegistry,
         simd: SharedSimdRegistry,
+        instances: InstanceTable,
     ) -> Self {
         Self {
-            functions,
-            refs,
-            simd,
+            arenas: LinkArenas {
+                functions,
+                refs,
+                simd,
+            },
+            instances,
         }
     }
 
     #[inline]
     #[cfg(all(sf_jit, not(sf_has_simd)))]
-    pub(crate) fn from_shared(functions: SharedFunctionRegistry, refs: SharedRefRegistry) -> Self {
-        Self { functions, refs }
+    pub(crate) fn from_shared(
+        functions: SharedFunctionRegistry,
+        refs: SharedRefRegistry,
+        instances: InstanceTable,
+    ) -> Self {
+        Self {
+            arenas: LinkArenas { functions, refs },
+            instances,
+        }
     }
 }
 
@@ -308,10 +743,131 @@ mod tests {
         let tag = TagHandle::mint_fresh();
         let fields = collections::vec![Value::I32(7), Value::I64(11)];
 
-        let handle = registry.alloc_exn(tag, fields.clone());
-        let resolved = registry.resolve_exn(handle).expect("shared exception");
+        let arenas = registry.arenas();
+        let handle = arenas.alloc_exn(tag, fields.clone());
+        let resolved = arenas.resolve_exn(handle).expect("shared exception");
 
         assert_eq!(resolved.tag, tag);
         assert_eq!(resolved.fields, fields);
+    }
+}
+
+#[cfg(all(test, sf_jit))]
+mod instance_table_tests {
+    use super::*;
+    use crate::config::Config;
+    use crate::module::type_context::TypeContext;
+    use crate::vm::jit::entities::ModuleInst;
+    use tracked_alloc::string::String;
+
+    fn occupied_store(registry: &LinkRegistry) -> (InstanceId, InstanceHandle) {
+        let (id, handle) = registry.reserve_instance();
+        let store = Box::new(Store::new_with_registries(
+            ModuleInst::new(
+                Config::new(),
+                String::from("instance-table-test"),
+                TypeContext::new(collections::Vec::new()),
+            ),
+            handle.clone(),
+            registry.function_registry_shared(),
+            registry.ref_registry_shared(),
+            #[cfg(sf_has_simd)]
+            registry.simd_registry_shared(),
+        ));
+        registry
+            .instance_table()
+            .occupy_jit(id, store)
+            .expect("fresh instance slot");
+        (id, handle)
+    }
+
+    #[test]
+    fn checkout_rejects_generation_mismatch() {
+        let registry = LinkRegistry::new();
+        let (id, _) = occupied_store(&registry);
+        let stale = InstanceId::from_parts(id.index(), id.generation().wrapping_add(1));
+
+        assert!(registry.instance_table().checkout(stale).is_none());
+        assert_eq!(registry.instance_table().free(id), Ok(()));
+    }
+
+    #[test]
+    fn pending_reservations_are_distinct_and_abandoned_slots_reuse() {
+        let registry = LinkRegistry::new();
+        let table = registry.instance_table();
+        let first = table.reserve();
+        let second = table.reserve();
+
+        assert_ne!(first.index(), second.index());
+        table.abandon(first).expect("abandon first reservation");
+        assert_eq!(table.reserve(), first);
+        table.abandon(second).expect("abandon second reservation");
+    }
+
+    #[test]
+    fn free_rejects_checked_out_slot() {
+        let registry = LinkRegistry::new();
+        let (id, _) = occupied_store(&registry);
+        let token = registry
+            .instance_table()
+            .checkout(id)
+            .expect("occupied instance");
+
+        assert_eq!(
+            registry.instance_table().free(id),
+            Err(InstanceFreeError::InUse)
+        );
+        drop(token);
+        assert_eq!(registry.instance_table().free(id), Ok(()));
+    }
+
+    #[test]
+    fn two_checkout_tokens_can_coexist() {
+        let registry = LinkRegistry::new();
+        let (id, _) = occupied_store(&registry);
+        let first = registry
+            .instance_table()
+            .checkout(id)
+            .expect("first checkout");
+        let second = registry
+            .instance_table()
+            .checkout(id)
+            .expect("nested checkout");
+
+        assert_eq!(registry.instance_table().in_use(id), Some(2));
+        drop(second);
+        assert_eq!(registry.instance_table().in_use(id), Some(1));
+        drop(first);
+        assert_eq!(registry.instance_table().free(id), Ok(()));
+    }
+
+    #[test]
+    fn maximum_generation_retires_slot() {
+        let registry = LinkRegistry::new();
+        let table = registry.instance_table();
+        let id = table.reserve();
+        table.0.generations.borrow_mut()[id.index() as usize] = u32::MAX - 1;
+        let old = InstanceId::from_parts(id.index(), u32::MAX - 1);
+        let handle = table.handle(old);
+        let store = Box::new(Store::new_with_registries(
+            ModuleInst::new(
+                Config::new(),
+                String::from("retired-instance-slot"),
+                TypeContext::new(collections::Vec::new()),
+            ),
+            handle,
+            registry.function_registry_shared(),
+            registry.ref_registry_shared(),
+            #[cfg(sf_has_simd)]
+            registry.simd_registry_shared(),
+        ));
+        table
+            .occupy_jit(old, store)
+            .expect("penultimate generation");
+        table.free(old).expect("retire slot");
+
+        let replacement = table.reserve();
+        assert_ne!(replacement.index(), old.index());
+        assert_eq!(table.0.generations.borrow()[old.index() as usize], u32::MAX);
     }
 }
