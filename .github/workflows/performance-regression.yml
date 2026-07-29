@@ -451,7 +451,7 @@ jobs:
           echo "::warning title=Dev CI soft-fail::Action required; this job did not pass."
 
   wasmi:
-    name: wasmi / ${{ matrix.platform }} / ${{ matrix.engine }}
+    name: wasmi / ${{ matrix.platform }} / ${{ matrix.engine }} / ${{ matrix.category }}
     needs: prepare
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 35
@@ -465,15 +465,35 @@ jobs:
           - platform: x64-linux
             runner: ubuntu-latest
             engine: jit
+            category: execute
+          - platform: x64-linux
+            runner: ubuntu-latest
+            engine: jit
+            category: startup
           - platform: x64-linux
             runner: ubuntu-latest
             engine: interp
+            category: execute
+          - platform: x64-linux
+            runner: ubuntu-latest
+            engine: interp
+            category: startup
           - platform: arm64-linux
             runner: ubuntu-24.04-arm
             engine: jit
+            category: execute
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            engine: jit
+            category: startup
           - platform: arm64-linux
             runner: ubuntu-24.04-arm
             engine: interp
+            category: execute
+          - platform: arm64-linux
+            runner: ubuntu-24.04-arm
+            engine: interp
+            category: startup
     defaults:
       run:
         shell: bash
@@ -530,6 +550,7 @@ jobs:
         env:
           BASELINE_SHA: ${{ needs.prepare.outputs.baseline }}
           CANDIDATE_SHA: ${{ needs.prepare.outputs.candidate }}
+          CATEGORY: ${{ matrix.category }}
           ENGINE: ${{ matrix.engine }}
           PLATFORM: ${{ matrix.platform }}
         run: |
@@ -544,15 +565,17 @@ jobs:
             --candidate-sha "$CANDIDATE_SHA" \
             --platform "$PLATFORM" \
             --engine "$ENGINE" \
+            --category "$CATEGORY" \
             --pilot-probability 80 \
             --regression-probability 99.99 \
             --improvement-probability 99.99 \
             --family-jobs 4 \
+            --family-metric-count 27 \
             --max-confirmation-runs 2 \
             --target-root wasmi-target \
-            --out-dir "wasmi-output/${ENGINE}" || status=$?
-          if [[ -f "wasmi-output/${ENGINE}/summary.md" ]]; then
-            cat "wasmi-output/${ENGINE}/summary.md" >> "$GITHUB_STEP_SUMMARY"
+            --out-dir "wasmi-output/${ENGINE}-${CATEGORY}" || status=$?
+          if [[ -f "wasmi-output/${ENGINE}-${CATEGORY}/summary.md" ]]; then
+            cat "wasmi-output/${ENGINE}-${CATEGORY}/summary.md" >> "$GITHUB_STEP_SUMMARY"
           fi
           if [[ "$status" -ne 0 && "$GITHUB_REF" == refs/heads/dev/* ]]; then
             echo "::warning title=Dev wasmi performance soft-fail::Action required; see the job summary and artifact."
@@ -562,8 +585,8 @@ jobs:
       - uses: actions/upload-artifact@v7
         if: always()
         with:
-          name: wasmi-performance-${{ matrix.platform }}-${{ matrix.engine }}
-          path: wasmi-output/${{ matrix.engine }}/
+          name: wasmi-performance-${{ matrix.platform }}-${{ matrix.engine }}-${{ matrix.category }}
+          path: wasmi-output/${{ matrix.engine }}-${{ matrix.category }}/
           if-no-files-found: warn
           retention-days: 14
 

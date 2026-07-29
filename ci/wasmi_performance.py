@@ -726,6 +726,7 @@ def render_summary(
     *,
     platform: str,
     engine: str,
+    category: str,
     baseline_sha: str,
     candidate_sha: str,
     suite_sha: str,
@@ -734,11 +735,22 @@ def render_summary(
     improvement_probability: float,
     effective_regression_probability: float,
     effective_improvement_probability: float,
+    family_metric_count: int,
     family_jobs: int,
     maximum_looks: int,
     identical_sources: bool,
     metrics: dict[str, dict[str, Any]],
 ) -> str:
+    scope = (
+        f"{platform} / {engine}"
+        if category == "all"
+        else f"{platform} / {engine} / {category}"
+    )
+    shard_description = (
+        f"`{len(metrics)}` Criterion benchmarks"
+        if category == "all"
+        else f"`{len(metrics)}` `{category}` Criterion benchmarks"
+    )
     schedule = (
         "- schedule: one 10-sample adjacent A/B pilot; resolved local "
         "runtime source is identical, so confirmation is skipped"
@@ -750,13 +762,13 @@ def render_summary(
         )
     )
     lines = [
-        f"## wasmi-benchmarks: {platform} / {engine}",
+        f"## wasmi-benchmarks: {scope}",
         "",
         f"`{baseline_sha[:12]}` -> `{candidate_sha[:12]}`",
         "",
         f"- wasmi-benchmarks: `{suite_sha}`",
         (
-            f"- corpus: `{len(metrics)}` Criterion benchmarks; dedicated "
+            f"- corpus: {shard_description}; dedicated "
             "CoreMark score excluded, `startup/coremark` retained"
         ),
         schedule,
@@ -767,8 +779,9 @@ def render_summary(
             f"`{pilot_probability * 100:.1f}%`"
         ),
         (
-            f"- family correction: `{len(metrics)}` metrics x "
-            f"`{family_jobs}` jobs x `{maximum_looks}` looks; effective "
+            f"- family correction: `{family_metric_count}` metrics x "
+            f"`{family_jobs}` platform/engine groups x "
+            f"`{maximum_looks}` looks; effective "
             f"P(reg) `{effective_regression_probability * 100:.6f}%`, "
             f"P(imp) `{effective_improvement_probability * 100:.6f}%`"
         ),
@@ -826,12 +839,18 @@ def render_failure_summary(
     *,
     platform: str,
     engine: str,
+    category: str,
     baseline_sha: str,
     candidate_sha: str,
     error: str,
 ) -> str:
+    scope = (
+        f"{platform} / {engine}"
+        if category == "all"
+        else f"{platform} / {engine} / {category}"
+    )
     return "\n".join([
-        f"## wasmi-benchmarks: {platform} / {engine}",
+        f"## wasmi-benchmarks: {scope}",
         "",
         f"`{baseline_sha[:12]}` -> `{candidate_sha[:12]}`",
         "",
@@ -855,6 +874,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidate-sha", required=True)
     parser.add_argument("--platform", required=True)
     parser.add_argument("--engine", choices=("jit", "interp"), required=True)
+    parser.add_argument(
+        "--category",
+        choices=("all", "execute", "startup"),
+        default="all",
+        help="Run the full corpus or one parallel CI shard",
+    )
     parser.add_argument("--out-dir", required=True, type=Path)
     parser.add_argument("--target-root", required=True, type=Path)
     parser.add_argument(
@@ -889,6 +914,14 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="PERCENT",
     )
     parser.add_argument("--family-jobs", type=int, default=4)
+    parser.add_argument(
+        "--family-metric-count",
+        type=int,
+        help=(
+            "Total metrics across all shards in one platform/engine group; "
+            "defaults to the number selected by this invocation"
+        ),
+    )
     parser.add_argument(
         "--max-confirmation-runs",
         type=int,
@@ -935,7 +968,12 @@ def main() -> int:
             "and underscore"
         )
 
-    selected_groups = list(BENCHMARK_GROUPS)
+    selected_groups = [
+        group
+        for group in BENCHMARK_GROUPS
+        if args.category == "all"
+        or group.startswith(f"{args.category}/")
+    ]
     if args.only:
         unknown = set(args.only) - set(BENCHMARK_GROUPS)
         if unknown:
@@ -943,9 +981,24 @@ def main() -> int:
                 "--only contains unknown groups: "
                 + ", ".join(sorted(unknown))
             )
+        outside_category = set(args.only) - set(selected_groups)
+        if outside_category:
+            parser.error(
+                "--only contains groups outside --category: "
+                + ", ".join(sorted(outside_category))
+            )
         selected_groups = [
             group for group in BENCHMARK_GROUPS if group in set(args.only)
         ]
+    family_metric_count = (
+        args.family_metric_count
+        if args.family_metric_count is not None
+        else len(selected_groups)
+    )
+    if family_metric_count < len(selected_groups):
+        parser.error(
+            "--family-metric-count cannot be smaller than the selected shard"
+        )
 
     args.suite = args.suite.resolve()
     args.baseline_source = args.baseline_source.resolve()
@@ -970,13 +1023,13 @@ def main() -> int:
     maximum_looks = args.max_confirmation_runs
     effective_regression_probability = family_adjusted_probability(
         regression_probability,
-        metric_count=len(selected_groups),
+        metric_count=family_metric_count,
         job_count=args.family_jobs,
         maximum_looks=maximum_looks,
     )
     effective_improvement_probability = family_adjusted_probability(
         improvement_probability,
-        metric_count=len(selected_groups),
+        metric_count=family_metric_count,
         job_count=args.family_jobs,
         maximum_looks=maximum_looks,
     )
@@ -1164,6 +1217,7 @@ def main() -> int:
         failure_summary = render_failure_summary(
             platform=args.platform,
             engine=args.engine,
+            category=args.category,
             baseline_sha=args.baseline_sha,
             candidate_sha=args.candidate_sha,
             error=error,
@@ -1180,6 +1234,7 @@ def main() -> int:
                     "status": "ERROR",
                     "platform": args.platform,
                     "engine": args.engine,
+                    "category": args.category,
                     "baseline_sha": args.baseline_sha,
                     "candidate_sha": args.candidate_sha,
                     "error": error,
@@ -1208,6 +1263,7 @@ def main() -> int:
         "created_at": datetime.now(timezone.utc).isoformat(),
         "platform": args.platform,
         "engine": args.engine,
+        "category": args.category,
         "baseline_sha": args.baseline_sha,
         "candidate_sha": args.candidate_sha,
         "wasmi_benchmarks_repository": WASMI_BENCHMARKS_REPOSITORY,
@@ -1223,7 +1279,8 @@ def main() -> int:
         "effective_improvement_probability": (
             effective_improvement_probability
         ),
-        "family_metric_count": len(selected_groups),
+        "shard_metric_count": len(selected_groups),
+        "family_metric_count": family_metric_count,
         "family_job_count": args.family_jobs,
         "maximum_confirmation_looks": maximum_looks,
         "identical_sources": identical_sources,
@@ -1241,6 +1298,7 @@ def main() -> int:
     summary = render_summary(
         platform=args.platform,
         engine=args.engine,
+        category=args.category,
         baseline_sha=args.baseline_sha,
         candidate_sha=args.candidate_sha,
         suite_sha=suite_revision,
@@ -1253,6 +1311,7 @@ def main() -> int:
         effective_improvement_probability=(
             effective_improvement_probability
         ),
+        family_metric_count=family_metric_count,
         family_jobs=args.family_jobs,
         maximum_looks=maximum_looks,
         identical_sources=identical_sources,

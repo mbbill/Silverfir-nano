@@ -475,6 +475,10 @@ class WasmiPerformanceTests(unittest.TestCase):
                 "arm64-linux",
                 "--engine",
                 "interp",
+                "--category",
+                "startup",
+                "--family-metric-count",
+                "27",
                 "--out-dir",
                 str(out_dir),
                 "--target-root",
@@ -517,12 +521,21 @@ class WasmiPerformanceTests(unittest.TestCase):
             )
 
         self.assertEqual(exit_code, 0)
-        self.assertEqual(len(calls), 27)
+        startup_groups = {
+            group
+            for group in wasmi_performance.BENCHMARK_GROUPS
+            if group.startswith("startup/")
+        }
+        self.assertEqual(len(calls), 7)
+        self.assertEqual({group for group, _ in calls}, startup_groups)
         self.assertEqual({phase for _, phase in calls}, {"pilot"})
         self.assertTrue(document["identical_sources"])
+        self.assertEqual(document["category"], "startup")
+        self.assertEqual(document["shard_metric_count"], 7)
+        self.assertEqual(document["family_metric_count"], 27)
         self.assertEqual(
             set(document["confirmation_pairs"]),
-            set(wasmi_performance.BENCHMARK_GROUPS),
+            startup_groups,
         )
         self.assertTrue(
             all(not pairs for pairs in document["confirmation_pairs"].values())
