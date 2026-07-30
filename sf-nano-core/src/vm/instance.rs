@@ -206,9 +206,9 @@ impl Instance {
     /// Instantiate against a shared link registry, so instances can
     /// resolve each other's exports.
     ///
-    /// The JIT uses the registry for linked functions and references. The
-    /// interpreter still links functions through its import host, but shares
-    /// the registry's reference identities and payloads with other instances.
+    /// Both engines use the registry for linked functions and reference
+    /// identities. The interpreter enters registry-known peers directly
+    /// unless an installed [`crate::FuncRefHost`] overrides that routing.
     pub fn from_module_with_registry(
         engine: &Engine,
         module: Module,
@@ -241,8 +241,9 @@ impl Instance {
     /// function references, retaining a partial instance when a data segment
     /// traps.
     ///
-    /// The interpreter's function forwarding remains host-driven, while the
-    /// registry preserves reference identity and payloads across instances.
+    /// The hook takes precedence over the interpreter's engine-native path,
+    /// while the registry preserves reference identity and payloads across
+    /// instances.
     #[cfg(sf_interp)]
     pub fn from_module_with_registry_and_funcref_host(
         engine: &Engine,
@@ -1196,28 +1197,11 @@ mod tests {
                 .expect("instantiate consumer");
 
             assert_ne!(a, b);
-            let nested = world.invoke(b, "run_b", &[]);
-            match tier {
-                #[cfg(sf_jit)]
-                Tier::Jit => assert_eq!(
-                    nested.expect("nested invoke"),
-                    collections::vec![Value::I32(305_419_897)],
-                    "cross-instance call did not reach the provider"
-                ),
-                // The interpreter's engine-native cross-instance call path is
-                // deferred; without a FuncRefHost hook it must say so by name
-                // rather than dispatch something. This arm pins that deferred
-                // state so it cannot rot into unreachable behaviour.
-                #[cfg(sf_interp)]
-                Tier::Interp => {
-                    let error = nested.expect_err("interp has no engine-native path yet");
-                    let message = alloc::format!("{error:?}");
-                    assert!(
-                        message.contains("without a FuncRefHost hook"),
-                        "unexpected interpreter error: {message}"
-                    );
-                }
-            }
+            assert_eq!(
+                world.invoke(b, "run_b", &[]).expect("nested invoke"),
+                collections::vec![Value::I32(305_419_897)],
+                "{tier:?}: cross-instance call did not reach the provider"
+            );
 
             // The flat case still works afterwards, so the call above left no
             // checkout behind on either engine.

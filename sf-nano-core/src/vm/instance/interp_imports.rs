@@ -126,8 +126,9 @@ pub(super) fn bind(
         let callback = match &provided.value {
             ImportValue::Func(ImportedFunction::Host { callback, .. }) => callback.clone(),
             // The world identity is retained in InterpInstance's function
-            // table. A direct call is intercepted there and delegated through
-            // FuncRefHost, or rejected with the named no-hook trap.
+            // table. A direct call is intercepted there and either delegated
+            // through an installed FuncRefHost or resolved through the shared
+            // runtime-world function arena.
             ImportValue::Func(ImportedFunction::Linked { .. }) => continue,
             _ => unreachable!("function provider was checked above"),
         };
