@@ -17,6 +17,7 @@
 
 use tracked_alloc::boxed::Box;
 use tracked_alloc::rc::Rc;
+use tracked_alloc::string::String;
 
 use crate::collections::{vec, Vec};
 use crate::config::Config;
@@ -30,11 +31,14 @@ use crate::vm::engine::Engine;
 use crate::vm::entities::{Caller, GlobalInst, MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedFunction, ImportedGlobal};
 use crate::vm::link::{
-    ref_type_matches, FuncEntry, InstanceHandle, InstanceId, InstanceLease, LinkArenas,
-    LinkRegistry, RefTypeOwner,
+    ref_type_matches, FuncEntry, InstanceHandle, InstanceId, InstanceLease, InstanceToken,
+    LinkArenas, LinkRegistry, RefTypeOwner,
 };
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{machine_raw_to_ref, ref_to_machine_raw, RefHandle, Value};
+use core::cell::RefCell;
+use core::marker::PhantomData;
+use core::ptr::NonNull;
 
 use super::engine::{
     DCell, EnterState, LinkedFunction, NativeEngine, EXIT_RETURN, EXIT_SLOW, EXIT_TRAP_BASE,
@@ -82,9 +86,36 @@ fn configured_ret_records(stack_slots: usize) -> usize {
 ///
 /// The signature carries only std types (`&mut [u8]`, not this crate's
 /// tracked collections), so external callers stay feature-independent.
-pub(crate) type HostDispatch = Box<
-    dyn for<'a> FnMut(&str, &str, &mut Caller<'a>, &[u64], &mut [u64]) -> Result<(), WasmError>,
->;
+type DynHostDispatch =
+    dyn for<'a> FnMut(&str, &str, &mut Caller<'a>, &[u64], &mut [u64]) -> Result<(), WasmError>;
+
+#[derive(Clone)]
+pub struct HostDispatch {
+    callback: Rc<RefCell<Box<DynHostDispatch>>>,
+}
+
+impl HostDispatch {
+    fn new(callback: Box<DynHostDispatch>) -> Self {
+        Self {
+            callback: Rc::new(RefCell::new(callback)),
+        }
+    }
+
+    fn invoke(
+        &self,
+        module: &str,
+        name: &str,
+        caller: &mut Caller<'_>,
+        args: &[u64],
+        results: &mut [u64],
+    ) -> Result<(), WasmError> {
+        let mut callback = self
+            .callback
+            .try_borrow_mut()
+            .map_err(|_| WasmError::trap("interp: host dispatcher is already active"))?;
+        callback(module, name, caller, args, results)
+    }
+}
 
 /// Embedder linking hook for function references the interpreter cannot enter
 /// natively.
@@ -106,6 +137,8 @@ pub struct FuncRefHost {
     pub invoke:
         alloc::boxed::Box<dyn FnMut(RefHandle, &[u64], &mut [u64]) -> Result<(), WasmError>>,
 }
+
+type SharedFuncRefHost = Rc<RefCell<FuncRefHost>>;
 
 #[inline]
 fn value_type_is_function_ref(module: &Module, value_type: ValueType) -> bool {
@@ -362,6 +395,66 @@ struct DriveCtx<'s> {
     acc: u64,
 }
 
+enum ExternalCallTarget {
+    Host {
+        dispatch: HostDispatch,
+        names: Rc<(String, String)>,
+        memory: Option<MemInst>,
+    },
+    FuncRef {
+        host: Option<SharedFuncRefHost>,
+        handle: RefHandle,
+        registry_known: bool,
+    },
+}
+
+pub(super) struct PreparedCall {
+    target: ExternalCallTarget,
+    args: Vec<u64>,
+    result_types: Vec<ValueType>,
+}
+
+impl PreparedCall {
+    fn invoke(&self) -> Result<Vec<u64>, WasmError> {
+        let mut results = vec![0u64; self.result_types.len()];
+        match &self.target {
+            ExternalCallTarget::Host {
+                dispatch,
+                names,
+                memory,
+            } => {
+                let mut caller = Caller::from_shared_memory(memory.clone());
+                dispatch.invoke(
+                    names.0.as_str(),
+                    names.1.as_str(),
+                    &mut caller,
+                    &self.args,
+                    &mut results,
+                )?;
+            }
+            ExternalCallTarget::FuncRef {
+                host,
+                handle,
+                registry_known,
+            } => match host {
+                Some(host) => {
+                    let mut host = host.try_borrow_mut().map_err(|_| {
+                        WasmError::trap("interp: function-reference host is already active")
+                    })?;
+                    (host.invoke)(*handle, &self.args, &mut results)?;
+                }
+                None if *registry_known => {
+                    return Err(WasmError::trap(
+                        super::ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED,
+                    ));
+                }
+                None => return Err(WasmError::trap(super::EXTERNAL_FUNCREF_HOST_REQUIRED)),
+            },
+        }
+        Ok(results)
+    }
+}
+
 enum StepExit {
     TailCall {
         callee: usize,
@@ -375,15 +468,18 @@ enum StepExit {
         pending: PendingException,
         search_current: bool,
     },
+    ExternalCall {
+        call: PreparedCall,
+        result_base: usize,
+        site: usize,
+        search_current: bool,
+    },
     Return,
 }
 
 /// Result of executing exactly one instruction.
 pub(super) enum Effect {
     Next,
-    /// Continue after a slow call whose first result must participate in the
-    /// native accumulator relay used by an adjacent folded consumer.
-    NextWithAcc(u64),
     Jump(usize),
     Call {
         callee: usize,
@@ -394,6 +490,11 @@ pub(super) enum Effect {
     TailCall {
         callee: usize,
         arg_base: usize,
+    },
+    ExternalCall {
+        call: PreparedCall,
+        arg_base: usize,
+        tail_target: Option<usize>,
     },
     Throw(PendingException),
     Ret,
@@ -464,7 +565,12 @@ pub struct InterpInstance {
     stack: Vec<u64>,
     ret_stack: Vec<u64>,
     host: Option<HostDispatch>,
-    funcref_host: Option<FuncRefHost>,
+    funcref_host: Option<SharedFuncRefHost>,
+    /// Stable import names for calls that leave an instance materialization.
+    ///
+    /// The driver clones one `Rc` into an owned call request, then passes the
+    /// borrowed strings to the host only after the instance borrow has ended.
+    import_names: Vec<Option<Rc<(String, String)>>>,
     /// Frame-relative handles: local/host functions use their local index;
     /// linked imports retain the provider's absolute world identity.
     function_handles: Vec<RefHandle>,
@@ -475,6 +581,67 @@ pub struct InterpInstance {
     native: Option<NativeState>,
 }
 
+/// Scoped access to an interpreter instance while it is being evaluated.
+///
+/// Occupied instances carry their checkout token across guest and host calls.
+/// A standalone or initializing instance instead carries its caller-owned,
+/// stable address. Neither form exposes an instance reference beyond a
+/// `with_instance` closure.
+pub(crate) enum InterpInstanceAccess<'a> {
+    CheckedOut(InstanceToken),
+    Borrowed {
+        pointer: NonNull<InterpInstance>,
+        lifetime: PhantomData<&'a mut InterpInstance>,
+    },
+}
+
+impl InterpInstanceAccess<'static> {
+    #[inline]
+    pub(crate) fn checked_out(token: InstanceToken) -> Self {
+        Self::CheckedOut(token)
+    }
+}
+
+impl<'a> InterpInstanceAccess<'a> {
+    #[inline]
+    fn borrowed(instance: &'a mut InterpInstance) -> Self {
+        Self::Borrowed {
+            pointer: NonNull::from(instance),
+            lifetime: PhantomData,
+        }
+    }
+
+    /// Materialize for one non-reentrant read scope.
+    #[inline]
+    pub(crate) fn with_instance<R>(
+        &self,
+        use_instance: impl for<'instance> FnOnce(&'instance InterpInstance) -> R,
+    ) -> Result<R, WasmError> {
+        let instance = match self {
+            Self::CheckedOut(token) => token
+                .interp()
+                .ok_or_else(|| WasmError::internal("instance is not an interpreter"))?,
+            Self::Borrowed { pointer, .. } => unsafe { pointer.as_ref() },
+        };
+        Ok(use_instance(instance))
+    }
+
+    /// Materialize for one non-reentrant mutation scope.
+    #[inline]
+    pub(crate) fn with_instance_mut<R>(
+        &mut self,
+        use_instance: impl for<'instance> FnOnce(&'instance mut InterpInstance) -> R,
+    ) -> Result<R, WasmError> {
+        let instance = match self {
+            Self::CheckedOut(token) => token
+                .interp_mut()
+                .ok_or_else(|| WasmError::internal("instance is not an interpreter"))?,
+            Self::Borrowed { pointer, .. } => unsafe { pointer.as_mut() },
+        };
+        Ok(use_instance(instance))
+    }
+}
+
 pub(crate) struct InterpInstanceLease {
     lease: InstanceLease,
 }
@@ -482,9 +649,7 @@ pub(crate) struct InterpInstanceLease {
 impl InterpInstanceLease {
     #[inline]
     pub(crate) fn instance_id(&self) -> InstanceId {
-        let id = self.instance_handle.self_id();
-        debug_assert_eq!(id, self.lease.id());
-        id
+        self.lease.id()
     }
 
     #[inline]
@@ -496,27 +661,51 @@ impl InterpInstanceLease {
     pub(crate) fn into_occupied_id(self) -> InstanceId {
         self.lease.into_occupied_id()
     }
-}
-
-impl core::ops::Deref for InterpInstanceLease {
-    type Target = InterpInstance;
 
     #[inline]
-    fn deref(&self) -> &Self::Target {
-        self.lease
+    pub(crate) fn with_instance<R>(
+        &self,
+        use_instance: impl for<'instance> FnOnce(&'instance InterpInstance) -> R,
+    ) -> R {
+        let instance = self
+            .lease
             .token()
             .interp()
-            .expect("interpreter lease must resolve to an InterpInstance")
+            .expect("interpreter lease must resolve to an InterpInstance");
+        use_instance(instance)
     }
-}
 
-impl core::ops::DerefMut for InterpInstanceLease {
     #[inline]
-    fn deref_mut(&mut self) -> &mut Self::Target {
-        self.lease
+    pub(crate) fn with_instance_mut<R>(
+        &mut self,
+        use_instance: impl for<'instance> FnOnce(&'instance mut InterpInstance) -> R,
+    ) -> R {
+        let instance = self
+            .lease
             .token_mut()
             .interp_mut()
-            .expect("interpreter lease must resolve to an InterpInstance")
+            .expect("interpreter lease must resolve to an InterpInstance");
+        use_instance(instance)
+    }
+
+    pub(crate) fn checkout_for_invocation(&self) -> Result<InstanceToken, WasmError> {
+        self.lease
+            .checkout_again()
+            .ok_or_else(|| WasmError::internal("interpreter instance is no longer available"))
+    }
+
+    pub(crate) fn memory(&self) -> Option<&[u8]> {
+        let memory = self.with_instance(|instance| instance.shared_memory_at(0))?;
+        let ptr = memory.memory_ptr();
+        let len = memory.memory_len();
+        Some(unsafe { core::slice::from_raw_parts(ptr, len) })
+    }
+
+    pub(crate) fn memory_mut(&mut self) -> Option<&mut [u8]> {
+        let memory = self.with_instance(|instance| instance.shared_memory_at(0))?;
+        let ptr = memory.memory_ptr();
+        let len = memory.memory_len();
+        Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
     }
 }
 
@@ -1031,6 +1220,16 @@ impl InterpInstance {
                 )?)));
             }
         }
+        let import_names = module
+            .functions()
+            .iter()
+            .map(|func| match func.def() {
+                crate::module::entities::FunctionDef::Import { module, name, .. } => {
+                    Some(Rc::new((module.clone(), name.clone())))
+                }
+                crate::module::entities::FunctionDef::Local(_) => None,
+            })
+            .collect();
 
         // Memories.
         let mut memories = Vec::new();
@@ -1308,7 +1507,8 @@ impl InterpInstance {
             stack: vec![0u64; stack_slots],
             ret_stack: vec![0u64; configured_ret_records(stack_slots) * (RET_RECORD / 8)],
             host,
-            funcref_host,
+            funcref_host: funcref_host.map(|host| Rc::new(RefCell::new(host))),
+            import_names,
             function_handles,
             function_identities,
             native: None,
@@ -1686,16 +1886,8 @@ impl InterpInstance {
         F: for<'a> FnMut(&str, &str, &mut Caller<'a>, &[u64], &mut [u64]) -> Result<(), WasmError>
             + 'static,
     {
-        let host: alloc::boxed::Box<
-            dyn for<'a> FnMut(
-                &str,
-                &str,
-                &mut Caller<'a>,
-                &[u64],
-                &mut [u64],
-            ) -> Result<(), WasmError>,
-        > = alloc::boxed::Box::new(host);
-        tracked_alloc::box_from_alloc(host)
+        let host: alloc::boxed::Box<DynHostDispatch> = alloc::boxed::Box::new(host);
+        HostDispatch::new(tracked_alloc::box_from_alloc(host))
     }
 
     /// Replace the host dispatcher after instantiation.
@@ -2197,19 +2389,36 @@ impl InterpInstance {
         args: &[u64],
         results: &mut [u64],
     ) -> Result<(), WasmError> {
-        let entry = self
-            .funcs
-            .get(func_index)
-            .ok_or(WasmError::invalid("interp: bad function index"))?;
-        let Some(func) = entry.clone() else {
+        let mut access = InterpInstanceAccess::borrowed(self);
+        Self::invoke_access(&mut access, func_index, args, results)
+    }
+
+    pub(crate) fn invoke_access(
+        access: &mut InterpInstanceAccess<'_>,
+        func_index: usize,
+        args: &[u64],
+        results: &mut [u64],
+    ) -> Result<(), WasmError> {
+        let entry = access.with_instance(|instance| instance.funcs.get(func_index).cloned())?;
+        let Some(entry) = entry else {
+            return Err(WasmError::invalid("interp: bad function index"));
+        };
+        let Some(func) = entry else {
             // An imported function, reached directly rather than through a
             // call inside a body -- `(start $imported)` does exactly this.
             // It has no predecoded body to enter; the host is the callee.
-            let mut frame = vec![0u64; args.len().max(results.len())];
+            let frame_len = args.len().max(results.len());
+            let mut frame = vec![0u64; frame_len];
             frame[..args.len()].copy_from_slice(args);
-            if let Err(error) = self.call_host(func_index, &mut frame, 0) {
-                let pending = self.pending_from_error(error)?;
-                return Err(Self::uncaught_exception(pending));
+            let call = access
+                .with_instance(|instance| instance.prepare_import_call(func_index, &frame, 0))??;
+            match Self::run_external_call(access, &call) {
+                Ok(returned) => frame[..returned.len()].copy_from_slice(&returned),
+                Err(error) => {
+                    let pending = access
+                        .with_instance_mut(|instance| instance.pending_from_error(error))??;
+                    return Err(Self::uncaught_exception(pending));
+                }
             }
             results.copy_from_slice(&frame[..results.len()]);
             return Ok(());
@@ -2224,7 +2433,7 @@ impl InterpInstance {
             pc: 0,
             route_established: false,
         };
-        self.drive(root, args, results)
+        Self::drive(access, root, args, results)
     }
 
     /// Stub for targets without a native backend: [`Self::new`] fails
@@ -2234,40 +2443,43 @@ impl InterpInstance {
     /// The call/return trampoline: runs activations to their next call or
     /// return boundary, keeping call depth as data on `saved`.
     fn drive(
-        &mut self,
+        access: &mut InterpInstanceAccess<'_>,
         root: Activation,
         args: &[u64],
         results: &mut [u64],
     ) -> Result<(), WasmError> {
-        if self
-            .memories
-            .iter()
-            .any(|memory| memory.inst.host_callback_borrowed())
-        {
-            return Err(WasmError::trap(
-                "linear memory is borrowed by a host callback",
-            ));
-        }
+        let (mut stack, mut ret_stack, reentrant) = access.with_instance_mut(|instance| {
+            if instance
+                .memories
+                .iter()
+                .any(|memory| memory.inst.host_callback_borrowed())
+            {
+                return Err(WasmError::trap(
+                    "linear memory is borrowed by a host callback",
+                ));
+            }
 
-        // Borrow the instance's buffers for the duration. A host callback
-        // that calls back into this same instance finds them taken and
-        // allocates its own pair, so re-entry stays correct without the
-        // common case paying for an allocation.
-        let mut stack = core::mem::take(&mut self.stack);
-        let mut ret_stack = core::mem::take(&mut self.ret_stack);
-        let reentrant = stack.is_empty();
-        if reentrant {
-            let slots = configured_stack_slots(&self.config);
-            stack = vec![0u64; slots];
-            ret_stack = vec![0u64; configured_ret_records(slots) * (RET_RECORD / 8)];
-        }
+            // Take the instance's buffers before the first guest step. A
+            // re-entry sees them absent and allocates its own pair.
+            let mut stack = core::mem::take(&mut instance.stack);
+            let mut ret_stack = core::mem::take(&mut instance.ret_stack);
+            let reentrant = stack.is_empty();
+            if reentrant {
+                let slots = configured_stack_slots(&instance.config);
+                stack = vec![0u64; slots];
+                ret_stack = vec![0u64; configured_ret_records(slots) * (RET_RECORD / 8)];
+            }
+            Ok((stack, ret_stack, reentrant))
+        })??;
 
-        let outcome = self.drive_on(root, args, &mut stack, &mut ret_stack, results);
+        let outcome = Self::drive_on(access, root, args, &mut stack, &mut ret_stack, results);
 
         // Only the owner hands them back; a nested call drops its own.
         if !reentrant {
-            self.stack = stack;
-            self.ret_stack = ret_stack;
+            access.with_instance_mut(|instance| {
+                instance.stack = stack;
+                instance.ret_stack = ret_stack;
+            })?;
         }
         outcome
     }
@@ -2275,7 +2487,7 @@ impl InterpInstance {
     /// Results are copied out here, while the stack that produced them is
     /// still in hand -- a nested call runs on a different one.
     fn drive_on(
-        &mut self,
+        access: &mut InterpInstanceAccess<'_>,
         root: Activation,
         args: &[u64],
         stack: &mut [u64],
@@ -2303,29 +2515,44 @@ impl InterpInstance {
         let mut act = root;
         let mut saved: Vec<SavedActivation> = Vec::new();
         loop {
-            match self.native_step(&mut act, &mut ctx)? {
+            let step =
+                access.with_instance_mut(|instance| instance.native_step(&mut act, &mut ctx))??;
+            match step {
                 StepExit::Call { callee, arg_base } => {
                     if saved.len() as u32 >= max_depth {
                         return Err(WasmError::trap("call stack exhausted"));
                     }
-                    let f = match self.funcs.get(callee) {
+                    let entry =
+                        access.with_instance(|instance| instance.funcs.get(callee).cloned())?;
+                    let f = match entry {
                         Some(Some(f)) => f.clone(),
                         Some(None) => {
                             // Imported function: dispatch to the host. Its
                             // first result rides the accumulator relay like
                             // any other call result.
                             let base = act.base;
-                            if let Err(error) =
-                                self.call_host(callee, &mut ctx.stack[base..], arg_base)
-                            {
-                                let pending = self.pending_from_error(error)?;
-                                let site = act.pc.checked_sub(1);
-                                self.unwind_exception(
-                                    pending, &mut act, &mut saved, &mut ctx, site,
-                                )?;
-                                continue;
+                            let call = access.with_instance(|instance| {
+                                instance.prepare_import_call(callee, &ctx.stack[base..], arg_base)
+                            })??;
+                            match Self::run_external_call(access, &call) {
+                                Ok(returned) => {
+                                    let result_base = base + arg_base;
+                                    ctx.stack[result_base..result_base + returned.len()]
+                                        .copy_from_slice(&returned);
+                                    ctx.acc = returned.first().copied().unwrap_or(0);
+                                }
+                                Err(error) => {
+                                    let pending = access.with_instance_mut(|instance| {
+                                        instance.pending_from_error(error)
+                                    })??;
+                                    let site = act.pc.checked_sub(1);
+                                    access.with_instance(|instance| {
+                                        instance.unwind_exception(
+                                            pending, &mut act, &mut saved, &mut ctx, site,
+                                        )
+                                    })??;
+                                }
                             }
-                            ctx.acc = ctx.stack[base + arg_base];
                             continue;
                         }
                         None => return Err(WasmError::trap("undefined element")),
@@ -2359,38 +2586,39 @@ impl InterpInstance {
                     // our results are expected), and the activation is
                     // replaced rather than pushed. Recursion through a tail
                     // call therefore runs at constant depth.
-                    let f = match self.funcs.get(callee) {
+                    let entry =
+                        access.with_instance(|instance| instance.funcs.get(callee).cloned())?;
+                    let f = match entry {
                         Some(Some(f)) => f.clone(),
                         Some(None) => {
                             // An imported tail callee: run the host, leave
                             // its results at this frame's base, and return
                             // to the caller as this activation would have.
                             let base = act.base;
-                            if let Err(error) =
-                                self.call_host(callee, &mut ctx.stack[base..], arg_base)
-                            {
-                                let pending = self.pending_from_error(error)?;
-                                // A tail call retires this activation before
-                                // entering the callee, so its try scopes are
-                                // not candidates for the exception.
-                                self.unwind_exception(
-                                    pending, &mut act, &mut saved, &mut ctx, None,
-                                )?;
-                                continue;
+                            let call = access.with_instance(|instance| {
+                                instance.prepare_import_call(callee, &ctx.stack[base..], arg_base)
+                            })??;
+                            match Self::run_external_call(access, &call) {
+                                Ok(returned) => {
+                                    ctx.stack[base..base + returned.len()]
+                                        .copy_from_slice(&returned);
+                                    ctx.acc = returned.first().copied().unwrap_or(0);
+                                }
+                                Err(error) => {
+                                    let pending = access.with_instance_mut(|instance| {
+                                        instance.pending_from_error(error)
+                                    })??;
+                                    // A tail call retires this activation
+                                    // before entering the callee, so its try
+                                    // scopes are not candidates.
+                                    access.with_instance(|instance| {
+                                        instance.unwind_exception(
+                                            pending, &mut act, &mut saved, &mut ctx, None,
+                                        )
+                                    })??;
+                                    continue;
+                                }
                             }
-                            let result_count = self
-                                .module
-                                .functions()
-                                .get(callee)
-                                .map(|func| func.func_type().results().len())
-                                .ok_or(WasmError::trap("undefined element"))?;
-                            ctx.stack
-                                .copy_within(base + arg_base..base + arg_base + result_count, base);
-                            ctx.acc = if result_count == 0 {
-                                0
-                            } else {
-                                ctx.stack[base]
-                            };
                             // Do not synthesize a Rust return here. This
                             // activation may itself have native-only callers
                             // represented solely by raw return records. The
@@ -2428,8 +2656,30 @@ impl InterpInstance {
                     search_current,
                 } => {
                     let site = search_current.then_some(act.pc);
-                    self.unwind_exception(pending, &mut act, &mut saved, &mut ctx, site)?;
+                    access.with_instance(|instance| {
+                        instance.unwind_exception(pending, &mut act, &mut saved, &mut ctx, site)
+                    })??;
                 }
+                StepExit::ExternalCall {
+                    call,
+                    result_base,
+                    site,
+                    search_current,
+                } => match Self::run_external_call(access, &call) {
+                    Ok(returned) => {
+                        ctx.stack[result_base..result_base + returned.len()]
+                            .copy_from_slice(&returned);
+                        ctx.acc = returned.first().copied().unwrap_or(0);
+                    }
+                    Err(error) => {
+                        let pending = access
+                            .with_instance_mut(|instance| instance.pending_from_error(error))??;
+                        let site = search_current.then_some(site);
+                        access.with_instance(|instance| {
+                            instance.unwind_exception(pending, &mut act, &mut saved, &mut ctx, site)
+                        })??;
+                    }
+                },
                 StepExit::Return => {
                     // Results are already in place: the callee's frame base
                     // IS the caller's staged-argument slot.
@@ -2451,6 +2701,15 @@ impl InterpInstance {
                 }
             }
         }
+    }
+
+    fn run_external_call(
+        access: &InterpInstanceAccess<'_>,
+        call: &PreparedCall,
+    ) -> Result<Vec<u64>, WasmError> {
+        let mut results = call.invoke()?;
+        access.with_instance(|instance| instance.localize_call_results(call, &mut results))?;
+        Ok(results)
     }
 
     /// Match and install one handler in `act`.
@@ -2617,83 +2876,107 @@ impl InterpInstance {
         Ok(&mut mem.bytes_mut()[ea as usize..end as usize])
     }
 
-    /// Dispatch an imported function to the host. `frame` is the CALLER's
-    /// frame slice; arguments and results live at `arg_base` within it.
-    fn call_host(
-        &mut self,
+    /// Prepare an imported call while the caller is materialized.
+    ///
+    /// `frame` is the caller's frame slice. The returned request owns every
+    /// value it needs, so the materialization can end before guest or host
+    /// code runs.
+    fn prepare_import_call(
+        &self,
         callee: usize,
-        frame: &mut [u64],
+        frame: &[u64],
         arg_base: usize,
-    ) -> Result<(), WasmError> {
-        // Borrow the three fields disjointly. Reading the import's names
-        // through `&self` while the dispatcher is held through `&mut self`
-        // is what used to force a `String` clone of both names on every
-        // single host call; destructuring makes them provably separate.
-        let Self {
-            module,
-            host,
-            funcref_host,
-            memories,
-            link_registry,
-            instance_handle,
-            function_handles,
-            function_identities,
-            ..
-        } = self;
-
-        let func = module
+    ) -> Result<PreparedCall, WasmError> {
+        let func = self
+            .module
             .functions()
             .get(callee)
             .ok_or(WasmError::trap("undefined element"))?;
-        let (mod_name, field) = match func.def() {
-            crate::module::entities::FunctionDef::Import { module, name, .. } => {
-                (module.as_str(), name.as_str())
-            }
+        match func.def() {
+            crate::module::entities::FunctionDef::Import { .. } => {}
             _ => return Err(WasmError::invalid("interp: not an import")),
-        };
+        }
         let func_type = func.func_type();
         let p = func_type.params().len();
-        let r = func_type.results().len();
-        let callee_handle = function_handles
-            .get(callee)
-            .copied()
-            .ok_or(WasmError::invalid(
-                "interp: imported function identity is missing",
-            ))?;
-        let foreign = link_registry
+        let callee_handle =
+            self.function_handles
+                .get(callee)
+                .copied()
+                .ok_or(WasmError::invalid(
+                    "interp: imported function identity is missing",
+                ))?;
+        let foreign = self
+            .link_registry
             .functions
             .entry_for_handle(callee_handle)
-            .is_some_and(|entry| entry.owner != instance_handle.self_id());
-        let mut results = [0u64; 8];
-        if r > results.len() {
+            .is_some_and(|entry| entry.owner != self.instance_handle.self_id());
+        if func_type.results().len() > 8 {
             return Err(WasmError::invalid("interp: too many host results"));
         }
         let mut args: Vec<u64> = frame[arg_base..arg_base + p].iter().copied().collect();
         for (arg, &value_type) in args.iter_mut().zip(func_type.params()) {
-            if value_type_is_function_ref(module, value_type) {
-                *arg = absolutize_slot_with(module, function_identities, *arg);
+            if value_type_is_function_ref(&self.module, value_type) {
+                *arg = absolutize_slot_with(&self.module, &self.function_identities, *arg);
             }
         }
-        if foreign {
-            let hook = funcref_host.as_mut().ok_or(WasmError::trap(
-                super::ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED,
-            ))?;
-            (hook.invoke)(callee_handle, &args, &mut results[..r])?;
+        let target = if foreign {
+            ExternalCallTarget::FuncRef {
+                host: self.funcref_host.clone(),
+                handle: callee_handle,
+                registry_known: true,
+            }
         } else {
-            let host = host
-                .as_mut()
+            let dispatch = self
+                .host
+                .as_ref()
                 .ok_or(WasmError::invalid("interp: no host dispatcher installed"))?;
-            let memory = memories.first().map(|memory| memory.inst.clone());
-            let mut caller = Caller::from_shared_memory(memory);
-            host(mod_name, field, &mut caller, &args, &mut results[..r])?;
-        }
-        for (result, &value_type) in results[..r].iter_mut().zip(func_type.results()) {
-            if value_type_is_function_ref(module, value_type) {
-                *result = localize_slot_with(module, instance_handle, link_registry, *result);
+            let names = self
+                .import_names
+                .get(callee)
+                .and_then(|names| names.as_ref())
+                .ok_or(WasmError::invalid("interp: import names are missing"))?;
+            ExternalCallTarget::Host {
+                dispatch: dispatch.clone(),
+                names: Rc::clone(names),
+                memory: self.memories.first().map(|memory| memory.inst.clone()),
             }
+        };
+        Ok(PreparedCall {
+            target,
+            args,
+            result_types: func_type.results().iter().copied().collect(),
+        })
+    }
+
+    fn prepare_funcref_call(
+        &self,
+        handle: RefHandle,
+        param_types: Vec<ValueType>,
+        result_types: Vec<ValueType>,
+        frame: &[u64],
+        arg_base: usize,
+        registry_known: bool,
+    ) -> PreparedCall {
+        let mut args = Vec::with_capacity(param_types.len());
+        args.extend_from_slice(&frame[arg_base..arg_base + param_types.len()]);
+        for (arg, &value_type) in args.iter_mut().zip(&param_types) {
+            *arg = self.absolutize_slot_for_type(*arg, value_type);
         }
-        frame[arg_base..arg_base + r].copy_from_slice(&results[..r]);
-        Ok(())
+        PreparedCall {
+            target: ExternalCallTarget::FuncRef {
+                host: self.funcref_host.clone(),
+                handle,
+                registry_known,
+            },
+            args,
+            result_types,
+        }
+    }
+
+    fn localize_call_results(&self, call: &PreparedCall, results: &mut [u64]) {
+        for (result, &value_type) in results.iter_mut().zip(&call.result_types) {
+            *result = self.localize_slot_for_type(*result, value_type);
+        }
     }
 
     /// Driver: run one activation on the native dispatch chain
@@ -2862,11 +3145,6 @@ impl InterpInstance {
                     };
                     match effect {
                         Effect::Next => state.pc = cstart + (idx as u64 + 1) * 32,
-                        Effect::NextWithAcc(value) => {
-                            ctx.acc = value;
-                            state.acc_value = value;
-                            state.pc = cstart + (idx as u64 + 1) * 32;
-                        }
                         Effect::Jump(t) => state.pc = cstart + (t as u64) * 32,
                         // `Return` always has a native handler; a slow one
                         // would desync the native return stack.
@@ -2880,6 +3158,20 @@ impl InterpInstance {
                         Effect::TailCall { callee, arg_base } => {
                             act.pc = idx + 1;
                             return Ok(StepExit::TailCall { callee, arg_base });
+                        }
+                        Effect::ExternalCall {
+                            call,
+                            arg_base,
+                            tail_target,
+                        } => {
+                            let tail = tail_target.is_some();
+                            act.pc = tail_target.unwrap_or(idx + 1);
+                            return Ok(StepExit::ExternalCall {
+                                call,
+                                result_base: if tail { base } else { base + arg_base },
+                                site: idx,
+                                search_current: !tail,
+                            });
                         }
                         Effect::Throw(pending) => {
                             // Unlike a normal call exit, a throw is handled at
@@ -3653,33 +3945,26 @@ impl InterpInstance {
                         })
                         .ok_or(WasmError::trap("indirect call type mismatch"))?;
                     let base = ins.b as usize;
-                    let mut args = Vec::with_capacity(param_types.len());
-                    args.extend_from_slice(&frame[base..base + param_types.len()]);
-                    for (arg, &value_type) in args.iter_mut().zip(&param_types) {
-                        *arg = self.absolutize_slot_for_type(*arg, value_type);
-                    }
-                    let mut results = vec![0u64; result_types.len()];
-                    match self.funcref_host.as_mut() {
-                        Some(host) => (host.invoke)(r, &args, &mut results)?,
-                        None if registry_known => {
-                            return Err(WasmError::trap(
-                                super::ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED,
-                            ))
-                        }
-                        None => return Err(WasmError::trap(super::EXTERNAL_FUNCREF_HOST_REQUIRED)),
-                    }
-                    for (result, &value_type) in results.iter_mut().zip(&result_types) {
-                        *result = self.localize_slot_for_type(*result, value_type);
-                    }
-                    frame[base..base + result_types.len()].copy_from_slice(&results);
-                    if ins.op == Op::ReturnCallRef {
-                        frame.copy_within(base..base + result_types.len(), 0);
-                        let target = func.slow_tail_return.ok_or(WasmError::invalid(
+                    let call = self.prepare_funcref_call(
+                        r,
+                        param_types,
+                        result_types,
+                        frame,
+                        base,
+                        registry_known,
+                    );
+                    let tail_target = if ins.op == Op::ReturnCallRef {
+                        Some(func.slow_tail_return.ok_or(WasmError::invalid(
                             "interp: tail call has no return landing",
-                        ))?;
-                        return Ok(Effect::Jump(target as usize));
-                    }
-                    return Ok(Effect::NextWithAcc(results.first().copied().unwrap_or(0)));
+                        ))? as usize)
+                    } else {
+                        None
+                    };
+                    return Ok(Effect::ExternalCall {
+                        call,
+                        arg_base: base,
+                        tail_target,
+                    });
                 }
                 let callee = local.encoded();
                 let arg_base = ins.b as usize;
@@ -3975,33 +4260,26 @@ impl InterpInstance {
                         })
                         .ok_or(WasmError::trap("indirect call type mismatch"))?;
                     let base = ins.b as usize;
-                    let mut args = Vec::with_capacity(param_types.len());
-                    args.extend_from_slice(&frame[base..base + param_types.len()]);
-                    for (arg, &value_type) in args.iter_mut().zip(&param_types) {
-                        *arg = self.absolutize_slot_for_type(*arg, value_type);
-                    }
-                    let mut results = vec![0u64; result_types.len()];
-                    match self.funcref_host.as_mut() {
-                        Some(h) => (h.invoke)(callee, &args, &mut results)?,
-                        None if registry_known => {
-                            return Err(WasmError::trap(
-                                super::ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED,
-                            ))
-                        }
-                        None => return Err(WasmError::trap(super::EXTERNAL_FUNCREF_HOST_REQUIRED)),
-                    }
-                    for (result, &value_type) in results.iter_mut().zip(&result_types) {
-                        *result = self.localize_slot_for_type(*result, value_type);
-                    }
-                    frame[base..base + result_types.len()].copy_from_slice(&results);
-                    if ins.op == Op::ReturnCallIndirect {
-                        frame.copy_within(base..base + result_types.len(), 0);
-                        let target = func.slow_tail_return.ok_or(WasmError::invalid(
+                    let call = self.prepare_funcref_call(
+                        callee,
+                        param_types,
+                        result_types,
+                        frame,
+                        base,
+                        registry_known,
+                    );
+                    let tail_target = if ins.op == Op::ReturnCallIndirect {
+                        Some(func.slow_tail_return.ok_or(WasmError::invalid(
                             "interp: tail call has no return landing",
-                        ))?;
-                        return Ok(Effect::Jump(target as usize));
-                    }
-                    return Ok(Effect::NextWithAcc(results.first().copied().unwrap_or(0)));
+                        ))? as usize)
+                    } else {
+                        None
+                    };
+                    return Ok(Effect::ExternalCall {
+                        call,
+                        arg_base: base,
+                        tail_target,
+                    });
                 }
                 let fi = local.encoded() as u32;
                 let expected = ins.c as u32;
@@ -5251,6 +5529,15 @@ mod tests {
     }
 
     fn exercise_foreign_world_funcref_calls() {
+        fn invoke_lease(
+            lease: &InterpInstanceLease,
+            func_index: usize,
+            results: &mut [u64],
+        ) -> Result<(), WasmError> {
+            let mut access = InterpInstanceAccess::checked_out(lease.checkout_for_invocation()?);
+            InterpInstance::invoke_access(&mut access, func_index, &[], results)
+        }
+
         let provider_bin: StdVec<u8> = wat::parse_str(
             r#"(module
                 (type $t (func (result i32)))
@@ -5275,7 +5562,9 @@ mod tests {
             Ok(provider) => provider,
             Err((_, error)) => panic!("provider: {error:?}"),
         };
-        let handle = provider.function_handle_at(0).expect("provider identity");
+        let handle = provider
+            .with_instance(|provider| provider.function_handle_at(0))
+            .expect("provider identity");
 
         let consumer_bin: StdVec<u8> = wat::parse_str(
             r#"(module
@@ -5301,7 +5590,7 @@ mod tests {
                 provider_types.clone(),
             )
         };
-        let mut hooked = match InterpInstance::new_partial_with_registry(
+        let hooked = match InterpInstance::new_partial_with_registry(
             &engine,
             Module::new("hooked-consumer", &consumer_bin).expect("hooked consumer module"),
             None,
@@ -5323,15 +5612,16 @@ mod tests {
         };
 
         for export in ["direct", "by_ref", "indirect"] {
-            let index = hooked.find_export(export).expect("hooked consumer export");
+            let index = hooked
+                .with_instance(|hooked| hooked.find_export(export))
+                .expect("hooked consumer export");
             let mut result = [0u64; 1];
-            hooked
-                .invoke(index, &[], &mut result)
+            invoke_lease(&hooked, index, &mut result)
                 .expect("the installed hook drives the world identity");
             assert_eq!(result[0], 7, "{export}");
         }
 
-        let mut without_hook = match InterpInstance::new_partial_with_registry(
+        let without_hook = match InterpInstance::new_partial_with_registry(
             &engine,
             Module::new("no-hook-consumer", &consumer_bin).expect("no-hook consumer module"),
             None,
@@ -5345,12 +5635,11 @@ mod tests {
 
         for export in ["direct", "by_ref", "indirect"] {
             let index = without_hook
-                .find_export(export)
+                .with_instance(|without_hook| without_hook.find_export(export))
                 .expect("no-hook consumer export");
             let mut result = [0u64; 1];
             assert_eq!(
-                without_hook
-                    .invoke(index, &[], &mut result)
+                invoke_lease(&without_hook, index, &mut result)
                     .expect_err("the engine-native call needs an installed hook"),
                 WasmError::trap(crate::vm::interpreter::ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED),
                 "{export}"

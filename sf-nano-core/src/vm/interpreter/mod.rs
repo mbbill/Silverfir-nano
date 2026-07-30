@@ -56,4 +56,6 @@ const EXTERNAL_FUNCREF_HOST_REQUIRED: &str =
 pub use exec::{FuncRefHost, InterpInstance};
 // The boundary converts host values through the same shared slot encoding
 // that the executor imports from `vm::value`.
-pub(crate) use exec::{raw_to_value_for_interp, value_to_raw_for_interp, InterpInstanceLease};
+pub(crate) use exec::{
+    raw_to_value_for_interp, value_to_raw_for_interp, InterpInstanceAccess, InterpInstanceLease,
+};

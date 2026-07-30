@@ -23,7 +23,8 @@ use crate::module::type_defs::FunctionType;
 use crate::module::Module;
 use crate::value_type::ValueType;
 use crate::vm::entities::{Caller, HostCallback};
-use crate::vm::interpreter::InterpInstance;
+use crate::vm::interpreter::{InterpInstance, InterpInstanceAccess};
+use crate::vm::link::InstanceToken;
 use crate::vm::value::Value;
 use tracked_alloc::string::String;
 
@@ -177,52 +178,62 @@ pub(super) fn bind(
 /// Call an export by name with typed values, the way the JIT's instance
 /// does, on top of the interpreter's index-and-raw-word call path.
 pub(super) fn invoke_by_name(
-    inst: &mut InterpInstance,
+    token: InstanceToken,
     name: &str,
     args: &[Value],
 ) -> Result<Vec<Value>, WasmError> {
-    let idx = inst
-        .find_export(name)
-        .ok_or(WasmError::invalid("exported function not found"))?;
-    let func_type = inst
-        .module()
-        .functions()
-        .get(idx)
-        .ok_or(WasmError::invalid("exported function not found"))?
-        .func_type()
-        .clone();
+    let mut access = InterpInstanceAccess::checked_out(token);
+    let (idx, func_type) = access.with_instance(|inst| {
+        let idx = inst
+            .find_export(name)
+            .ok_or(WasmError::invalid("exported function not found"))?;
+        let func_type = inst
+            .module()
+            .functions()
+            .get(idx)
+            .ok_or(WasmError::invalid("exported function not found"))?
+            .func_type()
+            .clone();
+        Ok::<(usize, FunctionType), WasmError>((idx, func_type))
+    })??;
 
     if args.len() != func_type.params().len() {
         return Err(WasmError::invalid("argument arity mismatch"));
     }
 
-    let mut raw_args: Vec<u64> = Vec::with_capacity(args.len());
-    for (&value_type, &value) in func_type.params().iter().zip(args) {
-        let value = inst.localize_value_for_type(value, value_type);
-        raw_args.push(value_to_raw(&value)?);
-    }
+    let raw_args = access.with_instance(|inst| {
+        let mut raw_args: Vec<u64> = Vec::with_capacity(args.len());
+        for (&value_type, &value) in func_type.params().iter().zip(args) {
+            let value = inst.localize_value_for_type(value, value_type);
+            raw_args.push(value_to_raw(&value)?);
+        }
+        Ok::<Vec<u64>, WasmError>(raw_args)
+    })??;
     let mut raw_results = crate::collections::vec![0u64; func_type.results().len()];
 
-    inst.invoke(idx, &raw_args, &mut raw_results)?;
+    InterpInstance::invoke_access(&mut access, idx, &raw_args, &mut raw_results)?;
 
-    let mut out: Vec<Value> = Vec::with_capacity(raw_results.len());
-    for (ty, &raw) in func_type.results().iter().zip(raw_results.iter()) {
-        let value = raw_to_value(*ty, raw)?;
-        out.push(inst.absolutize_value_for_type(value, *ty));
-    }
-    Ok(out)
+    access.with_instance(|inst| {
+        let mut out: Vec<Value> = Vec::with_capacity(raw_results.len());
+        for (ty, &raw) in func_type.results().iter().zip(raw_results.iter()) {
+            let value = raw_to_value(*ty, raw)?;
+            out.push(inst.absolutize_value_for_type(value, *ty));
+        }
+        Ok(out)
+    })?
 }
 
 /// Call a resolved export by index, writing results into a caller-owned
 /// slice.
 pub(super) fn call_by_index(
-    inst: &mut InterpInstance,
+    token: InstanceToken,
     index: usize,
     args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    let mut raw_args: Vec<u64> = Vec::with_capacity(args.len());
-    {
+    let mut access = InterpInstanceAccess::checked_out(token);
+    let raw_args = access.with_instance(|inst| {
+        let mut raw_args: Vec<u64> = Vec::with_capacity(args.len());
         let func_type = inst
             .module()
             .functions()
@@ -233,41 +244,73 @@ pub(super) fn call_by_index(
             let value = inst.localize_value_for_type(value, value_type);
             raw_args.push(value_to_raw(&value)?);
         }
-    }
+        Ok::<Vec<u64>, WasmError>(raw_args)
+    })??;
     let mut raw_results = crate::collections::vec![0u64; results.len()];
 
-    inst.invoke(index, &raw_args, &mut raw_results)?;
+    InterpInstance::invoke_access(&mut access, index, &raw_args, &mut raw_results)?;
 
     // Read the signature only after the call: holding it across the
     // invocation would need a clone of the type, which on a short function
     // costs more than the call itself.
-    let func_type = inst
-        .module()
-        .functions()
-        .get(index)
-        .ok_or(WasmError::invalid("function index out of range"))?
-        .func_type();
-    for (i, ty) in func_type.results().iter().enumerate() {
-        let value = raw_to_value(*ty, raw_results[i])?;
-        results[i] = inst.absolutize_value_for_type(value, *ty);
-    }
-    Ok(())
+    access.with_instance(|inst| {
+        let func_type = inst
+            .module()
+            .functions()
+            .get(index)
+            .ok_or(WasmError::invalid("function index out of range"))?
+            .func_type();
+        for (i, ty) in func_type.results().iter().enumerate() {
+            let value = raw_to_value(*ty, raw_results[i])?;
+            results[i] = inst.absolutize_value_for_type(value, *ty);
+        }
+        Ok(())
+    })?
 }
 
 /// Call an export by index with typed values.
 pub(super) fn invoke_by_index(
-    inst: &mut InterpInstance,
+    token: InstanceToken,
     idx: usize,
     args: &[Value],
 ) -> Result<Vec<Value>, WasmError> {
-    let (n_params, n_results) = inst
-        .func_arity(idx)
+    let mut access = InterpInstanceAccess::checked_out(token);
+    let (n_params, n_results) = access
+        .with_instance(|inst| inst.func_arity(idx))?
         .ok_or(WasmError::invalid("function index out of range"))?;
     if args.len() != n_params {
         return Err(WasmError::invalid("argument arity mismatch"));
     }
     let mut out = crate::collections::vec![Value::I32(0); n_results];
-    call_by_index(inst, idx, args, &mut out)?;
+    let raw_args = access.with_instance(|inst| {
+        let mut raw_args: Vec<u64> = Vec::with_capacity(args.len());
+        let func_type = inst
+            .module()
+            .functions()
+            .get(idx)
+            .ok_or(WasmError::invalid("function index out of range"))?
+            .func_type();
+        for (&value_type, &value) in func_type.params().iter().zip(args) {
+            let value = inst.localize_value_for_type(value, value_type);
+            raw_args.push(value_to_raw(&value)?);
+        }
+        Ok::<Vec<u64>, WasmError>(raw_args)
+    })??;
+    let mut raw_results = crate::collections::vec![0u64; n_results];
+    InterpInstance::invoke_access(&mut access, idx, &raw_args, &mut raw_results)?;
+    access.with_instance(|inst| {
+        let func_type = inst
+            .module()
+            .functions()
+            .get(idx)
+            .ok_or(WasmError::invalid("function index out of range"))?
+            .func_type();
+        for (i, ty) in func_type.results().iter().enumerate() {
+            let value = raw_to_value(*ty, raw_results[i])?;
+            out[i] = inst.absolutize_value_for_type(value, *ty);
+        }
+        Ok::<(), WasmError>(())
+    })??;
     Ok(out)
 }
 

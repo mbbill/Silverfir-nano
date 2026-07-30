@@ -338,11 +338,11 @@ impl Instance {
                 (index, ft.params().len(), ft.results().len())
             }
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => {
+            Inner::Interp(inst) => inst.with_instance(|inst| {
                 let index = inst.find_export(name)?;
                 let (params, results) = inst.func_arity(index)?;
-                (index, params, results)
-            }
+                Some((index, params, results))
+            })?,
         };
         Some(Func {
             index,
@@ -368,7 +368,12 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.call_function_index(func.index, args, results),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => interp_imports::call_by_index(inst, func.index, args, results),
+            Inner::Interp(inst) => interp_imports::call_by_index(
+                inst.checkout_for_invocation()?,
+                func.index,
+                args,
+                results,
+            ),
         }
     }
 
@@ -377,7 +382,7 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.has_function_export(name),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.find_export(name).is_some(),
+            Inner::Interp(inst) => inst.with_instance(|inst| inst.find_export(name).is_some()),
         }
     }
 
@@ -417,7 +422,9 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.invoke_function_index(idx, args),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => interp_imports::invoke_by_index(inst, idx, args),
+            Inner::Interp(inst) => {
+                interp_imports::invoke_by_index(inst.checkout_for_invocation()?, idx, args)
+            }
         }
     }
 
@@ -427,7 +434,7 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.global_at(idx),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => interp_imports::global_at(inst, idx),
+            Inner::Interp(inst) => inst.with_instance(|inst| interp_imports::global_at(inst, idx)),
         }
     }
 
@@ -437,7 +444,9 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.replace_global_at(idx, value),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => interp_imports::replace_global_at(inst, idx, value),
+            Inner::Interp(inst) => {
+                inst.with_instance_mut(|inst| interp_imports::replace_global_at(inst, idx, value))
+            }
         }
     }
 
@@ -447,10 +456,10 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.get_global(name),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => match inst.find_export_global(name) {
+            Inner::Interp(inst) => inst.with_instance(|inst| match inst.find_export_global(name) {
                 Some(idx) => interp_imports::global_at(inst, idx),
                 None => Ok(None),
-            },
+            }),
         }
     }
 
@@ -460,11 +469,12 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.function_type_at(idx),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst
-                .module()
-                .functions()
-                .get(idx)
-                .map(|f| f.func_type().clone()),
+            Inner::Interp(inst) => inst.with_instance(|inst| {
+                inst.module()
+                    .functions()
+                    .get(idx)
+                    .map(|f| f.func_type().clone())
+            }),
         }
     }
 
@@ -490,7 +500,7 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.function_handle_at(idx),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.function_handle_at(idx),
+            Inner::Interp(inst) => inst.with_instance(|inst| inst.function_handle_at(idx)),
         }
     }
 
@@ -500,7 +510,8 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.function_type_index_at(idx),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.module().functions().get(idx).map(|f| f.type_index()),
+            Inner::Interp(inst) => inst
+                .with_instance(|inst| inst.module().functions().get(idx).map(|f| f.type_index())),
         }
     }
 
@@ -510,7 +521,7 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.memory_pages(name),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => {
+            Inner::Interp(inst) => inst.with_instance(|inst| {
                 // By EXPORT NAME, not memory 0: a module with several
                 // exported memories would otherwise report the first one's
                 // size for all of them, and a caller sizing an import from
@@ -522,7 +533,7 @@ impl Instance {
                     .position(|m| m.export_names().iter().any(|export| export == name))?;
                 inst.shared_memory_at(idx)
                     .map(|m| m.memory_len() / crate::constants::WASM_PAGE_SIZE)
-            }
+            }),
         }
     }
 
@@ -532,7 +543,7 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.table_size(name),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => {
+            Inner::Interp(inst) => inst.with_instance(|inst| {
                 // By export name and from the LIVE table, as memory_pages
                 // does: a table grown after instantiation must report its
                 // current size, or an import sized from it gets stale limits.
@@ -542,7 +553,7 @@ impl Instance {
                     .iter()
                     .position(|t| t.export_names().iter().any(|e| e == name))?;
                 inst.table_len(idx)
-            }
+            }),
         }
     }
 
@@ -554,14 +565,14 @@ impl Instance {
             // Tag IDENTITY is a linking concern, so the interpreter mints
             // handles even though it cannot yet throw or catch.
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => {
+            Inner::Interp(inst) => inst.with_instance(|inst| {
                 let idx = inst
                     .module()
                     .tags()
                     .iter()
                     .position(|t| t.export_names().iter().any(|e| e == name))?;
                 inst.tag_handle_at(idx)
-            }
+            }),
         }
     }
 
@@ -573,7 +584,7 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.shared_memory_at(idx),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.shared_memory_at(idx),
+            Inner::Interp(inst) => inst.with_instance(|inst| inst.shared_memory_at(idx)),
         }
     }
 
@@ -582,9 +593,11 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.shared_table_state_at(idx),
             #[cfg(sf_interp)]
-            Inner::Interp(inst) => inst.table_state_at(idx).map(|table| ImportedTableState {
-                table,
-                type_ctx: None,
+            Inner::Interp(inst) => inst.with_instance(|inst| {
+                inst.table_state_at(idx).map(|table| ImportedTableState {
+                    table,
+                    type_ctx: None,
+                })
             }),
         }
     }
@@ -595,9 +608,11 @@ impl Instance {
             // With the exporter's type context: a reference type's concrete
             // heap type names an index in THIS module's type space, and the
             // importer cannot resolve it otherwise.
-            Inner::Interp(inst) => inst.global_state_at(idx).map(|global| ImportedGlobalState {
-                global,
-                type_ctx: Some(inst.module().types().clone()),
+            Inner::Interp(inst) => inst.with_instance(|inst| {
+                inst.global_state_at(idx).map(|global| ImportedGlobalState {
+                    global,
+                    type_ctx: Some(inst.module().types().clone()),
+                })
             }),
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.shared_global_state_at(idx),
@@ -648,14 +663,19 @@ impl Instance {
         }
     }
 
-    /// The interpreter's instance, for its dispatch statistics and its
-    /// index-based call path. `None` when this instance is on another
-    /// engine.
+    /// Scoped access to the interpreter's instance. `None` when this
+    /// instance is on another engine.
+    ///
+    /// The higher-ranked closure prevents a reference derived from the
+    /// instance-table token from escaping this call.
     #[cfg(sf_interp)]
     #[inline]
-    pub fn as_interp(&self) -> Option<&InterpInstance> {
+    pub fn with_interp<R>(
+        &self,
+        use_instance: impl for<'instance> FnOnce(&'instance InterpInstance) -> R,
+    ) -> Option<R> {
         match &self.inner {
-            Inner::Interp(inst) => Some(inst),
+            Inner::Interp(inst) => Some(inst.with_instance(use_instance)),
             #[cfg(sf_jit)]
             Inner::Jit(_) => None,
         }
@@ -663,9 +683,12 @@ impl Instance {
 
     #[cfg(sf_interp)]
     #[inline]
-    pub fn as_interp_mut(&mut self) -> Option<&mut InterpInstance> {
+    pub fn with_interp_mut<R>(
+        &mut self,
+        use_instance: impl for<'instance> FnOnce(&'instance mut InterpInstance) -> R,
+    ) -> Option<R> {
         match &mut self.inner {
-            Inner::Interp(inst) => Some(inst),
+            Inner::Interp(inst) => Some(inst.with_instance_mut(use_instance)),
             #[cfg(sf_jit)]
             Inner::Jit(_) => None,
         }
@@ -805,11 +828,8 @@ impl RuntimeWorld {
             return JitInstance::invoke_token(token, name, args);
         }
         #[cfg(sf_interp)]
-        {
-            let mut token = token;
-            if let Some(instance) = token.interp_mut() {
-                return interp_imports::invoke_by_name(instance, name, args);
-            }
+        if token.interp().is_some() {
+            return interp_imports::invoke_by_name(token, name, args);
         }
         Err(WasmError::invalid(
             "runtime-world instance has no enabled engine",

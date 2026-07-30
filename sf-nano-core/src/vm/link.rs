@@ -446,6 +446,15 @@ impl InstanceLease {
             .expect("instance lease already released")
     }
 
+    #[inline]
+    pub(crate) fn checkout_again(&self) -> Option<InstanceToken> {
+        let token = self
+            .token
+            .as_ref()
+            .expect("instance lease already released");
+        InstanceTable(Rc::clone(&token.table)).checkout(token.id)
+    }
+
     pub(crate) fn is_exclusive(&self) -> bool {
         let token = self
             .token
