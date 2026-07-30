@@ -1091,9 +1091,16 @@ impl JitInstance {
         idx: usize,
         args: &[Value],
     ) -> Result<collections::Vec<Value>, WasmError> {
+        Self::invoke_function_index_token(self.checkout_for_invocation()?, idx, args)
+    }
+
+    pub(crate) fn invoke_function_index_token(
+        token: InstanceToken,
+        idx: usize,
+        args: &[Value],
+    ) -> Result<collections::Vec<Value>, WasmError> {
         let idx =
             u32::try_from(idx).map_err(|_| WasmError::invalid("function index out of range"))?;
-        let token = self.checkout_for_invocation()?;
         Self::validate_invocation_index(&token, idx)?;
         runtime::eval(token, idx, args)
     }

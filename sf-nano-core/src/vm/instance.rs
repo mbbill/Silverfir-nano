@@ -23,7 +23,7 @@ use crate::module::Module;
 use crate::vm::engine::{Engine, Tier};
 use crate::vm::entities::{Caller, MemInst};
 use crate::vm::imports::ImportedGlobalState;
-use crate::vm::link::{InstanceFreeError, InstanceId, LinkRegistry};
+use crate::vm::link::{InstanceFreeError, InstanceId, LinkRegistry, WorldHandle};
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 
@@ -722,6 +722,17 @@ impl RuntimeWorld {
         self.instances.remove(index).1
     }
 
+    /// A cheap, clonable capability for indexed calls into this world.
+    ///
+    /// The handle does not borrow or keep the world alive. This is the
+    /// callback shape that has to work: guest code calls a host function while
+    /// the embedder still holds `&mut RuntimeWorld`, and that host function
+    /// calls a runtime-chosen peer. Every call through the handle performs a
+    /// fresh generation-checked checkout.
+    pub fn handle(&self) -> WorldHandle {
+        self.registry.instance_table().world_handle()
+    }
+
     /// Instantiate `module` into this world, returning its id.
     ///
     /// Every instance in a world runs on the same engine: they resolve each
@@ -770,6 +781,14 @@ impl RuntimeWorld {
             .iter()
             .find(|(candidate, _)| *candidate == id)
             .and_then(|(_, instance)| instance.as_ref())
+    }
+
+    /// Mutable access to the instance facade behind `id`.
+    pub fn instance_mut(&mut self, id: InstanceId) -> Option<&mut Instance> {
+        self.instances
+            .iter_mut()
+            .find(|(candidate, _)| *candidate == id)
+            .and_then(|(_, instance)| instance.as_mut())
     }
 
     /// Drop an instance and retire its slot. Its id stops resolving.
@@ -838,6 +857,37 @@ impl RuntimeWorld {
     }
 }
 
+impl WorldHandle {
+    /// Invoke a function by its instance identity and local function index.
+    ///
+    /// This takes only `&self`: a host callback can therefore call back into
+    /// the world without aliasing the embedder's live mutable borrow of the
+    /// [`RuntimeWorld`] facade. The weak table reference is upgraded only for
+    /// this call, and `checkout` rejects an expired world, a freed instance,
+    /// and a stale generation with an ordinary error.
+    pub fn invoke(
+        &self,
+        id: InstanceId,
+        function_index: usize,
+        args: &[Value],
+    ) -> Result<collections::Vec<Value>, WasmError> {
+        let token = self
+            .checkout(id)
+            .ok_or_else(|| WasmError::invalid("unknown runtime-world instance"))?;
+        #[cfg(sf_jit)]
+        if token.jit().is_some() {
+            return JitInstance::invoke_function_index_token(token, function_index, args);
+        }
+        #[cfg(sf_interp)]
+        if token.interp().is_some() {
+            return interp_imports::invoke_by_index(token, function_index, args);
+        }
+        Err(WasmError::invalid(
+            "runtime-world instance has no enabled engine",
+        ))
+    }
+}
+
 impl Drop for RuntimeWorld {
     fn drop(&mut self) {
         while let Some((id, _)) = self.instances.last() {
@@ -887,6 +937,144 @@ mod tests {
         drop(checkout);
         world.free(id).expect("free after checkout ends");
         assert!(world.invoke(id, "add", &[]).is_err());
+    }
+
+    /// The embedder's `&mut RuntimeWorld` receiver stays live for the outer
+    /// invocation while `a` enters this host callback. The callback owns only
+    /// a weak world handle, so it can check out and invoke `b` without
+    /// reconstructing or aliasing that mutable borrow.
+    #[test]
+    fn world_handle_reenters_a_peer_from_a_host_callback() {
+        let provider_wasm = wat::parse_str(
+            r#"
+            (module
+              (func (export "add_forty") (param i32) (result i32)
+                local.get 0
+                i32.const 40
+                i32.add))
+            "#,
+        )
+        .expect("encode handle provider");
+        let caller_wasm = wat::parse_str(
+            r#"
+            (module
+              (func $call_b (import "host" "call_b") (param i32) (result i32))
+              (func (export "run_a") (param i32) (result i32)
+                local.get 0
+                call $call_b
+                i32.const 1
+                i32.add))
+            "#,
+        )
+        .expect("encode handle caller");
+        let callback_type = FunctionType::new(
+            collections::vec![crate::value_type::ValueType::I32],
+            collections::vec![crate::value_type::ValueType::I32],
+        );
+
+        for &tier in Tier::ALL {
+            let engine = Engine::new(Config::new().tier(tier)).expect("engine config");
+            let mut world = RuntimeWorld::new();
+            let handle = world.handle();
+            let b = world
+                .instantiate(
+                    &engine,
+                    Module::new("handle-provider-b", &provider_wasm).expect("parse provider"),
+                    &[],
+                )
+                .expect("instantiate provider b");
+            let callback_handle = handle.clone();
+            let host = Import::func_typed(
+                "host",
+                "call_b",
+                move |_caller, args, results| {
+                    let returned = callback_handle.invoke(b, 0, args)?;
+                    if returned.len() != results.len() {
+                        return Err(WasmError::invalid("argument/result arity mismatch"));
+                    }
+                    results.copy_from_slice(&returned);
+                    Ok(())
+                },
+                callback_type.clone(),
+            );
+            let a = world
+                .instantiate(
+                    &engine,
+                    Module::new("handle-caller-a", &caller_wasm).expect("parse caller"),
+                    &[host],
+                )
+                .expect("instantiate caller a");
+
+            assert_eq!(
+                world
+                    .invoke(a, "run_a", &[Value::I32(2)])
+                    .expect("a host callback invokes b"),
+                collections::vec![Value::I32(43)],
+                "{tier:?}: host callback did not reach b through the handle"
+            );
+
+            drop(world);
+            assert!(
+                handle.invoke(b, 0, &[Value::I32(2)]).is_err(),
+                "{tier:?}: a handle kept an expired world alive"
+            );
+        }
+    }
+
+    /// Reusing the freed slot makes the stale-id check load-bearing: without
+    /// the generation comparison this call would silently reach the
+    /// replacement and return its different sentinel.
+    #[test]
+    fn world_handle_rejects_a_freed_generation_after_slot_reuse() {
+        let old_wasm =
+            wat::parse_str(r#"(module (func (export "value") (result i32) i32.const 111))"#)
+                .expect("encode old handle target");
+        let replacement_wasm =
+            wat::parse_str(r#"(module (func (export "value") (result i32) i32.const 222))"#)
+                .expect("encode replacement handle target");
+
+        for &tier in Tier::ALL {
+            let engine = Engine::new(Config::new().tier(tier)).expect("engine config");
+            let mut world = RuntimeWorld::new();
+            let handle = world.handle();
+            let old = world
+                .instantiate(
+                    &engine,
+                    Module::new("old-handle-target", &old_wasm).expect("parse old target"),
+                    &[],
+                )
+                .expect("instantiate old target");
+            world.free(old).expect("free old target");
+            let replacement = world
+                .instantiate(
+                    &engine,
+                    Module::new("replacement-handle-target", &replacement_wasm)
+                        .expect("parse replacement target"),
+                    &[],
+                )
+                .expect("instantiate replacement target");
+
+            assert_eq!(
+                old.index(),
+                replacement.index(),
+                "{tier:?}: slot not reused"
+            );
+            assert_ne!(
+                old.generation(),
+                replacement.generation(),
+                "{tier:?}: reused slot kept its generation"
+            );
+            assert!(
+                handle.invoke(old, 0, &[]).is_err(),
+                "{tier:?}: stale id misdispatched to the replacement"
+            );
+            assert_eq!(
+                handle
+                    .invoke(replacement, 0, &[])
+                    .expect("current generation invokes"),
+                collections::vec![Value::I32(222)]
+            );
+        }
     }
 
     #[test]

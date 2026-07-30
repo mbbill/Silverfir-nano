@@ -272,7 +272,7 @@ fn run_cli(args: &[String]) -> i32 {
 /// Run the module on whichever engine was selected.
 ///
 /// One path for both. The engine was chosen back in argument parsing and
-/// `Instance` honours it; nothing from here down knows or cares which one
+/// `RuntimeWorld` honours it; nothing from here down knows or cares which one
 /// is underneath.
 fn run_module(
     engine: &Engine,
@@ -281,7 +281,7 @@ fn run_module(
     compile_only: bool,
     #[cfg(feature = "interp")] interp_stats: bool,
 ) -> i32 {
-    use sf_nano_core::{module::Module, Instance};
+    use sf_nano_core::{module::Module, RuntimeWorld};
 
     let module = match Module::new(module_name, data) {
         Ok(module) => module,
@@ -291,10 +291,11 @@ fn run_module(
         }
     };
     let imports = wasi_imports();
-    let mut instance = match Instance::from_module(engine, module, &imports) {
-        Ok(instance) => instance,
+    let mut world = RuntimeWorld::new();
+    let instance_id = match world.instantiate(engine, module, &imports) {
+        Ok(instance_id) => instance_id,
         Err(err) => {
-            eprintln!("Error instantiating module: {}", err);
+            eprintln!("Error instantiating module: {}", err.error());
             return 1;
         }
     };
@@ -304,17 +305,23 @@ fn run_module(
         return 0;
     }
 
+    let instance = world
+        .instance(instance_id)
+        .expect("newly instantiated module missing from runtime world");
     let entry = if instance.has_function_export("_start") {
         "_start"
     } else {
         "main"
     };
-    let result = instance.invoke(entry, &[]);
+    let result = world.invoke(instance_id, entry, &[]);
 
     print_native_stats();
     #[cfg(feature = "interp")]
     if interp_stats {
-        print_interp_stats(&instance);
+        let instance = world
+            .instance(instance_id)
+            .expect("invoked module missing from runtime world");
+        print_interp_stats(instance);
     }
 
     match result {
