@@ -80,6 +80,15 @@ impl Arm64 {
         a.ins("ldr x7, [x19, #32]");
     }
 
+    /// As [`Self::pre`], for handlers that also consume the cell's `c` field.
+    /// `c` sits at #24 and the next handler word at #32, so one `ldp` fetches
+    /// both. Pairing cell PAYLOAD is safe -- unlike pairing two frame slot
+    /// reads, which would lose store-to-load forwarding. `c` lands in x6,
+    /// which no handler body touches.
+    fn pre_c(&self, a: &mut Asm) {
+        a.ins("ldp x6, x7, [x19, #24]");
+    }
+
     fn bump(&self, a: &mut Asm, on: bool) {
         if on {
             a.ins("add x15, x15, #1");
@@ -140,10 +149,17 @@ impl Arm64 {
     /// work through pair instructions on Apple silicon and frame-slot
     /// forwarding is exactly what the slot-edge cost model depends on.
     fn src_ab(&self, a: &mut Asm, ac: Cls, bc: Cls) -> (u32, u32) {
-        if ac == Cls::Slot && bc == Cls::Slot {
+        // Both operands read the cell -- a slot's byte offset, or a constant's
+        // value -- so one `ldp` fetches both payload words. Only the slots
+        // then need the frame indirection.
+        if matches!(ac, Cls::Slot | Cls::Const) && matches!(bc, Cls::Slot | Cls::Const) {
             a.ins("ldp x10, x11, [x19, #8]");
-            a.ins("ldr x10, [x20, x10]");
-            a.ins("ldr x11, [x20, x11]");
+            if ac == Cls::Slot {
+                a.ins("ldr x10, [x20, x10]");
+            }
+            if bc == Cls::Slot {
+                a.ins("ldr x11, [x20, x11]");
+            }
             (10, 11)
         } else {
             (self.src_a(a, ac, 10), self.src_b(a, bc, 11))
@@ -159,8 +175,7 @@ impl Arm64 {
     }
 
     fn store_dst(&self, a: &mut Asm, src: u32) {
-        a.ins("ldr x12, [x19, #24]");
-        a.ins(&format!("str {}, [x20, x12]", x(src)));
+        a.ins(&format!("str {}, [x20, x6]", x(src)));
     }
 
     /// Mem and pinned destinations store to the slot (write-through keeps
@@ -185,8 +200,7 @@ impl Arm64 {
     /// zero-extension convention holds for free.
     fn finish_fp(&self, a: &mut Asm, d: DstCls) {
         if d != DstCls::Acc {
-            a.ins("ldr x12, [x19, #24]");
-            a.ins(&format!("str {}, [x20, x12]", f(false, self.fp_target(d))));
+            a.ins(&format!("str {}, [x20, x6]", f(false, self.fp_target(d))));
         }
     }
 
@@ -844,7 +858,11 @@ impl Isa for Arm64 {
             }
         }
 
-        self.pre(a);
+        if d == DstCls::Acc {
+            self.pre(a);
+        } else {
+            self.pre_c(a);
+        }
         match v.op {
             MovSlot | MovConst => {
                 let rd = self.dst_target(d);
