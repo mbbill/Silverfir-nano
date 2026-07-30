@@ -411,3 +411,28 @@
   dismissed because read-mostly slot loads are hidden by the out-of-order core,
   which is a wide-core argument, and every pinned-local timing to date was taken on
   one M4 P core (code)
+
+- 2026-07-30 measurement: core width does not change what a pin is worth.
+  Dropping arm64 alone to the reduced class set prices l1 on CoreMark at 4.09% on
+  the M1 runner and 4.59% on the Neoverse runner against the 4.2% already measured
+  on the M4 P core, with x86-64 left on the full set reporting byte-identical
+  executables as the control
+  [[register-residency.fact/l1-priced-per-core-2026-07-30]] (code)
+- 2026-07-30 measurement: CoreMark prices l1 at its corpus MINIMUM. On the same
+  M1 run l1 is worth 4.5-11.8% across five gate-confirmed metrics and
+  lz4-decompress alone is 2.9x CoreMark, so the +4.2%-over-l0 figure, the +1..+3%
+  net bound and the "unproven against its 2x handler size" verdict were all scoped
+  to the one benchmark that shows the effect most weakly (code)
+- 2026-07-30 measurement: the payoff law does not account for that. It converts a
+  pin only where a binding loop-carried chain breaks, and lz4's hot loops carry
+  0.97 effective independent chains with 8.3% at two or more, yet l1 is worth
+  11.75% on lz4-decompress at 2.43% pair volatility (code)
+- 2026-07-30 uncertain: the residual is presumably the load removal the top-k
+  census measures, which was dismissed for being hidden by the out-of-order core
+  -- both runners are out-of-order, so that dismissal does not hold, but the
+  mechanism has not been isolated (uncertain)
+- 2026-07-30 pitfall: the probe removes l1 together with its handler
+  multiplication, taking the arm64 engine from 339,064 to 177,924 bytes, so each
+  delta nets the residency loss against a size refund and understates residency.
+  On arm64-linux the sign reverses for lua-sunfish (+1.32%) and lua-json (+0.69%),
+  where the smaller engine beats the lost residency outright (code)
