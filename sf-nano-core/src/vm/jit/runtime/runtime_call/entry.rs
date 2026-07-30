@@ -154,7 +154,7 @@ fn call_runtime_by_local_index(
     args_region: RuntimeCallFrameRegion,
     results_region: RuntimeCallFrameRegion,
 ) -> Result<NativeCallStatus, WasmError> {
-    let mut target = current_store_access(ctx)?;
+    let mut target = runtime::current_store_access(ctx)?;
     invoke_runtime_target(
         ctx,
         frame,
@@ -206,7 +206,7 @@ fn call_runtime_by_handle(
     };
 
     let mut target = if owner_id == caller_id {
-        current_store_access(ctx)?
+        runtime::current_store_access(ctx)?
     } else {
         let token = caller_handle
             .checkout(owner_id)
@@ -387,38 +387,6 @@ fn invoke_runtime_target(
     }
 
     Ok(NativeCallStatus::Ok)
-}
-
-fn current_store_access(ctx: &NativeContext) -> Result<StoreAccess<'static>, WasmError> {
-    let store_ptr = ctx.store;
-    let (handle, id) = {
-        let store = ctx
-            .store()
-            .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
-        (
-            store.instance_handle().clone(),
-            store.instance_handle().self_id(),
-        )
-    };
-    if let Some(token) = handle.checkout(id) {
-        return Ok(StoreAccess::checked_out(token));
-    }
-
-    if let Some(table) = handle.table() {
-        if table.in_use(id) != Some(0) {
-            return Err(internal_error(
-                "runtime-call current instance checkout failed",
-            ));
-        }
-    }
-
-    // A live native context keeps the current store alive. An occupied store
-    // has an outer checkout for the active evaluation, so a failed self
-    // checkout with the reserved generation still unused means this is the
-    // unpublished, vacant-slot initialization path. Tests may use a standalone
-    // store whose weak table handle has already expired; their owning Box
-    // provides the same liveness guarantee for this call.
-    Ok(unsafe { StoreAccess::<'static>::initializing_raw(store_ptr, id) })
 }
 
 /// Validate a host-throw payload against the tag signature. A mismatch means

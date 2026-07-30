@@ -7,17 +7,20 @@ use crate::{
     vm::{
         entities::{MemInst, TableInst},
         jit::arch::backend_config,
+        jit::gc_heap::GcRef,
         jit::gc_type_check::check_ref_type_match,
         jit::runtime::{
+            self,
             common::{internal_error, trap_error},
             context::{NativeContext, PendingEscape},
+            StoreAccess,
         },
         jit::store::Store,
         jit::value_encoding::{
             absolutize, machine_raw_to_ref, ref_to_machine_raw, retag_for_container,
             try_machine_raw_to_value_in_store, value_to_machine_raw_in_store,
         },
-        link::RefRegistryEntry,
+        link::{InstanceId, RefRegistryEntry},
         tag::TagHandle,
         value::RefHandle,
         value::Value,
@@ -486,10 +489,60 @@ fn struct_field_storage(
         .ok_or_else(|| internal_error("preserved helper referenced invalid field index"))
 }
 
-fn resolve_struct_ref(
-    store: &Store,
-    handle: RefHandle,
-) -> Result<(*mut Store, crate::vm::jit::gc_heap::GcRef), WasmError> {
+struct ResolvedGcRef {
+    access: StoreAccess<'static>,
+    gc_ref: GcRef,
+}
+
+impl ResolvedGcRef {
+    #[inline]
+    fn owner(&self) -> InstanceId {
+        self.access.id()
+    }
+
+    #[inline]
+    fn with_store<R>(
+        &self,
+        use_store: impl for<'store> FnOnce(&'store Store) -> Result<R, WasmError>,
+    ) -> Result<R, WasmError> {
+        self.access.with_store(use_store)?
+    }
+
+    #[inline]
+    fn with_store_mut<R>(
+        &mut self,
+        use_store: impl for<'store> FnOnce(&'store mut Store) -> Result<R, WasmError>,
+    ) -> Result<R, WasmError> {
+        self.access.with_store_mut(use_store)?
+    }
+}
+
+fn gc_store_access(
+    ctx: &NativeContext,
+    owner: InstanceId,
+    invalid_ref: &'static str,
+) -> Result<StoreAccess<'static>, WasmError> {
+    let (current_id, instance_handle) = {
+        let current = current_store(ctx)?;
+        (
+            current.instance_handle().self_id(),
+            current.instance_handle().clone(),
+        )
+    };
+    if owner == current_id {
+        return runtime::current_store_access(ctx);
+    }
+
+    let token = instance_handle
+        .checkout(owner)
+        .ok_or_else(|| trap_error(invalid_ref))?;
+    if token.jit_pointer().is_none() {
+        return Err(trap_error(invalid_ref));
+    }
+    Ok(StoreAccess::checked_out(token))
+}
+
+fn resolve_struct_ref(ctx: &NativeContext, handle: RefHandle) -> Result<ResolvedGcRef, WasmError> {
     if handle.is_null() {
         return Err(trap_error("null structure reference"));
     }
@@ -497,10 +550,14 @@ fn resolve_struct_ref(
         return Err(trap_error("invalid structure reference"));
     }
 
-    match store.ref_entry_for_handle(handle) {
-        Some(RefRegistryEntry::Gc { store, gc_ref }) => Ok((store, gc_ref)),
-        _ => Err(trap_error("invalid structure reference")),
-    }
+    let (owner, gc_ref) = match current_store(ctx)?.ref_entry_for_handle(handle) {
+        Some(RefRegistryEntry::Gc { owner, gc_ref }) => (owner, gc_ref),
+        _ => return Err(trap_error("invalid structure reference")),
+    };
+    Ok(ResolvedGcRef {
+        access: gc_store_access(ctx, owner, "invalid structure reference")?,
+        gc_ref,
+    })
 }
 
 fn extend_packed_field(value: Value, storage: StorageType, signed: bool) -> Value {
@@ -586,10 +643,7 @@ fn value_from_data_bytes(storage: StorageType, bytes: &[u8]) -> Result<Value, Wa
     })
 }
 
-fn resolve_array_ref(
-    store: &Store,
-    handle: RefHandle,
-) -> Result<(*mut Store, crate::vm::jit::gc_heap::GcRef), WasmError> {
+fn resolve_array_ref(ctx: &NativeContext, handle: RefHandle) -> Result<ResolvedGcRef, WasmError> {
     if handle.is_null() {
         return Err(trap_error("null array reference"));
     }
@@ -597,10 +651,14 @@ fn resolve_array_ref(
         return Err(trap_error("invalid array reference"));
     }
 
-    match store.ref_entry_for_handle(handle) {
-        Some(RefRegistryEntry::Gc { store, gc_ref }) => Ok((store, gc_ref)),
-        _ => Err(trap_error("invalid array reference")),
-    }
+    let (owner, gc_ref) = match current_store(ctx)?.ref_entry_for_handle(handle) {
+        Some(RefRegistryEntry::Gc { owner, gc_ref }) => (owner, gc_ref),
+        _ => return Err(trap_error("invalid array reference")),
+    };
+    Ok(ResolvedGcRef {
+        access: gc_store_access(ctx, owner, "invalid array reference")?,
+        gc_ref,
+    })
 }
 
 pub(super) fn do_struct_get(
@@ -610,28 +668,26 @@ pub(super) fn do_struct_get(
     raw_ref: u64,
     signed: Option<bool>,
 ) -> Result<u64, WasmError> {
-    let (storage, value) = {
-        let current = current_store(ctx)?;
-        let storage = struct_field_storage(current, type_idx, field_idx)?;
-        let handle = ref_from_machine(raw_ref);
-        let (origin_store_ptr, gc_ref) = resolve_struct_ref(current, handle)?;
-        let origin_store = unsafe { origin_store_ptr.as_ref() }
-            .ok_or_else(|| internal_error("struct ref points to missing store"))?;
-        let value = origin_store
-            .gc_heap()
-            .borrow()
+    let storage = struct_field_storage(current_store(ctx)?, type_idx, field_idx)?;
+    let origin = resolve_struct_ref(ctx, ref_from_machine(raw_ref))?;
+    let gc_ref = origin.gc_ref;
+    let value = origin.with_store(|origin_store| {
+        let gc_heap = origin_store.gc_heap().borrow();
+        let value = gc_heap
             .get_struct(gc_ref)
             .map_err(|_| trap_error("invalid structure reference"))?
             .fields
             .get(field_idx as usize)
             .copied()
             .ok_or_else(|| internal_error("preserved helper referenced invalid struct field"))?;
-        (storage, value)
-    };
+        Ok(value)
+    })?;
     let value = match signed {
         Some(is_signed) => extend_packed_field(value, storage, is_signed),
         None => value,
     };
+    // GC fields are absolute Values. The origin scope is closed before the
+    // value is localized into the current instance's frame representation.
     Ok(value_to_machine(current_store_mut(ctx)?, value))
 }
 
@@ -643,28 +699,23 @@ pub(super) fn do_struct_set(
     raw_value: u64,
 ) -> Result<(), WasmError> {
     let handle = ref_from_machine(raw_ref);
-    let (storage, origin_ref) = {
-        let current = current_store(ctx)?;
-        (
-            struct_field_storage(current, type_idx, field_idx)?,
-            resolve_struct_ref(current, handle)?,
-        )
-    };
-    let (origin_store_ptr, gc_ref) = origin_ref;
+    let storage = struct_field_storage(current_store(ctx)?, type_idx, field_idx)?;
     let value = value_from_machine(ctx, raw_value, storage.to_valtype())?;
-    let origin_store = unsafe { origin_store_ptr.as_mut() }
-        .ok_or_else(|| internal_error("struct ref points to missing store"))?;
-    let mut gc_heap = origin_store.gc_heap().borrow_mut();
-    let gc_struct = gc_heap
-        .get_struct_mut(gc_ref)
-        .map_err(|_| trap_error("invalid structure reference"))?;
-    let Some(field) = gc_struct.fields.get_mut(field_idx as usize) else {
-        return Err(internal_error(
-            "preserved helper referenced invalid struct field",
-        ));
-    };
-    *field = value;
-    Ok(())
+    let mut origin = resolve_struct_ref(ctx, handle)?;
+    let gc_ref = origin.gc_ref;
+    origin.with_store_mut(|origin_store| {
+        let mut gc_heap = origin_store.gc_heap().borrow_mut();
+        let gc_struct = gc_heap
+            .get_struct_mut(gc_ref)
+            .map_err(|_| trap_error("invalid structure reference"))?;
+        let Some(field) = gc_struct.fields.get_mut(field_idx as usize) else {
+            return Err(internal_error(
+                "preserved helper referenced invalid struct field",
+            ));
+        };
+        *field = value;
+        Ok(())
+    })
 }
 
 pub(super) fn do_array_new_default(
@@ -737,45 +788,41 @@ pub(super) fn do_array_get(
     raw_index: u64,
     signed: Option<bool>,
 ) -> Result<u64, WasmError> {
-    let (storage, value) = {
-        let current = current_store(ctx)?;
-        let storage = array_element_storage(current, type_idx)?;
-        let handle = ref_from_machine(raw_ref);
-        let (origin_store_ptr, gc_ref) = resolve_array_ref(current, handle)?;
-        let index = raw_index as u32 as usize;
-        let origin_store = unsafe { origin_store_ptr.as_ref() }
-            .ok_or_else(|| internal_error("array ref points to missing store"))?;
-        let value = origin_store
-            .gc_heap()
-            .borrow()
+    let storage = array_element_storage(current_store(ctx)?, type_idx)?;
+    let origin = resolve_array_ref(ctx, ref_from_machine(raw_ref))?;
+    let gc_ref = origin.gc_ref;
+    let index = raw_index as u32 as usize;
+    let value = origin.with_store(|origin_store| {
+        let gc_heap = origin_store.gc_heap().borrow();
+        let value = gc_heap
             .get_array(gc_ref)
             .map_err(|_| trap_error("invalid array reference"))?
             .elements
             .get(index)
             .copied()
             .ok_or_else(|| trap_error("array element index out of bounds"))?;
-        (storage, value)
-    };
+        Ok(value)
+    })?;
     let value = match signed {
         Some(is_signed) => extend_packed_field(value, storage, is_signed),
         None => value,
     };
+    // As for struct.get, localize only after the absolute GC value has left
+    // the origin materialization scope.
     Ok(value_to_machine(current_store_mut(ctx)?, value))
 }
 
 pub(super) fn do_array_len(ctx: &NativeContext, raw_ref: u64) -> Result<u64, WasmError> {
-    let current = current_store(ctx)?;
-    let handle = ref_from_machine(raw_ref);
-    let (origin_store_ptr, gc_ref) = resolve_array_ref(current, handle)?;
-    let origin_store = unsafe { origin_store_ptr.as_ref() }
-        .ok_or_else(|| internal_error("array ref points to missing store"))?;
-    let len = origin_store
-        .gc_heap()
-        .borrow()
-        .get_array(gc_ref)
-        .map_err(|_| trap_error("invalid array reference"))?
-        .elements
-        .len();
+    let origin = resolve_array_ref(ctx, ref_from_machine(raw_ref))?;
+    let gc_ref = origin.gc_ref;
+    let len = origin.with_store(|origin_store| {
+        let gc_heap = origin_store.gc_heap().borrow();
+        Ok(gc_heap
+            .get_array(gc_ref)
+            .map_err(|_| trap_error("invalid array reference"))?
+            .elements
+            .len())
+    })?;
     Ok(len as u32 as u64)
 }
 
@@ -788,26 +835,21 @@ pub(super) fn do_array_set(
 ) -> Result<(), WasmError> {
     let handle = ref_from_machine(raw_ref);
     let index = raw_index as u32 as usize;
-    let (storage, origin_ref) = {
-        let current = current_store(ctx)?;
-        (
-            array_element_storage(current, type_idx)?,
-            resolve_array_ref(current, handle)?,
-        )
-    };
-    let (origin_store_ptr, gc_ref) = origin_ref;
+    let storage = array_element_storage(current_store(ctx)?, type_idx)?;
     let value = value_from_machine(ctx, raw_value, storage.to_valtype())?;
-    let origin_store = unsafe { origin_store_ptr.as_mut() }
-        .ok_or_else(|| internal_error("array ref points to missing store"))?;
-    let mut gc_heap = origin_store.gc_heap().borrow_mut();
-    let gc_array = gc_heap
-        .get_array_mut(gc_ref)
-        .map_err(|_| trap_error("invalid array reference"))?;
-    let Some(element) = gc_array.elements.get_mut(index) else {
-        return Err(trap_error("array element index out of bounds"));
-    };
-    *element = value;
-    Ok(())
+    let mut origin = resolve_array_ref(ctx, handle)?;
+    let gc_ref = origin.gc_ref;
+    origin.with_store_mut(|origin_store| {
+        let mut gc_heap = origin_store.gc_heap().borrow_mut();
+        let gc_array = gc_heap
+            .get_array_mut(gc_ref)
+            .map_err(|_| trap_error("invalid array reference"))?;
+        let Some(element) = gc_array.elements.get_mut(index) else {
+            return Err(trap_error("array element index out of bounds"));
+        };
+        *element = value;
+        Ok(())
+    })
 }
 
 pub(super) fn do_array_new_fixed(
@@ -856,26 +898,21 @@ pub(super) fn do_array_fill(
     let handle = ref_from_machine(raw_ref);
     let index = raw_index as u32 as usize;
     let len = raw_len as u32 as usize;
-    let (storage, origin_ref) = {
-        let current = current_store(ctx)?;
-        (
-            array_element_storage(current, type_idx)?,
-            resolve_array_ref(current, handle)?,
-        )
-    };
-    let (origin_store_ptr, gc_ref) = origin_ref;
+    let storage = array_element_storage(current_store(ctx)?, type_idx)?;
     let value = value_from_machine(ctx, raw_value, storage.to_valtype())?;
-    let origin_store = unsafe { origin_store_ptr.as_mut() }
-        .ok_or_else(|| internal_error("array ref points to missing store"))?;
-    let mut gc_heap = origin_store.gc_heap().borrow_mut();
-    let gc_array = gc_heap
-        .get_array_mut(gc_ref)
-        .map_err(|_| trap_error("invalid array reference"))?;
-    if index.saturating_add(len) > gc_array.elements.len() {
-        return Err(trap_error("array element index out of bounds"));
-    }
-    gc_array.elements[index..index + len].fill(value);
-    Ok(())
+    let mut origin = resolve_array_ref(ctx, handle)?;
+    let gc_ref = origin.gc_ref;
+    origin.with_store_mut(|origin_store| {
+        let mut gc_heap = origin_store.gc_heap().borrow_mut();
+        let gc_array = gc_heap
+            .get_array_mut(gc_ref)
+            .map_err(|_| trap_error("invalid array reference"))?;
+        if index.saturating_add(len) > gc_array.elements.len() {
+            return Err(trap_error("array element index out of bounds"));
+        }
+        gc_array.elements[index..index + len].fill(value);
+        Ok(())
+    })
 }
 
 pub(super) fn do_array_copy(
@@ -888,36 +925,35 @@ pub(super) fn do_array_copy(
     raw_src_index: u64,
     raw_len: u64,
 ) -> Result<(), WasmError> {
-    let current = current_store(ctx)?;
     let dst_handle = ref_from_machine(raw_dst_ref);
     let src_handle = ref_from_machine(raw_src_ref);
     let dst_index = raw_dst_index as u32 as usize;
     let src_index = raw_src_index as u32 as usize;
     let len = raw_len as u32 as usize;
-    let (dst_store_ptr, dst_gc_ref) = resolve_array_ref(current, dst_handle)?;
-    let (src_store_ptr, src_gc_ref) = resolve_array_ref(current, src_handle)?;
+    let mut dst = resolve_array_ref(ctx, dst_handle)?;
+    let src = resolve_array_ref(ctx, src_handle)?;
+    let dst_gc_ref = dst.gc_ref;
+    let src_gc_ref = src.gc_ref;
 
-    if dst_store_ptr == src_store_ptr && dst_gc_ref == src_gc_ref {
-        let origin_store = unsafe { dst_store_ptr.as_mut() }
-            .ok_or_else(|| internal_error("array ref points to missing store"))?;
-        let mut gc_heap = origin_store.gc_heap().borrow_mut();
-        let gc_array = gc_heap
-            .get_array_mut(dst_gc_ref)
-            .map_err(|_| trap_error("invalid array reference"))?;
-        if src_index.saturating_add(len) > gc_array.elements.len()
-            || dst_index.saturating_add(len) > gc_array.elements.len()
-        {
-            return Err(trap_error("array element index out of bounds"));
-        }
-        gc_array
-            .elements
-            .copy_within(src_index..src_index + len, dst_index);
-        return Ok(());
+    if dst.owner() == src.owner() && dst_gc_ref == src_gc_ref {
+        return dst.with_store_mut(|origin_store| {
+            let mut gc_heap = origin_store.gc_heap().borrow_mut();
+            let gc_array = gc_heap
+                .get_array_mut(dst_gc_ref)
+                .map_err(|_| trap_error("invalid array reference"))?;
+            if src_index.saturating_add(len) > gc_array.elements.len()
+                || dst_index.saturating_add(len) > gc_array.elements.len()
+            {
+                return Err(trap_error("array element index out of bounds"));
+            }
+            gc_array
+                .elements
+                .copy_within(src_index..src_index + len, dst_index);
+            Ok(())
+        });
     }
 
-    let copied = {
-        let src_store = unsafe { src_store_ptr.as_ref() }
-            .ok_or_else(|| internal_error("array ref points to missing store"))?;
+    let copied = src.with_store(|src_store| {
         let gc_heap = src_store.gc_heap().borrow();
         let src_array = gc_heap
             .get_array(src_gc_ref)
@@ -925,20 +961,20 @@ pub(super) fn do_array_copy(
         if src_index.saturating_add(len) > src_array.elements.len() {
             return Err(trap_error("array element index out of bounds"));
         }
-        src_array.elements[src_index..src_index + len].to_vec()
-    };
+        Ok(src_array.elements[src_index..src_index + len].to_vec())
+    })?;
 
-    let dst_store = unsafe { dst_store_ptr.as_mut() }
-        .ok_or_else(|| internal_error("array ref points to missing store"))?;
-    let mut gc_heap = dst_store.gc_heap().borrow_mut();
-    let dst_array = gc_heap
-        .get_array_mut(dst_gc_ref)
-        .map_err(|_| trap_error("invalid array reference"))?;
-    if dst_index.saturating_add(len) > dst_array.elements.len() {
-        return Err(trap_error("array element index out of bounds"));
-    }
-    dst_array.elements[dst_index..dst_index + len].copy_from_slice(&copied);
-    Ok(())
+    dst.with_store_mut(|dst_store| {
+        let mut gc_heap = dst_store.gc_heap().borrow_mut();
+        let dst_array = gc_heap
+            .get_array_mut(dst_gc_ref)
+            .map_err(|_| trap_error("invalid array reference"))?;
+        if dst_index.saturating_add(len) > dst_array.elements.len() {
+            return Err(trap_error("array element index out of bounds"));
+        }
+        dst_array.elements[dst_index..dst_index + len].copy_from_slice(&copied);
+        Ok(())
+    })
 }
 
 pub(super) fn do_array_init_data(
@@ -954,21 +990,20 @@ pub(super) fn do_array_init_data(
     let dst_index = raw_dst_index as u32 as usize;
     let src_index = raw_src_index as u32 as usize;
     let len = raw_len as u32 as usize;
-    let (origin_ref, values) = {
-        let current = current_store(ctx)?;
-        let storage = array_element_storage(current, type_idx)?;
-        let elem_size = data_array_element_size(storage)?;
-        let origin_ref = resolve_array_ref(current, handle)?;
-        let (origin_store_ptr, gc_ref) = origin_ref;
-        let origin_store = unsafe { origin_store_ptr.as_ref() }
-            .ok_or_else(|| internal_error("array ref points to missing store"))?;
-        let array_len = origin_store
-            .gc_heap()
-            .borrow()
+    let storage = array_element_storage(current_store(ctx)?, type_idx)?;
+    let elem_size = data_array_element_size(storage)?;
+    let mut origin = resolve_array_ref(ctx, handle)?;
+    let gc_ref = origin.gc_ref;
+    let array_len = origin.with_store(|origin_store| {
+        let gc_heap = origin_store.gc_heap().borrow();
+        Ok(gc_heap
             .get_array(gc_ref)
             .map_err(|_| trap_error("invalid array reference"))?
             .elements
-            .len();
+            .len())
+    })?;
+    let values = {
+        let current = current_store(ctx)?;
         let module = current.module();
         let data = module
             .data
@@ -1003,17 +1038,16 @@ pub(super) fn do_array_init_data(
                 &data.bytes[start..start + elem_size],
             )?);
         }
-        (origin_ref, values)
+        values
     };
-    let (origin_store_ptr, gc_ref) = origin_ref;
-    let origin_store = unsafe { origin_store_ptr.as_mut() }
-        .ok_or_else(|| internal_error("array ref points to missing store"))?;
-    let mut gc_heap = origin_store.gc_heap().borrow_mut();
-    let dst_array = gc_heap
-        .get_array_mut(gc_ref)
-        .map_err(|_| trap_error("invalid array reference"))?;
-    dst_array.elements[dst_index..dst_index + len].copy_from_slice(&values);
-    Ok(())
+    origin.with_store_mut(|origin_store| {
+        let mut gc_heap = origin_store.gc_heap().borrow_mut();
+        let dst_array = gc_heap
+            .get_array_mut(gc_ref)
+            .map_err(|_| trap_error("invalid array reference"))?;
+        dst_array.elements[dst_index..dst_index + len].copy_from_slice(&values);
+        Ok(())
+    })
 }
 
 pub(super) fn do_array_new_data(
@@ -1078,27 +1112,26 @@ pub(super) fn do_array_init_elem(
     let dst_index = raw_dst_index as u32 as usize;
     let src_index = raw_src_index as u32 as usize;
     let len = raw_len as u32 as usize;
-    let (origin_ref, values) = {
-        let current = current_store(ctx)?;
-        let element_ref_type = match array_element_field(current, type_idx)?.storage {
-            StorageType::Val(ValueType::Ref(ref_type)) => ref_type,
-            _ => {
-                return Err(internal_error(
-                    "preserved helper expected a reference array element type",
-                ));
-            }
-        };
-        let origin_ref = resolve_array_ref(current, handle)?;
-        let (origin_store_ptr, gc_ref) = origin_ref;
-        let origin_store = unsafe { origin_store_ptr.as_ref() }
-            .ok_or_else(|| internal_error("array ref points to missing store"))?;
-        let array_len = origin_store
-            .gc_heap()
-            .borrow()
+    let element_ref_type = match array_element_field(current_store(ctx)?, type_idx)?.storage {
+        StorageType::Val(ValueType::Ref(ref_type)) => ref_type,
+        _ => {
+            return Err(internal_error(
+                "preserved helper expected a reference array element type",
+            ));
+        }
+    };
+    let mut origin = resolve_array_ref(ctx, handle)?;
+    let gc_ref = origin.gc_ref;
+    let array_len = origin.with_store(|origin_store| {
+        let gc_heap = origin_store.gc_heap().borrow();
+        Ok(gc_heap
             .get_array(gc_ref)
             .map_err(|_| trap_error("invalid array reference"))?
             .elements
-            .len();
+            .len())
+    })?;
+    let values = {
+        let current = current_store(ctx)?;
         let module = current.module();
         let elem = module
             .elements
@@ -1125,17 +1158,16 @@ pub(super) fn do_array_init_elem(
         for handle in &elem.refs[src_index..src_index + len] {
             values.push(Value::Ref(*handle, element_ref_type));
         }
-        (origin_ref, values)
+        values
     };
-    let (origin_store_ptr, gc_ref) = origin_ref;
-    let origin_store = unsafe { origin_store_ptr.as_mut() }
-        .ok_or_else(|| internal_error("array ref points to missing store"))?;
-    let mut gc_heap = origin_store.gc_heap().borrow_mut();
-    let dst_array = gc_heap
-        .get_array_mut(gc_ref)
-        .map_err(|_| trap_error("invalid array reference"))?;
-    dst_array.elements[dst_index..dst_index + len].copy_from_slice(&values);
-    Ok(())
+    origin.with_store_mut(|origin_store| {
+        let mut gc_heap = origin_store.gc_heap().borrow_mut();
+        let dst_array = gc_heap
+            .get_array_mut(gc_ref)
+            .map_err(|_| trap_error("invalid array reference"))?;
+        dst_array.elements[dst_index..dst_index + len].copy_from_slice(&values);
+        Ok(())
+    })
 }
 
 pub(super) fn do_array_new_elem(

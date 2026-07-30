@@ -283,12 +283,11 @@ impl Store {
     }
 
     pub(crate) fn register_gc_ref(&mut self, gc_ref: GcRef) -> RefHandle {
-        let self_ptr = self as *mut Store;
         let idx = {
             let mut registry = self.ref_registry.borrow_mut();
             let idx = registry.len();
             registry.push(RefRegistryEntry::Gc {
-                store: self_ptr,
+                owner: self.instance_handle.self_id(),
                 gc_ref,
             });
             idx
@@ -313,23 +312,6 @@ impl Store {
     // Resolve a stored raw handle back into the concrete v128 payload.
     pub(crate) fn get_v128(&self, raw: u64) -> Option<[u8; 16]> {
         self.simd_registry.get(raw)
-    }
-}
-
-impl Drop for Store {
-    fn drop(&mut self) {
-        let self_ptr = self as *mut Store;
-        // GC handles still point into their owner's arena. Poison that pointer
-        // before the Store allocation disappears. Exception entries need no
-        // cleanup: their `Rc` owns the object independently of this Store.
-        for entry in self.ref_registry.borrow_mut().iter_mut() {
-            match entry {
-                RefRegistryEntry::Gc { store, .. } if *store == self_ptr => {
-                    *store = core::ptr::null_mut();
-                }
-                _ => {}
-            }
-        }
     }
 }
 

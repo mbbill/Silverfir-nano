@@ -35,9 +35,19 @@ pub(crate) fn check_ref_type_match(
                     | HeapType::Abstract(AbstractHeapType::Eq)
                     | HeapType::Abstract(AbstractHeapType::Any)
             )),
-            Some(RefRegistryEntry::Gc { store, gc_ref }) => {
-                let origin_store = unsafe { store.as_ref() }
-                    .ok_or_else(|| WasmError::internal("GC ref points to missing store".into()))?;
+            Some(RefRegistryEntry::Gc { owner, gc_ref }) => {
+                if owner == current_store.instance_handle().self_id() {
+                    return check_gc_ref_type(current_store, gc_ref, heap_type, current_store);
+                }
+                let owner = current_store
+                    .instance_handle()
+                    .checkout(owner)
+                    .ok_or_else(|| {
+                        WasmError::internal("GC ref points to missing instance".into())
+                    })?;
+                let origin_store = owner.jit().ok_or_else(|| {
+                    WasmError::internal("GC ref points to a non-JIT instance".into())
+                })?;
                 check_gc_ref_type(origin_store, gc_ref, heap_type, current_store)
             }
             Some(RefRegistryEntry::Exn(_)) => Ok(matches!(

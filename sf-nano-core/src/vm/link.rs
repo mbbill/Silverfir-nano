@@ -627,10 +627,10 @@ pub(crate) enum RefRegistryEntry {
     /// An `i31` payload interned by the JIT runtime's `ref.i31` helper.
     #[cfg(sf_jit)]
     I31(i32),
-    /// A GC object owned by a JIT `Store`'s heap. The raw pointer is nulled
-    /// by `Store::drop` when the owning store goes away.
+    /// A GC object owned by one JIT instance's heap. Consumers must checkout
+    /// the owner before materializing its `Store` and resolving `gc_ref`.
     #[cfg(sf_jit)]
-    Gc { store: *mut Store, gc_ref: GcRef },
+    Gc { owner: InstanceId, gc_ref: GcRef },
     /// Exception objects are registry-owned. Keeping the shared allocation
     /// here makes handles independent of the lifetime of the instance that
     /// originally allocated them.
@@ -957,13 +957,63 @@ mod instance_table_tests {
         assert_ne!(a_id, b_id);
 
         let mut first_a = table.checkout(a_id).expect("first A checkout");
-        let a_handle = {
+        let (a_handle, gc_handle) = {
             let a_store = first_a.jit_mut().expect("first A materialization");
             assert_eq!(a_store.instance_handle().self_id(), a_id);
-            a_store.instance_handle().clone()
+            let gc_ref = a_store
+                .gc_heap()
+                .borrow_mut()
+                .alloc_struct(37, collections::vec![Value::I32(0)]);
+            let gc_handle = a_store.register_gc_ref(gc_ref);
+            (a_store.instance_handle().clone(), gc_handle)
         };
         assert_eq!(table.in_use(a_id), Some(1));
         assert_eq!(table.in_use(b_id), Some(0));
+
+        let (gc_owner, gc_ref) = match registry
+            .ref_registry_shared()
+            .borrow()
+            .get(gc_handle.pooled_index().expect("pooled GC handle"))
+            .cloned()
+            .expect("registered GC entry")
+        {
+            RefRegistryEntry::Gc { owner, gc_ref } => (owner, gc_ref),
+            _ => panic!("GC handle resolved to a non-GC entry"),
+        };
+        assert_eq!(gc_owner, a_id);
+        {
+            let mut gc_owner_token = a_handle
+                .checkout(gc_owner)
+                .expect("GC owner checkout from registry identity");
+            {
+                let gc_owner_store = gc_owner_token.jit().expect("GC owner read materialization");
+                let gc_heap = gc_owner_store.gc_heap().borrow();
+                let gc_object = gc_heap
+                    .get_struct(gc_ref)
+                    .expect("GC object read materialization");
+                assert_eq!(gc_object.type_idx, 37);
+                assert_eq!(gc_object.fields.as_slice(), &[Value::I32(0)]);
+            }
+            {
+                let gc_owner_store = gc_owner_token
+                    .jit_mut()
+                    .expect("GC owner write materialization");
+                let mut gc_heap = gc_owner_store.gc_heap().borrow_mut();
+                let gc_object = gc_heap
+                    .get_struct_mut(gc_ref)
+                    .expect("GC object write materialization");
+                gc_object.fields[0] = Value::I32(0x1357_9bdf);
+            }
+            {
+                let gc_owner_store = gc_owner_token.jit().expect("GC owner rematerialization");
+                let gc_heap = gc_owner_store.gc_heap().borrow();
+                let gc_object = gc_heap
+                    .get_struct(gc_ref)
+                    .expect("GC object rematerialization");
+                assert_eq!(gc_object.fields.as_slice(), &[Value::I32(0x1357_9bdf)]);
+            }
+        }
+        assert_eq!(table.in_use(a_id), Some(1));
 
         let mut b = a_handle.checkout(b_id).expect("B checkout from A");
         let b_handle = {
@@ -1001,6 +1051,19 @@ mod instance_table_tests {
         table.free(b_id).expect("free Miri B");
         assert!(table.checkout(a_id).is_none());
         assert!(table.checkout(b_id).is_none());
+
+        let stale_owner = match registry
+            .ref_registry_shared()
+            .borrow()
+            .get(gc_handle.pooled_index().expect("pooled stale GC handle"))
+            .cloned()
+            .expect("stale GC entry remains registry-known")
+        {
+            RefRegistryEntry::Gc { owner, .. } => owner,
+            _ => panic!("stale GC handle resolved to a non-GC entry"),
+        };
+        assert_eq!(stale_owner, a_id);
+        assert!(table.checkout(stale_owner).is_none());
     }
 
     #[test]
