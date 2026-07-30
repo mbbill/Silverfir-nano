@@ -690,10 +690,10 @@ pub struct WastTestRunner {
     registered_as: HashMap<String, String>,
     module_definitions: HashMap<String, Vec<u8>>,
     function_registry: LinkRegistry,
-    /// Partially-instantiated JIT instances, kept alive so their
-    /// memories outlive a failed instantiation. The error type hands back
-    /// the JIT's own instance, not the engine-neutral one.
-    retained_failed_instances: Vec<sf_nano_core::JitInstance>,
+    /// Identities of partially-instantiated instances. The shared registry's
+    /// instance table owns their occupied slots; these ids record which
+    /// failures deliberately remain reachable.
+    retained_failed_instances: Vec<sf_nano_core::InstanceId>,
 }
 
 impl WastTestRunner {
@@ -1442,8 +1442,8 @@ impl WastTestRunner {
             Err(err) => {
                 let (partial, error) = err.into_parts();
                 if retain_partial {
-                    if let Some(instance) = partial {
-                        self.retained_failed_instances.push(instance);
+                    if let Some(id) = partial {
+                        self.retained_failed_instances.push(id);
                     }
                 }
                 Err(error)

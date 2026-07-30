@@ -30,6 +30,7 @@ use crate::value_type::{HeapType, ValueType};
 use crate::vm::engine::Engine;
 use crate::vm::entities::{Caller, FunctionInst, GlobalInst, HostCallback, MemInst, TableInst};
 use crate::vm::imports::*;
+use crate::vm::instance::InstanceInstantiationError;
 #[cfg(sf_jit)]
 use crate::vm::jit::entities::TableDispatchMode;
 use crate::vm::jit::entities::{
@@ -47,36 +48,6 @@ use crate::vm::value::{RefHandle, Value};
 
 pub struct JitInstance {
     lease: InstanceLease,
-}
-
-pub enum InstanceInstantiationError {
-    Complete(WasmError),
-    Partial {
-        instance: JitInstance,
-        error: WasmError,
-    },
-}
-
-impl From<WasmError> for InstanceInstantiationError {
-    fn from(error: WasmError) -> Self {
-        InstanceInstantiationError::Complete(error)
-    }
-}
-
-impl InstanceInstantiationError {
-    pub fn error(&self) -> &WasmError {
-        match self {
-            InstanceInstantiationError::Complete(error) => error,
-            InstanceInstantiationError::Partial { error, .. } => error,
-        }
-    }
-
-    pub fn into_parts(self) -> (Option<JitInstance>, WasmError) {
-        match self {
-            InstanceInstantiationError::Complete(error) => (None, error),
-            InstanceInstantiationError::Partial { instance, error } => (Some(instance), error),
-        }
-    }
 }
 
 #[derive(Clone, Copy)]
@@ -1044,10 +1015,10 @@ impl JitInstance {
 
         match init_result {
             Ok(()) => Ok(JitInstance { lease }),
-            Err(error) => Err(InstanceInstantiationError::Partial {
-                instance: JitInstance { lease },
-                error,
-            }),
+            Err(error) => {
+                let id = lease.into_occupied_id();
+                Err(InstanceInstantiationError::Partial { id, error })
+            }
         }
     }
 
