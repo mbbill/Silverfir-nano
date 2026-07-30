@@ -333,36 +333,37 @@ fn run_module(
 /// for -- the one place the CLI still asks which engine ran.
 #[cfg(feature = "interp")]
 fn print_interp_stats(instance: &sf_nano_core::Instance) {
-    let Some(inst) = instance.as_interp() else {
+    let Some(()) = instance.with_interp(|inst| {
+        let native = inst.dispatch_count();
+        if native > 0 && inst.dispatch_counting_enabled() {
+            eprintln!("[interp] native dispatches: {native}");
+        }
+        let code_len = inst.engine_code_len();
+        if code_len > 0 {
+            eprintln!(
+                "[interp] engine code: {code_len} bytes ({:.1} KB)",
+                code_len as f64 / 1024.0
+            );
+        }
+        let bigrams = inst.bigram_stats();
+        if !bigrams.is_empty() {
+            eprintln!("[interp] top fallthrough bigrams (static):");
+            for ((a, b), n) in bigrams.iter().take(16) {
+                eprintln!("[interp]   {a:?} -> {b:?}: {n}");
+            }
+        }
+        let slow = inst.slow_exit_stats();
+        if !slow.is_empty() {
+            let total: u64 = slow.iter().map(|(_, n)| n).sum();
+            eprintln!("[interp] slow exits: {total}");
+            for (op, n) in slow.iter().take(12) {
+                eprintln!("[interp]   {op:?}: {n}");
+            }
+        }
+    }) else {
         eprintln!("[interp] --interp-stats: this module ran on another engine");
         return;
     };
-    let native = inst.dispatch_count();
-    if native > 0 && inst.dispatch_counting_enabled() {
-        eprintln!("[interp] native dispatches: {native}");
-    }
-    let code_len = inst.engine_code_len();
-    if code_len > 0 {
-        eprintln!(
-            "[interp] engine code: {code_len} bytes ({:.1} KB)",
-            code_len as f64 / 1024.0
-        );
-    }
-    let bigrams = inst.bigram_stats();
-    if !bigrams.is_empty() {
-        eprintln!("[interp] top fallthrough bigrams (static):");
-        for ((a, b), n) in bigrams.iter().take(16) {
-            eprintln!("[interp]   {a:?} -> {b:?}: {n}");
-        }
-    }
-    let slow = inst.slow_exit_stats();
-    if !slow.is_empty() {
-        let total: u64 = slow.iter().map(|(_, n)| n).sum();
-        eprintln!("[interp] slow exits: {total}");
-        for (op, n) in slow.iter().take(12) {
-            eprintln!("[interp]   {op:?}: {n}");
-        }
-    }
 }
 
 fn print_usage(program_name: &str) {

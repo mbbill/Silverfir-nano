@@ -1126,9 +1126,8 @@ impl JitInstance {
     }
 
     fn checkout_for_invocation(&self) -> Result<InstanceToken, WasmError> {
-        let handle = { self.store().instance_handle().clone() };
-        handle
-            .checkout(handle.self_id())
+        self.lease
+            .checkout_again()
             .ok_or_else(|| WasmError::internal("JIT instance is no longer available"))
     }
 
