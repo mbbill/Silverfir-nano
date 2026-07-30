@@ -8,13 +8,12 @@ use crate::collections;
 
 use crate::{
     error::WasmError,
-    module::entities::FunctionSpec,
+    module::type_defs::FunctionType,
     vm::{
-        jit::result_buffer::ResultBuffer,
         jit::runtime::{
             code::NativeCode, collect_native_results_from_stack, context::NativeContext,
+            StoreAccess,
         },
-        jit::store::Store,
         jit::value_encoding::value_to_machine_raw_in_store,
         value::Value,
     },
@@ -31,14 +30,14 @@ use crate::vm::jit::runtime::trap_signal;
 use crate::vm::jit::debug::function_trace;
 
 pub(crate) fn eval(
-    spec: &FunctionSpec,
+    access: &mut StoreAccess<'_>,
+    local_index: u32,
+    func_type: &FunctionType,
     code: &NativeCode,
-    store: &mut Store,
     args: &[Value],
     backend: &'static str,
-) -> Result<ResultBuffer, WasmError> {
+) -> Result<crate::collections::Vec<Value>, WasmError> {
     let _ = backend;
-    let func_type = spec.func_type();
     if args.len() != func_type.params().len() {
         return Err(WasmError::invalid("invalid argument count"));
     }
@@ -53,60 +52,83 @@ pub(crate) fn eval(
     let entry = code
         .native_entry()
         .ok_or_else(|| WasmError::internal("native entry is missing finalized code"))?;
+    let store_ptr = access.store_pointer()?;
 
-    // Sized by the engine's configuration, which `Engine::new` already
-    // refused to leave unset.
-    let stack_bytes = store.config().get_wasm_stack_bytes();
-    #[cfg(sf_has_guard_pages)]
-    let max_frame_bytes = compiled.max_frame_bytes();
-    #[cfg(sf_has_guard_pages)]
-    let stack = match store.take_native_stack_cache() {
-        Some(stack) if stack.supports(stack_bytes, max_frame_bytes) => stack,
-        _ => {
-            crate::vm::jit::runtime::guard_pages::GuardPageStack::new(stack_bytes, max_frame_bytes)?
+    let prepared = access.with_store_mut(|store| {
+        if store.module().functions.get(local_index as usize).is_none() {
+            return Err(WasmError::internal(
+                "native entry function index is out of range",
+            ));
         }
-    };
-    #[cfg(sf_has_guard_pages)]
-    let stack_base = stack.base();
-    #[cfg(sf_has_guard_pages)]
-    let stack_end = stack.end();
-    #[cfg(sf_has_guard_pages)]
-    let stack_guard_end = stack.guard_end();
+        // Sized by the engine's configuration, which `Engine::new` already
+        // refused to leave unset.
+        let stack_bytes = store.config().get_wasm_stack_bytes();
+        #[cfg(sf_has_guard_pages)]
+        let max_frame_bytes = compiled.max_frame_bytes();
+        #[cfg(sf_has_guard_pages)]
+        let stack = match store.take_native_stack_cache() {
+            Some(stack) if stack.supports(stack_bytes, max_frame_bytes) => stack,
+            _ => crate::vm::jit::runtime::guard_pages::GuardPageStack::new(
+                stack_bytes,
+                max_frame_bytes,
+            )?,
+        };
+        #[cfg(sf_has_guard_pages)]
+        let stack_base = stack.base();
+        #[cfg(sf_has_guard_pages)]
+        let stack_end = stack.end();
+        #[cfg(sf_has_guard_pages)]
+        let stack_guard_end = stack.guard_end();
 
-    #[cfg(not(sf_has_guard_pages))]
-    let mut stack = {
-        let stack_slots = stack_bytes / core::mem::size_of::<u64>();
-        let mut stack = store
-            .take_native_stack_cache()
-            .unwrap_or_else(|| collections::vec![0u64; stack_slots]);
-        if stack.len() < stack_slots {
-            stack.resize(stack_slots, 0);
+        #[cfg(not(sf_has_guard_pages))]
+        let mut stack = {
+            let stack_slots = stack_bytes / core::mem::size_of::<u64>();
+            let mut stack = store
+                .take_native_stack_cache()
+                .unwrap_or_else(|| collections::vec![0u64; stack_slots]);
+            if stack.len() < stack_slots {
+                stack.resize(stack_slots, 0);
+            }
+            stack
+        };
+        #[cfg(not(sf_has_guard_pages))]
+        let stack_base = stack.as_mut_ptr();
+        #[cfg(not(sf_has_guard_pages))]
+        let stack_end = unsafe { stack_base.add(stack.len()) };
+
+        unsafe {
+            for (index, arg) in args.iter().enumerate() {
+                *stack_base.add(index) =
+                    value_to_machine_raw_in_store(*arg, compiled.backend().gp_unit_bytes, store);
+            }
+            // Note: zero-init of non-param locals is performed by the callee
+            // itself at function entry, only for slots flagged by the
+            // SsaProgram's `cell_info.reads_before_write` analysis.
         }
-        stack
-    };
-    #[cfg(not(sf_has_guard_pages))]
-    let stack_base = stack.as_mut_ptr();
-    #[cfg(not(sf_has_guard_pages))]
-    let stack_end = unsafe { stack_base.add(stack.len()) };
-
-    unsafe {
-        for (index, arg) in args.iter().enumerate() {
-            *stack_base.add(index) =
-                value_to_machine_raw_in_store(*arg, compiled.backend().gp_unit_bytes, store);
+        if let Err(error) = ensure_stack_capacity(stack_base, stack_end, runtime.total_frame_slots)
+        {
+            store.cache_native_stack(stack);
+            return Err(error);
         }
-        // Note: zero-init of non-param locals is performed by the callee
-        // itself at function entry, only for slots flagged by the SsaProgram's
-        // `cell_info.reads_before_write` analysis. The C entry path no
-        // longer needs to pre-zero the frame prefix.
-    }
-    if let Err(error) = ensure_stack_capacity(stack_base, stack_end, runtime.total_frame_slots) {
-        store.cache_native_stack(stack);
-        return Err(error);
-    }
 
-    let n_globals = store.module().globals.len();
-    let store_ptr = store as *mut Store;
-    let mut ctx = if let Some(mut ctx) = store.take_native_context_cache() {
+        let n_globals = store.module().globals.len();
+        let cached_ctx = store.take_native_context_cache();
+        Ok((
+            stack,
+            stack_base,
+            stack_end,
+            n_globals,
+            cached_ctx,
+            #[cfg(sf_has_guard_pages)]
+            stack_guard_end,
+        ))
+    })??;
+    #[cfg(sf_has_guard_pages)]
+    let (stack, stack_base, stack_end, n_globals, cached_ctx, stack_guard_end) = prepared;
+    #[cfg(not(sf_has_guard_pages))]
+    let (stack, stack_base, stack_end, n_globals, cached_ctx) = prepared;
+
+    let mut ctx = if let Some(mut ctx) = cached_ctx {
         ctx.prepare_for_invocation(store_ptr, stack_end);
         ctx
     } else {
@@ -124,7 +146,7 @@ pub(crate) fn eval(
     #[cfg(sf_call_trace)]
     {
         function_trace::init_from_env();
-        function_trace::native_root_entry(&mut ctx, spec, backend);
+        function_trace::native_root_entry(&mut ctx, local_index, backend);
     }
 
     #[cfg(sf_has_guard_pages)]
@@ -168,23 +190,27 @@ pub(crate) fn eval(
         }
 
         let out = unsafe {
-            collect_native_results_from_stack(
-                stack_base,
-                func_type.results(),
-                compiled.backend().gp_unit_bytes,
-                store,
-            )
-        }?;
+            access.with_store_mut(|store| {
+                collect_native_results_from_stack(
+                    stack_base,
+                    func_type.results(),
+                    compiled.backend().gp_unit_bytes,
+                    store,
+                )
+            })??
+        };
         #[cfg(sf_call_trace)]
         {
             let results_len = func_type.results().len();
             let results = unsafe { core::slice::from_raw_parts(stack_base, results_len) };
-            function_trace::native_root_exit(&mut ctx, spec, results);
+            function_trace::native_root_exit(&mut ctx, local_index, results);
         }
         Ok(out)
     })();
-    store.cache_native_context(ctx);
-    store.cache_native_stack(stack);
+    access.with_store_mut(|store| {
+        store.cache_native_context(ctx);
+        store.cache_native_stack(stack);
+    })?;
     result
 }
 

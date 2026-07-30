@@ -3,17 +3,16 @@ use tracked_alloc::rc::Rc;
 
 use crate::{
     error::WasmError,
-    module::entities::FunctionSpec,
+    module::{entities::FunctionSpec, type_defs::FunctionType},
     vm::{
         jit::backend::BackendConfig,
         jit::entities::ModuleInst,
         jit::machine::machine_ir::{MachineFuncId, MachineFunction},
-        jit::result_buffer::ResultBuffer,
         jit::runtime::{
             code::{CodegenModuleView, CompiledNativeModule, NativeCode, NativeRootEntry},
             code_buf::CodeBuffer,
+            StoreAccess,
         },
-        jit::store::Store,
         value::Value,
     },
 };
@@ -392,34 +391,35 @@ pub(crate) fn dispatch_emit_nop_padding(buf: &mut CodeBuffer, bytes: usize) {
 /// free of `sf_backend_*` cfgs.
 #[inline]
 pub(crate) fn dispatch_eval(
-    spec: &FunctionSpec,
+    access: &mut StoreAccess<'_>,
+    local_index: u32,
+    func_type: &FunctionType,
     code: &NativeCode,
-    store: &mut Store,
     args: &[Value],
-) -> Result<ResultBuffer, WasmError> {
+) -> Result<collections::Vec<Value>, WasmError> {
     let backend_name = active_native_backend_name();
     #[cfg(sf_backend_arm64)]
     {
-        common::eval::eval(spec, code, store, args, backend_name)
+        common::eval::eval(access, local_index, func_type, code, args, backend_name)
     }
     #[cfg(sf_backend_armv7a)]
     {
-        common::eval::eval(spec, code, store, args, backend_name)
+        common::eval::eval(access, local_index, func_type, code, args, backend_name)
     }
     #[cfg(sf_backend_thumbm)]
     {
-        common::eval::eval(spec, code, store, args, backend_name)
+        common::eval::eval(access, local_index, func_type, code, args, backend_name)
     }
     #[cfg(sf_backend_x64)]
     {
-        common::eval::eval(spec, code, store, args, backend_name)
+        common::eval::eval(access, local_index, func_type, code, args, backend_name)
     }
     #[cfg(sf_backend_riscv32)]
     {
-        common::eval::eval(spec, code, store, args, backend_name)
+        common::eval::eval(access, local_index, func_type, code, args, backend_name)
     }
     #[cfg(sf_backend_riscv64)]
     {
-        common::eval::eval(spec, code, store, args, backend_name)
+        common::eval::eval(access, local_index, func_type, code, args, backend_name)
     }
 }

@@ -290,25 +290,6 @@ pub(crate) fn try_raw_to_value_in_store(
     })
 }
 
-/// Normalize a machine-width raw frame slot into the host-width raw frame
-/// form used by `frame_owner`.
-///
-/// Both the input and output belong to the same instance's frame: the
-/// intermediate [`Value`] is absolute, while a reference in the returned raw
-/// slot is localized again for `frame_owner`.
-#[inline]
-pub(crate) fn normalize_machine_raw_in_store(
-    raw: RawValue,
-    value_type: ValueType,
-    gp_unit_bytes: u8,
-    store: &mut Store,
-) -> Result<RawValue, WasmError> {
-    Ok(value_to_raw_in_store(
-        try_machine_raw_to_value_in_store(raw, value_type, gp_unit_bytes, store)?,
-        store,
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;

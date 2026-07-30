@@ -137,7 +137,7 @@ impl Instance {
                 InterpInstance::new_partial_with_registry(
                     engine,
                     module,
-                    Some(InterpInstance::boxed_host(dispatch)),
+                    Some(InterpInstance::boxed_caller_host(dispatch)),
                     imports,
                     None,
                     registry,
@@ -228,7 +228,7 @@ impl Instance {
         match InterpInstance::new_partial_with_registry(
             engine,
             module,
-            Some(InterpInstance::boxed_host(dispatch)),
+            Some(InterpInstance::boxed_caller_host(dispatch)),
             imports,
             Some(funcref_host),
             registry,
@@ -688,18 +688,21 @@ impl RuntimeWorld {
         name: &str,
         args: &[Value],
     ) -> Result<collections::Vec<Value>, WasmError> {
-        let mut token = self
+        let token = self
             .registry
             .instance_table()
             .checkout(id)
             .ok_or_else(|| WasmError::invalid("unknown runtime-world instance"))?;
         #[cfg(sf_jit)]
-        if let Some(store) = token.jit_mut() {
-            return JitInstance::invoke_store(store, name, args);
+        if token.jit().is_some() {
+            return JitInstance::invoke_token(token, name, args);
         }
         #[cfg(sf_interp)]
-        if let Some(instance) = token.interp_mut() {
-            return interp_imports::invoke_by_name(instance, name, args);
+        {
+            let mut token = token;
+            if let Some(instance) = token.interp_mut() {
+                return interp_imports::invoke_by_name(instance, name, args);
+            }
         }
         Err(WasmError::invalid(
             "runtime-world instance has no enabled engine",

@@ -44,7 +44,8 @@ pub(super) fn bind(
     module: &Module,
     imports: &[Import],
 ) -> Result<
-    impl FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static,
+    impl for<'a> FnMut(&str, &str, &mut Caller<'a>, &[u64], &mut [u64]) -> Result<(), WasmError>
+        + 'static,
     WasmError,
 > {
     let mut bound: Vec<Bound> = Vec::new();
@@ -136,7 +137,7 @@ pub(super) fn bind(
     Ok(
         move |m: &str,
               n: &str,
-              mem: &mut [u8],
+              caller: &mut Caller<'_>,
               args: &[u64],
               results: &mut [u64]|
               -> Result<(), WasmError> {
@@ -154,8 +155,7 @@ pub(super) fn bind(
                 vresults.push(raw_to_value(*ty, 0)?);
             }
 
-            let mut caller = Caller::new(Some(mem));
-            entry.callback.call(&mut caller, &params, &mut vresults)?;
+            entry.callback.call(caller, &params, &mut vresults)?;
 
             for (dst, v) in results.iter_mut().zip(vresults.iter()) {
                 *dst = value_to_raw(v)?;

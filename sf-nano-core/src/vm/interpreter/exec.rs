@@ -27,7 +27,7 @@ use crate::module::Module;
 use crate::utils::limits::{Limitable, Limits};
 use crate::value_type::{AbstractHeapType, HeapType, RefType, ValueType};
 use crate::vm::engine::Engine;
-use crate::vm::entities::{GlobalInst, MemInst, TableInst};
+use crate::vm::entities::{Caller, GlobalInst, MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
 use crate::vm::link::{
     InstanceHandle, InstanceId, InstanceLease, LinkArenas, LinkRegistry, RefRegistryEntry,
@@ -112,8 +112,9 @@ fn configured_ret_records(stack_slots: usize) -> usize {
 ///
 /// The signature carries only std types (`&mut [u8]`, not this crate's
 /// tracked collections), so external callers stay feature-independent.
-pub(crate) type HostDispatch =
-    Box<dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError>>;
+pub(crate) type HostDispatch = Box<
+    dyn for<'a> FnMut(&str, &str, &mut Caller<'a>, &[u64], &mut [u64]) -> Result<(), WasmError>,
+>;
 
 /// How a reference to one of this instance's functions is named so another
 /// instance can call it, and how such a name is called back.
@@ -1600,8 +1601,32 @@ impl InterpInstance {
     where
         F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static,
     {
+        let mut host = host;
+        let wrapped = move |module: &str,
+                            name: &str,
+                            caller: &mut Caller<'_>,
+                            args: &[u64],
+                            results: &mut [u64]| {
+            let mut empty_memory = [];
+            let memory = caller.memory_mut().unwrap_or(&mut empty_memory);
+            host(module, name, memory, args, results)
+        };
+        Self::boxed_caller_host(wrapped)
+    }
+
+    pub(crate) fn boxed_caller_host<F>(host: F) -> HostDispatch
+    where
+        F: for<'a> FnMut(&str, &str, &mut Caller<'a>, &[u64], &mut [u64]) -> Result<(), WasmError>
+            + 'static,
+    {
         let host: alloc::boxed::Box<
-            dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError>,
+            dyn for<'a> FnMut(
+                &str,
+                &str,
+                &mut Caller<'a>,
+                &[u64],
+                &mut [u64],
+            ) -> Result<(), WasmError>,
         > = alloc::boxed::Box::new(host);
         tracked_alloc::box_from_alloc(host)
     }
@@ -1614,10 +1639,7 @@ impl InterpInstance {
     where
         F: FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError> + 'static,
     {
-        let host: alloc::boxed::Box<
-            dyn FnMut(&str, &str, &mut [u8], &[u64], &mut [u64]) -> Result<(), WasmError>,
-        > = alloc::boxed::Box::new(host);
-        self.host = Some(tracked_alloc::box_from_alloc(host));
+        self.host = Some(Self::boxed_host(host));
     }
 
     /// Resolve the element-segment function value at `seg[k]`.
@@ -2188,6 +2210,16 @@ impl InterpInstance {
         args: &[u64],
         results: &mut [u64],
     ) -> Result<(), WasmError> {
+        if self
+            .memories
+            .iter()
+            .any(|memory| memory.inst.host_callback_borrowed())
+        {
+            return Err(WasmError::trap(
+                "linear memory is borrowed by a host callback",
+            ));
+        }
+
         // Borrow the instance's buffers for the duration. A host callback
         // that calls back into this same instance finds them taken and
         // allocates its own pair, so re-entry stays correct without the
@@ -2610,11 +2642,9 @@ impl InterpInstance {
                 );
             }
         }
-        let mem0 = memories
-            .first_mut()
-            .map(|m| m.bytes_mut())
-            .unwrap_or(&mut []);
-        host(mod_name, field, mem0, &args, &mut results[..r])?;
+        let memory = memories.first().map(|memory| memory.inst.clone());
+        let mut caller = Caller::from_shared_memory(memory);
+        host(mod_name, field, &mut caller, &args, &mut results[..r])?;
         for (result, &value_type) in results[..r].iter_mut().zip(func_type.results()) {
             if value_type_is_function_ref(module, value_type) {
                 *result = localize_slot_with(published, *result);

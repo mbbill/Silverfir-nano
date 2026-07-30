@@ -7,11 +7,12 @@
 
 use crate::error::WasmError;
 use crate::value_type::ValueType;
-use crate::vm::entities::FunctionInst;
-use crate::vm::jit::result_buffer::ResultBuffer;
 use crate::vm::jit::store::Store;
-use crate::vm::jit::value_encoding::normalize_machine_raw_in_store;
+use crate::vm::jit::value_encoding::try_machine_raw_to_value_in_store;
+use crate::vm::link::{InstanceId, InstanceToken};
 use crate::vm::value::Value;
+use core::marker::PhantomData;
+use core::ptr::NonNull;
 
 pub(crate) mod code;
 pub(crate) mod code_buf;
@@ -30,14 +31,140 @@ pub(crate) mod trap_signal;
 
 mod native_eval;
 
-/// Run one function through the native engine.
+/// Scoped access to the store whose function is currently being evaluated.
+///
+/// An occupied instance carries its checkout token across calls. During
+/// instantiation the slot is deliberately vacant, so the unpublished boxed
+/// store is represented by a stable pointer tied to the caller's exclusive
+/// borrow instead. Neither variant exposes a store reference beyond a
+/// `with_store` closure.
+pub(crate) enum StoreAccess<'a> {
+    CheckedOut(InstanceToken),
+    Initializing {
+        pointer: NonNull<Store>,
+        id: InstanceId,
+        lifetime: PhantomData<&'a mut Store>,
+    },
+}
+
+impl StoreAccess<'static> {
+    #[inline]
+    pub(crate) fn checked_out(token: InstanceToken) -> Self {
+        Self::CheckedOut(token)
+    }
+}
+
+impl<'a> StoreAccess<'a> {
+    /// Recreate the initializing capability inside a native runtime call.
+    ///
+    /// # Safety
+    ///
+    /// `pointer` must identify a live, stable store for the lifetime of the
+    /// returned capability, and no store materialization may be live when
+    /// this capability is constructed. Production callers use this for the
+    /// unpublished initializing store; standalone runtime tests provide the
+    /// same guarantees through their owning box.
+    #[inline]
+    pub(crate) unsafe fn initializing_raw(pointer: *mut Store, id: InstanceId) -> Self {
+        Self::Initializing {
+            pointer: NonNull::new(pointer).expect("initializing store pointer must be non-null"),
+            id,
+            lifetime: PhantomData,
+        }
+    }
+
+    #[inline]
+    pub(crate) const fn id(&self) -> InstanceId {
+        match self {
+            Self::CheckedOut(token) => token.id(),
+            Self::Initializing { id, .. } => *id,
+        }
+    }
+
+    /// Return the capability's stable pointer without materializing a store.
+    #[inline]
+    pub(crate) fn store_pointer(&self) -> Result<*mut Store, WasmError> {
+        match self {
+            Self::CheckedOut(token) => token
+                .jit_pointer()
+                .ok_or_else(|| WasmError::internal("instance is not a JIT store")),
+            Self::Initializing { pointer, .. } => Ok(pointer.as_ptr()),
+        }
+    }
+
+    /// Materialize for one non-reentrant read scope.
+    ///
+    /// The closure must not invoke guest code, call a host callback, or
+    /// return a pointer derived from the store for later dereference.
+    #[inline]
+    pub(crate) fn with_store<R>(
+        &self,
+        use_store: impl for<'store> FnOnce(&'store Store) -> R,
+    ) -> Result<R, WasmError> {
+        let store = match self {
+            Self::CheckedOut(token) => token
+                .jit()
+                .ok_or_else(|| WasmError::internal("instance is not a JIT store"))?,
+            Self::Initializing { pointer, .. } => unsafe { pointer.as_ref() },
+        };
+        Ok(use_store(store))
+    }
+
+    /// Materialize for one non-reentrant mutation scope.
+    ///
+    /// The closure must not invoke guest code, call a host callback, or
+    /// return a pointer derived from the store for later dereference.
+    #[inline]
+    pub(crate) fn with_store_mut<R>(
+        &mut self,
+        use_store: impl for<'store> FnOnce(&'store mut Store) -> R,
+    ) -> Result<R, WasmError> {
+        let store = match self {
+            Self::CheckedOut(token) => token
+                .jit_mut()
+                .ok_or_else(|| WasmError::internal("instance is not a JIT store"))?,
+            Self::Initializing { pointer, .. } => unsafe { pointer.as_mut() },
+        };
+        Ok(use_store(store))
+    }
+}
+
+/// Run one function in an occupied instance through the native engine.
 #[inline]
 pub(crate) fn eval(
-    func_inst: &FunctionInst,
-    store: &mut Store,
+    token: InstanceToken,
+    local_index: u32,
     args: &[Value],
-) -> Result<ResultBuffer, WasmError> {
-    native_eval::eval(func_inst, store, args)
+) -> Result<crate::collections::Vec<Value>, WasmError> {
+    let mut access = StoreAccess::checked_out(token);
+    eval_access(&mut access, local_index, args)
+}
+
+/// Run a start function while its store remains unpublished in a vacant slot.
+///
+/// # Safety
+///
+/// `store` must point to the live boxed store reserved as `id`, and no store
+/// materialization may be live when this function is called. The box must not
+/// move or be dropped until evaluation returns.
+#[inline]
+pub(crate) unsafe fn eval_initializing(
+    store: *mut Store,
+    id: InstanceId,
+    local_index: u32,
+    args: &[Value],
+) -> Result<crate::collections::Vec<Value>, WasmError> {
+    let mut access = unsafe { StoreAccess::initializing_raw(store, id) };
+    eval_access(&mut access, local_index, args)
+}
+
+#[inline]
+pub(crate) fn eval_access(
+    access: &mut StoreAccess<'_>,
+    local_index: u32,
+    args: &[Value],
+) -> Result<crate::collections::Vec<Value>, WasmError> {
+    native_eval::eval(access, local_index, args)
 }
 
 #[inline]
@@ -46,16 +173,16 @@ pub(crate) unsafe fn collect_native_results_from_stack(
     result_types: &[ValueType],
     gp_unit_bytes: u8,
     store: &mut Store,
-) -> Result<ResultBuffer, WasmError> {
-    let mut out = ResultBuffer::with_exact_capacity(result_types.len());
+) -> Result<crate::collections::Vec<Value>, WasmError> {
+    let mut out = crate::collections::Vec::with_capacity(result_types.len());
     for (index, ty) in result_types.iter().enumerate() {
-        let raw = normalize_machine_raw_in_store(
+        let value = try_machine_raw_to_value_in_store(
             unsafe { *stack_base.add(index) },
             *ty,
             gp_unit_bytes,
             store,
         )?;
-        out.push(raw);
+        out.push(value);
     }
     Ok(out)
 }
