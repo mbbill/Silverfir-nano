@@ -856,7 +856,16 @@ impl JitInstance {
             let store_ptr = {
                 let store = store.as_mut();
                 for func_idx in 0..store.module().functions.len() {
-                    if !escapable_functions[func_idx] {
+                    // `escapable_functions` is sized to the PARSED module.
+                    // Linking can append synthetic host functions past that
+                    // count -- one per funcref-carrying imported global -- so
+                    // indexing it unguarded panics on those. They are
+                    // escapable by construction: each exists precisely
+                    // because a reference points at it, and registering them
+                    // is what lets the retag pass below hand the global an
+                    // absolute funcaddr instead of a local index that a peer
+                    // instance would resolve against its own functions.
+                    if !escapable_functions.get(func_idx).copied().unwrap_or(true) {
                         continue;
                     }
                     if let Some(handle) = store.module().functions[func_idx].linked_handle() {

@@ -1210,6 +1210,112 @@ mod tests {
         }
     }
 
+    /// A funcref-carrying imported global must reach a peer as an ABSOLUTE
+    /// handle. Linking synthesizes a host function past the parsed module's
+    /// function count for this shape, and that synthetic index used to be
+    /// skipped by world registration -- leaving a LOCAL index in a container
+    /// the reachability fact marks shared, which a peer would resolve against
+    /// its own function space. This path had no in-tree coverage.
+    #[cfg(sf_jit)]
+    #[test]
+    fn linked_function_in_an_imported_global_carries_the_absolute_form() {
+        fn answer(
+            _caller: &mut Caller<'_>,
+            _args: &[Value],
+            results: &mut [Value],
+        ) -> Result<(), WasmError> {
+            results[0] = Value::I32(0x5eed);
+            Ok(())
+        }
+
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (type $ft (func (result i32)))
+              (global $g (import "host" "fn_global") funcref)
+              (table 1 funcref)
+              (func (export "call_it") (result i32)
+                (table.set (i32.const 0) (global.get $g))
+                (call_indirect (type $ft) (i32.const 0))))
+            "#,
+        )
+        .expect("encode module");
+
+        let engine = Engine::new(Config::new().tier(Tier::Jit)).expect("engine");
+        let func_type = FunctionType::new(
+            collections::Vec::new(),
+            collections::vec![crate::value_type::ValueType::I32],
+        );
+        let import = Import::global_with_linked_function(
+            "host",
+            "fn_global",
+            Value::Ref(RefHandle::null(), crate::value_type::RefType::funcref()),
+            false,
+            Some((answer as crate::vm::entities::HostFn, func_type)),
+        );
+
+        let mut instance = Instance::from_module(
+            &engine,
+            Module::new("linked-global", &wasm).expect("parse"),
+            &[import],
+        )
+        .expect("instantiate with a linked-function global");
+
+        // The global must not hand out a local index.
+        let handle = match instance.global_at(0).expect("global") {
+            Some(Value::Ref(handle, _)) => handle,
+            other => panic!("expected a funcref global, got {other:?}"),
+        };
+        assert!(
+            !handle.is_null(),
+            "the linked function must have an address"
+        );
+
+        assert_eq!(
+            instance
+                .invoke("call_it", &[])
+                .expect("call through the global"),
+            collections::vec![Value::I32(0x5eed)]
+        );
+    }
+
+    /// An uncaught exception hands the embedder a `RefHandle`, and until
+    /// `exception_fields` existed there was no way to resolve it -- the
+    /// resolver was `pub(crate)`. This pins the capability the method claims,
+    /// on both engines, since it is otherwise the only reader of
+    /// `ExnInstance::fields` in a JIT-only build.
+    #[test]
+    fn uncaught_exception_payload_is_readable_by_the_embedder() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (tag $t (param i32 i64))
+              (func (export "boom")
+                i32.const 1234
+                i64.const 5678
+                throw $t))
+            "#,
+        )
+        .expect("encode throwing module");
+
+        for &tier in Tier::ALL {
+            let engine = Engine::new(Config::new().tier(tier)).expect("engine");
+            let mut instance =
+                Instance::from_module(&engine, Module::new("thrower", &wasm).expect("parse"), &[])
+                    .expect("instantiate");
+
+            let error = instance.invoke("boom", &[]).expect_err("must throw");
+            let WasmError::Exception { exn, .. } = error else {
+                panic!("{tier:?}: expected an uncaught exception, got {error:?}");
+            };
+            assert_eq!(
+                instance.exception_fields(exn),
+                Some(collections::vec![Value::I32(1234), Value::I64(5678)]),
+                "{tier:?}: the embedder must be able to read the payload"
+            );
+        }
+    }
+
     /// A world runs one engine; the second tier is refused by name.
     #[test]
     fn runtime_world_refuses_a_second_tier() {

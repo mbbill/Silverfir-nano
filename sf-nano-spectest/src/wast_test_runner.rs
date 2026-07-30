@@ -690,10 +690,6 @@ pub struct WastTestRunner {
     registered_as: HashMap<String, String>,
     module_definitions: HashMap<String, Vec<u8>>,
     function_registry: LinkRegistry,
-    /// Identities of partially-instantiated instances. The shared registry's
-    /// instance table owns their occupied slots; these ids record which
-    /// failures deliberately remain reachable.
-    retained_failed_instances: Vec<sf_nano_core::InstanceId>,
 }
 
 impl WastTestRunner {
@@ -709,7 +705,6 @@ impl WastTestRunner {
             registered_as: HashMap::new(),
             module_definitions: HashMap::new(),
             function_registry: LinkRegistry::new(),
-            retained_failed_instances: Vec::new(),
         }
     }
 
@@ -1243,7 +1238,7 @@ impl WastTestRunner {
                 wast::Wat::Module(module) => match module.encode() {
                     Ok(wasm_bytes) => {
                         register_forwarding_instances(&mut self.instances, &self.registered_as);
-                        match self.instantiate_with_registry(&wasm_bytes, true) {
+                        match self.instantiate_with_registry(&wasm_bytes) {
                             Ok(_instance) => Ok(vec![]),
                             Err(e) => Err(TestError::runtime(
                                 "successful module instantiation".to_string(),
@@ -1318,7 +1313,6 @@ impl WastTestRunner {
         register_forwarding_instances(&mut self.instances, &self.registered_as);
         let instance = self.instantiate_named(
             &compiled.wasm_bytes,
-            false,
             #[cfg(feature = "interp")]
             &internal_name,
         )?;
@@ -1344,7 +1338,7 @@ impl WastTestRunner {
     /// Try to instantiate a module temporarily (for assert_invalid/assert_unlinkable).
     fn try_instantiate_temp(&mut self, wasm_bytes: &[u8]) -> Result<Instance, WasmError> {
         register_forwarding_instances(&mut self.instances, &self.registered_as);
-        self.instantiate_with_registry(wasm_bytes, true)
+        self.instantiate_with_registry(wasm_bytes)
     }
 
     fn drop_unreachable_module(&mut self, internal_name: &str) {
@@ -1370,11 +1364,7 @@ impl WastTestRunner {
         self.module_bytes.remove(internal_name);
     }
 
-    fn instantiate_with_registry(
-        &mut self,
-        wasm_bytes: &[u8],
-        retain_partial: bool,
-    ) -> Result<Instance, WasmError> {
+    fn instantiate_with_registry(&mut self, wasm_bytes: &[u8]) -> Result<Instance, WasmError> {
         // Every instance gets a name, even a throwaway one: it may publish a
         // funcref into a table another module holds, and that reference has to
         // stay callable afterwards -- including when this instantiation traps.
@@ -1388,7 +1378,6 @@ impl WastTestRunner {
         };
         self.instantiate_named(
             wasm_bytes,
-            retain_partial,
             #[cfg(feature = "interp")]
             &owner,
         )
@@ -1397,7 +1386,6 @@ impl WastTestRunner {
     fn instantiate_named(
         &mut self,
         wasm_bytes: &[u8],
-        retain_partial: bool,
         #[cfg(feature = "interp")] owner: &str,
     ) -> Result<Instance, WasmError> {
         let imports = self.build_imports(wasm_bytes)?;
@@ -1440,13 +1428,10 @@ impl WastTestRunner {
         ) {
             Ok(instance) => Ok(instance),
             Err(err) => {
-                let (partial, error) = err.into_parts();
-                if retain_partial {
-                    if let Some(id) = partial {
-                        self.retained_failed_instances.push(id);
-                    }
-                }
-                Err(error)
+                // A partial instance keeps its world slot occupied with its
+                // generation unbumped, so references minted before the failure
+                // stay resolvable without the harness holding anything.
+                Err(err.into_parts().1)
             }
         }
     }
