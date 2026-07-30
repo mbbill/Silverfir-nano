@@ -41,7 +41,7 @@ use crate::vm::jit::store::Store;
 use crate::vm::jit::value_encoding::{
     absolutize, retag_for_container, try_raw_to_value_in_store, value_to_container_raw_in_store,
 };
-use crate::vm::link::{InstanceId, InstanceLease, LinkRegistry};
+use crate::vm::link::{InstanceId, InstanceLease, InstanceToken, LinkRegistry};
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
 
@@ -879,143 +879,152 @@ impl JitInstance {
         store.set_exports(exports);
 
         let init_result = (|| -> Result<(), WasmError> {
-            let store = store.as_mut();
-            for func_idx in 0..store.module().functions.len() {
-                if let Some(handle) = store.module().functions[func_idx].linked_handle() {
-                    store.module_mut().set_function_handle(func_idx, handle);
-                } else {
-                    let _ = store.register_local_function(func_idx);
-                }
-            }
-            // Imported value globals are created before local functions receive
-            // world addresses. Normalize any reachable funcref cell now that the
-            // complete local-index map exists.
-            for global_idx in 0..store.module().globals.len() {
-                if !store.module().global_needs_funcref_retag(global_idx) {
-                    continue;
-                }
-                let (raw, value_type) = {
-                    let global = store.global(global_idx);
-                    (global.raw(), global.value_type)
-                };
-                let value = try_raw_to_value_in_store(raw, value_type, store)?;
-                let raw = value_to_container_raw_in_store(value, true, store);
-                store.global_mut(global_idx).set_raw(raw);
-            }
-
-            #[cfg(sf_jit)]
-            crate::vm::jit::build::ensure_module_compiled(store)?;
-
-            for (i, global) in mod_globals.iter().enumerate() {
-                if let GlobalDef::Local(spec) = global.def() {
-                    let value = eval_const_expr(spec.init_expr(), store)?;
-                    let reachable = store.module().global_is_reachable(i);
-                    let raw = value_to_container_raw_in_store(value, reachable, store);
-                    store.global_mut(i).set_raw(raw);
-                }
-            }
-
-            for (i, table) in mod_tables.iter().enumerate() {
-                if table.is_import() {
-                    continue;
-                }
-
-                let Some(init_expr) = table.spec().init_expr() else {
-                    continue;
-                };
-
-                let value = eval_const_expr(init_expr, store)?;
-                let init_ref = match value {
-                    Value::Ref(handle, _) => {
-                        let reachable = store.module().table_is_reachable(i);
-                        retag_for_container(store, handle, reachable)
+            let store_ptr = {
+                let store = store.as_mut();
+                for func_idx in 0..store.module().functions.len() {
+                    if let Some(handle) = store.module().functions[func_idx].linked_handle() {
+                        store.module_mut().set_function_handle(func_idx, handle);
+                    } else {
+                        let _ = store.register_local_function(func_idx);
                     }
-                    _ => {
-                        return Err(WasmError::invalid(
-                            "table initializer must evaluate to a reference",
-                        ))
-                    }
-                };
-
-                let table_inst = store.table_mut(i);
-                let mut elements = table_inst.elements_mut();
-                for slot in elements.iter_mut() {
-                    *slot = init_ref;
                 }
-            }
+                // Imported value globals are created before local functions receive
+                // world addresses. Normalize any reachable funcref cell now that the
+                // complete local-index map exists.
+                for global_idx in 0..store.module().globals.len() {
+                    if !store.module().global_needs_funcref_retag(global_idx) {
+                        continue;
+                    }
+                    let (raw, value_type) = {
+                        let global = store.global(global_idx);
+                        (global.raw(), global.value_type)
+                    };
+                    let value = try_raw_to_value_in_store(raw, value_type, store)?;
+                    let raw = value_to_container_raw_in_store(value, true, store);
+                    store.global_mut(global_idx).set_raw(raw);
+                }
 
-            for (i, element) in mod_elements.iter().enumerate() {
-                match element {
-                    Element::Active {
-                        table_index,
-                        offset_expr,
-                        init,
-                    } => {
-                        if *table_index >= store.module().tables.len() {
-                            return Err(WasmError::unlinkable("unknown table"));
+                #[cfg(sf_jit)]
+                crate::vm::jit::build::ensure_module_compiled(store)?;
+
+                for (i, global) in mod_globals.iter().enumerate() {
+                    if let GlobalDef::Local(spec) = global.def() {
+                        let value = eval_const_expr(spec.init_expr(), store)?;
+                        let reachable = store.module().global_is_reachable(i);
+                        let raw = value_to_container_raw_in_store(value, reachable, store);
+                        store.global_mut(i).set_raw(raw);
+                    }
+                }
+
+                for (i, table) in mod_tables.iter().enumerate() {
+                    if table.is_import() {
+                        continue;
+                    }
+
+                    let Some(init_expr) = table.spec().init_expr() else {
+                        continue;
+                    };
+
+                    let value = eval_const_expr(init_expr, store)?;
+                    let init_ref = match value {
+                        Value::Ref(handle, _) => {
+                            let reachable = store.module().table_is_reachable(i);
+                            retag_for_container(store, handle, reachable)
                         }
-                        let offset = eval_offset(offset_expr, store.module())?;
-                        let reachable = store.module().table_is_reachable(*table_index);
-                        let refs = materialize_element_init(init, store, reachable)?;
-
-                        let table = store.table_mut(*table_index);
-                        let mut elements = table.elements_mut();
-                        if offset + refs.len() > elements.len() {
-                            return Err(WasmError::unlinkable("out of bounds table access"));
+                        _ => {
+                            return Err(WasmError::invalid(
+                                "table initializer must evaluate to a reference",
+                            ))
                         }
-                        elements[offset..offset + refs.len()].copy_from_slice(&refs);
-                        drop(elements);
-                        store.module_mut().elements[i].drop_segment();
-                    }
-                    Element::Passive { init } => {
-                        // Passive segments are not statically private. Their
-                        // eventual table.init destination decides whether the
-                        // absolute value is localized again.
-                        let refs = materialize_element_init(init, store, true)?;
-                        store.module_mut().elements[i] = ElementInst::new(refs);
-                    }
-                    Element::Declarative { .. } => {
-                        store.module_mut().elements[i].drop_segment();
+                    };
+
+                    let table_inst = store.table_mut(i);
+                    let mut elements = table_inst.elements_mut();
+                    for slot in elements.iter_mut() {
+                        *slot = init_ref;
                     }
                 }
-            }
 
-            #[cfg(sf_jit)]
-            {
-                for memory in &store.module().memories {
-                    memory.ensure_allocated()?;
-                }
-            }
+                for (i, element) in mod_elements.iter().enumerate() {
+                    match element {
+                        Element::Active {
+                            table_index,
+                            offset_expr,
+                            init,
+                        } => {
+                            if *table_index >= store.module().tables.len() {
+                                return Err(WasmError::unlinkable("unknown table"));
+                            }
+                            let offset = eval_offset(offset_expr, store.module())?;
+                            let reachable = store.module().table_is_reachable(*table_index);
+                            let refs = materialize_element_init(init, store, reachable)?;
 
-            for data_seg in &mod_data {
-                match data_seg {
-                    Data::Active {
-                        memory_index,
-                        offset_expr,
-                        init,
-                    } => {
-                        let offset = eval_offset(offset_expr, store.module())?;
-                        let mem = store.memory_mut(*memory_index);
-                        let mem_len = mem.memory_len();
-                        if offset + init.len() > mem_len {
-                            return Err(WasmError::unlinkable("out of bounds memory access"));
+                            let table = store.table_mut(*table_index);
+                            let mut elements = table.elements_mut();
+                            if offset + refs.len() > elements.len() {
+                                return Err(WasmError::unlinkable("out of bounds table access"));
+                            }
+                            elements[offset..offset + refs.len()].copy_from_slice(&refs);
+                            drop(elements);
+                            store.module_mut().elements[i].drop_segment();
                         }
-                        let dst = unsafe {
-                            core::slice::from_raw_parts_mut(
-                                mem.memory_ptr().add(offset),
-                                init.len(),
-                            )
-                        };
-                        dst.copy_from_slice(init);
+                        Element::Passive { init } => {
+                            // Passive segments are not statically private. Their
+                            // eventual table.init destination decides whether the
+                            // absolute value is localized again.
+                            let refs = materialize_element_init(init, store, true)?;
+                            store.module_mut().elements[i] = ElementInst::new(refs);
+                        }
+                        Element::Declarative { .. } => {
+                            store.module_mut().elements[i].drop_segment();
+                        }
                     }
-                    Data::Passive { .. } => {}
                 }
-            }
+
+                #[cfg(sf_jit)]
+                {
+                    for memory in &store.module().memories {
+                        memory.ensure_allocated()?;
+                    }
+                }
+
+                for data_seg in &mod_data {
+                    match data_seg {
+                        Data::Active {
+                            memory_index,
+                            offset_expr,
+                            init,
+                        } => {
+                            let offset = eval_offset(offset_expr, store.module())?;
+                            let mem = store.memory_mut(*memory_index);
+                            let mem_len = mem.memory_len();
+                            if offset + init.len() > mem_len {
+                                return Err(WasmError::unlinkable("out of bounds memory access"));
+                            }
+                            let dst = unsafe {
+                                core::slice::from_raw_parts_mut(
+                                    mem.memory_ptr().add(offset),
+                                    init.len(),
+                                )
+                            };
+                            dst.copy_from_slice(init);
+                        }
+                        Data::Passive { .. } => {}
+                    }
+                }
+                core::ptr::from_mut(store)
+            };
 
             if let Some(start_idx) = start_func_index {
-                let func_ptr = &store.module().functions[start_idx] as *const FunctionInst;
-                let func_ref = unsafe { &*func_ptr };
-                runtime::eval(func_ref, store, &[])?;
+                let start_idx = u32::try_from(start_idx)
+                    .map_err(|_| WasmError::internal("start function index exceeds u32"))?;
+                // SAFETY: `store_ptr` came from the unpublished boxed store
+                // after the initialization materialization ended. The box
+                // remains stable and the reserved slot stays vacant until
+                // this evaluation returns.
+                unsafe {
+                    runtime::eval_initializing(store_ptr, instance_id, start_idx, &[])?;
+                }
             }
 
             Ok(())
@@ -1041,34 +1050,26 @@ impl JitInstance {
         name: &str,
         args: &[Value],
     ) -> Result<collections::Vec<Value>, WasmError> {
-        Self::invoke_store(self.store_mut(), name, args)
+        Self::invoke_token(self.checkout_for_invocation()?, name, args)
     }
 
-    pub(crate) fn invoke_store(
-        store: &mut Store,
+    pub(crate) fn invoke_token(
+        token: InstanceToken,
         name: &str,
         args: &[Value],
     ) -> Result<collections::Vec<Value>, WasmError> {
-        let (_, _, idx) = store
-            .exports()
-            .iter()
-            .find(|(n, k, _)| matches!(k, ExportKind::Func) && n == name)
-            .ok_or_else(|| WasmError::invalid("exported function not found"))?;
-        let idx = *idx;
-
-        let func_ptr = &store.module().functions[idx] as *const FunctionInst;
-        let func_ref = unsafe { &*func_ptr };
-
-        let result_stack = runtime::eval(func_ref, store, args)?;
-        let ft = func_ref.func_type();
-        let result_types = ft.results();
-
-        let mut results = collections::Vec::with_capacity(result_types.len());
-        for (i, ty) in result_types.iter().enumerate() {
-            let raw = result_stack.peek_at_index(i);
-            results.push(try_raw_to_value_in_store(raw, *ty, store)?);
-        }
-        Ok(results)
+        let idx = {
+            let store = token
+                .jit()
+                .ok_or_else(|| WasmError::internal("instance is not a JIT store"))?;
+            let (_, _, idx) = store
+                .exports()
+                .iter()
+                .find(|(n, k, _)| matches!(k, ExportKind::Func) && n == name)
+                .ok_or_else(|| WasmError::invalid("exported function not found"))?;
+            u32::try_from(*idx).map_err(|_| WasmError::internal("function index exceeds u32"))?
+        };
+        runtime::eval(token, idx, args)
     }
 
     /// The function index behind an exported name, resolved once.
@@ -1087,21 +1088,15 @@ impl JitInstance {
         args: &[Value],
         results: &mut [Value],
     ) -> Result<(), WasmError> {
-        let store = self.store_mut();
-        let func_ptr = store
-            .module()
-            .functions
-            .get(idx)
-            .ok_or_else(|| WasmError::invalid("function index out of range"))?
-            as *const FunctionInst;
-        let func_ref = unsafe { &*func_ptr };
-
-        let result_stack = runtime::eval(func_ref, store, args)?;
-        let result_types = func_ref.func_type().results();
-        for (i, ty) in result_types.iter().enumerate() {
-            let raw = result_stack.peek_at_index(i);
-            results[i] = try_raw_to_value_in_store(raw, *ty, store)?;
+        let idx =
+            u32::try_from(idx).map_err(|_| WasmError::invalid("function index out of range"))?;
+        let token = self.checkout_for_invocation()?;
+        Self::validate_invocation_index(&token, idx)?;
+        let returned = runtime::eval(token, idx, args)?;
+        if returned.len() != results.len() {
+            return Err(WasmError::invalid("argument/result arity mismatch"));
         }
+        results.copy_from_slice(&returned);
         Ok(())
     }
 
@@ -1110,25 +1105,11 @@ impl JitInstance {
         idx: usize,
         args: &[Value],
     ) -> Result<collections::Vec<Value>, WasmError> {
-        let store = self.store_mut();
-        let func_ptr = store
-            .module()
-            .functions
-            .get(idx)
-            .ok_or_else(|| WasmError::invalid("function index out of range"))?
-            as *const FunctionInst;
-        let func_ref = unsafe { &*func_ptr };
-
-        let result_stack = runtime::eval(func_ref, store, args)?;
-        let ft = func_ref.func_type();
-        let result_types = ft.results();
-
-        let mut results = collections::Vec::with_capacity(result_types.len());
-        for (i, ty) in result_types.iter().enumerate() {
-            let raw = result_stack.peek_at_index(i);
-            results.push(try_raw_to_value_in_store(raw, *ty, store)?);
-        }
-        Ok(results)
+        let idx =
+            u32::try_from(idx).map_err(|_| WasmError::invalid("function index out of range"))?;
+        let token = self.checkout_for_invocation()?;
+        Self::validate_invocation_index(&token, idx)?;
+        runtime::eval(token, idx, args)
     }
 
     pub fn has_function_export(&self, name: &str) -> bool {
@@ -1156,6 +1137,23 @@ impl JitInstance {
         let id = self.store().instance_handle().self_id();
         debug_assert_eq!(id, self.lease.id());
         id
+    }
+
+    fn checkout_for_invocation(&self) -> Result<InstanceToken, WasmError> {
+        let handle = { self.store().instance_handle().clone() };
+        handle
+            .checkout(handle.self_id())
+            .ok_or_else(|| WasmError::internal("JIT instance is no longer available"))
+    }
+
+    fn validate_invocation_index(token: &InstanceToken, idx: u32) -> Result<(), WasmError> {
+        let store = token
+            .jit()
+            .ok_or_else(|| WasmError::internal("instance is not a JIT store"))?;
+        if store.module().functions.get(idx as usize).is_none() {
+            return Err(WasmError::invalid("function index out of range"));
+        }
+        Ok(())
     }
 
     #[inline]

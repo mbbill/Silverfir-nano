@@ -16,9 +16,7 @@ mod imp {
     use tracked_alloc::string::String;
 
     use crate::error::WasmError;
-    use crate::module::entities::FunctionSpec;
     use crate::value_type::ValueType;
-    use crate::vm::entities::FunctionInst;
     use crate::vm::jit::entities::ModuleInst;
     use crate::vm::jit::runtime::context::NativeContext;
     use crate::vm::jit::store::Store;
@@ -285,33 +283,16 @@ mod imp {
         }
     }
 
-    fn find_func_idx_by_spec(module: &ModuleInst, spec: &FunctionSpec) -> Option<u32> {
-        module
-            .functions
-            .iter()
-            .enumerate()
-            .find_map(|(idx, func)| match func {
-                FunctionInst::Local {
-                    spec: candidate, ..
-                } if core::ptr::eq(candidate, spec) => Some(idx as u32),
-                _ => None,
-            })
-    }
-
-    pub(crate) fn native_root_entry(
-        ctx: &mut NativeContext,
-        spec: &FunctionSpec,
-        backend: &'static str,
-    ) {
+    pub(crate) fn native_root_entry(ctx: &mut NativeContext, func_idx: u32, backend: &'static str) {
         if !enabled() {
             return;
         }
         let Some(store) = (unsafe { ctx.store.as_ref() }) else {
             return;
         };
-        let Some(func_idx) = find_func_idx_by_spec(store.module(), spec) else {
+        if store.module().functions.get(func_idx as usize).is_none() {
             return;
-        };
+        }
         ctx.trace_stack.clear();
         ctx.trace_stack.push(func_idx);
         record_event(
@@ -325,16 +306,16 @@ mod imp {
         );
     }
 
-    pub(crate) fn native_root_exit(ctx: &mut NativeContext, spec: &FunctionSpec, results: &[u64]) {
+    pub(crate) fn native_root_exit(ctx: &mut NativeContext, func_idx: u32, results: &[u64]) {
         if !enabled() {
             return;
         }
         let Some(store) = (unsafe { ctx.store.as_ref() }) else {
             return;
         };
-        let Some(func_idx) = find_func_idx_by_spec(store.module(), spec) else {
+        if store.module().functions.get(func_idx as usize).is_none() {
             return;
-        };
+        }
         record_event(None, EventKind::Exit, func_idx, 0, results, store, None);
         ctx.trace_stack.clear();
     }

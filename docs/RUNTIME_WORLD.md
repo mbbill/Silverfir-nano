@@ -1224,10 +1224,11 @@ individually because the *sites* still have to be found and fixed.
    `value_to_raw_in_store` (`:124`, arm at `:132`),
    `value_to_machine_raw_in_store` (`:138`, `:144`),
    `try_machine_raw_to_value_in_store` (`:162`, `:169`) and
-   `try_raw_to_value_in_store` (`:182`, `:196`) — plus the composer
-   `normalize_machine_raw_in_store` (`:202-212`). State the fix over **the
-   functions carrying a `Ref` arm**, not over a list, and let the compiler
-   find them.
+   `try_raw_to_value_in_store` (`:182`, `:196`). The former
+   `normalize_machine_raw_in_store` composer was deleted when native
+   evaluation began returning absolute `Value`s rather than owner-relative
+   raw results. State the fix over **the functions carrying a `Ref` arm**, not
+   over a list, and let the compiler find them.
 
    The two that were omitted are not incidental: they are the **public API's**
    conversions. The instance getters and setters use them, including an
@@ -1236,11 +1237,11 @@ individually because the *sites* still have to be found and fixed.
    embedder through `try_raw_to_value_in_store` and `replace_global_at` /
    `set_global` take one back through `value_to_raw_in_store`.
 
-   `normalize_machine_raw_in_store` needs a **stated output form**. It
-   composes machine-raw -> `Value` -> host-raw, passing the *same* store to
-   both halves (`:208-211`), which is correct only when one store owns both
-   sides. Under the invariant its contract has to say which frame each half
-   belongs to; today it composes correctly by luck.
+   The deleted `normalize_machine_raw_in_store` needed a **stated output
+   form**: composing machine-raw -> `Value` -> host-raw with one store is
+   correct only when that store owns both sides. The invocation boundary now
+   stops at the absolute `Value`; a later, separately scoped materialization
+   of the frame owner performs the inbound conversion.
 
    Note also that "these functions take `&Store`, so the instance is in scope"
    — an earlier justification — is **not sufficient**. The instance in scope

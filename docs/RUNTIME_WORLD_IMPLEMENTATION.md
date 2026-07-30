@@ -351,9 +351,10 @@ end, but implement it as the sequence below.*
      materialization, const-expr `ref.func`) to consult their destination.
   5. The six crossings: the four `Ref`-arm conversion functions become
      instance-relative (pass the store owning the **frame** — fix
-     `invoke_runtime_target`'s two sites to pass the caller's store);
-     `normalize_machine_raw_in_store` gets a stated output form; interp
-     localization in `call_host` (raw u64 slots) and the two
+     `invoke_runtime_target`'s two sites to pass the caller's store); native
+     evaluation returns absolute `Value`s and deletes the owner-relative
+     `normalize_machine_raw_in_store` composer; interp localization in
+     `call_host` (raw u64 slots) and the two
      `FuncRefHost::invoke` call sites; `function_handle_at` becomes a
      conversion site minting the absolute form; fix the stale
      `interp_imports.rs` header.

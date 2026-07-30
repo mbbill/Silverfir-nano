@@ -6,26 +6,29 @@ use crate::{
     error::WasmError,
     module::type_context::{check_function_types_equivalent, concrete_type_matches_cross_context},
     vm::{
-        entities::{Caller, FunctionInst},
         jit::arch::backend_config,
-        jit::runtime,
         jit::runtime::{
+            self,
             common::{
                 internal_error, run_frame_call_with_status, trap_error, value_matches_value_type,
                 NativeCallStatus,
             },
             context::{NativeContext, PendingEscape},
+            StoreAccess,
         },
         jit::store::Store,
         jit::value_encoding::{
             localize, machine_raw_to_ref, try_machine_raw_to_value_in_store,
-            try_raw_to_value_in_store, value_to_machine_raw_in_store,
+            value_to_machine_raw_in_store,
         },
         tag::TagHandle,
         value::RefHandle,
         value::Value,
     },
 };
+
+#[cfg(test)]
+use crate::vm::entities::{Caller, FunctionInst};
 
 use super::abi::{
     RuntimeCallFrameRegion, RuntimeCallMeta, RuntimeCallTargetKind, RuntimeCallTypeCheckKind,
@@ -151,22 +154,15 @@ fn call_runtime_by_local_index(
     args_region: RuntimeCallFrameRegion,
     results_region: RuntimeCallFrameRegion,
 ) -> Result<NativeCallStatus, WasmError> {
-    let store_ptr = {
-        let store = ctx
-            .store()
-            .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
-        store as *const Store as *mut Store
-    };
-    let owner_store = unsafe { store_ptr.as_mut() }
-        .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
-    let callee_ptr = owner_store
-        .module()
-        .functions
-        .get(func_idx as usize)
-        .ok_or_else(|| internal_error("runtime-call referenced invalid function index"))?
-        as *const FunctionInst;
-    let callee = unsafe { &*callee_ptr };
-    invoke_runtime_target(ctx, frame, owner_store, callee, args_region, results_region)
+    let mut target = current_store_access(ctx)?;
+    invoke_runtime_target(
+        ctx,
+        frame,
+        &mut target,
+        func_idx,
+        args_region,
+        results_region,
+    )
 }
 
 fn call_runtime_by_handle(
@@ -181,73 +177,76 @@ fn call_runtime_by_handle(
     if handle.is_null() {
         return Err(trap_error("null function reference"));
     }
-    let caller_store_ptr = ctx.store;
-    if caller_store_ptr.is_null() {
-        return Err(internal_error("runtime-call context is missing store"));
-    }
-    let localized = {
-        let caller_store = unsafe { &*caller_store_ptr };
-        localize(caller_store, handle)
+    let (caller_handle, caller_id, owner_id, local_index) = {
+        let caller_store = ctx
+            .store()
+            .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
+        let caller_id = caller_store.instance_handle().self_id();
+        let localized = localize(caller_store, handle);
+        if !localized.is_special() && localized.encoded() < caller_store.module().functions.len() {
+            let local_index = u32::try_from(localized.encoded())
+                .map_err(|_| internal_error("runtime-call local function index exceeds u32"))?;
+            (
+                caller_store.instance_handle().clone(),
+                caller_id,
+                caller_id,
+                local_index,
+            )
+        } else {
+            let entry = caller_store
+                .function_entry_for_handle(localized)
+                .ok_or_else(|| trap_error("invalid function reference"))?;
+            (
+                caller_store.instance_handle().clone(),
+                caller_id,
+                entry.owner,
+                entry.local_index,
+            )
+        }
     };
 
-    if !localized.is_special()
-        && (localized.encoded() < unsafe { &*caller_store_ptr }.module().functions.len())
-    {
-        let local_index = u32::try_from(localized.encoded())
-            .map_err(|_| internal_error("runtime-call local function index exceeds u32"))?;
-        let owner_store = unsafe { &mut *caller_store_ptr };
-        validate_runtime_target_type(
-            owner_store,
-            local_index,
-            owner_store,
-            expected_type_idx,
-            type_check_kind,
-        )?;
-        let callee_ptr = runtime_callee_ptr(owner_store, local_index)?;
-        let callee = unsafe { &*callee_ptr };
-        return invoke_runtime_target(ctx, frame, owner_store, callee, args_region, results_region);
+    let mut target = if owner_id == caller_id {
+        current_store_access(ctx)?
+    } else {
+        let token = caller_handle
+            .checkout(owner_id)
+            .ok_or_else(|| internal_error("runtime-call referenced dead function owner"))?;
+        StoreAccess::checked_out(token)
+    };
+
+    if target.id() == caller_id {
+        target.with_store(|store| {
+            validate_runtime_target_type(
+                store,
+                local_index,
+                store,
+                expected_type_idx,
+                type_check_kind,
+            )
+        })??;
+    } else {
+        target.with_store(|owner_store| {
+            let caller_store = ctx
+                .store()
+                .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
+            validate_runtime_target_type(
+                owner_store,
+                local_index,
+                caller_store,
+                expected_type_idx,
+                type_check_kind,
+            )
+        })??;
     }
 
-    let entry = unsafe { &*caller_store_ptr }
-        .function_entry_for_handle(localized)
-        .ok_or_else(|| trap_error("invalid function reference"))?;
-    let mut owner = unsafe { &*caller_store_ptr }
-        .instance_handle()
-        .checkout(entry.owner)
-        .ok_or_else(|| internal_error("runtime-call referenced dead function owner"))?;
-    {
-        let owner_store = owner
-            .jit()
-            .ok_or_else(|| internal_error("runtime-call referenced a non-JIT function owner"))?;
-        let caller_store = unsafe { &*caller_store_ptr };
-        validate_runtime_target_type(
-            owner_store,
-            entry.local_index,
-            caller_store,
-            expected_type_idx,
-            type_check_kind,
-        )?;
-    }
-
-    let owner_store = owner
-        .jit_mut()
-        .ok_or_else(|| internal_error("runtime-call referenced a non-JIT function owner"))?;
-    let callee_ptr = runtime_callee_ptr(owner_store, entry.local_index)?;
-    let callee = unsafe { &*callee_ptr };
-    invoke_runtime_target(ctx, frame, owner_store, callee, args_region, results_region)
-}
-
-#[inline]
-fn runtime_callee_ptr(
-    owner_store: &Store,
-    local_index: u32,
-) -> Result<*const FunctionInst, WasmError> {
-    Ok(owner_store
-        .module()
-        .functions
-        .get(local_index as usize)
-        .ok_or_else(|| internal_error("runtime-call referenced invalid function index"))?
-        as *const FunctionInst)
+    invoke_runtime_target(
+        ctx,
+        frame,
+        &mut target,
+        local_index,
+        args_region,
+        results_region,
+    )
 }
 
 fn validate_runtime_target_type(
@@ -260,7 +259,11 @@ fn validate_runtime_target_type(
     if expected_type_idx == u32::MAX {
         return Ok(());
     }
-    let callee = unsafe { &*runtime_callee_ptr(owner_store, local_index)? };
+    let callee = owner_store
+        .module()
+        .functions
+        .get(local_index as usize)
+        .ok_or_else(|| internal_error("runtime-call referenced invalid function index"))?;
     let actual_type_idx = callee.type_index();
     let compatible = if actual_type_idx != u32::MAX {
         concrete_type_matches_cross_context(
@@ -295,22 +298,19 @@ fn validate_runtime_target_type(
 fn invoke_runtime_target(
     ctx: &mut NativeContext,
     frame: *mut u64,
-    owner_store: &mut Store,
-    callee: &FunctionInst,
+    target: &mut StoreAccess<'_>,
+    local_index: u32,
     args_region: RuntimeCallFrameRegion,
     results_region: RuntimeCallFrameRegion,
 ) -> Result<NativeCallStatus, WasmError> {
-    let func_type = Rc::new(callee.func_type().clone());
-    let frame_owner_ptr = ctx.store;
-    if frame_owner_ptr.is_null() {
-        return Err(internal_error(
-            "runtime-call context is missing frame owner",
-        ));
-    }
-    let frame_is_owned_by_target = core::ptr::eq(
-        frame_owner_ptr.cast_const(),
-        core::ptr::from_ref::<Store>(owner_store),
-    );
+    let func_type = target.with_store(|store| {
+        let callee = store
+            .module()
+            .functions
+            .get(local_index as usize)
+            .ok_or_else(|| internal_error("runtime-call referenced invalid function index"))?;
+        Ok::<_, WasmError>(Rc::new(callee.func_type().clone()))
+    })??;
 
     require_region_slots(
         args_region,
@@ -324,11 +324,9 @@ fn invoke_runtime_target(
     )?;
 
     let args: collections::Vec<Value> = {
-        let frame_owner = if frame_is_owned_by_target {
-            &*owner_store
-        } else {
-            unsafe { &*frame_owner_ptr }
-        };
+        let frame_owner = ctx
+            .store()
+            .ok_or_else(|| internal_error("runtime-call context is missing frame owner"))?;
         func_type
             .params()
             .iter()
@@ -346,58 +344,21 @@ fn invoke_runtime_target(
             })
             .collect::<Result<_, _>>()?
     };
-    let mut ret_vals = collections::vec![Value::default(); func_type.results().len()];
-
-    match callee {
-        FunctionInst::Host { callback, .. } => {
-            let mem_slice = if owner_store.module().memories.is_empty() {
-                None
-            } else {
-                let mem = owner_store.memory_mut(0);
-                let ptr = mem.memory_ptr();
-                let len = mem.memory_len();
-                if len == 0 {
-                    None
-                } else {
-                    Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
-                }
-            };
-            let mut caller = Caller::new(mem_slice);
-            match callback.call(&mut caller, &args, &mut ret_vals) {
-                Ok(()) => {}
-                Err(WasmError::HostThrow {
-                    tag,
-                    args: exn_args,
-                }) => {
-                    if !validate_host_throw_payload(tag, &exn_args, ctx) {
-                        return Err(trap_error("host threw mistyped exception"));
-                    }
-                    let handle = owner_store.alloc_exn(tag, exn_args);
-                    ctx.pending_escape = PendingEscape::Throw { exn: handle, tag };
-                    return Ok(NativeCallStatus::Thrown);
-                }
-                Err(other) => return Err(other),
+    let ret_vals = match runtime::eval_access(target, local_index, &args) {
+        Ok(values) => values,
+        Err(WasmError::HostThrow {
+            tag,
+            args: exn_args,
+        }) => {
+            if !validate_host_throw_payload(tag, &exn_args, ctx) {
+                return Err(trap_error("host threw mistyped exception"));
             }
+            let handle = target.with_store_mut(|store| store.alloc_exn(tag, exn_args))?;
+            ctx.pending_escape = PendingEscape::Throw { exn: handle, tag };
+            return Ok(NativeCallStatus::Thrown);
         }
-        FunctionInst::Linked { handle, .. } => {
-            return call_runtime_by_handle(
-                ctx,
-                frame,
-                *handle,
-                u32::MAX,
-                RuntimeCallTypeCheckKind::None,
-                args_region,
-                results_region,
-            );
-        }
-        FunctionInst::Local { .. } => {
-            let result_stack = runtime::eval(callee, owner_store, &args)?;
-            for (index, ty) in func_type.results().iter().enumerate() {
-                ret_vals[index] =
-                    try_raw_to_value_in_store(result_stack.peek_at_index(index), *ty, owner_store)?;
-            }
-        }
-    }
+        Err(other) => return Err(other),
+    };
 
     if ret_vals.len() != func_type.results().len() {
         return Err(internal_error(
@@ -407,25 +368,57 @@ fn invoke_runtime_target(
 
     ctx.refresh_cached_views();
 
-    for (index, value) in ret_vals.into_iter().enumerate() {
-        let raw = if frame_is_owned_by_target {
-            value_to_machine_raw_in_store(value, active_gp_unit_bytes(), owner_store)
-        } else {
-            let frame_owner = unsafe { &mut *frame_owner_ptr };
-            value_to_machine_raw_in_store(value, active_gp_unit_bytes(), frame_owner)
-        };
-        unsafe {
-            region_write(
-                frame,
-                results_region,
-                index as u16,
-                raw,
-                "runtime-call result slot is out of bounds",
-            )?;
+    {
+        let frame_owner = ctx
+            .store_mut()
+            .ok_or_else(|| internal_error("runtime-call context is missing frame owner"))?;
+        for (index, value) in ret_vals.into_iter().enumerate() {
+            let raw = value_to_machine_raw_in_store(value, active_gp_unit_bytes(), frame_owner);
+            unsafe {
+                region_write(
+                    frame,
+                    results_region,
+                    index as u16,
+                    raw,
+                    "runtime-call result slot is out of bounds",
+                )?;
+            }
         }
     }
 
     Ok(NativeCallStatus::Ok)
+}
+
+fn current_store_access(ctx: &NativeContext) -> Result<StoreAccess<'static>, WasmError> {
+    let store_ptr = ctx.store;
+    let (handle, id) = {
+        let store = ctx
+            .store()
+            .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
+        (
+            store.instance_handle().clone(),
+            store.instance_handle().self_id(),
+        )
+    };
+    if let Some(token) = handle.checkout(id) {
+        return Ok(StoreAccess::checked_out(token));
+    }
+
+    if let Some(table) = handle.table() {
+        if table.in_use(id) != Some(0) {
+            return Err(internal_error(
+                "runtime-call current instance checkout failed",
+            ));
+        }
+    }
+
+    // A live native context keeps the current store alive. An occupied store
+    // has an outer checkout for the active evaluation, so a failed self
+    // checkout with the reserved generation still unused means this is the
+    // unpublished, vacant-slot initialization path. Tests may use a standalone
+    // store whose weak table handle has already expired; their owning Box
+    // provides the same liveness guarantee for this call.
+    Ok(unsafe { StoreAccess::<'static>::initializing_raw(store_ptr, id) })
 }
 
 /// Validate a host-throw payload against the tag signature. A mismatch means

@@ -672,8 +672,8 @@ pub(super) fn do_array_new_default(
     type_idx: u32,
     length_raw: u64,
 ) -> Result<u64, WasmError> {
-    let store = current_store_mut(ctx)?;
     let (elem_type, length) = {
+        let store = current_store(ctx)?;
         let def_type = store
             .module()
             .types
@@ -694,8 +694,11 @@ pub(super) fn do_array_new_default(
         .try_reserve(length)
         .map_err(|_| trap_error("out of memory"))?;
     elements.resize(length, init);
-    let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
-    let handle = store.register_gc_ref(gc_ref);
+    let handle = {
+        let store = current_store_mut(ctx)?;
+        let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
+        store.register_gc_ref(gc_ref)
+    };
     Ok(ref_to_machine(handle))
 }
 
@@ -705,20 +708,25 @@ pub(super) fn do_array_new(
     init_raw: u64,
     length_raw: u64,
 ) -> Result<u64, WasmError> {
-    let store = current_store_mut(ctx)?;
-    let (elem_type, length) = {
+    let (init, length) = {
+        let store = current_store_mut(ctx)?;
         let storage = array_element_storage(store, type_idx)?;
-        (storage.to_valtype(), length_raw as u32 as usize)
+        let elem_type = storage.to_valtype();
+        (
+            try_machine_raw_to_value_in_store(init_raw, elem_type, active_gp_unit_bytes(), store)?,
+            length_raw as u32 as usize,
+        )
     };
-    let init =
-        try_machine_raw_to_value_in_store(init_raw, elem_type, active_gp_unit_bytes(), store)?;
     let mut elements = crate::collections::Vec::new();
     elements
         .try_reserve(length)
         .map_err(|_| trap_error("out of memory"))?;
     elements.resize(length, init);
-    let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
-    let handle = store.register_gc_ref(gc_ref);
+    let handle = {
+        let store = current_store_mut(ctx)?;
+        let gc_ref = store.gc_heap().borrow_mut().alloc_array(type_idx, elements);
+        store.register_gc_ref(gc_ref)
+    };
     Ok(ref_to_machine(handle))
 }
 

@@ -347,6 +347,17 @@ impl InstanceToken {
         }
     }
 
+    /// The generation-checked slot pointer without materializing its store.
+    #[cfg(sf_jit)]
+    #[inline]
+    pub(crate) fn jit_pointer(&self) -> Option<*mut Store> {
+        match self.pointer {
+            InstancePointer::Jit(pointer) => Some(pointer),
+            #[cfg(sf_interp)]
+            InstancePointer::Interp(_) => None,
+        }
+    }
+
     #[cfg(sf_jit)]
     #[inline]
     pub(crate) fn jit_mut(&mut self) -> Option<&mut Store> {
@@ -954,67 +965,55 @@ mod instance_table_tests {
     fn miri_instance_table_scopes_materializations() {
         let registry = LinkRegistry::new();
         let table = registry.instance_table();
-        let (id, _) = occupied_store(&registry);
-        let mut first = table.checkout(id).expect("first checkout");
-        let mut second = table.checkout(id).expect("second checkout");
+        let (a_id, _) = occupied_store(&registry);
+        let (b_id, _) = occupied_store(&registry);
+        assert_ne!(a_id, b_id);
 
-        assert_eq!(table.in_use(id), Some(2));
-        {
-            let store = first.jit_mut().expect("first materialization");
-            assert_eq!(store.instance_handle().self_id(), id);
-        }
-        {
-            let store = second.jit_mut().expect("second materialization");
-            assert_eq!(store.instance_handle().self_id(), id);
-        }
-        {
-            let store = first.jit_mut().expect("rematerialize first token");
-            assert_eq!(store.instance_handle().self_id(), id);
-        }
-
-        let wrong_generation = InstanceId::from_parts(id.index(), id.generation() + 1);
-        assert!(table.checkout(wrong_generation).is_none());
-        assert_eq!(table.free(id), Err(InstanceFreeError::InUse));
-
-        drop(second);
-        assert_eq!(table.in_use(id), Some(1));
-        drop(first);
-        assert_eq!(table.in_use(id), Some(0));
-        table.free(id).expect("free after checkouts end");
-        assert!(table.checkout(id).is_none());
-
-        let caller_id = table.reserve();
-        let caller_handle = table.handle(caller_id);
-        table
-            .occupy_jit(caller_id, test_store(&registry, caller_handle))
-            .expect("occupy Miri caller");
-        let owner_id = table.reserve();
-        let owner_handle = table.handle(owner_id);
-        table
-            .occupy_jit(owner_id, test_store(&registry, owner_handle))
-            .expect("occupy Miri foreign owner");
-        assert_ne!(caller_id, owner_id);
-
-        let mut caller = table.checkout(caller_id).expect("caller checkout");
-        let caller_store = caller.jit_mut().expect("caller materialization");
-        assert_eq!(caller_store.instance_handle().self_id(), caller_id);
-
-        let owned_owner = {
-            let owner = caller_store
-                .instance_handle()
-                .checkout(owner_id)
-                .expect("nested foreign-owner checkout");
-            let owner_store = owner.jit().expect("foreign-owner materialization");
-            owner_store.instance_handle().self_id()
+        let mut first_a = table.checkout(a_id).expect("first A checkout");
+        let a_handle = {
+            let a_store = first_a.jit_mut().expect("first A materialization");
+            assert_eq!(a_store.instance_handle().self_id(), a_id);
+            a_store.instance_handle().clone()
         };
+        assert_eq!(table.in_use(a_id), Some(1));
+        assert_eq!(table.in_use(b_id), Some(0));
 
-        assert_eq!(owned_owner, owner_id);
-        assert_eq!(table.in_use(owner_id), Some(0));
-        assert_eq!(caller_store.instance_handle().self_id(), caller_id);
+        let mut b = a_handle.checkout(b_id).expect("B checkout from A");
+        let b_handle = {
+            let b_store = b.jit_mut().expect("B materialization");
+            assert_eq!(b_store.instance_handle().self_id(), b_id);
+            b_store.instance_handle().clone()
+        };
+        assert_eq!(table.in_use(a_id), Some(1));
+        assert_eq!(table.in_use(b_id), Some(1));
 
-        drop(caller);
-        table.free(caller_id).expect("free Miri caller");
-        table.free(owner_id).expect("free Miri foreign owner");
+        let mut reentered_a = b_handle.checkout(a_id).expect("A re-entry from B");
+        {
+            let a_store = reentered_a.jit_mut().expect("re-entered A materialization");
+            assert_eq!(a_store.instance_handle().self_id(), a_id);
+        }
+        assert_eq!(table.in_use(a_id), Some(2));
+        assert_eq!(table.in_use(b_id), Some(1));
+        assert_eq!(table.free(a_id), Err(InstanceFreeError::InUse));
+        assert_eq!(table.free(b_id), Err(InstanceFreeError::InUse));
+
+        drop(reentered_a);
+        assert_eq!(table.in_use(a_id), Some(1));
+        {
+            let a_store = first_a
+                .jit_mut()
+                .expect("A rematerialization after re-entry");
+            assert_eq!(a_store.instance_handle().self_id(), a_id);
+        }
+        drop(b);
+        assert_eq!(table.in_use(b_id), Some(0));
+        drop(first_a);
+        assert_eq!(table.in_use(a_id), Some(0));
+
+        table.free(a_id).expect("free Miri A");
+        table.free(b_id).expect("free Miri B");
+        assert!(table.checkout(a_id).is_none());
+        assert!(table.checkout(b_id).is_none());
     }
 
     #[test]

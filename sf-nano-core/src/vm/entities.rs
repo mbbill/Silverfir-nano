@@ -70,24 +70,70 @@ impl core::fmt::Debug for HostCallback {
     }
 }
 
+enum CallerMemory<'a> {
+    Borrowed(&'a mut [u8]),
+    Shared(MemInst),
+}
+
 pub struct Caller<'a> {
-    memory: Option<&'a mut [u8]>,
+    memory: Option<CallerMemory<'a>>,
+    shared_borrow_active: Cell<bool>,
 }
 
 impl<'a> Caller<'a> {
     #[inline]
     pub fn new(memory: Option<&'a mut [u8]>) -> Self {
-        Self { memory }
+        Self {
+            memory: memory.map(CallerMemory::Borrowed),
+            shared_borrow_active: Cell::new(false),
+        }
+    }
+
+    #[inline]
+    pub(crate) fn from_shared_memory(memory: Option<MemInst>) -> Caller<'static> {
+        Caller {
+            memory: memory.map(CallerMemory::Shared),
+            shared_borrow_active: Cell::new(false),
+        }
+    }
+
+    fn begin_shared_borrow(&self) {
+        if self.shared_borrow_active.get() {
+            return;
+        }
+        let Some(CallerMemory::Shared(memory)) = self.memory.as_ref() else {
+            return;
+        };
+        memory
+            .begin_host_callback_borrow()
+            .expect("host memory borrow must pass invocation preflight");
+        self.shared_borrow_active.set(true);
     }
 
     #[inline]
     pub fn memory(&self) -> Option<&[u8]> {
-        self.memory.as_deref()
+        self.begin_shared_borrow();
+        match self.memory.as_ref()? {
+            CallerMemory::Borrowed(memory) => Some(memory),
+            CallerMemory::Shared(memory) => {
+                let ptr = memory.memory_ptr();
+                let len = memory.memory_len();
+                Some(unsafe { core::slice::from_raw_parts(ptr, len) })
+            }
+        }
     }
 
     #[inline]
     pub fn memory_mut(&mut self) -> Option<&mut [u8]> {
-        self.memory.as_deref_mut()
+        self.begin_shared_borrow();
+        match self.memory.as_mut()? {
+            CallerMemory::Borrowed(memory) => Some(memory),
+            CallerMemory::Shared(memory) => {
+                let ptr = memory.memory_ptr();
+                let len = memory.memory_len();
+                Some(unsafe { core::slice::from_raw_parts_mut(ptr, len) })
+            }
+        }
     }
 
     /// Construct a wasm-catchable throw from host code. Use as:
@@ -107,6 +153,18 @@ impl<'a> Caller<'a> {
             tag,
             args: args.into(),
         }
+    }
+}
+
+impl Drop for Caller<'_> {
+    fn drop(&mut self) {
+        if !self.shared_borrow_active.get() {
+            return;
+        }
+        let Some(CallerMemory::Shared(memory)) = self.memory.as_ref() else {
+            return;
+        };
+        memory.end_host_callback_borrow();
     }
 }
 
@@ -231,6 +289,7 @@ impl TableInst {
 #[derive(Debug)]
 pub(crate) struct MemBacking {
     pub(crate) data: collections::Vec<u8>,
+    pub(crate) host_callback_borrowed: Cell<bool>,
     #[cfg(sf_has_guard_pages)]
     pub(crate) guard: Option<GuardPageMemory>,
 }
@@ -260,6 +319,7 @@ impl MemInst {
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
                 data: collections::vec![0u8; initial_bytes],
+                host_callback_borrowed: Cell::new(false),
                 #[cfg(sf_has_guard_pages)]
                 guard: None,
             })),
@@ -275,6 +335,7 @@ impl MemInst {
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
                 data: collections::Vec::new(),
+                host_callback_borrowed: Cell::new(false),
                 guard: Some(guard),
             })),
             limits,
@@ -284,6 +345,26 @@ impl MemInst {
     #[inline]
     pub(crate) fn backing_mut(&self) -> RefMut<'_, MemBacking> {
         self.backing.borrow_mut()
+    }
+
+    #[inline]
+    pub(crate) fn host_callback_borrowed(&self) -> bool {
+        self.backing.borrow().host_callback_borrowed.get()
+    }
+
+    pub(crate) fn begin_host_callback_borrow(&self) -> Result<(), WasmError> {
+        let backing = self.backing.borrow();
+        if backing.host_callback_borrowed.replace(true) {
+            return Err(WasmError::trap(
+                "linear memory is already borrowed by a host callback",
+            ));
+        }
+        Ok(())
+    }
+
+    #[inline]
+    pub(crate) fn end_host_callback_borrow(&self) {
+        self.backing.borrow().host_callback_borrowed.set(false);
     }
 
     #[inline]

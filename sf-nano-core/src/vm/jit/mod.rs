@@ -22,8 +22,8 @@
 //!
 //! The engine's runtime *storage* also lives here: `store` (the runtime
 //! world native code addresses), `gc_heap`, `expr_eval` (instantiation-time
-//! constant evaluation against a store), `gc_type_check`, `result_buffer`,
-//! and `value_encoding` (the raw-slot and 32-bit wire encodings the native
+//! constant evaluation against a store), `gc_type_check`, and
+//! `value_encoding` (the raw-slot and 32-bit wire encodings the native
 //! boundary marshals through). The interpreter shares none of these; what
 //! the engines exchange goes through `crate::vm::link` instead.
 //!
@@ -44,7 +44,6 @@ pub(crate) mod gc_type_check;
 pub(crate) mod instance;
 pub(crate) mod machine;
 pub(crate) mod middle;
-pub(crate) mod result_buffer;
 pub(crate) mod runtime;
 pub(crate) mod store;
 pub(crate) mod template;

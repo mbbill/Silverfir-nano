@@ -73,6 +73,7 @@ impl MemInstJit for MemInst {
         Ok(MemInst {
             backing: Rc::new(RefCell::new(MemBacking {
                 data: collections::Vec::new(),
+                host_callback_borrowed: Cell::new(false),
                 #[cfg(sf_has_guard_pages)]
                 guard: None,
             })),
