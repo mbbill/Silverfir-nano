@@ -39,7 +39,7 @@ pub use vm::engine::{Engine, Tier};
 pub use vm::entities::{Caller, FunctionInst, HostCallback, HostFn};
 pub use vm::instance::{
     Func, Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,
-    InstanceInstantiationError,
+    InstanceInstantiationError, RuntimeWorld,
 };
 // The interpreter's instance is public as the counterpart to
 // `JitInstance` -- the escape hatch for what only this engine can answer.
