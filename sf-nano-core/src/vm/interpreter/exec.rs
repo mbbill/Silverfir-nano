@@ -3792,6 +3792,29 @@ mod tests {
             .all(|&(op, exits)| { !matches!(op, Op::MovPair | Op::I64_SubBrIf) || exits == 0 }));
     }
 
+    /// A frame's width is `n_locals + max operand-stack height`, and the
+    /// height has no cap, so ordinary valid wasm can declare a frame far
+    /// wider than any spec test's -- none exceeds 8,191 slots. A nativeness
+    /// gate keyed on that width once demoted every cell in such a function,
+    /// `Return` among them, and the driver rejects a slow return outright: a
+    /// function that returned a value returned an error instead. Exercised
+    /// through a call, because the caller's `Call` cell is rewired to the
+    /// native call handler whenever the callee's frame fits 16 bits, so a
+    /// demoted callee also stranded a pushed return record.
+    #[test]
+    fn deep_operand_stack_stays_native() {
+        use alloc::format;
+        for n in [100u64, 9000] {
+            let src = format!(
+                "(module (func $big (result i32)\n{}{})\n\
+                 (func (export \"run\") (result i32) call $big))",
+                "i32.const 1\n".repeat(n as usize),
+                "i32.add\n".repeat(n as usize - 1),
+            );
+            assert_eq!(run1(&src, "run", &[]).expect("deep frame"), n, "n={n}");
+        }
+    }
+
     #[test]
     fn iterative_fibonacci_dispatch_count_tracks_three_hot_cells() {
         let (bin, _) = instantiate(ITERATIVE_FIB_WAT);
