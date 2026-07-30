@@ -491,6 +491,11 @@ impl InterpInstanceLease {
     pub(crate) fn has_exclusive_lease(&self) -> bool {
         self.lease.is_exclusive()
     }
+
+    #[inline]
+    pub(crate) fn into_occupied_id(self) -> InstanceId {
+        self.lease.into_occupied_id()
+    }
 }
 
 impl core::ops::Deref for InterpInstanceLease {
@@ -5302,12 +5307,14 @@ mod tests {
             None,
             &[make_import()],
             Some(FuncRefHost {
-                invoke: Box::new(move |callee, args, results| {
-                    assert_eq!(callee, handle);
-                    assert!(args.is_empty());
-                    results[0] = 7;
-                    Ok(())
-                }),
+                invoke: alloc::boxed::Box::new(
+                    move |callee: RefHandle, args: &[u64], results: &mut [u64]| {
+                        assert_eq!(callee, handle);
+                        assert!(args.is_empty());
+                        results[0] = 7;
+                        Ok(())
+                    },
+                ),
             }),
             &registry,
         ) {

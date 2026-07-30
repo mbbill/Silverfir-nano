@@ -35,7 +35,7 @@ use crate::vm::jit::store::Store;
 
 /// Stable identity for one instance in a runtime world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct InstanceId {
+pub struct InstanceId {
     index: u32,
     generation: u32,
 }
@@ -47,12 +47,12 @@ impl InstanceId {
     }
 
     #[inline]
-    pub(crate) const fn index(self) -> u32 {
+    pub const fn index(self) -> u32 {
         self.index
     }
 
     #[inline]
-    pub(crate) const fn generation(self) -> u32 {
+    pub const fn generation(self) -> u32 {
         self.generation
     }
 }
@@ -444,6 +444,18 @@ impl InstanceLease {
             .as_ref()
             .expect("instance lease already released");
         InstanceTable(Rc::clone(&token.table)).in_use(token.id) == Some(1)
+    }
+
+    /// Release this facade's checkout without freeing its occupied slot.
+    ///
+    /// Failed instantiation returns the stable id while the world remains the
+    /// owner. Taking the token first prevents `InstanceLease::drop` from
+    /// interpreting this as ordinary facade teardown.
+    pub(crate) fn into_occupied_id(mut self) -> InstanceId {
+        let token = self.token.take().expect("instance lease already released");
+        let id = token.id();
+        drop(token);
+        id
     }
 }
 

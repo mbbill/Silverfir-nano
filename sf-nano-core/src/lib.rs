@@ -39,6 +39,7 @@ pub use vm::engine::{Engine, Tier};
 pub use vm::entities::{Caller, FunctionInst, HostCallback, HostFn};
 pub use vm::instance::{
     Func, Import, ImportValue, ImportedFunction, ImportedTableState, ImportedTagState, Instance,
+    InstanceInstantiationError,
 };
 // The interpreter's instance is public as the counterpart to
 // `JitInstance` -- the escape hatch for what only this engine can answer.
@@ -55,10 +56,10 @@ pub use vm::jit::arch::active_native_backend_name;
 #[cfg(sf_jit)]
 pub use vm::jit::build::{jit_stats_snapshot, JitStatsSnapshot};
 #[cfg(sf_jit)]
-pub use vm::jit::instance::{InstanceInstantiationError, JitInstance};
+pub use vm::jit::instance::JitInstance;
 #[cfg(sf_has_guard_pages)]
 use vm::jit::runtime::trap_signal;
-pub use vm::link::LinkRegistry;
+pub use vm::link::{InstanceId, LinkRegistry};
 pub use vm::tag::TagHandle;
 pub use vm::value::{RefHandle, Value};
 
