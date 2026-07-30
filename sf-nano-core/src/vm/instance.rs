@@ -721,6 +721,8 @@ impl Drop for RuntimeWorld {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::Config;
+    use crate::vm::engine::Tier;
 
     const ADD_WASM: &[u8] = &[
         0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x01, 0x07, 0x01, 0x60, 0x02, 0x7f, 0x7f,
@@ -754,6 +756,72 @@ mod tests {
         drop(checkout);
         world.free(id).expect("free after checkout ends");
         assert!(world.invoke(id, "add", &[]).is_err());
+    }
+
+    #[test]
+    fn runtime_world_registers_only_escapable_functions() {
+        let wasm = wat::parse_str(
+            r#"
+            (module
+              (func $hidden)
+              (func $code_ref)
+              (func $element_declared)
+              (func (export "declared_ref") (result funcref)
+                ref.func $code_ref)
+              ;; The validator's expression-form arm over-declares every
+              ;; function even though this segment contains no ref.func.
+              (elem declare funcref (ref.null func))
+              (elem declare func $element_declared)
+            )
+            "#,
+        )
+        .expect("encode escapable-function module");
+
+        for &tier in Tier::ALL {
+            let engine = Engine::new(Config::new().tier(tier)).expect("engine config");
+            let module = Module::new("runtime-world-escapable", &wasm).expect("parse module");
+            let mut world = RuntimeWorld::new();
+            let id = world
+                .instantiate(&engine, module, &[])
+                .expect("instantiate in world");
+
+            let instance = &world
+                .instances
+                .iter()
+                .find(|(candidate, _)| *candidate == id)
+                .expect("world retains instance")
+                .1;
+            assert!(
+                instance.function_handle_at(0).is_none(),
+                "{tier:?}: hidden function acquired a world address"
+            );
+            let declared = instance
+                .function_handle_at(1)
+                .expect("code-section ref.func has a world address");
+
+            let returned = world
+                .invoke(id, "declared_ref", &[])
+                .expect("execute ref.func");
+            assert!(
+                matches!(returned.as_slice(), [Value::Ref(handle, _)] if *handle == declared),
+                "{tier:?}: ref.func did not return the declared identity"
+            );
+
+            let arenas = world.registry.arenas();
+            let entries = arenas.functions.borrow();
+            assert!(
+                entries.iter().all(|entry| entry.owner == id),
+                "{tier:?}: registration has the wrong owner"
+            );
+            assert_eq!(
+                entries
+                    .iter()
+                    .map(|entry| entry.local_index)
+                    .collect::<collections::Vec<_>>(),
+                collections::vec![1, 2, 3],
+                "{tier:?}: escapable function set is not exact"
+            );
+        }
     }
 
     #[cfg(feature = "memprof")]

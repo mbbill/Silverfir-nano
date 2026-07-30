@@ -160,7 +160,11 @@ fn absolutize_ref_with(
     if module.functions().get(local).is_none() {
         return handle;
     }
-    function_identities.get(local).copied().unwrap_or(handle)
+    function_identities
+        .get(local)
+        .copied()
+        .filter(|identity| !identity.is_null())
+        .unwrap_or(handle)
 }
 
 fn localize_ref_with(
@@ -479,6 +483,8 @@ pub struct InterpInstance {
     /// linked imports retain the provider's absolute world identity.
     function_handles: Vec<RefHandle>,
     /// Absolute world identities indexed by this module's function index.
+    /// Non-escapable local functions keep the null sentinel and consume no
+    /// world address.
     function_identities: Vec<RefHandle>,
     native: Option<NativeState>,
 }
@@ -866,6 +872,7 @@ impl InterpInstance {
             .iter()
             .map(|table| table.is_import() || !table.export_names().is_empty())
             .collect();
+        let escapable_functions = module.escapable_functions()?;
 
         // Resolve imported memories up front, indexed the way the module
         // declares them, so the loop below can take a shared backing
@@ -995,16 +1002,25 @@ impl InterpInstance {
                     ));
                 }
                 function_handles.push(handle);
-                function_identities.push(handle);
+                function_identities.push(if escapable_functions[func_idx] {
+                    handle
+                } else {
+                    RefHandle::null()
+                });
                 continue;
             }
 
             let local = RefHandle::new(func_idx);
-            let absolute = link_registry.functions.absolute_handle(FuncEntry {
-                owner: instance_handle.self_id(),
-                local_index: u32::try_from(func_idx)
-                    .map_err(|_| WasmError::invalid("interpreter function index is too large"))?,
-            });
+            let absolute = if escapable_functions[func_idx] {
+                link_registry.functions.absolute_handle(FuncEntry {
+                    owner: instance_handle.self_id(),
+                    local_index: u32::try_from(func_idx).map_err(|_| {
+                        WasmError::invalid("interpreter function index is too large")
+                    })?,
+                })
+            } else {
+                RefHandle::null()
+            };
             function_handles.push(local);
             function_identities.push(absolute);
         }
@@ -2223,7 +2239,10 @@ impl InterpInstance {
 
     /// The function's absolute world identity for an external boundary.
     pub fn function_handle_at(&self, func_index: usize) -> Option<RefHandle> {
-        self.function_identities.get(func_index).copied()
+        self.function_identities
+            .get(func_index)
+            .copied()
+            .filter(|handle| !handle.is_null())
     }
 
     /// The memory entity at `idx`, for another instance to import.
