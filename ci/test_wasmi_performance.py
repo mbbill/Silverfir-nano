@@ -6,7 +6,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import mock_open, patch
 
 from ci import wasmi_performance
 
@@ -168,6 +168,59 @@ class WasmiPerformanceTests(unittest.TestCase):
             wasmi_performance.ENGINE_CORE_FEATURES["interp"].split(",")
         )
         self.assertFalse(jit & interp)
+
+    def test_runtime_fingerprint_remaps_the_identity_target_directory(
+        self,
+    ) -> None:
+        # build.rs writes interp_engine_cfg.rs into OUT_DIR and the crate
+        # include!s it, so without this remap an interpreter build of identical
+        # sources fingerprints differently per version and every benchmark
+        # needlessly enters confirmation.
+        context = wasmi_performance.CargoContext(
+            version="candidate",
+            source=Path("/source"),
+            suite=Path("/suite"),
+            config=Path("/suite/.cargo/config.toml"),
+            target=Path("/target"),
+            cargo="cargo",
+            toolchain="1.97.0",
+            feature="silverfir-nano-interp",
+            runtime_id="silverfir-nano.interpreter",
+            core_features="interp",
+        )
+        captured: dict[str, str] = {}
+
+        def record(command, *, cwd, env, capture, check=True):
+            captured.update(env)
+            return subprocess.CompletedProcess(
+                args=list(command),
+                returncode=0,
+                stdout=json.dumps({
+                    "reason": "compiler-artifact",
+                    "package_id": "path+file:///source#sf-nano-core@0.1.0",
+                    "target": {"kind": ["lib"], "name": "sf_nano_core"},
+                    "filenames": ["/artifact/libsf_nano_core-1.rlib"],
+                }),
+                stderr="",
+            )
+
+        with (
+            patch.object(Path, "mkdir"),
+            patch.object(wasmi_performance, "run_process", side_effect=record),
+            patch("builtins.open", mock_open(read_data=b"engine")),
+        ):
+            wasmi_performance.runtime_fingerprint(context)
+
+        flags = captured["CARGO_ENCODED_RUSTFLAGS"].split("\x1f")
+        identity_target = Path("/target/runtime-identity").resolve().as_posix()
+        self.assertIn(
+            f"--remap-path-prefix={identity_target}=/workspace/identity-target",
+            flags,
+        )
+        # The measured checkout stays remapped as well.
+        self.assertTrue(
+            any(flag.endswith("=/workspace/sf-nano") for flag in flags)
+        )
 
     def test_runtime_fingerprint_rejects_an_ambiguous_artifact_set(
         self,
