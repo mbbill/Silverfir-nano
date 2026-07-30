@@ -22,10 +22,10 @@
 //!
 //! The engine's runtime *storage* also lives here: `store` (the runtime
 //! world native code addresses), `gc_heap`, `expr_eval` (instantiation-time
-//! constant evaluation against a store), `gc_type_check`, and
-//! `value_encoding` (the raw-slot and 32-bit wire encodings the native
-//! boundary marshals through). The interpreter shares none of these; what
-//! the engines exchange goes through `crate::vm::link` instead.
+//! constant evaluation against a store), and `value_encoding` (the raw-slot
+//! and 32-bit wire encodings the native boundary marshals through). Dynamic
+//! reference type tests are shared through `crate::vm::link`, where world
+//! provenance from either engine is available.
 //!
 //! `debug/` is the IR/jitdump tooling for the same pipeline.
 //!
@@ -40,7 +40,6 @@ pub(crate) mod debug;
 pub(crate) mod entities;
 pub(crate) mod expr_eval;
 pub(crate) mod gc_heap;
-pub(crate) mod gc_type_check;
 pub(crate) mod instance;
 pub(crate) mod machine;
 pub(crate) mod middle;

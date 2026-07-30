@@ -437,6 +437,11 @@ pub enum Op {
     /// second `MovSlot`. Emitted for adjacent stack staging or local
     /// assignments.
     MovPair,
+    /// Dynamic reference test/cast. `a` is the reference operand, `b` is an
+    /// encoded `RefType`, and `c` is the result slot. These stay on the shared
+    /// Rust slow path so both engines use the same world-provenance matcher.
+    RefTest,
+    RefCast,
     Unreachable,
 }
 

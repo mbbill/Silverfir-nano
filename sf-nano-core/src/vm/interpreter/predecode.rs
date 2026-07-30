@@ -23,8 +23,9 @@ use crate::module::type_context::TypeContext;
 use crate::module::Module;
 use crate::op_decoder::{BlockType, Decoder, Immediate, OpStream, OpcodeHandler};
 use crate::op_decoder::{CatchClause, CatchClauseKind};
-use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
+use crate::opcodes::{Opcode, OpcodeFB, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
+use crate::value_type::ValueType;
 use crate::vm::tag::TagHandle;
 use crate::vm::value::RefHandle;
 
@@ -1900,6 +1901,28 @@ impl<'m> Predecoder<'m> {
         }
     }
 
+    fn fb_op(&mut self, fb: OpcodeFB, imm: &Immediate) -> Result<(), WasmError> {
+        use OpcodeFB::*;
+        let op = match fb {
+            REF_TEST | REF_TEST_NULL => Op::RefTest,
+            REF_CAST | REF_CAST_NULL => Op::RefCast,
+            _ => return Err(unsupported_opcode(WasmOpcode::FB(fb))),
+        };
+        let ref_type = match imm {
+            Immediate::RefType(ValueType::Ref(ref_type)) => *ref_type,
+            _ => return Err(desync()),
+        };
+
+        let at = self.code.len() as u32;
+        let source = self.pop()?;
+        let (a, a_const) = self.operand(source, at);
+        let flags = if a_const { FLAG_A_CONST } else { 0 };
+        let dst = self.temp_slot_used(self.height());
+        let index = self.emit(op, flags, a, ref_type.encode_to_u64(), dst);
+        self.push_result_temp(index);
+        Ok(())
+    }
+
     fn patch_fixups_to_here(&mut self, fixups: &[Fixup]) {
         let here = self.code.len() as u32;
         for &f in fixups {
@@ -2131,6 +2154,13 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                         continue;
                     }
                     self.fc_op(fc, &op.imm.clone())?;
+                    continue;
+                }
+                WasmOpcode::FB(fb) => {
+                    if self.dead {
+                        continue;
+                    }
+                    self.fb_op(fb, &op.imm.clone())?;
                     continue;
                 }
                 other => return Err(unsupported_opcode(other)),
