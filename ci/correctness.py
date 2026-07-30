@@ -30,7 +30,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, Sequence
 
-from ci.runner import ROOT, TARGET, Result, Runner, require_tools, slug
+from ci.runner import ROOT, TARGET, Diagnostic, Result, Runner, require_tools, slug
 
 
 TESTSUITE = TARGET / "webassembly-testsuite"
@@ -406,7 +406,7 @@ def run_cross_regression_tests(runner: Runner, config: CrossPlatform) -> None:
     # This target normally uses panic=abort, which stable libtest refuses.
     # Appending panic=unwind overrides only that setting; Cargo preserves the
     # target's preceding static-link flags from .cargo/config.toml.
-    cargo(
+    result = cargo(
         runner,
         "run riscv64 special-funcref call_indirect guard (release)",
         "test",
@@ -425,6 +425,40 @@ def run_cross_regression_tests(runner: Runner, config: CrossPlatform) -> None:
             "--exact",
             "--nocapture",
         ),
+    )
+    # `--exact` on a name that no longer exists prints "running 0 tests" and
+    # exits 0, so a rename would leave this step green while running nothing.
+    # The point of the step is that this specific guard executes under QEMU,
+    # so require the evidence that it did.
+    if result.status != "FAIL" and not test_reported_one_pass(result):
+        runner.results.append(
+            Result(
+                name="riscv64 guard test actually ran",
+                status="FAIL",
+                argv=("<assertion>",),
+                log=result.log,
+                returncode=1,
+                diagnostics=(
+                    Diagnostic(
+                        "error",
+                        f"expected `{SPECIAL_FUNCREF_GUARD_TEST}` to report one passing "
+                        "test under QEMU; the filter matched nothing, which means the "
+                        "test was renamed, moved, or cfg'd out",
+                    ),
+                ),
+            )
+        )
+
+
+def test_reported_one_pass(result: Result) -> bool:
+    """Whether a libtest run actually executed a test, rather than filtering
+    every candidate away and exiting 0."""
+    if result.log is None or not result.log.exists():
+        return False
+    text = result.log.read_text(encoding="utf-8", errors="replace")
+    return any(
+        line.startswith("test result: ok.") and not line.startswith("test result: ok. 0 passed")
+        for line in text.splitlines()
     )
 
 

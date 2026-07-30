@@ -58,6 +58,38 @@ reason = "even an approval cannot disable all warnings"
         )
         self.assertTrue(any("never permitted" in error for error in errors))
 
+    def test_empty_reason_is_not_a_reason(self) -> None:
+        """`reason = ""` compiles and used to pass, while the manifest path
+        rejected an empty reason outright. The inline path is now primary, so
+        it has to demand at least as much."""
+        for value in ('""', '"   "'):
+            with self.subTest(value=value):
+                errors = self.run_policy(
+                    f"#[allow(dead_code, reason = {value})]\nfn hidden() {{}}\n"
+                )
+                self.assertTrue(
+                    any("needs an inline `reason" in error for error in errors),
+                    f"empty reason {value} must not satisfy the audit",
+                )
+
+    def test_bracket_in_a_reason_cannot_hide_a_warnings_suppression(self) -> None:
+        """The attribute scanner used to truncate at the first `]`, so a
+        bracket in ordinary prose made the whole suppression invisible --
+        including a `warnings` one, which is refused outright."""
+        errors = self.run_policy(
+            '#[allow(warnings, reason = "see [1] for context")]\nfn hidden() {}\n'
+        )
+        self.assertTrue(any("never permitted" in error for error in errors))
+
+    def test_bracket_in_a_reason_is_otherwise_fine(self) -> None:
+        self.assertEqual(
+            self.run_policy(
+                '#[allow(dead_code, reason = "see [1]; unreachable under mode-wasm")]\n'
+                "fn hidden() {}\n"
+            ),
+            [],
+        )
+
     def test_manifest_covers_a_site_that_cannot_carry_a_reason(self) -> None:
         """The manifest is the fallback for attribute positions that cannot
         take a reason inline. It still works, and still demands one."""

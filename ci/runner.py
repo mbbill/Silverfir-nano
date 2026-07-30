@@ -33,17 +33,41 @@ RELEVANT_ERROR_RE = re.compile(
 # Linker chatter that `-Z build-std` provokes for a tier-3 target and that no
 # change to this repository can silence. `riscv32gc-unknown-linux-musl` is not
 # a rustup target -- std is compiled from source into the target directory --
-# so the linker probes a `rustlib` path that legitimately does not exist. These
-# stay visible as diagnostics; they simply do not fail the gate, because the
-# alternative is a job that is permanently red and therefore tells nobody
-# anything when rv32 actually breaks. Every other warning, linker or compiler,
-# still fails.
-BENIGN_LINKER_WARNING_RE = re.compile(
-    r"^warning:\s*linker stderr:\s*(?:"
-    r"ignoring deprecated linker optimization setting"
-    r"|unable to open library directory '[^']*[/\\]rustlib[/\\][^']*': FileNotFound"
-    r")"
+# so the linker probes a `rustlib` path that legitimately does not exist.
+#
+# These do not fail the gate; the alternative is a job that is permanently red
+# and therefore says nothing when rv32 actually breaks. Be clear about the
+# cost: a discounted line does NOT reach the run summary either, because a
+# step whose only warnings were discounted reports OK and `diagnostics_by_issue`
+# collects from WARN/FAIL steps only. The text survives in `target/ci-logs/`.
+#
+# Read the next part before touching these patterns. rustc folds ONE linker
+# invocation's entire stderr into ONE diagnostic: the first line carries the
+# `warning:` prefix and everything else is indented continuation with no
+# prefix of its own. So a real `undefined reference` emitted by the same link
+# arrives as a continuation line of a benign-looking warning. Matching only
+# the first line therefore hides real errors -- that is not hypothetical, it
+# is what the first version of this code did.
+#
+# Two rules keep that closed, and both matter:
+#   * these patterns are FULLY ANCHORED, so a benign prefix followed by
+#     anything else does not match; and
+#   * a diagnostic is discounted only when EVERY content line in its block
+#     matches, which is decided in `benign_block` below.
+# Anything unrecognised in the block makes the whole diagnostic count. Fail
+# safe: an unfamiliar linker message is a warning, not a free pass.
+BENIGN_LINKER_LINE_RE = re.compile(
+    r"^(?:warning:\s*)?(?:linker stderr:\s*)?(?:"
+    r"ignoring deprecated linker optimization setting '[^']*'"
+    # Scoped to the one target whose std is built from source. Any other
+    # target missing its rustlib means the toolchain is genuinely broken.
+    r"|unable to open library directory "
+    r"'[^']*[/\\]rustlib[/\\]riscv32gc-unknown-linux-musl[/\\][^']*': FileNotFound"
+    r")$"
 )
+# Rustc's rendering furniture around a diagnostic: the source-span gutter and
+# its trailing notes. Carries no diagnostic content of its own.
+DIAGNOSTIC_DECORATION_RE = re.compile(r"^(?:\||=\s*(?:note|help):|\^+|\d+\s*\||\s*$)")
 
 
 @dataclass(frozen=True)
@@ -103,6 +127,29 @@ def parse_log(path: Path, returncode: int) -> tuple[int, int, tuple[Diagnostic, 
             seen.add(diagnostic)
             diagnostics.append(diagnostic)
 
+    def benign_block(start: int) -> bool:
+        """True only if every content line of this diagnostic is recognised.
+
+        The block runs from the header line until the next column-0
+        diagnostic. A single unrecognised line -- an `undefined reference`
+        riding along in the same linker invocation -- makes the whole
+        diagnostic count.
+        """
+        if not BENIGN_LINKER_LINE_RE.match(lines[start].strip()):
+            return False
+        for following in lines[start + 1 :]:
+            if not following.strip():
+                continue
+            # A new column-0 diagnostic ends this block.
+            if not following[:1].isspace():
+                return True
+            content = following.strip()
+            if DIAGNOSTIC_DECORATION_RE.match(content):
+                continue
+            if not BENIGN_LINKER_LINE_RE.match(content):
+                return False
+        return True
+
     for index, line in enumerate(lines):
         match = DIAGNOSTIC_RE.match(line)
         if not match:
@@ -111,7 +158,7 @@ def parse_log(path: Path, returncode: int) -> tuple[int, int, tuple[Diagnostic, 
         kind = "error" if header.startswith("error") else "warning"
         if kind == "error":
             errors += 1
-        elif BENIGN_LINKER_WARNING_RE.match(line.strip()):
+        elif benign_block(index):
             benign += 1
         elif not GENERATED_WARNINGS_RE.search(line):
             warnings += 1

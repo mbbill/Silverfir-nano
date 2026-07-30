@@ -37,12 +37,24 @@ from typing import Iterable
 
 
 CONTROLLED_LINT_RE = re.compile(r"\b(?:warnings|dead_code|unused(?:_[A-Za-z0-9_]+)?)\b")
-ATTRIBUTE_RE = re.compile(r"#!?\s*\[(?P<body>[^\]]*)\]", re.MULTILINE | re.DOTALL)
+# A bracket inside a reason string used to truncate the attribute body here,
+# which made the whole suppression invisible to the scanner -- including a
+# `warnings` suppression, the one thing this file refuses outright. Consume
+# quoted strings whole so prose like `reason = "see [1]"` cannot hide one.
+ATTRIBUTE_RE = re.compile(
+    r"#!?\s*\[(?P<body>(?:[^\]\"]|\"(?:[^\"\\\\]|\\\\.)*\")*)\]",
+    re.MULTILINE | re.DOTALL,
+)
 SUPPRESSION_RE = re.compile(
     r"\b(?P<kind>allow|expect)\s*\((?P<body>[^)]*)\)",
     re.MULTILINE | re.DOTALL,
 )
-REASON_RE = re.compile(r"\breason\s*=")
+# A reason must actually say something. `reason = ""` compiles and, before
+# this was tightened, passed the audit -- while the manifest path rejected an
+# empty reason outright. The inline path is now the primary one, so it has to
+# demand at least as much. Requires a quoted value with a non-whitespace
+# character in it; a raw string (r"...") counts too.
+REASON_RE = re.compile(r"\breason\s*=\s*r?#*\"[^\"]*[^\"\s][^\"]*\"")
 # `.claude` holds agent worktrees (full repo copies whose sources are not part
 # of this checkout) and session state; scanning it makes local runs report
 # other checkouts' findings. `.cargo`, `.github`, and other dot-directories
