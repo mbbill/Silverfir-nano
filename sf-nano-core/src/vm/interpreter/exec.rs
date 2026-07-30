@@ -34,7 +34,7 @@ use crate::vm::link::{
     LinkRegistry, RefTypeOwner,
 };
 use crate::vm::tag::TagHandle;
-use crate::vm::value::{RefHandle, Value};
+use crate::vm::value::{machine_raw_to_ref, ref_to_machine_raw, RefHandle, Value};
 
 use super::engine::{
     DCell, EnterState, LinkedFunction, NativeEngine, EXIT_RETURN, EXIT_SLOW, EXIT_TRAP_BASE,
@@ -44,39 +44,9 @@ use super::fmath;
 use super::instr::{op_from_index, Op};
 use super::instr::{Instr, FLAG_ADDR64, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
 use super::predecode::{predecode_function, PredecodedFunction, WIDE_MEMARG};
+use super::SLOT_GP_UNIT_BYTES;
 
 const PAGE: usize = 65536;
-/// A null reference, as it sits in an 8-byte slot.
-///
-/// `RefHandle` is `usize`-wide, so its own null (`usize::MAX`) is a different
-/// bit pattern on 32- and 64-bit hosts. Slots are always 8 bytes, so the two
-/// conversions below normalize null to one value and a reference means the
-/// same thing in a slot on every target.
-const NULL_REF_SLOT: u64 = u64::MAX;
-
-/// A reference as stored in a slot, table entry, or global.
-///
-/// A plain handle's payload IS the function index -- the same number the
-/// interpreter used to store as a bare `u32` -- so widening to the full
-/// handle keeps funcrefs bit-identical and brings extern/host refs, which
-/// ride in `RefHandle`'s tag bits, along for free.
-#[inline]
-pub(crate) fn ref_to_slot(handle: RefHandle) -> u64 {
-    if handle.is_null() {
-        NULL_REF_SLOT
-    } else {
-        handle.0 as u64
-    }
-}
-
-#[inline]
-pub(crate) fn slot_to_ref(slot: u64) -> RefHandle {
-    if slot == NULL_REF_SLOT {
-        RefHandle::null()
-    } else {
-        RefHandle::new(slot as usize)
-    }
-}
 const MAX_CALL_DEPTH: u32 = 4096;
 /// Ceiling on native call depth, and so on the return-stack records the
 /// dispatch chain can plant.
@@ -191,11 +161,14 @@ fn localize_ref_with(
 
 #[inline]
 fn absolutize_slot_with(module: &Module, function_identities: &[RefHandle], slot: u64) -> u64 {
-    ref_to_slot(absolutize_ref_with(
-        module,
-        function_identities,
-        slot_to_ref(slot),
-    ))
+    ref_to_machine_raw(
+        absolutize_ref_with(
+            module,
+            function_identities,
+            machine_raw_to_ref(slot, SLOT_GP_UNIT_BYTES),
+        ),
+        SLOT_GP_UNIT_BYTES,
+    )
 }
 
 #[inline]
@@ -205,12 +178,15 @@ fn localize_slot_with(
     link_registry: &LinkArenas,
     slot: u64,
 ) -> u64 {
-    ref_to_slot(localize_ref_with(
-        module,
-        instance_handle,
-        link_registry,
-        slot_to_ref(slot),
-    ))
+    ref_to_machine_raw(
+        localize_ref_with(
+            module,
+            instance_handle,
+            link_registry,
+            machine_raw_to_ref(slot, SLOT_GP_UNIT_BYTES),
+        ),
+        SLOT_GP_UNIT_BYTES,
+    )
 }
 
 /// `max` is a growth limit, consulted only by `table.grow`; the executor
@@ -246,7 +222,10 @@ impl TableEntries {
     fn get(&self, i: usize) -> Option<u64> {
         match self {
             Self::Private(v) => v.get(i).copied(),
-            Self::Shared(t) => t.elements().get(i).map(|h| ref_to_slot(*h)),
+            Self::Shared(t) => t
+                .elements()
+                .get(i)
+                .map(|handle| ref_to_machine_raw(*handle, SLOT_GP_UNIT_BYTES)),
         }
     }
 
@@ -255,7 +234,10 @@ impl TableEntries {
         let oob = || WasmError::trap("out of bounds table access");
         match self {
             Self::Private(vec) => *vec.get_mut(i).ok_or_else(oob)? = v,
-            Self::Shared(t) => *t.elements_mut().get_mut(i).ok_or_else(oob)? = slot_to_ref(v),
+            Self::Shared(t) => {
+                *t.elements_mut().get_mut(i).ok_or_else(oob)? =
+                    machine_raw_to_ref(v, SLOT_GP_UNIT_BYTES)
+            }
         }
         Ok(())
     }
@@ -263,14 +245,18 @@ impl TableEntries {
     fn resize(&mut self, n: usize, v: u64) {
         match self {
             Self::Private(vec) => vec.resize(n, v),
-            Self::Shared(t) => t.elements_mut().resize(n, slot_to_ref(v)),
+            Self::Shared(t) => t
+                .elements_mut()
+                .resize(n, machine_raw_to_ref(v, SLOT_GP_UNIT_BYTES)),
         }
     }
 
     fn fill(&mut self, at: usize, n: usize, v: u64) {
         match self {
             Self::Private(vec) => vec[at..at + n].fill(v),
-            Self::Shared(t) => t.elements_mut()[at..at + n].fill(slot_to_ref(v)),
+            Self::Shared(t) => {
+                t.elements_mut()[at..at + n].fill(machine_raw_to_ref(v, SLOT_GP_UNIT_BYTES))
+            }
         }
     }
 
@@ -548,7 +534,7 @@ pub(crate) fn value_to_raw_for_interp(v: &Value) -> Result<u64, WasmError> {
         Value::I64(x) => *x as u64,
         Value::F32(x) => x.to_bits() as u64,
         Value::F64(x) => x.to_bits(),
-        Value::Ref(handle, _) => ref_to_slot(*handle),
+        Value::Ref(handle, _) => ref_to_machine_raw(*handle, SLOT_GP_UNIT_BYTES),
         _ => return Err(WasmError::invalid("interp: unsupported value type")),
     })
 }
@@ -559,7 +545,7 @@ pub(crate) fn raw_to_value_for_interp(raw: u64, ty: ValueType) -> Result<Value, 
         ValueType::I64 => Value::I64(raw as i64),
         ValueType::F32 => Value::F32(f32::from_bits(raw as u32)),
         ValueType::F64 => Value::F64(f64::from_bits(raw)),
-        ValueType::Ref(ref_ty) => Value::Ref(slot_to_ref(raw), ref_ty),
+        ValueType::Ref(ref_ty) => Value::Ref(machine_raw_to_ref(raw, SLOT_GP_UNIT_BYTES), ref_ty),
         ValueType::V128 | ValueType::Unknown => {
             return Err(WasmError::invalid("interp: unsupported value type"))
         }
@@ -1253,14 +1239,16 @@ impl InterpInstance {
                         raw
                     }
                 }
-                None => NULL_REF_SLOT,
+                None => ref_to_machine_raw(RefHandle::null(), SLOT_GP_UNIT_BYTES),
             };
             let entries = match (&shared_from_import, shared_out) {
                 (Some(inst), _) => TableEntries::Shared(inst.clone()),
                 (None, true) => {
                     let inst = TableInst::new(limits.clone(), t.value_type());
-                    inst.elements_mut()
-                        .resize(limits.min(), slot_to_ref(init_slot));
+                    inst.elements_mut().resize(
+                        limits.min(),
+                        machine_raw_to_ref(init_slot, SLOT_GP_UNIT_BYTES),
+                    );
                     TableEntries::Shared(inst)
                 }
                 (None, false) => TableEntries::Private(vec![init_slot; limits.min() as usize]),
@@ -1369,7 +1357,10 @@ impl InterpInstance {
                             .get(fi)
                             .copied()
                             .ok_or(WasmError::invalid("element function identity missing"))?;
-                        let slot = self.table_slot_for_storage(table_index, ref_to_slot(handle));
+                        let slot = self.table_slot_for_storage(
+                            table_index,
+                            ref_to_machine_raw(handle, SLOT_GP_UNIT_BYTES),
+                        );
                         self.tables[table_index]
                             .entries
                             .set(off as usize + k, slot)?;
@@ -1729,10 +1720,11 @@ impl InterpInstance {
                 .get(k)
                 .and_then(|&fi| self.function_handles.get(fi as usize))
                 .copied()
-                .map(ref_to_slot)
+                .map(|handle| ref_to_machine_raw(handle, SLOT_GP_UNIT_BYTES))
                 .ok_or(WasmError::trap("out of bounds table access")),
-            // Already a slot: `eval_const` yields `NULL_REF_SLOT` for
-            // `ref.null` and a plain handle for `ref.func`.
+            // Already in the shared slot encoding: `eval_const` yields the
+            // target-width null wire form for `ref.null` and a plain handle
+            // for `ref.func`.
             ElementInit::InitExprs { exprs, .. } => exprs
                 .get(k)
                 .ok_or(WasmError::trap("out of bounds table access"))
@@ -1812,7 +1804,10 @@ impl InterpInstance {
     #[inline]
     fn absolutize_slot_for_type(&self, slot: u64, value_type: ValueType) -> u64 {
         if value_type_is_function_ref(&self.module, value_type) {
-            ref_to_slot(self.absolutize_ref(slot_to_ref(slot)))
+            ref_to_machine_raw(
+                self.absolutize_ref(machine_raw_to_ref(slot, SLOT_GP_UNIT_BYTES)),
+                SLOT_GP_UNIT_BYTES,
+            )
         } else {
             slot
         }
@@ -1821,7 +1816,10 @@ impl InterpInstance {
     #[inline]
     fn localize_slot_for_type(&self, slot: u64, value_type: ValueType) -> u64 {
         if value_type_is_function_ref(&self.module, value_type) {
-            ref_to_slot(self.localize_ref(slot_to_ref(slot)))
+            ref_to_machine_raw(
+                self.localize_ref(machine_raw_to_ref(slot, SLOT_GP_UNIT_BYTES)),
+                SLOT_GP_UNIT_BYTES,
+            )
         } else {
             slot
         }
@@ -1836,9 +1834,15 @@ impl InterpInstance {
             return slot;
         }
         if self.table_reachable.get(table_idx).copied().unwrap_or(true) {
-            ref_to_slot(self.absolutize_ref(slot_to_ref(slot)))
+            ref_to_machine_raw(
+                self.absolutize_ref(machine_raw_to_ref(slot, SLOT_GP_UNIT_BYTES)),
+                SLOT_GP_UNIT_BYTES,
+            )
         } else {
-            ref_to_slot(self.localize_ref(slot_to_ref(slot)))
+            ref_to_machine_raw(
+                self.localize_ref(machine_raw_to_ref(slot, SLOT_GP_UNIT_BYTES)),
+                SLOT_GP_UNIT_BYTES,
+            )
         }
     }
 
@@ -1864,9 +1868,15 @@ impl InterpInstance {
             .copied()
             .unwrap_or(true)
         {
-            ref_to_slot(self.absolutize_ref(slot_to_ref(slot)))
+            ref_to_machine_raw(
+                self.absolutize_ref(machine_raw_to_ref(slot, SLOT_GP_UNIT_BYTES)),
+                SLOT_GP_UNIT_BYTES,
+            )
         } else {
-            ref_to_slot(self.localize_ref(slot_to_ref(slot)))
+            ref_to_machine_raw(
+                self.localize_ref(machine_raw_to_ref(slot, SLOT_GP_UNIT_BYTES)),
+                SLOT_GP_UNIT_BYTES,
+            )
         }
     }
 
@@ -2494,7 +2504,7 @@ impl InterpInstance {
             }
         }
         if handler.forwards_exn {
-            target[payload_arity] = ref_to_slot(pending.exn);
+            target[payload_arity] = ref_to_machine_raw(pending.exn, SLOT_GP_UNIT_BYTES);
         }
 
         act.pc = handler.target as usize;
@@ -3561,7 +3571,7 @@ impl InterpInstance {
             // ---- ref/table ----
             Op::RefIsNull => {
                 let v = opa!(ins);
-                frame[ins.c as usize] = slot_to_ref(v).is_null() as u64;
+                frame[ins.c as usize] = machine_raw_to_ref(v, SLOT_GP_UNIT_BYTES).is_null() as u64;
             }
             Op::Throw => {
                 let pending =
@@ -3569,7 +3579,8 @@ impl InterpInstance {
                 return Ok(Effect::Throw(pending));
             }
             Op::ThrowRef => {
-                let pending = self.exception_from_ref(slot_to_ref(opa!(ins)))?;
+                let pending =
+                    self.exception_from_ref(machine_raw_to_ref(opa!(ins), SLOT_GP_UNIT_BYTES))?;
                 return Ok(Effect::Throw(pending));
             }
             Op::RefEq => {
@@ -3577,13 +3588,13 @@ impl InterpInstance {
             }
             Op::RefAsNonNull => {
                 let v = opa!(ins);
-                if slot_to_ref(v).is_null() {
+                if machine_raw_to_ref(v, SLOT_GP_UNIT_BYTES).is_null() {
                     return Err(WasmError::trap("null function reference"));
                 }
                 frame[ins.c as usize] = v;
             }
             Op::RefTest => {
-                let handle = slot_to_ref(opa!(ins));
+                let handle = machine_raw_to_ref(opa!(ins), SLOT_GP_UNIT_BYTES);
                 let target = RefType::decode_from_u64(ins.b);
                 let is_match = if handle.is_null() {
                     target.nullable
@@ -3594,7 +3605,7 @@ impl InterpInstance {
             }
             Op::RefCast => {
                 let raw = opa!(ins);
-                let handle = slot_to_ref(raw);
+                let handle = machine_raw_to_ref(raw, SLOT_GP_UNIT_BYTES);
                 let target = RefType::decode_from_u64(ins.b);
                 let is_match = if handle.is_null() {
                     target.nullable
@@ -3607,7 +3618,7 @@ impl InterpInstance {
                 frame[ins.c as usize] = raw;
             }
             Op::CallRef | Op::ReturnCallRef => {
-                let r = slot_to_ref(opa!(ins));
+                let r = machine_raw_to_ref(opa!(ins), SLOT_GP_UNIT_BYTES);
                 if r.is_null() {
                     return Err(WasmError::trap("null function reference"));
                 }
@@ -3921,7 +3932,7 @@ impl InterpInstance {
                     .ok()
                     .and_then(|t| table.entries.get(t))
                     .ok_or(WasmError::trap("undefined element"))?;
-                let callee = slot_to_ref(fi);
+                let callee = machine_raw_to_ref(fi, SLOT_GP_UNIT_BYTES);
                 if callee.is_null() {
                     return Err(WasmError::trap("uninitialized element"));
                 }
@@ -5682,6 +5693,31 @@ mod tests {
     }
 
     #[test]
+    fn reference_slot_encoding_round_trips_function_range_endpoints() {
+        for encoded in [0, crate::vm::value::FUNCADDR_TOP] {
+            let handle = RefHandle::new(encoded);
+            let slot = ref_to_machine_raw(handle, SLOT_GP_UNIT_BYTES);
+            assert_eq!(
+                machine_raw_to_ref(slot, SLOT_GP_UNIT_BYTES),
+                handle,
+                "interpreter target-width slot changed a function handle"
+            );
+        }
+
+        let null_slot = ref_to_machine_raw(RefHandle::null(), SLOT_GP_UNIT_BYTES);
+        let expected_null_slot = if SLOT_GP_UNIT_BYTES == 4 {
+            u32::MAX as u64
+        } else {
+            u64::MAX
+        };
+        assert_eq!(null_slot, expected_null_slot);
+        assert_eq!(
+            machine_raw_to_ref(null_slot, SLOT_GP_UNIT_BYTES),
+            RefHandle::null()
+        );
+    }
+
+    #[test]
     fn special_funcref_in_private_table_takes_slow_path() {
         const FUNCADDR_TOP: usize = (1 << 28) - 2;
 
@@ -5701,8 +5737,8 @@ mod tests {
         )
         .expect("wat");
         let module = Module::new("special-private-table", &bin).expect("module");
-        let special = ref_to_slot(RefHandle::hostref(7));
-        let unregistered = ref_to_slot(RefHandle::new(FUNCADDR_TOP / 2));
+        let special = ref_to_machine_raw(RefHandle::hostref(7), SLOT_GP_UNIT_BYTES);
+        let unregistered = ref_to_machine_raw(RefHandle::new(FUNCADDR_TOP / 2), SLOT_GP_UNIT_BYTES);
         assert_eq!(unregistered >> 32, 0);
         let mut returned_refs = [special, unregistered].into_iter();
         let host = InterpInstance::boxed_host(move |_module, _name, _memory, _args, results| {

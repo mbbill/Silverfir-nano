@@ -18,12 +18,10 @@ use crate::{
         },
         jit::store::Store,
         jit::value_encoding::{
-            localize, machine_raw_to_ref, try_machine_raw_to_value_in_store,
-            value_to_machine_raw_in_store,
+            localize, try_machine_raw_to_value_in_store, value_to_machine_raw_in_store,
         },
         tag::TagHandle,
-        value::RefHandle,
-        value::Value,
+        value::{machine_raw_to_ref, RefHandle, Value},
     },
 };
 

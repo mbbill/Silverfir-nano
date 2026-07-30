@@ -13,6 +13,12 @@ use core::fmt::Display;
 /// downward from this bound. `(1 << 28) - 1` remains unused as a guard rail.
 pub(crate) const FUNCADDR_TOP: usize = (1 << 28) - 2;
 
+const TARGET32_REF_SPECIAL_TAG: u32 = 1 << 28;
+const TARGET32_REF_EXTERN_TAG: u32 = 1 << 29;
+const TARGET32_REF_POOL_TAG: u32 = 1 << 27;
+const TARGET32_REF_PAYLOAD_MASK: u32 = TARGET32_REF_SPECIAL_TAG - 1;
+const TARGET32_REF_HOST_PAYLOAD_MASK: u32 = TARGET32_REF_POOL_TAG - 1;
+
 #[repr(transparent)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct RefHandle(pub(crate) usize);
@@ -143,6 +149,65 @@ impl RefHandle {
 }
 
 const _: () = assert!(FUNCADDR_TOP < RefHandle::SPECIAL_TAG);
+
+/// Encode a reference into the slot form consumed at `gp_unit_bytes`.
+///
+/// This is the single reference-slot encoding for both engines. In
+/// particular, 32-bit null is `u32::MAX` widened to `u64`, not `u64::MAX`.
+#[inline(always)]
+pub(crate) fn ref_to_machine_raw(handle: RefHandle, gp_unit_bytes: u8) -> u64 {
+    if gp_unit_bytes != 4 {
+        return handle.encoded() as u64;
+    }
+
+    if handle.is_null() {
+        return u32::MAX as u64;
+    }
+
+    if !handle.is_special() {
+        return (handle.encoded() as u32 & TARGET32_REF_PAYLOAD_MASK) as u64;
+    }
+
+    let payload = (handle.payload() as u32) & TARGET32_REF_HOST_PAYLOAD_MASK;
+    let mut raw = TARGET32_REF_SPECIAL_TAG | payload;
+    if handle.is_pooled() {
+        raw |= TARGET32_REF_POOL_TAG;
+    }
+    if handle.is_extern() {
+        raw |= TARGET32_REF_EXTERN_TAG;
+    }
+    raw as u64
+}
+
+/// Decode the shared reference-slot form consumed at `gp_unit_bytes`.
+#[inline(always)]
+pub(crate) fn machine_raw_to_ref(raw: u64, gp_unit_bytes: u8) -> RefHandle {
+    if gp_unit_bytes != 4 {
+        return RefHandle::new(raw as usize);
+    }
+
+    let raw = raw as u32;
+    if raw == u32::MAX {
+        return RefHandle::null();
+    }
+    if (raw & TARGET32_REF_SPECIAL_TAG) == 0 {
+        return RefHandle::new((raw & TARGET32_REF_PAYLOAD_MASK) as usize);
+    }
+
+    let payload = (raw & TARGET32_REF_HOST_PAYLOAD_MASK) as usize;
+    let is_extern = (raw & TARGET32_REF_EXTERN_TAG) != 0;
+    if (raw & TARGET32_REF_POOL_TAG) != 0 {
+        let mut handle = RefHandle::from_pool_index(payload);
+        if is_extern {
+            handle = handle.to_extern().expect("pooled refs are special");
+        }
+        handle
+    } else if is_extern {
+        RefHandle::externref(payload)
+    } else {
+        RefHandle::hostref(payload)
+    }
+}
 
 impl From<RefHandle> for usize {
     fn from(val: RefHandle) -> Self {
@@ -401,8 +466,26 @@ impl Value {
 
 #[cfg(test)]
 mod tests {
-    use super::Value;
+    use super::{machine_raw_to_ref, ref_to_machine_raw, RefHandle, Value, FUNCADDR_TOP};
     use crate::value_type::ValueType;
+
+    #[test]
+    fn function_address_range_endpoints_round_trip_at_both_gp_widths() {
+        for encoded in [0, FUNCADDR_TOP] {
+            let handle = RefHandle::new(encoded);
+            assert!(!handle.is_special());
+
+            for gp_unit_bytes in [4, 8] {
+                let raw = ref_to_machine_raw(handle, gp_unit_bytes);
+                let decoded = machine_raw_to_ref(raw, gp_unit_bytes);
+                assert_eq!(decoded.raw(), encoded);
+                assert!(!decoded.is_special());
+            }
+        }
+
+        assert_eq!(ref_to_machine_raw(RefHandle::null(), 4), u32::MAX as u64);
+        assert_eq!(machine_raw_to_ref(u32::MAX as u64, 4), RefHandle::null());
+    }
 
     #[test]
     fn default_scalar_values_match_their_types() {
