@@ -56,7 +56,15 @@ pub(crate) fn operand_is_f32(op: Op, is_b: bool) -> bool {
 
 /// Bytes per dispatch cell. Two per 64-byte cache line; branch targets and
 /// the pc advance are both denominated in it.
-pub(crate) const CELL: u32 = 32;
+/// The two cell sizes. A cell holds a handler word plus its payload, and the
+/// payload of the common shapes -- three slot fields, a branch, a load or
+/// store, a paired move -- fits eight bytes, so those cells are half size.
+/// The wide form is for the payloads that do not fit: a full-width constant,
+/// a call, a fused memory op, and the slow stub. Width is a property of those
+/// individual ops rather than of an operand class, which keeps it out of the
+/// operand cross-product and so out of the engine's size budget.
+pub(crate) const CELL_WIDE: u32 = 32;
+pub(crate) const CELL_NARROW: u32 = 16;
 
 /// Number of distinct `Op` discriminants.
 pub(crate) const N_OPS: usize = Op::Unreachable as usize + 1;
@@ -385,10 +393,11 @@ pub(crate) fn native_guard(ins: &Instr) -> bool {
     }
 }
 
-/// Whether this op's `c` field is a branch target cell index, which the
-/// link pass turns into an absolute cell address. Must list exactly the
-/// ops [`transform_bc`] multiplies by [`CELL`] — a missed one would leave
-/// a relative offset and the handler would branch into hyperspace.
+/// Whether this op's `c` field is a branch target instruction index, which
+/// the link pass turns into an absolute cell address. Must list exactly the
+/// ops whose `c` [`transform_bc`] leaves as a raw index — a missed one would
+/// leave an index where an address belongs and the handler would branch into
+/// hyperspace.
 pub(crate) fn c_is_branch_target(op: Op) -> bool {
     use Op::*;
     matches!(op, Br | BrIf | BrIfNot) || between(op, I32_BrEq, I64_SubBrIf)
@@ -424,7 +433,9 @@ pub(crate) fn transform_bc(ins: &Instr, flags: u16) -> (u64, u64) {
             Br | BrIf | BrIfNot => ins.b,
             _ => scaled_b(ins),
         };
-        return (b, ins.c * CELL as u64);
+        // The target stays an instruction INDEX here: cells are not all
+        // the same size, so only the link pass can turn it into an offset.
+        return (b, ins.c);
     }
     match family(ins.op) {
         // loads: b = static offset (stays raw), c = dst slot

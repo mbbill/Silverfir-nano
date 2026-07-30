@@ -812,7 +812,6 @@ impl Isa for Arm64 {
                 a.ins(&format!("cmp {}, w12", w(ra)));
                 a.ins(&format!("csel w10, {}, w12, lo", w(ra)));
                 a.ins("ldr w10, [x11, w10, uxtw #2]");
-                a.ins("lsl x10, x10, #5");
                 a.ins("add x19, x24, x10");
                 a.ins("ldr x9, [x19]");
                 a.ins("br x9");

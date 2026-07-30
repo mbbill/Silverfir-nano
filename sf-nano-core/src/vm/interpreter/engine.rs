@@ -22,7 +22,8 @@ use super::instr::{
 };
 use super::layout::{
     build_op_base, c_is_branch_target, family, native_guard, op_slot, operand_is_f32,
-    result_is_f32, slot_fields, total_slots, transform_bc, writes_acc, Fam, Pinned, N_OPS,
+    result_is_f32, slot_fields, total_slots, transform_bc, writes_acc, Fam, Pinned, CELL_NARROW,
+    CELL_WIDE, N_OPS,
 };
 use super::predecode::PredecodedFunction;
 
@@ -102,6 +103,23 @@ pub(super) struct DCell {
 pub(super) struct LinkedFunction {
     pub cells: Vec<DCell>,
     br_flat: Vec<u32>,
+    /// Byte offset of each instruction's cell, indexed by instruction, with
+    /// one extra entry for the pad cell so the offset past the last
+    /// instruction is addressable. Cells are not all the same size, so the
+    /// driver cannot recover this by shifting a pc.
+    ///
+    /// Built on demand: it is needed only where the driver crosses between
+    /// instruction-index space and cell-address space — a slow exit, a trap,
+    /// or a call resume — and most functions never do. Walking the stream
+    /// per crossing instead would be quadratic for a function whose hot loop
+    /// contains a slow op.
+    cell_off: Option<Vec<u32>>,
+    /// Which cells take the wide form, one bit per instruction. Only two
+    /// sizes exist, so recording the choice costs an eighth of a byte per
+    /// instruction against the sixteen the narrow form saves — and it has to
+    /// be recorded rather than recomputed, because the size follows the
+    /// link-resolved flags, which do not outlive linking.
+    cell_wide: Vec<u64>,
     /// Byte offsets of the function's pinned locals in its frame (0 when
     /// absent — the unconditional reload then reads slot 0, which no cell
     /// consumes as a pinned class).
@@ -110,6 +128,50 @@ pub(super) struct LinkedFunction {
     /// Whether any pinned slot is float-mode: drives the conditional
     /// float-twin reloads on the call and return paths.
     pub fp_pinned: bool,
+    /// Byte offset of the pad cell, i.e. the length of the real cell
+    /// stream. Held eagerly because the pc range map needs it for every
+    /// function at link time, which a lazy offset table would defeat; one
+    /// word per function is free.
+    pub code_bytes: u32,
+}
+
+impl LinkedFunction {
+    /// Size of instruction `i`'s cell.
+    fn cell_size(&self, i: usize) -> u32 {
+        if self.cell_wide[i / 64] >> (i % 64) & 1 == 1 {
+            CELL_WIDE
+        } else {
+            CELL_NARROW
+        }
+    }
+
+    /// Cell byte offsets by instruction index, with one entry past the last
+    /// instruction for the pad cell. Materialized on first use.
+    fn cell_offsets(&mut self) -> &[u32] {
+        if self.cell_off.is_none() {
+            let n = self.cells.len();
+            let mut off = Vec::with_capacity(n + 1);
+            let mut at = 0u32;
+            for i in 0..n {
+                off.push(at);
+                at += self.cell_size(i);
+            }
+            off.push(at);
+            self.cell_off = Some(off);
+        }
+        self.cell_off.as_deref().expect("materialized above")
+    }
+
+    /// Byte offset of instruction `idx`'s cell.
+    pub(super) fn offset_of(&mut self, idx: usize) -> Option<u32> {
+        self.cell_offsets().get(idx).copied()
+    }
+
+    /// The instruction whose cell starts at `off`. `None` when `off` is not a
+    /// cell boundary, which is a corrupt pc rather than a recoverable state.
+    pub(super) fn index_at(&mut self, off: u32) -> Option<usize> {
+        self.cell_offsets().binary_search(&off).ok()
+    }
 }
 
 /// Pick the function's pinned locals — the most- and second-most-
@@ -419,12 +481,21 @@ impl NativeEngine {
         // and one padding cell removes the dependency. Its handler is the
         // slow stub, so control reaching it exits cleanly rather than
         // jumping through uninitialized memory.
+        // A handler reads a slot field as a halfword, so a frame whose byte
+        // offsets do not fit 16 bits has no native form: the load would
+        // silently index the wrong slot. `frame_slots` bounds every slot
+        // field, so one check per function covers all of them. Honored on
+        // every backend rather than per-ISA — 8,192 slots is three orders of
+        // magnitude past the widest frame in the corpus, so the bound costs
+        // nothing to apply unconditionally.
+        let slots_fit_halfword = (func.frame_slots as u64) * 8 <= 0xffff;
+
         let mut cells = Vec::with_capacity(func.code.len() + 1);
         let mut brtable_native = vec![false; func.code.len()];
         for (i, ins) in func.code.iter().enumerate() {
             let fl = flags[i];
             let mut h = self.handler_for(ins, fl, &pin);
-            if !native_guard(ins) {
+            if !native_guard(ins) || !slots_fit_halfword {
                 h = None;
             }
             // A 32-bit host reads a cell's static offset as one machine
@@ -485,10 +556,30 @@ impl NativeEngine {
         let mut lf = LinkedFunction {
             cells,
             br_flat,
+            cell_off: None,
+            // Every cell is wide until the narrow forms land, which makes the
+            // offsets this expands to identical to the shift they replace.
+            cell_wide: vec![u64::MAX; (func.code.len() + 1).div_ceil(64)],
             l0_off: off_of(pin.l0),
             l1_off: off_of(pin.l1),
             fp_pinned: (pin.l0 != u64::MAX && pin.l0_float) || (pin.l1 != u64::MAX && pin.l1_float),
+            code_bytes: 0,
         };
+        // Cell offsets, computed here and deliberately NOT stored: the link
+        // pass needs them to resolve targets, the driver needs them only on
+        // an escape, and most functions never take one.
+        let mut off = Vec::with_capacity(func.code.len() + 1);
+        let mut at = 0u32;
+        for i in 0..=func.code.len() {
+            off.push(at);
+            at += lf.cell_size(i);
+        }
+        lf.code_bytes = off[func.code.len()];
+        // The flat table held target instruction indices; resolve them to
+        // cell byte offsets now that the sizes are known.
+        for e in lf.br_flat.iter_mut() {
+            *e = off[*e as usize];
+        }
         // The flat buffer has its final allocation now; resolve BrTable
         // base offsets to absolute addresses.
         let base = lf.br_flat.as_ptr() as u64;
@@ -506,7 +597,7 @@ impl NativeEngine {
         let cells_base = lf.cells.as_ptr() as u64;
         for i in 0..func.code.len() {
             if c_is_branch_target(func.code[i].op) {
-                lf.cells[i].c += cells_base;
+                lf.cells[i].c = cells_base + off[lf.cells[i].c as usize] as u64;
             }
         }
         lf

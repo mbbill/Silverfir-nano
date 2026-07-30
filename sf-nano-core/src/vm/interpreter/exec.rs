@@ -1325,7 +1325,7 @@ impl InterpInstance {
             if let Some(lf) = lf {
                 let start = lf.cells.as_ptr() as u64;
                 // The trailing prefetch pad is not an instruction.
-                let end = start + (lf.cells.len() as u64 - 1) * 32;
+                let end = start + lf.code_bytes as u64;
                 ranges.push((start, end, i as u32));
             }
         }
@@ -1358,6 +1358,28 @@ impl InterpInstance {
             Some(&(start, _, fi)) if pc >= start => Ok((fi as usize, start)),
             _ => Err(WasmError::invalid("interp: native pc outside any function")),
         }
+    }
+
+    /// The instruction whose cell begins at `pc`. Only the escape paths ask
+    /// — a slow exit, a trap, a call resume — so materializing the offset
+    /// table here is a cold cost that no dispatch pays.
+    fn cell_index_at(&mut self, fi: usize, cstart: u64, pc: u64) -> Result<usize, WasmError> {
+        let native = self.native.as_mut().expect("native state");
+        let lf = native.linked[fi].as_mut().expect("linked");
+        lf.index_at((pc - cstart) as u32).ok_or(WasmError::invalid(
+            "interp: native pc not at a cell boundary",
+        ))
+    }
+
+    /// Address of instruction `idx`'s cell. Counterpart of
+    /// [`Self::cell_index_at`], and equally cold.
+    fn cell_pc_of(&mut self, fi: usize, cstart: u64, idx: usize) -> Result<u64, WasmError> {
+        let native = self.native.as_mut().expect("native state");
+        let lf = native.linked[fi].as_mut().expect("linked");
+        let off = lf
+            .offset_of(idx)
+            .ok_or(WasmError::invalid("interp: cell index out of range"))?;
+        Ok(cstart + off as u64)
     }
 
     /// Static adjacent-pair census over the predecoded streams: a pair
@@ -2454,7 +2476,7 @@ impl InterpInstance {
                 EXIT_SLOW => {
                     let (fi, cstart) = self.native_pc_lookup(state.pc)?;
                     let f = self.funcs[fi].clone().expect("range map import");
-                    let idx = ((state.pc - cstart) / 32) as usize;
+                    let idx = self.cell_index_at(fi, cstart, state.pc)?;
                     let base = ((state.frame - stack_ptr) / 8) as usize;
                     act.func = f.clone();
                     act.func_index = fi;
@@ -2492,13 +2514,13 @@ impl InterpInstance {
                         },
                     };
                     match effect {
-                        Effect::Next => state.pc = cstart + (idx as u64 + 1) * 32,
+                        Effect::Next => state.pc = self.cell_pc_of(fi, cstart, idx + 1)?,
                         Effect::NextWithAcc(value) => {
                             ctx.acc = value;
                             state.acc_value = value;
-                            state.pc = cstart + (idx as u64 + 1) * 32;
+                            state.pc = self.cell_pc_of(fi, cstart, idx + 1)?;
                         }
-                        Effect::Jump(t) => state.pc = cstart + (t as u64) * 32,
+                        Effect::Jump(t) => state.pc = self.cell_pc_of(fi, cstart, t as usize)?,
                         // `Return` always has a native handler; a slow one
                         // would desync the native return stack.
                         Effect::Ret => {
