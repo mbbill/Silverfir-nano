@@ -55,7 +55,7 @@ pub(crate) enum PendingEscape {
     #[default]
     None,
     /// Uncaught wasm exception — carries an `exnref` pool handle that
-    /// dereferences through `Store::exn_heap()` to the payload.
+    /// resolves through the shared reference registry to the payload.
     Throw { exn: RefHandle, tag: TagHandle },
 }
 

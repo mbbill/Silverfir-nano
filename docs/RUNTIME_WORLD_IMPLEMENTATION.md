@@ -65,6 +65,21 @@ the engine-visible `ref.test` divergences, and the function-registry revision
 counter. What honestly remains: the generated-code ABI's own `unsafe`, the
 epoch-validated caches, and the one checkout primitive.
 
+**A fourth category, added by this migration and worth naming so a future
+reader is not misled by the list above.** `Caller` used to hold
+`Option<&'a mut [u8]>` — borrow-checked, zero `unsafe`. That shape forced
+`&mut Store` to span the host call, which is exactly the anti-pattern this
+design exists to remove, so `Caller` now holds an `Rc` handle and builds its
+slices with `from_raw_parts`/`from_raw_parts_mut`
+(`vm/entities.rs:121`, `:134`), guarded by a `host_callback_borrowed: Cell<bool>`
+test-and-set. The protocol is sound today: both engines preflight the flag
+before running guest code (`jit/runtime/native_eval.rs`,
+`interpreter/exec.rs`), the borrow errors on double entry, and `Caller::drop`
+releases it on every path including unwind. But it is held together by two
+hand-placed preflights that nothing forces to stay in sync, where the old
+shape had the borrow checker doing it for free. Treat any change near it as
+touching an invariant, not an implementation detail.
+
 ---
 
 ## 2. Ground rules for working in this repository

@@ -101,10 +101,6 @@ impl RefHandle {
             .then_some(self.0 & Self::host_payload_mask())
     }
 
-    pub fn host_index(&self) -> Option<usize> {
-        self.is_host().then_some(self.0 & Self::host_payload_mask())
-    }
-
     pub(crate) fn from_pool_index(index: usize) -> Self {
         Self(Self::SPECIAL_TAG | Self::pool_payload_tag() | (index & Self::host_payload_mask()))
     }

@@ -97,6 +97,14 @@ enum InstancePointer {
 
 /// A generation-checked, RAII checkout of one instance slot.
 pub(crate) struct InstanceToken {
+    /// Strong on purpose, and load-bearing beyond keeping the table alive.
+    ///
+    /// `StoreAccess::Initializing` skips its "no live checkout of this slot"
+    /// test when the handle's `Weak` has expired, and that is only sound
+    /// because a live token holds a STRONG reference here: an expired `Weak`
+    /// therefore proves no token exists, so no aliasing checkout can be
+    /// outstanding. Changing this to a `Weak` would compile, pass every test,
+    /// and silently unsound that path.
     table: Rc<InstanceTableInner>,
     id: InstanceId,
     pointer: InstancePointer,
