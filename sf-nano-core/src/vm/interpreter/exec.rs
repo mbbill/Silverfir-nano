@@ -2376,8 +2376,16 @@ impl InterpInstance {
                 .and_then(|l| l.as_mut())
                 .map(|lf| {
                     // `act.pc` is an instruction index and cells are not a
-                    // fixed size, so only the offset table can place it.
-                    let pc_off = lf.offset_of(act.pc);
+                    // fixed size, so only the offset table can place it —
+                    // except at 0, which is every FRESH activation and is
+                    // always offset 0. Resolving that without the table is
+                    // what keeps the table an escape-only cost: entering a
+                    // function is not an escape, resuming one is.
+                    let pc_off = if act.pc == 0 {
+                        Some(0)
+                    } else {
+                        lf.offset_of(act.pc)
+                    };
                     (
                         enter,
                         exit_cell,
