@@ -1,9 +1,8 @@
 //! Integer Mandelbrot kernel for the Pico 2 LCD demos.
 //!
-//! The host firmware uses this module for geometry constants; the nested
-//! `wasm-demo` crate uses the full renderer.
-
-#![allow(dead_code)]
+//! Compiled into two crates: the firmware links it as `pub mod kernels`, and
+//! `wasm-demo` includes the same file behind `#[path]`. Everything here is
+//! reachable in both, so neither build needs a blanket suppression.
 
 pub const WIDTH: usize = 160;
 pub const HEIGHT: usize = 128;
