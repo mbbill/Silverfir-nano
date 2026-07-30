@@ -845,8 +845,7 @@ impl Isa for X86_64 {
                 a.ins(&format!("mov esi, {}", d(ra)));
                 a.ins("cmp esi, edx");
                 a.ins("cmova esi, edx"); // clamp: out of range takes the default
-                a.ins("mov esi, [rcx + rsi*4]"); // target instruction index
-                a.ins("shl rsi, 5");
+                a.ins("mov esi, [rcx + rsi*4]"); // target cell byte offset
                 a.ins("lea rbx, [r9 + rsi]");
                 a.ins("mov rax, [rbx]");
                 a.ins("jmp rax");

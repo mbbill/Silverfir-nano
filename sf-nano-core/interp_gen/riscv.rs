@@ -989,8 +989,7 @@ impl Isa for RiscV {
                 a.label(&keep);
                 a.ins(&format!("slli {T4}, {T4}, 2"));
                 a.ins(&format!("add {T4}, {T2}, {T4}"));
-                a.ins(&format!("lw {T4}, 0({T4})")); // target instruction index
-                a.ins(&format!("slli {T4}, {T4}, 5"));
+                a.ins(&format!("lw {T4}, 0({T4})")); // target cell byte offset
                 a.ins(&format!("add {PC}, {CODE}, {T4}"));
                 a.ins(&format!("{lp} {T1}, 0({PC})"));
                 a.ins(&format!("jr {T1}"));

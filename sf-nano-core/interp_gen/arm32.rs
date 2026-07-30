@@ -560,7 +560,7 @@ impl Isa for Arm32 {
                 self.cond_mov(a, "hs", T3, T2);
                 a.ins(&format!("ldr {T3}, [{T1}, {T3}, lsl #2]"));
                 a.ins(&format!("ldr {T1}, [{STATE}, #{S_CODE}]"));
-                a.ins(&format!("add {PC}, {T1}, {T3}, lsl #5"));
+                a.ins(&format!("add {PC}, {T1}, {T3}"));
                 a.ins(&format!("ldr {T0}, [{PC}]"));
                 a.ins(&format!("bx {T0}"));
                 return;
