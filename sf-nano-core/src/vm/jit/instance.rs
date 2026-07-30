@@ -877,39 +877,32 @@ impl JitInstance {
             registry.simd_registry_shared(),
         ));
         store.set_exports(exports);
-        registry
-            .instance_table()
-            .occupy_jit(instance_id, store)
-            .expect("freshly reserved JIT instance slot");
-        let mut lease = InstanceLease::checkout(&lease_handle).expect("occupied JIT instance slot");
-        let store = lease
-            .token_mut()
-            .jit_mut()
-            .expect("JIT lease must resolve to a Store");
-        for func_idx in 0..store.module().functions.len() {
-            if let Some(handle) = store.module().functions[func_idx].linked_handle() {
-                store.module_mut().set_function_handle(func_idx, handle);
-            } else {
-                let _ = store.register_local_function(func_idx);
-            }
-        }
-        // Imported value globals are created before local functions receive
-        // world addresses. Normalize any reachable funcref cell now that the
-        // complete local-index map exists.
-        for global_idx in 0..store.module().globals.len() {
-            if !store.module().global_needs_funcref_retag(global_idx) {
-                continue;
-            }
-            let (raw, value_type) = {
-                let global = store.global(global_idx);
-                (global.raw(), global.value_type)
-            };
-            let value = try_raw_to_value_in_store(raw, value_type, store)?;
-            let raw = value_to_container_raw_in_store(value, true, store);
-            store.global_mut(global_idx).set_raw(raw);
-        }
 
         let init_result = (|| -> Result<(), WasmError> {
+            let store = store.as_mut();
+            for func_idx in 0..store.module().functions.len() {
+                if let Some(handle) = store.module().functions[func_idx].linked_handle() {
+                    store.module_mut().set_function_handle(func_idx, handle);
+                } else {
+                    let _ = store.register_local_function(func_idx);
+                }
+            }
+            // Imported value globals are created before local functions receive
+            // world addresses. Normalize any reachable funcref cell now that the
+            // complete local-index map exists.
+            for global_idx in 0..store.module().globals.len() {
+                if !store.module().global_needs_funcref_retag(global_idx) {
+                    continue;
+                }
+                let (raw, value_type) = {
+                    let global = store.global(global_idx);
+                    (global.raw(), global.value_type)
+                };
+                let value = try_raw_to_value_in_store(raw, value_type, store)?;
+                let raw = value_to_container_raw_in_store(value, true, store);
+                store.global_mut(global_idx).set_raw(raw);
+            }
+
             #[cfg(sf_jit)]
             crate::vm::jit::build::ensure_module_compiled(store)?;
 
@@ -1027,6 +1020,12 @@ impl JitInstance {
 
             Ok(())
         })();
+
+        registry
+            .instance_table()
+            .occupy_jit(instance_id, store)
+            .expect("freshly reserved JIT instance slot");
+        let lease = InstanceLease::checkout(&lease_handle).expect("occupied JIT instance slot");
 
         match init_result {
             Ok(()) => Ok(JitInstance { lease }),
