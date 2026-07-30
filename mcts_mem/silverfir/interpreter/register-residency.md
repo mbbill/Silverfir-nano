@@ -1,14 +1,15 @@
-- Only fixed-role registers plus two value registers participate in the
-  dispatch contract: the accumulator, and the l0 register. There is no
-  fill/spill scheme.
+- Only fixed-role registers plus a fixed, small set of value registers
+  participate in the dispatch contract: the accumulator and the pinned-local
+  registers. There is no fill/spill scheme.
 
-- One local per function — the link-time most-referenced slot — is
-  register-resident across the whole body (the l0 class): reads cost zero
-  instructions, writes go to both the register and the frame slot
-  (write-through), and calls and returns carry the l0 offset in call
-  cells and return records. The register reloads from the slot at every
-  chain entry; the slow path never sees it. No second register-local
-  class exists.
+- Two locals per function — the link-time most-referenced slots — are
+  register-resident across the whole body (the l0 and l1 classes): reads cost
+  zero instructions, writes go to both the register and the frame slot
+  (write-through), and calls and returns carry both offsets in call cells and
+  return records. The registers reload from their slots at every chain entry;
+  the slow path never sees them. Register- or flash-constrained targets link a
+  reduced class set that drops l1, taking a three-operand op from 100 variants
+  to 48.
 
 - One accumulator register carries span-1 temp edges: when a value
   producer is immediately followed by its sole consumer in the same
