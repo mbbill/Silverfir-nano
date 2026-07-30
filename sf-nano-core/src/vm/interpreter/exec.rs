@@ -2367,27 +2367,34 @@ impl InterpInstance {
         ctx: &mut DriveCtx,
     ) -> Result<StepExit, WasmError> {
         let info = {
-            let native = self.native.as_ref().expect("native_step without state");
+            let native = self.native.as_mut().expect("native_step without state");
+            let enter = native.engine.entry_fn();
+            let exit_cell = native.engine.exit_cell_addr();
             native
                 .linked
-                .get(act.func_index)
-                .and_then(|l| l.as_ref())
+                .get_mut(act.func_index)
+                .and_then(|l| l.as_mut())
                 .map(|lf| {
+                    // `act.pc` is an instruction index and cells are not a
+                    // fixed size, so only the offset table can place it.
+                    let pc_off = lf.offset_of(act.pc);
                     (
-                        native.engine.entry_fn(),
-                        native.engine.exit_cell_addr(),
+                        enter,
+                        exit_cell,
                         lf.cells.as_ptr() as u64,
                         lf.l0_off,
                         lf.l1_off,
+                        pc_off,
                     )
                 })
         };
-        let (enter, exit_cell, cells_base, l0_off, l1_off) = match info {
+        let (enter, exit_cell, cells_base, l0_off, l1_off, pc_off) = match info {
             Some(x) => x,
             // An activation always has a linked body (imports never
             // become activations).
             None => return Err(WasmError::invalid("interp: unlinked activation")),
         };
+        let pc_off = pc_off.ok_or(WasmError::invalid("interp: activation pc out of range"))?;
         // First entry of a Rust-created activation: plant the sentinel
         // record so this activation's native `Return` comes back to Rust.
         // The frame word must be a READABLE dummy (never 0): the native
@@ -2414,7 +2421,7 @@ impl InterpInstance {
         let ret_ptr = ctx.ret_stack.as_mut_ptr() as u64;
         let mut state = EnterState {
             reason: 0,
-            pc: cells_base + (act.pc as u64) * 32,
+            pc: cells_base + pc_off as u64,
             frame: stack_ptr + (act.base as u64) * 8,
             mem_base: 0,
             mem_len: 0,
