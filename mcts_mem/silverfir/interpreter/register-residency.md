@@ -1,14 +1,15 @@
-- Only fixed-role registers plus two value registers participate in the
-  dispatch contract: the accumulator, and the l0 register. There is no
-  fill/spill scheme.
+- Only fixed-role registers plus a fixed, small set of value registers
+  participate in the dispatch contract: the accumulator and the pinned-local
+  registers. There is no fill/spill scheme.
 
-- One local per function — the link-time most-referenced slot — is
-  register-resident across the whole body (the l0 class): reads cost zero
-  instructions, writes go to both the register and the frame slot
-  (write-through), and calls and returns carry the l0 offset in call
-  cells and return records. The register reloads from the slot at every
-  chain entry; the slow path never sees it. No second register-local
-  class exists.
+- Two locals per function — the link-time most-referenced slots — are
+  register-resident across the whole body (the l0 and l1 classes): reads cost
+  zero instructions, writes go to both the register and the frame slot
+  (write-through), and calls and returns carry both offsets in call cells and
+  return records. The registers reload from their slots at every chain entry;
+  the slow path never sees them. Register- or flash-constrained targets link a
+  reduced class set that drops l1, taking a three-operand op from 100 variants
+  to 48.
 
 - One accumulator register carries span-1 temp edges: when a value
   producer is immediately followed by its sole consumer in the same
@@ -395,3 +396,43 @@
   structural growth either, since the return record's fourth word carries only a
   16-bit offset and a call cell's third field is unused. What bounds the set is
   the governing law's handler multiplication (code)
+
+- 2026-07-30 measurement: hot loops carry about ONE independent loop-carried
+  chain each, corpus-wide, once strided induction variables are excluded --
+  effective chains per innermost loop 0.96-1.03 across nine modules against 3.0-4.9
+  carried locals, with eff>=2 at 0.1-11.4% and eff>=3 at 0.1-8.5%. So a second pin
+  has no second chain to break in most hot loops and the CoreMark l1 verdict is the
+  corpus shape, not a benchmark artifact; a third pin has almost nowhere to convert
+  by this mechanism. Method, validation against a hand-read mandelbrot kernel, a
+  corrected intermediate result, and the upper-bound caveat are in
+  [[register-residency.fact/independent-carried-chains-2026-07-30]] (code)
+- 2026-07-30 rationale: that closes the chain-criticality case for a wider pinned
+  set but not the load-removal case -- the top-k census's extra coverage was
+  dismissed because read-mostly slot loads are hidden by the out-of-order core,
+  which is a wide-core argument, and every pinned-local timing to date was taken on
+  one M4 P core (code)
+
+- 2026-07-30 measurement: core width does not change what a pin is worth.
+  Dropping arm64 alone to the reduced class set prices l1 on CoreMark at 4.09% on
+  the M1 runner and 4.59% on the Neoverse runner against the 4.2% already measured
+  on the M4 P core, with x86-64 left on the full set reporting byte-identical
+  executables as the control
+  [[register-residency.fact/l1-priced-per-core-2026-07-30]] (code)
+- 2026-07-30 measurement: CoreMark prices l1 at its corpus MINIMUM. On the same
+  M1 run l1 is worth 4.5-11.8% across five gate-confirmed metrics and
+  lz4-decompress alone is 2.9x CoreMark, so the +4.2%-over-l0 figure, the +1..+3%
+  net bound and the "unproven against its 2x handler size" verdict were all scoped
+  to the one benchmark that shows the effect most weakly (code)
+- 2026-07-30 measurement: the payoff law does not account for that. It converts a
+  pin only where a binding loop-carried chain breaks, and lz4's hot loops carry
+  0.97 effective independent chains with 8.3% at two or more, yet l1 is worth
+  11.75% on lz4-decompress at 2.43% pair volatility (code)
+- 2026-07-30 uncertain: the residual is presumably the load removal the top-k
+  census measures, which was dismissed for being hidden by the out-of-order core
+  -- both runners are out-of-order, so that dismissal does not hold, but the
+  mechanism has not been isolated (uncertain)
+- 2026-07-30 pitfall: the probe removes l1 together with its handler
+  multiplication, taking the arm64 engine from 339,064 to 177,924 bytes, so each
+  delta nets the residency loss against a size refund and understates residency.
+  On arm64-linux the sign reverses for lua-sunfish (+1.32%) and lua-json (+0.69%),
+  where the smaller engine beats the lost residency outright (code)
