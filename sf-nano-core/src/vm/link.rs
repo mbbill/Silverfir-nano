@@ -6,23 +6,18 @@
 //! a registry entry is only as engine-specific as the engine that minted it,
 //! so entry payloads are gated on the engine that produces them:
 //!
-//! - Function-registry entries point back into a JIT `Store` and exist only
-//!   when the JIT is compiled in. The interpreter deliberately does not
-//!   participate; it publishes function references through its embedder's
-//!   `FuncRefHost` instead.
+//! - Function-registry entries name an instance and local function index.
+//!   Both engines participate in this one world function-address space.
 //! - `RefRegistryEntry::Gc`/`I31` are minted by the JIT runtime's GC
-//!   helpers. `OpaqueInterpFunc` is minted by the interpreter. `Exn` is
-//!   engine-neutral: both engines allocate exceptions here, and the `Rc`
-//!   keeps the object alive independently of whichever instance threw it.
+//!   helpers. `Exn` is engine-neutral: both engines allocate exceptions
+//!   here, and the `Rc` keeps the object alive independently of whichever
+//!   instance threw it.
 
 use crate::collections;
 use crate::vm::tag::TagHandle;
-#[cfg(sf_jit)]
 use crate::vm::value::FUNCADDR_TOP;
 use crate::vm::value::{RefHandle, Value};
-use core::cell::RefCell;
-#[cfg(sf_jit)]
-use core::cell::{Cell, Ref};
+use core::cell::{Cell, Ref, RefCell};
 use tracked_alloc::{
     boxed::Box,
     rc::{Rc, Weak},
@@ -480,14 +475,12 @@ pub(crate) struct ExnInstance {
     pub(crate) fields: collections::Vec<Value>,
 }
 
-#[cfg(sf_jit)]
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct FuncEntry {
     pub(crate) owner: InstanceId,
     pub(crate) local_index: u32,
 }
 
-#[cfg(sf_jit)]
 #[derive(Clone)]
 pub(crate) struct SharedFunctionRegistry {
     entries: Rc<RefCell<collections::Vec<FuncEntry>>>,
@@ -497,7 +490,6 @@ pub(crate) struct SharedFunctionRegistry {
     max_local_functions_ever: Rc<Cell<usize>>,
 }
 
-#[cfg(sf_jit)]
 impl SharedFunctionRegistry {
     #[inline]
     pub(crate) fn new() -> Self {
@@ -544,6 +536,26 @@ impl SharedFunctionRegistry {
         );
         entries.push(entry);
         funcaddr
+    }
+
+    #[cfg(sf_interp)]
+    #[inline]
+    pub(crate) fn absolute_handle(&self, entry: FuncEntry) -> RefHandle {
+        let funcaddr = self.register(entry);
+        RefHandle::new(
+            FUNCADDR_TOP
+                .checked_sub(funcaddr)
+                .expect("registered funcaddr exceeds the encoding range"),
+        )
+    }
+
+    #[inline]
+    pub(crate) fn entry_for_handle(&self, handle: RefHandle) -> Option<FuncEntry> {
+        if handle.is_null() || handle.is_special() {
+            return None;
+        }
+        let funcaddr = FUNCADDR_TOP.checked_sub(handle.encoded())?;
+        self.borrow().get(funcaddr).copied()
     }
 }
 
@@ -619,17 +631,6 @@ pub(crate) enum RefRegistryEntry {
     /// by `Store::drop` when the owning store goes away.
     #[cfg(sf_jit)]
     Gc { store: *mut Store, gc_ref: GcRef },
-    /// Globally unique identity for an interpreter-local function when no
-    /// callable `FuncRefHost` resolver is installed. The originating
-    /// interpreter can localize it through its own publication map; another
-    /// instance must treat it as opaque rather than aliasing the same numeric
-    /// local index.
-    ///
-    /// Opaque means opaque to type tests too: `check_ref_type_match` reports
-    /// no match for it, `func` included, which diverges from the spec answer
-    /// for `ref.test (ref func)`. See the note there.
-    #[cfg(sf_interp)]
-    OpaqueInterpFunc,
     /// Exception objects are registry-owned. Keeping the shared allocation
     /// here makes handles independent of the lifetime of the instance that
     /// originally allocated them.
@@ -641,7 +642,8 @@ impl RefRegistryEntry {
     fn resolve_exn(self) -> Option<Rc<ExnInstance>> {
         match self {
             Self::Exn(exn) => Some(exn),
-            _ => None,
+            #[cfg(sf_jit)]
+            Self::I31(_) | Self::Gc { .. } => None,
         }
     }
 }
@@ -664,8 +666,7 @@ pub(crate) fn alloc_exn_in(
 
 #[derive(Clone)]
 pub(crate) struct LinkArenas {
-    #[cfg(sf_jit)]
-    functions: SharedFunctionRegistry,
+    pub(crate) functions: SharedFunctionRegistry,
     refs: SharedRefRegistry,
     #[cfg(all(sf_jit, sf_has_simd))]
     simd: SharedSimdRegistry,
@@ -675,7 +676,6 @@ impl LinkArenas {
     #[inline]
     fn new() -> Self {
         Self {
-            #[cfg(sf_jit)]
             functions: SharedFunctionRegistry::new(),
             refs: Rc::new(RefCell::new(collections::Vec::new())),
             #[cfg(all(sf_jit, sf_has_simd))]
@@ -688,19 +688,6 @@ impl LinkArenas {
     #[cfg(sf_interp)]
     pub(crate) fn alloc_exn(&self, tag: TagHandle, fields: collections::Vec<Value>) -> RefHandle {
         alloc_exn_in(&self.refs, tag, fields)
-    }
-
-    /// Mint a non-callable but globally unique identity for an interpreter
-    /// function reference.
-    #[cfg(sf_interp)]
-    pub(crate) fn alloc_opaque_interp_funcref(&self) -> RefHandle {
-        let idx = {
-            let mut registry = self.refs.borrow_mut();
-            let idx = registry.len();
-            registry.push(RefRegistryEntry::OpaqueInterpFunc);
-            idx
-        };
-        RefHandle::from_pool_index(idx)
     }
 
     #[cfg(sf_interp)]

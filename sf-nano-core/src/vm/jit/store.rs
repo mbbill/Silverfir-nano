@@ -26,7 +26,7 @@ use crate::vm::link::{
     SharedRefRegistry,
 };
 use crate::vm::tag::TagHandle;
-use crate::vm::value::{RefHandle, Value, FUNCADDR_TOP};
+use crate::vm::value::{RefHandle, Value};
 use core::cell::RefCell;
 
 const UNREGISTERED_FUNCADDR: usize = usize::MAX;
@@ -259,11 +259,7 @@ impl Store {
     }
 
     pub(crate) fn function_entry_for_handle(&self, handle: RefHandle) -> Option<FuncEntry> {
-        if handle.is_null() || handle.is_special() {
-            return None;
-        }
-        let funcaddr = FUNCADDR_TOP.checked_sub(handle.encoded())?;
-        self.function_registry.borrow().get(funcaddr).copied()
+        self.function_registry.entry_for_handle(handle)
     }
 
     #[inline]

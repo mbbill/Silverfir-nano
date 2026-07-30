@@ -77,49 +77,58 @@ pub(super) fn bind(
         else {
             return Err(WasmError::unlinkable("missing function import"));
         };
-        let callback = match &provided.value {
+        let (provided_type, provided_type_index, type_ctx) = match &provided.value {
             ImportValue::Func(ImportedFunction::Host {
-                callback,
                 func_type: provided_type,
                 type_index: provided_type_index,
                 type_ctx,
-            }) => {
-                if let Some(provided_type) = provided_type {
-                    // With a type context, compare through it rather than
-                    // structurally: two `func` types in the same rec group are
-                    // structurally identical yet distinct identities, and only
-                    // the context can tell them apart. This is the same
-                    // comparison the JIT makes.
-                    let compatible = match (type_ctx, *provided_type_index) {
-                        // Both halves present: decide by IDENTITY. Two `(func)`
-                        // types differing only in their position within a rec
-                        // group are distinct, and nothing structural separates
-                        // them -- only the index within each context does.
-                        (Some(ctx), idx) if idx != u32::MAX => concrete_type_matches_cross_context(
-                            ctx,
-                            idx,
-                            module.types(),
-                            func.type_index(),
-                        ),
-                        (Some(ctx), _) => {
-                            check_function_types_equivalent(provided_type, &func_type, ctx)
-                        }
-                        (None, _) => {
-                            provided_type.params() == func_type.params()
-                                && provided_type.results() == func_type.results()
-                        }
-                    };
-                    if !compatible {
-                        return Err(WasmError::unlinkable("incompatible import type"));
-                    }
-                }
-                callback.clone()
-            }
-            // A cross-instance link resolves through the function registry,
-            // which this engine does not participate in yet. The import IS
-            // provided, so it is not a link error; calling it is what fails.
-            ImportValue::Func(ImportedFunction::Linked { .. }) => continue,
+                ..
+            }) => (
+                provided_type.as_ref(),
+                *provided_type_index,
+                type_ctx.as_ref(),
+            ),
+            ImportValue::Func(ImportedFunction::Linked {
+                func_type,
+                type_index,
+                type_ctx,
+                ..
+            }) => (Some(func_type), *type_index, type_ctx.as_ref()),
             _ => return Err(WasmError::unlinkable("incompatible import type")),
+        };
+
+        if let Some(provided_type) = provided_type {
+            // With a type context, compare through it rather than
+            // structurally: two `func` types in the same rec group are
+            // structurally identical yet distinct identities, and only the
+            // context can tell them apart. This is the same comparison the
+            // JIT makes.
+            let compatible = match (type_ctx, provided_type_index) {
+                // Both halves present: decide by IDENTITY. Two `(func)` types
+                // differing only in their position within a rec group are
+                // distinct, and nothing structural separates them -- only
+                // the index within each context does.
+                (Some(ctx), idx) if idx != u32::MAX => {
+                    concrete_type_matches_cross_context(ctx, idx, module.types(), func.type_index())
+                }
+                (Some(ctx), _) => check_function_types_equivalent(provided_type, &func_type, ctx),
+                (None, _) => {
+                    provided_type.params() == func_type.params()
+                        && provided_type.results() == func_type.results()
+                }
+            };
+            if !compatible {
+                return Err(WasmError::unlinkable("incompatible import type"));
+            }
+        }
+
+        let callback = match &provided.value {
+            ImportValue::Func(ImportedFunction::Host { callback, .. }) => callback.clone(),
+            // The world identity is retained in InterpInstance's function
+            // table. A direct call is intercepted there and delegated through
+            // FuncRefHost, or rejected with the named no-hook trap.
+            ImportValue::Func(ImportedFunction::Linked { .. }) => continue,
+            _ => unreachable!("function provider was checked above"),
         };
 
         bound.push(Bound {

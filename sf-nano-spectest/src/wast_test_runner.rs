@@ -269,6 +269,10 @@ thread_local! {
     // Raw pointers to instances — valid only during single-threaded test execution.
     static FORWARDING_INSTANCES: RefCell<HashMap<String, *mut Instance>> =
         RefCell::new(HashMap::new());
+    // Absolute world identity -> original owning instance/function. Entries
+    // are append-only so a later linked alias can never replace its owner.
+    static FORWARDING_FUNCTIONS: RefCell<HashMap<RefHandle, (String, usize)>> =
+        RefCell::new(HashMap::new());
 }
 
 fn register_forwarding_instances(
@@ -284,6 +288,20 @@ fn register_forwarding_instances(
         for (reg_name, internal_name) in registered_as {
             if let Some(inst_ptr) = map.get(internal_name).copied() {
                 map.insert(reg_name.clone(), inst_ptr);
+            }
+        }
+    });
+    FORWARDING_FUNCTIONS.with(|cell| {
+        let mut functions = cell.borrow_mut();
+        for (internal_name, instance) in instances.iter() {
+            let mut function_index = 0;
+            while instance.function_type_at(function_index).is_some() {
+                if let Some(handle) = instance.function_handle_at(function_index) {
+                    functions
+                        .entry(handle)
+                        .or_insert_with(|| (internal_name.clone(), function_index));
+                }
+                function_index += 1;
             }
         }
     });
@@ -385,6 +403,7 @@ fn alloc_forwarding_slot_target(instance_name: &str, target: ForwardingTarget) -
 fn clear_forwarding() {
     FORWARDING_SLOTS.with(|cell| cell.borrow_mut().clear());
     FORWARDING_INSTANCES.with(|cell| cell.borrow_mut().clear());
+    FORWARDING_FUNCTIONS.with(|cell| cell.borrow_mut().clear());
 }
 
 /// A raw 64-bit slot read as `ty`, and back.
@@ -406,11 +425,7 @@ fn raw_slot_to_value(
         ValueType::F32 => Value::F32(f32::from_bits(raw as u32)),
         ValueType::F64 => Value::F64(f64::from_bits(raw)),
         ValueType::Ref(r) => Value::Ref(RefHandle::new(raw as usize), r),
-        _ => {
-            return Err(WasmError::internal(
-                "published funcref: unsupported value type",
-            ))
-        }
+        _ => return Err(WasmError::internal("world funcref: unsupported value type")),
     })
 }
 
@@ -422,40 +437,34 @@ fn value_to_raw_slot(v: &Value) -> Result<u64, WasmError> {
         Value::F32(x) => x.to_bits() as u64,
         Value::F64(x) => x.to_bits(),
         Value::Ref(h, _) => h.raw() as u64,
-        _ => return Err(WasmError::internal("published funcref: unsupported value")),
+        _ => return Err(WasmError::internal("world funcref: unsupported value")),
     })
 }
 
-/// Call a published funcref, converting raw slots at the boundary.
+/// Call an absolute world funcref, converting raw slots at the boundary.
 ///
 /// The engine hands raw slots because that is what its frames hold; the
 /// callee's signature says how to read them, and the harness is the side that
 /// can look that up.
 #[cfg(feature = "interp")]
 fn forward_raw_call(handle: RefHandle, args: &[u64], results: &mut [u64]) -> Result<(), WasmError> {
-    let slot = handle
-        .host_index()
-        .ok_or_else(|| WasmError::internal("published funcref without a slot"))?;
-    let (inst_name, func_index) = FORWARDING_SLOTS.with(|cell| {
-        let slots = cell.borrow();
-        match slots.get(slot).and_then(|s| s.as_ref()) {
-            Some(s) => match &s.target {
-                ForwardingTarget::FunctionIndex(idx) => Ok((s.instance_name.clone(), *idx)),
-            },
-            None => Err(WasmError::internal("published funcref slot empty")),
-        }
+    let (inst_name, func_index) = FORWARDING_FUNCTIONS.with(|cell| {
+        cell.borrow()
+            .get(&handle)
+            .cloned()
+            .ok_or_else(|| WasmError::internal("world funcref identity is not registered"))
     })?;
     FORWARDING_INSTANCES.with(|cell| {
         let map = cell.borrow();
         let inst_ptr = *map
             .get(&inst_name)
-            .ok_or_else(|| WasmError::internal("published funcref owner is gone"))?;
+            .ok_or_else(|| WasmError::internal("world funcref owner is gone"))?;
         // Safety: as `forward_call` -- single-threaded, and the owning
-        // instance outlives a call through a table it published into.
+        // instance outlives a call through a table it stored a funcref into.
         let inst = unsafe { &mut *inst_ptr };
         let ty = inst
             .function_type_at(func_index)
-            .ok_or_else(|| WasmError::internal("published funcref has no type"))?;
+            .ok_or_else(|| WasmError::internal("world funcref has no type"))?;
         let typed: Vec<Value> = ty
             .params()
             .iter()
@@ -680,7 +689,6 @@ pub struct WastTestRunner {
     named_modules: HashMap<String, String>,
     registered_as: HashMap<String, String>,
     module_definitions: HashMap<String, Vec<u8>>,
-    linked_function_refs: HashMap<(String, String, usize), usize>,
     function_registry: LinkRegistry,
     /// Partially-instantiated JIT instances, kept alive so their
     /// memories outlive a failed instantiation. The error type hands back
@@ -700,7 +708,6 @@ impl WastTestRunner {
             named_modules: HashMap::new(),
             registered_as: HashMap::new(),
             module_definitions: HashMap::new(),
-            linked_function_refs: HashMap::new(),
             function_registry: LinkRegistry::new(),
             retained_failed_instances: Vec::new(),
         }
@@ -1361,8 +1368,6 @@ impl WastTestRunner {
 
         self.instances.remove(internal_name);
         self.module_bytes.remove(internal_name);
-        self.linked_function_refs
-            .retain(|(dst, src, _), _| dst != internal_name && src != internal_name);
     }
 
     fn instantiate_with_registry(
@@ -1397,17 +1402,14 @@ impl WastTestRunner {
     ) -> Result<Instance, WasmError> {
         let imports = self.build_imports(wasm_bytes)?;
         let module = Module::new("main", wasm_bytes)?;
-        // Only the interpreter needs a `FuncRefHost`: the JIT resolves a
-        // cross-instance funcref through the registry alone. In a build
-        // without `interp` the whole path -- the tier, the host, and the
-        // constructor that takes one -- does not exist to name.
+        // Only the interpreter needs a `FuncRefHost`: the embedder's linking
+        // hook drives the absolute world identity while the engine-native
+        // interpreter trampoline remains deferred. The JIT resolves the same
+        // identity through the registry alone. In a build without `interp`
+        // this whole path does not exist to name.
         #[cfg(feature = "interp")]
         if self.engine.tier() == Tier::Interp {
-            let owner_name = owner.to_string();
             let host = sf_nano_core::FuncRefHost {
-                publish: Box::new(move |func_index| {
-                    RefHandle::hostref(alloc_forwarding_function_slot(&owner_name, func_index))
-                }),
                 invoke: Box::new(forward_raw_call),
             };
             return match Instance::from_module_with_registry_and_funcref_host(
@@ -1749,7 +1751,6 @@ impl WastTestRunner {
                 else {
                     continue;
                 };
-                let value = self.remap_global_value(&src_internal, &dst_internal, value);
                 global_ops.push((dst_internal.clone(), dst_idx, value));
             }
         }
@@ -1810,7 +1811,6 @@ impl WastTestRunner {
             else {
                 continue;
             };
-            let value = self.remap_global_value(src_internal, &dst_internal, value);
             global_ops.push((dst_internal, dst_idx, value));
         }
 
@@ -1820,62 +1820,6 @@ impl WastTestRunner {
             }
         }
         Ok(())
-    }
-
-    fn remap_table_ref(
-        &mut self,
-        src_internal: &str,
-        dst_internal: &str,
-        handle: RefHandle,
-    ) -> RefHandle {
-        if handle.is_null() || handle.is_extern() {
-            return handle;
-        }
-
-        let src_func_idx = handle.payload();
-        let key = (
-            dst_internal.to_string(),
-            src_internal.to_string(),
-            src_func_idx,
-        );
-        if let Some(&dst_func_idx) = self.linked_function_refs.get(&key) {
-            return RefHandle::new(dst_func_idx);
-        }
-
-        let Some(func_type) = self
-            .instances
-            .get(src_internal)
-            .and_then(|instance| instance.function_type_at(src_func_idx))
-        else {
-            return handle;
-        };
-
-        let slot = alloc_forwarding_function_slot(src_internal, src_func_idx);
-        let Some(&callback) = FORWARDER_TABLE.get(slot) else {
-            return handle;
-        };
-
-        let Some(dst_instance) = self.instances.get_mut(dst_internal) else {
-            return handle;
-        };
-        let dst_func_idx = dst_instance.append_host_function(func_type, callback);
-        self.linked_function_refs.insert(key, dst_func_idx);
-        RefHandle::new(dst_func_idx)
-    }
-
-    fn remap_global_value(
-        &mut self,
-        src_internal: &str,
-        dst_internal: &str,
-        value: Value,
-    ) -> Value {
-        match value {
-            Value::Ref(handle, ref_type) if !handle.is_null() && !handle.is_extern() => Value::Ref(
-                self.remap_table_ref(src_internal, dst_internal, handle),
-                ref_type,
-            ),
-            other => other,
-        }
     }
 
     // -----------------------------------------------------------------------
