@@ -597,6 +597,33 @@
   and lua for one handler set, so a baseline it produced is a fitted draw rather
   than a neutral one (code)
 
+- 2026-07-29 measurement: pairing the dst descriptor with the next-handler
+  prefetch is not merely CoreMark-neutral. Under the wasmi-benchmarks gate it
+  confirms mandelbrot -7.96% on the macos-14 runner (P(reg) 99.999995% over 20
+  pairs, where the same runner's JIT control moved +0.22% at 1.03% pair
+  volatility) and execute/fibonacci-iter -7.84% at 0.16% volatility, while
+  lz4-decompress gains 10.23% and stream-Add 5.75%. The pairing redistributes
+  cost rather than removing it, and the losses land on the
+  dispatch-latency-bound benchmarks (code)
+- 2026-07-29 uncertain: the macos-14 runner is a narrower core than the M4 the
+  CoreMark-neutral result came from, which would put the "size and
+  instruction-count lever for narrow cores" reading the wrong way round; the
+  runner's chip is inferred from the image label, not measured (uncertain)
+- 2026-07-29 measurement: pairing cell PAYLOAD words is not unconditionally
+  free either. Widening the operand pair from slot+slot to slot-or-const puts a
+  constant's VALUE in the pair's second half, where it reaches the ALU with no
+  intervening frame load, and that confirmed execute/reverse_complement -13%
+  and -23% across two runs, while execute/bulk-ops gained 2.1% in both (code)
+- 2026-07-29 rationale: the slot+slot guard on the operand pair is load-bearing
+  rather than a missed opportunity -- when both operands are slots each still
+  needs its own dependent frame load, and that access absorbs the pair's
+  second-half latency; any pairing whose second word reaches its consumer
+  directly exposes it (code)
+- 2026-07-29 measurement: the two pairings together cut the emitted engine from
+  339,064 to 309,040 bytes and generated instructions from 84,763 to 77,257,
+  -8.9% each -- a larger size lever than the 6,600 bytes the dst-descriptor
+  pairing bought alone, but not separable from the regressions above (code)
+
 ## Moves
 
 - 2026-07-26 replaced [[stencil-stitching]]: removing the dispatch between cells is
