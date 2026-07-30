@@ -129,6 +129,46 @@ impl<'a> StoreAccess<'a> {
     }
 }
 
+/// Recover the capability for the store named by a live native context.
+///
+/// An occupied instance can be checked out again while its outer evaluation
+/// token remains live. A start function instead names the unpublished store
+/// whose reserved slot is still vacant, so that case retains the initializing
+/// raw capability rather than requiring checkout to succeed.
+pub(crate) fn current_store_access(
+    ctx: &context::NativeContext,
+) -> Result<StoreAccess<'static>, WasmError> {
+    let store_ptr = ctx.store;
+    let (handle, id) = {
+        let store = ctx
+            .store()
+            .ok_or_else(|| WasmError::internal("native context is missing its store"))?;
+        (
+            store.instance_handle().clone(),
+            store.instance_handle().self_id(),
+        )
+    };
+    if let Some(token) = handle.checkout(id) {
+        return Ok(StoreAccess::checked_out(token));
+    }
+
+    if let Some(table) = handle.table() {
+        if table.in_use(id) != Some(0) {
+            return Err(WasmError::internal(
+                "native context current instance checkout failed",
+            ));
+        }
+    }
+
+    // A live native context keeps the current store alive. An occupied store
+    // has an outer checkout for the active evaluation, so a failed self
+    // checkout with the reserved generation still unused means this is the
+    // unpublished, vacant-slot initialization path. Tests may use a standalone
+    // store whose weak table handle has already expired; their owning Box
+    // provides the same liveness guarantee for this call.
+    Ok(unsafe { StoreAccess::<'static>::initializing_raw(store_ptr, id) })
+}
+
 /// Run one function in an occupied instance through the native engine.
 #[inline]
 pub(crate) fn eval(

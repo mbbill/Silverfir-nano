@@ -1814,8 +1814,11 @@ impl InterpInstance {
                     HeapType::Abstract(AbstractHeapType::Exn)
                 ),
                 #[cfg(sf_jit)]
-                RefRegistryEntry::Gc { store, gc_ref } => {
-                    let Some(origin) = (unsafe { store.as_ref() }) else {
+                RefRegistryEntry::Gc { owner, gc_ref } => {
+                    let Some(owner) = self.instance_handle.checkout(owner) else {
+                        return false;
+                    };
+                    let Some(origin) = owner.jit() else {
                         return false;
                     };
                     match expected.heap_type {
