@@ -655,6 +655,15 @@
   two full 64-bit words beside one packed word of slot offsets, which preserves
   absolute branch targets and needs no side table for calls or wide constants
   [[dispatch.fact/cell-size-is-not-the-mechanism-2026-07-30]] (code)
+- 2026-07-30 measurement: a 16-byte cell should read its fields NARROW rather
+  than pack and extract them. Packing's two halves cancel -- removing two memory
+  uops buys 2.1% while the three extractions cost 2.63% -- but one halfword load
+  per field adds no ALU and holds the memory-uop count at the three it already
+  is, measuring -0.62% with the sign split 4/8 against the ALU probe's 5/5. The
+  size axis is a memory result, not a time one: cells are the dominant runtime
+  allocation at 631K against a 339K engine on CoreMark and 14.7M on sqlite, so
+  the target is to halve them without losing time
+  [[dispatch.fact/narrow-field-reads-2026-07-30]] (code)
 
 ## Moves
 
