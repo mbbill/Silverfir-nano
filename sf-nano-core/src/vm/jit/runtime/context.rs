@@ -197,6 +197,18 @@ impl NativeContext {
         self.stack_end = stack_end;
         self.error = None;
         self.pending_escape = PendingEscape::None;
+        self.refresh_cached_views_if_stale();
+    }
+
+    /// Refresh only when a cached dependency changed.
+    ///
+    /// This check covers every mutation a callee can make visible to its
+    /// caller: module revision covers entity/type/function changes, table
+    /// revisions cover element writes as well as growth, memory base/length
+    /// checks cover shared-memory growth, and global caches contain backing
+    /// pointers rather than the mutable values behind them.
+    #[inline]
+    pub(crate) fn refresh_cached_views_if_stale(&mut self) {
         if !self.cached_views_are_current() {
             self.refresh_cached_views();
         }

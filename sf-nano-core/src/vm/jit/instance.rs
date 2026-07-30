@@ -358,6 +358,9 @@ impl JitInstance {
             .iter()
             .map(|global| global.is_import() || !global.export_names().is_empty())
             .collect();
+        let escapable_functions = module
+            .escapable_functions()
+            .map_err(InstanceInstantiationError::Complete)?;
         #[cfg(sf_jit)]
         let table_dispatch_modes = compute_static_table_dispatch_modes(&module)
             .map_err(InstanceInstantiationError::Complete)?;
@@ -882,6 +885,9 @@ impl JitInstance {
             let store_ptr = {
                 let store = store.as_mut();
                 for func_idx in 0..store.module().functions.len() {
+                    if !escapable_functions[func_idx] {
+                        continue;
+                    }
                     if let Some(handle) = store.module().functions[func_idx].linked_handle() {
                         store.module_mut().set_function_handle(func_idx, handle);
                     } else {
@@ -1310,10 +1316,11 @@ impl JitInstance {
     /// Mint the function's absolute reference form for external use.
     pub fn function_handle_at(&self, idx: usize) -> Option<RefHandle> {
         let store = self.store();
-        store
-            .module()
-            .function_handle(idx)
-            .map(|handle| absolutize(store, handle))
+        let handle = store.module().function_handle(idx)?;
+        if handle.is_null() {
+            return None;
+        }
+        Some(absolutize(store, handle))
     }
 
     /// Resolve an exported tag to its runtime identity. Required for

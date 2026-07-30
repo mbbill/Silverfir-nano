@@ -1,14 +1,16 @@
 use tracked_alloc::string::String;
 
 use crate::collections;
+use crate::op_decoder::{Decoder, Immediate, OpStream, OpcodeHandler};
+use crate::opcodes::{Opcode, WasmOpcode};
 
 #[cfg(not(sf_has_simd))]
 use self::type_defs::{CompositeType, StorageType};
 #[cfg(not(sf_has_simd))]
 use crate::value_type::ValueType;
-use entities::{Data, Element, Function, Global, Memory, Table, Tag};
 #[cfg(not(sf_has_simd))]
-use entities::{ElementInit, FunctionType};
+use entities::FunctionType;
+use entities::{Data, Element, ElementInit, Function, Global, Memory, Table, Tag};
 
 pub mod builder;
 pub mod entities;
@@ -129,6 +131,56 @@ impl Module {
         self.data_count
     }
 
+    /// Functions whose identity may leave direct-call-only code.
+    ///
+    /// The code-section scan is authoritative: the validator deliberately
+    /// over-approximates expression-form element declarations. Element
+    /// initializers, other constant expressions, and exports supplement the
+    /// exact `ref.func` operands found in function bodies.
+    pub(crate) fn escapable_functions(&self) -> Result<collections::Vec<bool>, WasmError> {
+        let mut escapable = collections::vec![false; self.functions.len()];
+
+        for function in &self.functions {
+            if let Some(spec) = function.spec() {
+                scan_ref_funcs(spec.code(), &mut escapable)?;
+            }
+        }
+
+        for (index, function) in self.functions.iter().enumerate() {
+            if !function.export_names().is_empty() {
+                escapable[index] = true;
+            }
+        }
+
+        for element in &self.elements {
+            match element.get_init() {
+                ElementInit::FunctionIndexes(indices) => {
+                    for &index in indices {
+                        mark_escapable(&mut escapable, index)?;
+                    }
+                }
+                ElementInit::InitExprs { exprs, .. } => {
+                    for expr in exprs {
+                        scan_ref_funcs(expr, &mut escapable)?;
+                    }
+                }
+            }
+        }
+
+        for table in &self.tables {
+            if let Some(expr) = table.spec().init_expr() {
+                scan_ref_funcs(expr, &mut escapable)?;
+            }
+        }
+        for global in &self.globals {
+            if let Some(spec) = global.spec() {
+                scan_ref_funcs(spec.init_expr(), &mut escapable)?;
+            }
+        }
+
+        Ok(escapable)
+    }
+
     /// Consume the module, returning all internal fields.
     pub fn into_parts(
         self,
@@ -155,6 +207,49 @@ impl Module {
             self.start_func_index,
         )
     }
+}
+
+fn mark_escapable(escapable: &mut [bool], index: usize) -> Result<(), WasmError> {
+    let slot = escapable
+        .get_mut(index)
+        .ok_or_else(|| WasmError::invalid("ref.func: function index out of range"))?;
+    *slot = true;
+    Ok(())
+}
+
+struct RefFuncScan<'a> {
+    escapable: &'a mut [bool],
+}
+
+impl OpcodeHandler for RefFuncScan<'_> {
+    fn on_decode_begin(&mut self) -> Result<(), WasmError> {
+        Ok(())
+    }
+
+    fn on_stream<'x, 'y, 'z>(
+        &mut self,
+        stream: &mut OpStream<'x, 'y, 'z>,
+    ) -> Result<(), WasmError> {
+        while let Some(decoded) = stream.next()? {
+            if let (WasmOpcode::OP(Opcode::REF_FUNC), Immediate::FunctionIndex(function_index)) =
+                (decoded.wasm_op, &decoded.imm)
+            {
+                mark_escapable(self.escapable, *function_index as usize)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn on_decode_end(&mut self) -> Result<(), WasmError> {
+        Ok(())
+    }
+}
+
+fn scan_ref_funcs(code: &[u8], escapable: &mut [bool]) -> Result<(), WasmError> {
+    let mut scan = RefFuncScan { escapable };
+    let mut decoder = Decoder::new(code);
+    decoder.add_handler(&mut scan);
+    decoder.decode_function()
 }
 
 #[cfg(not(sf_has_simd))]

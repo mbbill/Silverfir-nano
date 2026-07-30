@@ -366,7 +366,7 @@ fn invoke_runtime_target(
         ));
     }
 
-    ctx.refresh_cached_views();
+    ctx.refresh_cached_views_if_stale();
 
     {
         let frame_owner = ctx
