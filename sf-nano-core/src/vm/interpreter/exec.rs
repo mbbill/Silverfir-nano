@@ -1651,6 +1651,9 @@ impl InterpInstance {
     /// Only a global that is imported or exported is held as a `GlobalInst`;
     /// a purely private one lives in the array and has nothing to share.
     pub fn global_state_at(&self, idx: usize) -> Option<GlobalInst> {
+        if !self.global_reachable.get(idx).copied().unwrap_or(true) {
+            return None;
+        }
         self.shared_globals.get(idx)?.clone()
     }
 
@@ -2024,6 +2027,9 @@ impl InterpInstance {
     /// Only a table that is imported or exported is held as a `TableInst`;
     /// a purely private one keeps an array and has nothing to share.
     pub fn table_state_at(&self, idx: usize) -> Option<TableInst> {
+        if !self.table_reachable.get(idx).copied().unwrap_or(true) {
+            return None;
+        }
         match &self.tables.get(idx)?.entries {
             TableEntries::Shared(t) => Some(t.clone()),
             TableEntries::Private(_) => None,

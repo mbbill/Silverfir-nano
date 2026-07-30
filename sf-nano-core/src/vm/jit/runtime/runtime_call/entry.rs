@@ -454,7 +454,9 @@ fn validate_host_throw_payload(tag: TagHandle, payload: &[Value], ctx: &NativeCo
 
 #[cfg(test)]
 mod tests {
-    use tracked_alloc::{boxed::Box, rc::Rc, string::String};
+    #[cfg(any(sf_ir_dump, sf_jitdump))]
+    use tracked_alloc::string::String;
+    use tracked_alloc::{boxed::Box, rc::Rc};
 
     use super::*;
     use crate::{
@@ -465,12 +467,12 @@ mod tests {
             entities::{HostFn, MemInst},
             jit::entities::ModuleInst,
             jit::runtime::{common::NativeCallStatus, context::NativeContextBox},
-            jit::store::Store,
+            jit::store::{tests::store as test_store, Store},
         },
     };
 
     fn test_context(module: ModuleInst) -> (Box<Store>, NativeContextBox) {
-        let mut store = Box::new(Store::new(module));
+        let mut store = test_store(module);
         let n_globals = store.module().globals.len();
         let ctx = NativeContext::new(
             (&mut *store) as *mut Store,
@@ -510,6 +512,7 @@ mod tests {
         ));
         let mut module = ModuleInst::new(
             crate::config::Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
             String::from("m"),
             TypeContext::empty(),
         );
@@ -573,6 +576,7 @@ mod tests {
         ));
         let mut module = ModuleInst::new(
             crate::config::Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
             String::from("m"),
             TypeContext::empty(),
         );
