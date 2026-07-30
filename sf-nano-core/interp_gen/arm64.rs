@@ -109,7 +109,7 @@ impl Arm64 {
                 tmp
             }
             Cls::Slot => {
-                a.ins(&format!("ldr {}, [x19, #8]", x(tmp)));
+                a.ins(&format!("ldrh {}, [x19, #8]", w(tmp)));
                 a.ins(&format!("ldr {0}, [x20, {0}]", x(tmp)));
                 tmp
             }
@@ -126,7 +126,7 @@ impl Arm64 {
                 tmp
             }
             Cls::Slot => {
-                a.ins(&format!("ldr {}, [x19, #16]", x(tmp)));
+                a.ins(&format!("ldrh {}, [x19, #16]", w(tmp)));
                 a.ins(&format!("ldr {0}, [x20, {0}]", x(tmp)));
                 tmp
             }
@@ -141,7 +141,8 @@ impl Arm64 {
     /// forwarding is exactly what the slot-edge cost model depends on.
     fn src_ab(&self, a: &mut Asm, ac: Cls, bc: Cls) -> (u32, u32) {
         if ac == Cls::Slot && bc == Cls::Slot {
-            a.ins("ldp x10, x11, [x19, #8]");
+            a.ins("ldrh w10, [x19, #8]");
+            a.ins("ldrh w11, [x19, #16]");
             a.ins("ldr x10, [x20, x10]");
             a.ins("ldr x11, [x20, x11]");
             (10, 11)
@@ -159,7 +160,7 @@ impl Arm64 {
     }
 
     fn store_dst(&self, a: &mut Asm, src: u32) {
-        a.ins("ldr x12, [x19, #24]");
+        a.ins("ldrh w12, [x19, #24]");
         a.ins(&format!("str {}, [x20, x12]", x(src)));
     }
 
@@ -185,7 +186,7 @@ impl Arm64 {
     /// zero-extension convention holds for free.
     fn finish_fp(&self, a: &mut Asm, d: DstCls) {
         if d != DstCls::Acc {
-            a.ins("ldr x12, [x19, #24]");
+            a.ins("ldrh w12, [x19, #24]");
             a.ins(&format!("str {}, [x20, x12]", f(false, self.fp_target(d))));
         }
     }
@@ -196,7 +197,7 @@ impl Arm64 {
     fn src_fp(&self, a: &mut Asm, cls: Cls, w32: bool, v: u32, pcoff: u32, tmp: u32) -> u32 {
         match cls {
             Cls::Slot => {
-                a.ins(&format!("ldr {}, [x19, #{pcoff}]", x(tmp)));
+                a.ins(&format!("ldrh {}, [x19, #{pcoff}]", w(tmp)));
                 a.ins(&format!("ldr {}, [x20, {}]", f(w32, v), x(tmp)));
                 v
             }
@@ -215,7 +216,8 @@ impl Arm64 {
 
     fn src_fp_ab(&self, a: &mut Asm, ac: Cls, bc: Cls, w32: bool) -> (u32, u32) {
         if ac == Cls::Slot && bc == Cls::Slot {
-            a.ins("ldp x10, x11, [x19, #8]");
+            a.ins("ldrh w10, [x19, #8]");
+            a.ins("ldrh w11, [x19, #16]");
             a.ins(&format!("ldr {}, [x20, x10]", f(w32, 0)));
             a.ins(&format!("ldr {}, [x20, x11]", f(w32, 1)));
             (0, 1)
@@ -876,7 +878,8 @@ impl Isa for Arm64 {
                 // Strictly ordered: commit dst1 (including its pinned
                 // register, when present) before reading src2.
                 if v.a == Cls::Slot && v.b == Cls::Slot {
-                    a.ins("ldp x10, x11, [x19, #8]");
+                    a.ins("ldrh w10, [x19, #8]");
+                    a.ins("ldrh w11, [x19, #16]");
                 } else if v.a == Cls::Slot {
                     a.ins("ldr x10, [x19, #8]");
                 } else if v.b == Cls::Slot {

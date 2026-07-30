@@ -419,12 +419,21 @@ impl NativeEngine {
         // and one padding cell removes the dependency. Its handler is the
         // slow stub, so control reaching it exits cleanly rather than
         // jumping through uninitialized memory.
+        // A handler reads a slot field as a halfword, so a frame whose byte
+        // offsets do not fit 16 bits has no native form: the load would
+        // silently index the wrong slot. `frame_slots` bounds every slot
+        // field, so one check per function covers all of them. Honored on
+        // every backend rather than per-ISA — 8,192 slots is three orders of
+        // magnitude past the widest frame in the corpus, so the bound costs
+        // nothing to apply unconditionally.
+        let slots_fit_halfword = (func.frame_slots as u64) * 8 <= 0xffff;
+
         let mut cells = Vec::with_capacity(func.code.len() + 1);
         let mut brtable_native = vec![false; func.code.len()];
         for (i, ins) in func.code.iter().enumerate() {
             let fl = flags[i];
             let mut h = self.handler_for(ins, fl, &pin);
-            if !native_guard(ins) {
+            if !native_guard(ins) || !slots_fit_halfword {
                 h = None;
             }
             // A 32-bit host reads a cell's static offset as one machine
