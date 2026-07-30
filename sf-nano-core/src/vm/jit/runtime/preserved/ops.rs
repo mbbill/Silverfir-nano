@@ -8,7 +8,6 @@ use crate::{
         entities::{MemInst, TableInst},
         jit::arch::backend_config,
         jit::gc_heap::GcRef,
-        jit::gc_type_check::check_ref_type_match,
         jit::runtime::{
             self,
             common::{internal_error, trap_error},
@@ -20,7 +19,7 @@ use crate::{
             absolutize, machine_raw_to_ref, ref_to_machine_raw, retag_for_container,
             try_machine_raw_to_value_in_store, value_to_machine_raw_in_store,
         },
-        link::{InstanceId, RefRegistryEntry},
+        link::{ref_type_matches, InstanceId, RefRegistryEntry, RefTypeOwner},
         tag::TagHandle,
         value::RefHandle,
         value::Value,
@@ -362,7 +361,11 @@ pub(super) fn do_ref_test(
     let is_match = if handle.is_null() {
         target_type.nullable
     } else {
-        check_ref_type_match(handle, &target_type.heap_type, current_store(ctx)?)?
+        ref_type_matches(
+            handle,
+            &target_type.heap_type,
+            RefTypeOwner::Jit(current_store(ctx)?),
+        )?
     };
     Ok(u64::from(is_match))
 }
@@ -384,7 +387,11 @@ pub(super) fn do_ref_cast(
         };
     }
 
-    if check_ref_type_match(handle, &target_type.heap_type, current_store(ctx)?)? {
+    if ref_type_matches(
+        handle,
+        &target_type.heap_type,
+        RefTypeOwner::Jit(current_store(ctx)?),
+    )? {
         Ok(ref_to_machine(handle))
     } else {
         Err(trap_error("cast failure"))

@@ -30,8 +30,8 @@ use crate::vm::engine::Engine;
 use crate::vm::entities::{Caller, GlobalInst, MemInst, TableInst};
 use crate::vm::imports::{Import, ImportValue, ImportedFunction, ImportedGlobal};
 use crate::vm::link::{
-    FuncEntry, InstanceHandle, InstanceId, InstanceLease, LinkArenas, LinkRegistry,
-    RefRegistryEntry,
+    ref_type_matches, FuncEntry, InstanceHandle, InstanceId, InstanceLease, LinkArenas,
+    LinkRegistry, RefTypeOwner,
 };
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
@@ -1768,147 +1768,6 @@ impl InterpInstance {
             .map(|tag| tag.func_type().params())
     }
 
-    fn function_entry_type(&self, entry: FuncEntry) -> Option<(TypeContext, u32)> {
-        if entry.owner == self.instance_handle.self_id() {
-            let source_idx = self
-                .module
-                .functions()
-                .get(entry.local_index as usize)?
-                .type_index();
-            return Some((self.module.types().clone(), source_idx));
-        }
-
-        let owner = self.instance_handle.checkout(entry.owner)?;
-        if let Some(origin) = owner.interp() {
-            let source_idx = origin
-                .module
-                .functions()
-                .get(entry.local_index as usize)?
-                .type_index();
-            return Some((origin.module.types().clone(), source_idx));
-        }
-        #[cfg(sf_jit)]
-        if let Some(origin) = owner.jit() {
-            let source_idx = origin
-                .module()
-                .functions
-                .get(entry.local_index as usize)?
-                .type_index();
-            return Some((origin.module().types.clone(), source_idx));
-        }
-        None
-    }
-
-    fn ref_handle_matches_type(&self, handle: RefHandle, expected: RefType) -> bool {
-        if handle.is_null() {
-            return expected.nullable;
-        }
-
-        if handle.is_extern() {
-            return matches!(
-                expected.heap_type,
-                HeapType::Abstract(AbstractHeapType::Extern)
-            );
-        }
-
-        if handle.is_pooled() {
-            let Some(entry) = self.link_registry.ref_entry_for_handle(handle) else {
-                return false;
-            };
-            return match entry {
-                // Pooled I31/Gc entries are minted only by the JIT runtime;
-                // in an interpreter-only build they cannot exist.
-                #[cfg(sf_jit)]
-                RefRegistryEntry::I31(_) => matches!(
-                    expected.heap_type,
-                    HeapType::Abstract(
-                        AbstractHeapType::I31 | AbstractHeapType::Eq | AbstractHeapType::Any
-                    )
-                ),
-                RefRegistryEntry::Exn(_) => matches!(
-                    expected.heap_type,
-                    HeapType::Abstract(AbstractHeapType::Exn)
-                ),
-                #[cfg(sf_jit)]
-                RefRegistryEntry::Gc { owner, gc_ref } => {
-                    let Some(owner) = self.instance_handle.checkout(owner) else {
-                        return false;
-                    };
-                    let Some(origin) = owner.jit() else {
-                        return false;
-                    };
-                    match expected.heap_type {
-                        HeapType::Concrete(target_idx) => {
-                            let Ok(source_idx) = origin.gc_heap().borrow().type_idx(gc_ref) else {
-                                return false;
-                            };
-                            concrete_type_matches_cross_context(
-                                &origin.module().types,
-                                source_idx,
-                                self.module.types(),
-                                target_idx,
-                            )
-                        }
-                        HeapType::Abstract(AbstractHeapType::Struct) => {
-                            origin.gc_heap().borrow().is_struct(gc_ref)
-                        }
-                        HeapType::Abstract(AbstractHeapType::Array) => {
-                            origin.gc_heap().borrow().is_array(gc_ref)
-                        }
-                        HeapType::Abstract(AbstractHeapType::Eq | AbstractHeapType::Any) => true,
-                        _ => false,
-                    }
-                }
-            };
-        }
-
-        // A hostref is a generic host reference, never an interpreter
-        // function identity.
-        if handle.is_host() {
-            return matches!(
-                expected.heap_type,
-                HeapType::Abstract(AbstractHeapType::Any)
-            );
-        }
-
-        let localized = self.localize_ref(handle);
-        if localized.encoded() < self.module.functions().len() {
-            let Some(func) = self.module.functions().get(localized.encoded()) else {
-                return false;
-            };
-            return match expected.heap_type {
-                HeapType::Abstract(AbstractHeapType::Func) => true,
-                HeapType::Concrete(target_idx) => {
-                    let source_idx = func.type_index();
-                    source_idx != u32::MAX
-                        && HeapType::Concrete(source_idx)
-                            .is_subtype_of(&HeapType::Concrete(target_idx), self.module.types())
-                }
-                _ => false,
-            };
-        }
-
-        let Some(entry) = self.link_registry.functions.entry_for_handle(localized) else {
-            return false;
-        };
-        match expected.heap_type {
-            HeapType::Abstract(AbstractHeapType::Func) => true,
-            HeapType::Concrete(target_idx) => {
-                let Some((source_types, source_idx)) = self.function_entry_type(entry) else {
-                    return false;
-                };
-                source_idx != u32::MAX
-                    && concrete_type_matches_cross_context(
-                        &source_types,
-                        source_idx,
-                        self.module.types(),
-                        target_idx,
-                    )
-            }
-            _ => false,
-        }
-    }
-
     fn host_value_matches_type(&self, value: &Value, expected: ValueType) -> bool {
         match (value, expected) {
             (Value::I32(_), ValueType::I32)
@@ -1927,7 +1786,8 @@ impl InterpInstance {
                             .heap_type
                             .is_subtype_of(&expected.heap_type, self.module.types())
                 } else {
-                    self.ref_handle_matches_type(*handle, expected)
+                    ref_type_matches(*handle, &expected.heap_type, RefTypeOwner::Interp(self))
+                        .unwrap_or(false)
                 }
             }
             _ => false,
@@ -2204,6 +2064,16 @@ impl InterpInstance {
     #[inline]
     pub fn module(&self) -> &Module {
         &self.module
+    }
+
+    #[inline]
+    pub(crate) fn instance_handle(&self) -> &InstanceHandle {
+        &self.instance_handle
+    }
+
+    #[inline]
+    pub(crate) fn link_arenas(&self) -> &LinkArenas {
+        &self.link_registry
     }
 
     /// The first linear memory's contents, if the module defines one.
@@ -3712,6 +3582,30 @@ impl InterpInstance {
                 }
                 frame[ins.c as usize] = v;
             }
+            Op::RefTest => {
+                let handle = slot_to_ref(opa!(ins));
+                let target = RefType::decode_from_u64(ins.b);
+                let is_match = if handle.is_null() {
+                    target.nullable
+                } else {
+                    ref_type_matches(handle, &target.heap_type, RefTypeOwner::Interp(self))?
+                };
+                frame[ins.c as usize] = u64::from(is_match);
+            }
+            Op::RefCast => {
+                let raw = opa!(ins);
+                let handle = slot_to_ref(raw);
+                let target = RefType::decode_from_u64(ins.b);
+                let is_match = if handle.is_null() {
+                    target.nullable
+                } else {
+                    ref_type_matches(handle, &target.heap_type, RefTypeOwner::Interp(self))?
+                };
+                if !is_match {
+                    return Err(WasmError::trap("cast failure"));
+                }
+                frame[ins.c as usize] = raw;
+            }
             Op::CallRef | Op::ReturnCallRef => {
                 let r = slot_to_ref(opa!(ins));
                 if r.is_null() {
@@ -3724,10 +3618,10 @@ impl InterpInstance {
                 if local.encoded() >= self.module.functions().len() {
                     let registry_known = self.link_registry.functions.entry_for_handle(r).is_some();
                     if registry_known {
-                        if !self.ref_handle_matches_type(
-                            r,
-                            RefType::non_nullable_concrete(ins.c as u32),
-                        ) {
+                        let expected = RefType::non_nullable_concrete(ins.c as u32);
+                        if !ref_type_matches(r, &expected.heap_type, RefTypeOwner::Interp(self))
+                            .unwrap_or(false)
+                        {
                             return Err(WasmError::trap("indirect call type mismatch"));
                         }
                     }
@@ -4042,10 +3936,14 @@ impl InterpInstance {
                         .entry_for_handle(callee)
                         .is_some();
                     if registry_known {
-                        if !self.ref_handle_matches_type(
+                        let expected = RefType::non_nullable_concrete(ins.c as u32);
+                        if !ref_type_matches(
                             callee,
-                            RefType::non_nullable_concrete(ins.c as u32),
-                        ) {
+                            &expected.heap_type,
+                            RefTypeOwner::Interp(self),
+                        )
+                        .unwrap_or(false)
+                        {
                             return Err(WasmError::trap("indirect call type mismatch"));
                         }
                     }

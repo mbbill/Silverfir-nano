@@ -14,6 +14,9 @@
 //!   instance threw it.
 
 use crate::collections;
+use crate::error::WasmError;
+use crate::module::type_context::{concrete_type_matches_cross_context, TypeContext};
+use crate::value_type::{AbstractHeapType, HeapType};
 use crate::vm::tag::TagHandle;
 use crate::vm::value::FUNCADDR_TOP;
 use crate::vm::value::{RefHandle, Value};
@@ -635,6 +638,247 @@ pub(crate) enum RefRegistryEntry {
     /// here makes handles independent of the lifetime of the instance that
     /// originally allocated them.
     Exn(Rc<ExnInstance>),
+}
+
+/// The currently executing instance for a shared dynamic reference-type test.
+///
+/// Same-owner values are inspected through the caller's existing
+/// materialization. Foreign owners are reached only through a fresh,
+/// generation-checked checkout.
+#[derive(Clone, Copy)]
+pub(crate) enum RefTypeOwner<'a> {
+    #[cfg(sf_jit)]
+    Jit(&'a Store),
+    #[cfg(sf_interp)]
+    Interp(&'a InterpInstance),
+}
+
+impl<'a> RefTypeOwner<'a> {
+    fn from_token(token: &'a InstanceToken) -> Option<Self> {
+        #[cfg(sf_jit)]
+        if let Some(store) = token.jit() {
+            return Some(Self::Jit(store));
+        }
+        #[cfg(sf_interp)]
+        if let Some(instance) = token.interp() {
+            return Some(Self::Interp(instance));
+        }
+        None
+    }
+
+    fn instance_handle(self) -> &'a InstanceHandle {
+        match self {
+            #[cfg(sf_jit)]
+            Self::Jit(store) => store.instance_handle(),
+            #[cfg(sf_interp)]
+            Self::Interp(instance) => instance.instance_handle(),
+        }
+    }
+
+    fn types(self) -> &'a TypeContext {
+        match self {
+            #[cfg(sf_jit)]
+            Self::Jit(store) => &store.module().types,
+            #[cfg(sf_interp)]
+            Self::Interp(instance) => instance.module().types(),
+        }
+    }
+
+    fn function_count(self) -> usize {
+        match self {
+            #[cfg(sf_jit)]
+            Self::Jit(store) => store.module().functions.len(),
+            #[cfg(sf_interp)]
+            Self::Interp(instance) => instance.module().functions().len(),
+        }
+    }
+
+    fn function_type_index(self, local_index: u32) -> Option<u32> {
+        match self {
+            #[cfg(sf_jit)]
+            Self::Jit(store) => store
+                .module()
+                .functions
+                .get(local_index as usize)
+                .map(|function| function.type_index()),
+            #[cfg(sf_interp)]
+            Self::Interp(instance) => instance
+                .module()
+                .functions()
+                .get(local_index as usize)
+                .map(|function| function.type_index()),
+        }
+    }
+
+    fn function_entry_for_handle(self, handle: RefHandle) -> Option<FuncEntry> {
+        match self {
+            #[cfg(sf_jit)]
+            Self::Jit(store) => store.function_entry_for_handle(handle),
+            #[cfg(sf_interp)]
+            Self::Interp(instance) => instance.link_arenas().functions.entry_for_handle(handle),
+        }
+    }
+
+    fn ref_entry_for_handle(self, handle: RefHandle) -> Option<RefRegistryEntry> {
+        match self {
+            #[cfg(sf_jit)]
+            Self::Jit(store) => store.ref_entry_for_handle(handle),
+            #[cfg(sf_interp)]
+            Self::Interp(instance) => instance.link_arenas().ref_entry_for_handle(handle),
+        }
+    }
+
+    #[cfg(sf_jit)]
+    fn jit_store(self) -> Option<&'a Store> {
+        match self {
+            Self::Jit(store) => Some(store),
+            #[cfg(sf_interp)]
+            Self::Interp(_) => None,
+        }
+    }
+}
+
+/// Test one non-null reference against a heap type using world provenance.
+///
+/// Nullability remains a property of each instruction/API call site, so null
+/// never reaches this function.
+pub(crate) fn ref_type_matches(
+    handle: RefHandle,
+    expected: &HeapType,
+    current: RefTypeOwner<'_>,
+) -> Result<bool, WasmError> {
+    debug_assert!(!handle.is_null());
+
+    if handle.is_extern() {
+        return Ok(matches!(
+            expected,
+            HeapType::Abstract(AbstractHeapType::Extern)
+        ));
+    }
+
+    if handle.is_pooled() {
+        return match current.ref_entry_for_handle(handle) {
+            #[cfg(sf_jit)]
+            Some(RefRegistryEntry::I31(_)) => Ok(matches!(
+                expected,
+                HeapType::Abstract(
+                    AbstractHeapType::I31 | AbstractHeapType::Eq | AbstractHeapType::Any
+                )
+            )),
+            Some(RefRegistryEntry::Exn(_)) => Ok(matches!(
+                expected,
+                HeapType::Abstract(AbstractHeapType::Exn)
+            )),
+            #[cfg(sf_jit)]
+            Some(RefRegistryEntry::Gc { owner, gc_ref }) => {
+                let current_id = current.instance_handle().self_id();
+                if owner == current_id {
+                    let origin = current.jit_store().ok_or_else(|| {
+                        WasmError::internal("GC ref points to a non-JIT instance")
+                    })?;
+                    return gc_ref_type_matches(origin, gc_ref, expected, current.types());
+                }
+
+                let token = current
+                    .instance_handle()
+                    .checkout(owner)
+                    .ok_or_else(|| WasmError::internal("GC ref points to missing instance"))?;
+                let origin = RefTypeOwner::from_token(&token)
+                    .and_then(RefTypeOwner::jit_store)
+                    .ok_or_else(|| WasmError::internal("GC ref points to a non-JIT instance"))?;
+                gc_ref_type_matches(origin, gc_ref, expected, current.types())
+            }
+            None => Err(WasmError::invalid("invalid pooled reference")),
+        };
+    }
+
+    // A hostref belongs to the aggregate hierarchy and has no more specific
+    // engine-dependent provenance.
+    if handle.is_host() {
+        return Ok(matches!(
+            expected,
+            HeapType::Abstract(AbstractHeapType::Any)
+        ));
+    }
+
+    let local_index = handle.encoded();
+    if local_index < current.function_count() {
+        return function_type_matches(current, local_index as u32, expected, current);
+    }
+
+    let entry = current
+        .function_entry_for_handle(handle)
+        .ok_or_else(|| WasmError::invalid("invalid function reference"))?;
+    match expected {
+        HeapType::Abstract(AbstractHeapType::Func) => return Ok(true),
+        HeapType::Abstract(_) => return Ok(false),
+        HeapType::Concrete(_) => {}
+    }
+    if entry.owner == current.instance_handle().self_id() {
+        return function_type_matches(current, entry.local_index, expected, current);
+    }
+
+    let token = current
+        .instance_handle()
+        .checkout(entry.owner)
+        .ok_or_else(|| WasmError::internal("function ref points to missing instance"))?;
+    let origin = RefTypeOwner::from_token(&token)
+        .ok_or_else(|| WasmError::internal("function ref points to unavailable instance"))?;
+    function_type_matches(origin, entry.local_index, expected, current)
+}
+
+fn function_type_matches(
+    origin: RefTypeOwner<'_>,
+    local_index: u32,
+    expected: &HeapType,
+    current: RefTypeOwner<'_>,
+) -> Result<bool, WasmError> {
+    match expected {
+        HeapType::Abstract(AbstractHeapType::Func) => Ok(true),
+        HeapType::Concrete(target_index) => {
+            let source_index = origin
+                .function_type_index(local_index)
+                .ok_or_else(|| WasmError::internal("function ref index is out of range"))?;
+            if source_index == u32::MAX {
+                return Ok(false);
+            }
+            Ok(concrete_type_matches_cross_context(
+                origin.types(),
+                source_index,
+                current.types(),
+                *target_index,
+            ))
+        }
+        _ => Ok(false),
+    }
+}
+
+#[cfg(sf_jit)]
+fn gc_ref_type_matches(
+    origin: &Store,
+    gc_ref: GcRef,
+    expected: &HeapType,
+    current_types: &TypeContext,
+) -> Result<bool, WasmError> {
+    match expected {
+        HeapType::Concrete(target_index) => {
+            let source_index = origin.gc_heap().borrow().type_idx(gc_ref)?;
+            Ok(concrete_type_matches_cross_context(
+                &origin.module().types,
+                source_index,
+                current_types,
+                *target_index,
+            ))
+        }
+        HeapType::Abstract(AbstractHeapType::Struct) => {
+            Ok(origin.gc_heap().borrow().is_struct(gc_ref))
+        }
+        HeapType::Abstract(AbstractHeapType::Array) => {
+            Ok(origin.gc_heap().borrow().is_array(gc_ref))
+        }
+        HeapType::Abstract(AbstractHeapType::Eq | AbstractHeapType::Any) => Ok(true),
+        _ => Ok(false),
+    }
 }
 
 #[cfg(sf_interp)]

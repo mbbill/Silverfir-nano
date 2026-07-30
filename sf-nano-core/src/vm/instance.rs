@@ -824,6 +824,187 @@ mod tests {
         }
     }
 
+    #[cfg(all(sf_jit, sf_interp))]
+    #[test]
+    fn runtime_world_reference_type_answers_match_between_engines() {
+        let provider_wasm = wat::parse_str(
+            r#"
+            (module
+              (type $provider (func (param i32) (result i32)))
+              (func $target (type $provider) (param i32) (result i32)
+                local.get 0)
+              (elem declare func $target)
+              (func (export "get") (result funcref)
+                ref.func $target))
+            "#,
+        )
+        .expect("encode reference provider");
+        let consumer_wasm = wat::parse_str(
+            r#"
+            (module
+              ;; The matching type deliberately has a different index from
+              ;; the provider's type. Index zero is a same-numbered decoy.
+              (type $wrong (func (result i64)))
+              (type $right (func (param i32) (result i32)))
+
+              (func (export "test_func") (param funcref) (result i32)
+                (ref.test (ref func) (local.get 0)))
+              (func (export "test_right") (param funcref) (result i32)
+                (ref.test (ref $right) (local.get 0)))
+              (func (export "test_wrong") (param funcref) (result i32)
+                (ref.test (ref $wrong) (local.get 0)))
+              (func (export "cast_right") (param funcref) (result funcref)
+                (ref.cast (ref $right) (local.get 0)))
+              (func (export "cast_wrong") (param funcref) (result funcref)
+                (ref.cast (ref $wrong) (local.get 0)))
+
+              (func (export "test_any") (param (ref null any)) (result i32)
+                (ref.test (ref any) (local.get 0)))
+              (func (export "cast_any") (param (ref null any))
+                (result (ref null any))
+                (ref.cast (ref any) (local.get 0)))
+
+              (func (export "test_nullable") (param funcref) (result i32)
+                (ref.test (ref null func) (local.get 0)))
+              (func (export "test_nonnull") (param funcref) (result i32)
+                (ref.test (ref func) (local.get 0)))
+              (func (export "cast_nullable") (param funcref) (result funcref)
+                (ref.cast (ref null func) (local.get 0)))
+              (func (export "cast_nonnull") (param funcref) (result funcref)
+                (ref.cast (ref func) (local.get 0))))
+            "#,
+        )
+        .expect("encode reference consumer");
+
+        fn answers_for(
+            tier: Tier,
+            provider_wasm: &[u8],
+            consumer_wasm: &[u8],
+        ) -> collections::Vec<i32> {
+            fn invoke_i32(
+                world: &mut RuntimeWorld,
+                consumer: InstanceId,
+                tier: Tier,
+                name: &str,
+                argument: Value,
+            ) -> i32 {
+                let values = world
+                    .invoke(consumer, name, &[argument])
+                    .unwrap_or_else(|error| panic!("{tier:?} {name}: {error}"));
+                match values.as_slice() {
+                    [Value::I32(value)] => *value,
+                    other => panic!("{tier:?} {name}: unexpected results {other:?}"),
+                }
+            }
+
+            fn invoke_ref(
+                world: &mut RuntimeWorld,
+                consumer: InstanceId,
+                tier: Tier,
+                name: &str,
+                argument: Value,
+            ) -> RefHandle {
+                let values = world
+                    .invoke(consumer, name, &[argument])
+                    .unwrap_or_else(|error| panic!("{tier:?} {name}: {error}"));
+                match values.as_slice() {
+                    [Value::Ref(handle, _)] => *handle,
+                    other => panic!("{tier:?} {name}: unexpected results {other:?}"),
+                }
+            }
+
+            fn cast_traps(
+                world: &mut RuntimeWorld,
+                consumer: InstanceId,
+                tier: Tier,
+                name: &str,
+                argument: Value,
+            ) -> i32 {
+                let error = world
+                    .invoke(consumer, name, &[argument])
+                    .expect_err("cast should trap");
+                assert_eq!(
+                    error,
+                    WasmError::Trap("cast failure"),
+                    "{tier:?} {name}: wrong failure"
+                );
+                1
+            }
+
+            let engine = Engine::new(Config::new().tier(tier)).expect("engine config");
+            let mut world = RuntimeWorld::new();
+            let provider = world
+                .instantiate(
+                    &engine,
+                    Module::new("reference-provider", provider_wasm).expect("parse provider"),
+                    &[],
+                )
+                .expect("instantiate provider");
+            let consumer = world
+                .instantiate(
+                    &engine,
+                    Module::new("reference-consumer", consumer_wasm).expect("parse consumer"),
+                    &[],
+                )
+                .expect("instantiate consumer");
+
+            let function = world
+                .invoke(provider, "get", &[])
+                .expect("get provider function")
+                .into_iter()
+                .next()
+                .expect("one provider result");
+            let Value::Ref(function_handle, _) = function else {
+                panic!("{tier:?}: provider returned a non-reference")
+            };
+            let host_handle = RefHandle::hostref(7);
+            let host = Value::Ref(host_handle, crate::value_type::RefType::anyref());
+            let null_handle = RefHandle::null();
+            let null = Value::Ref(null_handle, crate::value_type::RefType::funcref());
+
+            let mut answers = collections::vec![
+                invoke_i32(&mut world, consumer, tier, "test_func", function),
+                invoke_i32(&mut world, consumer, tier, "test_right", function),
+                invoke_i32(&mut world, consumer, tier, "test_wrong", function),
+                i32::from(
+                    invoke_ref(&mut world, consumer, tier, "cast_right", function)
+                        == function_handle,
+                ),
+                cast_traps(&mut world, consumer, tier, "cast_wrong", function),
+                // Host references historically took different paths. Both
+                // engines now answer the aggregate `any` type uniformly.
+                invoke_i32(&mut world, consumer, tier, "test_any", host),
+                i32::from(invoke_ref(&mut world, consumer, tier, "cast_any", host) == host_handle),
+                // Nullability remains at the opcode call sites, not in the
+                // shared non-null matcher.
+                invoke_i32(&mut world, consumer, tier, "test_nullable", null),
+                invoke_i32(&mut world, consumer, tier, "test_nonnull", null),
+                i32::from(
+                    invoke_ref(&mut world, consumer, tier, "cast_nullable", null) == null_handle,
+                ),
+                cast_traps(&mut world, consumer, tier, "cast_nonnull", null),
+            ];
+
+            // Absolute function handles may outlive their owners. Abstract
+            // function matching needs only the arena provenance; concrete
+            // matching is the arm that checks out the owner's type context.
+            world.free(provider).expect("free reference provider");
+            answers.push(invoke_i32(
+                &mut world,
+                consumer,
+                tier,
+                "test_func",
+                function,
+            ));
+            answers
+        }
+
+        let jit = answers_for(Tier::Jit, &provider_wasm, &consumer_wasm);
+        let interp = answers_for(Tier::Interp, &provider_wasm, &consumer_wasm);
+        assert_eq!(jit, interp, "reference-type answers diverged by engine");
+        assert_eq!(jit, collections::vec![1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1]);
+    }
+
     #[cfg(feature = "memprof")]
     #[test]
     fn empty_world_after_free_has_no_live_tracked_bytes() {
