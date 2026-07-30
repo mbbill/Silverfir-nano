@@ -71,6 +71,26 @@
   this class must assert a returned value, because a trap-only assertion passes
   against it (code).
 
+- 2026-07-30 measurement: the migration made the interpreter faster, not
+  slower. Against the pre-migration baseline on x64: counter-global +61%,
+  regex_redux +13%, tiny_keccak +11%, argon2 and nbody about +9%. The one
+  benchmark the gate flagged as a regression, fibonacci-tail, is 5.43% faster
+  when its upstream module is run locally with both binaries built on the same
+  toolchain, and x86_64 emits no return_call handler at all, so its tail calls
+  take the same shared path every other target does (code).
+
+- 2026-07-30 pitfall: the performance gate reports false regressions. A
+  calibration run comparing one commit against itself flagged bzip2 at -1.91%
+  with 99.999998% stated confidence after twenty paired samples. Treat a single
+  flagged metric as a prompt to reproduce locally, not as a finding; a direction
+  that repeats across independent runs is the weakest signal worth acting on
+  (code).
+
+- 2026-07-30 pitfall: a local A/B between this branch and main compares two
+  toolchains unless told otherwise, because main pins an older rustc in
+  rust-toolchain.toml while the branch tracks stable. Set RUSTUP_TOOLCHAIN for
+  both sides; the same confound reached CI before it was fixed there (code).
+
 - 2026-07-30 statement: the engine-native interpreter-to-interpreter call path
   is deferred. An installed host funcref hook drives cross-instance calls on
   the interpreter; without one the call traps by name, and a test pins that
