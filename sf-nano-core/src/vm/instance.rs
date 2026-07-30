@@ -73,11 +73,36 @@ pub struct Instance {
     registry: LinkRegistry,
 }
 
-/// An engine-owned collection of boxed instances addressed by generational
-/// ids. The existing `Instance` API uses a private one-slot world.
-pub(crate) struct RuntimeWorld {
+/// A set of instances that can name each other's functions.
+///
+/// Instances live in generational slots, so an id identifies one instance for
+/// as long as that instance lives and stops resolving once it does not. A
+/// reference held across a free fails its generation check rather than
+/// reaching whatever occupied the slot next.
+///
+/// `invoke` checks the callee out of the table and lets its own borrow of the
+/// world end before running it. A cross-instance call made from inside that
+/// callee therefore re-enters through a fresh checkout instead of nesting a
+/// borrow, which is what makes the nested case work:
+///
+/// ```ignore
+/// let mut world = RuntimeWorld::new();
+/// let a = world.instantiate(&engine, module_a, &[])?;
+/// let b = world.instantiate(&engine, module_b, &imports_naming(a))?;
+/// // `run_b` calls a funcref owned by `a`, mid-execution.
+/// let result = world.invoke(b, "run_b", &args)?;
+/// ```
+///
+/// [`Instance::from_module`] remains the convenience for embedders that want
+/// one module: it owns a private one-slot world.
+pub struct RuntimeWorld {
     registry: LinkRegistry,
     instances: collections::Vec<(InstanceId, Option<Instance>)>,
+    /// A world runs one engine. The first instantiation fixes the tier and
+    /// later ones must match: instances in a world resolve each other's
+    /// function identities out of one address space, and the two engines do
+    /// not share a call path for them.
+    tier: Option<Tier>,
 }
 
 /// The result of an instantiation that did not produce a usable facade.
@@ -633,10 +658,12 @@ impl Instance {
 }
 
 impl RuntimeWorld {
-    pub(crate) fn new() -> Self {
+    /// An empty world. The first instantiation fixes its tier.
+    pub fn new() -> Self {
         Self {
             registry: LinkRegistry::new(),
             instances: collections::Vec::new(),
+            tier: None,
         }
     }
 
@@ -644,6 +671,7 @@ impl RuntimeWorld {
         Self {
             registry,
             instances: collections::Vec::new(),
+            tier: None,
         }
     }
 
@@ -655,27 +683,61 @@ impl RuntimeWorld {
         self.instances.remove(index).1
     }
 
-    fn instantiate(
+    /// Instantiate `module` into this world, returning its id.
+    ///
+    /// Every instance in a world runs on the same engine: they resolve each
+    /// other's function identities out of one address space, and the engines
+    /// do not share a call path for those. Mixing tiers is rejected rather
+    /// than half-supported.
+    pub fn instantiate(
         &mut self,
         engine: &Engine,
         module: Module,
         imports: &[Import],
     ) -> Result<InstanceId, InstanceInstantiationError> {
+        match self.tier {
+            Some(tier) if tier != engine.tier() => {
+                return Err(InstanceInstantiationError::Complete(WasmError::invalid(
+                    "a runtime world runs one engine; this world is already instantiated on the other tier",
+                )));
+            }
+            _ => {}
+        }
         match Instance::from_module_in_registry(engine, module, imports, &self.registry) {
             Ok(instance) => {
                 let id = instance.instance_id();
                 self.instances.push((id, Some(instance)));
+                self.tier = Some(engine.tier());
                 Ok(id)
             }
             Err(InstanceInstantiationError::Partial { id, error }) => {
+                // The slot is occupied, so the tier is fixed even though no
+                // usable facade came back.
                 self.instances.push((id, None));
+                self.tier = Some(engine.tier());
                 Err(InstanceInstantiationError::Partial { id, error })
             }
             Err(error) => Err(error),
         }
     }
 
-    fn free(&mut self, id: InstanceId) -> Result<(), WasmError> {
+    /// The instance behind `id`, for reaching its exports when linking a
+    /// later module against it.
+    ///
+    /// `None` once the id stops resolving, and also for a slot left occupied
+    /// by a partial instantiation, which has no usable facade.
+    pub fn instance(&self, id: InstanceId) -> Option<&Instance> {
+        self.instances
+            .iter()
+            .find(|(candidate, _)| *candidate == id)
+            .and_then(|(_, instance)| instance.as_ref())
+    }
+
+    /// Drop an instance and retire its slot. Its id stops resolving.
+    ///
+    /// Fails while the instance is checked out — that is, while a call into
+    /// it is on the stack.
+    pub fn free(&mut self, id: InstanceId) -> Result<(), WasmError> {
         let index = self
             .instances
             .iter()
@@ -707,7 +769,12 @@ impl RuntimeWorld {
         Ok(())
     }
 
-    fn invoke(
+    /// Call an exported function on one instance of this world.
+    ///
+    /// The callee is checked out of the instance table and this borrow of the
+    /// world ends before it runs, so a cross-instance call made from inside
+    /// the callee re-enters through a fresh checkout rather than nesting.
+    pub fn invoke(
         &mut self,
         id: InstanceId,
         name: &str,
@@ -1033,6 +1100,131 @@ mod tests {
         let interp = answers_for(Tier::Interp, &provider_wasm, &consumer_wasm);
         assert_eq!(jit, interp, "reference-type answers diverged by engine");
         assert_eq!(jit, collections::vec![1, 1, 0, 1, 1, 1, 1, 1, 0, 1, 1, 1]);
+    }
+
+    /// The design's Embedder API example: `b` calls a function owned by `a`
+    /// while `b` is mid-execution. Both instances are checked out at once, and
+    /// neither call needs the `&mut RuntimeWorld` the embedder is holding --
+    /// `invoke` lets its own borrow end before the callee runs.
+    #[test]
+    fn runtime_world_invokes_across_instances_mid_execution() {
+        let provider = wat::parse_str(
+            r#"
+            (module
+              (func (export "answer") (result i32)
+                i32.const 305419896))
+            "#,
+        )
+        .expect("encode provider");
+        let consumer = wat::parse_str(
+            r#"
+            (module
+              (func $answer (import "a" "answer") (result i32))
+              (func (export "run_b") (result i32)
+                call $answer
+                i32.const 1
+                i32.add))
+            "#,
+        )
+        .expect("encode consumer");
+
+        for &tier in Tier::ALL {
+            let engine = Engine::new(Config::new().tier(tier)).expect("engine config");
+            let mut world = RuntimeWorld::new();
+
+            let a = world
+                .instantiate(
+                    &engine,
+                    Module::new("provider", &provider).expect("parse provider"),
+                    &[],
+                )
+                .expect("instantiate provider");
+
+            let (handle, func_type) = {
+                let instance = world.instance(a).expect("world retains the provider");
+                (
+                    instance
+                        .function_handle_at(0)
+                        .expect("exported function has a world address"),
+                    instance
+                        .function_type_at(0)
+                        .expect("exported function has a type"),
+                )
+            };
+
+            let b = world
+                .instantiate(
+                    &engine,
+                    Module::new("consumer", &consumer).expect("parse consumer"),
+                    &[Import::linked_func_typed("a", "answer", handle, func_type)],
+                )
+                .expect("instantiate consumer");
+
+            assert_ne!(a, b);
+            let nested = world.invoke(b, "run_b", &[]);
+            match tier {
+                #[cfg(sf_jit)]
+                Tier::Jit => assert_eq!(
+                    nested.expect("nested invoke"),
+                    collections::vec![Value::I32(305_419_897)],
+                    "cross-instance call did not reach the provider"
+                ),
+                // The interpreter's engine-native cross-instance call path is
+                // deferred; without a FuncRefHost hook it must say so by name
+                // rather than dispatch something. This arm pins that deferred
+                // state so it cannot rot into unreachable behaviour.
+                #[cfg(sf_interp)]
+                Tier::Interp => {
+                    let error = nested.expect_err("interp has no engine-native path yet");
+                    let message = alloc::format!("{error:?}");
+                    assert!(
+                        message.contains("without a FuncRefHost hook"),
+                        "unexpected interpreter error: {message}"
+                    );
+                }
+            }
+
+            // The flat case still works afterwards, so the call above left no
+            // checkout behind on either engine.
+            assert_eq!(
+                world.invoke(a, "answer", &[]).expect("flat invoke"),
+                collections::vec![Value::I32(305_419_896)]
+            );
+            world.free(b).expect("free consumer");
+            world.free(a).expect("free provider");
+        }
+    }
+
+    /// A world runs one engine; the second tier is refused by name.
+    #[test]
+    fn runtime_world_refuses_a_second_tier() {
+        if Tier::ALL.len() < 2 {
+            return;
+        }
+        let mut world = RuntimeWorld::new();
+        let first = Engine::new(Config::new().tier(Tier::ALL[0])).expect("first engine");
+        let second = Engine::new(Config::new().tier(Tier::ALL[1])).expect("second engine");
+
+        world
+            .instantiate(
+                &first,
+                Module::new("first", ADD_WASM).expect("parse add module"),
+                &[],
+            )
+            .expect("first instantiation fixes the tier");
+
+        let error = world
+            .instantiate(
+                &second,
+                Module::new("second", ADD_WASM).expect("parse add module"),
+                &[],
+            )
+            .expect_err("a world must refuse a second tier");
+        let message = alloc::format!("{:?}", error.error());
+        assert!(
+            message.contains("runs one engine"),
+            "unexpected rejection: {message}"
+        );
     }
 
     #[test]
