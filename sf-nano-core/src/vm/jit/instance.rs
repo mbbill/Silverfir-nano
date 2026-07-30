@@ -21,9 +21,7 @@ use crate::module::type_context::{
 };
 use crate::module::type_defs::FunctionType;
 use crate::module::Module;
-#[cfg(sf_jit)]
 use crate::op_decoder::{Decoder, OpStream, OpcodeHandler};
-#[cfg(sf_jit)]
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
 use crate::value_type::{HeapType, ValueType};
@@ -31,7 +29,6 @@ use crate::vm::engine::Engine;
 use crate::vm::entities::{Caller, FunctionInst, GlobalInst, HostCallback, MemInst, TableInst};
 use crate::vm::imports::*;
 use crate::vm::instance::InstanceInstantiationError;
-#[cfg(sf_jit)]
 use crate::vm::jit::entities::TableDispatchMode;
 use crate::vm::jit::entities::{
     DataInst, ElementInst, MemInstJit, ModuleInst, TableInstJit, TagInst,
@@ -142,12 +139,10 @@ fn global_value_type_can_initialize_cross_context(
     }
 }
 
-#[cfg(sf_jit)]
 struct TableMutationScan {
     has_mutation: bool,
 }
 
-#[cfg(sf_jit)]
 impl OpcodeHandler for TableMutationScan {
     fn on_decode_begin(&mut self) -> Result<(), WasmError> {
         self.has_mutation = false;
@@ -178,10 +173,8 @@ impl OpcodeHandler for TableMutationScan {
     }
 }
 
-#[cfg(sf_jit)]
 use crate::module::entities::FunctionSpec;
 
-#[cfg(sf_jit)]
 fn function_has_table_mutation(spec: &FunctionSpec) -> Result<bool, WasmError> {
     let mut scan = TableMutationScan {
         has_mutation: false,
@@ -194,7 +187,6 @@ fn function_has_table_mutation(spec: &FunctionSpec) -> Result<bool, WasmError> {
     Ok(scan.has_mutation)
 }
 
-#[cfg(sf_jit)]
 fn element_init_is_local_only(module: &Module, init: &ElementInit) -> bool {
     match init {
         ElementInit::FunctionIndexes(indices) => indices.iter().all(|idx| {
@@ -208,7 +200,6 @@ fn element_init_is_local_only(module: &Module, init: &ElementInit) -> bool {
     }
 }
 
-#[cfg(sf_jit)]
 fn table_active_elements_are_local_only(module: &Module, table_idx: usize) -> bool {
     module.elements().iter().all(|element| match element {
         Element::Active {
@@ -218,7 +209,6 @@ fn table_active_elements_are_local_only(module: &Module, table_idx: usize) -> bo
     })
 }
 
-#[cfg(sf_jit)]
 fn module_declares_type_subtyping(module: &Module) -> bool {
     module
         .types()
@@ -227,7 +217,6 @@ fn module_declares_type_subtyping(module: &Module) -> bool {
         .any(|ty| !ty.supertypes.is_empty())
 }
 
-#[cfg(sf_jit)]
 fn compute_static_table_dispatch_modes(
     module: &Module,
 ) -> Result<collections::Vec<TableDispatchMode>, WasmError> {
@@ -332,7 +321,6 @@ impl JitInstance {
         let escapable_functions = module
             .escapable_functions()
             .map_err(InstanceInstantiationError::Complete)?;
-        #[cfg(sf_jit)]
         let table_dispatch_modes = compute_static_table_dispatch_modes(&module)
             .map_err(InstanceInstantiationError::Complete)?;
         let (
@@ -826,7 +814,6 @@ impl JitInstance {
         module_inst.tags = tag_insts;
         module_inst.elements = elements;
         module_inst.data = data;
-        #[cfg(sf_jit)]
         {
             module_inst.table_dispatch_modes = table_dispatch_modes;
         }
@@ -882,7 +869,6 @@ impl JitInstance {
                     store.global_mut(global_idx).set_raw(raw);
                 }
 
-                #[cfg(sf_jit)]
                 crate::vm::jit::build::ensure_module_compiled(store)?;
 
                 for (i, global) in mod_globals.iter().enumerate() {
@@ -959,7 +945,6 @@ impl JitInstance {
                     }
                 }
 
-                #[cfg(sf_jit)]
                 {
                     for memory in &store.module().memories {
                         memory.ensure_allocated()?;
@@ -1580,7 +1565,6 @@ mod tests {
         builder.build()
     }
 
-    #[cfg(sf_jit)]
     #[test]
     fn fixed_private_local_table_enables_local_only_dispatch_mode() {
         let wasm = wat::parse_str(
@@ -1603,7 +1587,6 @@ mod tests {
         );
     }
 
-    #[cfg(sf_jit)]
     #[test]
     fn table_mutation_keeps_dispatch_mode_generic() {
         let wasm = wat::parse_str(
@@ -1627,7 +1610,6 @@ mod tests {
         assert_eq!(modes, collections::vec![TableDispatchMode::Generic]);
     }
 
-    #[cfg(sf_jit)]
     #[test]
     fn subtype_module_keeps_dispatch_mode_generic() {
         let wasm = wat::parse_str(
@@ -1891,7 +1873,6 @@ mod tests {
         assert_eq!(bias.get(), 42);
     }
 
-    #[cfg(sf_jit)]
     #[test]
     fn direct_self_tail_call_reuses_function_entry() {
         let wasm = wat::parse_str(
@@ -1970,7 +1951,7 @@ mod tests {
         }
     }
 
-    #[cfg(all(sf_has_simd, sf_jit))]
+    #[cfg(sf_has_simd)]
     #[test]
     fn invoke_rejects_unsupported_live_simd_ops_during_lowering() {
         let wasm = wat::parse_str(
@@ -1992,7 +1973,7 @@ mod tests {
         assert_eq!(results.as_slice(), &[crate::Value::V128([u8::MAX; 16])]);
     }
 
-    #[cfg(all(sf_has_simd, sf_jit))]
+    #[cfg(sf_has_simd)]
     #[test]
     fn invoke_returns_live_v128_const() {
         let wasm = wat::parse_str(
