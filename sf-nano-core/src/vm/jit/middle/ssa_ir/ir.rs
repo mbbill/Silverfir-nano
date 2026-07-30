@@ -380,7 +380,17 @@ impl SsaInst {
 /// with std (`guard-pages`, debug); without them those fields are
 /// produce-only.
 #[derive(Clone, Copy, Debug)]
-#[allow(dead_code)]
+#[cfg_attr(
+    not(sf_ir_dump),
+    allow(
+        dead_code,
+        reason = "The spill/fill slot and cell-id fields exist so the \
+sf_ir_dump exporters can print them; every other consumer destructures the \
+variants it needs and ignores the rest. Without that cfg they are \
+produce-only, so the suppression is scoped to exactly the builds where \
+nothing reads them."
+    )
+)]
 pub(crate) enum SsaInstView<'a> {
     Fill {
         slot: FrameSlot,

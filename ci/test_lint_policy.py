@@ -29,11 +29,18 @@ class LintPolicyTests(unittest.TestCase):
     def test_clean_source_passes(self) -> None:
         self.assertEqual(self.run_policy("pub fn live() {}\n"), [])
 
-    def test_unapproved_allow_dead_code_fails(self) -> None:
-        errors = self.run_policy(
-            '#[allow(dead_code, reason = "temporary")]\nfn hidden() {}\n'
+    def test_inline_reason_is_sufficient(self) -> None:
+        """A reason states the exception where the next reader will see it, so
+        it needs no second entry in a file nobody opens. What this cannot check
+        is that a human agreed with the reason -- that rule lives in CLAUDE.md
+        and is enforced by review."""
+        self.assertEqual(
+            self.run_policy(
+                '#[allow(dead_code, reason = "called through FFI by name")]\n'
+                "fn hidden() {}\n"
+            ),
+            [],
         )
-        self.assertTrue(any("unapproved allow(dead_code)" in error for error in errors))
 
     def test_allow_warnings_is_never_permitted(self) -> None:
         manifest = """\
@@ -50,6 +57,26 @@ reason = "even an approval cannot disable all warnings"
             '#[allow(warnings, reason = "bad")]\nfn hidden() {}\n', manifest
         )
         self.assertTrue(any("never permitted" in error for error in errors))
+
+    def test_manifest_covers_a_site_that_cannot_carry_a_reason(self) -> None:
+        """The manifest is the fallback for attribute positions that cannot
+        take a reason inline. It still works, and still demands one."""
+        manifest = """\
+version = 1
+
+[[suppression]]
+path = "src/lib.rs"
+kind = "allow"
+lints = ["dead_code"]
+anchor = "fn generated_entry() {}"
+reason = "generated source; the attribute position takes no inline reason"
+"""
+        self.assertEqual(
+            self.run_policy(
+                "#[allow(dead_code)]\nfn generated_entry() {}\n", manifest
+            ),
+            [],
+        )
 
     def test_exact_approved_exception_passes(self) -> None:
         manifest = """\
@@ -71,7 +98,7 @@ reason = "called by firmware through a symbol name"
 
     def test_suppression_without_inline_reason_fails(self) -> None:
         errors = self.run_policy("#[expect(dead_code)]\nfn hidden() {}\n")
-        self.assertTrue(any("require `reason" in error for error in errors))
+        self.assertTrue(any("needs an inline `reason" in error for error in errors))
 
     def test_stale_approval_fails(self) -> None:
         manifest = """\
@@ -94,12 +121,18 @@ reason = "old exception"
         )
 
     def test_cfg_attr_suppression_is_detected(self) -> None:
+        """A cfg_attr-wrapped suppression is still a suppression: reasonless it
+        fails, and with a reason it passes like any other."""
         errors = self.run_policy(
-            '#[cfg_attr(unix, allow(unused_imports, reason = "platform API"))]\n'
-            "use core::fmt;\n"
+            "#[cfg_attr(unix, allow(unused_imports))]\nuse core::fmt;\n"
         )
-        self.assertTrue(
-            any("unapproved allow(unused_imports)" in error for error in errors)
+        self.assertTrue(any("needs an inline `reason" in error for error in errors))
+        self.assertEqual(
+            self.run_policy(
+                '#[cfg_attr(unix, allow(unused_imports, reason = "platform API"))]\n'
+                "use core::fmt;\n"
+            ),
+            [],
         )
 
     def test_generated_string_attribute_gets_content_anchor(self) -> None:

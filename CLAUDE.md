@@ -59,23 +59,36 @@ not an agent-owned allowlist.
 `ci/lint_policy.py` exists to EXPOSE every `allow`/`expect` hack so it gets
 fixed **properly**: delete the dead code, restructure so the code is not
 dead, or gate it precisely. Responding to an audit finding by writing an
-inline `reason = "..."` and a matching manifest entry fixes nothing — it
-launders the hack through the audit's escape hatch and neuters the tool.
-This applies no matter how accurate or well-written the reason is.
+inline `reason = "..."` fixes nothing — it launders the hack through the
+audit's escape hatch and neuters the tool. This applies no matter how
+accurate or well-written the reason is.
+
+**Read this next part carefully, because the tool cannot enforce it.** An
+inline `reason` is all the checker requires: write one and the audit goes
+green. It cannot tell a reviewed exception from one an agent invented,
+because a plausible sentence is exactly what an agent would produce. The
+checker guarantees only that every suppression is *stated and greppable*.
+The rest is this rule, and review.
 
 Hard rules:
 
-- An agent NEVER writes `reason = "..."` attributes or
-  `ci/lint_suppressions.toml` entries on its own judgment — not even for
-  sites it believes are legitimate boundaries, and not even when the user
-  has approved a cleanup task in general terms. Each exception is blessed
-  by the user individually, site by site.
-- The manifest's only legitimate contents are irreducible compilation
-  boundaries the user has personally reviewed (e.g. the `build.rs`
-  dual-compile modules). Small and exact means a handful, not dozens.
+- An agent NEVER writes a `reason = "..."` attribute on its own judgment —
+  not even for sites it believes are legitimate boundaries, not even when
+  the reason it would write is true, and not even when the user has
+  approved a cleanup task in general terms. Each exception is blessed by
+  the user individually, site by site. "The audit passes now" is not
+  evidence that the suppression was warranted.
+- The same rule covers `ci/lint_suppressions.toml`, which exists only for
+  attribute positions that cannot carry an inline reason at all. Adding an
+  entry there is a claim that no inline reason is possible; it is not a
+  second place to record an ordinary exception.
 - A finding with no proper fix you can see is left RED and reported as a
   question. A red audit is the ratchet working; making it green without
   fixing the cause is the failure mode this file exists to prevent.
+- When you do get approval, the reason must be *checkable*: name the build
+  or cfg in which the item is unreachable, and how that was verified. A
+  reason that cannot be falsified is how a stale suppression outlives the
+  thing it was added for.
 
 If a feature-only build exposes a cluster of dead code that points to unclear
 engine ownership, shared runtime state, or another architecture question,

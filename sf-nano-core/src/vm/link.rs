@@ -484,9 +484,6 @@ impl Drop for InstanceLease {
 #[derive(Debug, Clone)]
 pub(crate) struct ExnInstance {
     pub(crate) tag: TagHandle,
-    // JIT-only builds retain payloads for exception identity/lifetime even
-    // though only the interpreter currently reads them back at a catch.
-    #[cfg_attr(not(sf_interp), allow(dead_code))]
     pub(crate) fields: collections::Vec<Value>,
 }
 
@@ -893,7 +890,6 @@ fn gc_ref_type_matches(
     }
 }
 
-#[cfg(sf_interp)]
 impl RefRegistryEntry {
     fn resolve_exn(self) -> Option<Rc<ExnInstance>> {
         match self {
@@ -946,7 +942,6 @@ impl LinkArenas {
         alloc_exn_in(&self.refs, tag, fields)
     }
 
-    #[cfg(sf_interp)]
     pub(crate) fn resolve_exn(&self, handle: RefHandle) -> Option<Rc<ExnInstance>> {
         let idx = handle.pooled_index()?;
         let entry = self.refs.borrow().get(idx).cloned()?;
@@ -982,7 +977,6 @@ impl LinkRegistry {
     }
 
     #[inline]
-    #[cfg(any(sf_interp, test))]
     pub(crate) fn arenas(&self) -> LinkArenas {
         self.arenas.clone()
     }

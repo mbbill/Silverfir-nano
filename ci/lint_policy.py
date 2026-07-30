@@ -1,5 +1,20 @@
 #!/usr/bin/env python3
-"""Reject broad Rust lint suppressions unless they were explicitly audited."""
+"""Reject broad Rust lint suppressions unless they state why they exist.
+
+Every `allow`/`expect` of `warnings`, `dead_code` or `unused*` must carry an
+inline `reason = "..."`, which puts the justification in front of the next
+person to read the code rather than in a file they will never open. Sites that
+cannot carry one inline -- a generated file, an attribute the toolchain will
+not accept a reason on -- go in `ci/lint_suppressions.toml` instead.
+
+What this cannot check is whether a human agreed with the reason. Nothing
+mechanical can: a plausible sentence is exactly what an agent writing its own
+exception would produce. So the audit guarantees only that every suppression is
+*stated and greppable*, and the rule that an agent never writes one on its own
+judgment lives in CLAUDE.md and AGENTS.md, enforced by review.
+
+Suppressing `warnings` wholesale is refused outright, reason or not.
+"""
 
 from __future__ import annotations
 
@@ -213,27 +228,41 @@ def check(root: Path, manifest: Path) -> list[str]:
     approved, errors = load_approved(manifest)
     errors.extend(check_cargo_lints(root))
     errors.extend(check_lint_flags(root))
-    actual: collections.Counter[SuppressionKey] = collections.Counter()
+    # `needs_manifest` holds the suppressions that did not state a reason
+    # inline and therefore fall back to the manifest. `seen` holds every
+    # suppression, so a manifest entry whose site is gone reads as stale even
+    # when the surviving sites carry inline reasons.
+    needs_manifest: collections.Counter[SuppressionKey] = collections.Counter()
+    seen: collections.Counter[SuppressionKey] = collections.Counter()
     locations: dict[SuppressionKey, list[int]] = collections.defaultdict(list)
 
     for path in rust_files(root):
         for suppression in scan_file(path, root):
             key = suppression.key
-            actual[key] += 1
             locations[key].append(suppression.line)
+            seen[key] += 1
             where = f"{key.path}:{suppression.line}"
             if "warnings" in key.lints:
                 errors.append(f"{where}: suppressing `warnings` is never permitted")
+                continue
+            # An inline reason states the exception where the next reader will
+            # see it, so it stands on its own. What this does NOT check is that
+            # a human agreed with the reason -- nothing mechanical can, since a
+            # plausible sentence is exactly what an agent writing its own
+            # exception would produce. That rule lives in CLAUDE.md and
+            # AGENTS.md; this audit only guarantees every exception is stated
+            # and greppable.
             if not suppression.has_reason:
-                errors.append(f"{where}: audited suppressions require `reason = \"...\"`")
+                needs_manifest[key] += 1
 
-    for key, count in sorted((actual - approved).items()):
+    for key, count in sorted((needs_manifest - approved).items()):
         lines = ", ".join(str(line) for line in locations[key])
         errors.append(
-            f"{key.path}:{lines}: unapproved {key.kind}({', '.join(key.lints)}) "
-            f"before `{key.anchor}`"
+            f"{key.path}:{lines}: {key.kind}({', '.join(key.lints)}) before "
+            f"`{key.anchor}` needs an inline `reason = \"...\"`, or a manifest "
+            f"entry if the attribute position cannot carry one"
         )
-    for key, count in sorted((approved - actual).items()):
+    for key, count in sorted((approved - seen).items()):
         errors.append(
             f"{manifest}: stale approval for {key.path} "
             f"{key.kind}({', '.join(key.lints)}) before `{key.anchor}`"
