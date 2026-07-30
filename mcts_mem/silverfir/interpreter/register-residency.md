@@ -396,3 +396,18 @@
   structural growth either, since the return record's fourth word carries only a
   16-bit offset and a call cell's third field is unused. What bounds the set is
   the governing law's handler multiplication (code)
+
+- 2026-07-30 measurement: hot loops carry about ONE independent loop-carried
+  chain each, corpus-wide, once strided induction variables are excluded --
+  effective chains per innermost loop 0.96-1.03 across nine modules against 3.0-4.9
+  carried locals, with eff>=2 at 0.1-11.4% and eff>=3 at 0.1-8.5%. So a second pin
+  has no second chain to break in most hot loops and the CoreMark l1 verdict is the
+  corpus shape, not a benchmark artifact; a third pin has almost nowhere to convert
+  by this mechanism. Method, validation against a hand-read mandelbrot kernel, a
+  corrected intermediate result, and the upper-bound caveat are in
+  [[register-residency.fact/independent-carried-chains-2026-07-30]] (code)
+- 2026-07-30 rationale: that closes the chain-criticality case for a wider pinned
+  set but not the load-removal case -- the top-k census's extra coverage was
+  dismissed because read-mostly slot loads are hidden by the out-of-order core,
+  which is a wide-core argument, and every pinned-local timing to date was taken on
+  one M4 P core (code)
