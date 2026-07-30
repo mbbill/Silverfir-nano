@@ -61,33 +61,38 @@ jobs:
       - name: Set up Miri sysroot
         run: cargo +nightly miri setup
 
+      # `--exact` on a name that no longer exists prints "running 0 tests"
+      # and exits 0, so a rename would turn these steps green while checking
+      # nothing. Assert the test actually ran.
       - name: Check scoped materialization under Stacked Borrows
         env:
           MIRIFLAGS: -Zmiri-strict-provenance
-        run: >-
-          cargo +nightly miri test
-          -p sf-nano-core
-          --no-default-features
-          --features jit,interp
-          --lib
-          vm::link::instance_table_tests::miri_instance_table_scopes_materializations
-          --
-          --exact
-          --nocapture
+        run: |
+          set -o pipefail
+          cargo +nightly miri test \
+            -p sf-nano-core \
+            --no-default-features \
+            --features jit,interp \
+            --lib \
+            vm::link::instance_table_tests::miri_instance_table_scopes_materializations \
+            -- --exact --nocapture | tee miri-sb.log
+          grep -q '^test result: ok\. 1 passed' miri-sb.log
 
       - name: Check scoped materialization under Tree Borrows
         env:
-          MIRIFLAGS: -Zmiri-tree-borrows
-        run: >-
-          cargo +nightly miri test
-          -p sf-nano-core
-          --no-default-features
-          --features jit,interp
-          --lib
-          vm::link::instance_table_tests::miri_instance_table_scopes_materializations
-          --
-          --exact
-          --nocapture
+          # Both aliasing models AND provenance. Replacing MIRIFLAGS wholesale
+          # would silently drop strict provenance from this run.
+          MIRIFLAGS: -Zmiri-tree-borrows -Zmiri-strict-provenance
+        run: |
+          set -o pipefail
+          cargo +nightly miri test \
+            -p sf-nano-core \
+            --no-default-features \
+            --features jit,interp \
+            --lib \
+            vm::link::instance_table_tests::miri_instance_table_scopes_materializations \
+            -- --exact --nocapture | tee miri-tb.log
+          grep -q '^test result: ok\. 1 passed' miri-tb.log
 
   platform:
     name: ${{ matrix.platform }}

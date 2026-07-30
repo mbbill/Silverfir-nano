@@ -53,6 +53,55 @@ class WarningGateTests(unittest.TestCase):
         self.assertEqual(warnings, 0, "benign linker probe must not fail the gate")
         self.assertEqual(len(diagnostics), 3, "and must still be visible")
 
+    def test_real_error_riding_a_benign_linker_diagnostic_still_fails(self) -> None:
+        """rustc folds one linker invocation's whole stderr into ONE diagnostic:
+        the continuation lines are indented and carry no `warning:` prefix. An
+        `undefined reference` therefore arrives attached to a benign-looking
+        warning, and matching only the first line hid it. Captured from real
+        rustc output, not hand-written."""
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "cargo.log"
+            log.write_text(
+                "warning: linker stderr: ignoring deprecated linker "
+                "optimization setting '1'\n"
+                "         undefined reference to `sf_os_alloc'\n"
+                "  |\n"
+                "  = note: `#[warn(linker_messages)]` on by default\n",
+                encoding="utf-8",
+            )
+            errors, warnings, _ = parse_log(log, 0)
+        self.assertEqual(
+            (errors, warnings, 0)[:2] != (0, 0),
+            True,
+            "a real linker error must not be discounted with the benign line it rides on",
+        )
+
+    def test_benign_prefix_with_trailing_text_still_fails(self) -> None:
+        """The patterns are fully anchored, so a benign prefix followed by
+        anything else does not match."""
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "cargo.log"
+            log.write_text(
+                "warning: linker stderr: ignoring deprecated linker optimization "
+                "setting '1'; undefined reference to `sf_os_alloc'\n",
+                encoding="utf-8",
+            )
+            errors, warnings, _ = parse_log(log, 0)
+        self.assertNotEqual((errors, warnings), (0, 0))
+
+    def test_rustlib_probe_is_scoped_to_the_build_std_target(self) -> None:
+        """Only riscv32gc-unknown-linux-musl builds its std from source. Any
+        other target missing its rustlib means a broken toolchain."""
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "cargo.log"
+            log.write_text(
+                "warning: linker stderr: unable to open library directory "
+                "'/x/lib/rustlib/x86_64-pc-windows-msvc/lib': FileNotFound\n",
+                encoding="utf-8",
+            )
+            errors, warnings, _ = parse_log(log, 0)
+        self.assertNotEqual((errors, warnings), (0, 0))
+
     def test_other_linker_warnings_still_fail_the_gate(self) -> None:
         with tempfile.TemporaryDirectory() as directory:
             log = Path(directory) / "cargo.log"
