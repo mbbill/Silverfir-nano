@@ -908,7 +908,9 @@ pub(crate) mod fixed_call_table_view_offset {
 
 #[cfg(test)]
 mod tests {
-    use tracked_alloc::{boxed::Box, rc::Rc, string::String};
+    #[cfg(any(sf_ir_dump, sf_jitdump))]
+    use tracked_alloc::string::String;
+    use tracked_alloc::{boxed::Box, rc::Rc};
 
     use super::*;
     use crate::{
@@ -919,7 +921,12 @@ mod tests {
         },
         value_type::ValueType,
         vm::{
-            entities::Caller, jit::entities::ModuleInst, jit::store::Store, link::LinkRegistry,
+            entities::Caller,
+            jit::{
+                entities::ModuleInst,
+                store::{tests::store as test_store, Store},
+            },
+            link::LinkRegistry,
             value::Value,
         },
     };
@@ -956,7 +963,7 @@ mod tests {
         ))
     }
 
-    fn module_with_local(name: &str) -> ModuleInst {
+    fn module_with_local() -> ModuleInst {
         let func_type = Rc::new(FunctionType::new(collections::vec![], collections::vec![]));
         let types = TypeContext::new(collections::vec![Rc::new(DefType {
             composite: CompositeType::Func(Rc::clone(&func_type)),
@@ -964,7 +971,12 @@ mod tests {
             is_final: true,
             rec_group: None,
         })]);
-        let mut module = ModuleInst::new(crate::config::Config::new(), String::from(name), types);
+        let mut module = ModuleInst::new(
+            crate::config::Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
+            String::from("m"),
+            types,
+        );
         module.functions.push(FunctionInst::Local {
             spec: FunctionSpec::new(func_type, 1),
             type_index: 0,
@@ -984,7 +996,12 @@ mod tests {
                 collections::vec![ValueType::I64],
             ),
         ]);
-        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
+        let mut module = ModuleInst::new(
+            crate::config::Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
+            String::from("m"),
+            types,
+        );
         module.functions.push(FunctionInst::Local {
             spec: FunctionSpec::new(
                 Rc::new(FunctionType::new(
@@ -995,7 +1012,7 @@ mod tests {
             ),
             type_index: 1,
         });
-        let mut store = Box::new(Store::new(module));
+        let mut store = test_store(module);
         for func_idx in 0..store.module().functions.len() {
             let _ = store.register_local_function(func_idx);
         }
@@ -1019,12 +1036,12 @@ mod tests {
     fn refresh_function_views_are_indexed_only_by_local_function_index() {
         let registry = LinkRegistry::new();
         {
-            let mut dropped_store = store_with_registry(module_with_local("dropped"), &registry);
+            let mut dropped_store = store_with_registry(module_with_local(), &registry);
             let dropped_handle = dropped_store.register_local_function(0);
             assert_eq!(dropped_handle.payload(), 0);
         }
 
-        let mut live_store = store_with_registry(module_with_local("live"), &registry);
+        let mut live_store = store_with_registry(module_with_local(), &registry);
         let live_handle = live_store.register_local_function(0);
         assert_eq!(live_handle.payload(), 0);
         assert_eq!(live_store.clone_function_registry().borrow().len(), 2);
@@ -1061,7 +1078,12 @@ mod tests {
                 collections::vec![ValueType::I64],
             ),
         ]);
-        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
+        let mut module = ModuleInst::new(
+            crate::config::Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
+            String::from("m"),
+            types,
+        );
         module.functions.push(FunctionInst::Host {
             func_type: Rc::new(FunctionType::new(
                 collections::vec![ValueType::I32],
@@ -1069,7 +1091,7 @@ mod tests {
             )),
             callback: crate::vm::entities::HostCallback::new(host_noop),
         });
-        let mut store = Box::new(Store::new(module));
+        let mut store = test_store(module);
         for func_idx in 0..store.module().functions.len() {
             let _ = store.register_local_function(func_idx);
         }

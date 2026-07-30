@@ -2316,8 +2316,6 @@ fn f64_matches_nan_pattern(actual: f64, expected: &NanPattern<wast::token::F64>)
 #[cfg(test)]
 mod tests {
     use super::*;
-    #[cfg(target_arch = "aarch64")]
-    use sf_nano_core::FunctionInst;
     use sf_nano_core::{Config, Engine, Tier, Value};
     use std::path::PathBuf;
 
@@ -2459,16 +2457,11 @@ mod tests {
         // Native code is the JIT's business, so this assertion reaches
         // through to its instance rather than the engine-neutral one.
         let jit = instance.as_jit().expect("this test runs on the jit");
-        match &jit.store().module().functions[func_index] {
-            FunctionInst::Local { spec, .. } => {
-                assert!(
-                    spec.has_native_code(),
-                    "expected native code to be compiled for as-mixed-operands"
-                );
-            }
-            FunctionInst::Host { .. } => panic!("expected local export"),
-            FunctionInst::Linked { .. } => panic!("expected local export"),
-        }
+        assert_eq!(
+            jit.function_has_native_code(func_index),
+            Some(true),
+            "expected native code to be compiled for as-mixed-operands"
+        );
     }
 
     #[test]

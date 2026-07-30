@@ -815,13 +815,15 @@ mod instance_table_tests {
     use crate::config::Config;
     use crate::module::type_context::TypeContext;
     use crate::vm::jit::entities::ModuleInst;
+    #[cfg(any(sf_ir_dump, sf_jitdump))]
     use tracked_alloc::string::String;
 
-    fn test_store(registry: &LinkRegistry, handle: InstanceHandle, name: &str) -> Box<Store> {
+    fn test_store(registry: &LinkRegistry, handle: InstanceHandle) -> Box<Store> {
         Box::new(Store::new_with_registries(
             ModuleInst::new(
                 Config::new(),
-                String::from(name),
+                #[cfg(any(sf_ir_dump, sf_jitdump))]
+                String::from("instance-table-test"),
                 TypeContext::new(collections::Vec::new()),
             ),
             handle,
@@ -834,7 +836,7 @@ mod instance_table_tests {
 
     fn occupied_store(registry: &LinkRegistry) -> (InstanceId, InstanceHandle) {
         let (id, handle) = registry.reserve_instance();
-        let store = test_store(registry, handle.clone(), "instance-table-test");
+        let store = test_store(registry, handle.clone());
         registry
             .instance_table()
             .occupy_jit(id, store)
@@ -865,10 +867,7 @@ mod instance_table_tests {
         assert_eq!(reused.index(), first.index());
         assert_ne!(reused.generation(), first.generation());
         table
-            .occupy_jit(
-                reused,
-                test_store(&registry, table.handle(reused), "reused-reservation"),
-            )
+            .occupy_jit(reused, test_store(&registry, table.handle(reused)))
             .expect("occupy reused reservation");
         assert!(table.checkout(first).is_none());
         let replacement = table.checkout(reused).expect("new generation checks out");
@@ -987,18 +986,12 @@ mod instance_table_tests {
         let caller_id = table.reserve();
         let caller_handle = table.handle(caller_id);
         table
-            .occupy_jit(
-                caller_id,
-                test_store(&registry, caller_handle, "miri-caller"),
-            )
+            .occupy_jit(caller_id, test_store(&registry, caller_handle))
             .expect("occupy Miri caller");
         let owner_id = table.reserve();
         let owner_handle = table.handle(owner_id);
         table
-            .occupy_jit(
-                owner_id,
-                test_store(&registry, owner_handle, "miri-foreign-owner"),
-            )
+            .occupy_jit(owner_id, test_store(&registry, owner_handle))
             .expect("occupy Miri foreign owner");
         assert_ne!(caller_id, owner_id);
 
@@ -1012,17 +1005,12 @@ mod instance_table_tests {
                 .checkout(owner_id)
                 .expect("nested foreign-owner checkout");
             let owner_store = owner.jit().expect("foreign-owner materialization");
-            (
-                owner_store.instance_handle().self_id(),
-                owner_store.module().name.clone(),
-            )
+            owner_store.instance_handle().self_id()
         };
 
-        assert_eq!(owned_owner.0, owner_id);
-        assert_eq!(owned_owner.1, "miri-foreign-owner");
+        assert_eq!(owned_owner, owner_id);
         assert_eq!(table.in_use(owner_id), Some(0));
         assert_eq!(caller_store.instance_handle().self_id(), caller_id);
-        assert_eq!(caller_store.module().name, "miri-caller");
 
         drop(caller);
         table.free(caller_id).expect("free Miri caller");
@@ -1040,6 +1028,7 @@ mod instance_table_tests {
         let store = Box::new(Store::new_with_registries(
             ModuleInst::new(
                 Config::new(),
+                #[cfg(any(sf_ir_dump, sf_jitdump))]
                 String::from("retired-instance-slot"),
                 TypeContext::new(collections::Vec::new()),
             ),

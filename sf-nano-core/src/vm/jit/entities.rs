@@ -18,7 +18,9 @@ use crate::vm::jit::runtime::code_buf::CodeBuffer;
 use crate::vm::tag::TagHandle;
 use crate::vm::value::RefHandle;
 use core::cell::{Cell, RefCell};
-use tracked_alloc::{rc::Rc, string::String};
+use tracked_alloc::rc::Rc;
+#[cfg(any(sf_ir_dump, sf_jitdump))]
+use tracked_alloc::string::String;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum TableDispatchMode {
@@ -108,39 +110,31 @@ impl MemInstJit for MemInst {
 // Instantiation-time entity of the JIT's `Store` world. The interpreter
 // tracks tag identity with bare `TagHandle`s in its own state.
 #[derive(Debug, Clone, Copy)]
-pub struct TagInst {
+pub(crate) struct TagInst {
     pub handle: TagHandle,
     pub type_index: u32,
-    /// `true` when the tag is imported — its `handle` may alias a handle
-    /// imported into a different tag index. Enables the static-catch
-    /// matcher in the semantic decoder to fall back to the runtime
-    /// throw path when it can't prove two tag indices refer to distinct
-    /// runtime identities.
-    pub is_import: bool,
 }
 
 #[derive(Debug, Clone)]
-pub struct ElementInst {
+pub(crate) struct ElementInst {
     pub refs: collections::Vec<RefHandle>,
-    pub value_type: ValueType,
     pub dropped: bool,
 }
 
 impl ElementInst {
-    pub fn new(refs: collections::Vec<RefHandle>, value_type: ValueType) -> Self {
+    pub(crate) fn new(refs: collections::Vec<RefHandle>) -> Self {
         ElementInst {
             refs,
-            value_type,
             dropped: false,
         }
     }
 
     #[inline]
-    pub fn is_dropped(&self) -> bool {
+    pub(crate) fn is_dropped(&self) -> bool {
         self.dropped
     }
 
-    pub fn drop_segment(&mut self) {
+    pub(crate) fn drop_segment(&mut self) {
         self.refs.clear();
         self.refs.shrink_to_fit();
         self.dropped = true;
@@ -148,13 +142,13 @@ impl ElementInst {
 }
 
 #[derive(Debug, Clone)]
-pub struct DataInst {
+pub(crate) struct DataInst {
     pub bytes: collections::Vec<u8>,
     pub dropped: bool,
 }
 
 impl DataInst {
-    pub fn new(bytes: collections::Vec<u8>) -> Self {
+    pub(crate) fn new(bytes: collections::Vec<u8>) -> Self {
         DataInst {
             bytes,
             dropped: false,
@@ -162,11 +156,11 @@ impl DataInst {
     }
 
     #[inline]
-    pub fn is_dropped(&self) -> bool {
+    pub(crate) fn is_dropped(&self) -> bool {
         self.dropped
     }
 
-    pub fn drop_segment(&mut self) {
+    pub(crate) fn drop_segment(&mut self) {
         self.bytes.clear();
         self.bytes.shrink_to_fit();
         self.dropped = true;
@@ -174,10 +168,11 @@ impl DataInst {
 }
 
 #[derive(Debug)]
-pub struct ModuleInst {
+pub(crate) struct ModuleInst {
     /// The engine's configuration, carried here because every stage that
     /// needs a budget already has the module in hand.
     pub(crate) config: Config,
+    #[cfg(any(sf_ir_dump, sf_jitdump))]
     pub name: String,
     pub types: TypeContext,
     pub functions: collections::Vec<FunctionInst>,
@@ -199,9 +194,14 @@ pub struct ModuleInst {
 }
 
 impl ModuleInst {
-    pub fn new(config: Config, name: String, types: TypeContext) -> Self {
+    pub(crate) fn new(
+        config: Config,
+        #[cfg(any(sf_ir_dump, sf_jitdump))] name: String,
+        types: TypeContext,
+    ) -> Self {
         ModuleInst {
             config,
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
             name,
             types,
             functions: collections::Vec::new(),
@@ -220,12 +220,12 @@ impl ModuleInst {
     }
 
     #[inline]
-    pub fn get_type(&self, index: u32) -> Option<&Rc<FunctionType>> {
+    pub(crate) fn get_type(&self, index: u32) -> Option<&Rc<FunctionType>> {
         self.types.get_function_type(index)
     }
 
     #[inline]
-    pub fn function_handle(&self, index: usize) -> Option<RefHandle> {
+    pub(crate) fn function_handle(&self, index: usize) -> Option<RefHandle> {
         self.function_handles.get(index).copied()
     }
 
@@ -271,19 +271,13 @@ impl ModuleInst {
         )
     }
 
-    pub(crate) fn clear_native_code(&self) {
-        for function in &self.functions {
-            if let Some(spec) = function.spec() {
-                spec.clear_native_code();
-            }
-        }
-    }
-
-    pub fn config(&self) -> &Config {
+    pub(crate) fn config(&self) -> &Config {
         &self.config
     }
 
-    pub fn native_code_buffer(&self) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
+    pub(crate) fn native_code_buffer(
+        &self,
+    ) -> Result<core::cell::RefMut<'_, CodeBuffer>, &'static str> {
         let mut native_buf = self
             .native_buf
             .try_borrow_mut()
@@ -321,6 +315,7 @@ impl Default for ModuleInst {
     fn default() -> Self {
         Self {
             config: Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
             name: String::new(),
             types: TypeContext::empty(),
             functions: collections::Vec::new(),

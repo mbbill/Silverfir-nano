@@ -19,7 +19,7 @@ use tracked_alloc::{
     AllocationDescriptor, AllocationHandle, AllocationState, RUNTIME_MEMORY_OWNER,
 };
 
-pub struct CodeBuffer {
+pub(crate) struct CodeBuffer {
     base: *mut u8,
     capacity: usize,
     offset: usize,
@@ -52,11 +52,11 @@ impl core::fmt::Debug for CodeBuffer {
 
 impl CodeBuffer {
     #[inline]
-    pub fn new(config: &Config) -> Result<Self, &'static str> {
+    pub(crate) fn new(config: &Config) -> Result<Self, &'static str> {
         Self::with_capacity(config.get_code_arena_bytes())
     }
 
-    pub fn with_capacity(capacity: usize) -> Result<Self, &'static str> {
+    pub(crate) fn with_capacity(capacity: usize) -> Result<Self, &'static str> {
         let base = os::alloc_executable(capacity)?;
         let buffer = Self {
             base,
@@ -84,12 +84,12 @@ impl CodeBuffer {
     }
 
     #[inline]
-    pub fn begin_write(&mut self) {
+    pub(crate) fn begin_write(&mut self) {
         unsafe { os::begin_write_executable(self.base, self.capacity) };
     }
 
     #[inline]
-    pub fn finish_write(&mut self, written_start: usize, written_len: usize) {
+    pub(crate) fn finish_write(&mut self, written_start: usize, written_len: usize) {
         unsafe {
             os::finish_write_executable(self.base, self.capacity, written_start, written_len);
         }
@@ -97,8 +97,14 @@ impl CodeBuffer {
         self.trace.update(self.trace_state());
     }
 
+    #[cfg(any(
+        sf_backend_x64,
+        sf_arm32_isa_thumb,
+        sf_backend_riscv32,
+        sf_backend_riscv64
+    ))]
     #[inline]
-    pub fn emit_u8(&mut self, byte: u8) -> usize {
+    pub(crate) fn emit_u8(&mut self, byte: u8) -> usize {
         let offset = self.offset;
         assert!(offset < self.capacity, "native code buffer overflow");
         unsafe {
@@ -109,7 +115,7 @@ impl CodeBuffer {
     }
 
     #[inline]
-    pub fn emit_u32(&mut self, inst: u32) -> usize {
+    pub(crate) fn emit_u32(&mut self, inst: u32) -> usize {
         let offset = self.offset;
         assert!(offset + 4 <= self.capacity, "native code buffer overflow");
         unsafe {
@@ -119,8 +125,9 @@ impl CodeBuffer {
         offset
     }
 
+    #[cfg(any(sf_backend_arm64, sf_backend_x64, sf_backend_riscv64))]
     #[inline]
-    pub fn emit_u64(&mut self, value: u64) -> usize {
+    pub(crate) fn emit_u64(&mut self, value: u64) -> usize {
         let offset = self.offset;
         assert!(offset + 8 <= self.capacity, "native code buffer overflow");
         unsafe {
@@ -131,7 +138,7 @@ impl CodeBuffer {
     }
 
     #[inline]
-    pub fn emit_bytes(&mut self, bytes: &[u8]) -> usize {
+    pub(crate) fn emit_bytes(&mut self, bytes: &[u8]) -> usize {
         let offset = self.offset;
         assert!(
             offset + bytes.len() <= self.capacity,
@@ -145,23 +152,16 @@ impl CodeBuffer {
     }
 
     #[inline]
-    pub fn patch_u8(&mut self, offset: usize, byte: u8) {
-        assert!(offset < self.offset, "patch beyond written region");
-        unsafe {
-            self.base.add(offset).write(byte);
-        }
-    }
-
-    #[inline]
-    pub fn patch_u32(&mut self, offset: usize, inst: u32) {
+    pub(crate) fn patch_u32(&mut self, offset: usize, inst: u32) {
         assert!(offset + 4 <= self.offset, "patch beyond written region");
         unsafe {
             (self.base.add(offset) as *mut u32).write(inst);
         }
     }
 
+    #[cfg(any(sf_backend_arm64, sf_backend_x64, sf_backend_riscv64))]
     #[inline]
-    pub fn patch_u64(&mut self, offset: usize, value: u64) {
+    pub(crate) fn patch_u64(&mut self, offset: usize, value: u64) {
         assert!(offset + 8 <= self.offset, "patch beyond written region");
         unsafe {
             (self.base.add(offset) as *mut u64).write(value);
@@ -169,13 +169,13 @@ impl CodeBuffer {
     }
 
     #[inline]
-    pub fn byte(&self, offset: usize) -> u8 {
+    pub(crate) fn byte(&self, offset: usize) -> u8 {
         assert!(offset < self.offset, "read beyond written region");
         unsafe { *self.base.add(offset) }
     }
 
     #[inline]
-    pub unsafe fn fn_ptr<F>(&self, offset: usize) -> F
+    pub(crate) unsafe fn fn_ptr<F>(&self, offset: usize) -> F
     where
         F: Copy,
     {
@@ -184,22 +184,23 @@ impl CodeBuffer {
     }
 
     #[inline]
-    pub fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.offset
     }
 
     #[inline]
-    pub fn as_ptr(&self) -> *const u8 {
+    pub(crate) fn as_ptr(&self) -> *const u8 {
         self.base.cast::<u8>()
     }
 
+    #[cfg(sf_has_guard_pages)]
     #[inline]
-    pub unsafe fn ptr(&self, offset: usize) -> *const u8 {
+    pub(crate) unsafe fn ptr(&self, offset: usize) -> *const u8 {
         unsafe { self.base.add(offset) }.cast::<u8>()
     }
 
     #[inline]
-    pub fn reset(&mut self) {
+    pub(crate) fn reset(&mut self) {
         #[cfg(sf_has_guard_pages)]
         self.unregister_trap_ranges();
         self.offset = 0;
@@ -208,7 +209,7 @@ impl CodeBuffer {
     }
 
     #[inline]
-    pub fn set_len(&mut self, len: usize) {
+    pub(crate) fn set_len(&mut self, len: usize) {
         assert!(len <= self.capacity, "native code buffer overflow");
         self.offset = len;
         #[cfg(feature = "memprof")]
@@ -216,7 +217,7 @@ impl CodeBuffer {
     }
 
     #[inline]
-    pub fn move_region(&mut self, src_offset: usize, dst_offset: usize, len: usize) {
+    pub(crate) fn move_region(&mut self, src_offset: usize, dst_offset: usize, len: usize) {
         assert!(
             src_offset + len <= self.offset,
             "move source beyond written region"

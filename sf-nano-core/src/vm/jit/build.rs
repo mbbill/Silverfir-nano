@@ -1514,7 +1514,9 @@ pub(crate) fn ensure_module_compiled(store: &Store) -> Result<(), WasmError> {
 
 #[cfg(test)]
 mod tests {
-    use tracked_alloc::{boxed::Box, rc::Rc, string::String};
+    use tracked_alloc::rc::Rc;
+    #[cfg(any(sf_ir_dump, sf_jitdump))]
+    use tracked_alloc::string::String;
 
     use super::ensure_module_compiled;
     use crate::collections;
@@ -1529,7 +1531,7 @@ mod tests {
         vm::{
             entities::{FunctionInst, MemInst},
             jit::entities::ModuleInst,
-            jit::store::Store,
+            jit::store::tests::store as test_store,
         },
     };
 
@@ -1551,7 +1553,12 @@ mod tests {
             func_def(collections::vec![], collections::vec![]),
             func_def(collections::vec![ValueType::I32], collections::vec![]),
         ]);
-        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
+        let mut module = ModuleInst::new(
+            crate::config::Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
+            String::from("m"),
+            types,
+        );
         let mut spec0 = FunctionSpec::new(
             Rc::new(FunctionType::new(collections::vec![], collections::vec![])),
             0,
@@ -1573,7 +1580,7 @@ mod tests {
             spec: spec1,
             type_index: 1,
         });
-        let store = Box::new(Store::new(module));
+        let store = test_store(module);
 
         ensure_module_compiled(&store).expect("native compile should succeed");
 
@@ -1599,7 +1606,12 @@ mod tests {
             collections::vec![ValueType::F64],
             collections::vec![ValueType::F64],
         )]);
-        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
+        let mut module = ModuleInst::new(
+            crate::config::Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
+            String::from("m"),
+            types,
+        );
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
                 collections::vec![ValueType::F64],
@@ -1612,7 +1624,7 @@ mod tests {
             spec,
             type_index: 0,
         });
-        let store = Box::new(Store::new(module));
+        let store = test_store(module);
 
         ensure_module_compiled(&store).expect("f64 local function should compile");
     }
@@ -1625,7 +1637,12 @@ mod tests {
             collections::vec![ValueType::F32, ValueType::F32],
             collections::vec![ValueType::F32],
         )]);
-        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
+        let mut module = ModuleInst::new(
+            crate::config::Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
+            String::from("m"),
+            types,
+        );
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
                 collections::vec![ValueType::F32, ValueType::F32],
@@ -1638,7 +1655,7 @@ mod tests {
             spec,
             type_index: 0,
         });
-        let store = Box::new(Store::new(module));
+        let store = test_store(module);
 
         ensure_module_compiled(&store).expect("f32 add function should compile");
     }
@@ -1662,7 +1679,12 @@ mod tests {
             collections::vec![ValueType::F32, ValueType::I32],
             collections::vec![ValueType::F32],
         )]);
-        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
+        let mut module = ModuleInst::new(
+            crate::config::Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
+            String::from("m"),
+            types,
+        );
         let mut spec = FunctionSpec::new(
             Rc::new(FunctionType::new(
                 collections::vec![ValueType::F32, ValueType::I32],
@@ -1686,7 +1708,7 @@ mod tests {
             spec,
             type_index: 0,
         });
-        let store = Box::new(Store::new(module));
+        let store = test_store(module);
 
         ensure_module_compiled(&store).expect("f32 if/else function should compile");
     }
@@ -1712,7 +1734,12 @@ mod tests {
             collections::vec![ValueType::I32, ValueType::I32],
             collections::vec![ValueType::F32],
         )]);
-        let mut module = ModuleInst::new(crate::config::Config::new(), String::from("m"), types);
+        let mut module = ModuleInst::new(
+            crate::config::Config::new(),
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
+            String::from("m"),
+            types,
+        );
         let mut spec = FunctionSpec::new(Rc::clone(&ty), 0);
         spec.set_locals(collections::vec![
             ValueType::F32,
@@ -1765,7 +1792,7 @@ mod tests {
             )
             .expect("test memory within runtime limits"),
         );
-        let store = Box::new(Store::new(module));
+        let store = test_store(module);
 
         ensure_module_compiled(&store).expect("f32 kahan-style loop should compile");
     }

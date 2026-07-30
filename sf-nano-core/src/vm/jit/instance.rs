@@ -7,7 +7,9 @@
 
 use crate::collections;
 
-use tracked_alloc::{boxed::Box, string::ToString};
+use tracked_alloc::boxed::Box;
+#[cfg(any(sf_ir_dump, sf_jitdump))]
+use tracked_alloc::string::ToString;
 
 use crate::error::WasmError;
 use crate::module::entities::{
@@ -774,7 +776,6 @@ impl JitInstance {
                     tag_insts.push(TagInst {
                         handle: TagHandle::mint_fresh(),
                         type_index: spec.type_index(),
-                        is_import: false,
                     });
                 }
                 TagDef::Import {
@@ -823,7 +824,6 @@ impl JitInstance {
                             tag_insts.push(TagInst {
                                 handle: state.handle,
                                 type_index: *type_index,
-                                is_import: true,
                             });
                         }
                         Some(_) => {
@@ -839,7 +839,7 @@ impl JitInstance {
 
         let elements: collections::Vec<ElementInst> = mod_elements
             .iter()
-            .map(|e| ElementInst::new(collections::Vec::new(), e.value_type()))
+            .map(|_| ElementInst::new(collections::Vec::new()))
             .collect();
 
         let data: collections::Vec<DataInst> = mod_data
@@ -847,7 +847,12 @@ impl JitInstance {
             .map(|d| DataInst::new(d.get_init().to_vec().into()))
             .collect();
 
-        let mut module_inst = ModuleInst::new(config, "main".to_string(), types);
+        let mut module_inst = ModuleInst::new(
+            config,
+            #[cfg(any(sf_ir_dump, sf_jitdump))]
+            "main".to_string(),
+            types,
+        );
         module_inst.functions = functions;
         module_inst.tables = tables;
         module_inst.memories = memories;
@@ -974,8 +979,7 @@ impl JitInstance {
                         // eventual table.init destination decides whether the
                         // absolute value is localized again.
                         let refs = materialize_element_init(init, store, true)?;
-                        store.module_mut().elements[i] =
-                            ElementInst::new(refs, element.value_type());
+                        store.module_mut().elements[i] = ElementInst::new(refs);
                     }
                     Element::Declarative { .. } => {
                         store.module_mut().elements[i].drop_segment();
@@ -1135,14 +1139,14 @@ impl JitInstance {
             .any(|(n, k, _)| matches!(k, ExportKind::Func) && n == name)
     }
 
-    pub fn store(&self) -> &Store {
+    pub(crate) fn store(&self) -> &Store {
         self.lease
             .token()
             .jit()
             .expect("JIT instance lease must resolve to a Store")
     }
 
-    pub fn store_mut(&mut self) -> &mut Store {
+    pub(crate) fn store_mut(&mut self) -> &mut Store {
         self.lease
             .token_mut()
             .jit_mut()
@@ -1279,40 +1283,6 @@ impl JitInstance {
         None
     }
 
-    pub fn table_elements_at(&self, idx: usize) -> Option<&[RefHandle]> {
-        self.store().module().tables.get(idx).map(|table| {
-            let elements = table.elements();
-            unsafe { core::slice::from_raw_parts(elements.as_ptr(), elements.len()) }
-        })
-    }
-
-    pub fn replace_table_elements_at(
-        &mut self,
-        idx: usize,
-        elements: &[RefHandle],
-    ) -> Result<(), WasmError> {
-        let table = self
-            .store_mut()
-            .module_mut()
-            .tables
-            .get_mut(idx)
-            .ok_or_else(|| WasmError::invalid("table index out of range"))?;
-        let mut table_elements = table.elements_mut();
-        if table_elements.len() != elements.len() {
-            return Err(WasmError::invalid("table size mismatch"));
-        }
-        table_elements.copy_from_slice(elements);
-        drop(table_elements);
-        #[cfg(sf_jit)]
-        {
-            for mode in &mut self.store_mut().module_mut().table_dispatch_modes {
-                *mode = TableDispatchMode::Generic;
-            }
-            self.store().module().clear_native_code();
-        }
-        Ok(())
-    }
-
     pub fn function_type_at(&self, idx: usize) -> Option<FunctionType> {
         self.store()
             .module()
@@ -1327,6 +1297,17 @@ impl JitInstance {
             .functions
             .get(idx)
             .map(FunctionInst::type_index)
+    }
+
+    /// Whether a local function has been compiled to native code.
+    ///
+    /// Host functions, linked functions, and out-of-range indices return
+    /// `None`.
+    pub fn function_has_native_code(&self, idx: usize) -> Option<bool> {
+        match self.store().module().functions.get(idx)? {
+            FunctionInst::Local { spec, .. } => Some(spec.has_native_code()),
+            FunctionInst::Host { .. } | FunctionInst::Linked { .. } => None,
+        }
     }
 
     /// Mint the function's absolute reference form for external use.
@@ -1350,26 +1331,34 @@ impl JitInstance {
     }
 
     pub fn shared_table_state_at(&self, idx: usize) -> Option<ImportedTableState> {
-        self.store()
+        let store = self.store();
+        if !store.module().table_is_reachable(idx) {
+            return None;
+        }
+        store
             .module()
             .tables
             .get(idx)
             .cloned()
             .map(|table| ImportedTableState {
                 table,
-                type_ctx: Some(self.store().module().types.clone()),
+                type_ctx: Some(store.module().types.clone()),
             })
     }
 
     pub fn shared_global_state_at(&self, idx: usize) -> Option<ImportedGlobalState> {
-        self.store()
+        let store = self.store();
+        if !store.module().global_is_reachable(idx) {
+            return None;
+        }
+        store
             .module()
             .globals
             .get(idx)
             .cloned()
             .map(|global| ImportedGlobalState {
                 global,
-                type_ctx: Some(self.store().module().types.clone()),
+                type_ctx: Some(store.module().types.clone()),
             })
     }
 
