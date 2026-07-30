@@ -39,6 +39,12 @@ mod instr;
 mod layout;
 mod predecode;
 
+pub(crate) const ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED: &str =
+    "interp: engine-native interpreter-to-interpreter calls without a FuncRefHost hook are not supported";
+
+const EXTERNAL_FUNCREF_HOST_REQUIRED: &str =
+    "interp: external function reference calls require a FuncRefHost hook";
+
 // `InterpInstance` is the engine's public face. The predecoded
 // representation behind it -- instructions, the opcode enum, operand
 // flags -- stays inside the engine: it is how a function is stored, not

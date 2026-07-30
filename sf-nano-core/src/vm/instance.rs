@@ -445,10 +445,7 @@ impl Instance {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.function_handle_at(idx),
             #[cfg(sf_interp)]
-            Inner::Interp(_) => {
-                let _ = idx;
-                None
-            }
+            Inner::Interp(inst) => inst.function_handle_at(idx),
         }
     }
 

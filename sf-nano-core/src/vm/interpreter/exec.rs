@@ -28,9 +28,10 @@ use crate::utils::limits::{Limitable, Limits};
 use crate::value_type::{AbstractHeapType, HeapType, RefType, ValueType};
 use crate::vm::engine::Engine;
 use crate::vm::entities::{Caller, GlobalInst, MemInst, TableInst};
-use crate::vm::imports::{Import, ImportValue, ImportedGlobal};
+use crate::vm::imports::{Import, ImportValue, ImportedFunction, ImportedGlobal};
 use crate::vm::link::{
-    InstanceHandle, InstanceId, InstanceLease, LinkArenas, LinkRegistry, RefRegistryEntry,
+    FuncEntry, InstanceHandle, InstanceId, InstanceLease, LinkArenas, LinkRegistry,
+    RefRegistryEntry,
 };
 use crate::vm::tag::TagHandle;
 use crate::vm::value::{RefHandle, Value};
@@ -43,7 +44,6 @@ use super::fmath;
 use super::instr::{op_from_index, Op};
 use super::instr::{Instr, FLAG_ADDR64, FLAG_A_CONST, FLAG_B_CONST, FLAG_FUSED};
 use super::predecode::{predecode_function, PredecodedFunction, WIDE_MEMARG};
-use core::cell::RefCell;
 
 const PAGE: usize = 65536;
 /// A null reference, as it sits in an 8-byte slot.
@@ -106,8 +106,8 @@ fn configured_ret_records(stack_slots: usize) -> usize {
 
 /// Host dispatcher for imported functions: called with the import's module
 /// and field names, the linear memory, argument slots, and result slots.
-/// Funcref-typed argument and result slots use instance-independent published
-/// names at this boundary; the interpreter converts against the caller's frame
+/// Funcref-typed argument and result slots use absolute world identities at
+/// this boundary; the interpreter converts against the caller's frame
 /// immediately before and after the callback.
 ///
 /// The signature carries only std types (`&mut [u8]`, not this crate's
@@ -116,24 +116,21 @@ pub(crate) type HostDispatch = Box<
     dyn for<'a> FnMut(&str, &str, &mut Caller<'a>, &[u64], &mut [u64]) -> Result<(), WasmError>,
 >;
 
-/// How a reference to one of this instance's functions is named so another
-/// instance can call it, and how such a name is called back.
+/// Embedder linking hook for function references the interpreter cannot enter
+/// natively.
 ///
-/// A funcref is a local index and means nothing outside the instance that
-/// wrote it, so one entering a SHARED table needs a global name. Naming is
-/// the embedder's job: resolving a name means calling into another instance,
-/// which needs `&mut` to it while this one is borrowed. The embedder owns
-/// both; an engine-side registry could only manage it with a raw pointer into
-/// storage the embedder is free to move.
+/// Both engines use one runtime-world function identity. An interpreter may
+/// delegate any absolute identity through this hook, including a
+/// registry-known function owned by another interpreter instance. The
+/// engine-native interpreter-to-interpreter token trampoline remains
+/// deliberately deferred; without this hook, that path takes its named trap.
 ///
 /// The boxes are `alloc`'s, not this crate's tracked ones, for the same reason
 /// `HostDispatch`'s signature carries only std types: an embedder has to be
 /// able to construct one without depending on the allocator this crate is
 /// built with.
 pub struct FuncRefHost {
-    /// Name local function `idx` of this instance.
-    pub publish: alloc::boxed::Box<dyn Fn(usize) -> RefHandle>,
-    /// Call whatever absolute `handle` names, wherever it lives.
+    /// Call whatever absolute world identity `handle` names.
     ///
     /// Funcref-typed argument and result slots are absolute at this boundary.
     pub invoke:
@@ -151,17 +148,9 @@ fn value_type_is_function_ref(module: &Module, value_type: ValueType) -> bool {
     )
 }
 
-/// Give a frame-local function reference an instance-independent name.
-///
-/// Published names are cached because the inverse mapping is also how this
-/// instance recognizes one of its own references on the way back in. Without
-/// an embedder resolver, a pooled opaque name still prevents a local index
-/// from silently naming a different instance's function.
 fn absolutize_ref_with(
     module: &Module,
-    funcref_host: Option<&FuncRefHost>,
-    link_registry: &LinkArenas,
-    published: &RefCell<Vec<(RefHandle, usize)>>,
+    function_identities: &[RefHandle],
     handle: RefHandle,
 ) -> RefHandle {
     if handle.is_null() || handle.is_special() {
@@ -171,57 +160,53 @@ fn absolutize_ref_with(
     if module.functions().get(local).is_none() {
         return handle;
     }
-    if let Some(named) = published
-        .borrow()
-        .iter()
-        .find_map(|&(named, index)| (index == local).then_some(named))
-    {
-        return named;
-    }
-    let named = match funcref_host {
-        Some(host) => (host.publish)(local),
-        None => link_registry.alloc_opaque_interp_funcref(),
-    };
-    published.borrow_mut().push((named, local));
-    named
+    function_identities.get(local).copied().unwrap_or(handle)
 }
 
-/// Recover this instance's frame-local index from a name it published.
-///
-/// Foreign names and every non-function reference are already in the only
-/// form this instance can retain, so the conversion is total and leaves them
-/// unchanged.
-fn localize_ref_with(published: &RefCell<Vec<(RefHandle, usize)>>, handle: RefHandle) -> RefHandle {
-    if handle.is_null() {
+fn localize_ref_with(
+    module: &Module,
+    instance_handle: &InstanceHandle,
+    link_registry: &LinkArenas,
+    handle: RefHandle,
+) -> RefHandle {
+    if handle.is_null() || handle.is_special() {
         return handle;
     }
-    published
-        .borrow()
-        .iter()
-        .find_map(|&(named, local)| (named == handle).then_some(RefHandle::new(local)))
-        .unwrap_or(handle)
+    if handle.encoded() < module.functions().len() {
+        return handle;
+    }
+    let Some(entry) = link_registry.functions.entry_for_handle(handle) else {
+        return handle;
+    };
+    if entry.owner == instance_handle.self_id() {
+        RefHandle::new(entry.local_index as usize)
+    } else {
+        handle
+    }
 }
 
 #[inline]
-fn absolutize_slot_with(
-    module: &Module,
-    funcref_host: Option<&FuncRefHost>,
-    link_registry: &LinkArenas,
-    published: &RefCell<Vec<(RefHandle, usize)>>,
-    slot: u64,
-) -> u64 {
+fn absolutize_slot_with(module: &Module, function_identities: &[RefHandle], slot: u64) -> u64 {
     ref_to_slot(absolutize_ref_with(
         module,
-        funcref_host,
-        link_registry,
-        published,
+        function_identities,
         slot_to_ref(slot),
     ))
 }
 
 #[inline]
-fn localize_slot_with(published: &RefCell<Vec<(RefHandle, usize)>>, slot: u64) -> u64 {
-    ref_to_slot(localize_ref_with(published, slot_to_ref(slot)))
+fn localize_slot_with(
+    module: &Module,
+    instance_handle: &InstanceHandle,
+    link_registry: &LinkArenas,
+    slot: u64,
+) -> u64 {
+    ref_to_slot(localize_ref_with(
+        module,
+        instance_handle,
+        link_registry,
+        slot_to_ref(slot),
+    ))
 }
 
 /// `max` is a growth limit, consulted only by `table.grow`; the executor
@@ -490,10 +475,11 @@ pub struct InterpInstance {
     ret_stack: Vec<u64>,
     host: Option<HostDispatch>,
     funcref_host: Option<FuncRefHost>,
-    /// Names this instance handed out for its OWN functions, so an absolute
-    /// reference read back at any boundary resolves to the local frame form
-    /// instead of going out through the embedder and back.
-    published: RefCell<Vec<(RefHandle, usize)>>,
+    /// Frame-relative handles: local/host functions use their local index;
+    /// linked imports retain the provider's absolute world identity.
+    function_handles: Vec<RefHandle>,
+    /// Absolute world identities indexed by this module's function index.
+    function_identities: Vec<RefHandle>,
     native: Option<NativeState>,
 }
 
@@ -579,13 +565,19 @@ pub(crate) fn raw_to_value_for_interp(raw: u64, ty: ValueType) -> Result<Value, 
 /// The grammar lives in `vm::const_eval`; this resolver reads
 /// already-initialized globals from the flat array (`globals` is what has
 /// been initialized so far, which is exactly what `global.get` may reach),
-/// widens `ref.func` to a plain handle whose payload IS the function index,
-/// and refuses the GC constructors this engine does not support.
-fn eval_const(module: &Module, expr: &[u8], globals: &[u64]) -> Result<u64, WasmError> {
+/// resolves `ref.func` through this instance's frame-handle table, and refuses
+/// the GC constructors this engine does not support.
+fn eval_const(
+    module: &Module,
+    function_handles: &[RefHandle],
+    expr: &[u8],
+    globals: &[u64],
+) -> Result<u64, WasmError> {
     use crate::vm::const_eval::{self, ConstResolver};
 
     struct R<'a> {
         module: &'a Module,
+        function_handles: &'a [RefHandle],
         globals: &'a [u64],
     }
 
@@ -596,8 +588,13 @@ fn eval_const(module: &Module, expr: &[u8], globals: &[u64]) -> Result<u64, Wasm
                 .functions()
                 .get(func_idx as usize)
                 .ok_or_else(|| WasmError::invalid("ref.func: function index out of range"))?;
+            let handle = self
+                .function_handles
+                .get(func_idx as usize)
+                .copied()
+                .ok_or_else(|| WasmError::invalid("ref.func: function identity missing"))?;
             Ok(Value::Ref(
-                RefHandle::new(func_idx as usize),
+                handle,
                 crate::value_type::RefType::new(
                     false,
                     crate::value_type::HeapType::Concrete(function.type_index()),
@@ -646,7 +643,15 @@ fn eval_const(module: &Module, expr: &[u8], globals: &[u64]) -> Result<u64, Wasm
         }
     }
 
-    let value = const_eval::eval_const_expr(expr, module.types(), &mut R { module, globals })?;
+    let value = const_eval::eval_const_expr(
+        expr,
+        module.types(),
+        &mut R {
+            module,
+            function_handles,
+            globals,
+        },
+    )?;
     value_to_raw_for_interp(&value)
 }
 
@@ -851,9 +856,6 @@ impl InterpInstance {
         instance_handle: InstanceHandle,
     ) -> Result<Self, WasmError> {
         let config = *engine.config();
-        // Names handed out for this instance's own functions, filled as
-        // exported globals and shared tables are initialized.
-        let published = RefCell::new(Vec::new());
         let global_reachable: Vec<bool> = module
             .globals()
             .iter()
@@ -960,14 +962,66 @@ impl InterpInstance {
             }
         }
 
-        // Functions: predecode every local function eagerly; imports are
-        // rejected on call, not here, so import-free modules always work.
+        // Functions join the world's one address space before any `ref.func`
+        // can be evaluated. A linked import keeps the provider's identity;
+        // local functions and host imports name this instance's function
+        // slot and retain the local-index frame form.
+        link_registry
+            .functions
+            .observe_local_function_count(module.functions().len());
+        let mut function_handles = Vec::with_capacity(module.functions().len());
+        let mut function_identities = Vec::with_capacity(module.functions().len());
+        for (func_idx, func) in module.functions().iter().enumerate() {
+            let linked_handle = match func.def() {
+                crate::module::entities::FunctionDef::Import {
+                    module: import_module,
+                    name,
+                    ..
+                } => imports.iter().find_map(|import| {
+                    if import.module != *import_module || import.name != *name {
+                        return None;
+                    }
+                    match &import.value {
+                        ImportValue::Func(ImportedFunction::Linked { handle, .. }) => Some(*handle),
+                        _ => None,
+                    }
+                }),
+                crate::module::entities::FunctionDef::Local(_) => None,
+            };
+            if let Some(handle) = linked_handle {
+                if link_registry.functions.entry_for_handle(handle).is_none() {
+                    return Err(WasmError::unlinkable(
+                        "interpreter linked function identity is unavailable",
+                    ));
+                }
+                function_handles.push(handle);
+                function_identities.push(handle);
+                continue;
+            }
+
+            let local = RefHandle::new(func_idx);
+            let absolute = link_registry.functions.absolute_handle(FuncEntry {
+                owner: instance_handle.self_id(),
+                local_index: u32::try_from(func_idx)
+                    .map_err(|_| WasmError::invalid("interpreter function index is too large"))?,
+            });
+            function_handles.push(local);
+            function_identities.push(absolute);
+        }
+
+        // Predecode every local function eagerly; imports are dispatched at
+        // the slow boundary, so import-free modules remain entirely local.
         let mut funcs = Vec::new();
         for (i, f) in module.functions().iter().enumerate() {
             if f.is_import() {
                 funcs.push(None);
             } else {
-                funcs.push(Some(Rc::new(predecode_function(&module, &tags, i)?)));
+                funcs.push(Some(Rc::new(predecode_function(
+                    &module,
+                    &tags,
+                    &function_handles,
+                    i,
+                )?)));
             }
         }
 
@@ -1006,18 +1060,12 @@ impl InterpInstance {
         for (global_idx, g) in module.globals().iter().enumerate() {
             match g.def() {
                 GlobalDef::Local(spec) => {
-                    let mut v = eval_const(&module, spec.init_expr(), &globals)?;
+                    let mut v = eval_const(&module, &function_handles, spec.init_expr(), &globals)?;
                     if value_type_is_function_ref(&module, spec.value_type()) {
                         v = if global_reachable[global_idx] {
-                            absolutize_slot_with(
-                                &module,
-                                funcref_host.as_ref(),
-                                &link_registry,
-                                &published,
-                                v,
-                            )
+                            absolutize_slot_with(&module, &function_identities, v)
                         } else {
-                            localize_slot_with(&published, v)
+                            localize_slot_with(&module, &instance_handle, &link_registry, v)
                         };
                     }
                     // An exported local global must BE the shared cell, so an
@@ -1057,15 +1105,14 @@ impl InterpInstance {
                             let mut raw = value_to_raw_for_interp(&v.value)?;
                             if value_type_is_function_ref(&module, *value_type) {
                                 raw = if global_reachable[global_idx] {
-                                    absolutize_slot_with(
+                                    absolutize_slot_with(&module, &function_identities, raw)
+                                } else {
+                                    localize_slot_with(
                                         &module,
-                                        funcref_host.as_ref(),
+                                        &instance_handle,
                                         &link_registry,
-                                        &published,
                                         raw,
                                     )
-                                } else {
-                                    localize_slot_with(&published, raw)
                                 };
                             }
                             shared_globals.push(None);
@@ -1098,15 +1145,14 @@ impl InterpInstance {
                             let mut raw = st.global.raw();
                             if value_type_is_function_ref(&module, *value_type) {
                                 raw = if global_reachable[global_idx] {
-                                    absolutize_slot_with(
+                                    absolutize_slot_with(&module, &function_identities, raw)
+                                } else {
+                                    localize_slot_with(
                                         &module,
-                                        funcref_host.as_ref(),
+                                        &instance_handle,
                                         &link_registry,
-                                        &published,
                                         raw,
                                     )
-                                } else {
-                                    localize_slot_with(&published, raw)
                                 };
                             }
                             globals.push(raw);
@@ -1180,18 +1226,12 @@ impl InterpInstance {
             // (ref.func $d))` full of nulls.
             let init_slot = match t.spec().init_expr() {
                 Some(expr) => {
-                    let raw = eval_const(&module, expr, &globals)?;
+                    let raw = eval_const(&module, &function_handles, expr, &globals)?;
                     if value_type_is_function_ref(&module, t.value_type()) {
                         if table_reachable[table_idx] {
-                            absolutize_slot_with(
-                                &module,
-                                funcref_host.as_ref(),
-                                &link_registry,
-                                &published,
-                                raw,
-                            )
+                            absolutize_slot_with(&module, &function_identities, raw)
                         } else {
-                            localize_slot_with(&published, raw)
+                            localize_slot_with(&module, &instance_handle, &link_registry, raw)
                         }
                     } else {
                         raw
@@ -1260,7 +1300,8 @@ impl InterpInstance {
             ret_stack: vec![0u64; configured_ret_records(stack_slots) * (RET_RECORD / 8)],
             host,
             funcref_host,
-            published,
+            function_handles,
+            function_identities,
             native: None,
         };
         // The dispatch chain, the data segments and the start function are
@@ -1285,7 +1326,12 @@ impl InterpInstance {
             else {
                 continue;
             };
-            let off = eval_const(&self.module, &offset_expr, &self.globals)? as u64;
+            let off = eval_const(
+                &self.module,
+                &self.function_handles,
+                &offset_expr,
+                &self.globals,
+            )? as u64;
             let len = self
                 .tables
                 .get(table_index)
@@ -1302,8 +1348,12 @@ impl InterpInstance {
             match &init {
                 ElementInit::FunctionIndexes(idxs) => {
                     for (k, &fi) in idxs.iter().enumerate() {
-                        let slot = self
-                            .table_slot_for_storage(table_index, ref_to_slot(RefHandle::new(fi)));
+                        let handle = self
+                            .function_handles
+                            .get(fi)
+                            .copied()
+                            .ok_or(WasmError::invalid("element function identity missing"))?;
+                        let slot = self.table_slot_for_storage(table_index, ref_to_slot(handle));
                         self.tables[table_index]
                             .entries
                             .set(off as usize + k, slot)?;
@@ -1313,7 +1363,7 @@ impl InterpInstance {
                     for (k, expr) in exprs.iter().enumerate() {
                         let v = self.table_slot_for_storage(
                             table_index,
-                            eval_const(&self.module, expr, &self.globals)?,
+                            eval_const(&self.module, &self.function_handles, expr, &self.globals)?,
                         );
                         self.tables[table_index].entries.set(off as usize + k, v)?;
                     }
@@ -1340,7 +1390,12 @@ impl InterpInstance {
                 else {
                     continue;
                 };
-                let off = eval_const(&self.module, offset_expr, &self.globals)? as u64;
+                let off = eval_const(
+                    &self.module,
+                    &self.function_handles,
+                    offset_expr,
+                    &self.globals,
+                )? as u64;
                 (*memory_index, off, init.clone())
             };
             let mem = self
@@ -1656,14 +1711,16 @@ impl InterpInstance {
         let raw = match element.get_init() {
             ElementInit::FunctionIndexes(idxs) => idxs
                 .get(k)
-                .map(|&fi| ref_to_slot(RefHandle::new(fi as usize)))
+                .and_then(|&fi| self.function_handles.get(fi as usize))
+                .copied()
+                .map(ref_to_slot)
                 .ok_or(WasmError::trap("out of bounds table access")),
             // Already a slot: `eval_const` yields `NULL_REF_SLOT` for
             // `ref.null` and a plain handle for `ref.func`.
             ElementInit::InitExprs { exprs, .. } => exprs
                 .get(k)
                 .ok_or(WasmError::trap("out of bounds table access"))
-                .and_then(|e| eval_const(&self.module, e, &self.globals)),
+                .and_then(|e| eval_const(&self.module, &self.function_handles, e, &self.globals)),
         }?;
         Ok(self.absolutize_slot_for_type(raw, element.value_type()))
     }
@@ -1693,6 +1750,37 @@ impl InterpInstance {
             .tags()
             .get(idx)
             .map(|tag| tag.func_type().params())
+    }
+
+    fn function_entry_type(&self, entry: FuncEntry) -> Option<(TypeContext, u32)> {
+        if entry.owner == self.instance_handle.self_id() {
+            let source_idx = self
+                .module
+                .functions()
+                .get(entry.local_index as usize)?
+                .type_index();
+            return Some((self.module.types().clone(), source_idx));
+        }
+
+        let owner = self.instance_handle.checkout(entry.owner)?;
+        if let Some(origin) = owner.interp() {
+            let source_idx = origin
+                .module
+                .functions()
+                .get(entry.local_index as usize)?
+                .type_index();
+            return Some((origin.module.types().clone(), source_idx));
+        }
+        #[cfg(sf_jit)]
+        if let Some(origin) = owner.jit() {
+            let source_idx = origin
+                .module()
+                .functions
+                .get(entry.local_index as usize)?
+                .type_index();
+            return Some((origin.module().types.clone(), source_idx));
+        }
+        None
     }
 
     fn ref_handle_matches_type(&self, handle: RefHandle, expected: RefType) -> bool {
@@ -1725,7 +1813,6 @@ impl InterpInstance {
                     expected.heap_type,
                     HeapType::Abstract(AbstractHeapType::Exn)
                 ),
-                RefRegistryEntry::OpaqueInterpFunc => false,
                 #[cfg(sf_jit)]
                 RefRegistryEntry::Gc { store, gc_ref } => {
                     let Some(origin) = (unsafe { store.as_ref() }) else {
@@ -1756,26 +1843,48 @@ impl InterpInstance {
             };
         }
 
-        // `hostref` is used both for generic host references and for
-        // interpreter funcrefs published by another instance. Without an
-        // attached provenance resolver those meanings are ambiguous, so a
-        // host-originated exception payload must not smuggle one into a
-        // statically typed slot. Wasm-originated funcrefs are canonicalized
-        // separately below, where their source instance is known.
+        // A hostref is a generic host reference, never an interpreter
+        // function identity.
         if handle.is_host() {
-            return false;
+            return matches!(
+                expected.heap_type,
+                HeapType::Abstract(AbstractHeapType::Any)
+            );
         }
 
-        let Some(func) = self.module.functions().get(handle.payload()) else {
+        let localized = self.localize_ref(handle);
+        if localized.encoded() < self.module.functions().len() {
+            let Some(func) = self.module.functions().get(localized.encoded()) else {
+                return false;
+            };
+            return match expected.heap_type {
+                HeapType::Abstract(AbstractHeapType::Func) => true,
+                HeapType::Concrete(target_idx) => {
+                    let source_idx = func.type_index();
+                    source_idx != u32::MAX
+                        && HeapType::Concrete(source_idx)
+                            .is_subtype_of(&HeapType::Concrete(target_idx), self.module.types())
+                }
+                _ => false,
+            };
+        }
+
+        let Some(entry) = self.link_registry.functions.entry_for_handle(localized) else {
             return false;
         };
         match expected.heap_type {
             HeapType::Abstract(AbstractHeapType::Func) => true,
             HeapType::Concrete(target_idx) => {
-                let source_idx = func.type_index();
+                let Some((source_types, source_idx)) = self.function_entry_type(entry) else {
+                    return false;
+                };
                 source_idx != u32::MAX
-                    && HeapType::Concrete(source_idx)
-                        .is_subtype_of(&HeapType::Concrete(target_idx), self.module.types())
+                    && concrete_type_matches_cross_context(
+                        &source_types,
+                        source_idx,
+                        self.module.types(),
+                        target_idx,
+                    )
             }
             _ => false,
         }
@@ -1808,18 +1917,17 @@ impl InterpInstance {
 
     #[inline]
     fn absolutize_ref(&self, handle: RefHandle) -> RefHandle {
-        absolutize_ref_with(
-            &self.module,
-            self.funcref_host.as_ref(),
-            &self.link_registry,
-            &self.published,
-            handle,
-        )
+        absolutize_ref_with(&self.module, &self.function_identities, handle)
     }
 
     #[inline]
     fn localize_ref(&self, handle: RefHandle) -> RefHandle {
-        localize_ref_with(&self.published, handle)
+        localize_ref_with(
+            &self.module,
+            &self.instance_handle,
+            &self.link_registry,
+            handle,
+        )
     }
 
     #[inline]
@@ -1932,19 +2040,28 @@ impl InterpInstance {
                 *field = Value::Ref(handle, ref_type);
                 continue;
             }
-            if self.module.functions().get(handle.payload()).is_none() {
+            let handle = if self.module.functions().get(handle.payload()).is_some() {
+                self.absolutize_ref(handle)
+            } else if self
+                .link_registry
+                .functions
+                .entry_for_handle(handle)
+                .is_some()
+            {
+                handle
+            } else {
                 return Err(WasmError::trap("host threw mistyped exception"));
-            }
-            *field = Value::Ref(self.absolutize_ref(handle), ref_type);
+            };
+            *field = Value::Ref(handle, ref_type);
         }
         Ok(fields)
     }
 
-    /// Translate one of this instance's own published function names back to
-    /// its canonical local slot representation. The exception object remains
-    /// globally named; only the value installed in the catching frame is
-    /// localized, preserving `ref.eq` with a fresh `ref.func` in the source
-    /// instance while a different instance keeps the global name.
+    /// Translate one of this instance's own absolute function identities back
+    /// to its canonical local slot representation. The exception object
+    /// remains globally named; only the value installed in the catching frame
+    /// is localized, preserving `ref.eq` with a fresh `ref.func` in the
+    /// source instance while a different instance keeps the global name.
     fn localize_exception_field(&self, value: Value) -> Value {
         let Value::Ref(handle, ref_type) = value else {
             return value;
@@ -2099,6 +2216,11 @@ impl InterpInstance {
             let ft = f.func_type();
             (ft.params().len(), ft.results().len())
         })
+    }
+
+    /// The function's absolute world identity for an external boundary.
+    pub fn function_handle_at(&self, func_index: usize) -> Option<RefHandle> {
+        self.function_identities.get(func_index).copied()
     }
 
     /// The memory entity at `idx`, for another instance to import.
@@ -2603,10 +2725,12 @@ impl InterpInstance {
         let Self {
             module,
             host,
-            memories,
             funcref_host,
+            memories,
             link_registry,
-            published,
+            instance_handle,
+            function_handles,
+            function_identities,
             ..
         } = self;
 
@@ -2623,9 +2747,16 @@ impl InterpInstance {
         let func_type = func.func_type();
         let p = func_type.params().len();
         let r = func_type.results().len();
-        let host = host
-            .as_mut()
-            .ok_or(WasmError::invalid("interp: no host dispatcher installed"))?;
+        let callee_handle = function_handles
+            .get(callee)
+            .copied()
+            .ok_or(WasmError::invalid(
+                "interp: imported function identity is missing",
+            ))?;
+        let foreign = link_registry
+            .functions
+            .entry_for_handle(callee_handle)
+            .is_some_and(|entry| entry.owner != instance_handle.self_id());
         let mut results = [0u64; 8];
         if r > results.len() {
             return Err(WasmError::invalid("interp: too many host results"));
@@ -2633,21 +2764,25 @@ impl InterpInstance {
         let mut args: Vec<u64> = frame[arg_base..arg_base + p].iter().copied().collect();
         for (arg, &value_type) in args.iter_mut().zip(func_type.params()) {
             if value_type_is_function_ref(module, value_type) {
-                *arg = absolutize_slot_with(
-                    module,
-                    funcref_host.as_ref(),
-                    link_registry,
-                    published,
-                    *arg,
-                );
+                *arg = absolutize_slot_with(module, function_identities, *arg);
             }
         }
-        let memory = memories.first().map(|memory| memory.inst.clone());
-        let mut caller = Caller::from_shared_memory(memory);
-        host(mod_name, field, &mut caller, &args, &mut results[..r])?;
+        if foreign {
+            let hook = funcref_host.as_mut().ok_or(WasmError::trap(
+                super::ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED,
+            ))?;
+            (hook.invoke)(callee_handle, &args, &mut results[..r])?;
+        } else {
+            let host = host
+                .as_mut()
+                .ok_or(WasmError::invalid("interp: no host dispatcher installed"))?;
+            let memory = memories.first().map(|memory| memory.inst.clone());
+            let mut caller = Caller::from_shared_memory(memory);
+            host(mod_name, field, &mut caller, &args, &mut results[..r])?;
+        }
         for (result, &value_type) in results[..r].iter_mut().zip(func_type.results()) {
             if value_type_is_function_ref(module, value_type) {
-                *result = localize_slot_with(published, *result);
+                *result = localize_slot_with(module, instance_handle, link_registry, *result);
             }
         }
         frame[arg_base..arg_base + r].copy_from_slice(&results[..r]);
@@ -3561,30 +3696,18 @@ impl InterpInstance {
                     return Err(WasmError::trap("null function reference"));
                 }
                 if r.is_special() {
-                    // A reference published by another interpreter instance
-                    // keeps its global identity in the shared exception
-                    // object. Invoke it through the same forwarding hook used
-                    // by shared tables; local publications stay local.
-                    let local = self
-                        .published
-                        .borrow()
-                        .iter()
-                        .find_map(|&(named, local)| (named == r).then_some(local));
-                    if let Some(local) = local {
-                        return Ok(if ins.op == Op::ReturnCallRef {
-                            Effect::TailCall {
-                                callee: local,
-                                arg_base: ins.b as usize,
-                            }
-                        } else {
-                            Effect::Call {
-                                callee: local,
-                                arg_base: ins.b as usize,
-                            }
-                        });
-                    }
-                    if !r.is_host() || r.is_extern() {
-                        return Err(WasmError::trap("indirect call type mismatch"));
+                    return Err(WasmError::trap("indirect call type mismatch"));
+                }
+                let local = self.localize_ref(r);
+                if local.encoded() >= self.module.functions().len() {
+                    let registry_known = self.link_registry.functions.entry_for_handle(r).is_some();
+                    if registry_known {
+                        if !self.ref_handle_matches_type(
+                            r,
+                            RefType::non_nullable_concrete(ins.c as u32),
+                        ) {
+                            return Err(WasmError::trap("indirect call type mismatch"));
+                        }
                     }
                     let (param_types, result_types) = self
                         .module
@@ -3606,7 +3729,12 @@ impl InterpInstance {
                     let mut results = vec![0u64; result_types.len()];
                     match self.funcref_host.as_mut() {
                         Some(host) => (host.invoke)(r, &args, &mut results)?,
-                        None => return Err(WasmError::trap("indirect call type mismatch")),
+                        None if registry_known => {
+                            return Err(WasmError::trap(
+                                super::ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED,
+                            ))
+                        }
+                        None => return Err(WasmError::trap(super::EXTERNAL_FUNCREF_HOST_REQUIRED)),
                     }
                     for (result, &value_type) in results.iter_mut().zip(&result_types) {
                         *result = self.localize_slot_for_type(*result, value_type);
@@ -3621,7 +3749,7 @@ impl InterpInstance {
                     }
                     return Ok(Effect::NextWithAcc(results.first().copied().unwrap_or(0)));
                 }
-                let callee = r.0;
+                let callee = local.encoded();
                 let arg_base = ins.b as usize;
                 return Ok(if ins.op == Op::ReturnCallRef {
                     Effect::TailCall { callee, arg_base }
@@ -3882,32 +4010,23 @@ impl InterpInstance {
                     return Err(WasmError::trap("uninitialized element"));
                 }
                 if callee.is_special() {
-                    // A published reference. If WE published it the callee is
-                    // ours: an exported table used from inside its own module
-                    // must not pay a round trip through the embedder.
-                    let local = self
-                        .published
-                        .borrow()
-                        .iter()
-                        .find_map(|&(named, local)| (named == callee).then_some(local));
-                    if let Some(local) = local {
-                        return Ok(if ins.op == Op::ReturnCallIndirect {
-                            Effect::TailCall {
-                                callee: local,
-                                arg_base: ins.b as usize,
-                            }
-                        } else {
-                            Effect::Call {
-                                callee: local,
-                                arg_base: ins.b as usize,
-                            }
-                        });
+                    return Err(WasmError::trap("indirect call type mismatch"));
+                }
+                let local = self.localize_ref(callee);
+                if local.encoded() >= self.module.functions().len() {
+                    let registry_known = self
+                        .link_registry
+                        .functions
+                        .entry_for_handle(callee)
+                        .is_some();
+                    if registry_known {
+                        if !self.ref_handle_matches_type(
+                            callee,
+                            RefType::non_nullable_concrete(ins.c as u32),
+                        ) {
+                            return Err(WasmError::trap("indirect call type mismatch"));
+                        }
                     }
-                    if !callee.is_host() || callee.is_extern() {
-                        return Err(WasmError::trap("indirect call type mismatch"));
-                    }
-                    // Otherwise it names a function in another instance, and
-                    // only the embedder can reach that.
                     let (param_types, result_types) = self
                         .module
                         .types()
@@ -3928,7 +4047,12 @@ impl InterpInstance {
                     let mut results = vec![0u64; result_types.len()];
                     match self.funcref_host.as_mut() {
                         Some(h) => (h.invoke)(callee, &args, &mut results)?,
-                        None => return Err(WasmError::trap("indirect call type mismatch")),
+                        None if registry_known => {
+                            return Err(WasmError::trap(
+                                super::ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED,
+                            ))
+                        }
+                        None => return Err(WasmError::trap(super::EXTERNAL_FUNCREF_HOST_REQUIRED)),
                     }
                     for (result, &value_type) in results.iter_mut().zip(&result_types) {
                         *result = self.localize_slot_for_type(*result, value_type);
@@ -3943,7 +4067,7 @@ impl InterpInstance {
                     }
                     return Ok(Effect::NextWithAcc(results.first().copied().unwrap_or(0)));
                 }
-                let fi = callee.0 as u32;
+                let fi = local.encoded() as u32;
                 let expected = ins.c as u32;
                 let actual = self
                     .module
@@ -5127,7 +5251,7 @@ mod tests {
     }
 
     #[test]
-    fn exception_funcref_without_a_resolver_is_opaque_and_localizes_at_origin() {
+    fn world_funcrefs_use_one_identity_and_pin_the_no_hook_trap() {
         let bin: StdVec<u8> = wat::parse_str(
             r#"(module
                 (type $ft (func))
@@ -5145,7 +5269,7 @@ mod tests {
                     (throw $e (ref.func $dummy))))"#,
         )
         .expect("wat");
-        let module = Module::new("opaque-funcref", &bin).expect("module");
+        let module = Module::new("world-funcref", &bin).expect("module");
         let mut inst = InterpInstance::new(
             &crate::vm::engine::Engine::with_defaults(),
             module,
@@ -5177,11 +5301,123 @@ mod tests {
         let Value::Ref(handle, _) = field else {
             panic!("expected funcref field");
         };
-        assert!(
-            handle.is_pooled(),
-            "shared object must not retain a module-local function index"
-        );
+        assert!(!handle.is_special(), "world funcrefs remain untagged");
         assert_ne!(handle, RefHandle::new(1));
+        let entry = inst
+            .link_registry
+            .functions
+            .entry_for_handle(handle)
+            .expect("world function identity");
+        assert_eq!(entry.owner, inst.instance_handle.self_id());
+        assert_eq!(entry.local_index, 1);
+
+        exercise_foreign_world_funcref_calls();
+    }
+
+    fn exercise_foreign_world_funcref_calls() {
+        let provider_bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (type $t (func (result i32)))
+                (func (export "f") (type $t) (result i32)
+                    i32.const 7))"#,
+        )
+        .expect("provider wat");
+        let provider_module = Module::new("provider", &provider_bin).expect("provider module");
+        let provider_type = provider_module.functions()[0].func_type().clone();
+        let provider_type_index = provider_module.functions()[0].type_index();
+        let provider_types = provider_module.types().clone();
+        let registry = LinkRegistry::new();
+        let engine = crate::vm::engine::Engine::with_defaults();
+        let provider = match InterpInstance::new_partial_with_registry(
+            &engine,
+            provider_module,
+            None,
+            &[],
+            None,
+            &registry,
+        ) {
+            Ok(provider) => provider,
+            Err((_, error)) => panic!("provider: {error:?}"),
+        };
+        let handle = provider.function_handle_at(0).expect("provider identity");
+
+        let consumer_bin: StdVec<u8> = wat::parse_str(
+            r#"(module
+                (type $t (func (result i32)))
+                (import "provider" "f" (func $f (type $t)))
+                (table 1 funcref)
+                (elem (i32.const 0) func $f)
+                (func (export "direct") (result i32)
+                    call $f)
+                (func (export "by_ref") (result i32)
+                    (call_ref $t (ref.func $f)))
+                (func (export "indirect") (result i32)
+                    (call_indirect (type $t) (i32.const 0))))"#,
+        )
+        .expect("consumer wat");
+        let make_import = || {
+            Import::linked_func_typed_with_context_and_index(
+                "provider",
+                "f",
+                handle,
+                provider_type.clone(),
+                provider_type_index,
+                provider_types.clone(),
+            )
+        };
+        let mut hooked = match InterpInstance::new_partial_with_registry(
+            &engine,
+            Module::new("hooked-consumer", &consumer_bin).expect("hooked consumer module"),
+            None,
+            &[make_import()],
+            Some(FuncRefHost {
+                invoke: Box::new(move |callee, args, results| {
+                    assert_eq!(callee, handle);
+                    assert!(args.is_empty());
+                    results[0] = 7;
+                    Ok(())
+                }),
+            }),
+            &registry,
+        ) {
+            Ok(hooked) => hooked,
+            Err((_, error)) => panic!("hooked consumer: {error:?}"),
+        };
+
+        for export in ["direct", "by_ref", "indirect"] {
+            let index = hooked.find_export(export).expect("hooked consumer export");
+            let mut result = [0u64; 1];
+            hooked
+                .invoke(index, &[], &mut result)
+                .expect("the installed hook drives the world identity");
+            assert_eq!(result[0], 7, "{export}");
+        }
+
+        let mut without_hook = match InterpInstance::new_partial_with_registry(
+            &engine,
+            Module::new("no-hook-consumer", &consumer_bin).expect("no-hook consumer module"),
+            None,
+            &[make_import()],
+            None,
+            &registry,
+        ) {
+            Ok(without_hook) => without_hook,
+            Err((_, error)) => panic!("no-hook consumer: {error:?}"),
+        };
+
+        for export in ["direct", "by_ref", "indirect"] {
+            let index = without_hook
+                .find_export(export)
+                .expect("no-hook consumer export");
+            let mut result = [0u64; 1];
+            assert_eq!(
+                without_hook
+                    .invoke(index, &[], &mut result)
+                    .expect_err("the engine-native call needs an installed hook"),
+                WasmError::trap(crate::vm::interpreter::ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED),
+                "{export}"
+            );
+        }
     }
 
     #[test]
@@ -5546,9 +5782,9 @@ mod tests {
         .expect("wat");
         let module = Module::new("special-private-table", &bin).expect("module");
         let special = ref_to_slot(RefHandle::hostref(7));
-        let out_of_range = ref_to_slot(RefHandle::new(FUNCADDR_TOP));
-        assert_eq!(out_of_range >> 32, 0);
-        let mut returned_refs = [special, out_of_range].into_iter();
+        let unregistered = ref_to_slot(RefHandle::new(FUNCADDR_TOP / 2));
+        assert_eq!(unregistered >> 32, 0);
+        let mut returned_refs = [special, unregistered].into_iter();
         let host = InterpInstance::boxed_host(move |_module, _name, _memory, _args, results| {
             results[0] = returned_refs.next().expect("one reference per invocation");
             Ok(())
@@ -5568,7 +5804,9 @@ mod tests {
         ));
         assert!(matches!(
             inst.invoke(go, &[0], &mut [0]),
-            Err(WasmError::Trap("undefined element"))
+            Err(WasmError::Trap(
+                crate::vm::interpreter::EXTERNAL_FUNCREF_HOST_REQUIRED
+            ))
         ));
     }
 

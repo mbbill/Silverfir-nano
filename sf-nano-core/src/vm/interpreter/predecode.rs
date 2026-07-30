@@ -26,6 +26,7 @@ use crate::op_decoder::{CatchClause, CatchClauseKind};
 use crate::opcodes::{Opcode, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
 use crate::vm::tag::TagHandle;
+use crate::vm::value::RefHandle;
 
 /// Marks a packed memarg field as a `wide_memargs` index rather than an
 /// inline `memidx << 48 | offset`. Bit 63 is free in the inline form, whose
@@ -131,11 +132,17 @@ impl PredecodedFunction {
 pub(crate) fn predecode_function(
     module: &Module,
     tag_handles: &[TagHandle],
+    function_handles: &[RefHandle],
     func_index: usize,
 ) -> Result<PredecodedFunction, WasmError> {
     if tag_handles.len() != module.tags().len() {
         return Err(WasmError::invalid(
             "interp: runtime tag table does not match module",
+        ));
+    }
+    if function_handles.len() != module.functions().len() {
+        return Err(WasmError::invalid(
+            "interp: runtime function table does not match module",
         ));
     }
     let func = module
@@ -159,6 +166,7 @@ pub(crate) fn predecode_function(
             types: module.types(),
             module,
             tag_handles,
+            function_handles,
             code: Vec::new(),
             stack: Vec::new(),
             frames: Vec::new(),
@@ -337,6 +345,9 @@ struct Predecoder<'m> {
     /// aliases for these handles, not identities themselves: two imports may
     /// name one tag, while two same-signature tags remain distinct.
     tag_handles: &'m [TagHandle],
+    /// Frame-form identities for `ref.func`: local indices for this
+    /// instance's functions and absolute handles for linked imports.
+    function_handles: &'m [RefHandle],
     code: Vec<Instr>,
     stack: Vec<Desc>,
     frames: Vec<CtlFrame>,
@@ -2627,7 +2638,14 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 }
                 Opcode::REF_FUNC => {
                     if let Immediate::FunctionIndex(i) = imm {
-                        self.stack.push(Desc::ConstV(i as u64));
+                        let handle =
+                            self.function_handles
+                                .get(i as usize)
+                                .copied()
+                                .ok_or_else(|| {
+                                    WasmError::invalid("ref.func: function identity missing")
+                                })?;
+                        self.stack.push(Desc::ConstV(handle.raw() as u64));
                     }
                 }
                 Opcode::REF_IS_NULL => {
@@ -3157,7 +3175,9 @@ mod tests {
             .iter()
             .map(|_| TagHandle::mint_fresh())
             .collect();
-        predecode_function(&module, &tag_handles, func).expect("predecode")
+        let function_handles: StdVec<RefHandle> =
+            (0..module.functions().len()).map(RefHandle::new).collect();
+        predecode_function(&module, &tag_handles, &function_handles, func).expect("predecode")
     }
 
     fn ops(f: &PredecodedFunction) -> StdVec<Op> {
@@ -4093,7 +4113,8 @@ mod tests {
             wat::parse_str(r#"(module (func (result v128) v128.const i32x4 0 0 0 0))"#)
                 .expect("wat");
         let module = Module::new("t", &bin).expect("module");
-        match predecode_function(&module, &[], 0) {
+        let function_handles = [RefHandle::new(0)];
+        match predecode_function(&module, &[], &function_handles, 0) {
             Ok(_) => panic!("SIMD must be refused"),
             Err(err) => assert!(
                 std::format!("{err:?}").contains("SIMD"),
