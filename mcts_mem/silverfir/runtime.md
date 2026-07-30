@@ -1,12 +1,15 @@
 - The store-rooted structure — module instance, GC heap, constant-expression
   evaluation, machine value encodings, and the per-invocation native caches —
   is the JIT engine's runtime world; the interpreter keeps its own flat
-  per-instance state and never constructs a store (`Store`).
+  per-instance state and never constructs a store (`Store`). Both engines'
+  instances live in one world's generational slots
+  ([[cross-instance-identity]]).
 
 - What the engines share is the entity model (memory/table/global/function
   instances, aliased across linked instances), the public value model, and
   the cross-instance link registry that resolves pooled handles back to their
-  values and carries each engine's minted identities.
+  values. Both engines name each other's functions through one identity
+  ([[cross-instance-identity]]).
 
 - Frame slots are the canonical source of truth for locals, spilled deep-stack
   values, call arguments and results, and call-link records; registers are
@@ -25,8 +28,9 @@
 
 - The Wasm operand/call stack and native dispatch context are cached per Store
   and reused across exported invocations. `eval` temporarily takes ownership;
-  exact module/table/function-registry revisions control cached dispatch-view
-  refresh (`take_native_stack_cache`, `prepare_for_invocation`).
+  exact module and table revisions control cached dispatch-view refresh. The
+  function dispatch view carries no revision and is indexed by local function
+  index (`take_native_stack_cache`, `prepare_for_invocation`).
 
 - Host/imported functions are clonable, potentially capturing `Fn` callbacks
   bound at instantiation and stored behind single-threaded shared ownership;
