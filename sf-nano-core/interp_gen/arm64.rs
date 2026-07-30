@@ -140,10 +140,19 @@ impl Arm64 {
     /// work through pair instructions on Apple silicon and frame-slot
     /// forwarding is exactly what the slot-edge cost model depends on.
     fn src_ab(&self, a: &mut Asm, ac: Cls, bc: Cls) -> (u32, u32) {
-        if ac == Cls::Slot && bc == Cls::Slot {
+        // Both operands read the cell -- a slot's byte offset, or a constant's
+        // value -- so one `ldp` fetches both payload words. Only the slots
+        // then need the frame indirection. The dispatch word keeps its own
+        // load: pairing it with cell payload delays it by a cycle, which
+        // costs more than the saved instruction on dispatch-bound loops.
+        if matches!(ac, Cls::Slot | Cls::Const) && matches!(bc, Cls::Slot | Cls::Const) {
             a.ins("ldp x10, x11, [x19, #8]");
-            a.ins("ldr x10, [x20, x10]");
-            a.ins("ldr x11, [x20, x11]");
+            if ac == Cls::Slot {
+                a.ins("ldr x10, [x20, x10]");
+            }
+            if bc == Cls::Slot {
+                a.ins("ldr x11, [x20, x11]");
+            }
             (10, 11)
         } else {
             (self.src_a(a, ac, 10), self.src_b(a, bc, 11))
