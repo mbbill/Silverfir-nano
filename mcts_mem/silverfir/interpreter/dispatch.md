@@ -1,7 +1,12 @@
 - Dispatch is pointer-in-cell threaded code: at link time each cell's
   leading word is rewritten to its handler's address, frame-slot operands
-  pre-scale to byte offsets, branch targets to cell byte offsets; the tail
-  is `advance pc; load handler word; indirect branch`.
+  pre-scale to byte offsets, branch targets resolve to absolute cell
+  addresses; the tail is `advance pc; load handler word; indirect branch`.
+
+- A cell's position is addressed as a byte offset through a per-function
+  mapping rather than as an index times a fixed cell size. The mapping is
+  materialized only where the driver crosses between instruction-index space
+  and cell-address space (`offset_of`).
 
 - Handlers run under fixed register roles held across the whole chain: pc,
   frame base, exit-state pointer, memory-0 base and length, current cell
@@ -623,6 +628,26 @@
   339,064 to 309,040 bytes and generated instructions from 84,763 to 77,257,
   -8.9% each -- a larger size lever than the 6,600 bytes the dst-descriptor
   pairing bought alone, but not separable from the regressions above (code)
+- 2026-07-30 (e7f92f57) statement: the operand-layout module is compiled
+  twice, once into the crate and once into the build script, so a decision
+  written there is shared by the build-time handler generator and the runtime
+  linker and the two cannot disagree by construction. Any per-op property both
+  sides must agree on -- which handler variants exist, and now how wide a cell
+  is -- belongs there rather than being mirrored (code)
+- 2026-07-30 pitfall: the flat BrTable buffer is shared state read by every
+  backend's BrTable handler, so changing its entries from instruction indices
+  to cell byte offsets silently broke three backends that still scaled by the
+  cell size. Local spec runs cover one ISA, and the performance jobs cover
+  four targets but not riscv or arm32, so a shared-encoding change has to be
+  read across all backend generators rather than tested into correctness (code)
+- 2026-07-30 rationale: the escape path is judged by whether it is COLD, not
+  by how it is implemented. A hot instruction must never leave the native
+  chain; a provably cold one may, and may use a helper back into Rust when it
+  touches too much runtime state. This makes the cold-path-only cell offset
+  mapping acceptable, and makes the real defect of the current fallback its
+  lack of proof -- coldness is evidenced by a runtime counter nobody reads,
+  where the linker already knows the loop structure and could refuse a
+  fallback inside a loop at build time (sourced)
 
 ## Moves
 
@@ -637,4 +662,3 @@
   not two execution paths — the oracle role moved to the JIT differential
   tests and spectest, and the shared single-instruction executor remains
   as the native chain's slow path (sourced)
-
