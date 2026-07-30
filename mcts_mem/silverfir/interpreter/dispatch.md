@@ -624,6 +624,30 @@
   -8.9% each -- a larger size lever than the 6,600 bytes the dst-descriptor
   pairing bought alone, but not separable from the regressions above (code)
 
+- 2026-07-30 measurement: an ALU op on the DISPATCH path costs 0.5-4.9% of
+  throughput, not the uniform 1.7% the 0.034-cycle marginal figure implies --
+  measured by inserting two mutually inverse ALU ops in the tail, halved:
+  lz4-decompress 4.9%, lz4-compress 4.0%, lua-fib 2.2%, bzip2 2.1%, mandelbrot
+  1.8%, sha256 1.5%, CoreMark 1.0% (4 interleaved rounds), sqlite 0.5%,
+  lua-sunfish ~0. The spread tracks the same dispatch-latency-bound workloads
+  that the cell-payload ldp pairings hurt most (code)
+- 2026-07-30 measurement: baking constant VALUES into their own handler variants
+  is worth 0.02-0.49% and is not viable. Constant operands are 4.4-19.9% of
+  loop-depth-weighted instructions, a fixed universal set covers only 30-66% of
+  them because the hottest values are module-specific (sqlite 25776, mandelbrot
+  1000, c-ray 56/40/24 against a shared 1/-1/2/4/8), and one removed load is
+  worth 4.6% of a dispatch (code)
+- 2026-07-30 measurement: descriptor packing fits. a:16, b:16, c:16 and 16 flag
+  bits hold every field the corpus needs -- slot offsets need 10-12 bits, a cell
+  index reaches sqlite's 22,473-cell function inside 16, and 89.6-95.3% of
+  constants fit signed 16 bits with the remainder taking the side-table index
+  already used for wide memory offsets
+  [[dispatch.fact/descriptor-packing-fit-2026-07-30]] (code)
+- 2026-07-30 rationale: the 32-bit handler word that would shrink the cell
+  further is both the expensive half and an unnecessary one -- an 8-byte handler
+  word plus one 8-byte packed word is already 16 bytes, so packing alone reaches
+  the size while the dispatch branch's dependency chain is left untouched (code)
+
 ## Moves
 
 - 2026-07-26 replaced [[stencil-stitching]]: removing the dispatch between cells is
