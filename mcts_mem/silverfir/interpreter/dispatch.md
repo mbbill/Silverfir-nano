@@ -648,6 +648,24 @@
   lack of proof -- coldness is evidenced by a runtime counter nobody reads,
   where the linker already knows the loop structure and could refuse a
   fallback inside a loop at build time (sourced)
+- 2026-07-30 (000b43c5) pitfall: a nativeness condition evaluated per FUNCTION
+  demotes every cell in it, `Return` included, and the driver rejects a slow
+  return outright -- so such a condition turns a function that returned a value
+  into one that returns an error. Any width or capability bound has to be
+  per-cell, or exempt the ops whose native form the driver depends on. The
+  demoted callee also strands a pushed return record, because the caller's call
+  cell is rewired whenever the callee's frame fits the packed field, without
+  consulting the callee's own condition (code)
+- 2026-07-30 statement: the 16-bit bound on a slot index is already enforced
+  per-instruction at predecode time, and failing it declines FUSION rather than
+  nativeness. That is the shape a narrow payload's bound should take -- a cell
+  that cannot express its operands loses the optimization, not its handler (code)
+- 2026-07-30 pitfall: a frame's width is locals plus maximum operand-stack
+  height and the height is uncapped, so ordinary valid wasm reaches widths no
+  spec test does -- none exceeds 8,191 slots (code)
+- 2026-07-30 pitfall: a wrong assumption living on the Rust side of the engine
+  fails identically on every target, so running the spec suites on a second ISA
+  does not test it -- the cross-ISA check only covers the generators (code)
 
 ## Moves
 
