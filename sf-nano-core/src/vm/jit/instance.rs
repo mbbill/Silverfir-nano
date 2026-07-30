@@ -540,13 +540,9 @@ impl JitInstance {
                     {
                         memories.push(MemInst::new_guarded(&config, mem.limits().clone())?);
                     }
-                    #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
+                    #[cfg(not(sf_has_guard_pages))]
                     {
                         memories.push(MemInst::new_unallocated(&config, mem.limits().clone())?);
-                    }
-                    #[cfg(all(not(sf_jit), not(sf_has_guard_pages)))]
-                    {
-                        memories.push(MemInst::new(&config, mem.limits().clone())?);
                     }
                 }
                 MemoryDef::Import {
@@ -604,13 +600,9 @@ impl JitInstance {
                                 {
                                     MemInst::new_guarded(&config, *import_limits)?
                                 }
-                                #[cfg(all(sf_jit, not(sf_has_guard_pages)))]
+                                #[cfg(not(sf_has_guard_pages))]
                                 {
                                     MemInst::new_unallocated(&config, *import_limits)?
-                                }
-                                #[cfg(all(not(sf_jit), not(sf_has_guard_pages)))]
-                                {
-                                    MemInst::new(&config, *import_limits)?
                                 }
                             };
                             memories.push(mem_inst);
