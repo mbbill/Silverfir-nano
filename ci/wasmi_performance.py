@@ -149,11 +149,27 @@ def runtime_fingerprint(context: CargoContext) -> str:
     checkouts even when the code is identical. Building sf-nano-core as its own
     workspace root is path-stable under the `--remap-path-prefix` this harness
     already sets, so hash that artifact instead.
+
+    That needs a second remap. `build.rs` writes `interp_engine_cfg.rs` into
+    `OUT_DIR` and the crate `include!`s it, so the absolute `OUT_DIR` -- which
+    lives under the per-version target directory -- is recorded in the rlib.
+    Without remapping the target directory too, an interpreter build of
+    identical sources fingerprints differently for baseline and candidate.
     """
     target = (context.target / "runtime-identity").resolve()
     target.mkdir(parents=True, exist_ok=True)
     env = cargo_environment(context)
     env["CARGO_TARGET_DIR"] = str(target)
+    flags = [
+        flag
+        for flag in env.get("CARGO_ENCODED_RUSTFLAGS", "").split("\x1f")
+        if flag
+    ]
+    flags.append(
+        "--remap-path-prefix="
+        f"{target.as_posix()}=/workspace/identity-target"
+    )
+    env["CARGO_ENCODED_RUSTFLAGS"] = "\x1f".join(flags)
     result = run_process(
         core_identity_command(context),
         cwd=context.source,
