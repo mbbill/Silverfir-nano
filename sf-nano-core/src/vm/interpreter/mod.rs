@@ -39,6 +39,10 @@ mod instr;
 mod layout;
 mod predecode;
 
+// Interpreter slots are always backed by `u64`, but references inside them
+// use the target GP wire width consumed by the generated dispatch chain.
+const SLOT_GP_UNIT_BYTES: u8 = core::mem::size_of::<usize>() as u8;
+
 pub(crate) const ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED: &str =
     "interp: engine-native interpreter-to-interpreter calls without a FuncRefHost hook are not supported";
 
@@ -50,6 +54,6 @@ const EXTERNAL_FUNCREF_HOST_REQUIRED: &str =
 // flags -- stays inside the engine: it is how a function is stored, not
 // an interface anything outside builds against.
 pub use exec::{FuncRefHost, InterpInstance};
-// The slot encoding is the boundary contract: `vm::instance` converts host
-// `Value::Ref`s with the same two functions the engine uses internally.
+// The boundary converts host values through the same shared slot encoding
+// that the executor imports from `vm::value`.
 pub(crate) use exec::{raw_to_value_for_interp, value_to_raw_for_interp, InterpInstanceLease};

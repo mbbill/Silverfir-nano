@@ -3,18 +3,9 @@
 use crate::error::WasmError;
 use crate::value_type::ValueType;
 use crate::vm::jit::store::Store;
-use crate::vm::value::{RefHandle, Value, FUNCADDR_TOP};
+use crate::vm::value::{machine_raw_to_ref, ref_to_machine_raw, RefHandle, Value, FUNCADDR_TOP};
 
 pub(crate) type RawValue = u64;
-
-// When generated code uses 32-bit GP slots on a wider host, refs need a
-// compact wire encoding that preserves the special/extern/pooled split instead
-// of reusing the host `RefHandle` bit layout directly.
-const TARGET32_REF_SPECIAL_TAG: u32 = 1 << 28;
-const TARGET32_REF_EXTERN_TAG: u32 = 1 << 29;
-const TARGET32_REF_POOL_TAG: u32 = 1 << 27;
-const TARGET32_REF_PAYLOAD_MASK: u32 = TARGET32_REF_SPECIAL_TAG - 1;
-const TARGET32_REF_HOST_PAYLOAD_MASK: u32 = TARGET32_REF_POOL_TAG - 1;
 
 #[inline(always)]
 pub(crate) const fn from_i32(val: i32) -> RawValue {
@@ -64,60 +55,6 @@ pub(crate) const fn as_f64(val: RawValue) -> f64 {
 #[inline(always)]
 pub(crate) const fn as_ref(val: RawValue) -> RefHandle {
     RefHandle::new(val as usize)
-}
-
-#[inline(always)]
-pub(crate) fn ref_to_machine_raw(handle: RefHandle, gp_unit_bytes: u8) -> RawValue {
-    if gp_unit_bytes != 4 {
-        return handle.encoded() as u64;
-    }
-
-    if handle.is_null() {
-        return u32::MAX as u64;
-    }
-
-    if !handle.is_special() {
-        return (handle.encoded() as u32 & TARGET32_REF_PAYLOAD_MASK) as u64;
-    }
-
-    let payload = (handle.payload() as u32) & TARGET32_REF_HOST_PAYLOAD_MASK;
-    let mut raw = TARGET32_REF_SPECIAL_TAG | payload;
-    if handle.is_pooled() {
-        raw |= TARGET32_REF_POOL_TAG;
-    }
-    if handle.is_extern() {
-        raw |= TARGET32_REF_EXTERN_TAG;
-    }
-    raw as u64
-}
-
-#[inline(always)]
-pub(crate) fn machine_raw_to_ref(raw: RawValue, gp_unit_bytes: u8) -> RefHandle {
-    if gp_unit_bytes != 4 {
-        return RefHandle::new(raw as usize);
-    }
-
-    let raw = raw as u32;
-    if raw == u32::MAX {
-        return RefHandle::null();
-    }
-    if (raw & TARGET32_REF_SPECIAL_TAG) == 0 {
-        return RefHandle::new((raw & TARGET32_REF_PAYLOAD_MASK) as usize);
-    }
-
-    let payload = (raw & TARGET32_REF_HOST_PAYLOAD_MASK) as usize;
-    let is_extern = (raw & TARGET32_REF_EXTERN_TAG) != 0;
-    if (raw & TARGET32_REF_POOL_TAG) != 0 {
-        let mut handle = RefHandle::from_pool_index(payload);
-        if is_extern {
-            handle = handle.to_extern().expect("pooled refs are special");
-        }
-        handle
-    } else if is_extern {
-        RefHandle::externref(payload)
-    } else {
-        RefHandle::hostref(payload)
-    }
 }
 
 /// Convert a function reference read from `frame_owner`'s local frame form
@@ -288,23 +225,4 @@ pub(crate) fn try_raw_to_value_in_store(
         ValueType::Ref(ref_type) => Value::Ref(absolutize(frame_owner, as_ref(raw)), ref_type),
         _ => Value::Unknown,
     })
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn function_address_range_endpoints_round_trip_at_both_gp_widths() {
-        for gp_unit_bytes in [4, 8] {
-            for encoded in [0, FUNCADDR_TOP] {
-                let handle = RefHandle::new(encoded);
-                assert!(!handle.is_special());
-                let raw = ref_to_machine_raw(handle, gp_unit_bytes);
-                let decoded = machine_raw_to_ref(raw, gp_unit_bytes);
-                assert_eq!(decoded.raw(), encoded);
-                assert!(!decoded.is_special());
-            }
-        }
-    }
 }

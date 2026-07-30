@@ -27,7 +27,7 @@ use crate::opcodes::{Opcode, OpcodeFB, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
 use crate::value_type::ValueType;
 use crate::vm::tag::TagHandle;
-use crate::vm::value::RefHandle;
+use crate::vm::value::{ref_to_machine_raw, RefHandle};
 
 /// Marks a packed memarg field as a `wide_memargs` index rather than an
 /// inline `memidx << 48 | offset`. Bit 63 is free in the inline form, whose
@@ -38,6 +38,7 @@ use super::instr::{
     operand_is_float, result_is_float, Instr, Op, FLAG_ADDR64, FLAG_A_ACC, FLAG_A_CONST,
     FLAG_B_ACC, FLAG_B_CONST, FLAG_DST_ACC, FLAG_FUSED, FLAG_SHARED_GLOBAL, FLAG_SHARED_TABLE,
 };
+use super::SLOT_GP_UNIT_BYTES;
 
 /// Producer index meaning "no patchable producer" (call results, block
 /// results arriving over a merge).
@@ -49,9 +50,6 @@ const FIXUP: u64 = u64::MAX;
 const EH_FUNCTION_TARGET_FIXUP: u32 = u32::MAX;
 /// Internal placeholder for a handler whose enclosing block has not ended.
 const EH_TARGET_FIXUP: u32 = u32::MAX - 1;
-/// Null funcref representation (function indices are table/ref values).
-pub(super) const NULL_FUNCREF: u64 = u64::MAX;
-
 /// One resolved `try_table` clause at a potentially-throwing instruction.
 ///
 /// `tag = None` is a `catch_all[_ref]`. Typed catches carry the runtime tag
@@ -2664,7 +2662,10 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                     }
                 }
                 Opcode::REF_NULL => {
-                    self.stack.push(Desc::ConstV(NULL_FUNCREF));
+                    self.stack.push(Desc::ConstV(ref_to_machine_raw(
+                        RefHandle::null(),
+                        SLOT_GP_UNIT_BYTES,
+                    )));
                 }
                 Opcode::REF_FUNC => {
                     if let Immediate::FunctionIndex(i) = imm {
@@ -2675,7 +2676,8 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                                 .ok_or_else(|| {
                                     WasmError::invalid("ref.func: function identity missing")
                                 })?;
-                        self.stack.push(Desc::ConstV(handle.raw() as u64));
+                        self.stack
+                            .push(Desc::ConstV(ref_to_machine_raw(handle, SLOT_GP_UNIT_BYTES)));
                     }
                 }
                 Opcode::REF_IS_NULL => {

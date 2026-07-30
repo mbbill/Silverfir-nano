@@ -22,10 +22,10 @@
 //!
 //! The engine's runtime *storage* also lives here: `store` (the runtime
 //! world native code addresses), `gc_heap`, `expr_eval` (instantiation-time
-//! constant evaluation against a store), and `value_encoding` (the raw-slot
-//! and 32-bit wire encodings the native boundary marshals through). Dynamic
-//! reference type tests are shared through `crate::vm::link`, where world
-//! provenance from either engine is available.
+//! constant evaluation against a store), and `value_encoding` (store-aware
+//! localization and marshalling around the shared slot encoding in
+//! `crate::vm::value`). Dynamic reference type tests are shared through
+//! `crate::vm::link`, where world provenance from either engine is available.
 //!
 //! `debug/` is the IR/jitdump tooling for the same pipeline.
 //!

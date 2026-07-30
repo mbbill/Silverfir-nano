@@ -16,13 +16,12 @@ use crate::{
         },
         jit::store::Store,
         jit::value_encoding::{
-            absolutize, machine_raw_to_ref, ref_to_machine_raw, retag_for_container,
-            try_machine_raw_to_value_in_store, value_to_machine_raw_in_store,
+            absolutize, retag_for_container, try_machine_raw_to_value_in_store,
+            value_to_machine_raw_in_store,
         },
         link::{ref_type_matches, InstanceId, RefRegistryEntry, RefTypeOwner},
         tag::TagHandle,
-        value::RefHandle,
-        value::Value,
+        value::{machine_raw_to_ref, ref_to_machine_raw, RefHandle, Value},
     },
 };
 
