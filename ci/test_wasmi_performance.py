@@ -103,6 +103,7 @@ class WasmiPerformanceTests(unittest.TestCase):
             toolchain="1.97.0",
             feature="silverfir-nano-interp",
             runtime_id="silverfir-nano.interpreter",
+            core_features="interp",
         )
         command = wasmi_performance.criterion_command(
             context,
@@ -126,32 +127,83 @@ class WasmiPerformanceTests(unittest.TestCase):
             "criterion-home",
         )
 
-    def test_source_fingerprint_covers_resolved_path_dependencies(
+    def test_core_identity_command_builds_only_the_measured_tier(
         self,
     ) -> None:
-        with tempfile.TemporaryDirectory() as temp_dir:
-            source = Path(temp_dir)
-            core = source / "sf-nano-core"
-            allocator = source / "tools" / "tracked-alloc"
-            core.mkdir(parents=True)
-            allocator.mkdir(parents=True)
-            core_manifest = core / "Cargo.toml"
-            allocator_manifest = allocator / "Cargo.toml"
-            core_manifest.write_text("[package]\nname='core'\n")
-            allocator_manifest.write_text("[package]\nname='alloc'\n")
-            allocator_source = allocator / "lib.rs"
-            allocator_source.write_text("pub fn version() -> u8 { 1 }\n")
-            manifests = [str(core_manifest), str(allocator_manifest)]
+        context = wasmi_performance.CargoContext(
+            version="candidate",
+            source=Path("/source"),
+            suite=Path("/suite"),
+            config=Path("/suite/.cargo/config.toml"),
+            target=Path("/target"),
+            cargo="cargo",
+            toolchain="1.97.0",
+            feature="silverfir-nano-jit",
+            runtime_id="silverfir-nano.jit",
+            core_features="jit,guard-pages",
+        )
+        command = wasmi_performance.core_identity_command(context)
 
-            before = wasmi_performance.source_fingerprint(
-                source, manifests
-            )
-            allocator_source.write_text("pub fn version() -> u8 { 2 }\n")
-            after = wasmi_performance.source_fingerprint(
-                source, manifests
-            )
+        self.assertIn("--no-default-features", command)
+        self.assertEqual(
+            command[command.index("--features") + 1],
+            "jit,guard-pages",
+        )
+        self.assertEqual(
+            command[command.index("--package") + 1],
+            "sf-nano-core",
+        )
+        # The suite measures bench-profile code, so the identity build has to
+        # use the same codegen settings.
+        self.assertEqual(command[command.index("--profile") + 1], "bench")
+        self.assertNotIn("interp", command[command.index("--features") + 1])
 
-        self.assertNotEqual(before, after)
+    def test_engine_core_features_cover_both_tiers_disjointly(self) -> None:
+        self.assertEqual(
+            set(wasmi_performance.ENGINE_CORE_FEATURES),
+            set(wasmi_performance.ENGINE_FEATURE),
+        )
+        jit = set(wasmi_performance.ENGINE_CORE_FEATURES["jit"].split(","))
+        interp = set(
+            wasmi_performance.ENGINE_CORE_FEATURES["interp"].split(",")
+        )
+        self.assertFalse(jit & interp)
+
+    def test_runtime_fingerprint_rejects_an_ambiguous_artifact_set(
+        self,
+    ) -> None:
+        context = wasmi_performance.CargoContext(
+            version="candidate",
+            source=Path("/source"),
+            suite=Path("/suite"),
+            config=Path("/suite/.cargo/config.toml"),
+            target=Path("/target"),
+            cargo="cargo",
+            toolchain="1.97.0",
+            feature="silverfir-nano-jit",
+            runtime_id="silverfir-nano.jit",
+            core_features="jit,guard-pages",
+        )
+        # Two rlibs mean the filter stopped identifying one compilation unit;
+        # hashing an arbitrary one would silently weaken the drift guard.
+        emitted = json.dumps({
+            "reason": "compiler-artifact",
+            "package_id": "path+file:///source/sf-nano-core#sf-nano-core@0.1.0",
+            "target": {"kind": ["lib"], "name": "sf_nano_core"},
+            "filenames": ["/a/libsf_nano_core-1.rlib", "/a/libsf_nano_core-2.rlib"],
+        })
+        with (
+            patch.object(Path, "mkdir"),
+            patch.object(
+                wasmi_performance,
+                "run_process",
+                return_value=subprocess.CompletedProcess(
+                    args=[], returncode=0, stdout=emitted, stderr=""
+                ),
+            ),
+        ):
+            with self.assertRaisesRegex(ValueError, "exactly one"):
+                wasmi_performance.runtime_fingerprint(context)
 
     def test_reachable_packages_ignore_disabled_runtime_adapters(
         self,
@@ -386,8 +438,8 @@ class WasmiPerformanceTests(unittest.TestCase):
                     wasmi_performance,
                     "build_context",
                     side_effect=[
-                        {"source_fingerprint": "baseline"},
-                        {"source_fingerprint": "candidate"},
+                        {"runtime_fingerprint": "baseline"},
+                        {"runtime_fingerprint": "candidate"},
                     ],
                 ),
                 patch.object(
@@ -421,7 +473,7 @@ class WasmiPerformanceTests(unittest.TestCase):
             {regression},
         )
 
-    def test_main_skips_confirmation_for_identical_runtime_source(
+    def test_main_skips_confirmation_for_identical_compiled_runtime(
         self,
     ) -> None:
         calls: list[tuple[str, str]] = []
@@ -504,8 +556,8 @@ class WasmiPerformanceTests(unittest.TestCase):
                     wasmi_performance,
                     "build_context",
                     side_effect=[
-                        {"source_fingerprint": "same"},
-                        {"source_fingerprint": "same"},
+                        {"runtime_fingerprint": "same"},
+                        {"runtime_fingerprint": "same"},
                     ],
                 ),
                 patch.object(
@@ -529,7 +581,7 @@ class WasmiPerformanceTests(unittest.TestCase):
         self.assertEqual(len(calls), 7)
         self.assertEqual({group for group, _ in calls}, startup_groups)
         self.assertEqual({phase for _, phase in calls}, {"pilot"})
-        self.assertTrue(document["identical_sources"])
+        self.assertTrue(document["identical_runtime"])
         self.assertEqual(document["category"], "startup")
         self.assertEqual(document["shard_metric_count"], 7)
         self.assertEqual(document["family_metric_count"], 27)

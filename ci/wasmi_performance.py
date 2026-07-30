@@ -85,6 +85,13 @@ ENGINE_RUNTIME_ID = {
     "jit": "silverfir-nano.jit",
     "interp": "silverfir-nano.interpreter",
 }
+# The features `runtimes/silverfir-nano/Cargo.toml` forwards to sf-nano-core for
+# each tier. Kept here so the identity build compiles the same code the suite
+# links; `verify_resolution` already fails if the adapter stops matching.
+ENGINE_CORE_FEATURES = {
+    "jit": "jit,guard-pages",
+    "interp": "interp",
+}
 
 
 @dataclass(frozen=True)
@@ -98,6 +105,7 @@ class CargoContext:
     toolchain: str
     feature: str
     runtime_id: str
+    core_features: str
 
 
 def command_text(command: Sequence[str]) -> str:
@@ -108,45 +116,73 @@ def slug(value: str) -> str:
     return value.replace("/", "__").replace("\\", "__")
 
 
-def source_fingerprint(
-    source: Path,
-    package_manifests: Iterable[str],
-) -> str:
-    """Hash every local package resolved from the measured checkout."""
-    source = source.resolve()
-    roots: list[Path] = []
-    for manifest in package_manifests:
-        root = Path(manifest).resolve().parent
-        try:
-            root.relative_to(source)
-        except ValueError as exc:
-            raise ValueError(
-                f"local package is outside measured checkout: {root}"
-            ) from exc
-        roots.append(root)
-    roots = sorted(set(roots))
-    if not roots:
-        raise ValueError(f"no local packages resolved below {source}")
+def core_identity_command(context: CargoContext) -> list[str]:
+    return [
+        *cargo_prefix(context, "build"),
+        "--locked",
+        "--package",
+        "sf-nano-core",
+        "--profile",
+        "bench",
+        "--no-default-features",
+        "--features",
+        context.core_features,
+        "--message-format",
+        "json-render-diagnostics",
+    ]
 
-    digest = hashlib.sha256()
-    for root in roots:
-        package_relative = root.relative_to(source).as_posix()
-        files = sorted(
-            path
-            for path in root.rglob("*")
-            if path.is_file()
-            and "target" not in path.relative_to(root).parts
-            and "__pycache__" not in path.relative_to(root).parts
+
+def runtime_fingerprint(context: CargoContext) -> str:
+    """Hash the compiled runtime the suite links, not the checkout it came from.
+
+    `classify_metrics` reads an equal fingerprint as proof that a measured
+    difference is runner drift, so the fingerprint has to answer "does this
+    checkout produce the same code for this engine", not "did any file change".
+    An interpreter-only edit leaves a `--engine jit` binary untouched, and a
+    source hash cannot see that: it reports a difference, every benchmark enters
+    confirmation, and sub-percent drift on a short benchmark confirms as a
+    regression.
+
+    The bench executable itself cannot answer it either. The suite links
+    sf-nano-core as a patched path dependency and Cargo bakes that path into
+    `-C metadata`, so the executable differs between the `baseline/` and `.`
+    checkouts even when the code is identical. Building sf-nano-core as its own
+    workspace root is path-stable under the `--remap-path-prefix` this harness
+    already sets, so hash that artifact instead.
+    """
+    target = (context.target / "runtime-identity").resolve()
+    target.mkdir(parents=True, exist_ok=True)
+    env = cargo_environment(context)
+    env["CARGO_TARGET_DIR"] = str(target)
+    result = run_process(
+        core_identity_command(context),
+        cwd=context.source,
+        env=env,
+        capture=True,
+    )
+    artifacts: list[str] = []
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line.startswith("{"):
+            continue
+        message = json.loads(line)
+        if message.get("reason") != "compiler-artifact":
+            continue
+        if "sf-nano-core" not in str(message.get("package_id", "")):
+            continue
+        if "lib" not in message.get("target", {}).get("kind", []):
+            continue
+        artifacts.extend(message.get("filenames", []))
+    artifacts = sorted({name for name in artifacts if name.endswith(".rlib")})
+    if len(artifacts) != 1:
+        raise ValueError(
+            "expected exactly one sf-nano-core rlib for "
+            f"features {context.core_features!r}, got {artifacts}"
         )
-        for path in files:
-            relative = (
-                f"{package_relative}/{path.relative_to(root).as_posix()}"
-            ).encode()
-            digest.update(len(relative).to_bytes(8, "big"))
-            digest.update(relative)
-            with path.open("rb") as stream:
-                for chunk in iter(lambda: stream.read(1024 * 1024), b""):
-                    digest.update(chunk)
+    digest = hashlib.sha256()
+    with open(artifacts[0], "rb") as stream:
+        for chunk in iter(lambda: stream.read(1024 * 1024), b""):
+            digest.update(chunk)
     return digest.hexdigest()
 
 
@@ -486,10 +522,7 @@ def build_context(context: CargoContext) -> dict[str, Any]:
         **resolution,
         "target": str(context.target.resolve()),
         "elapsed_seconds": time.monotonic() - started,
-        "source_fingerprint": source_fingerprint(
-            context.source,
-            resolution["local_manifests"],
-        ),
+        "runtime_fingerprint": runtime_fingerprint(context),
     }
 
 
@@ -738,7 +771,7 @@ def render_summary(
     family_metric_count: int,
     family_jobs: int,
     maximum_looks: int,
-    identical_sources: bool,
+    identical_runtime: bool,
     metrics: dict[str, dict[str, Any]],
 ) -> str:
     scope = (
@@ -752,9 +785,9 @@ def render_summary(
         else f"`{len(metrics)}` `{category}` Criterion benchmarks"
     )
     schedule = (
-        "- schedule: one 10-sample adjacent A/B pilot; resolved local "
-        "runtime source is identical, so confirmation is skipped"
-        if identical_sources
+        "- schedule: one 10-sample adjacent A/B pilot; the compiled "
+        "runtime is identical, so confirmation is skipped"
+        if identical_runtime
         else (
             "- schedule: one 10-sample adjacent A/B pilot; selected "
             f"benchmarks receive up to `{maximum_looks}` independent "
@@ -787,12 +820,13 @@ def render_summary(
         ),
         "",
     ]
-    if identical_sources:
+    if identical_runtime:
         lines.extend([
             (
-                "> **Identical resolved local runtime source:** apparent "
-                "regressions "
-                "are runner drift and are reported as UNSTABLE, not failures."
+                "> **Identical compiled runtime:** this engine's "
+                "sf-nano-core artifact is byte-identical, so apparent "
+                "regressions are runner drift and are reported as UNSTABLE, "
+                "not failures."
             ),
             "",
         ])
@@ -1061,6 +1095,7 @@ def main() -> int:
         contexts: dict[str, CargoContext] = {}
         feature = ENGINE_FEATURE[args.engine]
         runtime_id = ENGINE_RUNTIME_ID[args.engine]
+        core_features = ENGINE_CORE_FEATURES[args.engine]
         for version, source in (
             ("baseline", args.baseline_source),
             ("candidate", args.candidate_source),
@@ -1092,6 +1127,7 @@ def main() -> int:
                 toolchain=args.toolchain,
                 feature=feature,
                 runtime_id=runtime_id,
+                core_features=core_features,
             )
 
         builds = {
@@ -1100,9 +1136,9 @@ def main() -> int:
         }
         for version, revision in source_revisions.items():
             builds[version]["source_revision"] = revision
-        identical_sources = (
-            builds["baseline"]["source_fingerprint"]
-            == builds["candidate"]["source_fingerprint"]
+        identical_runtime = (
+            builds["baseline"]["runtime_fingerprint"]
+            == builds["candidate"]["runtime_fingerprint"]
         )
 
         pilot_pairs: dict[str, dict[str, Any]] = {}
@@ -1135,7 +1171,7 @@ def main() -> int:
         }
         pending = set(confirmation_pairs)
 
-        if identical_sources:
+        if identical_runtime:
             final = {
                 group: initial[group]
                 for group in confirmation_pairs
@@ -1203,7 +1239,7 @@ def main() -> int:
             plans=plans,
             regression_probability=effective_regression_probability,
             improvement_probability=effective_improvement_probability,
-            identical_binaries=identical_sources,
+            identical_binaries=identical_runtime,
         )
     except (
         ArithmeticError,
@@ -1250,7 +1286,7 @@ def main() -> int:
     for group, metric in metrics.items():
         metric["process_pairs"] = (
             1
-            if identical_sources or not plans[group]["selected"]
+            if identical_runtime or not plans[group]["selected"]
             else len(confirmation_pairs[group])
         )
 
@@ -1283,7 +1319,7 @@ def main() -> int:
         "family_metric_count": family_metric_count,
         "family_job_count": args.family_jobs,
         "maximum_confirmation_looks": maximum_looks,
-        "identical_sources": identical_sources,
+        "identical_runtime": identical_runtime,
         "builds": builds,
         "pilot_pairs": pilot_pairs,
         "confirmation_pairs": confirmation_pairs,
@@ -1314,7 +1350,7 @@ def main() -> int:
         family_metric_count=family_metric_count,
         family_jobs=args.family_jobs,
         maximum_looks=maximum_looks,
-        identical_sources=identical_sources,
+        identical_runtime=identical_runtime,
         metrics=metrics,
     )
     (args.out_dir / "summary.md").write_text(
