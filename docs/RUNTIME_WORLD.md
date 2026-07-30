@@ -1,17 +1,38 @@
 # Runtime World: retiring `*mut Store` cross-instance identity
 
-**Status: APPROVED FOR IMPLEMENTATION — not yet implemented.** Stage 3 of
-the runtime-storage refactor. This design passed a seven-pass adversarial
-review (35 issues raised and resolved on file:line evidence, zero
-escalations; the full record is `docs/decisions.json`, 37 entries) and was
-signed off by the project owner on 2026-07-29.
+**Status: IMPLEMENTED at `bc7cbb03` (2026-07-30).** Stage 3 of the
+runtime-storage refactor. This design passed a seven-pass adversarial review
+(35 issues raised and resolved on file:line evidence, zero escalations; the
+full record is `docs/decisions.json`) and was signed off by the project
+owner on 2026-07-29. All nine migration steps landed over 2026-07-29/30.
 
-**If you are implementing this, start with
-`docs/RUNTIME_WORLD_IMPLEMENTATION.md`** — the step-by-step playbook with
-per-step work items, verification commands, and success criteria. This
-document is the design itself: what to build and why every piece is shaped
-the way it is. When the playbook and this document disagree, this document
-wins; report the discrepancy.
+What the implementation confirmed, deviated from, or left open:
+
+- **Every deletion under "What this deletes" happened.** `impl Drop for
+  Store`, both populations of cross-instance `unsafe` deref,
+  `OpaqueInterpFunc` and the publication map, the second funcref model, and
+  the function-registry revision counter are all gone. The remaining
+  `unsafe` is the three categories this document names: the generated-code
+  ABI, the epoch-validated raw caches, and the one `checkout` primitive.
+- **Decision 38 amends the `InstanceHandle` sketch.** The conversion
+  primitives do not live on the handle — it cannot reach the function arena.
+  They resolve per-instance instead. Decision 34 had already flagged that
+  sketch line as a redundant declaration; see `docs/decisions.json`.
+- **Two invariants had to be enforced together.** The instantiation window
+  (step 3 item 7) and the invocation boundary are one change: an A → B → A
+  call held two overlapping `&mut Store(A)` materializations until the
+  boundary began carrying tokens instead. `StoreAccess::Initializing` is
+  sound only because a Vacant slot cannot be checked out.
+- **Still deferred:** the engine-native interpreter-to-interpreter call
+  path. An installed `FuncRefHost` drives cross-instance calls on the
+  interpreter; without one, the named trap fires and a test pins it.
+
+**If you are implementing something on top of this, the step-by-step
+playbook with per-step work items and verification commands is
+`docs/RUNTIME_WORLD_IMPLEMENTATION.md`.** This document is the design
+itself: what was built and why every piece is shaped the way it is. When
+the playbook and this document disagree, this document wins; report the
+discrepancy.
 
 Design-history context (why the codebase is shaped this way at all) lives in
 `mcts_mem/silverfir/runtime.md` and its `.alt/runtime-store.md`.
