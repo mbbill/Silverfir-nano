@@ -647,6 +647,14 @@
   further is both the expensive half and an unnecessary one -- an 8-byte handler
   word plus one 8-byte packed word is already 16 bytes, so packing alone reaches
   the size while the dispatch branch's dependency chain is left untouched (code)
+- 2026-07-30 measurement: the cell's SIZE is not the mechanism. Doubling the
+  cell to 64 bytes, which holds every dependency chain and field-load count
+  fixed and changes only footprint, costs 0.23% of CoreMark inside a 2.0%
+  spread -- so shrinking 32 bytes to 16 buys nothing on its own and only the
+  field-load count can pay. Dropping the size target lets a 32-byte cell keep
+  two full 64-bit words beside one packed word of slot offsets, which preserves
+  absolute branch targets and needs no side table for calls or wide constants
+  [[dispatch.fact/cell-size-is-not-the-mechanism-2026-07-30]] (code)
 
 ## Moves
 
