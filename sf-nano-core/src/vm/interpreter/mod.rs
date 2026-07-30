@@ -43,9 +43,6 @@ mod predecode;
 // use the target GP wire width consumed by the generated dispatch chain.
 const SLOT_GP_UNIT_BYTES: u8 = core::mem::size_of::<usize>() as u8;
 
-pub(crate) const ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED: &str =
-    "interp: engine-native interpreter-to-interpreter calls without a FuncRefHost hook are not supported";
-
 const EXTERNAL_FUNCREF_HOST_REQUIRED: &str =
     "interp: external function reference calls require a FuncRefHost hook";
 

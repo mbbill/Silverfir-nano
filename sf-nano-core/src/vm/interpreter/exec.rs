@@ -117,14 +117,14 @@ impl HostDispatch {
     }
 }
 
-/// Embedder linking hook for function references the interpreter cannot enter
-/// natively.
+/// Embedder linking hook for function references the interpreter should
+/// delegate outside its runtime world.
 ///
-/// Both engines use one runtime-world function identity. An interpreter may
-/// delegate any absolute identity through this hook, including a
-/// registry-known function owned by another interpreter instance. The
-/// engine-native interpreter-to-interpreter token trampoline remains
-/// deliberately deferred; without this hook, that path takes its named trap.
+/// Both engines use one runtime-world function identity. Registry-known
+/// interpreter functions can be entered directly, but an installed hook keeps
+/// precedence so embedders may override that routing. The hook is also the
+/// escape hatch for functions owned outside this world and for cross-engine
+/// calls, since a runtime world itself is single-tier.
 ///
 /// The boxes are `alloc`'s, not this crate's tracked ones, for the same reason
 /// `HostDispatch`'s signature carries only std types: an embedder has to be
@@ -404,8 +404,13 @@ enum ExternalCallTarget {
     FuncRef {
         host: Option<SharedFuncRefHost>,
         handle: RefHandle,
-        registry_known: bool,
+        world: Option<WorldFuncTarget>,
     },
+}
+
+struct WorldFuncTarget {
+    entry: FuncEntry,
+    checkout: InstanceHandle,
 }
 
 pub(super) struct PreparedCall {
@@ -435,7 +440,7 @@ impl PreparedCall {
             ExternalCallTarget::FuncRef {
                 host,
                 handle,
-                registry_known,
+                world,
             } => match host {
                 Some(host) => {
                     let mut host = host.try_borrow_mut().map_err(|_| {
@@ -443,12 +448,16 @@ impl PreparedCall {
                     })?;
                     (host.invoke)(*handle, &self.args, &mut results)?;
                 }
-                None if *registry_known => {
-                    return Err(WasmError::trap(
-                        super::ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED,
-                    ));
+                None => {
+                    let world = world
+                        .as_ref()
+                        .ok_or_else(|| WasmError::trap(super::EXTERNAL_FUNCREF_HOST_REQUIRED))?;
+                    results = InterpInstance::invoke_world_target(
+                        world,
+                        &self.args,
+                        self.result_types.len(),
+                    )?;
                 }
-                None => return Err(WasmError::trap(super::EXTERNAL_FUNCREF_HOST_REQUIRED)),
             },
         }
         Ok(results)
@@ -1518,6 +1527,39 @@ impl InterpInstance {
         // see initialized memory, and a trap in either has to hand the
         // instance back rather than lose it.
         Ok(inst)
+    }
+
+    /// Build the storage half of an interpreter instance for the instance
+    /// table's Miri tests without touching generated native dispatch symbols,
+    /// which Miri cannot evaluate.
+    ///
+    /// These tests never execute guest code; they exercise the real boxed
+    /// instance, checkout tokens, scoped accessors, and mutable interpreter
+    /// storage.
+    #[cfg(test)]
+    pub(crate) fn build_for_instance_table_test(
+        engine: &Engine,
+        module: Module,
+        registry: &LinkRegistry,
+        instance_handle: InstanceHandle,
+    ) -> Result<Self, WasmError> {
+        Self::build(
+            engine,
+            module,
+            None,
+            &[],
+            None,
+            registry.arenas(),
+            instance_handle,
+        )
+    }
+
+    /// Force an observable write to the inline instance allocation in Miri
+    /// materialization tests.
+    #[cfg(test)]
+    pub fn touch_storage_for_instance_table_test(&mut self) {
+        let dropped_data = core::mem::take(&mut self.dropped_data);
+        self.dropped_data = dropped_data;
     }
 
     /// Copy every active element segment into its table.
@@ -2905,11 +2947,15 @@ impl InterpInstance {
                 .ok_or(WasmError::invalid(
                     "interp: imported function identity is missing",
                 ))?;
-        let foreign = self
+        let world = self
             .link_registry
             .functions
             .entry_for_handle(callee_handle)
-            .is_some_and(|entry| entry.owner != self.instance_handle.self_id());
+            .filter(|entry| entry.owner != self.instance_handle.self_id())
+            .map(|entry| WorldFuncTarget {
+                entry,
+                checkout: self.instance_handle.clone(),
+            });
         if func_type.results().len() > 8 {
             return Err(WasmError::invalid("interp: too many host results"));
         }
@@ -2919,11 +2965,11 @@ impl InterpInstance {
                 *arg = absolutize_slot_with(&self.module, &self.function_identities, *arg);
             }
         }
-        let target = if foreign {
+        let target = if world.is_some() {
             ExternalCallTarget::FuncRef {
                 host: self.funcref_host.clone(),
                 handle: callee_handle,
-                registry_known: true,
+                world,
             }
         } else {
             let dispatch = self
@@ -2955,7 +3001,7 @@ impl InterpInstance {
         result_types: Vec<ValueType>,
         frame: &[u64],
         arg_base: usize,
-        registry_known: bool,
+        entry: Option<FuncEntry>,
     ) -> PreparedCall {
         let mut args = Vec::with_capacity(param_types.len());
         args.extend_from_slice(&frame[arg_base..arg_base + param_types.len()]);
@@ -2966,11 +3012,71 @@ impl InterpInstance {
             target: ExternalCallTarget::FuncRef {
                 host: self.funcref_host.clone(),
                 handle,
-                registry_known,
+                world: entry.map(|entry| WorldFuncTarget {
+                    entry,
+                    checkout: self.instance_handle.clone(),
+                }),
             },
             args,
             result_types,
         }
+    }
+
+    /// Enter a registry-known interpreter function through absolute raw
+    /// slots.
+    ///
+    /// The caller has already ended its materialization and converted every
+    /// funcref argument to world form before this function checks out the
+    /// owner. The callee is materialized only in short conversion scopes
+    /// around the ordinary invocation, so guest execution never overlaps a
+    /// token-derived `&mut InterpInstance`.
+    fn invoke_world_target(
+        target: &WorldFuncTarget,
+        args: &[u64],
+        expected_results: usize,
+    ) -> Result<Vec<u64>, WasmError> {
+        let token = target
+            .checkout
+            .checkout(target.entry.owner)
+            .ok_or_else(|| {
+                WasmError::internal("interpreter function owner is no longer available")
+            })?;
+        let mut access = InterpInstanceAccess::checked_out(token);
+        let local_index = target.entry.local_index as usize;
+        let (local_args, result_types) = access.with_instance(|instance| {
+            let func_type = instance
+                .module
+                .functions()
+                .get(local_index)
+                .ok_or_else(|| WasmError::internal("interpreter function index is out of range"))?
+                .func_type();
+            if args.len() != func_type.params().len()
+                || expected_results != func_type.results().len()
+            {
+                return Err(WasmError::internal(
+                    "interpreter linked function arity does not match",
+                ));
+            }
+
+            let local_args = args
+                .iter()
+                .copied()
+                .zip(func_type.params().iter().copied())
+                .map(|(arg, value_type)| instance.localize_slot_for_type(arg, value_type))
+                .collect::<Vec<_>>();
+            let result_types = func_type.results().iter().copied().collect::<Vec<_>>();
+            Ok::<_, WasmError>((local_args, result_types))
+        })??;
+
+        let mut results = vec![0u64; result_types.len()];
+        Self::invoke_access(&mut access, local_index, &local_args, &mut results)?;
+
+        access.with_instance(|instance| {
+            for (result, value_type) in results.iter_mut().zip(result_types) {
+                *result = instance.absolutize_slot_for_type(*result, value_type);
+            }
+        })?;
+        Ok(results)
     }
 
     fn localize_call_results(&self, call: &PreparedCall, results: &mut [u64]) {
@@ -3924,8 +4030,8 @@ impl InterpInstance {
                 }
                 let local = self.localize_ref(r);
                 if local.encoded() >= self.module.functions().len() {
-                    let registry_known = self.link_registry.functions.entry_for_handle(r).is_some();
-                    if registry_known {
+                    let entry = self.link_registry.functions.entry_for_handle(r);
+                    if entry.is_some() {
                         let expected = RefType::non_nullable_concrete(ins.c as u32);
                         if !ref_type_matches(r, &expected.heap_type, RefTypeOwner::Interp(self))
                             .unwrap_or(false)
@@ -3945,14 +4051,8 @@ impl InterpInstance {
                         })
                         .ok_or(WasmError::trap("indirect call type mismatch"))?;
                     let base = ins.b as usize;
-                    let call = self.prepare_funcref_call(
-                        r,
-                        param_types,
-                        result_types,
-                        frame,
-                        base,
-                        registry_known,
-                    );
+                    let call =
+                        self.prepare_funcref_call(r, param_types, result_types, frame, base, entry);
                     let tail_target = if ins.op == Op::ReturnCallRef {
                         Some(func.slow_tail_return.ok_or(WasmError::invalid(
                             "interp: tail call has no return landing",
@@ -4231,12 +4331,8 @@ impl InterpInstance {
                 }
                 let local = self.localize_ref(callee);
                 if local.encoded() >= self.module.functions().len() {
-                    let registry_known = self
-                        .link_registry
-                        .functions
-                        .entry_for_handle(callee)
-                        .is_some();
-                    if registry_known {
+                    let entry = self.link_registry.functions.entry_for_handle(callee);
+                    if entry.is_some() {
                         let expected = RefType::non_nullable_concrete(ins.c as u32);
                         if !ref_type_matches(
                             callee,
@@ -4266,7 +4362,7 @@ impl InterpInstance {
                         result_types,
                         frame,
                         base,
-                        registry_known,
+                        entry,
                     );
                     let tail_target = if ins.op == Op::ReturnCallIndirect {
                         Some(func.slow_tail_return.ok_or(WasmError::invalid(
@@ -5465,7 +5561,7 @@ mod tests {
     }
 
     #[test]
-    fn world_funcrefs_use_one_identity_and_pin_the_no_hook_trap() {
+    fn world_funcrefs_use_one_identity_and_drive_foreign_calls() {
         let bin: StdVec<u8> = wat::parse_str(
             r#"(module
                 (type $ft (func))
@@ -5541,13 +5637,18 @@ mod tests {
         let provider_bin: StdVec<u8> = wat::parse_str(
             r#"(module
                 (type $t (func (result i32)))
+                (type $identity (func (param funcref) (result funcref)))
                 (func (export "f") (type $t) (result i32)
-                    i32.const 7))"#,
+                    i32.const 7)
+                (func (export "identity") (type $identity)
+                    local.get 0))"#,
         )
         .expect("provider wat");
         let provider_module = Module::new("provider", &provider_bin).expect("provider module");
         let provider_type = provider_module.functions()[0].func_type().clone();
         let provider_type_index = provider_module.functions()[0].type_index();
+        let identity_type = provider_module.functions()[1].func_type().clone();
+        let identity_type_index = provider_module.functions()[1].type_index();
         let provider_types = provider_module.types().clone();
         let registry = LinkRegistry::new();
         let engine = crate::vm::engine::Engine::with_defaults();
@@ -5565,42 +5666,69 @@ mod tests {
         let handle = provider
             .with_instance(|provider| provider.function_handle_at(0))
             .expect("provider identity");
+        let identity_handle = provider
+            .with_instance(|provider| provider.function_handle_at(1))
+            .expect("provider identity function");
 
         let consumer_bin: StdVec<u8> = wat::parse_str(
             r#"(module
                 (type $t (func (result i32)))
+                (type $identity (func (param funcref) (result funcref)))
                 (import "provider" "f" (func $f (type $t)))
+                (import "provider" "identity" (func $identity (type $identity)))
                 (table 1 funcref)
                 (elem (i32.const 0) func $f)
+                (func $local)
+                (elem declare func $local)
                 (func (export "direct") (result i32)
                     call $f)
                 (func (export "by_ref") (result i32)
                     (call_ref $t (ref.func $f)))
                 (func (export "indirect") (result i32)
-                    (call_indirect (type $t) (i32.const 0))))"#,
+                    (call_indirect (type $t) (i32.const 0)))
+                (func (export "round_trip") (result i32)
+                    ref.func $local
+                    call $identity
+                    ref.func $local
+                    ref.eq))"#,
         )
         .expect("consumer wat");
-        let make_import = || {
-            Import::linked_func_typed_with_context_and_index(
-                "provider",
-                "f",
-                handle,
-                provider_type.clone(),
-                provider_type_index,
-                provider_types.clone(),
-            )
+        let make_imports = || {
+            [
+                Import::linked_func_typed_with_context_and_index(
+                    "provider",
+                    "f",
+                    handle,
+                    provider_type.clone(),
+                    provider_type_index,
+                    provider_types.clone(),
+                ),
+                Import::linked_func_typed_with_context_and_index(
+                    "provider",
+                    "identity",
+                    identity_handle,
+                    identity_type.clone(),
+                    identity_type_index,
+                    provider_types.clone(),
+                ),
+            ]
         };
         let hooked = match InterpInstance::new_partial_with_registry(
             &engine,
             Module::new("hooked-consumer", &consumer_bin).expect("hooked consumer module"),
             None,
-            &[make_import()],
+            &make_imports(),
             Some(FuncRefHost {
                 invoke: alloc::boxed::Box::new(
                     move |callee: RefHandle, args: &[u64], results: &mut [u64]| {
-                        assert_eq!(callee, handle);
-                        assert!(args.is_empty());
-                        results[0] = 7;
+                        if callee == handle {
+                            assert!(args.is_empty());
+                            results[0] = 13;
+                            return Ok(());
+                        }
+                        assert_eq!(callee, identity_handle);
+                        assert_eq!(args.len(), 1);
+                        results[0] = args[0];
                         Ok(())
                     },
                 ),
@@ -5611,21 +5739,26 @@ mod tests {
             Err((_, error)) => panic!("hooked consumer: {error:?}"),
         };
 
-        for export in ["direct", "by_ref", "indirect"] {
+        for (export, expected) in [
+            ("direct", 13),
+            ("by_ref", 13),
+            ("indirect", 13),
+            ("round_trip", 1),
+        ] {
             let index = hooked
                 .with_instance(|hooked| hooked.find_export(export))
                 .expect("hooked consumer export");
             let mut result = [0u64; 1];
             invoke_lease(&hooked, index, &mut result)
                 .expect("the installed hook drives the world identity");
-            assert_eq!(result[0], 7, "{export}");
+            assert_eq!(result[0], expected, "{export}");
         }
 
         let without_hook = match InterpInstance::new_partial_with_registry(
             &engine,
             Module::new("no-hook-consumer", &consumer_bin).expect("no-hook consumer module"),
             None,
-            &[make_import()],
+            &make_imports(),
             None,
             &registry,
         ) {
@@ -5633,17 +5766,19 @@ mod tests {
             Err((_, error)) => panic!("no-hook consumer: {error:?}"),
         };
 
-        for export in ["direct", "by_ref", "indirect"] {
+        for (export, expected) in [
+            ("direct", 7),
+            ("by_ref", 7),
+            ("indirect", 7),
+            ("round_trip", 1),
+        ] {
             let index = without_hook
                 .with_instance(|without_hook| without_hook.find_export(export))
                 .expect("no-hook consumer export");
             let mut result = [0u64; 1];
-            assert_eq!(
-                invoke_lease(&without_hook, index, &mut result)
-                    .expect_err("the engine-native call needs an installed hook"),
-                WasmError::trap(crate::vm::interpreter::ENGINE_NATIVE_INTERP_CALL_UNSUPPORTED),
-                "{export}"
-            );
+            invoke_lease(&without_hook, index, &mut result)
+                .expect("the engine-native path drives the world identity");
+            assert_eq!(result[0], expected, "{export}");
         }
     }
 

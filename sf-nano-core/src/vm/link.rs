@@ -1079,6 +1079,12 @@ mod instance_table_tests {
     use super::*;
     use crate::config::Config;
     use crate::module::type_context::TypeContext;
+    #[cfg(sf_interp)]
+    use crate::module::Module;
+    #[cfg(sf_interp)]
+    use crate::vm::engine::{Engine, Tier};
+    #[cfg(sf_interp)]
+    use crate::vm::interpreter::{InterpInstance, InterpInstanceAccess};
     use crate::vm::jit::entities::ModuleInst;
     #[cfg(any(sf_ir_dump, sf_jitdump))]
     use tracked_alloc::string::String;
@@ -1106,6 +1112,29 @@ mod instance_table_tests {
             .instance_table()
             .occupy_jit(id, store)
             .expect("fresh instance slot");
+        (id, handle)
+    }
+
+    #[cfg(sf_interp)]
+    fn occupied_interp(registry: &LinkRegistry, name: &str) -> (InstanceId, InstanceHandle) {
+        const MEMORY_WASM: &[u8] = &[
+            0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01,
+        ];
+        let engine =
+            Engine::new(Config::new().tier(Tier::Interp)).expect("interpreter test engine");
+        let module = Module::new(name, MEMORY_WASM).expect("interpreter test module");
+        let (id, handle) = registry.reserve_instance();
+        let instance = InterpInstance::build_for_instance_table_test(
+            &engine,
+            module,
+            registry,
+            handle.clone(),
+        )
+        .expect("interpreter test instance");
+        registry
+            .instance_table()
+            .occupy_interp(id, Box::new(instance))
+            .expect("fresh interpreter instance slot");
         (id, handle)
     }
 
@@ -1331,6 +1360,73 @@ mod instance_table_tests {
         };
         assert_eq!(stale_owner, a_id);
         assert!(table.checkout(stale_owner).is_none());
+
+        #[cfg(sf_interp)]
+        {
+            let interp_registry = LinkRegistry::new();
+            let interp_table = interp_registry.instance_table();
+            let (a_id, a_handle) = occupied_interp(&interp_registry, "Miri interpreter A");
+            let (b_id, _) = occupied_interp(&interp_registry, "Miri interpreter B");
+            assert_ne!(a_id, b_id);
+
+            // Materialize A only inside this scope. The checkout token may
+            // remain live, but the token-derived instance reference must not.
+            let mut first_a = InterpInstanceAccess::checked_out(
+                interp_table.checkout(a_id).expect("first A checkout"),
+            );
+            first_a
+                .with_instance_mut(|a| {
+                    a.touch_storage_for_instance_table_test();
+                    a.memory_mut().expect("A memory")[0] = 0x11;
+                    assert_eq!(a.instance_handle().self_id(), a_id);
+                })
+                .expect("first A materialization");
+            drop(first_a);
+
+            // Materialize B after A's scope has ended. While B remains live,
+            // use its world capability to check out and materialize A again.
+            let b_token = a_handle.checkout(b_id).expect("B checkout from A");
+            let mut b_access = InterpInstanceAccess::checked_out(b_token);
+            b_access
+                .with_instance_mut(|b| {
+                    b.touch_storage_for_instance_table_test();
+                    b.memory_mut().expect("B memory")[0] = 0x22;
+                    let a_token = b
+                        .instance_handle()
+                        .checkout(a_id)
+                        .expect("A re-entry from B");
+                    let mut reentered_a = InterpInstanceAccess::checked_out(a_token);
+                    reentered_a
+                        .with_instance_mut(|a| {
+                            a.touch_storage_for_instance_table_test();
+                            assert_eq!(a.memory().expect("re-entered A memory")[0], 0x11);
+                            a.memory_mut().expect("re-entered A memory")[0] = 0x33;
+                        })
+                        .expect("re-entered A materialization");
+                    drop(reentered_a);
+
+                    // Keep using B after the nested A scope so Miri observes
+                    // that these are distinct live instance allocations.
+                    assert_eq!(b.memory().expect("B memory after A re-entry")[0], 0x22);
+                })
+                .expect("B materialization");
+            drop(b_access);
+
+            let mut final_a = InterpInstanceAccess::checked_out(
+                interp_table.checkout(a_id).expect("final A checkout"),
+            );
+            final_a
+                .with_instance_mut(|a| {
+                    a.touch_storage_for_instance_table_test();
+                    assert_eq!(a.memory().expect("final A memory")[0], 0x33);
+                })
+                .expect("final A materialization");
+            drop(final_a);
+            interp_table.free(b_id).expect("free interpreter B");
+            interp_table.free(a_id).expect("free interpreter A");
+            assert!(interp_table.checkout(a_id).is_none());
+            assert!(interp_table.checkout(b_id).is_none());
+        }
     }
 
     #[test]
