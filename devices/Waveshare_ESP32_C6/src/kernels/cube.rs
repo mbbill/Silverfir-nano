@@ -8,8 +8,15 @@
 //!   X). Product `coord × Q15 >> 15` stays comfortably inside i32.
 //! - Projection: pinhole, integer divide by camera-space Z.
 //! - Raster: edge-function triangle scan with incremental updates.
-
-#![allow(dead_code)]
+//!
+//! Same dual-compile shape as the mandelbrot kernel: under `mode-wasm` only the
+//! geometry constants are reachable from the firmware.
+#![allow(
+    dead_code,
+    reason = "Under mode-wasm the firmware uses only WIDTH/HEIGHT/FB_BYTES \
+while rendering happens in the wasm guest; the renderer is live in the \
+mode-native build and in wasm-demo, which includes this same file."
+)]
 
 pub const WIDTH: usize = 160;
 pub const HEIGHT: usize = 128;

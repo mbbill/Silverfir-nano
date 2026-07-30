@@ -30,6 +30,20 @@ RELEVANT_ERROR_RE = re.compile(
     r"(error(?:\[|:)|fatal|failed|failure|panicked|not found|missing|FAIL)",
     re.IGNORECASE,
 )
+# Linker chatter that `-Z build-std` provokes for a tier-3 target and that no
+# change to this repository can silence. `riscv32gc-unknown-linux-musl` is not
+# a rustup target -- std is compiled from source into the target directory --
+# so the linker probes a `rustlib` path that legitimately does not exist. These
+# stay visible as diagnostics; they simply do not fail the gate, because the
+# alternative is a job that is permanently red and therefore tells nobody
+# anything when rv32 actually breaks. Every other warning, linker or compiler,
+# still fails.
+BENIGN_LINKER_WARNING_RE = re.compile(
+    r"^warning:\s*linker stderr:\s*(?:"
+    r"ignoring deprecated linker optimization setting"
+    r"|unable to open library directory '[^']*[/\\]rustlib[/\\][^']*': FileNotFound"
+    r")"
+)
 
 
 @dataclass(frozen=True)
@@ -80,6 +94,7 @@ def parse_log(path: Path, returncode: int) -> tuple[int, int, tuple[Diagnostic, 
 
     errors = 0
     warnings = 0
+    benign = 0
     diagnostics: list[Diagnostic] = []
     seen: set[Diagnostic] = set()
 
@@ -96,6 +111,8 @@ def parse_log(path: Path, returncode: int) -> tuple[int, int, tuple[Diagnostic, 
         kind = "error" if header.startswith("error") else "warning"
         if kind == "error":
             errors += 1
+        elif BENIGN_LINKER_WARNING_RE.match(line.strip()):
+            benign += 1
         elif not GENERATED_WARNINGS_RE.search(line):
             warnings += 1
 
@@ -117,7 +134,10 @@ def parse_log(path: Path, returncode: int) -> tuple[int, int, tuple[Diagnostic, 
         (int(match.group(1)) for line in lines if (match := GENERATED_WARNINGS_RE.search(line))),
         default=0,
     )
-    warnings = max(warnings, generated_count)
+    # Cargo's per-crate "generated N warnings" tally counts the benign linker
+    # lines too, so discount them here as well or they come back through the
+    # aggregate.
+    warnings = max(warnings, max(0, generated_count - benign))
 
     if returncode and errors == 0:
         errors = 1

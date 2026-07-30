@@ -468,6 +468,21 @@ impl Instance {
         }
     }
 
+    /// The payload of an exception, by the handle a `WasmError::Exception`
+    /// carried out.
+    ///
+    /// An uncaught exception surfaces with a reference handle, its tag, and
+    /// the module's name for that tag. The handle alone is opaque to an
+    /// embedder, so this resolves it to the values the throw carried.
+    /// Exception objects are registry-owned, so this keeps working after the
+    /// instance that threw has been dropped.
+    pub fn exception_fields(&self, exn: RefHandle) -> Option<collections::Vec<Value>> {
+        self.registry
+            .arenas()
+            .resolve_exn(exn)
+            .map(|instance| instance.fields.clone())
+    }
+
     /// An absolute reference handle for a function, suitable for crossing
     /// instance boundaries.
     pub fn function_handle_at(&self, idx: usize) -> Option<RefHandle> {

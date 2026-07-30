@@ -1,9 +1,16 @@
 //! Pico2 integer Mandelbrot kernel adapted to the ESP32-C6 LCD.
 //!
-//! The host firmware uses this module for geometry constants; the nested
-//! `wasm-demo` crate uses the full renderer.
-
-#![allow(dead_code)]
+//! Compiled into two crates. Under `mode-wasm` the firmware renders inside the
+//! wasm guest and links this module only for its geometry constants, so the
+//! native renderer below is genuinely unreachable there; `wasm-demo` includes
+//! the same file behind `#[path]` and calls `render`. Verified with
+//! `cargo check --release` on the default feature set.
+#![allow(
+    dead_code,
+    reason = "Under mode-wasm the firmware uses only WIDTH/HEIGHT/FB_BYTES \
+while rendering happens in the wasm guest; the renderer is live in the \
+mode-native build and in wasm-demo, which includes this same file."
+)]
 
 pub const WIDTH: usize = 160;
 pub const HEIGHT: usize = 128;

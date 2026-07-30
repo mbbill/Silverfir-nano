@@ -6,7 +6,15 @@ use crate::config::CODE_ARENA_BYTES;
 
 #[repr(align(16))]
 struct CodeArena {
-    #[allow(dead_code)]
+    #[allow(
+        dead_code,
+        reason = "The field IS the executable arena: it reserves the aligned \
+    static storage the JIT allocates from, and the allocator hands out its \
+    address rather than reading it through a reference. Reading it via a field \
+    projection would silence this, but projecting a field of a `static mut` \
+    requires an `unsafe` block that the whole-static form does not, and this \
+    project prefers an audited allow over a new unsafe in firmware."
+    )]
     bytes: [u8; CODE_ARENA_BYTES],
 }
 

@@ -32,6 +32,41 @@ class WarningGateTests(unittest.TestCase):
         self.assertEqual(warnings, 2)
         self.assertEqual(len(diagnostics), 3)
 
+    def test_build_std_linker_probe_does_not_fail_the_gate(self) -> None:
+        """`-Z build-std` on a tier-3 target provokes linker chatter no change
+        here can silence. It must stay visible without turning a job whose
+        rv32 spectests all pass permanently red."""
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "cargo.log"
+            log.write_text(
+                "warning: linker stderr: ignoring deprecated linker "
+                "optimization setting '1'\n"
+                "warning: linker stderr: unable to open library directory "
+                "'/home/runner/.rustup/toolchains/nightly-x86_64-unknown-linux-gnu"
+                "/lib/rustlib/riscv32gc-unknown-linux-musl/lib': FileNotFound\n"
+                "warning: `sf-nano-cli` (bin \"sf-nano-cli\") generated 2 warnings\n",
+                encoding="utf-8",
+            )
+            errors, warnings, diagnostics = parse_log(log, 0)
+
+        self.assertEqual(errors, 0)
+        self.assertEqual(warnings, 0, "benign linker probe must not fail the gate")
+        self.assertEqual(len(diagnostics), 3, "and must still be visible")
+
+    def test_other_linker_warnings_still_fail_the_gate(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            log = Path(directory) / "cargo.log"
+            log.write_text(
+                "warning: linker stderr: undefined reference to `sf_os_alloc`\n"
+                "warning: `sf-nano-cli` (bin \"sf-nano-cli\") generated 1 warning\n",
+                encoding="utf-8",
+            )
+            errors, warnings, diagnostics = parse_log(log, 0)
+
+        self.assertEqual(errors, 0)
+        self.assertEqual(warnings, 1, "only the two named probe messages are benign")
+        self.assertEqual(len(diagnostics), 2)
+
     def test_warning_fails_the_final_gate(self) -> None:
         runner = Runner("unit/warning")
         runner.results.append(

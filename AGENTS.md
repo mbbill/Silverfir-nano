@@ -30,12 +30,24 @@ and an inline reason.
 
 `reason = "..."` is not a fix. The policy script exists to expose every
 suppression so it gets fixed properly — deleted, restructured, or gated
-precisely — and annotating a finding with a reason plus a manifest entry
-merely launders it through the audit, however accurate the reason reads.
-Agents never author `reason=` attributes or manifest entries on their own
-judgment; each exception is blessed by the user individually, site by
-site. A finding with no visible proper fix is left red and reported as a
-question, not made green.
+precisely — and annotating a finding with a reason merely launders it
+through the audit, however accurate the reason reads.
+
+The checker cannot stop you. An inline `reason` is all it requires, and it
+cannot tell a reviewed exception from an invented one: a plausible sentence
+is exactly what an agent would write. It guarantees only that every
+suppression is stated and greppable. So this rule, not the tool, is what
+holds — agents never author a `reason=` attribute on their own judgment,
+however true the reason would be, and each exception is blessed by the user
+individually, site by site. "The audit passes now" is not evidence the
+suppression was warranted.
+
+`ci/lint_suppressions.toml` is only for attribute positions that cannot
+carry an inline reason; an entry there claims no inline reason is possible,
+and is not a second place to record an ordinary exception. When you do have
+approval, make the reason checkable: name the build or cfg in which the item
+is unreachable and how you verified it. A finding with no visible proper fix
+is left red and reported as a question, not made green.
 
 ## cfg follows meaning
 
