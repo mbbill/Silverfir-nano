@@ -23,9 +23,11 @@ What the implementation confirmed, deviated from, or left open:
   call held two overlapping `&mut Store(A)` materializations until the
   boundary began carrying tokens instead. `StoreAccess::Initializing` is
   sound only because a Vacant slot cannot be checked out.
-- **Still deferred:** the engine-native interpreter-to-interpreter call
-  path. An installed `FuncRefHost` drives cross-instance calls on the
-  interpreter; without one, the named trap fires and a test pins it.
+- **The engine-native interpreter-to-interpreter call path is implemented.**
+  Registry-known foreign funcrefs resolve through a generation-checked
+  `checkout` and enter their owning interpreter instance directly.
+  `FuncRefHost` remains an override and the escape hatch for functions kept
+  outside the world or calls that cross the world's single-engine boundary.
 
 **If you are implementing something on top of this, the step-by-step
 playbook with per-step work items and verification commands is

@@ -96,6 +96,28 @@
   the interpreter; without one the call traps by name, and a test pins that
   state so it cannot rot into unreachable behaviour (code).
 
+- 2026-07-30 statement: the deferred interpreter cross-instance path became
+  sound only after the invocation boundary stopped carrying a token-derived
+  materialization across the call. Its earlier soundness at the one checkout
+  site was an accident of scope, not a general property: a second,
+  runtime-chosen checkout requires ending the caller's materialization first
+  (sourced).
+
+- 2026-07-30 pitfall: the earlier negative-control record needs this
+  append-only correction: the plain double-materialization control is rejected
+  by Stacked Borrows and accepted by Tree Borrows. The two Miri steps are not
+  interchangeable; for this control, Stacked Borrows supplies the
+  load-bearing rejection (sourced).
+
+- 2026-07-30 pitfall: migrating a real consumer exposed a public-API gap:
+  `RuntimeWorld` host callbacks could not call a runtime-chosen
+  `(InstanceId, function_index)` back into their world. `HostFn` has nowhere
+  to carry state, while a thread-local raw world pointer would alias the
+  embedder's live mutable world borrow. The resulting `WorldHandle` is an
+  opaque, cheaply cloned weak table reference; each call performs a fresh
+  generation-checked checkout, so expired worlds and stale ids return errors
+  without a strong reference cycle (sourced).
+
 ## Moves
 
 - 2026-07-30 (bc7cbb03) replaced [[pointer-identity]]: raw store pointers made

@@ -493,12 +493,12 @@ runtime.md facts on the divergences.*
 
 ## 7. After the migration
 
+- The engine-native interp-to-interp `Linked` call path is complete.
 - Follow-ups deliberately **not** in scope (do not implement without owner
-  sign-off): the interp-to-interp `Linked` call path; cross-engine funcaddr
-  calls; the per-instance funcaddr block optimization (measure first — step
-  1's benchmark exists for exactly this decision); entity storage into world
-  arenas ("ids all the way down"); the three "Filed separately" fail-loudly
-  items.
+  sign-off): cross-engine funcaddr calls; the per-instance funcaddr block
+  optimization (measure first — step 1's benchmark exists for exactly this
+  decision); entity storage into world arenas ("ids all the way down"); the
+  three "Filed separately" fail-loudly items.
 - Record the completed migration in `mcts_mem` (the `runtime.md` node's
   Items must be updated to describe the new live design, with Moves entries
   for what was replaced — see the mcts-mem skill/README conventions; the

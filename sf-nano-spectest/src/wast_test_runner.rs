@@ -6,12 +6,9 @@ use sf_nano_core::module::type_context::TypeContext;
 use sf_nano_core::module::Module;
 use sf_nano_core::value_type::{AbstractHeapType, HeapType, RefType};
 use sf_nano_core::{
-    Caller, Engine, HostFn, Import, Instance, Limitable, LinkRegistry, RefHandle, Value, WasmError,
+    Caller, Engine, HostFn, Import, InstanceId, Limitable, RefHandle, RuntimeWorld, Value,
+    WasmError, WorldHandle,
 };
-// The tier is only ever compared against `Interp`, which a build without the
-// interpreter has no variant for.
-#[cfg(feature = "interp")]
-use sf_nano_core::Tier;
 use std::{cell::RefCell, collections::HashMap, fmt, fs, path::Path};
 use wast::{
     core::{NanPattern, V128Pattern, WastArgCore, WastRetCore},
@@ -250,61 +247,24 @@ fn spectest_imports() -> Vec<Import> {
 // HostFn is a plain fn pointer — no closures. To forward calls to
 // registered module exports, we use a thread-local slot table:
 //   1. Before instantiation, allocate a slot per cross-module function import.
-//   2. Each slot stores (instance_name, export_name).
-//   3. Macro-generated fn pointers (fwd_00..fwd_31) each call forward_call(N).
-//   4. forward_call reads the slot, finds the instance, and invokes the export.
+//   2. Each slot stores the target instance id and function index.
+//   3. Macro-generated fn pointers (fwd_00..fwd_127) each call forward_call(N).
+//   4. forward_call checks the instance out through a non-owning world handle.
 
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum ForwardingTarget {
     FunctionIndex(usize),
 }
 
 struct ForwardingSlot {
-    instance_name: String,
+    instance_id: InstanceId,
     target: ForwardingTarget,
 }
 
 thread_local! {
     static FORWARDING_SLOTS: RefCell<Vec<Option<ForwardingSlot>>> =
         RefCell::new(Vec::new());
-    // Raw pointers to instances — valid only during single-threaded test execution.
-    static FORWARDING_INSTANCES: RefCell<HashMap<String, *mut Instance>> =
-        RefCell::new(HashMap::new());
-    // Absolute world identity -> original owning instance/function. Entries
-    // are append-only so a later linked alias can never replace its owner.
-    static FORWARDING_FUNCTIONS: RefCell<HashMap<RefHandle, (String, usize)>> =
-        RefCell::new(HashMap::new());
-}
-
-fn register_forwarding_instances(
-    instances: &mut HashMap<String, Instance>,
-    registered_as: &HashMap<String, String>,
-) {
-    FORWARDING_INSTANCES.with(|cell| {
-        let mut map = cell.borrow_mut();
-        map.clear();
-        for (internal_name, inst) in instances.iter_mut() {
-            map.insert(internal_name.clone(), inst as *mut Instance);
-        }
-        for (reg_name, internal_name) in registered_as {
-            if let Some(inst_ptr) = map.get(internal_name).copied() {
-                map.insert(reg_name.clone(), inst_ptr);
-            }
-        }
-    });
-    FORWARDING_FUNCTIONS.with(|cell| {
-        let mut functions = cell.borrow_mut();
-        for (internal_name, instance) in instances.iter() {
-            let mut function_index = 0;
-            while instance.function_type_at(function_index).is_some() {
-                if let Some(handle) = instance.function_handle_at(function_index) {
-                    functions
-                        .entry(handle)
-                        .or_insert_with(|| (internal_name.clone(), function_index));
-                }
-                function_index += 1;
-            }
-        }
-    });
+    static FORWARDING_WORLD: RefCell<Option<WorldHandle>> = RefCell::new(None);
 }
 
 fn find_exported_global_index(module: &Module, export_name: &str) -> Option<usize> {
@@ -358,11 +318,8 @@ fn find_exported_memory_index(module: &Module, export_name: &str) -> Option<usiz
         })
 }
 
-fn alloc_forwarding_function_slot(instance_name: &str, function_index: usize) -> usize {
-    alloc_forwarding_slot_target(
-        instance_name,
-        ForwardingTarget::FunctionIndex(function_index),
-    )
+fn alloc_forwarding_function_slot(instance_id: InstanceId, function_index: usize) -> usize {
+    alloc_forwarding_slot_target(instance_id, ForwardingTarget::FunctionIndex(function_index))
 }
 
 /// Allocate -- or reuse -- the slot forwarding to `(instance, target)`.
@@ -374,26 +331,19 @@ fn alloc_forwarding_function_slot(instance_name: &str, function_index: usize) ->
 /// is silently dropped, which surfaces as "missing function import" a long way
 /// from the cause. Slots are keyed by what they forward to, so the table is
 /// bounded by distinct targets rather than by instantiation count.
-fn alloc_forwarding_slot_target(instance_name: &str, target: ForwardingTarget) -> usize {
+fn alloc_forwarding_slot_target(instance_id: InstanceId, target: ForwardingTarget) -> usize {
     FORWARDING_SLOTS.with(|cell| {
         let mut slots = cell.borrow_mut();
         let existing = slots.iter().position(|s| {
-            s.as_ref().is_some_and(|s| {
-                s.instance_name == instance_name
-                    && match (&s.target, &target) {
-                        (
-                            ForwardingTarget::FunctionIndex(a),
-                            ForwardingTarget::FunctionIndex(b),
-                        ) => a == b,
-                    }
-            })
+            s.as_ref()
+                .is_some_and(|s| s.instance_id == instance_id && s.target == target)
         });
         if let Some(idx) = existing {
             return idx;
         }
         let idx = slots.len();
         slots.push(Some(ForwardingSlot {
-            instance_name: instance_name.to_string(),
+            instance_id,
             target,
         }));
         idx
@@ -402,81 +352,7 @@ fn alloc_forwarding_slot_target(instance_name: &str, target: ForwardingTarget) -
 
 fn clear_forwarding() {
     FORWARDING_SLOTS.with(|cell| cell.borrow_mut().clear());
-    FORWARDING_INSTANCES.with(|cell| cell.borrow_mut().clear());
-    FORWARDING_FUNCTIONS.with(|cell| cell.borrow_mut().clear());
-}
-
-/// A raw 64-bit slot read as `ty`, and back.
-///
-/// The engine keeps every value in an 8-byte slot and a reference verbatim as
-/// its `RefHandle` -- the same convention its host boundary uses.
-///
-/// Raw slots cross the boundary only through the interpreter's
-/// `FuncRefHost`; the JIT forwards typed `Value`s.
-#[cfg(feature = "interp")]
-fn raw_slot_to_value(
-    ty: sf_nano_core::value_type::ValueType,
-    raw: u64,
-) -> Result<Value, WasmError> {
-    use sf_nano_core::value_type::ValueType;
-    Ok(match ty {
-        ValueType::I32 => Value::I32(raw as u32 as i32),
-        ValueType::I64 => Value::I64(raw as i64),
-        ValueType::F32 => Value::F32(f32::from_bits(raw as u32)),
-        ValueType::F64 => Value::F64(f64::from_bits(raw)),
-        ValueType::Ref(r) => Value::Ref(RefHandle::new(raw as usize), r),
-        _ => return Err(WasmError::internal("world funcref: unsupported value type")),
-    })
-}
-
-#[cfg(feature = "interp")]
-fn value_to_raw_slot(v: &Value) -> Result<u64, WasmError> {
-    Ok(match v {
-        Value::I32(x) => *x as u32 as u64,
-        Value::I64(x) => *x as u64,
-        Value::F32(x) => x.to_bits() as u64,
-        Value::F64(x) => x.to_bits(),
-        Value::Ref(h, _) => h.raw() as u64,
-        _ => return Err(WasmError::internal("world funcref: unsupported value")),
-    })
-}
-
-/// Call an absolute world funcref, converting raw slots at the boundary.
-///
-/// The engine hands raw slots because that is what its frames hold; the
-/// callee's signature says how to read them, and the harness is the side that
-/// can look that up.
-#[cfg(feature = "interp")]
-fn forward_raw_call(handle: RefHandle, args: &[u64], results: &mut [u64]) -> Result<(), WasmError> {
-    let (inst_name, func_index) = FORWARDING_FUNCTIONS.with(|cell| {
-        cell.borrow()
-            .get(&handle)
-            .cloned()
-            .ok_or_else(|| WasmError::internal("world funcref identity is not registered"))
-    })?;
-    FORWARDING_INSTANCES.with(|cell| {
-        let map = cell.borrow();
-        let inst_ptr = *map
-            .get(&inst_name)
-            .ok_or_else(|| WasmError::internal("world funcref owner is gone"))?;
-        // Safety: as `forward_call` -- single-threaded, and the owning
-        // instance outlives a call through a table it stored a funcref into.
-        let inst = unsafe { &mut *inst_ptr };
-        let ty = inst
-            .function_type_at(func_index)
-            .ok_or_else(|| WasmError::internal("world funcref has no type"))?;
-        let typed: Vec<Value> = ty
-            .params()
-            .iter()
-            .zip(args)
-            .map(|(t, raw)| raw_slot_to_value(*t, *raw))
-            .collect::<Result<_, _>>()?;
-        let ret = inst.invoke_function_index(func_index, &typed)?;
-        for (dst, v) in results.iter_mut().zip(ret.iter()) {
-            *dst = value_to_raw_slot(v)?;
-        }
-        Ok(())
-    })
+    FORWARDING_WORLD.with(|cell| *cell.borrow_mut() = None);
 }
 
 fn forward_call(
@@ -485,39 +361,25 @@ fn forward_call(
     args: &[Value],
     results: &mut [Value],
 ) -> Result<(), WasmError> {
-    let (inst_name, target) = FORWARDING_SLOTS.with(|cell| {
+    let (instance_id, target) = FORWARDING_SLOTS.with(|cell| {
         let slots = cell.borrow();
         match slots.get(slot).and_then(|s| s.as_ref()) {
-            Some(s) => Ok((
-                s.instance_name.clone(),
-                match &s.target {
-                    ForwardingTarget::FunctionIndex(idx) => ForwardingTarget::FunctionIndex(*idx),
-                },
-            )),
+            Some(s) => Ok((s.instance_id, s.target)),
             None => Err(WasmError::internal("forwarding slot empty")),
         }
     })?;
-    FORWARDING_INSTANCES.with(|cell| {
-        let map = cell.borrow();
-        match map.get(&inst_name) {
-            Some(&inst_ptr) => {
-                // Safety: single-threaded spectest, instance outlives the call
-                let inst = unsafe { &mut *inst_ptr };
-                let ret = match target {
-                    ForwardingTarget::FunctionIndex(function_index) => {
-                        inst.invoke_function_index(function_index, args)?
-                    }
-                };
-                for (i, v) in ret.iter().enumerate() {
-                    if i < results.len() {
-                        results[i] = *v;
-                    }
-                }
-                Ok(())
-            }
-            None => Err(WasmError::internal("forwarding instance not found")),
+    let world = FORWARDING_WORLD
+        .with(|cell| cell.borrow().clone())
+        .ok_or_else(|| WasmError::internal("forwarding world is not installed"))?;
+    let ret = match target {
+        ForwardingTarget::FunctionIndex(function_index) => {
+            world.invoke(instance_id, function_index, args)?
         }
-    })
+    };
+    for (dst, value) in results.iter_mut().zip(ret) {
+        *dst = value;
+    }
+    Ok(())
 }
 
 macro_rules! make_forwarder {
@@ -682,21 +544,24 @@ const FORWARDER_TABLE: [HostFn; 128] = [
 
 pub struct WastTestRunner {
     engine: Engine,
-    instances: HashMap<String, Instance>,
+    world: RuntimeWorld,
+    instances: HashMap<String, InstanceId>,
     module_bytes: HashMap<String, Vec<u8>>,
     module_counter: u32,
     current_module: Option<String>,
     named_modules: HashMap<String, String>,
     registered_as: HashMap<String, String>,
     module_definitions: HashMap<String, Vec<u8>>,
-    function_registry: LinkRegistry,
 }
 
 impl WastTestRunner {
     pub fn new(engine: Engine) -> Self {
         clear_forwarding();
+        let world = RuntimeWorld::new();
+        FORWARDING_WORLD.with(|cell| *cell.borrow_mut() = Some(world.handle()));
         WastTestRunner {
             engine,
+            world,
             instances: HashMap::new(),
             module_bytes: HashMap::new(),
             module_counter: 0,
@@ -704,7 +569,6 @@ impl WastTestRunner {
             named_modules: HashMap::new(),
             registered_as: HashMap::new(),
             module_definitions: HashMap::new(),
-            function_registry: LinkRegistry::new(),
         }
     }
 
@@ -867,8 +731,6 @@ impl WastTestRunner {
     // -----------------------------------------------------------------------
 
     fn execute_wast_invoke(&mut self, invoke: &WastInvoke) -> Result<Vec<Value>, TestError> {
-        // Refresh forwarding pointers (HashMap may have been modified since last registration)
-        register_forwarding_instances(&mut self.instances, &self.registered_as);
         self.sync_registered_imports_from_sources()
             .map_err(|error| TestError::infrastructure(error.to_string()))?;
 
@@ -882,26 +744,31 @@ impl WastTestRunner {
             .map(|arg| arg.into())
             .collect();
 
-        let result = {
-            let instance = self.instances.get_mut(&internal_name).ok_or_else(|| {
+        let result = self
+            .instances
+            .get(&internal_name)
+            .copied()
+            .ok_or_else(|| {
                 TestError::infrastructure(format!("Instance '{}' not found", internal_name))
-            })?;
-            instance
-                .invoke(invoke.name, &args)
-                .map(|v| v.into_iter().collect())
-        };
+            })
+            .and_then(|id| {
+                self.world
+                    .invoke(id, invoke.name, &args)
+                    .map(|values| values.into_iter().collect())
+                    .map_err(|error| {
+                        TestError::runtime(
+                            format!("successful invocation of function '{}'", invoke.name),
+                            error,
+                        )
+                    })
+            });
 
         self.sync_registered_imports_back_to_sources(&internal_name)
             .map_err(|error| TestError::infrastructure(error.to_string()))?;
         self.sync_registered_imports_from_sources()
             .map_err(|error| TestError::infrastructure(error.to_string()))?;
 
-        result.map_err(|e| {
-            TestError::runtime(
-                format!("successful invocation of function '{}'", invoke.name),
-                e,
-            )
-        })
+        result
     }
 
     // -----------------------------------------------------------------------
@@ -1032,15 +899,16 @@ impl WastTestRunner {
         expected_message: &str,
     ) -> Result<(), TestError> {
         match self.compile_quote_wat(quote_wat) {
-            Ok(compiled) => {
-                match self.try_instantiate_temp(&compiled.wasm_bytes) {
-                    Ok(_) => Err(TestError::infrastructure(format!(
-                        "Expected: invalid module with error '{}', Actual: validation and instantiation succeeded",
-                        expected_message
-                    ))),
-                    Err(_) => Ok(()),
+            Ok(compiled) => match self.try_instantiate_temp(&compiled.wasm_bytes) {
+                Ok(id) => {
+                    self.discard_temp(id)?;
+                    Err(TestError::infrastructure(format!(
+                            "Expected: invalid module with error '{}', Actual: validation and instantiation succeeded",
+                            expected_message
+                        )))
                 }
-            }
+                Err(_) => Ok(()),
+            },
             Err(_) => Ok(()),
         }
     }
@@ -1062,11 +930,14 @@ impl WastTestRunner {
                         let imports = self
                             .build_imports(&bytes)
                             .map_err(|error| TestError::infrastructure(error.to_string()))?;
-                        match Instance::from_module(&self.engine, module, &imports) {
-                            Ok(_) => Err(TestError::infrastructure(format!(
-                                "Expected: malformed module with error '{}', Actual: WASM parsing succeeded ({} bytes)",
-                                expected_message, compiled.wasm_bytes.len()
-                            ))),
+                        match self.world.instantiate(&self.engine, module, &imports) {
+                            Ok(id) => {
+                                self.discard_temp(id)?;
+                                Err(TestError::infrastructure(format!(
+                                    "Expected: malformed module with error '{}', Actual: WASM parsing succeeded ({} bytes)",
+                                    expected_message, compiled.wasm_bytes.len()
+                                )))
+                            }
                             Err(_) => Ok(()),
                         }
                     }
@@ -1087,20 +958,19 @@ impl WastTestRunner {
         expected_message: &str,
     ) -> Result<(), TestError> {
         match wat {
-            wast::Wat::Module(ref mut module) => {
-                match module.encode() {
-                    Ok(wasm_bytes) => {
-                        match self.try_instantiate_temp(&wasm_bytes) {
-                            Ok(_) => Err(TestError::infrastructure(format!(
-                                "Expected: unlinkable module with error '{}', Actual: instantiation succeeded",
-                                expected_message
-                            ))),
-                            Err(_) => Ok(()),
-                        }
+            wast::Wat::Module(ref mut module) => match module.encode() {
+                Ok(wasm_bytes) => match self.try_instantiate_temp(&wasm_bytes) {
+                    Ok(id) => {
+                        self.discard_temp(id)?;
+                        Err(TestError::infrastructure(format!(
+                                    "Expected: unlinkable module with error '{}', Actual: instantiation succeeded",
+                                    expected_message
+                                )))
                     }
                     Err(_) => Ok(()),
-                }
-            }
+                },
+                Err(_) => Ok(()),
+            },
             _ => Err(TestError::infrastructure(
                 "Component unlinkable tests not supported yet".to_string(),
             )),
@@ -1218,10 +1088,18 @@ impl WastTestRunner {
                 let internal_name = self
                     .resolve_module_name(module.as_ref())
                     .map_err(TestError::infrastructure)?;
-                let instance = self.instances.get(&internal_name).ok_or_else(|| {
+                let id = self.instances.get(&internal_name).copied().ok_or_else(|| {
                     TestError::infrastructure(format!("Instance '{}' not found", internal_name))
                 })?;
-                let value = instance
+                let value = self
+                    .world
+                    .instance(id)
+                    .ok_or_else(|| {
+                        TestError::infrastructure(format!(
+                            "Instance '{}' is no longer available",
+                            internal_name
+                        ))
+                    })?
                     .get_global(global)
                     .map_err(|error| {
                         TestError::runtime(format!("reading global '{}'", global), error)
@@ -1236,16 +1114,16 @@ impl WastTestRunner {
             }
             WastExecute::Wat(wat) => match wat {
                 wast::Wat::Module(module) => match module.encode() {
-                    Ok(wasm_bytes) => {
-                        register_forwarding_instances(&mut self.instances, &self.registered_as);
-                        match self.instantiate_with_registry(&wasm_bytes) {
-                            Ok(_instance) => Ok(vec![]),
-                            Err(e) => Err(TestError::runtime(
-                                "successful module instantiation".to_string(),
-                                e,
-                            )),
+                    Ok(wasm_bytes) => match self.instantiate_with_registry(&wasm_bytes) {
+                        Ok(id) => {
+                            self.discard_temp(id)?;
+                            Ok(vec![])
                         }
-                    }
+                        Err(e) => Err(TestError::runtime(
+                            "successful module instantiation".to_string(),
+                            e,
+                        )),
+                    },
                     Err(e) => Err(TestError::infrastructure(format!(
                         "Module encoding failed: {}",
                         e
@@ -1310,15 +1188,10 @@ impl WastTestRunner {
         let internal_name = format!("module_{}", self.module_counter);
         self.module_counter += 1;
 
-        register_forwarding_instances(&mut self.instances, &self.registered_as);
-        let instance = self.instantiate_named(
-            &compiled.wasm_bytes,
-            #[cfg(feature = "interp")]
-            &internal_name,
-        )?;
+        let instance_id = self.instantiate_named(&compiled.wasm_bytes)?;
         let previous_current = self.current_module.replace(internal_name.clone());
 
-        self.instances.insert(internal_name.clone(), instance);
+        self.instances.insert(internal_name.clone(), instance_id);
         self.module_bytes
             .insert(internal_name.clone(), compiled.wasm_bytes);
 
@@ -1329,111 +1202,60 @@ impl WastTestRunner {
         self.sync_registered_imports_back_to_sources(&internal_name)?;
         self.sync_registered_imports_from_sources()?;
         if let Some(previous_current) = previous_current {
-            self.drop_unreachable_module(&previous_current);
+            self.drop_unreachable_module(&previous_current)?;
         }
 
         Ok(internal_name)
     }
 
     /// Try to instantiate a module temporarily (for assert_invalid/assert_unlinkable).
-    fn try_instantiate_temp(&mut self, wasm_bytes: &[u8]) -> Result<Instance, WasmError> {
-        register_forwarding_instances(&mut self.instances, &self.registered_as);
+    fn try_instantiate_temp(&mut self, wasm_bytes: &[u8]) -> Result<InstanceId, WasmError> {
         self.instantiate_with_registry(wasm_bytes)
     }
 
-    fn drop_unreachable_module(&mut self, internal_name: &str) {
+    fn discard_temp(&mut self, id: InstanceId) -> Result<(), TestError> {
+        self.world.free(id).map_err(|error| {
+            TestError::runtime("dropping temporary module instance".to_string(), error)
+        })
+    }
+
+    fn drop_unreachable_module(&mut self, internal_name: &str) -> Result<(), WasmError> {
         if self.current_module.as_deref() == Some(internal_name) {
-            return;
+            return Ok(());
         }
         if self
             .named_modules
             .values()
             .any(|name| name.as_str() == internal_name)
         {
-            return;
+            return Ok(());
         }
         if self
             .registered_as
             .values()
             .any(|name| name.as_str() == internal_name)
         {
-            return;
+            return Ok(());
         }
 
+        if let Some(id) = self.instances.get(internal_name).copied() {
+            self.world.free(id)?;
+        }
         self.instances.remove(internal_name);
         self.module_bytes.remove(internal_name);
+        Ok(())
     }
 
-    fn instantiate_with_registry(&mut self, wasm_bytes: &[u8]) -> Result<Instance, WasmError> {
-        // Every instance gets a name, even a throwaway one: it may publish a
-        // funcref into a table another module holds, and that reference has to
-        // stay callable afterwards -- including when this instantiation traps.
-        // Only the interpreter forwards by name; the JIT reaches a partial
-        // instance's exports through the registry, so it mints no name here.
-        #[cfg(feature = "interp")]
-        let owner = {
-            let owner = format!("anon_{}", self.module_counter);
-            self.module_counter += 1;
-            owner
-        };
-        self.instantiate_named(
-            wasm_bytes,
-            #[cfg(feature = "interp")]
-            &owner,
-        )
+    fn instantiate_with_registry(&mut self, wasm_bytes: &[u8]) -> Result<InstanceId, WasmError> {
+        self.instantiate_named(wasm_bytes)
     }
 
-    fn instantiate_named(
-        &mut self,
-        wasm_bytes: &[u8],
-        #[cfg(feature = "interp")] owner: &str,
-    ) -> Result<Instance, WasmError> {
+    fn instantiate_named(&mut self, wasm_bytes: &[u8]) -> Result<InstanceId, WasmError> {
         let imports = self.build_imports(wasm_bytes)?;
         let module = Module::new("main", wasm_bytes)?;
-        // Only the interpreter needs a `FuncRefHost`: the embedder's linking
-        // hook drives the absolute world identity while the engine-native
-        // interpreter trampoline remains deferred. The JIT resolves the same
-        // identity through the registry alone. In a build without `interp`
-        // this whole path does not exist to name.
-        #[cfg(feature = "interp")]
-        if self.engine.tier() == Tier::Interp {
-            let host = sf_nano_core::FuncRefHost {
-                invoke: Box::new(forward_raw_call),
-            };
-            return match Instance::from_module_with_registry_and_funcref_host(
-                &self.engine,
-                module,
-                &imports,
-                &self.function_registry,
-                host,
-            ) {
-                Ok(instance) => Ok(instance),
-                Err((partial, error)) => {
-                    // A trapping instantiation still wrote its element
-                    // segments, so anything they reference must remain
-                    // reachable: keep the instance and let it be forwarded to.
-                    if let Some(instance) = partial {
-                        self.instances.insert(owner.to_string(), instance);
-                        register_forwarding_instances(&mut self.instances, &self.registered_as);
-                    }
-                    Err(error)
-                }
-            };
-        }
-        match Instance::from_module_with_registry(
-            &self.engine,
-            module,
-            &imports,
-            &self.function_registry,
-        ) {
-            Ok(instance) => Ok(instance),
-            Err(err) => {
-                // A partial instance keeps its world slot occupied with its
-                // generation unbumped, so references minted before the failure
-                // stay resolvable without the harness holding anything.
-                Err(err.into_parts().1)
-            }
-        }
+        self.world
+            .instantiate(&self.engine, module, &imports)
+            .map_err(|error| error.into_parts().1)
     }
 
     /// Build imports for a module by providing spectest imports plus exports
@@ -1444,7 +1266,11 @@ impl WastTestRunner {
 
         // For each registered module, provide its exports as imports.
         for (registered_name, internal_name) in &self.registered_as {
-            if let Some(instance) = self.instances.get(internal_name) {
+            if let Some((instance_id, instance)) = self
+                .instances
+                .get(internal_name)
+                .and_then(|id| self.world.instance(*id).map(|instance| (*id, instance)))
+            {
                 if let Some(bytes) = self.module_bytes.get(internal_name) {
                     if let Ok(module) = Module::new("_export_scan", bytes) {
                         // Global exports — preserve live global identity
@@ -1512,16 +1338,15 @@ impl WastTestRunner {
                                             ),
                                         );
                                     } else {
-                                        // No link handle: the interpreter does
-                                        // not participate in the JIT's
-                                        // function registry. Forward through
-                                        // the host boundary instead -- the
-                                        // callee still runs in the other
-                                        // instance, by index, so this is a
-                                        // real cross-instance call and not a
-                                        // stub.
+                                        // A function without a world identity
+                                        // (for example, a re-exported host
+                                        // function) still crosses through the
+                                        // host boundary. The forwarding slot
+                                        // names its owning world instance by id,
+                                        // never by a pointer into harness
+                                        // storage.
                                         let slot =
-                                            alloc_forwarding_function_slot(internal_name, func_idx);
+                                            alloc_forwarding_function_slot(instance_id, func_idx);
                                         // A dropped import here becomes
                                         // "missing function import" at
                                         // instantiation, so say which limit
@@ -1670,7 +1495,11 @@ impl WastTestRunner {
                         continue;
                     }
                     if let Some(internal) = self.named_modules.get(mod_name) {
-                        if let Some(inst) = self.instances.get(internal) {
+                        if let Some(inst) = self
+                            .instances
+                            .get(internal)
+                            .and_then(|id| self.world.instance(*id))
+                        {
                             if let Some(value) = inst.get_global(import_name)? {
                                 imports.push(Import::global(mod_name, import_name, value, false));
                             } else {
@@ -1730,6 +1559,7 @@ impl WastTestRunner {
                 let Some(value) = self
                     .instances
                     .get(&src_internal)
+                    .and_then(|id| self.world.instance(*id))
                     .map(|instance| instance.global_at(src_idx))
                     .transpose()?
                     .flatten()
@@ -1741,7 +1571,10 @@ impl WastTestRunner {
         }
 
         for (dst_internal, dst_idx, value) in global_ops {
-            if let Some(instance) = self.instances.get_mut(&dst_internal) {
+            let Some(id) = self.instances.get(&dst_internal).copied() else {
+                continue;
+            };
+            if let Some(instance) = self.world.instance_mut(id) {
                 let _ = instance.replace_global_at(dst_idx, value);
             }
         }
@@ -1790,6 +1623,7 @@ impl WastTestRunner {
             let Some(value) = self
                 .instances
                 .get(src_internal)
+                .and_then(|id| self.world.instance(*id))
                 .map(|instance| instance.global_at(src_idx))
                 .transpose()?
                 .flatten()
@@ -1800,7 +1634,10 @@ impl WastTestRunner {
         }
 
         for (dst_internal, dst_idx, value) in global_ops {
-            if let Some(instance) = self.instances.get_mut(&dst_internal) {
+            let Some(id) = self.instances.get(&dst_internal).copied() else {
+                continue;
+            };
+            if let Some(instance) = self.world.instance_mut(id) {
                 let _ = instance.replace_global_at(dst_idx, value);
             }
         }
@@ -2252,6 +2089,10 @@ mod tests {
         assert_eq!(values.as_ref(), expected);
     }
 
+    fn only_instance_id(runner: &WastTestRunner) -> InstanceId {
+        runner.instances.values().copied().next().expect("instance")
+    }
+
     /// One engine per test, on the tier the test names.
     fn engine_for(tier: Tier) -> Engine {
         Engine::new(Config::new().tier(tier)).expect("engine")
@@ -2304,9 +2145,10 @@ mod tests {
     #[test]
     fn regress_if_as_br_table_last_true() {
         let mut runner = instantiate_first_module("if.wast");
-        let instance = runner.instances.values_mut().next().expect("instance");
-        let ret = instance
-            .invoke("as-br_table-last", &[Value::I32(1)])
+        let id = only_instance_id(&runner);
+        let ret = runner
+            .world
+            .invoke(id, "as-br_table-last", &[Value::I32(1)])
             .expect("invoke export");
         expect_values(ret, &[Value::I32(2)]);
     }
@@ -2314,9 +2156,10 @@ mod tests {
     #[test]
     fn regress_br_table_as_if_else_false() {
         let mut runner = instantiate_first_module("br_table.wast");
-        let instance = runner.instances.values_mut().next().expect("instance");
-        let ret = instance
-            .invoke("as-if-else", &[Value::I32(0), Value::I32(6)])
+        let id = only_instance_id(&runner);
+        let ret = runner
+            .world
+            .invoke(id, "as-if-else", &[Value::I32(0), Value::I32(6)])
             .expect("invoke export");
         expect_values(ret, &[Value::I32(4)]);
     }
@@ -2324,9 +2167,10 @@ mod tests {
     #[test]
     fn regress_memory_redundancy_malloc_aliasing() {
         let mut runner = instantiate_first_module("memory_redundancy.wast");
-        let instance = runner.instances.values_mut().next().expect("instance");
-        let ret = instance
-            .invoke("malloc_aliasing", &[])
+        let id = only_instance_id(&runner);
+        let ret = runner
+            .world
+            .invoke(id, "malloc_aliasing", &[])
             .expect("invoke export");
         expect_values(ret, &[Value::I32(43)]);
     }
@@ -2377,14 +2221,16 @@ mod tests {
             })
             .map(|(index, _)| index)
             .expect("exported function index");
-        let instance = runner.instances.values_mut().next().expect("instance");
-        let ret = instance
-            .invoke("as-mixed-operands", &[Value::I32(0)])
+        let id = only_instance_id(&runner);
+        let ret = runner
+            .world
+            .invoke(id, "as-mixed-operands", &[Value::I32(0)])
             .expect("invoke export");
         assert_eq!(ret.as_slice(), &[Value::I32(-3)]);
 
         // Native code is the JIT's business, so this assertion reaches
         // through to its instance rather than the engine-neutral one.
+        let instance = runner.world.instance(id).expect("instance");
         let jit = instance.as_jit().expect("this test runs on the jit");
         assert_eq!(
             jit.function_has_native_code(func_index),
@@ -2434,27 +2280,31 @@ mod tests {
         .expect("compile wat");
 
         let mut runner = WastTestRunner::new(test_engine());
-        let mut instance = runner
+        let id = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
 
-        let malloc = instance
-            .invoke("malloc", &[Value::I32(4)])
+        let malloc = runner
+            .world
+            .invoke(id, "malloc", &[Value::I32(4)])
             .expect("invoke malloc");
         assert_eq!(malloc.as_slice(), &[Value::I32(16)]);
 
-        let second = instance
-            .invoke("two_calls_second", &[])
+        let second = runner
+            .world
+            .invoke(id, "two_calls_second", &[])
             .expect("invoke two_calls_second");
         assert_eq!(second.as_slice(), &[Value::I32(16)]);
 
-        let diff = instance
-            .invoke("two_calls_diff", &[])
+        let diff = runner
+            .world
+            .invoke(id, "two_calls_diff", &[])
             .expect("invoke two_calls_diff");
         assert_eq!(diff.as_slice(), &[Value::I32(0)]);
 
-        let alias = instance
-            .invoke("store_y_load_x", &[])
+        let alias = runner
+            .world
+            .invoke(id, "store_y_load_x", &[])
             .expect("invoke store_y_load_x");
         assert_eq!(alias.as_slice(), &[Value::I32(43)]);
     }
@@ -2486,29 +2336,33 @@ mod tests {
         .expect("compile wat");
 
         let mut runner = WastTestRunner::new(test_engine());
-        let mut instance = runner
+        let id = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
 
-        instance.invoke("init", &[]).expect("invoke init");
+        runner.world.invoke(id, "init", &[]).expect("invoke init");
 
-        let cast_hit = instance
-            .invoke("br_on_cast", &[Value::I32(0)])
+        let cast_hit = runner
+            .world
+            .invoke(id, "br_on_cast", &[Value::I32(0)])
             .expect("invoke br_on_cast success");
         assert_eq!(cast_hit.as_slice(), &[Value::I32(7)]);
 
-        let cast_miss = instance
-            .invoke("br_on_cast", &[Value::I32(1)])
+        let cast_miss = runner
+            .world
+            .invoke(id, "br_on_cast", &[Value::I32(1)])
             .expect("invoke br_on_cast failure");
         assert_eq!(cast_miss.as_slice(), &[Value::I32(-1)]);
 
-        let cast_fail_miss = instance
-            .invoke("br_on_cast_fail", &[Value::I32(0)])
+        let cast_fail_miss = runner
+            .world
+            .invoke(id, "br_on_cast_fail", &[Value::I32(0)])
             .expect("invoke br_on_cast_fail success");
         assert_eq!(cast_fail_miss.as_slice(), &[Value::I32(7)]);
 
-        let cast_fail_hit = instance
-            .invoke("br_on_cast_fail", &[Value::I32(1)])
+        let cast_fail_hit = runner
+            .world
+            .invoke(id, "br_on_cast_fail", &[Value::I32(1)])
             .expect("invoke br_on_cast_fail branch");
         assert_eq!(cast_fail_hit.as_slice(), &[Value::I32(-1)]);
     }
@@ -2530,12 +2384,13 @@ mod tests {
         .expect("compile wat");
 
         let mut runner = WastTestRunner::new(test_engine());
-        let mut instance = runner
+        let id = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
 
-        let field = instance
-            .invoke("make_field", &[])
+        let field = runner
+            .world
+            .invoke(id, "make_field", &[])
             .expect("invoke make_field");
         assert_eq!(field.as_slice(), &[Value::I32(6)]);
     }
@@ -2565,12 +2420,13 @@ mod tests {
         .expect("compile wat");
 
         let mut runner = WastTestRunner::new(test_engine());
-        let mut instance = runner
+        let id = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
 
-        let value = instance
-            .invoke("write_then_read", &[])
+        let value = runner
+            .world
+            .invoke(id, "write_then_read", &[])
             .expect("invoke write_then_read");
         assert_eq!(value.as_slice(), &[Value::I32(7)]);
     }
@@ -2630,14 +2486,20 @@ mod tests {
         .expect("compile wat");
 
         let mut runner = WastTestRunner::new(test_engine());
-        let mut instance = runner
+        let id = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
 
-        let fixed_sum = instance.invoke("fixed_sum", &[]).expect("invoke fixed_sum");
+        let fixed_sum = runner
+            .world
+            .invoke(id, "fixed_sum", &[])
+            .expect("invoke fixed_sum");
         assert_eq!(fixed_sum.as_slice(), &[Value::I32(15)]);
 
-        let copied = instance.invoke("fill_copy", &[]).expect("invoke fill_copy");
+        let copied = runner
+            .world
+            .invoke(id, "fill_copy", &[])
+            .expect("invoke fill_copy");
         assert_eq!(copied.as_slice(), &[Value::I32(9)]);
     }
 
@@ -2662,11 +2524,11 @@ mod tests {
         .expect("compile wat");
 
         let mut runner = WastTestRunner::new(test_engine());
-        let mut instance = runner
+        let id = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
 
-        let value = instance.invoke("read", &[]).expect("invoke read");
+        let value = runner.world.invoke(id, "read", &[]).expect("invoke read");
         assert_eq!(value.as_slice(), &[Value::I32(4)]);
     }
 
@@ -2704,17 +2566,19 @@ mod tests {
         .expect("compile wat");
 
         let mut runner = WastTestRunner::new(test_engine());
-        let mut instance = runner
+        let id = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
 
-        let new_data = instance
-            .invoke("new_data_second", &[])
+        let new_data = runner
+            .world
+            .invoke(id, "new_data_second", &[])
             .expect("invoke new_data_second");
         assert_eq!(new_data.as_slice(), &[Value::I32(i32::from(b'B'))]);
 
-        let init_data = instance
-            .invoke("init_data_third", &[])
+        let init_data = runner
+            .world
+            .invoke(id, "init_data_third", &[])
             .expect("invoke init_data_third");
         assert_eq!(init_data.as_slice(), &[Value::I32(i32::from(b'C'))]);
     }
@@ -2762,17 +2626,19 @@ mod tests {
         .expect("compile wat");
 
         let mut runner = WastTestRunner::new(test_engine());
-        let mut instance = runner
+        let id = runner
             .try_instantiate_temp(&wasm_bytes)
             .expect("instantiate temp module");
 
-        let new_elem = instance
-            .invoke("new_elem_non_null", &[])
+        let new_elem = runner
+            .world
+            .invoke(id, "new_elem_non_null", &[])
             .expect("invoke new_elem_non_null");
         assert_eq!(new_elem.as_slice(), &[Value::I32(1)]);
 
-        let init_elem = instance
-            .invoke("init_elem_non_null", &[])
+        let init_elem = runner
+            .world
+            .invoke(id, "init_elem_non_null", &[])
             .expect("invoke init_elem_non_null");
         assert_eq!(init_elem.as_slice(), &[Value::I32(1)]);
     }
@@ -2789,15 +2655,17 @@ mod tests {
     #[test]
     fn native_if_params_id_break_uses_join_payload() {
         let mut runner = instantiate_first_module_with_backend("if.wast", Tier::Jit);
-        let instance = runner.instances.values_mut().next().expect("instance");
+        let id = only_instance_id(&runner);
 
-        let ret_false = instance
-            .invoke("params-id-break", &[Value::I32(0)])
+        let ret_false = runner
+            .world
+            .invoke(id, "params-id-break", &[Value::I32(0)])
             .expect("invoke export");
         assert_eq!(ret_false.as_slice(), &[Value::I32(3)]);
 
-        let ret_true = instance
-            .invoke("params-id-break", &[Value::I32(1)])
+        let ret_true = runner
+            .world
+            .invoke(id, "params-id-break", &[Value::I32(1)])
             .expect("invoke export");
         assert_eq!(ret_true.as_slice(), &[Value::I32(3)]);
     }

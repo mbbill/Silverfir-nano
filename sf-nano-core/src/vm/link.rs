@@ -81,6 +81,18 @@ struct InstanceTableInner {
 #[derive(Clone)]
 pub(crate) struct InstanceTable(Rc<InstanceTableInner>);
 
+/// A cheap, non-owning capability for calling back into a runtime world.
+///
+/// A host callback may need to invoke a runtime-chosen peer while the
+/// embedder's mutable borrow of the owning [`crate::RuntimeWorld`] remains
+/// live. This opaque handle makes that shape expressible without exposing the
+/// instance table or its checkout tokens. Its back-reference is deliberately
+/// weak so storing a clone inside an instance cannot close an ownership cycle.
+#[derive(Clone)]
+pub struct WorldHandle {
+    table: Weak<InstanceTableInner>,
+}
+
 /// A non-owning back-reference carried by each stored engine instance.
 #[derive(Clone)]
 pub(crate) struct InstanceHandle {
@@ -175,6 +187,13 @@ impl InstanceTable {
         InstanceHandle {
             table: Rc::downgrade(&self.0),
             self_id: id,
+        }
+    }
+
+    #[inline]
+    pub(crate) fn world_handle(&self) -> WorldHandle {
+        WorldHandle {
+            table: Rc::downgrade(&self.0),
         }
     }
 
@@ -316,6 +335,13 @@ impl InstanceTable {
             return None;
         }
         self.0.in_use.borrow().get(id.index() as usize).copied()
+    }
+}
+
+impl WorldHandle {
+    pub(crate) fn checkout(&self, id: InstanceId) -> Option<InstanceToken> {
+        let table = self.table.upgrade()?;
+        InstanceTable(table.into()).checkout(id)
     }
 }
 
