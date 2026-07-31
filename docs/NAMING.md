@@ -112,17 +112,39 @@ Only where the code violates its own patterns.
 `Store` has not been the spec's store since the 2026-02 split; it is the JIT's
 instance body, and `JitInstance { lease: InstanceLease }` owns nothing.
 
-**This rename alone does not achieve its goal.** The visibility is mirrored:
+**This rename alone does not achieve its goal**, and the reason is not
+visibility. The two engines expose *different access patterns*:
 
-| | body | lease |
-|---|---|---|
-| JIT | `Store` — `pub(crate)` | `JitInstance` — `pub` |
-| Interp | `InterpInstance` — `pub` | `InterpInstanceLease` — `pub(crate)` |
+| | escape hatch | hands back | public methods |
+|---|---|---|---|
+| JIT | `as_jit()` / `as_jit_mut()` | `&JitInstanceLease` — the token wrapper | 28 |
+| Interp | `with_interp(f)` / `with_interp_mut(f)` | nothing; lends `&InterpInstance` for a scope | 26 |
 
-The JIT exposes its lease and hides its body; the interpreter does the
-opposite. `lib.rs:44-49` claims they are counterparts, and renaming leaves
-that false. **Making it true is a visibility decision that must be taken
-explicitly**, not a side effect of a rename.
+Which is why the visibility is mirrored: the JIT publishes its lease because
+that is what it hands out, and the interpreter publishes its body because
+that is what its closure lends. Each is internally consistent. `lib.rs:44-49`
+calling them counterparts is what is false.
+
+The two shapes are not equally safe. The closure form is the containment
+pattern this refactor established — materialization is bounded by a scope the
+caller cannot escape. The lease form is safe today only because
+`JitInstanceLease`'s 28 methods each materialize internally and return
+nothing borrowed.
+
+Three coherent resolutions:
+
+- **A — make both closure-scoped.** Add `with_jit(f)`, retire `as_jit`.
+  Consistent with the containment design and makes the counterpart claim
+  true. Breaks any embedder calling `as_jit`.
+- **B — make both lease-returning.** Publish `InterpInstanceLease` with
+  forwarding methods. More work, and it spreads the weaker shape.
+- **C — keep both, correct the comment.** Free and honest: document that the
+  JIT hatch is a token wrapper and the interpreter's is a scoped accessor,
+  because that is how each engine materializes.
+
+**Recommendation: A**, on the grounds that the closure shape is the one the
+rest of the runtime is built on; **C** if the API break is not worth it.
+This is a decision about the public API, not about spelling.
 
 ### 2. `Handle` carries four roles
 
@@ -198,3 +220,28 @@ Recorded so the same mistakes are not re-proposed:
    Pattern B, which is one of the three things the code already gets right.
 6. **A five-wave, ~900-site plan** where the demonstrable defects are four
    renames and two design decisions.
+
+## Investigated and settled: the `FunctionSpec` native-code cache
+
+`module/entities.rs`'s `FunctionSpec` carries two JIT-only fields behind
+`UnsafeCell` — `native_code` and `native_cache` — with every caller in
+`vm/jit/`. That is engine-only state living in the shared module layer.
+
+The stated risk to moving it was that the cache is attached to the module and
+might therefore be shared by all instances of that module, so relocating it
+into the JIT subtree would lose compiled-code reuse. **That risk does not
+exist.** `Module` derives only `Debug` — it is not `Clone` and never held
+behind `Rc` — and `FunctionSpec` is likewise neither, and is *moved* into
+`FunctionInst::Local` at instantiation (`jit/instance.rs:345`). Each instance
+owns its own specs, so the cache is already per-instance and no cross-instance
+sharing can be lost.
+
+The move is therefore mechanical. Every caller already holds both the local
+function index and the JIT's `ModuleInst` (`build.rs:1285,1385`,
+`native_eval.rs:55`), so a side vector on `ModuleInst` indexed by function
+index reaches all of them.
+
+One thing it does **not** buy: the `UnsafeCell` does not disappear.
+`ensure_module_compiled` takes `&JitInstance` and still writes the cache, so
+interior mutability is required wherever it lives. The gain is that the
+shared module layer stops carrying `unsafe`, not that the `unsafe` goes away.
