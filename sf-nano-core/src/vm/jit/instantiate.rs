@@ -838,6 +838,7 @@ impl JitInstanceLease {
                         let _ = store.register_local_function(func_idx);
                     }
                 }
+                store.finalize_self_local_by_abs();
                 // Imported value globals are created before local functions receive
                 // world addresses. Normalize any reachable funcref cell now that the
                 // complete local-index map exists.

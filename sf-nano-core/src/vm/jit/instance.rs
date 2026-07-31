@@ -26,7 +26,7 @@ use crate::vm::link::{
     SharedRefRegistry,
 };
 use crate::vm::tag::TagIdentity;
-use crate::vm::value::{RefValue, Value};
+use crate::vm::value::{RefValue, Value, FUNCADDR_TOP};
 use core::cell::RefCell;
 
 const UNREGISTERED_FUNCADDR: usize = usize::MAX;
@@ -37,6 +37,11 @@ pub(crate) struct JitInstance {
     instance_backref: InstanceBackref,
     function_registry: SharedFunctionRegistry,
     local_funcaddrs: collections::Vec<usize>,
+    /// Reverse lookup for this instance's own registered wasm functions.
+    /// `absolute - self_abs_base` indexes `self_local_by_abs`; gaps contain
+    /// `u32::MAX`. Imported host and linked functions never populate it.
+    self_abs_base: usize,
+    self_local_by_abs: collections::Vec<u32>,
     ref_registry: SharedRefRegistry,
     #[cfg(sf_has_simd)]
     simd_registry: SharedSimdRegistry,
@@ -66,6 +71,8 @@ impl JitInstance {
             instance_backref,
             function_registry,
             local_funcaddrs: collections::vec![UNREGISTERED_FUNCADDR; function_count],
+            self_abs_base: usize::MAX,
+            self_local_by_abs: collections::Vec::new(),
             ref_registry,
             #[cfg(sf_has_simd)]
             simd_registry,
@@ -245,6 +252,69 @@ impl JitInstance {
     pub(crate) fn funcaddr_for_local_index(&self, local_index: usize) -> Option<usize> {
         let funcaddr = self.local_funcaddrs.get(local_index).copied()?;
         (funcaddr != UNREGISTERED_FUNCADDR).then_some(funcaddr)
+    }
+
+    /// Finalize the owner-private absolute-to-local map after initial function
+    /// registration. Only wasm-defined functions participate: imports can
+    /// carry another instance's absolute identity and must never enter this
+    /// reverse map. Instantiation calls this once before any `NativeContext`
+    /// can publish a view into the resulting allocation.
+    pub(crate) fn finalize_self_local_by_abs(&mut self) {
+        let self_id = self.instance_backref.self_id();
+        let mut self_abs_base = usize::MAX;
+        let mut self_abs_hi = 0usize;
+
+        for (local_index, func) in self.module.functions.iter().enumerate() {
+            if !matches!(func, FunctionInst::Local { .. }) {
+                continue;
+            }
+            let Some(funcaddr) = self.funcaddr_for_local_index(local_index) else {
+                continue;
+            };
+            let entry = self
+                .function_entry_for_funcaddr(funcaddr)
+                .expect("registered local function is missing from the function arena");
+            assert!(
+                entry.owner == self_id && entry.local_index as usize == local_index,
+                "registered local function has a mismatched arena identity"
+            );
+            let encoded = FUNCADDR_TOP
+                .checked_sub(funcaddr)
+                .expect("registered funcaddr exceeds the encoding range");
+            self_abs_base = self_abs_base.min(encoded);
+            self_abs_hi = self_abs_hi.max(encoded);
+        }
+
+        let mut self_local_by_abs = collections::Vec::new();
+        if self_abs_base != usize::MAX {
+            self_local_by_abs.resize(self_abs_hi - self_abs_base + 1, u32::MAX);
+            for (local_index, func) in self.module.functions.iter().enumerate() {
+                if !matches!(func, FunctionInst::Local { .. }) {
+                    continue;
+                }
+                let Some(funcaddr) = self.funcaddr_for_local_index(local_index) else {
+                    continue;
+                };
+                let encoded = FUNCADDR_TOP
+                    .checked_sub(funcaddr)
+                    .expect("registered funcaddr exceeds the encoding range");
+                self_local_by_abs[encoded - self_abs_base] = u32::try_from(local_index)
+                    .expect("local function index exceeds the funcaddr encoding");
+            }
+        }
+
+        self.self_abs_base = self_abs_base;
+        self.self_local_by_abs = self_local_by_abs;
+    }
+
+    #[inline]
+    pub(crate) fn self_abs_base(&self) -> usize {
+        self.self_abs_base
+    }
+
+    #[inline]
+    pub(crate) fn self_local_by_abs(&self) -> &[u32] {
+        &self.self_local_by_abs
     }
 
     pub(crate) fn function_entry_for_handle(&self, handle: RefValue) -> Option<FuncEntry> {
