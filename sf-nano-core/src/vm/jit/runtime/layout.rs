@@ -71,9 +71,6 @@ pub(crate) struct NativeContextAbiLayout {
     pub globals_len_offset: u32,
     pub store_offset: u32,
     pub current_module_offset: u32,
-    pub self_abs_base_offset: u32,
-    pub self_local_by_abs_base_offset: u32,
-    pub self_local_by_abs_len_offset: u32,
     /// Offset of the trailing inline raw-ptr array (`[*mut u64; globals_len]`)
     /// within the runtime context. JIT-emitted `global.get`/`global.set` uses
     /// this as the base for a single indexed load into the tail, followed by
@@ -192,9 +189,6 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
     let globals_len_offset = type_canon_len_offset + ptr;
     let store_offset = globals_len_offset + ptr;
     let current_module_offset = store_offset + ptr;
-    let self_abs_base_offset = current_module_offset + ptr;
-    let self_local_by_abs_base_offset = self_abs_base_offset + ptr;
-    let self_local_by_abs_len_offset = self_local_by_abs_base_offset + ptr;
     // The inline raw-ptr tail is pinned to the host struct's tail offset
     // (equivalent to `offset_of!(NativeContext, globals_ptrs_tail)` since the
     // marker is the last field of the `#[repr(C)]` struct). This keeps
@@ -229,9 +223,6 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
             globals_len_offset,
             store_offset,
             current_module_offset,
-            self_abs_base_offset,
-            self_local_by_abs_base_offset,
-            self_local_by_abs_len_offset,
             globals_ptrs_inline_offset,
             size,
         },
@@ -312,18 +303,6 @@ mod tests {
         assert_eq!(
             layout.context.type_canon_len_offset,
             ctx_offset::TYPE_CANON_LEN
-        );
-        assert_eq!(
-            layout.context.self_abs_base_offset,
-            ctx_offset::SELF_ABS_BASE
-        );
-        assert_eq!(
-            layout.context.self_local_by_abs_base_offset,
-            ctx_offset::SELF_LOCAL_BY_ABS_BASE
-        );
-        assert_eq!(
-            layout.context.self_local_by_abs_len_offset,
-            ctx_offset::SELF_LOCAL_BY_ABS_LEN
         );
     }
 

@@ -13,6 +13,15 @@ pub(crate) mod function_kind {
     pub(crate) const EXTERNAL: u32 = 1;
 }
 
+/// Encoded absolute-handle span occupied by the functions this instance
+/// registered during instantiation. `count` is the span length; any gap is
+/// represented by an invalid function-view suffix entry.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct SelfAbsoluteFunctionRange {
+    pub(crate) base: usize,
+    pub(crate) count: usize,
+}
+
 /// Per-function dispatch facts used by indirect dispatch.
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]

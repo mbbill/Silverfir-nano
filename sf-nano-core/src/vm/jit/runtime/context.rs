@@ -43,7 +43,7 @@ use crate::{
             layout::local_call_info_abi_layout,
         },
         tag::TagIdentity,
-        value::RefValue,
+        value::{RefValue, FUNCADDR_TOP},
     },
 };
 
@@ -115,12 +115,6 @@ pub(crate) struct NativeContext {
     pub(crate) globals_len: usize,
     pub(crate) store: *mut JitInstance,
     pub(crate) current_module: *const ModuleInst,
-    /// Lowest encoded absolute handle covered by the owner-private reverse
-    /// map. `usize::MAX` when the map is empty.
-    pub(crate) self_abs_base: usize,
-    /// Stable view into `JitInstance::self_local_by_abs`.
-    pub(crate) self_local_by_abs_base: *const u32,
-    pub(crate) self_local_by_abs_len: usize,
     pub(crate) error: Option<WasmError>,
     /// Pending wasm exception / trap in transit between runtime-call entry
     /// and the catch-dispatcher block (or the function escape path).
@@ -188,7 +182,6 @@ impl NativeContext {
         } else {
             self.current_module = core::ptr::null();
         }
-        self.refresh_self_local_by_abs_view();
         self.refresh_globals_ptrs();
         self.refresh_memory_views();
         self.refresh_table_views();
@@ -330,28 +323,6 @@ impl NativeContext {
             return false;
         }
         true
-    }
-
-    #[inline]
-    fn refresh_self_local_by_abs_view(&mut self) {
-        let (self_abs_base, self_local_by_abs_base, self_local_by_abs_len) =
-            if let Some(store) = self.store() {
-                let reverse = store.self_local_by_abs();
-                (
-                    store.self_abs_base(),
-                    if reverse.is_empty() {
-                        core::ptr::null()
-                    } else {
-                        reverse.as_ptr()
-                    },
-                    reverse.len(),
-                )
-            } else {
-                (usize::MAX, core::ptr::null(), 0)
-            };
-        self.self_abs_base = self_abs_base;
-        self.self_local_by_abs_base = self_local_by_abs_base;
-        self.self_local_by_abs_len = self_local_by_abs_len;
     }
 
     #[inline]
@@ -513,7 +484,12 @@ impl NativeContext {
 
         let module = store.module();
         let type_canon = &self.type_canon;
-        let function_views: collections::Vec<_> = module
+        let local_len = module.functions.len();
+        let self_absolute_range = store.self_absolute_range();
+        let total_len = local_len
+            .checked_add(self_absolute_range.count)
+            .expect("function-view length overflow");
+        let mut function_views: collections::Vec<_> = module
             .functions
             .iter()
             .enumerate()
@@ -552,13 +528,43 @@ impl NativeContext {
             })
             .collect();
 
+        function_views.resize(
+            total_len,
+            NativeFunctionView {
+                kind: function_kind::EXTERNAL,
+                type_canon: u32::MAX,
+                local_target: u32::MAX,
+            },
+        );
+        for local_index in 0..local_len {
+            let Some(funcaddr) = store.funcaddr_for_local_index(local_index) else {
+                continue;
+            };
+            let encoded = FUNCADDR_TOP
+                .checked_sub(funcaddr)
+                .expect("registered funcaddr exceeds the encoding range");
+            let Some(delta) = encoded.checked_sub(self_absolute_range.base) else {
+                // Host functions may be appended after native compilation.
+                // Their newer absolute addresses sit below the baked range
+                // and fall back, while their local handles use the prefix.
+                continue;
+            };
+            if delta >= self_absolute_range.count {
+                continue;
+            }
+            function_views[local_len + delta] = function_views[local_index];
+        }
+
         self.function_views = function_views;
         self.function_views_base = if self.function_views.is_empty() {
             core::ptr::null()
         } else {
             self.function_views.as_ptr()
         };
-        self.function_views_len = self.function_views.len();
+        // This remains the local-handle discriminator. The owner-private
+        // absolute views live in the allocation's suffix and are addressed by
+        // generated code only after its baked range check.
+        self.function_views_len = local_len;
     }
 
     #[inline]
@@ -785,9 +791,6 @@ impl NativeContextBox {
                 globals_len: n_globals,
                 store,
                 current_module: core::ptr::null(),
-                self_abs_base: usize::MAX,
-                self_local_by_abs_base: core::ptr::null(),
-                self_local_by_abs_len: 0,
                 error: None,
                 pending_escape: PendingEscape::None,
                 #[cfg(sf_has_guard_pages)]
@@ -908,12 +911,6 @@ pub(crate) mod ctx_offset {
             core::mem::offset_of!(NativeContext, type_canon_base) as u32;
         pub(crate) const TYPE_CANON_LEN: u32 =
             core::mem::offset_of!(NativeContext, type_canon_len) as u32;
-        pub(crate) const SELF_ABS_BASE: u32 =
-            core::mem::offset_of!(NativeContext, self_abs_base) as u32;
-        pub(crate) const SELF_LOCAL_BY_ABS_BASE: u32 =
-            core::mem::offset_of!(NativeContext, self_local_by_abs_base) as u32;
-        pub(crate) const SELF_LOCAL_BY_ABS_LEN: u32 =
-            core::mem::offset_of!(NativeContext, self_local_by_abs_len) as u32;
     }
     #[cfg(test)]
     pub(crate) use test_only::*;
@@ -1083,7 +1080,7 @@ mod tests {
     }
 
     #[test]
-    fn self_absolute_reverse_view_excludes_foreign_and_host_registrations() {
+    fn self_absolute_function_views_follow_encoded_order_after_local_prefix() {
         let registry = LinkRegistry::new();
         let dropped_encoded = {
             let mut dropped_store = store_with_registry(module_with_local(), &registry);
@@ -1102,7 +1099,7 @@ mod tests {
             callback: crate::vm::entities::HostCallback::new(host_noop),
         });
         module.functions.push(FunctionInst::Local {
-            spec: FunctionSpec::new(func_type, 1),
+            spec: FunctionSpec::new(Rc::clone(&func_type), 1),
             type_index: 0,
         });
 
@@ -1122,8 +1119,22 @@ mod tests {
             - live_store
                 .funcaddr_for_local_index(2)
                 .expect("second live local function registration");
-        live_store.finalize_self_local_by_abs();
-        assert_eq!(registry.function_registry_shared().borrow().len(), 4);
+        live_store.finalize_self_absolute_range();
+        let self_absolute_range = live_store.self_absolute_range();
+
+        // The embedding API can append host functions after compilation. The
+        // baked self range stays fixed, while the function-view prefix grows.
+        let late_host_index = live_store.module().functions.len();
+        live_store.module_mut().functions.push(FunctionInst::Host {
+            func_type,
+            callback: crate::vm::entities::HostCallback::new(host_noop),
+        });
+        let _ = live_store.register_local_function(late_host_index);
+        let late_host_encoded = FUNCADDR_TOP
+            - live_store
+                .funcaddr_for_local_index(late_host_index)
+                .expect("late host function registration");
+        assert_eq!(registry.function_registry_shared().borrow().len(), 5);
 
         let n_globals = live_store.module().globals.len();
         let ctx = NativeContext::new(
@@ -1132,14 +1143,21 @@ mod tests {
             n_globals,
         );
 
-        assert_eq!(ctx.self_abs_base, local_two_encoded);
-        assert_eq!(local_zero_encoded - ctx.self_abs_base, 2);
-        assert_eq!(host_encoded - ctx.self_abs_base, 1);
-        assert!(dropped_encoded >= ctx.self_abs_base + ctx.self_local_by_abs_len);
-        let reverse = unsafe {
-            core::slice::from_raw_parts(ctx.self_local_by_abs_base, ctx.self_local_by_abs_len)
-        };
-        assert_eq!(reverse, &[2, u32::MAX, 0]);
+        assert_eq!(self_absolute_range.base, local_two_encoded);
+        assert_eq!(self_absolute_range.count, 3);
+        assert_eq!(local_zero_encoded - self_absolute_range.base, 2);
+        assert_eq!(host_encoded - self_absolute_range.base, 1);
+        assert!(dropped_encoded >= self_absolute_range.base + self_absolute_range.count);
+        assert!(late_host_encoded < self_absolute_range.base);
+
+        assert_eq!(ctx.function_views_len, 4);
+        assert_eq!(ctx.function_views.len(), 7);
+        let prefix = &ctx.function_views[..ctx.function_views_len];
+        let absolute = &ctx.function_views[ctx.function_views_len..];
+        assert_eq!(absolute, &[prefix[2], prefix[1], prefix[0]]);
+        assert_eq!(absolute[0].local_target, 2);
+        assert_eq!(absolute[1].kind, function_kind::EXTERNAL);
+        assert_eq!(absolute[2].local_target, 0);
     }
 
     #[test]

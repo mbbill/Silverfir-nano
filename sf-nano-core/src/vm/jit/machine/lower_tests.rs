@@ -31,6 +31,7 @@ use crate::vm::{
             target::SsaTarget,
         },
     },
+    jit::runtime::dispatch_view::SelfAbsoluteFunctionRange,
     jit::wasm::primitive_op::PrimitiveOpKind,
 };
 
@@ -39,7 +40,14 @@ const HOST_CALL_SCRATCH_SLOTS: u16 = if HOST_GP_UNIT_BYTES == 4 { 8 } else { 3 }
 
 /// Test-local shorthand: these tests never exercise table dispatch modes.
 fn lower_module(input: LowerModuleInput) -> Result<LoweredMachineModule, crate::error::WasmError> {
-    lower_module_with_table_dispatch_modes(input, &[])
+    lower_module_with_table_dispatch_modes(
+        input,
+        &[],
+        SelfAbsoluteFunctionRange {
+            base: 100,
+            count: 7,
+        },
+    )
 }
 
 fn total_gp_budget_for_allocatable(allocatable_gp_budget: u8, gp_unit_bytes: u8) -> u8 {
@@ -4884,7 +4892,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     assert_eq!(lowered.module.consts.len(), 1);
 
     let program = &lowered.module.functions[0].program;
-    assert_eq!(program.blocks.len(), 12);
+    assert_eq!(program.blocks.len(), 11);
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Branch { .. }
@@ -4904,7 +4912,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
                 ..
             },
             then_edge: MachineEdge {
-                target: MachineBlockId(5),
+                target: MachineBlockId(4),
                 ..
             },
             else_edge: MachineEdge {
@@ -4914,68 +4922,93 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         }
     ));
     assert!(matches!(
-        program.blocks[6].terminator,
+        program.blocks[5].terminator,
         MachineTerminator::Trap {
             kind: MachineTrapKind::InvalidFunctionReference
         }
     ));
     assert!(matches!(
-        program.blocks[8].terminator,
+        program.blocks[7].terminator,
         MachineTerminator::Jump(MachineEdge {
-            target: MachineBlockId(9),
+            target: MachineBlockId(8),
             ..
         })
     ));
-    assert_eq!(program.blocks[8].params.len(), 1);
+    assert_eq!(program.blocks[7].params.len(), 1);
     assert!(matches!(
-        program.blocks[8].ops[0].kind,
+        program.blocks[7].ops[0].kind,
         MachineInstKind::IntBinary {
             op: MachineIntBinaryOp::Add,
             ..
         }
     ));
     assert!(matches!(
-        program.blocks[9].terminator,
+        program.blocks[8].terminator,
         MachineTerminator::Call {
             target: MachineCallTarget::Indirect { .. },
             success: MachineEdge {
-                target: MachineBlockId(11),
+                target: MachineBlockId(10),
                 ..
             },
             ..
         }
     ));
     let range_block = &program.blocks[3];
+    assert_eq!(range_block.params.len(), 2);
+    let function_views_len_loads = program.blocks[1]
+        .ops
+        .iter()
+        .filter_map(|inst| match inst.kind {
+            MachineInstKind::Load { dst, addr, .. }
+                if addr.offset
+                    == crate::vm::jit::runtime::context::ctx_offset::FUNCTION_VIEWS_LEN as i32 =>
+            {
+                Some(dst)
+            }
+            _ => None,
+        })
+        .collect::<collections::Vec<_>>();
+    assert_eq!(function_views_len_loads.len(), 1);
+    let function_views_len = function_views_len_loads[0];
+    let MachineTerminator::Branch { else_edge, .. } = &program.blocks[1].terminator else {
+        panic!("expected local/absolute discriminator branch");
+    };
+    assert_eq!(else_edge.args[0], MachineValue::Reg(function_views_len));
+    assert_eq!(range_block.params[0].reg, function_views_len);
     assert!(matches!(
         range_block.ops.as_slice(),
         [
             MachineInst {
-                kind: MachineInstKind::Load { addr: abs_base, .. },
-            },
-            MachineInst {
                 kind: MachineInstKind::IntBinary {
                     op: MachineIntBinaryOp::Sub,
+                    rhs: MachineValue::Imm64(100),
                     ..
                 },
             },
             MachineInst {
-                kind: MachineInstKind::Load { addr: reverse_len, .. },
+                kind: MachineInstKind::IntBinary {
+                    op: MachineIntBinaryOp::Add,
+                    lhs: MachineValue::Reg(local_len),
+                    ..
+                },
             },
-        ] if abs_base.offset
-            == crate::vm::jit::runtime::context::ctx_offset::SELF_ABS_BASE as i32
-            && reverse_len.offset
-                == crate::vm::jit::runtime::context::ctx_offset::SELF_LOCAL_BY_ABS_LEN as i32
+        ] if *local_len == function_views_len
     ));
+    assert!(!range_block.ops.iter().any(|inst| matches!(
+        inst.kind,
+        MachineInstKind::Load { .. } | MachineInstKind::IndexedLoad { .. }
+    )));
     assert!(matches!(
         range_block.terminator,
         MachineTerminator::Branch {
             cond: MachineBranchCond::IntCompare {
                 kind: MachineCompareKind::Ge,
                 sign: MachineSign::Unsigned,
+                rhs: MachineValue::Imm64(7),
                 ..
             },
             then_edge: MachineEdge {
-                target: MachineBlockId(10),
+                target: MachineBlockId(9),
                 ..
             },
             else_edge: MachineEdge {
@@ -4983,48 +5016,6 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
                 ..
             },
         }
-    ));
-    let lookup_block = &program.blocks[4];
-    assert!(matches!(
-        lookup_block.ops.as_slice(),
-        [
-            MachineInst {
-                kind: MachineInstKind::Load { addr: reverse_base, .. },
-            },
-            MachineInst {
-                kind: MachineInstKind::IntBinary {
-                    op: MachineIntBinaryOp::Shl,
-                    rhs: MachineValue::Imm64(2),
-                    ..
-                },
-            },
-            MachineInst {
-                kind: MachineInstKind::IndexedLoad {
-                    width: MachineMemWidth::U32,
-                    extension: MachineLoadExtension::ZeroExtend,
-                    ..
-                },
-            },
-        ] if reverse_base.offset
-            == crate::vm::jit::runtime::context::ctx_offset::SELF_LOCAL_BY_ABS_BASE as i32
-    ));
-    assert!(matches!(
-        lookup_block.terminator,
-        MachineTerminator::Branch {
-            cond: MachineBranchCond::IntCompare {
-                kind: MachineCompareKind::Eq,
-                rhs: MachineValue::Imm64(value),
-                ..
-            },
-            then_edge: MachineEdge {
-                target: MachineBlockId(10),
-                ..
-            },
-            else_edge: MachineEdge {
-                target: MachineBlockId(5),
-                ..
-            },
-        } if value == u32::MAX as u64
     ));
     let callee_slot_offset = i32::from(call_base.advance(2).0) * 8;
     let callee_slot_stores = program
@@ -5046,9 +5037,9 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         .count();
     assert_eq!(
         callee_slot_stores, 1,
-        "self resolution must carry its local index in MIR while preserving the original absolute frame handle for every runtime fallback"
+        "self resolution must carry its function-view index in MIR while preserving the original absolute frame handle for every runtime fallback"
     );
-    let type_check_ops = &program.blocks[5].ops;
+    let type_check_ops = &program.blocks[4].ops;
     assert!(!type_check_ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::Move {
@@ -5087,7 +5078,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         }
     ));
     assert!(matches!(
-        &program.blocks[5].terminator,
+        &program.blocks[4].terminator,
         MachineTerminator::Branch {
             cond: MachineBranchCond::IntCompare {
                 rhs: MachineValue::Reg(rhs),
@@ -5097,7 +5088,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         } if *rhs == type_check_scaled
     ));
 
-    let dispatch_ops = &program.blocks[7].ops;
+    let dispatch_ops = &program.blocks[6].ops;
     assert!(!dispatch_ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::Move {
@@ -5136,26 +5127,26 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         }
     ));
     assert!(matches!(
-        program.blocks[10].ops[0].kind,
+        program.blocks[9].ops[0].kind,
         MachineInstKind::CallRuntime(_)
     ));
     assert!(matches!(
-        program.blocks[10].ops[1].kind,
+        program.blocks[9].ops[1].kind,
         MachineInstKind::Load { .. }
     ));
     assert!(matches!(
-        program.blocks[10].ops[2].kind,
+        program.blocks[9].ops[2].kind,
         MachineInstKind::Load { .. }
     ));
     assert!(matches!(
-        program.blocks[10].terminator,
+        program.blocks[9].terminator,
         MachineTerminator::Jump(MachineEdge {
-            target: MachineBlockId(11),
+            target: MachineBlockId(10),
             ..
         })
     ));
     assert!(matches!(
-        program.blocks[11].terminator,
+        program.blocks[10].terminator,
         MachineTerminator::Trap {
             kind: MachineTrapKind::Unreachable
         }
@@ -5314,7 +5305,7 @@ fn lowers_call_indirect_local_path_with_live_register_args() {
     assert_eq!(
         self_range_edge.args.len(),
         self_range_block.params.len(),
-        "self-absolute resolver must receive the raw handle plus every live register argument"
+        "self-absolute resolver must receive the local-view length, raw handle, and every live register argument"
     );
     let range_fallback = match &self_range_block.terminator {
         MachineTerminator::Branch { then_edge, .. } => then_edge,
@@ -5338,20 +5329,16 @@ fn lowers_call_indirect_local_path_with_live_register_args() {
             .collect::<collections::Vec<_>>(),
         "generic-table range fallback must bind the runtime block parameters"
     );
-    let self_lookup_edge = match &self_range_block.terminator {
+    let in_range_edge = match &self_range_block.terminator {
         MachineTerminator::Branch { else_edge, .. } => else_edge,
         other => panic!("expected owner-private absolute range branch, got {other:?}"),
     };
-    let self_lookup_block = &program.blocks[self_lookup_edge.target.as_usize()];
-    let gap_fallback = match &self_lookup_block.terminator {
-        MachineTerminator::Branch { then_edge, .. } => then_edge,
-        other => panic!("expected owner-private reverse-map sentinel branch, got {other:?}"),
-    };
+    assert_ne!(in_range_edge.target, runtime_block.id);
     assert_eq!(
-        gap_fallback.target, runtime_block.id,
-        "a reverse-map gap must preserve the absolute handle and use the runtime helper"
+        in_range_edge.args.len(),
+        program.blocks[in_range_edge.target.as_usize()].params.len(),
+        "an in-range self absolute must carry its suffix view index and every live argument to type checking"
     );
-    assert_eq!(gap_fallback.args, range_fallback.args);
     let arg_offsets = collections::vec![
         i32::from(call_base.0) * 8,
         i32::from(call_base.advance(1).0) * 8,
@@ -6003,17 +5990,26 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
             })
         })
         .expect("expected self-absolute range block");
-    assert!(self_range.ops.iter().all(|inst| matches!(
-        inst.kind,
-        MachineInstKind::Load {
-            width: MachineMemWidth::U32,
-            ..
-        } | MachineInstKind::IntBinary {
-            width: MachineIntWidth::I32,
-            op: MachineIntBinaryOp::Sub,
-            ..
-        }
-    )));
+    assert!(matches!(
+        self_range.ops.as_slice(),
+        [
+            MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: MachineIntWidth::I32,
+                    op: MachineIntBinaryOp::Sub,
+                    rhs: MachineValue::Imm64(100),
+                    ..
+                },
+            },
+            MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    width: MachineIntWidth::I32,
+                    op: MachineIntBinaryOp::Add,
+                    ..
+                },
+            },
+        ]
+    ));
     assert!(matches!(
         self_range.terminator,
         MachineTerminator::Branch {
@@ -6021,49 +6017,11 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
                 width: MachineIntWidth::I32,
                 kind: MachineCompareKind::Ge,
                 sign: MachineSign::Unsigned,
+                rhs: MachineValue::Imm64(7),
                 ..
             },
             ..
         }
-    ));
-    let self_lookup = program
-        .blocks
-        .iter()
-        .find(|block| {
-            block.ops.iter().any(|inst| {
-                matches!(
-                    inst.kind,
-                    MachineInstKind::IndexedLoad {
-                        width: MachineMemWidth::U32,
-                        extension: MachineLoadExtension::ZeroExtend,
-                        ..
-                    }
-                )
-            }) && block.ops.iter().any(|inst| {
-                matches!(
-                    inst.kind,
-                    MachineInstKind::IntBinary {
-                        width: MachineIntWidth::I32,
-                        op: MachineIntBinaryOp::Shl,
-                        rhs: MachineValue::Imm64(2),
-                        ..
-                    }
-                )
-            })
-        })
-        .expect("expected self-absolute reverse-map lookup block");
-    assert!(matches!(
-        self_lookup.terminator,
-        MachineTerminator::Branch {
-            cond: MachineBranchCond::IntCompare {
-                width: MachineIntWidth::I32,
-                kind: MachineCompareKind::Eq,
-                sign: MachineSign::Unsigned,
-                rhs: MachineValue::Imm64(value),
-                ..
-            },
-            ..
-        } if value == u32::MAX as u64
     ));
     assert!(
         program
