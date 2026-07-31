@@ -125,6 +125,42 @@
   above this line predate the rename and keep the old spellings, since the log
   is append-only (sourced).
 
+- 2026-07-31 measurement: the migration cost `call_indirect` through a table
+  that crosses the instance boundary. On arm64-darwin, funcref-exported-table
+  fell from 541M to 6M calls/s on the JIT and from 21.0M to 16.1M on the
+  interpreter; CI failed all eight native jobs on both engines. Direct calls
+  were unaffected on both. The blast radius is exactly tables that are
+  exported or imported: of the nineteen benchmark modules only funcref.wasm
+  has one, and the same module rebuilt without `-Wl,--export-table` shows no
+  regression at all (1210 vs 1222 M/s) (code).
+
+- 2026-07-31 pitfall: for a reachable table the JIT's inline dispatch is not
+  slow, it is unreachable. The slot holds the absolute form, the inline guard
+  tests `value < function_views_len`, and the arena asserts the absolute and
+  local ranges never overlap -- so the guard can never pass and every call
+  takes the runtime helper. The helper did not get slower; `function_views` is
+  byte-identical across the change and the pre-migration build simply never
+  entered it. A fix must restore an inline path; making the helper cheaper
+  cannot close the gap (code).
+
+- 2026-07-31 pitfall: compilation metrics do not prove the emitted code is
+  unchanged. Baseline and candidate report identical function, SSA, MIR and
+  code-size figures across this regression, because the change is a branch
+  TARGET: it moves no node and need not move a byte. Comparing those four
+  numbers eliminates nothing (code).
+
+- 2026-07-31 measurement: the interpreter's share of that regression was two
+  unrelated causes, and the larger one is not about funcrefs. `Effect` and
+  `StepExit` reached 144 bytes because `ExternalCall` carried a `PreparedCall`
+  inline; both are returned by value from the slow path, so every slow exit
+  copied 144 bytes. Boxing that variant takes them to 32 and recovers about
+  three quarters of the loss, and it taxes every slow-exit-dominated workload
+  rather than `call_indirect` alone. The remainder is the funcref cause: a
+  self-owned absolute handle can never satisfy the local-range early-out, so
+  each call fell through to the shared arena until each instance carried the
+  reverse of its own identity map (code).
+
+
 ## Moves
 
 - 2026-07-30 (bc7cbb03) replaced [[pointer-identity]]: raw store pointers made
