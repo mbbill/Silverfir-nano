@@ -14,7 +14,7 @@ What the implementation confirmed, deviated from, or left open:
   the function-registry revision counter are all gone. The remaining
   `unsafe` is the three categories this document names: the generated-code
   ABI, the epoch-validated raw caches, and the one `checkout` primitive.
-- **Decision 38 amends the `InstanceHandle` sketch.** The conversion
+- **Decision 38 amends the `InstanceBackref` sketch.** The conversion
   primitives do not live on the handle — it cannot reach the function arena.
   They resolve per-instance instead. Decision 34 had already flagged that
   sketch line as a redundant declaration; see `docs/decisions.json`.
@@ -193,7 +193,7 @@ struct InstanceTableInner {
 /// What every `Store` and `InterpInstance` carries, in the same place
 /// `LinkRegistry` lives today. NON-owning, which is what keeps the graph
 /// acyclic.
-pub(crate) struct InstanceHandle {
+pub(crate) struct InstanceBackref {
     table:   Weak<InstanceTableInner>,
     /// This instance's own id. THIS FIELD IS WHAT `self as *mut Store`
     /// (`store.rs:225`, `:274`) AND `core::ptr::eq` (`context.rs:499`)
@@ -203,7 +203,7 @@ pub(crate) struct InstanceHandle {
     self_id: InstanceId,
 }
 
-impl InstanceHandle {
+impl InstanceBackref {
     /// The one resolution operation. `&self`, so it is callable from the
     /// `&Store` the deep helpers already hold.
     fn checkout(&self, id: InstanceId) -> Option<InstanceToken> {
@@ -612,7 +612,7 @@ that import or export a table.
 The interpreter registers its instances in the same world and mints world
 funcaddrs like the JIT does. Consequences:
 
-- `published: Vec<(RefHandle, usize)>`, `OpaqueInterpFunc`, and the
+- `published: Vec<(RefValue, usize)>`, `OpaqueInterpFunc`, and the
   hostref overloading disappear. Localizing a reference the instance itself
   owns becomes an O(1) world lookup in place of today's linear scan
   (`exec.rs:3194`, `:3478`). `FuncRefHost` narrows to what it is actually
@@ -741,7 +741,7 @@ load-bearing:
   to `(owner, local_index)`. *Foreign* funcrefs index this; local ones do
   not, for the reason in the next subsection.
 - **The pooled reference arena.** `I31` / `Gc` / `Exn`, reached through
-  `RefHandle::from_pool_index`, which sets `SPECIAL_TAG | pool_payload_tag`
+  `RefValue::from_pool_index`, which sets `SPECIAL_TAG | pool_payload_tag`
   (`value.rs:95-97`) and therefore reports `is_special()`.
 
 Keeping them separate is what lets **both** funcref forms stay untagged, and
@@ -813,7 +813,7 @@ separate *normalization* rule for shared containers, below, is about which
 form a container may hold, not about how a form is recognized.)
 
 **Scope: this rule governs reference-typed slots only.** The 64-bit slot ABI
-also carries values that are not `RefHandle`s at all. A v128 rides as an
+also carries values that are not `RefValue`s at all. A v128 rides as an
 index into the shared SIMD arena — `value_to_raw_in_store` sends
 `Value::V128` to `intern_v128` and `Value::Ref` to `from_ref` into the same
 raw slot (`value_encoding.rs:124-135`) — so a v128 slot holds a small integer
@@ -1006,7 +1006,7 @@ because "we could not think of another" is weaker than showing the search:
 
 - **A shared `Module`.** Refuted by value ownership: `Store` holds
   `module: ModuleInst` by value (`jit/store.rs:30-31`), and `ModuleInst` owns
-  its `function_handles: Vec<RefHandle>` by value (`jit/entities.rs:182-186`).
+  its `function_handles: Vec<RefValue>` by value (`jit/entities.rs:182-186`).
   No two instances share one.
 - **Unwinding** (traps, wasm exceptions). Covered twice over — an exception
   payload is a `Vec<Value>`, hence absolute by representation (below), and the
@@ -1048,7 +1048,7 @@ handle would be minted local and then installed into a different instance's
 imports, where it reads as that instance's local index. That is the silent
 wrong-function dispatch the range encoding exists to prevent, and it would be
 a regression: today's handle is unambiguously absolute, because
-`register_local_function` returns `RefHandle::new(registry.len())`
+`register_local_function` returns `RefValue::new(registry.len())`
 (`store.rs:224-238`), an index into a registry cloned into every linked
 store.
 
@@ -1110,7 +1110,7 @@ The hole: `shared_table_state_at` / `shared_global_state_at`
 (`instance.rs:483-508`) index tables and globals with **no export or import
 filter** — the JIT arm is `store.module().tables.get(idx).cloned()`
 (`jit/instance.rs:1265-1289`) — and the clone aliases, because `TableInst`
-derives `Clone` over `elements: Rc<RefCell<Vec<RefHandle>>>`
+derives `Clone` over `elements: Rc<RefCell<Vec<RefValue>>>`
 (`entities.rs:169-176`) and `GlobalInst` over `cell: Rc<GlobalCell>`. From
 there `Import::table_with_state` binds it into a peer through
 `TableInst::from_shared`. So a table with no imports and no exports — private
@@ -1206,7 +1206,7 @@ below is bidirectional.
 
 The boundary is **not** "where a `Value` crosses". Enumerating by `Value` was
 still enumerating by representation, and it missed a crossing that carries a
-`RefHandle` and bare `u64` slots. The boundary is:
+`RefValue` and bare `u64` slots. The boundary is:
 
 > wherever a reference leaves the instance that can interpret it — whatever
 > it is carried in.
@@ -1289,7 +1289,7 @@ individually because the *sites* still have to be found and fixed.
 4. **`Instance::invoke` / `call`** — they take `&[Value]` and return
    `Vec<Value>` (`instance.rs:233-238`), so an embedder can pass a funcref
    straight in.
-5. **`FuncRefHost::invoke`** — `Box<dyn FnMut(RefHandle, &[u64], &mut [u64])
+5. **`FuncRefHost::invoke`** — `Box<dyn FnMut(RefValue, &[u64], &mut [u64])
    -> Result<(), WasmError>>` (`exec.rs:129-131`): a handle and raw frame
    slots, straight to the embedder. Its call sites are `Op::CallRef`
    (`exec.rs:3218`) and `Op::CallIndirect` (`:3504`), **neither of which goes
@@ -1433,7 +1433,7 @@ change.
 > Two of them sharpened the check, and the second sharpening is the one to
 > keep. The fifth defeated the fix for the fourth: enumerating by "where a
 > `Value` crosses" was still enumerating by *representation*, and
-> `FuncRefHost::invoke` carries a `RefHandle` and bare `u64` slots. The
+> `FuncRefHost::invoke` carries a `RefValue` and bare `u64` slots. The
 > sixth was the first where the blindness was **structural** rather than an
 > omission — both endpoints of a cross-instance call are containers the rule
 > permitted, so no enumeration of containers could ever have found it. What
@@ -1469,7 +1469,7 @@ alike, so the boundary has to be decided statically or not at all.
 - `lower_table_set` bounds-checks and stores the source register through
   `lower_table_access_continuation` with no runtime helper
   (`lower_leaf_special.rs:831-873`), and tables are genuinely aliased —
-  `TableInst { elements: Rc<RefCell<Vec<RefHandle>>> }` (`entities.rs:170-171`)
+  `TableInst { elements: Rc<RefCell<Vec<RefValue>>> }` (`entities.rs:170-171`)
   bound through `TableInst::from_shared` (`jit/instance.rs:528-533`).
 - `lower_global_set` (`lower_leaf_special.rs:602-612`) falls through to the
   scalar emit, which ends in a plain `MachineInstKind::Store` into the cell
@@ -1652,7 +1652,7 @@ lookup onto the load path, which is worse than the helper call it replaces.
 
 #### The 32-bit budget
 
-`RefHandle` has 28 payload bits untagged and 27 pooled (`value.rs:21-38`),
+`RefValue` has 28 payload bits untagged and 27 pooled (`value.rs:21-38`),
 and the TARGET32 wire form matches (`value_encoding.rs:13-16`). The two
 ceilings have **different** bounds, and an earlier draft justified both with
 one clause about the escapable-set filter, which is wrong:
@@ -1863,14 +1863,14 @@ are the JIT's actual job.
 
    **The audit for this step is two-armed, and both arms are greps:**
    - *(i) Value crossings* — every `pub fn` on `Instance` or `JitInstance`
-     whose signature mentions `RefHandle` or `Value`.
+     whose signature mentions `RefValue` or `Value`.
    - *(ii) Aliasing crossings* — every `pub fn` yielding a container or
      storage handle: `TableInst`, `GlobalInst`, `ImportedTableState`,
      `ImportedGlobalState`, `&Store`.
 
    Arm (ii) is the one that finds the clause-(2) class, and it is the arm an
    earlier draft did not have: `shared_table_state_at` and `store()` mention
-   neither `RefHandle` nor `Value`, so arm (i) alone cannot see them. The two
+   neither `RefValue` nor `Value`, so arm (i) alone cannot see them. The two
    arms answer different questions — *what form does this carry* versus *what
    can this alias* — and only the second decides whether the static fact
    survives.

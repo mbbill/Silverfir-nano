@@ -1850,7 +1850,7 @@ impl RiscV {
         a.ins(&format!("ld {T3}, 120({STATE})")); // table 0 length
         self.br_far(a, "bgeu", T2, T3, &st.slow);
         a.ins(&format!("ld {T3}, 112({STATE})")); // table 0 entries
-                                                  // Entries are `RefHandle` slots (8 bytes); a plain handle's payload
+                                                  // Entries are `RefValue` slots (8 bytes); a plain handle's payload
                                                   // is the function index, which always fits in the low 32 bits. The
                                                   // slot-form guard below therefore rejects every encoding with a
                                                   // nonzero upper half: normalized null (all-ones) and every special

@@ -8,7 +8,7 @@ use crate::{
         jit::build,
         jit::runtime::{code::NativeCode, StoreAccess},
         jit::value_encoding::absolutize,
-        link::{FuncEntry, InstanceHandle},
+        link::{FuncEntry, InstanceBackref},
         value::Value,
     },
 };
@@ -22,7 +22,7 @@ enum EvalTarget {
     },
     Linked {
         entry: FuncEntry,
-        instance_handle: InstanceHandle,
+        instance_backref: InstanceBackref,
     },
     Local {
         func_type: Rc<FunctionType>,
@@ -92,7 +92,7 @@ pub(super) fn eval(
                     .ok_or_else(|| WasmError::internal("linked function handle not found"))?;
                 Ok(EvalTarget::Linked {
                     entry,
-                    instance_handle: store.instance_handle().clone(),
+                    instance_backref: store.instance_backref().clone(),
                 })
             }
             FunctionInst::Local { spec, .. } => {
@@ -123,12 +123,12 @@ pub(super) fn eval(
         }
         EvalTarget::Linked {
             entry,
-            instance_handle,
+            instance_backref,
         } => {
             if entry.owner == access.id() {
                 return eval(access, entry.local_index, args);
             }
-            let owner = instance_handle
+            let owner = instance_backref
                 .checkout(entry.owner)
                 .ok_or_else(|| WasmError::internal("linked function owner no longer available"))?;
             let mut owner_access = StoreAccess::checked_out(owner);

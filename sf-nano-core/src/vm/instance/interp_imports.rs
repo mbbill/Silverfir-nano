@@ -345,7 +345,7 @@ pub(super) fn replace_global_at(
 #[inline]
 /// Whether a host-boundary value type has a raw slot form.
 ///
-/// References do: a slot carries the `RefHandle` verbatim, the same thing the
+/// References do: a slot carries the `RefValue` verbatim, the same thing the
 /// JIT hands across this boundary. Only v128 has no 8-byte form, which is why
 /// SIMD is excluded from this engine rather than merely unimplemented.
 fn raw_kind(ty: ValueType) -> Option<ValueType> {

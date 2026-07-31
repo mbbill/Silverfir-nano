@@ -6,8 +6,8 @@ use sf_nano_core::module::type_context::TypeContext;
 use sf_nano_core::module::Module;
 use sf_nano_core::value_type::{AbstractHeapType, HeapType, RefType};
 use sf_nano_core::{
-    Caller, Engine, HostFn, Import, InstanceId, Limitable, RefHandle, RuntimeWorld, Value,
-    WasmError, WorldHandle,
+    Caller, Engine, HostFn, Import, InstanceId, Limitable, RefValue, RuntimeWorld, Value,
+    WasmError, WorldAccess,
 };
 use std::{cell::RefCell, collections::HashMap, fmt, fs, path::Path};
 use wast::{
@@ -129,16 +129,16 @@ impl From<WastValue> for Value {
             WastValue::Either(_) => {
                 panic!("Either should not be converted to Value")
             }
-            WastValue::NullRef(ref_type) => Value::Ref(RefHandle::null(), ref_type),
+            WastValue::NullRef(ref_type) => Value::Ref(RefValue::null(), ref_type),
             WastValue::FuncRef(Some(idx)) => {
-                Value::Ref(RefHandle::new(idx as usize), RefType::funcref())
+                Value::Ref(RefValue::new(idx as usize), RefType::funcref())
             }
-            WastValue::FuncRef(None) => Value::Ref(RefHandle::null(), RefType::funcref()),
+            WastValue::FuncRef(None) => Value::Ref(RefValue::null(), RefType::funcref()),
             WastValue::ExternRef(Some(idx)) => {
                 let externref_type = RefType::new(false, AbstractHeapType::Extern.into());
-                Value::Ref(RefHandle::externref(idx as usize), externref_type)
+                Value::Ref(RefValue::externref(idx as usize), externref_type)
             }
-            WastValue::ExternRef(None) => Value::Ref(RefHandle::null(), RefType::externref()),
+            WastValue::ExternRef(None) => Value::Ref(RefValue::null(), RefType::externref()),
             WastValue::AnyFuncRef => {
                 panic!("AnyFuncRef should not be converted to Value")
             }
@@ -163,15 +163,15 @@ impl From<WastValue> for Value {
             WastValue::Ref(Some(idx), ref_type) => {
                 let handle = match ref_type.heap_type {
                     HeapType::Abstract(AbstractHeapType::Any)
-                    | HeapType::Abstract(AbstractHeapType::Eq) => RefHandle::hostref(idx as usize),
+                    | HeapType::Abstract(AbstractHeapType::Eq) => RefValue::hostref(idx as usize),
                     HeapType::Abstract(AbstractHeapType::Extern) => {
-                        RefHandle::externref(idx as usize)
+                        RefValue::externref(idx as usize)
                     }
-                    _ => RefHandle::new(idx as usize),
+                    _ => RefValue::new(idx as usize),
                 };
                 Value::Ref(handle, ref_type)
             }
-            WastValue::Ref(None, ref_type) => Value::Ref(RefHandle::null(), ref_type),
+            WastValue::Ref(None, ref_type) => Value::Ref(RefValue::null(), ref_type),
         }
     }
 }
@@ -264,7 +264,7 @@ struct ForwardingSlot {
 thread_local! {
     static FORWARDING_SLOTS: RefCell<Vec<Option<ForwardingSlot>>> =
         RefCell::new(Vec::new());
-    static FORWARDING_WORLD: RefCell<Option<WorldHandle>> = RefCell::new(None);
+    static FORWARDING_WORLD: RefCell<Option<WorldAccess>> = RefCell::new(None);
 }
 
 fn find_exported_global_index(module: &Module, export_name: &str) -> Option<usize> {
@@ -1385,7 +1385,7 @@ impl WastTestRunner {
                         // rec-group identity checks link correctly.
                         for tag in module.tags() {
                             for export_name in tag.export_names() {
-                                let Some(handle) = instance.tag_handle(export_name) else {
+                                let Some(handle) = instance.tag_identity(export_name) else {
                                     continue;
                                 };
                                 imports.push(Import::linked_tag_typed_with_context_and_index(

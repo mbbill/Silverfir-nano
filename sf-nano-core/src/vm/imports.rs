@@ -12,8 +12,8 @@ use crate::module::type_context::TypeContext;
 use crate::module::type_defs::FunctionType;
 use crate::utils::limits::Limits;
 use crate::vm::entities::{Caller, GlobalInst, HostCallback, HostFn, MemInst, TableInst};
-use crate::vm::tag::TagHandle;
-use crate::vm::value::{RefHandle, Value};
+use crate::vm::tag::TagIdentity;
+use crate::vm::value::{RefValue, Value};
 
 pub struct Import {
     pub module: String,
@@ -57,7 +57,7 @@ pub enum ImportedFunction {
         type_ctx: Option<TypeContext>,
     },
     Linked {
-        handle: RefHandle,
+        handle: RefValue,
         func_type: FunctionType,
         type_index: u32,
         type_ctx: Option<TypeContext>,
@@ -66,7 +66,7 @@ pub enum ImportedFunction {
 
 #[derive(Clone)]
 pub struct ImportedTagState {
-    pub handle: TagHandle,
+    pub handle: TagIdentity,
     pub func_type: FunctionType,
     /// Source-context type index for the tag's function type, or
     /// `u32::MAX` for host-minted tags that have no wasm type index.
@@ -177,7 +177,7 @@ impl Import {
     pub fn linked_func_typed(
         module: &str,
         name: &str,
-        handle: RefHandle,
+        handle: RefValue,
         func_type: FunctionType,
     ) -> Self {
         Self::linked_func_typed_with_context_and_index(
@@ -193,7 +193,7 @@ impl Import {
     pub fn linked_func_typed_with_context(
         module: &str,
         name: &str,
-        handle: RefHandle,
+        handle: RefValue,
         func_type: FunctionType,
         type_ctx: TypeContext,
     ) -> Self {
@@ -210,7 +210,7 @@ impl Import {
     pub fn linked_func_typed_with_context_and_index(
         module: &str,
         name: &str,
-        handle: RefHandle,
+        handle: RefValue,
         func_type: FunctionType,
         type_index: u32,
         type_ctx: TypeContext,
@@ -341,7 +341,7 @@ impl Import {
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Tag(ImportedTagState {
-                handle: TagHandle::mint_fresh(),
+                handle: TagIdentity::mint_fresh(),
                 func_type,
                 type_index: u32::MAX,
                 type_ctx: None,
@@ -359,7 +359,7 @@ impl Import {
             module: module.to_string(),
             name: name.to_string(),
             value: ImportValue::Tag(ImportedTagState {
-                handle: TagHandle::mint_fresh(),
+                handle: TagIdentity::mint_fresh(),
                 func_type,
                 type_index: u32::MAX,
                 type_ctx: Some(type_ctx),
@@ -374,8 +374,8 @@ impl Import {
         module: &str,
         name: &str,
         func_type: FunctionType,
-    ) -> (Self, TagHandle) {
-        let handle = TagHandle::mint_fresh();
+    ) -> (Self, TagIdentity) {
+        let handle = TagIdentity::mint_fresh();
         let import = Import {
             module: module.to_string(),
             name: name.to_string(),
@@ -389,14 +389,14 @@ impl Import {
         (import, handle)
     }
 
-    /// Cross-module tag linking: import the tag using an explicit `TagHandle`
-    /// obtained via `JitInstance::tag_handle(...)` or a previous
+    /// Cross-module tag linking: import the tag using an explicit `TagIdentity`
+    /// obtained via `JitInstance::tag_identity(...)` or a previous
     /// `tag_typed_with_handle`/`linked_tag_typed*` call. Preserves tag
     /// identity across module boundaries.
     pub fn linked_tag_typed(
         module: &str,
         name: &str,
-        handle: TagHandle,
+        handle: TagIdentity,
         func_type: FunctionType,
     ) -> Self {
         Import {
@@ -414,7 +414,7 @@ impl Import {
     pub fn linked_tag_typed_with_context(
         module: &str,
         name: &str,
-        handle: TagHandle,
+        handle: TagIdentity,
         func_type: FunctionType,
         type_ctx: TypeContext,
     ) -> Self {
@@ -437,7 +437,7 @@ impl Import {
     pub fn linked_tag_typed_with_context_and_index(
         module: &str,
         name: &str,
-        handle: TagHandle,
+        handle: TagIdentity,
         func_type: FunctionType,
         type_index: u32,
         type_ctx: TypeContext,

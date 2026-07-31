@@ -8,6 +8,6 @@
   not a flat enumeration of reference shapes.
 
 - A reference value at runtime is a single tagged index word
-  ([[ref-handle]]) whose high bits distinguish the funcref, GC, i31,
+  ([[ref-value]]) whose high bits distinguish the funcref, GC, i31,
   extern, and host hierarchies; the null reference is the all-ones sentinel,
   never a valid index.

@@ -91,7 +91,7 @@ pub(crate) struct NativeRuntimeAbiLayout {
     pub fixed_call_table_view: FixedCallTableViewAbiLayout,
     pub fixed_call_table_entry: FixedCallTableEntryAbiLayout,
     pub context: NativeContextAbiLayout,
-    pub ref_handle_stride: u32,
+    pub ref_value_stride: u32,
 }
 
 #[inline]
@@ -226,7 +226,7 @@ pub(crate) const fn native_runtime_abi_layout(gp_unit_bytes: u8) -> NativeRuntim
             globals_ptrs_inline_offset,
             size,
         },
-        ref_handle_stride: ptr,
+        ref_value_stride: ptr,
     }
 }
 
@@ -421,6 +421,6 @@ mod tests {
         assert_eq!(layout.context.fixed_call_table_views_len_offset, 52);
         assert_eq!(layout.context.type_canon_base_offset, 56);
         assert_eq!(layout.context.globals_len_offset, 64);
-        assert_eq!(layout.ref_handle_stride, 4);
+        assert_eq!(layout.ref_value_stride, 4);
     }
 }

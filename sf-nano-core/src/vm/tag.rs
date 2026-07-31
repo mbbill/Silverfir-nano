@@ -8,14 +8,14 @@ use core::sync::atomic::{AtomicUsize, Ordering};
 /// Opaque, process-globally-unique tag identity. Zero is reserved as an
 /// invalid/null sentinel.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct TagHandle(usize);
+pub struct TagIdentity(usize);
 
-impl TagHandle {
+impl TagIdentity {
     #[inline]
     pub fn mint_fresh() -> Self {
         static COUNTER: AtomicUsize = AtomicUsize::new(1);
         let raw = COUNTER.fetch_add(1, Ordering::Relaxed);
-        debug_assert!(raw != 0, "TagHandle counter overflowed to zero sentinel");
+        debug_assert!(raw != 0, "TagIdentity counter overflowed to zero sentinel");
         Self(raw)
     }
 }

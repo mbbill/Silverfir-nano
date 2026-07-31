@@ -16,7 +16,7 @@ use crate::module::type_defs::CompositeType;
 use crate::opcodes::{Opcode, OpcodeFB, OpcodeFD};
 use crate::utils::payload::Payload;
 use crate::value_type::{AbstractHeapType, HeapType, RefType};
-use crate::vm::value::{RefHandle, Value};
+use crate::vm::value::{RefValue, Value};
 
 /// Engine-provided resolution for the constant-expression operators whose
 /// meaning depends on runtime state.
@@ -59,7 +59,7 @@ pub(crate) fn eval_const_expr(
             Opcode::F64_CONST => stack.push(Value::F64(code.read_f64()?)),
             Opcode::REF_NULL => {
                 let heap_type = HeapType::parse(&mut code)?;
-                stack.push(Value::Ref(RefHandle::null(), RefType::new(true, heap_type)));
+                stack.push(Value::Ref(RefValue::null(), RefType::new(true, heap_type)));
             }
             Opcode::REF_FUNC => {
                 let func_idx = code.read_leb128_u32()?;
@@ -285,7 +285,7 @@ fn pop_i64(stack: &mut collections::Vec<Value>, message: &'static str) -> Result
 fn pop_ref(
     stack: &mut collections::Vec<Value>,
     message: &'static str,
-) -> Result<(RefHandle, RefType), WasmError> {
+) -> Result<(RefValue, RefType), WasmError> {
     match stack.pop() {
         Some(Value::Ref(handle, ref_type)) => Ok((handle, ref_type)),
         _ => Err(WasmError::invalid(message)),

@@ -6,8 +6,8 @@ use crate::collections;
 use crate::utils::{
     leb128::ReadError as Leb128ReadError, limits::LimitsError, payload::PayloadError,
 };
-use crate::vm::tag::TagHandle;
-use crate::vm::value::{RefHandle, Value};
+use crate::vm::tag::TagIdentity;
+use crate::vm::value::{RefValue, Value};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum WasmError {
@@ -22,8 +22,8 @@ pub enum WasmError {
     /// helpers when a throw propagates past every active `try_table` handler
     /// in the current invocation.
     Exception {
-        exn: RefHandle,
-        tag: TagHandle,
+        exn: RefValue,
+        tag: TagIdentity,
         module_tag_name: Option<String>,
     },
     /// Host-side throw inbound channel. A host callback returns
@@ -32,7 +32,7 @@ pub enum WasmError {
     /// consumes it and converts it into `NativeCallStatus::Thrown`. It
     /// should never reach the embedder.
     HostThrow {
-        tag: TagHandle,
+        tag: TagIdentity,
         args: collections::Vec<Value>,
     },
 }

@@ -20,8 +20,8 @@ use crate::{
         jit::value_encoding::{
             localize, try_machine_raw_to_value_in_store, value_to_machine_raw_in_store,
         },
-        tag::TagHandle,
-        value::{machine_raw_to_ref, RefHandle, Value},
+        tag::TagIdentity,
+        value::{machine_raw_to_ref, RefValue, Value},
     },
 };
 
@@ -166,7 +166,7 @@ fn call_runtime_by_local_index(
 fn call_runtime_by_handle(
     ctx: &mut NativeContext,
     frame: *mut u64,
-    handle: RefHandle,
+    handle: RefValue,
     expected_type_idx: u32,
     type_check_kind: RuntimeCallTypeCheckKind,
     args_region: RuntimeCallFrameRegion,
@@ -179,13 +179,13 @@ fn call_runtime_by_handle(
         let caller_store = ctx
             .store()
             .ok_or_else(|| internal_error("runtime-call context is missing store"))?;
-        let caller_id = caller_store.instance_handle().self_id();
+        let caller_id = caller_store.instance_backref().self_id();
         let localized = localize(caller_store, handle);
         if !localized.is_special() && localized.encoded() < caller_store.module().functions.len() {
             let local_index = u32::try_from(localized.encoded())
                 .map_err(|_| internal_error("runtime-call local function index exceeds u32"))?;
             (
-                caller_store.instance_handle().clone(),
+                caller_store.instance_backref().clone(),
                 caller_id,
                 caller_id,
                 local_index,
@@ -195,7 +195,7 @@ fn call_runtime_by_handle(
                 .function_entry_for_handle(localized)
                 .ok_or_else(|| trap_error("invalid function reference"))?;
             (
-                caller_store.instance_handle().clone(),
+                caller_store.instance_backref().clone(),
                 caller_id,
                 entry.owner,
                 entry.local_index,
@@ -389,7 +389,7 @@ fn invoke_runtime_target(
 
 /// Validate a host-throw payload against the tag signature. A mismatch means
 /// the embedder built a malformed throw and should trap rather than propagate.
-fn validate_host_throw_payload(tag: TagHandle, payload: &[Value], ctx: &NativeContext) -> bool {
+fn validate_host_throw_payload(tag: TagIdentity, payload: &[Value], ctx: &NativeContext) -> bool {
     let Some(store) = ctx.store() else {
         return false;
     };

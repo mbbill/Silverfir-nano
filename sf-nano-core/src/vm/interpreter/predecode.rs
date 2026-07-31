@@ -26,8 +26,8 @@ use crate::op_decoder::{CatchClause, CatchClauseKind};
 use crate::opcodes::{Opcode, OpcodeFB, OpcodeFC, WasmOpcode};
 use crate::utils::limits::Limitable;
 use crate::value_type::ValueType;
-use crate::vm::tag::TagHandle;
-use crate::vm::value::{ref_to_machine_raw, RefHandle};
+use crate::vm::tag::TagIdentity;
+use crate::vm::value::{ref_to_machine_raw, RefValue};
 
 /// Marks a packed memarg field as a `wide_memargs` index rather than an
 /// inline `memidx << 48 | offset`. Bit 63 is free in the inline form, whose
@@ -58,7 +58,7 @@ const EH_TARGET_FIXUP: u32 = u32::MAX - 1;
 /// any typed payload fields.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct ExceptionHandler {
-    pub(crate) tag: Option<TagHandle>,
+    pub(crate) tag: Option<TagIdentity>,
     pub(crate) payload_arity: u32,
     pub(crate) forwards_exn: bool,
     pub(crate) target: u32,
@@ -130,11 +130,11 @@ impl PredecodedFunction {
 /// Predecode one local (non-import) function of a parsed module.
 pub(crate) fn predecode_function(
     module: &Module,
-    tag_handles: &[TagHandle],
-    function_handles: &[RefHandle],
+    tag_identities: &[TagIdentity],
+    function_handles: &[RefValue],
     func_index: usize,
 ) -> Result<PredecodedFunction, WasmError> {
-    if tag_handles.len() != module.tags().len() {
+    if tag_identities.len() != module.tags().len() {
         return Err(WasmError::invalid(
             "interp: runtime tag table does not match module",
         ));
@@ -164,7 +164,7 @@ pub(crate) fn predecode_function(
         let mut p = Predecoder {
             types: module.types(),
             module,
-            tag_handles,
+            tag_identities,
             function_handles,
             code: Vec::new(),
             stack: Vec::new(),
@@ -299,7 +299,7 @@ enum PendingExceptionTarget {
 /// only at instructions that can throw.
 #[derive(Clone, Copy)]
 struct ActiveExceptionHandler {
-    tag: Option<TagHandle>,
+    tag: Option<TagIdentity>,
     payload_arity: u32,
     forwards_exn: bool,
     target: PendingExceptionTarget,
@@ -343,10 +343,10 @@ struct Predecoder<'m> {
     /// Runtime identities resolved by the linker. Module tag indices are
     /// aliases for these handles, not identities themselves: two imports may
     /// name one tag, while two same-signature tags remain distinct.
-    tag_handles: &'m [TagHandle],
+    tag_identities: &'m [TagIdentity],
     /// Frame-form identities for `ref.func`: local indices for this
     /// instance's functions and absolute handles for linked imports.
-    function_handles: &'m [RefHandle],
+    function_handles: &'m [RefValue],
     code: Vec<Instr>,
     stack: Vec<Desc>,
     frames: Vec<CtlFrame>,
@@ -594,7 +594,7 @@ impl<'m> Predecoder<'m> {
                         .tag_idx
                         .ok_or(WasmError::invalid("interp: typed catch has no tag"))?;
                     let tag = self
-                        .tag_handles
+                        .tag_identities
                         .get(tag_idx as usize)
                         .copied()
                         .ok_or(WasmError::invalid("interp: bad catch tag"))?;
@@ -2663,7 +2663,7 @@ impl<'m> OpcodeHandler for Predecoder<'m> {
                 }
                 Opcode::REF_NULL => {
                     self.stack.push(Desc::ConstV(ref_to_machine_raw(
-                        RefHandle::null(),
+                        RefValue::null(),
                         SLOT_GP_UNIT_BYTES,
                     )));
                 }
@@ -3202,14 +3202,14 @@ mod tests {
     fn predecode_wat(src: &str, func: usize) -> PredecodedFunction {
         let bin: StdVec<u8> = wat::parse_str(src).expect("wat");
         let module = Module::new("t", &bin).expect("module");
-        let tag_handles: StdVec<TagHandle> = module
+        let tag_identities: StdVec<TagIdentity> = module
             .tags()
             .iter()
-            .map(|_| TagHandle::mint_fresh())
+            .map(|_| TagIdentity::mint_fresh())
             .collect();
-        let function_handles: StdVec<RefHandle> =
-            (0..module.functions().len()).map(RefHandle::new).collect();
-        predecode_function(&module, &tag_handles, &function_handles, func).expect("predecode")
+        let function_handles: StdVec<RefValue> =
+            (0..module.functions().len()).map(RefValue::new).collect();
+        predecode_function(&module, &tag_identities, &function_handles, func).expect("predecode")
     }
 
     fn ops(f: &PredecodedFunction) -> StdVec<Op> {
@@ -4145,7 +4145,7 @@ mod tests {
             wat::parse_str(r#"(module (func (result v128) v128.const i32x4 0 0 0 0))"#)
                 .expect("wat");
         let module = Module::new("t", &bin).expect("module");
-        let function_handles = [RefHandle::new(0)];
+        let function_handles = [RefValue::new(0)];
         match predecode_function(&module, &[], &function_handles, 0) {
             Ok(_) => panic!("SIMD must be refused"),
             Err(err) => assert!(

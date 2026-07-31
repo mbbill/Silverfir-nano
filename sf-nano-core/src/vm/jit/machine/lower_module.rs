@@ -2753,7 +2753,7 @@ fn build_call_indirect_checked_block(
                 op: MachineIntBinaryOp::Mul,
                 dst: index,
                 lhs: MachineValue::Reg(index),
-                rhs: MachineValue::Imm64(u64::from(runtime_layout.ref_handle_stride)),
+                rhs: MachineValue::Imm64(u64::from(runtime_layout.ref_value_stride)),
             },
         },
         MachineInst {

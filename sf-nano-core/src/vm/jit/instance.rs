@@ -40,8 +40,8 @@ use crate::vm::jit::value_encoding::{
     absolutize, retag_for_container, try_raw_to_value_in_store, value_to_container_raw_in_store,
 };
 use crate::vm::link::{InstanceId, InstanceLease, InstanceToken, LinkRegistry};
-use crate::vm::tag::TagHandle;
-use crate::vm::value::{RefHandle, Value};
+use crate::vm::tag::TagIdentity;
+use crate::vm::value::{RefValue, Value};
 
 pub struct JitInstance {
     lease: InstanceLease,
@@ -656,7 +656,7 @@ impl JitInstance {
                                                 ),
                                                 callback: HostCallback::new(*callback),
                                             });
-                                            val = Value::Ref(RefHandle::new(func_idx), ref_type);
+                                            val = Value::Ref(RefValue::new(func_idx), ref_type);
                                         }
                                     }
                                     let val_type = val.value_type();
@@ -728,7 +728,7 @@ impl JitInstance {
             match tag.def() {
                 TagDef::Local(spec) => {
                     tag_insts.push(TagInst {
-                        handle: TagHandle::mint_fresh(),
+                        handle: TagIdentity::mint_fresh(),
                         type_index: spec.type_index(),
                     });
                 }
@@ -819,11 +819,11 @@ impl JitInstance {
         }
         module_inst.table_reachable = table_reachable;
         module_inst.global_reachable = global_reachable;
-        let (instance_id, instance_handle) = registry.reserve_instance();
-        let lease_handle = instance_handle.clone();
+        let (instance_id, instance_backref) = registry.reserve_instance();
+        let lease_handle = instance_backref.clone();
         let mut store = Box::new(Store::new_with_registries(
             module_inst,
-            instance_handle,
+            instance_backref,
             registry.function_registry_shared(),
             registry.ref_registry_shared(),
             #[cfg(sf_has_simd)]
@@ -1104,7 +1104,7 @@ impl JitInstance {
     }
 
     pub(crate) fn instance_id(&self) -> InstanceId {
-        let id = self.store().instance_handle().self_id();
+        let id = self.store().instance_backref().self_id();
         debug_assert_eq!(id, self.lease.id());
         id
     }
@@ -1277,7 +1277,7 @@ impl JitInstance {
     }
 
     /// Mint the function's absolute reference form for external use.
-    pub fn function_handle_at(&self, idx: usize) -> Option<RefHandle> {
+    pub fn function_handle_at(&self, idx: usize) -> Option<RefValue> {
         let store = self.store();
         let handle = store.module().function_handle(idx)?;
         if handle.is_null() {
@@ -1288,7 +1288,7 @@ impl JitInstance {
 
     /// Resolve an exported tag to its runtime identity. Required for
     /// cross-module tag linking via `Import::linked_tag_typed(...)`.
-    pub fn tag_handle(&self, name: &str) -> Option<TagHandle> {
+    pub fn tag_identity(&self, name: &str) -> Option<TagIdentity> {
         let (_, _, idx) = self
             .store()
             .exports()
@@ -1341,7 +1341,7 @@ impl JitInstance {
                 self.store().clone_ref_registry(),
                 self.store().clone_simd_registry(),
                 self.store()
-                    .instance_handle()
+                    .instance_backref()
                     .table()
                     .expect("live JIT instance table"),
             )
@@ -1351,7 +1351,7 @@ impl JitInstance {
             self.store().clone_function_registry(),
             self.store().clone_ref_registry(),
             self.store()
-                .instance_handle()
+                .instance_backref()
                 .table()
                 .expect("live JIT instance table"),
         )
@@ -1497,7 +1497,7 @@ fn materialize_element_init(
     init: &ElementInit,
     store: &mut Store,
     reachable_destination: bool,
-) -> Result<collections::Vec<RefHandle>, WasmError> {
+) -> Result<collections::Vec<RefValue>, WasmError> {
     match init {
         ElementInit::FunctionIndexes(indices) => indices
             .iter()
@@ -1650,7 +1650,7 @@ mod tests {
 
     fn grow_shared_table_for_test(table: &TableInst, new_len: usize) {
         let mut elements = table.elements_mut();
-        elements.resize(new_len, RefHandle::null());
+        elements.resize(new_len, RefValue::null());
     }
 
     #[test]

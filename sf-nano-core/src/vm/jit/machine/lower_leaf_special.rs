@@ -2264,7 +2264,7 @@ impl<'a> BlockLowerContext<'a> {
                 op: MachineIntBinaryOp::Mul,
                 dst: index64,
                 lhs: MachineValue::Reg(index64),
-                rhs: MachineValue::Imm64(u64::from(runtime_layout.ref_handle_stride)),
+                rhs: MachineValue::Imm64(u64::from(runtime_layout.ref_value_stride)),
             },
         });
         ops.push(MachineInst {
@@ -2347,7 +2347,7 @@ impl<'a> BlockLowerContext<'a> {
                 op: MachineIntBinaryOp::Mul,
                 dst: index64,
                 lhs: MachineValue::Reg(index64),
-                rhs: MachineValue::Imm64(u64::from(runtime_layout.ref_handle_stride)),
+                rhs: MachineValue::Imm64(u64::from(runtime_layout.ref_value_stride)),
             },
         });
         ops.push(MachineInst {

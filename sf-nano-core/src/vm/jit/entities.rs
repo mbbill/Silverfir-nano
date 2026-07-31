@@ -15,8 +15,8 @@ use crate::module::{type_context::TypeContext, type_defs::FunctionType};
 use crate::value_type::{AbstractHeapType, HeapType, ValueType};
 use crate::vm::entities::{FunctionInst, GlobalInst, MemBacking, MemInst, TableInst};
 use crate::vm::jit::runtime::code_buf::CodeBuffer;
-use crate::vm::tag::TagHandle;
-use crate::vm::value::RefHandle;
+use crate::vm::tag::TagIdentity;
+use crate::vm::value::RefValue;
 use core::cell::{Cell, RefCell};
 use tracked_alloc::rc::Rc;
 #[cfg(any(sf_ir_dump, sf_jitdump))]
@@ -109,21 +109,21 @@ impl MemInstJit for MemInst {
 }
 
 // Instantiation-time entity of the JIT's `Store` world. The interpreter
-// tracks tag identity with bare `TagHandle`s in its own state.
+// tracks tag identity with bare `TagIdentity`s in its own state.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct TagInst {
-    pub handle: TagHandle,
+    pub handle: TagIdentity,
     pub type_index: u32,
 }
 
 #[derive(Debug, Clone)]
 pub(crate) struct ElementInst {
-    pub refs: collections::Vec<RefHandle>,
+    pub refs: collections::Vec<RefValue>,
     pub dropped: bool,
 }
 
 impl ElementInst {
-    pub(crate) fn new(refs: collections::Vec<RefHandle>) -> Self {
+    pub(crate) fn new(refs: collections::Vec<RefValue>) -> Self {
         ElementInst {
             refs,
             dropped: false,
@@ -177,7 +177,7 @@ pub(crate) struct ModuleInst {
     pub name: String,
     pub types: TypeContext,
     pub functions: collections::Vec<FunctionInst>,
-    pub function_handles: collections::Vec<RefHandle>,
+    pub function_handles: collections::Vec<RefValue>,
     pub tables: collections::Vec<TableInst>,
     pub memories: collections::Vec<MemInst>,
     pub globals: collections::Vec<GlobalInst>,
@@ -226,19 +226,19 @@ impl ModuleInst {
     }
 
     #[inline]
-    pub(crate) fn function_handle(&self, index: usize) -> Option<RefHandle> {
+    pub(crate) fn function_handle(&self, index: usize) -> Option<RefValue> {
         self.function_handles.get(index).copied()
     }
 
     #[inline]
     pub(crate) fn ensure_function_handle_capacity(&mut self, len: usize) {
         if self.function_handles.len() < len {
-            self.function_handles.resize(len, RefHandle::null());
+            self.function_handles.resize(len, RefValue::null());
         }
     }
 
     #[inline]
-    pub(crate) fn set_function_handle(&mut self, index: usize, handle: RefHandle) {
+    pub(crate) fn set_function_handle(&mut self, index: usize, handle: RefValue) {
         self.ensure_function_handle_capacity(index + 1);
         self.function_handles[index] = handle;
     }

@@ -28,7 +28,7 @@
 
 - A null reference is encoded as the all-ones sentinel (usize::MAX); ref.null lowers
   to a usize::MAX constant and ref.is_null to an unsigned-equality compare against it
-  (`RefHandle`).
+  (`RefValue`).
 
 ## Facts
 

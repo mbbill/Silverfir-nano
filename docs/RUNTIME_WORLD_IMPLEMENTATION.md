@@ -319,7 +319,7 @@ direction"; "The seam: checkout"; "The safety invariant lives on the token".*
   API — with the full checkout mechanism, but nothing yet uses cross-instance
   ids.
 - **Work**: `InstanceTable` (slots/generations/in_use, all the sketch's
-  shapes), `InstanceHandle { table: Weak<...>, self_id }` carried by `Store`
+  shapes), `InstanceBackref { table: Weak<...>, self_id }` carried by `Store`
   and `InterpInstance` where `LinkRegistry` is carried today,
   engine-discriminated `InstanceToken` as an RAII guard, `checkout` with
   `&raw` pointer extraction, generation retire-at-`u32::MAX`, `free` erroring
@@ -346,7 +346,7 @@ end, but implement it as the sequence below.*
   privacy fact both computed and made unfalsifiable.
 - **Work sequence**:
   1. `FUNCADDR_TOP`, the two total conversion primitives on
-     `InstanceHandle`, and the encoding round-trip test over both range
+     `InstanceBackref`, and the encoding round-trip test over both range
      endpoints at both widths (`ref_to_machine_raw`/`machine_raw_to_ref`).
   2. Replace `FunctionRegistryEntry` with `FuncEntry { owner, local_index }`
      **and** re-index `function_views` by local function index in the same
