@@ -2,7 +2,7 @@
 
 use crate::error::WasmError;
 use crate::value_type::ValueType;
-use crate::vm::jit::store::Store;
+use crate::vm::jit::store::JitInstance;
 use crate::vm::value::{machine_raw_to_ref, ref_to_machine_raw, RefValue, Value, FUNCADDR_TOP};
 
 pub(crate) type RawValue = u64;
@@ -64,7 +64,7 @@ pub(crate) const fn as_ref(val: RawValue) -> RefValue {
 /// instance's local-index range pass through unchanged. Resolution uses only
 /// the per-instance local-index map and never checks out an instance slot.
 #[inline]
-pub(crate) fn absolutize(frame_owner: &Store, handle: RefValue) -> RefValue {
+pub(crate) fn absolutize(frame_owner: &JitInstance, handle: RefValue) -> RefValue {
     if handle.is_null() || handle.is_special() {
         return handle;
     }
@@ -90,7 +90,7 @@ pub(crate) fn absolutize(frame_owner: &Store, handle: RefValue) -> RefValue {
 /// through unchanged. Resolution uses only the shared function arena and
 /// never checks out an instance slot.
 #[inline]
-pub(crate) fn localize(frame_owner: &Store, handle: RefValue) -> RefValue {
+pub(crate) fn localize(frame_owner: &JitInstance, handle: RefValue) -> RefValue {
     if handle.is_null() || handle.is_special() {
         return handle;
     }
@@ -117,7 +117,11 @@ pub(crate) fn localize(frame_owner: &Store, handle: RefValue) -> RefValue {
 /// container may hold the owning instance's local form. Both conversions are
 /// total, so foreign, null, and non-function references pass through.
 #[inline]
-pub(crate) fn retag_for_container(store: &Store, handle: RefValue, reachable: bool) -> RefValue {
+pub(crate) fn retag_for_container(
+    store: &JitInstance,
+    handle: RefValue,
+    reachable: bool,
+) -> RefValue {
     if reachable {
         absolutize(store, handle)
     } else {
@@ -126,7 +130,7 @@ pub(crate) fn retag_for_container(store: &Store, handle: RefValue, reachable: bo
 }
 
 #[inline]
-pub(crate) fn value_to_raw_in_store(val: Value, frame_owner: &mut Store) -> RawValue {
+pub(crate) fn value_to_raw_in_store(val: Value, frame_owner: &mut JitInstance) -> RawValue {
     match val {
         #[cfg(sf_has_simd)]
         Value::V128(value) => frame_owner.intern_v128(value),
@@ -144,7 +148,7 @@ pub(crate) fn value_to_raw_in_store(val: Value, frame_owner: &mut Store) -> RawV
 pub(crate) fn value_to_container_raw_in_store(
     val: Value,
     reachable: bool,
-    store: &mut Store,
+    store: &mut JitInstance,
 ) -> RawValue {
     match val {
         Value::Ref(r, _) => from_ref(retag_for_container(store, r, reachable)),
@@ -156,7 +160,7 @@ pub(crate) fn value_to_container_raw_in_store(
 pub(crate) fn value_to_machine_raw_in_store(
     val: Value,
     gp_unit_bytes: u8,
-    frame_owner: &mut Store,
+    frame_owner: &mut JitInstance,
 ) -> RawValue {
     match val {
         Value::Ref(r, _) => ref_to_machine_raw(localize(frame_owner, r), gp_unit_bytes),
@@ -181,7 +185,7 @@ pub(crate) fn try_machine_raw_to_value_in_store(
     raw: RawValue,
     value_type: ValueType,
     gp_unit_bytes: u8,
-    frame_owner: &Store,
+    frame_owner: &JitInstance,
 ) -> Result<Value, WasmError> {
     Ok(match value_type {
         ValueType::Ref(ref_type) => Value::Ref(
@@ -207,7 +211,7 @@ pub(crate) fn try_machine_raw_to_value_in_store(
 pub(crate) fn try_raw_to_value_in_store(
     raw: RawValue,
     value_type: ValueType,
-    frame_owner: &Store,
+    frame_owner: &JitInstance,
 ) -> Result<Value, WasmError> {
     Ok(match value_type {
         ValueType::I32 => Value::I32(as_i32(raw)),

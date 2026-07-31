@@ -4,7 +4,7 @@
 //! bytes, the same `&[Import]`, and the same `invoke(name, &[Value])` work
 //! on the JIT and on the interpreter, and the code that calls them needs no
 //! `cfg`. What differs -- native code versus a threaded dispatch chain,
-//! a `Store` full of entities versus a flat predecoded frame -- differs
+//! a `JitInstance` full of entities versus a flat predecoded frame -- differs
 //! below this line.
 //!
 //! The inner variants are gated on the engine features, so a build with one
@@ -30,7 +30,7 @@ use crate::vm::value::{RefValue, Value};
 #[cfg(sf_interp)]
 use crate::vm::interpreter::{InterpInstance, InterpInstanceLease};
 #[cfg(sf_jit)]
-use crate::vm::jit::instance::JitInstance;
+use crate::vm::jit::instance::JitInstanceLease;
 
 // One import model for both engines. The interpreter's raw host-dispatch
 // boundary is an implementation detail that `interp_imports` drives from
@@ -44,7 +44,7 @@ mod interp_imports;
 
 enum Inner {
     #[cfg(sf_jit)]
-    Jit(JitInstance),
+    Jit(JitInstanceLease),
     #[cfg(sf_interp)]
     Interp(InterpInstanceLease),
 }
@@ -168,11 +168,13 @@ impl Instance {
         validate(&module)?;
         match engine.tier() {
             #[cfg(sf_jit)]
-            Tier::Jit => JitInstance::from_module_with_registry(engine, module, imports, registry)
-                .map(|inst| Self {
-                    inner: Inner::Jit(inst),
-                    registry: registry.clone(),
-                }),
+            Tier::Jit => JitInstanceLease::from_module_with_registry(
+                engine, module, imports, registry,
+            )
+            .map(|inst| Self {
+                inner: Inner::Jit(inst),
+                registry: registry.clone(),
+            }),
             #[cfg(sf_interp)]
             Tier::Interp => {
                 let dispatch = interp_imports::bind(&module, imports)?;
@@ -646,7 +648,7 @@ impl Instance {
     /// no counterpart for. `None` when this instance is on another engine.
     #[cfg(sf_jit)]
     #[inline]
-    pub fn as_jit(&self) -> Option<&JitInstance> {
+    pub fn as_jit(&self) -> Option<&JitInstanceLease> {
         match &self.inner {
             Inner::Jit(inst) => Some(inst),
             #[cfg(sf_interp)]
@@ -656,7 +658,7 @@ impl Instance {
 
     #[cfg(sf_jit)]
     #[inline]
-    pub fn as_jit_mut(&mut self) -> Option<&mut JitInstance> {
+    pub fn as_jit_mut(&mut self) -> Option<&mut JitInstanceLease> {
         match &mut self.inner {
             Inner::Jit(inst) => Some(inst),
             #[cfg(sf_interp)]
@@ -845,7 +847,7 @@ impl RuntimeWorld {
             .ok_or_else(|| WasmError::invalid("unknown runtime-world instance"))?;
         #[cfg(sf_jit)]
         if token.jit().is_some() {
-            return JitInstance::invoke_token(token, name, args);
+            return JitInstanceLease::invoke_token(token, name, args);
         }
         #[cfg(sf_interp)]
         if token.interp().is_some() {
@@ -876,7 +878,7 @@ impl WorldAccess {
             .ok_or_else(|| WasmError::invalid("unknown runtime-world instance"))?;
         #[cfg(sf_jit)]
         if token.jit().is_some() {
-            return JitInstance::invoke_function_index_token(token, function_index, args);
+            return JitInstanceLease::invoke_function_index_token(token, function_index, args);
         }
         #[cfg(sf_interp)]
         if token.interp().is_some() {

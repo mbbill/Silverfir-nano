@@ -42,7 +42,7 @@ pub use vm::instance::{
     InstanceInstantiationError, RuntimeWorld,
 };
 // The interpreter's instance is public as the counterpart to
-// `JitInstance` -- the escape hatch for what only this engine can answer.
+// `JitInstanceLease` -- the escape hatch for what only this engine can answer.
 // Its predecoded representation (instructions, opcode enum, operand flags)
 // is not: it is how the engine stores a function, not something an
 // embedder builds against.
@@ -56,7 +56,7 @@ pub use vm::jit::arch::active_native_backend_name;
 #[cfg(sf_jit)]
 pub use vm::jit::build::{jit_stats_snapshot, JitStatsSnapshot};
 #[cfg(sf_jit)]
-pub use vm::jit::instance::JitInstance;
+pub use vm::jit::instance::JitInstanceLease;
 #[cfg(sf_has_guard_pages)]
 use vm::jit::runtime::trap_signal;
 pub use vm::link::{InstanceId, LinkRegistry, WorldAccess};

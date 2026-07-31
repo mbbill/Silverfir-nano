@@ -390,7 +390,7 @@ impl Import {
     }
 
     /// Cross-module tag linking: import the tag using an explicit `TagIdentity`
-    /// obtained via `JitInstance::tag_identity(...)` or a previous
+    /// obtained via `JitInstanceLease::tag_identity(...)` or a previous
     /// `tag_typed_with_handle`/`linked_tag_typed*` call. Preserves tag
     /// identity across module boundaries.
     pub fn linked_tag_typed(

@@ -1,7 +1,7 @@
 - The store-rooted structure — module instance, GC heap, constant-expression
   evaluation, machine value encodings, and the per-invocation native caches —
   is the JIT engine's runtime world; the interpreter keeps its own flat
-  per-instance state and never constructs a store (`Store`). Both engines'
+  per-instance state and never constructs a store (`JitInstance`). Both engines'
   instances live in one world's generational slots
   ([[cross-instance-identity]]).
 

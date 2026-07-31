@@ -1,4 +1,4 @@
-//! The JIT's instantiated module: the `Store`, the entity model, and the
+//! The JIT's instantiated module: the `JitInstance`, the entity model, and the
 //! frame layout the emitted native code reads directly.
 //!
 //! Embedders reach this through [`crate::Instance`], which picks an engine;
@@ -35,7 +35,7 @@ use crate::vm::jit::entities::{
 };
 use crate::vm::jit::expr_eval::eval_const_expr;
 use crate::vm::jit::runtime;
-use crate::vm::jit::store::Store;
+use crate::vm::jit::store::JitInstance;
 use crate::vm::jit::value_encoding::{
     absolutize, retag_for_container, try_raw_to_value_in_store, value_to_container_raw_in_store,
 };
@@ -43,7 +43,7 @@ use crate::vm::link::{InstanceId, InstanceLease, InstanceToken, LinkRegistry};
 use crate::vm::tag::TagIdentity;
 use crate::vm::value::{RefValue, Value};
 
-pub struct JitInstance {
+pub struct JitInstanceLease {
     lease: InstanceLease,
 }
 
@@ -253,7 +253,7 @@ fn compute_static_table_dispatch_modes(
     Ok(modes)
 }
 
-impl JitInstance {
+impl JitInstanceLease {
     pub fn new(engine: &Engine, wasm_bytes: &[u8], imports: &[Import]) -> Result<Self, WasmError> {
         let module = Module::new("main", wasm_bytes)?;
         Self::from_module(engine, module, imports)
@@ -821,7 +821,7 @@ impl JitInstance {
         module_inst.global_reachable = global_reachable;
         let (instance_id, instance_backref) = registry.reserve_instance();
         let lease_handle = instance_backref.clone();
-        let mut store = Box::new(Store::new_with_registries(
+        let mut store = Box::new(JitInstance::new_with_registries(
             module_inst,
             instance_backref,
             registry.function_registry_shared(),
@@ -1000,7 +1000,7 @@ impl JitInstance {
         let lease = InstanceLease::checkout(&lease_handle).expect("occupied JIT instance slot");
 
         match init_result {
-            Ok(()) => Ok(JitInstance { lease }),
+            Ok(()) => Ok(JitInstanceLease { lease }),
             Err(error) => {
                 let id = lease.into_occupied_id();
                 Err(InstanceInstantiationError::Partial { id, error })
@@ -1089,18 +1089,18 @@ impl JitInstance {
             .any(|(n, k, _)| matches!(k, ExportKind::Func) && n == name)
     }
 
-    pub(crate) fn store(&self) -> &Store {
+    pub(crate) fn store(&self) -> &JitInstance {
         self.lease
             .token()
             .jit()
-            .expect("JIT instance lease must resolve to a Store")
+            .expect("JIT instance lease must resolve to a JitInstance")
     }
 
-    pub(crate) fn store_mut(&mut self) -> &mut Store {
+    pub(crate) fn store_mut(&mut self) -> &mut JitInstance {
         self.lease
             .token_mut()
             .jit_mut()
-            .expect("JIT instance lease must resolve to a Store")
+            .expect("JIT instance lease must resolve to a JitInstance")
     }
 
     pub(crate) fn instance_id(&self) -> InstanceId {
@@ -1495,7 +1495,7 @@ fn eval_offset(expr: &ConstExpr, module: &ModuleInst) -> Result<usize, WasmError
 
 fn materialize_element_init(
     init: &ElementInit,
-    store: &mut Store,
+    store: &mut JitInstance,
     reachable_destination: bool,
 ) -> Result<collections::Vec<RefValue>, WasmError> {
     match init {
@@ -1669,7 +1669,7 @@ mod tests {
             Some(shared_memory),
         );
 
-        let instance = JitInstance::from_module(
+        let instance = JitInstanceLease::from_module(
             &crate::vm::engine::Engine::with_defaults(),
             module,
             &[import],
@@ -1695,7 +1695,7 @@ mod tests {
             }),
         );
 
-        let instance = JitInstance::from_module(
+        let instance = JitInstanceLease::from_module(
             &crate::vm::engine::Engine::with_defaults(),
             module,
             &[import],
@@ -1717,7 +1717,7 @@ mod tests {
             "#,
         )
         .expect("source module should encode");
-        let source = JitInstance::new(
+        let source = JitInstanceLease::new(
             &crate::vm::engine::Engine::with_defaults(),
             &source_wasm,
             &[],
@@ -1739,7 +1739,7 @@ mod tests {
             "#,
         )
         .expect("importer module should encode");
-        let mut importer = JitInstance::new(
+        let mut importer = JitInstanceLease::new(
             &crate::vm::engine::Engine::with_defaults(),
             &importer_wasm,
             &[
@@ -1770,7 +1770,7 @@ mod tests {
             "#,
         )
         .expect("mutable source module should encode");
-        let mutable_source = JitInstance::new(
+        let mutable_source = JitInstanceLease::new(
             &crate::vm::engine::Engine::with_defaults(),
             &mutable_source_wasm,
             &[],
@@ -1788,7 +1788,7 @@ mod tests {
         )
         .expect("mutable importer module should encode");
 
-        assert!(JitInstance::new(
+        assert!(JitInstanceLease::new(
             &crate::vm::engine::Engine::with_defaults(),
             &mutable_importer_wasm,
             &[Import::global_with_state("env", "g", mutable_shared)]
@@ -1804,7 +1804,7 @@ mod tests {
             "#,
         )
         .expect("immutable source module should encode");
-        let immutable_source = JitInstance::new(
+        let immutable_source = JitInstanceLease::new(
             &crate::vm::engine::Engine::with_defaults(),
             &immutable_source_wasm,
             &[],
@@ -1822,7 +1822,7 @@ mod tests {
         )
         .expect("immutable importer module should encode");
 
-        assert!(JitInstance::new(
+        assert!(JitInstanceLease::new(
             &crate::vm::engine::Engine::with_defaults(),
             &immutable_importer_wasm,
             &[Import::global_with_state("env", "g", immutable_shared)]
@@ -1858,7 +1858,7 @@ mod tests {
             },
         )];
         let mut instance =
-            JitInstance::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &imports)
+            JitInstanceLease::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &imports)
                 .expect("capturing callback should instantiate");
 
         let first = instance
@@ -1902,7 +1902,7 @@ mod tests {
         )
         .expect("tail-call module should encode");
         let mut instance =
-            JitInstance::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &[])
+            JitInstanceLease::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &[])
                 .expect("instantiation should succeed");
 
         let result = instance
@@ -1926,7 +1926,7 @@ mod tests {
 
         #[cfg(not(sf_has_simd))]
         {
-            let err = match JitInstance::from_module(
+            let err = match JitInstanceLease::from_module(
                 &crate::vm::engine::Engine::with_defaults(),
                 builder.build(),
                 &[],
@@ -1942,7 +1942,7 @@ mod tests {
 
         #[cfg(sf_has_simd)]
         {
-            JitInstance::from_module(
+            JitInstanceLease::from_module(
                 &crate::vm::engine::Engine::with_defaults(),
                 builder.build(),
                 &[],
@@ -1965,7 +1965,7 @@ mod tests {
         .expect("wat should encode a SIMD module");
 
         let mut instance =
-            JitInstance::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &[])
+            JitInstanceLease::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &[])
                 .expect("instantiation should succeed");
         let results = instance
             .invoke("not", &[crate::Value::V128([0; 16])])
@@ -1986,7 +1986,7 @@ mod tests {
         .expect("wat should encode a SIMD const module");
 
         let mut instance =
-            JitInstance::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &[])
+            JitInstanceLease::new(&crate::vm::engine::Engine::with_defaults(), &wasm, &[])
                 .expect("instantiation should succeed");
         let expected = crate::Value::V128([1, 0, 0, 0, 2, 0, 0, 0, 3, 0, 0, 0, 4, 0, 0, 0]);
         let results = instance

@@ -11,7 +11,7 @@
 //! another's), imports (`vm::imports`), values, config, and the WASI host.
 //!
 //! Not shared is code generation: this module never touches `middle/`,
-//! `machine/`, or `arch/`, and the JIT's `Store` and `jit/runtime/` layer
+//! `machine/`, or `arch/`, and the JIT's `JitInstance` and `jit/runtime/` layer
 //! stay the JIT's, so interpreter work can never break JIT builds.
 //!
 //! Pipeline:

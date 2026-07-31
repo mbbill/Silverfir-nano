@@ -31,7 +31,7 @@ use crate::vm::interpreter::InterpInstance;
 #[cfg(sf_jit)]
 use crate::vm::jit::gc_heap::GcRef;
 #[cfg(sf_jit)]
-use crate::vm::jit::store::Store;
+use crate::vm::jit::store::JitInstance;
 
 /// Stable identity for one instance in a runtime world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -63,7 +63,7 @@ impl InstanceId {
 /// box-pointer storage, never the separately allocated instance body.
 pub(crate) enum WorldSlot {
     #[cfg(sf_jit)]
-    Jit(Box<Store>),
+    Jit(Box<JitInstance>),
     #[cfg(sf_interp)]
     Interp(Box<InterpInstance>),
     Vacant,
@@ -102,7 +102,7 @@ pub(crate) struct InstanceBackref {
 
 enum InstancePointer {
     #[cfg(sf_jit)]
-    Jit(*mut Store),
+    Jit(*mut JitInstance),
     #[cfg(sf_interp)]
     Interp(*mut InterpInstance),
 }
@@ -201,7 +201,7 @@ impl InstanceTable {
     pub(crate) fn occupy_jit(
         &self,
         id: InstanceId,
-        store: Box<Store>,
+        store: Box<JitInstance>,
     ) -> Result<(), InstanceFreeError> {
         self.occupy(id, WorldSlot::Jit(store))
     }
@@ -371,7 +371,7 @@ impl InstanceToken {
 
     #[cfg(sf_jit)]
     #[inline]
-    pub(crate) fn jit(&self) -> Option<&Store> {
+    pub(crate) fn jit(&self) -> Option<&JitInstance> {
         match self.pointer {
             InstancePointer::Jit(pointer) => Some(unsafe { &*pointer }),
             #[cfg(sf_interp)]
@@ -382,7 +382,7 @@ impl InstanceToken {
     /// The generation-checked slot pointer without materializing its store.
     #[cfg(sf_jit)]
     #[inline]
-    pub(crate) fn jit_pointer(&self) -> Option<*mut Store> {
+    pub(crate) fn jit_pointer(&self) -> Option<*mut JitInstance> {
         match self.pointer {
             InstancePointer::Jit(pointer) => Some(pointer),
             #[cfg(sf_interp)]
@@ -392,7 +392,7 @@ impl InstanceToken {
 
     #[cfg(sf_jit)]
     #[inline]
-    pub(crate) fn jit_mut(&mut self) -> Option<&mut Store> {
+    pub(crate) fn jit_mut(&mut self) -> Option<&mut JitInstance> {
         match self.pointer {
             InstancePointer::Jit(pointer) => Some(unsafe { &mut *pointer }),
             #[cfg(sf_interp)]
@@ -683,7 +683,7 @@ pub(crate) enum RefRegistryEntry {
     #[cfg(sf_jit)]
     I31(i32),
     /// A GC object owned by one JIT instance's heap. Consumers must checkout
-    /// the owner before materializing its `Store` and resolving `gc_ref`.
+    /// the owner before materializing its `JitInstance` and resolving `gc_ref`.
     #[cfg(sf_jit)]
     Gc { owner: InstanceId, gc_ref: GcRef },
     /// Exception objects are registry-owned. Keeping the shared allocation
@@ -700,7 +700,7 @@ pub(crate) enum RefRegistryEntry {
 #[derive(Clone, Copy)]
 pub(crate) enum RefTypeOwner<'a> {
     #[cfg(sf_jit)]
-    Jit(&'a Store),
+    Jit(&'a JitInstance),
     #[cfg(sf_interp)]
     Interp(&'a InterpInstance),
 }
@@ -781,7 +781,7 @@ impl<'a> RefTypeOwner<'a> {
     }
 
     #[cfg(sf_jit)]
-    fn jit_store(self) -> Option<&'a Store> {
+    fn jit_store(self) -> Option<&'a JitInstance> {
         match self {
             Self::Jit(store) => Some(store),
             #[cfg(sf_interp)]
@@ -907,7 +907,7 @@ fn function_type_matches(
 
 #[cfg(sf_jit)]
 fn gc_ref_type_matches(
-    origin: &Store,
+    origin: &JitInstance,
     gc_ref: GcRef,
     expected: &HeapType,
     current_types: &TypeContext,
@@ -1115,8 +1115,8 @@ mod instance_table_tests {
     #[cfg(any(sf_ir_dump, sf_jitdump))]
     use tracked_alloc::string::String;
 
-    fn test_store(registry: &LinkRegistry, handle: InstanceBackref) -> Box<Store> {
-        Box::new(Store::new_with_registries(
+    fn test_store(registry: &LinkRegistry, handle: InstanceBackref) -> Box<JitInstance> {
+        Box::new(JitInstance::new_with_registries(
             ModuleInst::new(
                 Config::new(),
                 #[cfg(any(sf_ir_dump, sf_jitdump))]
@@ -1463,7 +1463,7 @@ mod instance_table_tests {
         table.0.generations.borrow_mut()[id.index() as usize] = u32::MAX - 1;
         let old = InstanceId::from_parts(id.index(), u32::MAX - 1);
         let handle = table.handle(old);
-        let store = Box::new(Store::new_with_registries(
+        let store = Box::new(JitInstance::new_with_registries(
             ModuleInst::new(
                 Config::new(),
                 #[cfg(any(sf_ir_dump, sf_jitdump))]

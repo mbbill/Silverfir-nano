@@ -7,7 +7,7 @@
 
 use crate::error::WasmError;
 use crate::value_type::ValueType;
-use crate::vm::jit::store::Store;
+use crate::vm::jit::store::JitInstance;
 use crate::vm::jit::value_encoding::try_machine_raw_to_value_in_store;
 use crate::vm::link::{InstanceId, InstanceToken};
 use crate::vm::value::Value;
@@ -41,9 +41,9 @@ mod native_eval;
 pub(crate) enum StoreAccess<'a> {
     CheckedOut(InstanceToken),
     Initializing {
-        pointer: NonNull<Store>,
+        pointer: NonNull<JitInstance>,
         id: InstanceId,
-        lifetime: PhantomData<&'a mut Store>,
+        lifetime: PhantomData<&'a mut JitInstance>,
     },
 }
 
@@ -65,7 +65,7 @@ impl<'a> StoreAccess<'a> {
     /// unpublished initializing store; standalone runtime tests provide the
     /// same guarantees through their owning box.
     #[inline]
-    pub(crate) unsafe fn initializing_raw(pointer: *mut Store, id: InstanceId) -> Self {
+    pub(crate) unsafe fn initializing_raw(pointer: *mut JitInstance, id: InstanceId) -> Self {
         Self::Initializing {
             pointer: NonNull::new(pointer).expect("initializing store pointer must be non-null"),
             id,
@@ -83,7 +83,7 @@ impl<'a> StoreAccess<'a> {
 
     /// Return the capability's stable pointer without materializing a store.
     #[inline]
-    pub(crate) fn store_pointer(&self) -> Result<*mut Store, WasmError> {
+    pub(crate) fn store_pointer(&self) -> Result<*mut JitInstance, WasmError> {
         match self {
             Self::CheckedOut(token) => token
                 .jit_pointer()
@@ -99,7 +99,7 @@ impl<'a> StoreAccess<'a> {
     #[inline]
     pub(crate) fn with_store<R>(
         &self,
-        use_store: impl for<'store> FnOnce(&'store Store) -> R,
+        use_store: impl for<'store> FnOnce(&'store JitInstance) -> R,
     ) -> Result<R, WasmError> {
         let store = match self {
             Self::CheckedOut(token) => token
@@ -117,7 +117,7 @@ impl<'a> StoreAccess<'a> {
     #[inline]
     pub(crate) fn with_store_mut<R>(
         &mut self,
-        use_store: impl for<'store> FnOnce(&'store mut Store) -> R,
+        use_store: impl for<'store> FnOnce(&'store mut JitInstance) -> R,
     ) -> Result<R, WasmError> {
         let store = match self {
             Self::CheckedOut(token) => token
@@ -189,7 +189,7 @@ pub(crate) fn eval(
 /// move or be dropped until evaluation returns.
 #[inline]
 pub(crate) unsafe fn eval_initializing(
-    store: *mut Store,
+    store: *mut JitInstance,
     id: InstanceId,
     local_index: u32,
     args: &[Value],
@@ -212,7 +212,7 @@ pub(crate) unsafe fn collect_native_results_from_stack(
     stack_base: *const u64,
     result_types: &[ValueType],
     gp_unit_bytes: u8,
-    store: &mut Store,
+    store: &mut JitInstance,
 ) -> Result<crate::collections::Vec<Value>, WasmError> {
     let mut out = crate::collections::Vec::with_capacity(result_types.len());
     for (index, ty) in result_types.iter().enumerate() {
