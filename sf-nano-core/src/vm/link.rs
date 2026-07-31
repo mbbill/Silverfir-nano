@@ -31,7 +31,7 @@ use crate::vm::interpreter::InterpInstance;
 #[cfg(sf_jit)]
 use crate::vm::jit::gc_heap::GcRef;
 #[cfg(sf_jit)]
-use crate::vm::jit::store::JitInstance;
+use crate::vm::jit::instance::JitInstance;
 
 /// Stable identity for one instance in a runtime world.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

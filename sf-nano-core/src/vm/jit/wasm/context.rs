@@ -8,7 +8,7 @@ use crate::{
     module::type_context::TypeContext,
     op_decoder::{BlockType, Immediate},
     value_type::ValueType,
-    vm::jit::store::JitInstance,
+    vm::jit::instance::JitInstance,
 };
 
 /// Immutable decode context for one function body.

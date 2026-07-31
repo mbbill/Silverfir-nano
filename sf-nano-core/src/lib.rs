@@ -56,7 +56,7 @@ pub use vm::jit::arch::active_native_backend_name;
 #[cfg(sf_jit)]
 pub use vm::jit::build::{jit_stats_snapshot, JitStatsSnapshot};
 #[cfg(sf_jit)]
-pub use vm::jit::instance::JitInstanceLease;
+pub use vm::jit::instantiate::JitInstanceLease;
 #[cfg(sf_has_guard_pages)]
 use vm::jit::runtime::trap_signal;
 pub use vm::link::{InstanceId, LinkRegistry, WorldAccess};

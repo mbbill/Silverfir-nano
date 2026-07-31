@@ -511,7 +511,7 @@ runtime.md facts on the divergences.*
 
 - Branch `dev/runtime-storage-rescope`, PR #18. Stages 1-2 of the wider
   refactor are already landed there: the Store and its satellites are
-  JIT-owned (`vm/jit/store.rs`), `vm/link.rs` is the registry meeting point,
+  JIT-owned (`vm/jit/instance.rs`), `vm/link.rs` is the registry meeting point,
   `ExnHeap` is deleted (exceptions are registry-owned), one shared
   const-expr evaluator (`vm/const_eval.rs`), engine cfgs at the gates only,
   and the lint-policy machinery is hardened. **The RuntimeWorld itself is

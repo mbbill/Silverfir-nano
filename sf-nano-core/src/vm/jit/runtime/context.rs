@@ -34,6 +34,7 @@ use crate::{
     vm::{
         entities::FunctionInst,
         jit::entities::{ModuleInst, TableDispatchMode, TableInstJit},
+        jit::instance::JitInstance,
         jit::runtime::{
             code::CompiledNativeModule,
             dispatch_view::{
@@ -41,7 +42,6 @@ use crate::{
             },
             layout::local_call_info_abi_layout,
         },
-        jit::store::JitInstance,
         tag::TagIdentity,
         value::RefValue,
     },
@@ -936,7 +936,7 @@ mod tests {
             entities::Caller,
             jit::{
                 entities::ModuleInst,
-                store::{tests::store as test_store, JitInstance},
+                instance::{tests::store as test_store, JitInstance},
             },
             link::LinkRegistry,
             value::Value,

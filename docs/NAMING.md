@@ -65,7 +65,7 @@ compiler and backend internals — `Arm64Reg`, `CfgBlock`, `EdgeStub`,
 
 **This convention governs the instance storage and identity types**: those
 declared in `vm/link.rs`, `vm/instance.rs`, `vm/entities.rs`, `vm/tag.rs`,
-`vm/value.rs`, `vm/jit/store.rs`, `vm/jit/runtime/mod.rs`, plus the engine
+`vm/value.rs`, `vm/jit/instance.rs`, `vm/jit/runtime/mod.rs`, plus the engine
 bodies and their leases. Roughly forty types. Everything else is explicitly
 out of scope; a compiler IR node is free to be called whatever the compiler
 finds clearest.

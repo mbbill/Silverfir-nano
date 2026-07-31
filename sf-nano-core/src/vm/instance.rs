@@ -30,7 +30,7 @@ use crate::vm::value::{RefValue, Value};
 #[cfg(sf_interp)]
 use crate::vm::interpreter::{InterpInstance, InterpInstanceLease};
 #[cfg(sf_jit)]
-use crate::vm::jit::instance::JitInstanceLease;
+use crate::vm::jit::instantiate::JitInstanceLease;
 
 // One import model for both engines. The interpreter's raw host-dispatch
 // boundary is an implementation detail that `interp_imports` drives from
