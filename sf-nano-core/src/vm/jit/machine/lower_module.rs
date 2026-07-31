@@ -1784,31 +1784,52 @@ fn lower_indirect_dispatch_cluster(
     };
     let fixed_local_table = fixed_local_table_len.is_some();
     let fixed_fast_table = fixed_local_table && !lower.use_explicit_stack_prechecks();
-    let (checked, trap_oob, trap_invalid_ref, trap_type_mismatch, type_check, dispatch) =
-        match source {
-            IndirectCallSource::Table { .. } => {
-                let checked = Some(extra_block_ids.alloc());
-                let trap_oob = Some(extra_block_ids.alloc());
-                let type_check = extra_block_ids.alloc();
-                let trap_invalid_ref = extra_block_ids.alloc();
-                let trap_type_mismatch = fixed_local_table.then(|| extra_block_ids.alloc());
-                let dispatch = (!fixed_local_table).then(|| extra_block_ids.alloc());
-                (
-                    checked,
-                    trap_oob,
-                    trap_invalid_ref,
-                    trap_type_mismatch,
-                    type_check,
-                    dispatch,
-                )
-            }
-            IndirectCallSource::Ref { .. } => {
-                let trap_invalid_ref = extra_block_ids.alloc();
-                let type_check = extra_block_ids.alloc();
-                let dispatch = Some(extra_block_ids.alloc());
-                (None, None, trap_invalid_ref, None, type_check, dispatch)
-            }
-        };
+    let (
+        checked,
+        trap_oob,
+        self_abs_range,
+        self_abs_lookup,
+        trap_invalid_ref,
+        trap_type_mismatch,
+        type_check,
+        dispatch,
+    ) = match source {
+        IndirectCallSource::Table { .. } => {
+            let checked = Some(extra_block_ids.alloc());
+            let trap_oob = Some(extra_block_ids.alloc());
+            let self_abs_range = (!fixed_local_table).then(|| extra_block_ids.alloc());
+            let self_abs_lookup = (!fixed_local_table).then(|| extra_block_ids.alloc());
+            let type_check = extra_block_ids.alloc();
+            let trap_invalid_ref = extra_block_ids.alloc();
+            let trap_type_mismatch = fixed_local_table.then(|| extra_block_ids.alloc());
+            let dispatch = (!fixed_local_table).then(|| extra_block_ids.alloc());
+            (
+                checked,
+                trap_oob,
+                self_abs_range,
+                self_abs_lookup,
+                trap_invalid_ref,
+                trap_type_mismatch,
+                type_check,
+                dispatch,
+            )
+        }
+        IndirectCallSource::Ref { .. } => {
+            let trap_invalid_ref = extra_block_ids.alloc();
+            let type_check = extra_block_ids.alloc();
+            let dispatch = Some(extra_block_ids.alloc());
+            (
+                None,
+                None,
+                None,
+                None,
+                trap_invalid_ref,
+                None,
+                type_check,
+                dispatch,
+            )
+        }
+    };
     let local_prepare = extra_block_ids.alloc();
     let local_transfer = if fixed_fast_table {
         local_prepare
@@ -1895,7 +1916,10 @@ fn lower_indirect_dispatch_cluster(
                         kind: if fixed_local_table {
                             MachineCompareKind::Eq
                         } else {
-                            MachineCompareKind::Ge
+                            // Keep the exported-table absolute path on the
+                            // fallthrough edge. Local handles still branch
+                            // directly to the existing type-check path.
+                            MachineCompareKind::Lt
                         },
                         sign: MachineSign::Unsigned,
                         lhs: MachineValue::Reg(indirect_temps.lane2),
@@ -1911,16 +1935,21 @@ fn lower_indirect_dispatch_cluster(
                         target: if fixed_local_table {
                             trap_invalid_ref
                         } else {
-                            runtime_call.expect("generic indirect dispatch should allocate runtime")
+                            type_check
                         },
                         args: if fixed_local_table {
                             collections::Vec::new()
                         } else {
-                            carried_args.param_values()
+                            prepend_gp_word_arg(indirect_temps.lane2, &carried_args.param_values())
                         },
                     },
                     else_edge: MachineEdge {
-                        target: type_check,
+                        target: if fixed_local_table {
+                            type_check
+                        } else {
+                            self_abs_range
+                                .expect("generic indirect dispatch should allocate self range")
+                        },
                         args: if fixed_fast_table {
                             prepend_gp_word_args(
                                 &[
@@ -1933,7 +1962,7 @@ fn lower_indirect_dispatch_cluster(
                         } else if fixed_local_table {
                             prepend_gp_word_arg(indirect_temps.lane2, &carried_args.param_values())
                         } else {
-                            carried_args.param_values()
+                            prepend_gp_word_arg(indirect_temps.lane2, &carried_args.param_values())
                         },
                     },
                 },
@@ -1948,6 +1977,65 @@ fn lower_indirect_dispatch_cluster(
                     kind: MachineTrapKind::TableOutOfBounds,
                 },
             )?;
+            if let (Some(self_abs_range), Some(self_abs_lookup)) = (self_abs_range, self_abs_lookup)
+            {
+                let runtime_call =
+                    runtime_call.expect("generic indirect dispatch should allocate runtime");
+                push_lowered_block(
+                    self_abs_range,
+                    original_blocks,
+                    extra_blocks,
+                    prepend_gp_word_param(indirect_temps.lane2, &carried_args.params),
+                    build_call_indirect_self_abs_range_block(lower)?,
+                    MachineTerminator::Branch {
+                        cond: MachineBranchCond::IntCompare {
+                            width: lower.gp_word_int_width(),
+                            kind: MachineCompareKind::Ge,
+                            sign: MachineSign::Unsigned,
+                            lhs: MachineValue::Reg(indirect_temps.lane0),
+                            rhs: MachineValue::Reg(indirect_temps.lane1),
+                        },
+                        then_edge: MachineEdge {
+                            target: runtime_call,
+                            args: carried_args.param_values(),
+                        },
+                        else_edge: MachineEdge {
+                            target: self_abs_lookup,
+                            args: prepend_gp_word_arg(
+                                indirect_temps.lane0,
+                                &carried_args.param_values(),
+                            ),
+                        },
+                    },
+                )?;
+                push_lowered_block(
+                    self_abs_lookup,
+                    original_blocks,
+                    extra_blocks,
+                    prepend_gp_word_param(indirect_temps.lane0, &carried_args.params),
+                    build_call_indirect_self_abs_lookup_block(lower)?,
+                    MachineTerminator::Branch {
+                        cond: MachineBranchCond::IntCompare {
+                            width: lower.gp_word_int_width(),
+                            kind: MachineCompareKind::Eq,
+                            sign: MachineSign::Unsigned,
+                            lhs: MachineValue::Reg(indirect_temps.lane2),
+                            rhs: MachineValue::Imm64(u32::MAX as u64),
+                        },
+                        then_edge: MachineEdge {
+                            target: runtime_call,
+                            args: carried_args.param_values(),
+                        },
+                        else_edge: MachineEdge {
+                            target: type_check,
+                            args: prepend_gp_word_arg(
+                                indirect_temps.lane2,
+                                &carried_args.param_values(),
+                            ),
+                        },
+                    },
+                )?;
+            }
             push_lowered_block(
                 type_check,
                 original_blocks,
@@ -1964,7 +2052,7 @@ fn lower_indirect_dispatch_cluster(
                 } else if fixed_local_table {
                     prepend_gp_word_param(indirect_temps.lane2, &carried_args.params)
                 } else {
-                    carried_args.params.clone()
+                    prepend_gp_word_param(indirect_temps.lane2, &carried_args.params)
                 },
                 if fixed_fast_table {
                     build_call_indirect_expected_type_load_block(lower, type_idx)?
@@ -1975,7 +2063,11 @@ fn lower_indirect_dispatch_cluster(
                         indirect_temps.lane2,
                     )?
                 } else {
-                    build_call_indirect_type_check_block(lower, type_idx, source.frame_slot())?
+                    build_call_indirect_type_check_from_reg_block(
+                        lower,
+                        type_idx,
+                        indirect_temps.lane2,
+                    )?
                 },
                 MachineTerminator::Branch {
                     cond: MachineBranchCond::IntCompare {
@@ -1989,8 +2081,10 @@ fn lower_indirect_dispatch_cluster(
                         }),
                         rhs: MachineValue::Reg(if fixed_fast_table {
                             indirect_temps.lane1
-                        } else {
+                        } else if fixed_local_table {
                             indirect_temps.lane2
+                        } else {
+                            indirect_temps.lane3
                         }),
                     },
                     then_edge: MachineEdge {
@@ -2023,7 +2117,7 @@ fn lower_indirect_dispatch_cluster(
                         } else if fixed_local_table {
                             carried_args.local_prepare_args(indirect_temps.lane0)
                         } else {
-                            carried_args.param_values()
+                            prepend_gp_word_arg(indirect_temps.lane2, &carried_args.param_values())
                         },
                     },
                 },
@@ -2054,8 +2148,8 @@ fn lower_indirect_dispatch_cluster(
                     dispatch.expect("generic indirect dispatch should allocate dispatch"),
                     original_blocks,
                     extra_blocks,
-                    carried_args.params.clone(),
-                    build_call_indirect_dispatch_block(lower, source.frame_slot())?,
+                    prepend_gp_word_param(indirect_temps.lane2, &carried_args.params),
+                    build_call_indirect_dispatch_from_reg_block(lower, indirect_temps.lane2)?,
                     MachineTerminator::Branch {
                         cond: MachineBranchCond::IntCompare {
                             width: lower.gp_word_int_width(),
@@ -2804,6 +2898,98 @@ fn build_call_indirect_checked_block(
     Ok(ops)
 }
 
+/// Prepare the owner-private reverse-map range check for an absolute funcref.
+///
+/// The original handle remains published in the frame for every possible
+/// runtime fallback. Subtraction is wrapping at the target GP width, so a
+/// handle below `self_abs_base` becomes a large unsigned delta and fails the
+/// single `delta < len` range check.
+fn build_call_indirect_self_abs_range_block(
+    lower: &BlockLowerContext<'_>,
+) -> Result<collections::Vec<MachineInst>, WasmError> {
+    let runtime_layout = lower.runtime_abi_layout();
+    let temps = call_indirect_gp_temps(lower)?;
+    let delta = temps.lane0;
+    let range_value = temps.lane1;
+    let handle = temps.lane2;
+    Ok(collections::vec![
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: range_value,
+                addr: lower.runtime_addr(runtime_layout.context.self_abs_base_offset),
+                width: lower.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: lower.gp_word_int_width(),
+                op: MachineIntBinaryOp::Sub,
+                dst: delta,
+                lhs: MachineValue::Reg(handle),
+                rhs: MachineValue::Reg(range_value),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: range_value,
+                addr: lower.runtime_addr(runtime_layout.context.self_local_by_abs_len_offset,),
+                width: lower.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        },
+    ])
+}
+
+/// Load the local function index for an in-range self-owned absolute handle.
+/// A sparse-map gap carries `u32::MAX` and is rejected while the runtime
+/// helper's frame slot still contains the original absolute handle.
+fn build_call_indirect_self_abs_lookup_block(
+    lower: &BlockLowerContext<'_>,
+) -> Result<collections::Vec<MachineInst>, WasmError> {
+    let runtime_layout = lower.runtime_abi_layout();
+    let temps = call_indirect_gp_temps(lower)?;
+    let byte_offset = temps.lane0;
+    let reverse_base = temps.lane1;
+    let local_index = temps.lane2;
+    Ok(collections::vec![
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: reverse_base,
+                addr: lower.runtime_addr(runtime_layout.context.self_local_by_abs_base_offset,),
+                width: lower.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: lower.gp_word_int_width(),
+                op: MachineIntBinaryOp::Shl,
+                dst: byte_offset,
+                lhs: MachineValue::Reg(byte_offset),
+                rhs: MachineValue::Imm64(2),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::IndexedLoad {
+                dst: local_index,
+                base: reverse_base,
+                index: byte_offset,
+                index_extend: MachineIndexExtend::None,
+                offset: 0,
+                width: MachineMemWidth::U32,
+                extension: MachineLoadExtension::ZeroExtend,
+            },
+        },
+    ])
+}
+
 fn build_call_ref_validate_block(
     lower: &BlockLowerContext<'_>,
     ref_slot: FrameSlot,
@@ -2859,6 +3045,56 @@ fn build_call_indirect_type_check_block(
         MachineLoadExtension::ZeroExtend,
         actual_type,
     )?;
+    ops.push(MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst: function_views,
+            addr: lower.runtime_addr(runtime_layout.context.type_canon_base_offset),
+            width: lower.gp_word_mem_width(),
+            extension: MachineLoadExtension::None,
+        },
+    });
+    ops.push(MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst: expected_type,
+            addr: indexed_const_addr(
+                function_views,
+                expected_type_idx,
+                core::mem::size_of::<u32>(),
+                0,
+            )?,
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+    });
+    Ok(ops)
+}
+
+fn build_call_indirect_type_check_from_reg_block(
+    lower: &BlockLowerContext<'_>,
+    expected_type_idx: u32,
+    func_idx: MachineReg,
+) -> Result<collections::Vec<MachineInst>, WasmError> {
+    let function_view_layout = function_view_abi_layout();
+    let runtime_layout = lower.runtime_abi_layout();
+    let temps = call_indirect_gp_temps(lower)?;
+    let actual_type = temps.lane0;
+    let function_views = temps.lane1;
+    let scaled_index = temps.lane3;
+    let expected_type = temps.lane3;
+    let mut ops = dynamic_function_view_load_from_reg(
+        lower,
+        func_idx,
+        function_views,
+        scaled_index,
+        function_view_layout.type_canon_offset,
+        MachineMemWidth::U32,
+        MachineLoadExtension::ZeroExtend,
+        actual_type,
+    );
     ops.push(MachineInst {
         kind: MachineInstKind::Load {
             owner: MachineRegOwner::LinearValue,
@@ -3174,6 +3410,42 @@ fn build_call_indirect_dispatch_block(
     Ok(ops)
 }
 
+fn build_call_indirect_dispatch_from_reg_block(
+    lower: &BlockLowerContext<'_>,
+    func_idx: MachineReg,
+) -> Result<collections::Vec<MachineInst>, WasmError> {
+    let function_view_layout = function_view_abi_layout();
+    let temps = call_indirect_gp_temps(lower)?;
+    let local_target = temps.lane0;
+    let function_views = temps.lane1;
+    let kind = temps.lane2;
+    let scaled_index = temps.lane3;
+    let mut ops = dynamic_function_view_load_from_reg(
+        lower,
+        func_idx,
+        function_views,
+        scaled_index,
+        function_view_layout.kind_offset,
+        MachineMemWidth::U32,
+        MachineLoadExtension::ZeroExtend,
+        kind,
+    );
+    ops.push(MachineInst {
+        kind: MachineInstKind::Load {
+            owner: MachineRegOwner::LinearValue,
+            ty: MachineStorageType::GpWord,
+            dst: local_target,
+            addr: MachineAddr {
+                base: function_views,
+                offset: function_view_layout.local_target_offset as i32,
+            },
+            width: MachineMemWidth::U32,
+            extension: MachineLoadExtension::ZeroExtend,
+        },
+    });
+    Ok(ops)
+}
+
 fn build_call_indirect_local_prepare_block(
     lower: &mut BlockLowerContext<'_>,
     args: FrameSpan,
@@ -3372,6 +3644,74 @@ fn emit_local_call_info_entry_addr(
         },
     });
     Ok(())
+}
+
+fn dynamic_function_view_load_from_reg(
+    lower: &BlockLowerContext<'_>,
+    func_idx: MachineReg,
+    base_reg: MachineReg,
+    scaled_index_reg: MachineReg,
+    field_offset: u32,
+    field_width: MachineMemWidth,
+    field_extension: MachineLoadExtension,
+    dst: MachineReg,
+) -> collections::Vec<MachineInst> {
+    let runtime_layout = lower.runtime_abi_layout();
+    let mut ops = collections::Vec::new();
+    if scaled_index_reg != func_idx {
+        ops.push(MachineInst {
+            kind: MachineInstKind::Move {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: scaled_index_reg,
+                src: MachineValue::Reg(func_idx),
+            },
+        });
+    }
+    ops.extend([
+        MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: lower.gp_word_int_width(),
+                op: MachineIntBinaryOp::Mul,
+                dst: scaled_index_reg,
+                lhs: MachineValue::Reg(scaled_index_reg),
+                rhs: MachineValue::Imm64(u64::from(runtime_layout.function_view.stride)),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst: base_reg,
+                addr: lower.runtime_addr(runtime_layout.context.function_views_base_offset),
+                width: lower.gp_word_mem_width(),
+                extension: MachineLoadExtension::None,
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::IntBinary {
+                width: lower.gp_word_int_width(),
+                op: MachineIntBinaryOp::Add,
+                dst: base_reg,
+                lhs: MachineValue::Reg(base_reg),
+                rhs: MachineValue::Reg(scaled_index_reg),
+            },
+        },
+        MachineInst {
+            kind: MachineInstKind::Load {
+                owner: MachineRegOwner::LinearValue,
+                ty: MachineStorageType::GpWord,
+                dst,
+                addr: MachineAddr {
+                    base: base_reg,
+                    offset: field_offset as i32,
+                },
+                width: field_width,
+                extension: field_extension,
+            },
+        },
+    ]);
+    ops
 }
 
 fn dynamic_function_view_load(

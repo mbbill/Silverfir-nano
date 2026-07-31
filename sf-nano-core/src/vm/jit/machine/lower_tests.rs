@@ -11,7 +11,7 @@ use crate::vm::{
             is_fp_reg, is_gp_reg, MachineAddr, MachineArgSrc, MachineBlockId, MachineBlockParam,
             MachineBranchCond, MachineCallLaneArg, MachineCallResults, MachineCallTarget,
             MachineCompareKind, MachineConvertOp, MachineEdge, MachineFloatWidth,
-            MachineFrameRegion, MachineFuncId, MachineFunction, MachineInstKind,
+            MachineFrameRegion, MachineFuncId, MachineFunction, MachineInst, MachineInstKind,
             MachineIntBinaryOp, MachineIntWidth, MachineLoadExtension, MachineMemWidth,
             MachineModule, MachineReg, MachineRegOwner, MachineResultDst, MachineSign,
             MachineStorageType, MachineTerminator, MachineTrapKind, MachineValue,
@@ -4884,7 +4884,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
     assert_eq!(lowered.module.consts.len(), 1);
 
     let program = &lowered.module.functions[0].program;
-    assert_eq!(program.blocks.len(), 10);
+    assert_eq!(program.blocks.len(), 12);
     assert!(matches!(
         program.blocks[0].terminator,
         MachineTerminator::Branch { .. }
@@ -4896,38 +4896,159 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         }
     ));
     assert!(matches!(
-        program.blocks[4].terminator,
+        program.blocks[1].terminator,
+        MachineTerminator::Branch {
+            cond: MachineBranchCond::IntCompare {
+                kind: MachineCompareKind::Lt,
+                sign: MachineSign::Unsigned,
+                ..
+            },
+            then_edge: MachineEdge {
+                target: MachineBlockId(5),
+                ..
+            },
+            else_edge: MachineEdge {
+                target: MachineBlockId(3),
+                ..
+            },
+        }
+    ));
+    assert!(matches!(
+        program.blocks[6].terminator,
         MachineTerminator::Trap {
             kind: MachineTrapKind::InvalidFunctionReference
         }
     ));
     assert!(matches!(
-        program.blocks[6].terminator,
+        program.blocks[8].terminator,
         MachineTerminator::Jump(MachineEdge {
-            target: MachineBlockId(7),
+            target: MachineBlockId(9),
             ..
         })
     ));
-    assert_eq!(program.blocks[6].params.len(), 1);
+    assert_eq!(program.blocks[8].params.len(), 1);
     assert!(matches!(
-        program.blocks[6].ops[0].kind,
+        program.blocks[8].ops[0].kind,
         MachineInstKind::IntBinary {
             op: MachineIntBinaryOp::Add,
             ..
         }
     ));
     assert!(matches!(
-        program.blocks[7].terminator,
+        program.blocks[9].terminator,
         MachineTerminator::Call {
             target: MachineCallTarget::Indirect { .. },
             success: MachineEdge {
-                target: MachineBlockId(9),
+                target: MachineBlockId(11),
                 ..
             },
             ..
         }
     ));
-    let type_check_ops = &program.blocks[3].ops;
+    let range_block = &program.blocks[3];
+    assert!(matches!(
+        range_block.ops.as_slice(),
+        [
+            MachineInst {
+                kind: MachineInstKind::Load { addr: abs_base, .. },
+            },
+            MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    op: MachineIntBinaryOp::Sub,
+                    ..
+                },
+            },
+            MachineInst {
+                kind: MachineInstKind::Load { addr: reverse_len, .. },
+            },
+        ] if abs_base.offset
+            == crate::vm::jit::runtime::context::ctx_offset::SELF_ABS_BASE as i32
+            && reverse_len.offset
+                == crate::vm::jit::runtime::context::ctx_offset::SELF_LOCAL_BY_ABS_LEN as i32
+    ));
+    assert!(matches!(
+        range_block.terminator,
+        MachineTerminator::Branch {
+            cond: MachineBranchCond::IntCompare {
+                kind: MachineCompareKind::Ge,
+                sign: MachineSign::Unsigned,
+                ..
+            },
+            then_edge: MachineEdge {
+                target: MachineBlockId(10),
+                ..
+            },
+            else_edge: MachineEdge {
+                target: MachineBlockId(4),
+                ..
+            },
+        }
+    ));
+    let lookup_block = &program.blocks[4];
+    assert!(matches!(
+        lookup_block.ops.as_slice(),
+        [
+            MachineInst {
+                kind: MachineInstKind::Load { addr: reverse_base, .. },
+            },
+            MachineInst {
+                kind: MachineInstKind::IntBinary {
+                    op: MachineIntBinaryOp::Shl,
+                    rhs: MachineValue::Imm64(2),
+                    ..
+                },
+            },
+            MachineInst {
+                kind: MachineInstKind::IndexedLoad {
+                    width: MachineMemWidth::U32,
+                    extension: MachineLoadExtension::ZeroExtend,
+                    ..
+                },
+            },
+        ] if reverse_base.offset
+            == crate::vm::jit::runtime::context::ctx_offset::SELF_LOCAL_BY_ABS_BASE as i32
+    ));
+    assert!(matches!(
+        lookup_block.terminator,
+        MachineTerminator::Branch {
+            cond: MachineBranchCond::IntCompare {
+                kind: MachineCompareKind::Eq,
+                rhs: MachineValue::Imm64(value),
+                ..
+            },
+            then_edge: MachineEdge {
+                target: MachineBlockId(10),
+                ..
+            },
+            else_edge: MachineEdge {
+                target: MachineBlockId(5),
+                ..
+            },
+        } if value == u32::MAX as u64
+    ));
+    let callee_slot_offset = i32::from(call_base.advance(2).0) * 8;
+    let callee_slot_stores = program
+        .blocks
+        .iter()
+        .flat_map(|block| block.ops.iter())
+        .filter(|inst| {
+            matches!(
+                inst.kind,
+                MachineInstKind::Store {
+                    addr: MachineAddr {
+                        base: MACHINE_FP_REG,
+                        offset,
+                    },
+                    ..
+                } if offset == callee_slot_offset
+            )
+        })
+        .count();
+    assert_eq!(
+        callee_slot_stores, 1,
+        "self resolution must carry its local index in MIR while preserving the original absolute frame handle for every runtime fallback"
+    );
+    let type_check_ops = &program.blocks[5].ops;
     assert!(!type_check_ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::Move {
@@ -4966,7 +5087,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         }
     ));
     assert!(matches!(
-        &program.blocks[3].terminator,
+        &program.blocks[5].terminator,
         MachineTerminator::Branch {
             cond: MachineBranchCond::IntCompare {
                 rhs: MachineValue::Reg(rhs),
@@ -4976,7 +5097,7 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         } if *rhs == type_check_scaled
     ));
 
-    let dispatch_ops = &program.blocks[5].ops;
+    let dispatch_ops = &program.blocks[7].ops;
     assert!(!dispatch_ops.iter().any(|inst| matches!(
         inst.kind,
         MachineInstKind::Move {
@@ -5015,26 +5136,26 @@ fn lowers_call_indirect_with_local_and_runtime_dispatch_paths() {
         }
     ));
     assert!(matches!(
-        program.blocks[8].ops[0].kind,
+        program.blocks[10].ops[0].kind,
         MachineInstKind::CallRuntime(_)
     ));
     assert!(matches!(
-        program.blocks[8].ops[1].kind,
+        program.blocks[10].ops[1].kind,
         MachineInstKind::Load { .. }
     ));
     assert!(matches!(
-        program.blocks[8].ops[2].kind,
+        program.blocks[10].ops[2].kind,
         MachineInstKind::Load { .. }
     ));
     assert!(matches!(
-        program.blocks[8].terminator,
+        program.blocks[10].terminator,
         MachineTerminator::Jump(MachineEdge {
-            target: MachineBlockId(9),
+            target: MachineBlockId(11),
             ..
         })
     ));
     assert!(matches!(
-        program.blocks[9].terminator,
+        program.blocks[11].terminator,
         MachineTerminator::Trap {
             kind: MachineTrapKind::Unreachable
         }
@@ -5185,13 +5306,23 @@ fn lowers_call_indirect_local_path_with_live_register_args() {
         MachineTerminator::Branch { else_edge, .. } => &program.blocks[else_edge.target.as_usize()],
         other => panic!("expected table bounds branch, got {other:?}"),
     };
-    let range_fallback = match &checked_block.terminator {
-        MachineTerminator::Branch { then_edge, .. } => then_edge,
+    let self_range_edge = match &checked_block.terminator {
+        MachineTerminator::Branch { else_edge, .. } => else_edge,
         other => panic!("expected function-reference range branch, got {other:?}"),
+    };
+    let self_range_block = &program.blocks[self_range_edge.target.as_usize()];
+    assert_eq!(
+        self_range_edge.args.len(),
+        self_range_block.params.len(),
+        "self-absolute resolver must receive the raw handle plus every live register argument"
+    );
+    let range_fallback = match &self_range_block.terminator {
+        MachineTerminator::Branch { then_edge, .. } => then_edge,
+        other => panic!("expected owner-private absolute range branch, got {other:?}"),
     };
     assert_eq!(
         range_fallback.target, runtime_block.id,
-        "generic-table out-of-local-range references must use the runtime helper"
+        "foreign absolute references must miss the owner-private range and use the runtime helper"
     );
     assert_eq!(
         range_fallback.args.len(),
@@ -5207,6 +5338,20 @@ fn lowers_call_indirect_local_path_with_live_register_args() {
             .collect::<collections::Vec<_>>(),
         "generic-table range fallback must bind the runtime block parameters"
     );
+    let self_lookup_edge = match &self_range_block.terminator {
+        MachineTerminator::Branch { else_edge, .. } => else_edge,
+        other => panic!("expected owner-private absolute range branch, got {other:?}"),
+    };
+    let self_lookup_block = &program.blocks[self_lookup_edge.target.as_usize()];
+    let gap_fallback = match &self_lookup_block.terminator {
+        MachineTerminator::Branch { then_edge, .. } => then_edge,
+        other => panic!("expected owner-private reverse-map sentinel branch, got {other:?}"),
+    };
+    assert_eq!(
+        gap_fallback.target, runtime_block.id,
+        "a reverse-map gap must preserve the absolute handle and use the runtime helper"
+    );
+    assert_eq!(gap_fallback.args, range_fallback.args);
     let arg_offsets = collections::vec![
         i32::from(call_base.0) * 8,
         i32::from(call_base.advance(1).0) * 8,
@@ -5843,6 +5988,83 @@ fn lowers_call_indirect_with_gp_word_width_on_32_bit_target() {
             ..
         }
     )));
+    let self_range = program
+        .blocks
+        .iter()
+        .find(|block| {
+            block.ops.iter().any(|inst| {
+                matches!(
+                    inst.kind,
+                    MachineInstKind::IntBinary {
+                        op: MachineIntBinaryOp::Sub,
+                        ..
+                    }
+                )
+            })
+        })
+        .expect("expected self-absolute range block");
+    assert!(self_range.ops.iter().all(|inst| matches!(
+        inst.kind,
+        MachineInstKind::Load {
+            width: MachineMemWidth::U32,
+            ..
+        } | MachineInstKind::IntBinary {
+            width: MachineIntWidth::I32,
+            op: MachineIntBinaryOp::Sub,
+            ..
+        }
+    )));
+    assert!(matches!(
+        self_range.terminator,
+        MachineTerminator::Branch {
+            cond: MachineBranchCond::IntCompare {
+                width: MachineIntWidth::I32,
+                kind: MachineCompareKind::Ge,
+                sign: MachineSign::Unsigned,
+                ..
+            },
+            ..
+        }
+    ));
+    let self_lookup = program
+        .blocks
+        .iter()
+        .find(|block| {
+            block.ops.iter().any(|inst| {
+                matches!(
+                    inst.kind,
+                    MachineInstKind::IndexedLoad {
+                        width: MachineMemWidth::U32,
+                        extension: MachineLoadExtension::ZeroExtend,
+                        ..
+                    }
+                )
+            }) && block.ops.iter().any(|inst| {
+                matches!(
+                    inst.kind,
+                    MachineInstKind::IntBinary {
+                        width: MachineIntWidth::I32,
+                        op: MachineIntBinaryOp::Shl,
+                        rhs: MachineValue::Imm64(2),
+                        ..
+                    }
+                )
+            })
+        })
+        .expect("expected self-absolute reverse-map lookup block");
+    assert!(matches!(
+        self_lookup.terminator,
+        MachineTerminator::Branch {
+            cond: MachineBranchCond::IntCompare {
+                width: MachineIntWidth::I32,
+                kind: MachineCompareKind::Eq,
+                sign: MachineSign::Unsigned,
+                rhs: MachineValue::Imm64(value),
+                ..
+            },
+            ..
+        } if value == u32::MAX as u64
+    ));
     assert!(
         program
             .blocks

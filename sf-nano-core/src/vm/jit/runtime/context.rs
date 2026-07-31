@@ -115,6 +115,12 @@ pub(crate) struct NativeContext {
     pub(crate) globals_len: usize,
     pub(crate) store: *mut JitInstance,
     pub(crate) current_module: *const ModuleInst,
+    /// Lowest encoded absolute handle covered by the owner-private reverse
+    /// map. `usize::MAX` when the map is empty.
+    pub(crate) self_abs_base: usize,
+    /// Stable view into `JitInstance::self_local_by_abs`.
+    pub(crate) self_local_by_abs_base: *const u32,
+    pub(crate) self_local_by_abs_len: usize,
     pub(crate) error: Option<WasmError>,
     /// Pending wasm exception / trap in transit between runtime-call entry
     /// and the catch-dispatcher block (or the function escape path).
@@ -182,6 +188,7 @@ impl NativeContext {
         } else {
             self.current_module = core::ptr::null();
         }
+        self.refresh_self_local_by_abs_view();
         self.refresh_globals_ptrs();
         self.refresh_memory_views();
         self.refresh_table_views();
@@ -323,6 +330,28 @@ impl NativeContext {
             return false;
         }
         true
+    }
+
+    #[inline]
+    fn refresh_self_local_by_abs_view(&mut self) {
+        let (self_abs_base, self_local_by_abs_base, self_local_by_abs_len) =
+            if let Some(store) = self.store() {
+                let reverse = store.self_local_by_abs();
+                (
+                    store.self_abs_base(),
+                    if reverse.is_empty() {
+                        core::ptr::null()
+                    } else {
+                        reverse.as_ptr()
+                    },
+                    reverse.len(),
+                )
+            } else {
+                (usize::MAX, core::ptr::null(), 0)
+            };
+        self.self_abs_base = self_abs_base;
+        self.self_local_by_abs_base = self_local_by_abs_base;
+        self.self_local_by_abs_len = self_local_by_abs_len;
     }
 
     #[inline]
@@ -756,6 +785,9 @@ impl NativeContextBox {
                 globals_len: n_globals,
                 store,
                 current_module: core::ptr::null(),
+                self_abs_base: usize::MAX,
+                self_local_by_abs_base: core::ptr::null(),
+                self_local_by_abs_len: 0,
                 error: None,
                 pending_escape: PendingEscape::None,
                 #[cfg(sf_has_guard_pages)]
@@ -876,6 +908,12 @@ pub(crate) mod ctx_offset {
             core::mem::offset_of!(NativeContext, type_canon_base) as u32;
         pub(crate) const TYPE_CANON_LEN: u32 =
             core::mem::offset_of!(NativeContext, type_canon_len) as u32;
+        pub(crate) const SELF_ABS_BASE: u32 =
+            core::mem::offset_of!(NativeContext, self_abs_base) as u32;
+        pub(crate) const SELF_LOCAL_BY_ABS_BASE: u32 =
+            core::mem::offset_of!(NativeContext, self_local_by_abs_base) as u32;
+        pub(crate) const SELF_LOCAL_BY_ABS_LEN: u32 =
+            core::mem::offset_of!(NativeContext, self_local_by_abs_len) as u32;
     }
     #[cfg(test)]
     pub(crate) use test_only::*;
@@ -939,7 +977,7 @@ mod tests {
                 instance::{tests::store as test_store, JitInstance},
             },
             link::LinkRegistry,
-            value::Value,
+            value::{Value, FUNCADDR_TOP},
         },
     };
 
@@ -1045,18 +1083,47 @@ mod tests {
     }
 
     #[test]
-    fn refresh_function_views_are_indexed_only_by_local_function_index() {
+    fn self_absolute_reverse_view_excludes_foreign_and_host_registrations() {
         let registry = LinkRegistry::new();
-        {
+        let dropped_encoded = {
             let mut dropped_store = store_with_registry(module_with_local(), &registry);
             let dropped_handle = dropped_store.register_local_function(0);
             assert_eq!(dropped_handle.payload(), 0);
-        }
+            let funcaddr = dropped_store
+                .funcaddr_for_local_index(0)
+                .expect("dropped local function registration");
+            FUNCADDR_TOP - funcaddr
+        };
 
-        let mut live_store = store_with_registry(module_with_local(), &registry);
-        let live_handle = live_store.register_local_function(0);
-        assert_eq!(live_handle.payload(), 0);
-        assert_eq!(registry.function_registry_shared().borrow().len(), 2);
+        let mut module = module_with_local();
+        let func_type = Rc::new(module.functions[0].func_type().clone());
+        module.functions.push(FunctionInst::Host {
+            func_type: Rc::clone(&func_type),
+            callback: crate::vm::entities::HostCallback::new(host_noop),
+        });
+        module.functions.push(FunctionInst::Local {
+            spec: FunctionSpec::new(func_type, 1),
+            type_index: 0,
+        });
+
+        let mut live_store = store_with_registry(module, &registry);
+        for func_idx in 0..live_store.module().functions.len() {
+            let _ = live_store.register_local_function(func_idx);
+        }
+        let local_zero_encoded = FUNCADDR_TOP
+            - live_store
+                .funcaddr_for_local_index(0)
+                .expect("first live local function registration");
+        let host_encoded = FUNCADDR_TOP
+            - live_store
+                .funcaddr_for_local_index(1)
+                .expect("live host function registration");
+        let local_two_encoded = FUNCADDR_TOP
+            - live_store
+                .funcaddr_for_local_index(2)
+                .expect("second live local function registration");
+        live_store.finalize_self_local_by_abs();
+        assert_eq!(registry.function_registry_shared().borrow().len(), 4);
 
         let n_globals = live_store.module().globals.len();
         let ctx = NativeContext::new(
@@ -1065,17 +1132,14 @@ mod tests {
             n_globals,
         );
 
-        assert_eq!(ctx.function_views_len, 1);
-        let views =
-            unsafe { core::slice::from_raw_parts(ctx.function_views_base, ctx.function_views_len) };
-        assert_eq!(
-            views[0],
-            NativeFunctionView {
-                kind: function_kind::LOCAL,
-                type_canon: 0,
-                local_target: 0,
-            }
-        );
+        assert_eq!(ctx.self_abs_base, local_two_encoded);
+        assert_eq!(local_zero_encoded - ctx.self_abs_base, 2);
+        assert_eq!(host_encoded - ctx.self_abs_base, 1);
+        assert!(dropped_encoded >= ctx.self_abs_base + ctx.self_local_by_abs_len);
+        let reverse = unsafe {
+            core::slice::from_raw_parts(ctx.self_local_by_abs_base, ctx.self_local_by_abs_len)
+        };
+        assert_eq!(reverse, &[2, u32::MAX, 0]);
     }
 
     #[test]
