@@ -42,8 +42,8 @@ use crate::{
             layout::local_call_info_abi_layout,
         },
         jit::store::Store,
-        tag::TagHandle,
-        value::RefHandle,
+        tag::TagIdentity,
+        value::RefValue,
     },
 };
 
@@ -56,7 +56,7 @@ pub(crate) enum PendingEscape {
     None,
     /// Uncaught wasm exception — carries an `exnref` pool handle that
     /// resolves through the shared reference registry to the payload.
-    Throw { exn: RefHandle, tag: TagHandle },
+    Throw { exn: RefValue, tag: TagIdentity },
 }
 
 impl PendingEscape {
@@ -83,7 +83,7 @@ pub(crate) struct NativeMemoryView {
 #[repr(C)]
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct NativeTableView {
-    pub(crate) elements_base: *mut RefHandle,
+    pub(crate) elements_base: *mut RefValue,
     pub(crate) elements_len: usize,
 }
 
@@ -313,7 +313,7 @@ impl NativeContext {
                 let base = if elements.is_empty() {
                     core::ptr::null_mut()
                 } else {
-                    elements.as_ptr() as *mut RefHandle
+                    elements.as_ptr() as *mut RefValue
                 };
                 view.elements_base != base
                     || view.elements_len != elements.len()
@@ -387,7 +387,7 @@ impl NativeContext {
                     elements_base: if elements.is_empty() {
                         core::ptr::null_mut()
                     } else {
-                        elements.as_ptr() as *mut RefHandle
+                        elements.as_ptr() as *mut RefValue
                     },
                     elements_len: elements.len(),
                 }
@@ -608,7 +608,7 @@ impl NativeContext {
     }
 
     #[inline]
-    fn function_view_for_fixed_handle(&self, handle: RefHandle) -> Option<NativeFunctionView> {
+    fn function_view_for_fixed_handle(&self, handle: RefValue) -> Option<NativeFunctionView> {
         if handle.is_null() || handle.is_special() {
             return None;
         }
@@ -964,10 +964,10 @@ mod tests {
     }
 
     fn store_with_registry(module: ModuleInst, registry: &LinkRegistry) -> Box<Store> {
-        let (_, instance_handle) = registry.reserve_instance();
+        let (_, instance_backref) = registry.reserve_instance();
         Box::new(Store::new_with_registries(
             module,
-            instance_handle,
+            instance_backref,
             registry.function_registry_shared(),
             registry.ref_registry_shared(),
             #[cfg(sf_has_simd)]

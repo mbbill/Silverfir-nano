@@ -645,7 +645,7 @@ impl Isa for Arm64 {
         a.ins("ldr x12, [x21, #120]"); // table 0 len
         a.ins("cmp w10, w12");
         a.ins(&format!("b.hs {}", st.slow)); // out of bounds (or no table)
-                                             // Entries are `RefHandle` slots (8 bytes). A plain handle's payload
+                                             // Entries are `RefValue` slots (8 bytes). A plain handle's payload
                                              // is the function index, so the fi*3/fi*24 arithmetic below is
                                              // unchanged. The fast path requires the upper 32 bits to be zero;
                                              // normalized null and current 64-bit tagged encodings fail that test.

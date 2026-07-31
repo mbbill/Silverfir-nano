@@ -59,9 +59,9 @@ pub use vm::jit::build::{jit_stats_snapshot, JitStatsSnapshot};
 pub use vm::jit::instance::JitInstance;
 #[cfg(sf_has_guard_pages)]
 use vm::jit::runtime::trap_signal;
-pub use vm::link::{InstanceId, LinkRegistry, WorldHandle};
-pub use vm::tag::TagHandle;
-pub use vm::value::{RefHandle, Value};
+pub use vm::link::{InstanceId, LinkRegistry, WorldAccess};
+pub use vm::tag::TagIdentity;
+pub use vm::value::{RefValue, Value};
 
 #[inline]
 pub const fn target_has_simd() -> bool {

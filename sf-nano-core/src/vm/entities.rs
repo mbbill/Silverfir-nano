@@ -14,8 +14,8 @@ use crate::value_type::ValueType;
 
 #[cfg(sf_has_guard_pages)]
 use crate::vm::jit::runtime::guard_pages::GuardPageMemory;
-use crate::vm::tag::TagHandle;
-use crate::vm::value::{RefHandle, Value};
+use crate::vm::tag::TagIdentity;
+use crate::vm::value::{RefValue, Value};
 
 /// A non-capturing host function pointer.
 ///
@@ -142,13 +142,13 @@ impl<'a> Caller<'a> {
     /// return Err(Caller::throw(my_tag, vec![Value::I32(42)]));
     /// ```
     ///
-    /// `tag` must be a live `TagHandle` (obtained via
-    /// `Instance::tag_handle(...)` or `Import::tag_typed_with_handle(...)`).
+    /// `tag` must be a live `TagIdentity` (obtained via
+    /// `Instance::tag_identity(...)` or `Import::tag_typed_with_handle(...)`).
     /// Payload arity and value types must match the tag's function-type
     /// params; a mistyped throw surfaces to wasm as
     /// `WasmError::Trap("host threw mistyped exception")`.
     #[inline]
-    pub fn throw(tag: TagHandle, args: impl Into<collections::Vec<Value>>) -> WasmError {
+    pub fn throw(tag: TagIdentity, args: impl Into<collections::Vec<Value>>) -> WasmError {
         WasmError::HostThrow {
             tag,
             args: args.into(),
@@ -180,7 +180,7 @@ pub enum FunctionInst {
     },
     Linked {
         func_type: Rc<FunctionType>,
-        handle: RefHandle,
+        handle: RefValue,
     },
 }
 
@@ -216,7 +216,7 @@ impl FunctionInst {
     }
 
     #[inline]
-    pub fn linked_handle(&self) -> Option<RefHandle> {
+    pub fn linked_handle(&self) -> Option<RefValue> {
         match self {
             FunctionInst::Linked { handle, .. } => Some(*handle),
             _ => None,
@@ -226,7 +226,7 @@ impl FunctionInst {
 
 #[derive(Debug, Clone)]
 pub struct TableInst {
-    elements: Rc<RefCell<collections::Vec<RefHandle>>>,
+    elements: Rc<RefCell<collections::Vec<RefValue>>>,
     // pub(crate) so `vm::jit::entities::TableInstJit` can read it; the bump
     // in `elements_mut` is unconditional because a shared table mutated by
     // any engine must invalidate JIT cached views.
@@ -240,7 +240,7 @@ impl TableInst {
         let initial_size = limits.min();
         TableInst {
             elements: Rc::new(RefCell::new(collections::vec![
-                RefHandle::null();
+                RefValue::null();
                 initial_size
             ])),
             revision: Rc::new(Cell::new(0)),
@@ -253,7 +253,7 @@ impl TableInst {
     pub fn from_shared(
         limits: Limits,
         value_type: ValueType,
-        elements: Rc<RefCell<collections::Vec<RefHandle>>>,
+        elements: Rc<RefCell<collections::Vec<RefValue>>>,
         revision: Rc<Cell<u64>>,
     ) -> Self {
         Self {
@@ -265,18 +265,18 @@ impl TableInst {
     }
 
     #[inline]
-    pub fn elements(&self) -> Ref<'_, collections::Vec<RefHandle>> {
+    pub fn elements(&self) -> Ref<'_, collections::Vec<RefValue>> {
         self.elements.borrow()
     }
 
     #[inline]
-    pub fn elements_mut(&self) -> RefMut<'_, collections::Vec<RefHandle>> {
+    pub fn elements_mut(&self) -> RefMut<'_, collections::Vec<RefValue>> {
         self.revision.set(self.revision.get().wrapping_add(1));
         self.elements.borrow_mut()
     }
 
     #[inline]
-    pub fn clone_shared_elements(&self) -> Rc<RefCell<collections::Vec<RefHandle>>> {
+    pub fn clone_shared_elements(&self) -> Rc<RefCell<collections::Vec<RefValue>>> {
         Rc::clone(&self.elements)
     }
 

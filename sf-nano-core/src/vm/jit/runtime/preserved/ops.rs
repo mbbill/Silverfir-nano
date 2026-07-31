@@ -20,8 +20,8 @@ use crate::{
             value_to_machine_raw_in_store,
         },
         link::{ref_type_matches, InstanceId, RefRegistryEntry, RefTypeOwner},
-        tag::TagHandle,
-        value::{machine_raw_to_ref, ref_to_machine_raw, RefHandle, Value},
+        tag::TagIdentity,
+        value::{machine_raw_to_ref, ref_to_machine_raw, RefValue, Value},
     },
 };
 
@@ -45,12 +45,12 @@ pub(super) fn active_gp_unit_bytes() -> u8 {
 }
 
 #[inline]
-fn ref_from_machine(raw_ref: u64) -> RefHandle {
+fn ref_from_machine(raw_ref: u64) -> RefValue {
     machine_raw_to_ref(raw_ref, active_gp_unit_bytes())
 }
 
 #[inline]
-fn ref_to_machine(handle: RefHandle) -> u64 {
+fn ref_to_machine(handle: RefValue) -> u64 {
     ref_to_machine_raw(handle, active_gp_unit_bytes())
 }
 
@@ -160,7 +160,7 @@ pub(super) fn do_eh_throw(
     start_slot: u16,
     slot_count: u16,
 ) -> Result<(), WasmError> {
-    let (tag_handle, exn_handle) = {
+    let (tag_identity, exn_handle) = {
         let store = current_store_mut(ctx)?;
         let tag_inst = store
             .module()
@@ -186,7 +186,7 @@ pub(super) fn do_eh_throw(
         (tag_inst.handle, exn_handle)
     };
 
-    raise_exception(ctx, tag_handle, exn_handle)
+    raise_exception(ctx, tag_identity, exn_handle)
 }
 
 pub(super) fn do_eh_throw_ref(
@@ -200,7 +200,7 @@ pub(super) fn do_eh_throw_ref(
         return Err(trap_error("null reference"));
     }
 
-    let tag_handle = {
+    let tag_identity = {
         let store = current_store(ctx)?;
         let exn_idx = exn_handle
             .pooled_index()
@@ -219,22 +219,22 @@ pub(super) fn do_eh_throw_ref(
         }
     };
 
-    raise_exception(ctx, tag_handle, exn_handle)
+    raise_exception(ctx, tag_identity, exn_handle)
 }
 
 fn raise_exception(
     ctx: &mut NativeContext,
-    tag_handle: TagHandle,
-    exn_handle: RefHandle,
+    tag_identity: TagIdentity,
+    exn_handle: RefValue,
 ) -> Result<(), WasmError> {
     ctx.pending_escape = PendingEscape::Throw {
         exn: exn_handle,
-        tag: tag_handle,
+        tag: tag_identity,
     };
 
     Err(WasmError::Exception {
         exn: exn_handle,
-        tag: tag_handle,
+        tag: tag_identity,
         module_tag_name: None,
     })
 }
@@ -299,7 +299,7 @@ pub(super) fn do_v128_from_raw(ctx: &NativeContext, raw: u64) -> Result<[u8; 16]
         .ok_or_else(|| internal_error("invalid v128 raw value"))
 }
 
-fn decode_i31(store: &Store, handle: RefHandle) -> Result<i32, WasmError> {
+fn decode_i31(store: &Store, handle: RefValue) -> Result<i32, WasmError> {
     if handle.is_null() {
         return Err(trap_error("null i31 reference"));
     }
@@ -528,18 +528,18 @@ fn gc_store_access(
     owner: InstanceId,
     invalid_ref: &'static str,
 ) -> Result<StoreAccess<'static>, WasmError> {
-    let (current_id, instance_handle) = {
+    let (current_id, instance_backref) = {
         let current = current_store(ctx)?;
         (
-            current.instance_handle().self_id(),
-            current.instance_handle().clone(),
+            current.instance_backref().self_id(),
+            current.instance_backref().clone(),
         )
     };
     if owner == current_id {
         return runtime::current_store_access(ctx);
     }
 
-    let token = instance_handle
+    let token = instance_backref
         .checkout(owner)
         .ok_or_else(|| trap_error(invalid_ref))?;
     if token.jit_pointer().is_none() {
@@ -548,7 +548,7 @@ fn gc_store_access(
     Ok(StoreAccess::checked_out(token))
 }
 
-fn resolve_struct_ref(ctx: &NativeContext, handle: RefHandle) -> Result<ResolvedGcRef, WasmError> {
+fn resolve_struct_ref(ctx: &NativeContext, handle: RefValue) -> Result<ResolvedGcRef, WasmError> {
     if handle.is_null() {
         return Err(trap_error("null structure reference"));
     }
@@ -649,7 +649,7 @@ fn value_from_data_bytes(storage: StorageType, bytes: &[u8]) -> Result<Value, Wa
     })
 }
 
-fn resolve_array_ref(ctx: &NativeContext, handle: RefHandle) -> Result<ResolvedGcRef, WasmError> {
+fn resolve_array_ref(ctx: &NativeContext, handle: RefValue) -> Result<ResolvedGcRef, WasmError> {
     if handle.is_null() {
         return Err(trap_error("null array reference"));
     }

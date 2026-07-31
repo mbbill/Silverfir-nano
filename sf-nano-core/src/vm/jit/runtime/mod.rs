@@ -144,8 +144,8 @@ pub(crate) fn current_store_access(
             .store()
             .ok_or_else(|| WasmError::internal("native context is missing its store"))?;
         (
-            store.instance_handle().clone(),
-            store.instance_handle().self_id(),
+            store.instance_backref().clone(),
+            store.instance_backref().self_id(),
         )
     };
     if let Some(token) = handle.checkout(id) {

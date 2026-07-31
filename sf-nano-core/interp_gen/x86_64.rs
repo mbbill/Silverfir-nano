@@ -663,7 +663,7 @@ impl Isa for X86_64 {
         a.ins("cmp rax, [r15 + 120]"); // table 0 length
         a.ins(&format!("jae {}", st.slow));
         a.ins("mov rcx, [r15 + 112]"); // table 0 entries
-                                       // Entries are `RefHandle` slots (8 bytes); a plain handle's payload
+                                       // Entries are `RefValue` slots (8 bytes); a plain handle's payload
                                        // is the function index. The fast path requires the upper 32 bits
                                        // to be zero. Normalized null and current 64-bit tagged encodings
                                        // fail that test and take the slow path.

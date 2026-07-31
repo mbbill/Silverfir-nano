@@ -118,6 +118,13 @@
   generation-checked checkout, so expired worlds and stale ids return errors
   without a strong reference cycle (sourced).
 
+- 2026-07-31 statement: the runtime access types were renamed to say what they
+  do about lifetime rather than sharing one `Handle` suffix across four roles:
+  `RefHandle` to `RefValue`, `TagHandle` to `TagIdentity`, `InstanceHandle` to
+  `InstanceBackref`, `WorldHandle` to `WorldAccess`. Facts and Moves entries
+  above this line predate the rename and keep the old spellings, since the log
+  is append-only (sourced).
+
 ## Moves
 
 - 2026-07-30 (bc7cbb03) replaced [[pointer-identity]]: raw store pointers made

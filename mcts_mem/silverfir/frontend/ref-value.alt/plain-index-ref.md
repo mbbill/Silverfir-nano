@@ -21,7 +21,7 @@
   index directly and are wrapped in a newtype that cannot be confused with a raw
   integer (code).
 
-- 2025-10-04 (eac9a06d) replaced by [[ref-handle]]: a plain usize index
+- 2025-10-04 (eac9a06d) replaced by [[ref-value]]: a plain usize index
   carried only a null sentinel and could not distinguish a GC-heap reference
   from an inline i31 value from a funcref, nor encode an i31 payload inline;
   tagging the high bits lets one word carry all reference kinds without a

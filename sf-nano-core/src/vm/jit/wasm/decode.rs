@@ -21,7 +21,7 @@ use crate::{
     opcodes::{Opcode, OpcodeFB, OpcodeFC, OpcodeFD, WasmOpcode},
     utils::payload::Payload,
     value_type::{HeapType, RefType, ValueType},
-    vm::{entities::FunctionInst, tag::TagHandle},
+    vm::{entities::FunctionInst, tag::TagIdentity},
 };
 
 use super::{
@@ -197,7 +197,7 @@ enum InlineThrowPayloadOp {
 #[derive(Clone, Debug)]
 struct InlineThrowWrapper {
     tag_idx: Option<u32>,
-    tag_handle: TagHandle,
+    tag_identity: TagIdentity,
     payload_ops: collections::Vec<InlineThrowPayloadOp>,
 }
 
@@ -345,7 +345,7 @@ fn inline_throw_tag(
     compile: CompileContext<'_>,
     owner_store: &crate::vm::jit::store::Store,
     tag_idx: u32,
-) -> Option<(Option<u32>, TagHandle, usize)> {
+) -> Option<(Option<u32>, TagIdentity, usize)> {
     let tag_inst = owner_store.module().tags.get(tag_idx as usize).copied()?;
     let tag_arity = owner_store
         .module()
@@ -375,7 +375,7 @@ fn with_inline_local_spec<R>(
         FunctionInst::Local { spec, .. } => analyze(spec, compile.store),
         FunctionInst::Linked { handle, .. } => {
             let entry = compile.store.function_entry_for_handle(*handle)?;
-            if entry.owner == compile.store.instance_handle().self_id() {
+            if entry.owner == compile.store.instance_backref().self_id() {
                 let FunctionInst::Local { spec, .. } =
                     compile.store.function(entry.local_index as usize)
                 else {
@@ -384,7 +384,7 @@ fn with_inline_local_spec<R>(
                 return analyze(spec, compile.store);
             }
 
-            let owner = compile.store.instance_handle().checkout(entry.owner)?;
+            let owner = compile.store.instance_backref().checkout(entry.owner)?;
             let owner_store = owner.jit()?;
             let FunctionInst::Local { spec, .. } = owner_store.function(entry.local_index as usize)
             else {
@@ -457,7 +457,8 @@ fn analyze_simple_inline_throw_wrapper(
         }
     }
 
-    let (caller_tag_idx, tag_handle, tag_arity) = inline_throw_tag(compile, owner_store, tag_idx)?;
+    let (caller_tag_idx, tag_identity, tag_arity) =
+        inline_throw_tag(compile, owner_store, tag_idx)?;
     let payload_arity = next_param as usize + payload_ops.len();
     if payload_arity != tag_arity {
         return None;
@@ -465,7 +466,7 @@ fn analyze_simple_inline_throw_wrapper(
 
     Some(InlineThrowWrapper {
         tag_idx: caller_tag_idx,
-        tag_handle,
+        tag_identity,
         payload_ops,
     })
 }
@@ -893,11 +894,14 @@ impl<'a> DecodeContext<'a> {
     /// Returns `None` if no match (throw escapes via runtime-call).
     ///
     /// The decoder runs after instantiation, so `TagInst.handle` values
-    /// already reflect runtime identities — we compare by `TagHandle`
+    /// already reflect runtime identities — we compare by `TagIdentity`
     /// rather than `tag_idx` to correctly resolve aliasing imports (e.g.
     /// two module-local imports of the same source tag produce distinct
     /// indices but equal handles).
-    fn match_throw_handle_to_catch(&self, throw_tag_handle: TagHandle) -> Option<StaticCatchMatch> {
+    fn match_throw_handle_to_catch(
+        &self,
+        throw_tag_identity: TagIdentity,
+    ) -> Option<StaticCatchMatch> {
         for depth in 0..self.control.len() as u32 {
             let frame = self.frame_at_depth(depth)?;
             if frame.kind != DecodeBlockKind::TryTable {
@@ -914,7 +918,7 @@ impl<'a> DecodeContext<'a> {
                         else {
                             continue;
                         };
-                        if catch_tag_inst.handle != throw_tag_handle {
+                        if catch_tag_inst.handle != throw_tag_identity {
                             continue;
                         }
                     }
@@ -966,14 +970,14 @@ impl<'a> DecodeContext<'a> {
     }
 
     fn match_throw_to_catch(&self, tag_idx: u32) -> Option<StaticCatchMatch> {
-        let throw_tag_handle = self
+        let throw_tag_identity = self
             .compile
             .store
             .module()
             .tags
             .get(tag_idx as usize)?
             .handle;
-        self.match_throw_handle_to_catch(throw_tag_handle)
+        self.match_throw_handle_to_catch(throw_tag_identity)
     }
 
     fn record_result_types(&mut self, idx: SemanticIndex, tys: &[ValueType]) {
@@ -1062,7 +1066,7 @@ impl<'a> DecodeContext<'a> {
             return false;
         }
 
-        let Some(resolved) = self.match_throw_handle_to_catch(wrapper.tag_handle) else {
+        let Some(resolved) = self.match_throw_handle_to_catch(wrapper.tag_identity) else {
             return false;
         };
         if resolved.forwards_exn {

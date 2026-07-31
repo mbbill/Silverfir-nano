@@ -22,11 +22,11 @@ use crate::vm::jit::instance::ExportKind;
 #[cfg(sf_has_simd)]
 use crate::vm::link::SharedSimdRegistry;
 use crate::vm::link::{
-    alloc_exn_in, FuncEntry, InstanceHandle, RefRegistryEntry, SharedFunctionRegistry,
+    alloc_exn_in, FuncEntry, InstanceBackref, RefRegistryEntry, SharedFunctionRegistry,
     SharedRefRegistry,
 };
-use crate::vm::tag::TagHandle;
-use crate::vm::value::{RefHandle, Value};
+use crate::vm::tag::TagIdentity;
+use crate::vm::value::{RefValue, Value};
 use core::cell::RefCell;
 
 const UNREGISTERED_FUNCADDR: usize = usize::MAX;
@@ -34,7 +34,7 @@ const UNREGISTERED_FUNCADDR: usize = usize::MAX;
 pub(crate) struct Store {
     module: ModuleInst,
     exports: collections::Vec<(String, ExportKind, usize)>,
-    instance_handle: InstanceHandle,
+    instance_backref: InstanceBackref,
     function_registry: SharedFunctionRegistry,
     local_funcaddrs: collections::Vec<usize>,
     ref_registry: SharedRefRegistry,
@@ -53,7 +53,7 @@ impl Store {
     #[inline]
     pub(crate) fn new_with_registries(
         module: ModuleInst,
-        instance_handle: InstanceHandle,
+        instance_backref: InstanceBackref,
         function_registry: SharedFunctionRegistry,
         ref_registry: SharedRefRegistry,
         #[cfg(sf_has_simd)] simd_registry: SharedSimdRegistry,
@@ -63,7 +63,7 @@ impl Store {
         Self {
             module,
             exports: collections::Vec::new(),
-            instance_handle,
+            instance_backref,
             function_registry,
             local_funcaddrs: collections::vec![UNREGISTERED_FUNCADDR; function_count],
             ref_registry,
@@ -77,8 +77,8 @@ impl Store {
     }
 
     #[inline]
-    pub(crate) fn instance_handle(&self) -> &InstanceHandle {
-        &self.instance_handle
+    pub(crate) fn instance_backref(&self) -> &InstanceBackref {
+        &self.instance_backref
     }
 
     /// The engine configuration this store's module was created with.
@@ -227,17 +227,17 @@ impl Store {
     /// valid after this store is dropped.
     pub(crate) fn alloc_exn(
         &mut self,
-        tag: TagHandle,
+        tag: TagIdentity,
         fields: collections::Vec<Value>,
-    ) -> RefHandle {
+    ) -> RefValue {
         alloc_exn_in(&self.ref_registry, tag, fields)
     }
 
-    pub(crate) fn register_local_function(&mut self, local_index: usize) -> RefHandle {
+    pub(crate) fn register_local_function(&mut self, local_index: usize) -> RefValue {
         self.function_registry
             .observe_local_function_count(self.module.functions.len());
         let funcaddr = self.function_registry.register(FuncEntry {
-            owner: self.instance_handle.self_id(),
+            owner: self.instance_backref.self_id(),
             local_index: u32::try_from(local_index)
                 .expect("local function index exceeds the funcaddr encoding"),
         });
@@ -246,7 +246,7 @@ impl Store {
                 .resize(local_index + 1, UNREGISTERED_FUNCADDR);
         }
         self.local_funcaddrs[local_index] = funcaddr;
-        let handle = RefHandle::new(local_index);
+        let handle = RefValue::new(local_index);
         self.module.ensure_function_handle_capacity(local_index + 1);
         self.module.set_function_handle(local_index, handle);
         handle
@@ -258,7 +258,7 @@ impl Store {
         (funcaddr != UNREGISTERED_FUNCADDR).then_some(funcaddr)
     }
 
-    pub(crate) fn function_entry_for_handle(&self, handle: RefHandle) -> Option<FuncEntry> {
+    pub(crate) fn function_entry_for_handle(&self, handle: RefValue) -> Option<FuncEntry> {
         self.function_registry.entry_for_handle(handle)
     }
 
@@ -267,11 +267,11 @@ impl Store {
         self.function_registry.borrow().get(funcaddr).copied()
     }
 
-    pub(crate) fn register_i31(&mut self, value: i32) -> RefHandle {
+    pub(crate) fn register_i31(&mut self, value: i32) -> RefValue {
         if let Some((idx, _)) = self.ref_registry.borrow().iter().enumerate().find(
             |(_, entry)| matches!(entry, RefRegistryEntry::I31(existing) if *existing == value),
         ) {
-            return RefHandle::from_pool_index(idx);
+            return RefValue::from_pool_index(idx);
         }
         let idx = {
             let mut registry = self.ref_registry.borrow_mut();
@@ -279,23 +279,23 @@ impl Store {
             registry.push(RefRegistryEntry::I31(value));
             idx
         };
-        RefHandle::from_pool_index(idx)
+        RefValue::from_pool_index(idx)
     }
 
-    pub(crate) fn register_gc_ref(&mut self, gc_ref: GcRef) -> RefHandle {
+    pub(crate) fn register_gc_ref(&mut self, gc_ref: GcRef) -> RefValue {
         let idx = {
             let mut registry = self.ref_registry.borrow_mut();
             let idx = registry.len();
             registry.push(RefRegistryEntry::Gc {
-                owner: self.instance_handle.self_id(),
+                owner: self.instance_backref.self_id(),
                 gc_ref,
             });
             idx
         };
-        RefHandle::from_pool_index(idx)
+        RefValue::from_pool_index(idx)
     }
 
-    pub(crate) fn ref_entry_for_handle(&self, handle: RefHandle) -> Option<RefRegistryEntry> {
+    pub(crate) fn ref_entry_for_handle(&self, handle: RefValue) -> Option<RefRegistryEntry> {
         let idx = handle.pooled_index()?;
         self.ref_registry.borrow().get(idx).cloned()
     }
@@ -323,10 +323,10 @@ pub(crate) mod tests {
 
     pub(crate) fn store(module: ModuleInst) -> Box<Store> {
         let registry = LinkRegistry::new();
-        let (_, instance_handle) = registry.reserve_instance();
+        let (_, instance_backref) = registry.reserve_instance();
         Box::new(Store::new_with_registries(
             module,
-            instance_handle,
+            instance_backref,
             registry.function_registry_shared(),
             registry.ref_registry_shared(),
             #[cfg(sf_has_simd)]
@@ -339,10 +339,10 @@ pub(crate) mod tests {
         use super::*;
 
         fn store_with(registry: &LinkRegistry) -> alloc::boxed::Box<Store> {
-            let (_, instance_handle) = registry.reserve_instance();
+            let (_, instance_backref) = registry.reserve_instance();
             alloc::boxed::Box::new(Store::new_with_registries(
                 ModuleInst::default(),
-                instance_handle,
+                instance_backref,
                 registry.function_registry_shared(),
                 registry.ref_registry_shared(),
                 #[cfg(sf_has_simd)]
@@ -354,7 +354,7 @@ pub(crate) mod tests {
         fn shared_registry_resolves_store_owned_exceptions() {
             let registry = LinkRegistry::new();
             let mut store = store_with(&registry);
-            let tag = TagHandle::mint_fresh();
+            let tag = TagIdentity::mint_fresh();
             let fields = collections::vec![Value::I32(23)];
             let handle = store.alloc_exn(tag, fields.clone());
 
@@ -372,7 +372,7 @@ pub(crate) mod tests {
             let registry = LinkRegistry::new();
             let (handle, tag, fields) = {
                 let mut store = store_with(&registry);
-                let tag = TagHandle::mint_fresh();
+                let tag = TagIdentity::mint_fresh();
                 let fields = collections::vec![Value::I32(41)];
                 (store.alloc_exn(tag, fields.clone()), tag, fields)
             };
@@ -395,7 +395,7 @@ pub(crate) mod tests {
             let mut store = store_with(&registry);
             let i31 = store.register_i31(7);
             let arenas = registry.arenas();
-            let exn = arenas.alloc_exn(TagHandle::mint_fresh(), collections::vec![]);
+            let exn = arenas.alloc_exn(TagIdentity::mint_fresh(), collections::vec![]);
 
             assert_ne!(i31, exn);
             assert!(arenas.resolve_exn(i31).is_none());

@@ -1,5 +1,5 @@
 - WebAssembly values carry their reference identity through a tagged handle
-  (`RefHandle`) whose bit layout distinguishes null, special, host, and pool
+  (`RefValue`) whose bit layout distinguishes null, special, host, and pool
   references, and which is sized to the target pointer width.
 
 - The layout uses a SPECIAL_TAG plus an EXTERN_TAG in the high bits and a
@@ -10,7 +10,7 @@
 ## Facts
 
 - 2025-10-06 (3ccf0d6f) rationale: the extern hierarchy is an orthogonal tag
-  bit (bit 61) on the same RefHandle, so extern.convert_any and any.convert_extern
+  bit (bit 61) on the same RefValue, so extern.convert_any and any.convert_extern
   are implemented by toggling that bit on the existing handle rather than
   allocating or wrapping; only GC (struct/array) and i31 references may carry
   the extern tag, while funcref and exnref are disjoint hierarchies and cannot
@@ -32,11 +32,11 @@
 
 - 2026-04-16 (9ff58dcd) statement: when generated code uses 32-bit GP slots on
   a wider host, a reference cannot be stored by reusing the pointer-width
-  RefHandle bit layout directly (the host tag bits sit above bit 31); the shared
+  RefValue bit layout directly (the host tag bits sit above bit 31); the shared
   value-encoding layer defines a separate compact 32-bit ref encoding
   with its own special/extern/pool tag bits (TARGET32_REF_*) that preserves the
   null/special/host/pooled/extern split in 32 bits, and routes refs to/from
-  RawValue through RefHandle::encoded() instead of the raw field (code).
+  RawValue through RefValue::encoded() instead of the raw field (code).
 
 ## Moves
 
@@ -50,6 +50,6 @@
   host/extern tag layout could not express the GC/i31 reference class introduced
   by wasm 3.0 — it had only a host bit and an extern bit and no encoding for a
   store-pooled reference; the layout is re-cut into a SPECIAL_TAG plus an
-  EXTERN_TAG plus a pool_payload bit inside the payload so one RefHandle
+  EXTERN_TAG plus a pool_payload bit inside the payload so one RefValue
   distinguishes null, special, host, extern, and pooled (i31/GC) references and
   routes pooled handles to the per-store ref registry (code).

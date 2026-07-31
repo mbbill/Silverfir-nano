@@ -3,7 +3,7 @@
 use crate::error::WasmError;
 use crate::value_type::ValueType;
 use crate::vm::jit::store::Store;
-use crate::vm::value::{machine_raw_to_ref, ref_to_machine_raw, RefHandle, Value, FUNCADDR_TOP};
+use crate::vm::value::{machine_raw_to_ref, ref_to_machine_raw, RefValue, Value, FUNCADDR_TOP};
 
 pub(crate) type RawValue = u64;
 
@@ -28,7 +28,7 @@ pub(crate) const fn from_f64(val: f64) -> RawValue {
 }
 
 #[inline(always)]
-pub(crate) const fn from_ref(val: RefHandle) -> RawValue {
+pub(crate) const fn from_ref(val: RefValue) -> RawValue {
     val.encoded() as u64
 }
 
@@ -53,8 +53,8 @@ pub(crate) const fn as_f64(val: RawValue) -> f64 {
 }
 
 #[inline(always)]
-pub(crate) const fn as_ref(val: RawValue) -> RefHandle {
-    RefHandle::new(val as usize)
+pub(crate) const fn as_ref(val: RawValue) -> RefValue {
+    RefValue::new(val as usize)
 }
 
 /// Convert a function reference read from `frame_owner`'s local frame form
@@ -64,7 +64,7 @@ pub(crate) const fn as_ref(val: RawValue) -> RefHandle {
 /// instance's local-index range pass through unchanged. Resolution uses only
 /// the per-instance local-index map and never checks out an instance slot.
 #[inline]
-pub(crate) fn absolutize(frame_owner: &Store, handle: RefHandle) -> RefHandle {
+pub(crate) fn absolutize(frame_owner: &Store, handle: RefValue) -> RefValue {
     if handle.is_null() || handle.is_special() {
         return handle;
     }
@@ -75,7 +75,7 @@ pub(crate) fn absolutize(frame_owner: &Store, handle: RefHandle) -> RefHandle {
     let Some(funcaddr) = frame_owner.funcaddr_for_local_index(local_index) else {
         return handle;
     };
-    RefHandle::new(
+    RefValue::new(
         FUNCADDR_TOP
             .checked_sub(funcaddr)
             .expect("registered funcaddr exceeds the encoding range"),
@@ -90,7 +90,7 @@ pub(crate) fn absolutize(frame_owner: &Store, handle: RefHandle) -> RefHandle {
 /// through unchanged. Resolution uses only the shared function arena and
 /// never checks out an instance slot.
 #[inline]
-pub(crate) fn localize(frame_owner: &Store, handle: RefHandle) -> RefHandle {
+pub(crate) fn localize(frame_owner: &Store, handle: RefValue) -> RefValue {
     if handle.is_null() || handle.is_special() {
         return handle;
     }
@@ -104,8 +104,8 @@ pub(crate) fn localize(frame_owner: &Store, handle: RefHandle) -> RefHandle {
     let Some(entry) = frame_owner.function_entry_for_funcaddr(funcaddr) else {
         return handle;
     };
-    if entry.owner == frame_owner.instance_handle().self_id() {
-        RefHandle::new(entry.local_index as usize)
+    if entry.owner == frame_owner.instance_backref().self_id() {
+        RefValue::new(entry.local_index as usize)
     } else {
         handle
     }
@@ -117,7 +117,7 @@ pub(crate) fn localize(frame_owner: &Store, handle: RefHandle) -> RefHandle {
 /// container may hold the owning instance's local form. Both conversions are
 /// total, so foreign, null, and non-function references pass through.
 #[inline]
-pub(crate) fn retag_for_container(store: &Store, handle: RefHandle, reachable: bool) -> RefHandle {
+pub(crate) fn retag_for_container(store: &Store, handle: RefValue, reachable: bool) -> RefValue {
     if reachable {
         absolutize(store, handle)
     } else {

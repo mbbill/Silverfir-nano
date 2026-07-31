@@ -17,9 +17,9 @@ use crate::collections;
 use crate::error::WasmError;
 use crate::module::type_context::{concrete_type_matches_cross_context, TypeContext};
 use crate::value_type::{AbstractHeapType, HeapType};
-use crate::vm::tag::TagHandle;
+use crate::vm::tag::TagIdentity;
 use crate::vm::value::FUNCADDR_TOP;
-use crate::vm::value::{RefHandle, Value};
+use crate::vm::value::{RefValue, Value};
 use core::cell::{Cell, Ref, RefCell};
 use tracked_alloc::{
     boxed::Box,
@@ -89,13 +89,13 @@ pub(crate) struct InstanceTable(Rc<InstanceTableInner>);
 /// instance table or its checkout tokens. Its back-reference is deliberately
 /// weak so storing a clone inside an instance cannot close an ownership cycle.
 #[derive(Clone)]
-pub struct WorldHandle {
+pub struct WorldAccess {
     table: Weak<InstanceTableInner>,
 }
 
 /// A non-owning back-reference carried by each stored engine instance.
 #[derive(Clone)]
-pub(crate) struct InstanceHandle {
+pub(crate) struct InstanceBackref {
     table: Weak<InstanceTableInner>,
     self_id: InstanceId,
 }
@@ -183,16 +183,16 @@ impl InstanceTable {
     }
 
     #[inline]
-    pub(crate) fn handle(&self, id: InstanceId) -> InstanceHandle {
-        InstanceHandle {
+    pub(crate) fn handle(&self, id: InstanceId) -> InstanceBackref {
+        InstanceBackref {
             table: Rc::downgrade(&self.0),
             self_id: id,
         }
     }
 
     #[inline]
-    pub(crate) fn world_handle(&self) -> WorldHandle {
-        WorldHandle {
+    pub(crate) fn world_access(&self) -> WorldAccess {
+        WorldAccess {
             table: Rc::downgrade(&self.0),
         }
     }
@@ -338,14 +338,14 @@ impl InstanceTable {
     }
 }
 
-impl WorldHandle {
+impl WorldAccess {
     pub(crate) fn checkout(&self, id: InstanceId) -> Option<InstanceToken> {
         let table = self.table.upgrade()?;
         InstanceTable(table.into()).checkout(id)
     }
 }
 
-impl InstanceHandle {
+impl InstanceBackref {
     #[inline]
     pub(crate) const fn self_id(&self) -> InstanceId {
         self.self_id
@@ -444,7 +444,7 @@ pub(crate) struct InstanceLease {
 }
 
 impl InstanceLease {
-    pub(crate) fn checkout(handle: &InstanceHandle) -> Option<Self> {
+    pub(crate) fn checkout(handle: &InstanceBackref) -> Option<Self> {
         Some(Self {
             token: Some(handle.checkout(handle.self_id())?),
         })
@@ -526,7 +526,7 @@ impl Drop for InstanceLease {
 /// an exception's lifetime independent of the instance that allocated it.
 #[derive(Debug, Clone)]
 pub(crate) struct ExnInstance {
-    pub(crate) tag: TagHandle,
+    pub(crate) tag: TagIdentity,
     pub(crate) fields: collections::Vec<Value>,
 }
 
@@ -595,9 +595,9 @@ impl SharedFunctionRegistry {
 
     #[cfg(sf_interp)]
     #[inline]
-    pub(crate) fn absolute_handle(&self, entry: FuncEntry) -> RefHandle {
+    pub(crate) fn absolute_handle(&self, entry: FuncEntry) -> RefValue {
         let funcaddr = self.register(entry);
-        RefHandle::new(
+        RefValue::new(
             FUNCADDR_TOP
                 .checked_sub(funcaddr)
                 .expect("registered funcaddr exceeds the encoding range"),
@@ -605,7 +605,7 @@ impl SharedFunctionRegistry {
     }
 
     #[inline]
-    pub(crate) fn entry_for_handle(&self, handle: RefHandle) -> Option<FuncEntry> {
+    pub(crate) fn entry_for_handle(&self, handle: RefValue) -> Option<FuncEntry> {
         if handle.is_null() || handle.is_special() {
             return None;
         }
@@ -718,12 +718,12 @@ impl<'a> RefTypeOwner<'a> {
         None
     }
 
-    fn instance_handle(self) -> &'a InstanceHandle {
+    fn instance_backref(self) -> &'a InstanceBackref {
         match self {
             #[cfg(sf_jit)]
-            Self::Jit(store) => store.instance_handle(),
+            Self::Jit(store) => store.instance_backref(),
             #[cfg(sf_interp)]
-            Self::Interp(instance) => instance.instance_handle(),
+            Self::Interp(instance) => instance.instance_backref(),
         }
     }
 
@@ -762,7 +762,7 @@ impl<'a> RefTypeOwner<'a> {
         }
     }
 
-    fn function_entry_for_handle(self, handle: RefHandle) -> Option<FuncEntry> {
+    fn function_entry_for_handle(self, handle: RefValue) -> Option<FuncEntry> {
         match self {
             #[cfg(sf_jit)]
             Self::Jit(store) => store.function_entry_for_handle(handle),
@@ -771,7 +771,7 @@ impl<'a> RefTypeOwner<'a> {
         }
     }
 
-    fn ref_entry_for_handle(self, handle: RefHandle) -> Option<RefRegistryEntry> {
+    fn ref_entry_for_handle(self, handle: RefValue) -> Option<RefRegistryEntry> {
         match self {
             #[cfg(sf_jit)]
             Self::Jit(store) => store.ref_entry_for_handle(handle),
@@ -795,7 +795,7 @@ impl<'a> RefTypeOwner<'a> {
 /// Nullability remains a property of each instruction/API call site, so null
 /// never reaches this function.
 pub(crate) fn ref_type_matches(
-    handle: RefHandle,
+    handle: RefValue,
     expected: &HeapType,
     current: RefTypeOwner<'_>,
 ) -> Result<bool, WasmError> {
@@ -823,7 +823,7 @@ pub(crate) fn ref_type_matches(
             )),
             #[cfg(sf_jit)]
             Some(RefRegistryEntry::Gc { owner, gc_ref }) => {
-                let current_id = current.instance_handle().self_id();
+                let current_id = current.instance_backref().self_id();
                 if owner == current_id {
                     let origin = current.jit_store().ok_or_else(|| {
                         WasmError::internal("GC ref points to a non-JIT instance")
@@ -832,7 +832,7 @@ pub(crate) fn ref_type_matches(
                 }
 
                 let token = current
-                    .instance_handle()
+                    .instance_backref()
                     .checkout(owner)
                     .ok_or_else(|| WasmError::internal("GC ref points to missing instance"))?;
                 let origin = RefTypeOwner::from_token(&token)
@@ -866,12 +866,12 @@ pub(crate) fn ref_type_matches(
         HeapType::Abstract(_) => return Ok(false),
         HeapType::Concrete(_) => {}
     }
-    if entry.owner == current.instance_handle().self_id() {
+    if entry.owner == current.instance_backref().self_id() {
         return function_type_matches(current, entry.local_index, expected, current);
     }
 
     let token = current
-        .instance_handle()
+        .instance_backref()
         .checkout(entry.owner)
         .ok_or_else(|| WasmError::internal("function ref points to missing instance"))?;
     let origin = RefTypeOwner::from_token(&token)
@@ -947,16 +947,16 @@ impl RefRegistryEntry {
 /// registry. Both engines' exception allocation funnels through here.
 pub(crate) fn alloc_exn_in(
     refs: &SharedRefRegistry,
-    tag: TagHandle,
+    tag: TagIdentity,
     fields: collections::Vec<Value>,
-) -> RefHandle {
+) -> RefValue {
     let idx = {
         let mut registry = refs.borrow_mut();
         let idx = registry.len();
         registry.push(RefRegistryEntry::Exn(Rc::new(ExnInstance { tag, fields })));
         idx
     };
-    RefHandle::from_pool_index(idx)
+    RefValue::from_pool_index(idx)
 }
 
 #[derive(Clone)]
@@ -981,18 +981,18 @@ impl LinkArenas {
     /// Allocate a backend-neutral exception object in the shared reference
     /// registry.
     #[cfg(sf_interp)]
-    pub(crate) fn alloc_exn(&self, tag: TagHandle, fields: collections::Vec<Value>) -> RefHandle {
+    pub(crate) fn alloc_exn(&self, tag: TagIdentity, fields: collections::Vec<Value>) -> RefValue {
         alloc_exn_in(&self.refs, tag, fields)
     }
 
-    pub(crate) fn resolve_exn(&self, handle: RefHandle) -> Option<Rc<ExnInstance>> {
+    pub(crate) fn resolve_exn(&self, handle: RefValue) -> Option<Rc<ExnInstance>> {
         let idx = handle.pooled_index()?;
         let entry = self.refs.borrow().get(idx).cloned()?;
         entry.resolve_exn()
     }
 
     #[cfg(sf_interp)]
-    pub(crate) fn ref_entry_for_handle(&self, handle: RefHandle) -> Option<RefRegistryEntry> {
+    pub(crate) fn ref_entry_for_handle(&self, handle: RefValue) -> Option<RefRegistryEntry> {
         let idx = handle.pooled_index()?;
         self.refs.borrow().get(idx).cloned()
     }
@@ -1014,7 +1014,7 @@ impl LinkRegistry {
     }
 
     #[inline]
-    pub(crate) fn reserve_instance(&self) -> (InstanceId, InstanceHandle) {
+    pub(crate) fn reserve_instance(&self) -> (InstanceId, InstanceBackref) {
         let id = self.instances.reserve();
         (id, self.instances.handle(id))
     }
@@ -1088,7 +1088,7 @@ mod tests {
     #[test]
     fn shared_registry_owns_exception_payloads() {
         let registry = LinkRegistry::new();
-        let tag = TagHandle::mint_fresh();
+        let tag = TagIdentity::mint_fresh();
         let fields = collections::vec![Value::I32(7), Value::I64(11)];
 
         let arenas = registry.arenas();
@@ -1115,7 +1115,7 @@ mod instance_table_tests {
     #[cfg(any(sf_ir_dump, sf_jitdump))]
     use tracked_alloc::string::String;
 
-    fn test_store(registry: &LinkRegistry, handle: InstanceHandle) -> Box<Store> {
+    fn test_store(registry: &LinkRegistry, handle: InstanceBackref) -> Box<Store> {
         Box::new(Store::new_with_registries(
             ModuleInst::new(
                 Config::new(),
@@ -1131,7 +1131,7 @@ mod instance_table_tests {
         ))
     }
 
-    fn occupied_store(registry: &LinkRegistry) -> (InstanceId, InstanceHandle) {
+    fn occupied_store(registry: &LinkRegistry) -> (InstanceId, InstanceBackref) {
         let (id, handle) = registry.reserve_instance();
         let store = test_store(registry, handle.clone());
         registry
@@ -1142,7 +1142,7 @@ mod instance_table_tests {
     }
 
     #[cfg(sf_interp)]
-    fn occupied_interp(registry: &LinkRegistry, name: &str) -> (InstanceId, InstanceHandle) {
+    fn occupied_interp(registry: &LinkRegistry, name: &str) -> (InstanceId, InstanceBackref) {
         const MEMORY_WASM: &[u8] = &[
             0x00, 0x61, 0x73, 0x6d, 0x01, 0x00, 0x00, 0x00, 0x05, 0x03, 0x01, 0x00, 0x01,
         ];
@@ -1281,13 +1281,13 @@ mod instance_table_tests {
         let mut first_a = table.checkout(a_id).expect("first A checkout");
         let (a_handle, gc_handle) = {
             let a_store = first_a.jit_mut().expect("first A materialization");
-            assert_eq!(a_store.instance_handle().self_id(), a_id);
+            assert_eq!(a_store.instance_backref().self_id(), a_id);
             let gc_ref = a_store
                 .gc_heap()
                 .borrow_mut()
                 .alloc_struct(37, collections::vec![Value::I32(0)]);
             let gc_handle = a_store.register_gc_ref(gc_ref);
-            (a_store.instance_handle().clone(), gc_handle)
+            (a_store.instance_backref().clone(), gc_handle)
         };
         assert_eq!(table.in_use(a_id), Some(1));
         assert_eq!(table.in_use(b_id), Some(0));
@@ -1340,8 +1340,8 @@ mod instance_table_tests {
         let mut b = a_handle.checkout(b_id).expect("B checkout from A");
         let b_handle = {
             let b_store = b.jit_mut().expect("B materialization");
-            assert_eq!(b_store.instance_handle().self_id(), b_id);
-            b_store.instance_handle().clone()
+            assert_eq!(b_store.instance_backref().self_id(), b_id);
+            b_store.instance_backref().clone()
         };
         assert_eq!(table.in_use(a_id), Some(1));
         assert_eq!(table.in_use(b_id), Some(1));
@@ -1349,7 +1349,7 @@ mod instance_table_tests {
         let mut reentered_a = b_handle.checkout(a_id).expect("A re-entry from B");
         {
             let a_store = reentered_a.jit_mut().expect("re-entered A materialization");
-            assert_eq!(a_store.instance_handle().self_id(), a_id);
+            assert_eq!(a_store.instance_backref().self_id(), a_id);
         }
         assert_eq!(table.in_use(a_id), Some(2));
         assert_eq!(table.in_use(b_id), Some(1));
@@ -1362,7 +1362,7 @@ mod instance_table_tests {
             let a_store = first_a
                 .jit_mut()
                 .expect("A rematerialization after re-entry");
-            assert_eq!(a_store.instance_handle().self_id(), a_id);
+            assert_eq!(a_store.instance_backref().self_id(), a_id);
         }
         drop(b);
         assert_eq!(table.in_use(b_id), Some(0));
@@ -1404,7 +1404,7 @@ mod instance_table_tests {
                 .with_instance_mut(|a| {
                     a.touch_storage_for_instance_table_test();
                     a.memory_mut().expect("A memory")[0] = 0x11;
-                    assert_eq!(a.instance_handle().self_id(), a_id);
+                    assert_eq!(a.instance_backref().self_id(), a_id);
                 })
                 .expect("first A materialization");
             drop(first_a);
@@ -1418,7 +1418,7 @@ mod instance_table_tests {
                     b.touch_storage_for_instance_table_test();
                     b.memory_mut().expect("B memory")[0] = 0x22;
                     let a_token = b
-                        .instance_handle()
+                        .instance_backref()
                         .checkout(a_id)
                         .expect("A re-entry from B");
                     let mut reentered_a = InterpInstanceAccess::checked_out(a_token);

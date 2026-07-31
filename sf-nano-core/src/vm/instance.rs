@@ -23,9 +23,9 @@ use crate::module::Module;
 use crate::vm::engine::{Engine, Tier};
 use crate::vm::entities::{Caller, MemInst};
 use crate::vm::imports::ImportedGlobalState;
-use crate::vm::link::{InstanceFreeError, InstanceId, LinkRegistry, WorldHandle};
-use crate::vm::tag::TagHandle;
-use crate::vm::value::{RefHandle, Value};
+use crate::vm::link::{InstanceFreeError, InstanceId, LinkRegistry, WorldAccess};
+use crate::vm::tag::TagIdentity;
+use crate::vm::value::{RefValue, Value};
 
 #[cfg(sf_interp)]
 use crate::vm::interpreter::{InterpInstance, InterpInstanceLease};
@@ -487,7 +487,7 @@ impl Instance {
     /// embedder, so this resolves it to the values the throw carried.
     /// Exception objects are registry-owned, so this keeps working after the
     /// instance that threw has been dropped.
-    pub fn exception_fields(&self, exn: RefHandle) -> Option<collections::Vec<Value>> {
+    pub fn exception_fields(&self, exn: RefValue) -> Option<collections::Vec<Value>> {
         self.registry
             .arenas()
             .resolve_exn(exn)
@@ -496,7 +496,7 @@ impl Instance {
 
     /// An absolute reference handle for a function, suitable for crossing
     /// instance boundaries.
-    pub fn function_handle_at(&self, idx: usize) -> Option<RefHandle> {
+    pub fn function_handle_at(&self, idx: usize) -> Option<RefValue> {
         match &self.inner {
             #[cfg(sf_jit)]
             Inner::Jit(inst) => inst.function_handle_at(idx),
@@ -559,10 +559,10 @@ impl Instance {
     }
 
     /// A tag handle for exception handling.
-    pub fn tag_handle(&self, name: &str) -> Option<TagHandle> {
+    pub fn tag_identity(&self, name: &str) -> Option<TagIdentity> {
         match &self.inner {
             #[cfg(sf_jit)]
-            Inner::Jit(inst) => inst.tag_handle(name),
+            Inner::Jit(inst) => inst.tag_identity(name),
             // Tag IDENTITY is a linking concern, so the interpreter mints
             // handles even though it cannot yet throw or catch.
             #[cfg(sf_interp)]
@@ -572,7 +572,7 @@ impl Instance {
                     .tags()
                     .iter()
                     .position(|t| t.export_names().iter().any(|e| e == name))?;
-                inst.tag_handle_at(idx)
+                inst.tag_identity_at(idx)
             }),
         }
     }
@@ -729,8 +729,8 @@ impl RuntimeWorld {
     /// the embedder still holds `&mut RuntimeWorld`, and that host function
     /// calls a runtime-chosen peer. Every call through the handle performs a
     /// fresh generation-checked checkout.
-    pub fn handle(&self) -> WorldHandle {
-        self.registry.instance_table().world_handle()
+    pub fn handle(&self) -> WorldAccess {
+        self.registry.instance_table().world_access()
     }
 
     /// Instantiate `module` into this world, returning its id.
@@ -857,7 +857,7 @@ impl RuntimeWorld {
     }
 }
 
-impl WorldHandle {
+impl WorldAccess {
     /// Invoke a function by its instance identity and local function index.
     ///
     /// This takes only `&self`: a host callback can therefore call back into
@@ -1224,7 +1224,7 @@ mod tests {
                 tier: Tier,
                 name: &str,
                 argument: Value,
-            ) -> RefHandle {
+            ) -> RefValue {
                 let values = world
                     .invoke(consumer, name, &[argument])
                     .unwrap_or_else(|error| panic!("{tier:?} {name}: {error}"));
@@ -1278,9 +1278,9 @@ mod tests {
             let Value::Ref(function_handle, _) = function else {
                 panic!("{tier:?}: provider returned a non-reference")
             };
-            let host_handle = RefHandle::hostref(7);
+            let host_handle = RefValue::hostref(7);
             let host = Value::Ref(host_handle, crate::value_type::RefType::anyref());
-            let null_handle = RefHandle::null();
+            let null_handle = RefValue::null();
             let null = Value::Ref(null_handle, crate::value_type::RefType::funcref());
 
             let mut answers = collections::vec![
@@ -1441,7 +1441,7 @@ mod tests {
         let import = Import::global_with_linked_function(
             "host",
             "fn_global",
-            Value::Ref(RefHandle::null(), crate::value_type::RefType::funcref()),
+            Value::Ref(RefValue::null(), crate::value_type::RefType::funcref()),
             false,
             Some((answer as crate::vm::entities::HostFn, func_type)),
         );
@@ -1471,7 +1471,7 @@ mod tests {
         );
     }
 
-    /// An uncaught exception hands the embedder a `RefHandle`, and until
+    /// An uncaught exception hands the embedder a `RefValue`, and until
     /// `exception_fields` existed there was no way to resolve it -- the
     /// resolver was `pub(crate)`. This pins the capability the method claims,
     /// on both engines, since it is otherwise the only reader of
