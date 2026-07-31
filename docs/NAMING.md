@@ -1,8 +1,14 @@
 # Runtime type naming
 
-**Status: proposal, second draft.** The first draft was reviewed against the
-code and failed on eleven counts; the review is the reason this one is
-smaller. What changed and why is recorded at the end.
+**Status: waves 1 and 2 landed; waves 3 and 4 are undecided.**
+
+Waves 1 and 2 are done — `71659c61` (the `Handle` family) and `ff8e482d`
+(the body/lease swap). Waves 3 and 4 are not renames and are not scheduled;
+they need decisions recorded below.
+
+The first draft of this document was reviewed against the code and failed on
+eleven counts; the review is why this one is smaller. What changed and why is
+recorded at the end.
 
 ## Method: extract the convention, do not invent one
 
@@ -165,8 +171,8 @@ falsely, and no better name has been established.
 
 | Wave | Scope | Notes |
 |---|---|---|
-| 1 | the `Handle` family (§2) | Four independent renames, no ordering constraint. Smallest blast radius; validates the gate. |
-| 2 | body/lease swap (§1) | Rename the lease first to free the name. The reverse order is *rejected by the compiler* as a same-namespace collision — not silently merged, as the first draft claimed. |
+| 1 | the `Handle` family (§2) | **Landed `71659c61`.** Four independent renames. The tree lint caught a first attempt that rewrote wrapped continuation lines inside committed Facts entries. |
+| 2 | body/lease swap (§1) | **Landed `ff8e482d`.** Not mechanical: `Store` is also an opcode (140 `MachineInstKind::Store`, 9 `Fam::Store`), so the type surface was bounded and verified opcode-free before renaming, with rustc confirming the bound. |
 | 3 | the visibility decision (§1) | A design change. Needs a decision before it can be planned. |
 | 4 | `RefRegistryEntry` split (§3) | A design change, independent of the others. |
 
